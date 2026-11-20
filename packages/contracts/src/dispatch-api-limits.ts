@@ -510,9 +510,12 @@ export const DOCUMENT_UPDATE_REFUSED_CLOSE_REASON = "DOC_UPDATE_REFUSED";
 
 /** The reason the document websocket closes with `DOCUMENT_TOO_LARGE_CLOSE_CODE` when the update
  *  carries an edit under a client id that is not the sender's: one Dispatch gave another person,
- *  one another person's edits claimed first, one Dispatch never gave out at all
- *  (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`), or one below 2^32 that the sender may not claim - one
- *  the document's history names, past the 30-day claim window or by a person who did not edit the
+ *  before the sender's edit under it or while that edit was judged, one another person's edits
+ *  claimed first, one at 2^35 or above, which Dispatch never gives out
+ *  (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`), one from 2^32 up that Dispatch stores for no one while
+ *  the document holds an edit under it, or that a client presenting no
+ *  `DOCUMENT_CLIENT_ID_PARAMETER` sends, or one below 2^32 that the sender may not claim - one the
+ *  document's history names, past the 30-day claim window or by a person who did not edit the
  *  document since, or one past the bounds every claim is held to on every socket, 64 a socket and
  *  64 a person in one document in one UTC day. It is the same close for an update that would
  *  take its socket past the 128 client ids one socket may write under besides its own, its claims
@@ -535,11 +538,15 @@ export const DOCUMENT_CLIENT_ID_PARAMETER = "client_id";
 /** The start of the Hocuspocus stateless message a document websocket sends first, before any
  *  other frame, on a socket that presented `DOCUMENT_CLIENT_ID_PARAMETER`: this prefix, then the
  *  decimal client id Dispatch gives that socket's page for the document. It is the id the page
- *  presented where Dispatch had given that id to the same person, and an id given out afresh
- *  otherwise; to a page admitted read-only, which writes under no id, an id drawn as a fresh one is
- *  that Dispatch stores for no one, which the page takes while it has written nothing and gives up
- *  for the one its next writable admission gives it. The page writes and announces its presence
- *  under no other id. Generated into Go as `contracts.DocumentClientIdMessagePrefix`. */
+ *  presented where Dispatch stores that id for the same person, or where Dispatch stores it for no
+ *  one and it is from 2^32 up and below 2^35 - the page's own, whose stored record Dispatch gave
+ *  back or swept, or one a read-only admission sent it - or, for a page that may write, below 2^32
+ *  and one it may claim; and an id given out afresh otherwise. A writable admission stores the id
+ *  it gives for the page's person. A page admitted read-only writes under no id and its admission
+ *  stores nothing, so an id it is sent that Dispatch stores for no one, presented or drawn as a
+ *  fresh one is, stays so until a writable admission of the page, which keeps it where Dispatch
+ *  stores it for no other person by then. The page writes and announces its presence under no
+ *  other id. Generated into Go as `contracts.DocumentClientIdMessagePrefix`. */
 export const DOCUMENT_CLIENT_ID_MESSAGE_PREFIX = "dispatch.client_id:";
 
 /**
@@ -548,16 +555,17 @@ export const DOCUMENT_CLIENT_ID_MESSAGE_PREFIX = "dispatch.client_id:";
  * document is closed with it before any room is made, and an update that would grow a document
  * already open is closed with it too, while an update that shrinks one still applies. A browser
  * asking for a document is closed with it as well where its person holds the 64 client ids no edit
- * has landed under that one document allows a person, and each is held by a socket still open. It
- * is also the close of an update the server cannot judge for now: one whose client ids it could
- * not read from its table, and one that would leave the rendering past its bound where a server
- * write has committed since the room's last rendering, so what the update started from is not
- * known yet - with every browser whose parked edit lands in a drain refused that way. And it is
- * the close of a browser whose first sync the server's copy memory had no room to answer within
- * its wait bound. It is in the 4500-4599 band collaborative servers publish as transient, so the
- * dashboard keeps the edit it could not send and reconnects on its own backoff, the live socket's
- * (`reconnectDelayMs`), which spreads a crowd of tabs and caps at 30 s, to retry it. Generated
- * into Go as `contracts.DocumentBusyCloseCode`.
+ * has landed under that one document allows a person, and each is held by a socket still open, and
+ * so is an update under an id from 2^32 up that Dispatch would store for that person then. It is
+ * also the close of an update the server cannot judge for now: one whose client ids it could not
+ * read from its table or write to it, and one that would leave the rendering past its bound where
+ * a server write has committed since the room's last rendering, so what the update started from
+ * is not known yet - with every browser whose parked edit lands in a drain refused that way. And
+ * it is the close of a browser whose first sync the server's copy memory had no room to answer
+ * within its wait bound. It is in the 4500-4599 band collaborative servers publish as transient,
+ * so the dashboard keeps the edit it could not send and reconnects on its own backoff, the live
+ * socket's (`reconnectDelayMs`), which spreads a crowd of tabs and caps at 30 s, to retry it.
+ * Generated into Go as `contracts.DocumentBusyCloseCode`.
  */
 export const DOCUMENT_BUSY_CLOSE_CODE = 4503;
 

@@ -625,8 +625,9 @@ const DocumentSchemaCloseReason = ${JSON.stringify(DOCUMENT_SCHEMA_CLOSE_REASON)
 // the client ids one socket may write under; DocumentBusyCloseCode and
 // DocumentBusyCloseReason close a browser the room-memory budget has no room for, one whose
 // person holds every client id no edit has landed under that a document allows them, each held by
-// a socket still open, the one whose update would grow a document while that budget is full, the
-// one whose update's client ids the table could not be read for, the one whose update the render
+// a socket still open - at its admission, or at an update under an id the room would give them -
+// the one whose update would grow a document while that budget is full, the one whose update's
+// client ids the table could not be read or written for, the one whose update the render
 // check could not size yet with the browsers whose parked edits a drain refused for that held, and
 // the one whose first sync the pod's copy heap had no room to answer.
 // Generated from DOCUMENT_TOO_LARGE_CLOSE_CODE, DOCUMENT_TOO_LARGE_CLOSE_REASON,

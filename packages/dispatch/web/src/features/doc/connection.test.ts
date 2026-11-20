@@ -1453,7 +1453,7 @@ test("a page takes the client id its socket's first frame gives it, announces an
   });
 });
 
-test("a page that has written under its client id and is given another is refused as an edit under an id Dispatch did not give it", async () => {
+test("a page that has written under its client id and is given another is refused as an edit under an id it may not write under", async () => {
   const artifact = artifactId();
   const server = serverWith("shared", 100);
   const given = 2 ** 32 + 7;
@@ -1476,7 +1476,7 @@ test("a page that has written under its client id and is given another is refuse
 // The room took every edit the page typed under the id its first socket gave it, and a later
 // socket gives it another: its person signed in again as someone else, say, whose admission is
 // given an id of its own (client_ids_admission.go, keepsClient). The page is refused as one
-// holding edits under an id Dispatch did not give it, though no saved row goes with the refusal:
+// holding edits under an id it may not write under, though no saved row goes with the refusal:
 // the room holds every edit, so the notice names none as lost.
 test("a page refused its client id after the room took every edit under it is told no edit went", async () => {
   const artifact = artifactId();
@@ -1498,7 +1498,7 @@ test("a page refused its client id after the room took every edit under it is to
     await waitFor(() => expect(refusals).toEqual([DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON]));
     expect(dropped).toEqual([0]);
     expect(refusedEditNotice(DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON, dropped[0])).toBe(
-      "Dispatch has reloaded the document: this page held edits under an editing identity Dispatch did not give you. Every edit of yours that reached Dispatch is kept, and those saved in this browser are sent again."
+      "Dispatch has reloaded the document: this page held edits under an editing identity it may not write under. Every edit of yours that reached Dispatch is kept, and those saved in this browser are sent again."
     );
   });
 });
@@ -1706,7 +1706,7 @@ test("a refusal of a row under another person's client id drops every row under 
       expect(await left()).toEqual(writers.indexOf(keptClient) < refusedAt ? [] : [keptClient])
     );
     expect(refusedEditNotice(DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON, 2)).toBe(
-      "2 of your edits were not saved: they were made under an editing identity Dispatch did not give you, so they cannot be sent. Dispatch has reloaded the document."
+      "2 of your edits were not saved: they were made under an editing identity this page may not write under. Dispatch has reloaded the document."
     );
   });
 });
@@ -1732,7 +1732,7 @@ function relayedFrame(update: Uint8Array, name: string): Uint8Array {
 // The room relayed another person's edit to this page and then lost it before its store, and the
 // page's person typed right after it while the socket was down. The reconnect's SyncStep2 hands
 // back the lost edit beside the person's own, and the room refuses it whole as an edit under an id
-// Dispatch did not give this person (client_ids_judgement.go, judgeClients). A SyncStep2 names no
+// this person may not write under (client_ids_judgement.go, judgeClients). A SyncStep2 names no
 // saved row, so none goes: the row is kept, and the notice says the document was reloaded and the
 // person's saved edits are sent again. The document read afresh from the room (ProofDocument's
 // `onEditRefused`) does send it: the row parks there on the other person's lost edit, which no
@@ -1791,7 +1791,7 @@ test("a SyncStep2 refused for another person's lost edit keeps the page's own ro
     expect(dropped).toEqual([0]);
     expect(await rowsOf(artifact)).toEqual([[artifact, given, 1]]);
     expect(refusedEditNotice(DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON, dropped[0])).toBe(
-      "Dispatch has reloaded the document: this page held edits under an editing identity Dispatch did not give you. Every edit of yours that reached Dispatch is kept, and those saved in this browser are sent again."
+      "Dispatch has reloaded the document: this page held edits under an editing identity it may not write under. Every edit of yours that reached Dispatch is kept, and those saved in this browser are sent again."
     );
   });
 

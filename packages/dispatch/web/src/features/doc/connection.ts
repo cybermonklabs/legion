@@ -104,8 +104,8 @@ export function reconnectingNotice(
  * until it is rebuilt (`DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`: its edit history has used up what the
  * server lets it scan), one this browser typed against the history someone else's rebuild replaced
  * (`DOCUMENT_REBUILT_CLOSE_REASON`), one holding content the document does not take
- * (`DOCUMENT_UPDATE_REFUSED_CLOSE_REASON`), one made under a client id Dispatch did not give this
- * browser's person (`DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON`), or one that would make the
+ * (`DOCUMENT_UPDATE_REFUSED_CLOSE_REASON`), one made under a client id this page may not write
+ * under (`DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON`), or one that would make the
  * document too large. Every one of them is permanent: the refused edit is dropped and the
  * document re-read, so a reconnect cannot meet the same refusal again.
  *
@@ -113,13 +113,17 @@ export function reconnectingNotice(
  * replaced history is: the restore drops each of those rows and reports when they were saved
  * (`pending-sync.ts`, `admit`). The client id refusal names how many edits went, `dropped`: every
  * saved row under the refused id goes with the refused edit, since each would meet the same refusal
- * (`dropClientRows`), so its notice says no more than that. Where none went, the notice names no
- * edit as lost: the page held edits under an id Dispatch did not give its person, and the browser
- * held no saved row under it. Either every edit the page made under that id had reached Dispatch
- * before a later socket would not give the id back (`takeClientId`), or the refused frame was the
- * page's SyncStep2, which names no row of its own: one that hands back another person's edit the
- * room relayed to this page and then lost before its store. The rebuilt document replays every
- * saved row that is left, a row that waits on that lost edit included, so the notice says those are
+ * (`dropClientRows`), so its notice says no more than that. The id is one the page may not write
+ * under, whichever way that came about: one Dispatch never gave this person, one it gave another
+ * person - a closed tab's id whose record it gave back, given since to someone else - one whose
+ * record is gone while the document holds an edit under it, or one past what one socket may hold,
+ * so the notice names no more than that either. Where none went, the notice names no edit as
+ * lost: the page held edits under an id it may not write under, and the browser held no saved row
+ * under it. Either every edit the page made under that id had reached Dispatch before a later
+ * socket would not give the id back (`takeClientId`), or the refused frame was the page's
+ * SyncStep2, which names no row of its own: one that hands back another person's edit the room
+ * relayed to this page and then lost before its store. The rebuilt document replays every saved
+ * row that is left, a row that waits on that lost edit included, so the notice says those are
  * sent again. A browser that keeps no rows (`PendingState.stored`) counts none either, whatever its
  * document held unsent. Of these refusals the page offers a rebuild only for
  * `DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`, the one a rebuild helps (`ProofDocument`); a rebuild of a
@@ -137,12 +141,12 @@ export function refusedEditNotice(reason: string, dropped?: number): string {
       return "Your last edit was not saved: it holds content this document does not take.";
     case DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON: {
       if (dropped === 0) {
-        return "Dispatch has reloaded the document: this page held edits under an editing identity Dispatch did not give you. Every edit of yours that reached Dispatch is kept, and those saved in this browser are sent again.";
+        return "Dispatch has reloaded the document: this page held edits under an editing identity it may not write under. Every edit of yours that reached Dispatch is kept, and those saved in this browser are sent again.";
       }
       const count = dropped ?? 1;
       return count === 1
-        ? "1 of your edits was not saved: it was made under an editing identity Dispatch did not give you, so it cannot be sent. Dispatch has reloaded the document."
-        : `${count} of your edits were not saved: they were made under an editing identity Dispatch did not give you, so they cannot be sent. Dispatch has reloaded the document.`;
+        ? "1 of your edits was not saved: it was made under an editing identity this page may not write under. Dispatch has reloaded the document."
+        : `${count} of your edits were not saved: they were made under an editing identity this page may not write under. Dispatch has reloaded the document.`;
     }
     default:
       return "Your last edit was not saved: it would make this document larger than a Dispatch document may be. Your other edits are kept.";
@@ -203,7 +207,7 @@ export interface ConnectionCallbacks {
    * rebuilt before it can take it (`DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`), the edit was typed
    * against a history someone else's rebuild replaced (`DOCUMENT_REBUILT_CLOSE_REASON`), it
    * holds content the document does not take (`DOCUMENT_UPDATE_REFUSED_CLOSE_REASON`), or it was
-   * made under a client id Dispatch did not give this browser's person
+   * made under a client id this page may not write under
    * (`DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON`). It fires with that last reason too when the
    * server will not give back the client id this connection's document has written under (the
    * socket's first frame, `readClientIdMessage`), and with `DOCUMENT_REBUILT_CLOSE_REASON` when a

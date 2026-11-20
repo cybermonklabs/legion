@@ -7,7 +7,8 @@
 -- A row is written in two ways. A document socket's admission of a page that may write gives the
 -- page a client id of its own and writes it here first (minted): Dispatch draws it at 2^32 or
 -- above, where no browser of an earlier build and no write of the server's own draws one, and the
--- page writes under no other id. A read-only admission writes nothing: its page writes under no
+-- page writes under no other id; an edit of a page under such an id that no row names is written
+-- the same way (below). A read-only admission writes nothing: its page writes under no
 -- id, and is sent one drawn the same way that no row names, or given back one its person's row
 -- names. A client id below 2^32 that no admission gave out - one a page of an earlier build, or a
 -- client that presents no client id at all, drew for itself - is written here (claimed) by the
@@ -22,8 +23,11 @@
 -- history first named it; and a page of this build claims any id only within those 30 days. So a
 -- tab open across the deploy, the edits it saved, and the clients that present no id still land.
 -- From then on a browser's update carrying an edit under a client id whose row names another
--- person is refused whole, and one carrying an edit under an id at 2^32 or above that has no row
--- is refused too (packages/envoy/internal/dispatch/docs/client_ids.go).
+-- person is refused whole, and so is one carrying an edit under an id at 2^32 or above that has no
+-- row, except where the id is below 2^35, the document holds no edit under it and the sender's
+-- page presented a client id: that id is written here as the sender's (minted), counted against
+-- the 64 below as an admission's is, and where another person's edit or page is given it first the
+-- update is refused (packages/envoy/internal/dispatch/docs/client_ids.go).
 --
 -- A claim can be made first by someone other than the tab whose id it is - a co-author, reading
 -- the id off the history, or any reader, reading an id no history names off the room's awareness
@@ -40,13 +44,18 @@
 -- a socket's admission gives the id back to the page that presented it, and every 5 minutes while
 -- a socket that holds the id is open and no edit has landed under it; landed is set once an edit
 -- under the id has landed in the document - integrated, not only parked behind a clock the room
--- lacks. A person holds at most 64 rows of minted ids in a document that never landed an edit: an
--- admission past that deletes, in the statement that writes its own row, the person's one there
--- presented least recently, and only one no socket has presented for 15 minutes, which no open
--- socket's is; where none is that old, the admission is refused for the editor to retry. A row
--- whose id never landed an edit and that nothing has presented for 30 days is deleted by the
--- hourly compaction sweep: a page that comes back after either deletion is given a fresh id,
--- which loses only what it typed offline under the old one that never landed. A claimed row is
+-- lacks - from the socket given the id or from another of the person's that holds it, such as a
+-- page replaying a closed tab's saved edits. A person holds at most 64 rows of minted ids in a
+-- document that never landed an edit: an admission past that deletes, in the statement that writes
+-- its own row, the person's one there presented least recently, and only one no socket has
+-- presented for 15 minutes, which no open socket's is; where none is that old, the admission is
+-- refused for the editor to retry. A row whose id never landed an edit and that nothing has
+-- presented for 30 days is deleted by the hourly compaction sweep. A page that comes back after
+-- either deletion and presents the id is given it again, its row written afresh, where no other
+-- row names it by then, and so is another page of the same browser whose edit replays what the
+-- first saved under the id, where the document holds no edit under it: what was typed offline
+-- under it lands. Where another person's row names the id by then, the page is given a fresh id,
+-- and the browser drops the edits saved under the old one that never landed. A claimed row is
 -- written landed and never swept: its id could otherwise be claimed by another person while the
 -- tab that holds it is still open and writing under it. The claims are bounded instead: a page
 -- of this build's by the 30 days, and every claim by the 64 a socket and the 64 a person makes in
@@ -60,8 +69,8 @@ create table document_client_ids (
   -- this build presenting it at its admission or by the first person to land an edit under it.
   minted boolean not null,
   -- whether an edit under this id has landed in the document: set once the document holds a
-  -- struct under an id an admission gave out, after an edit of its socket, and on every claim as
-  -- it is written, which is never swept.
+  -- struct under an id an admission gave out, after an edit of a socket of its person's holding
+  -- it, and on every claim as it is written, which is never swept.
   landed boolean not null default false,
   -- for a claimed id, the clock the document held the id to when the claim was made; null for a
   -- minted id.

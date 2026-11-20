@@ -106,8 +106,25 @@ func TestRV9CAnIDLandedByAReplayKeepsItsRow(t *testing.T) {
 	second.Close()
 	<-second.Ended
 
-	opens := rv9cFillCapUntilGone(t, service, artifactID, serverURL, a)
-	t.Logf("alice's row for %d, an id the stored history names, was given back after %d page loads", a, opens)
+	// A landed row is neither given back nor swept, so where the loop waited for this row's
+	// deletion it now fills the cap and requires the row kept (the architect's ruling, Envoy
+	// 9f1f2cfb, 2026-11-20).
+	fill := socketURL(serverURL, artifactID) + "&" + contracts.DocumentClientIdParameter + "="
+	deadline := time.Now().Add(2 * time.Minute)
+	for opens := 0; opens < maxUnlandedMintsADocument+1; {
+		if time.Now().After(deadline) {
+			t.Fatalf("after %d opens the cap was not filled", opens)
+		}
+		if _, busy := openAndLeave(t, fill, "alice"); busy {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		opens++
+	}
+	if storedClientIDs(t, service, artifactID, a) == 0 {
+		t.Fatalf("alice's row for %d, an id the stored history names, was given back after %d page loads", a, maxUnlandedMintsADocument+1)
+	}
+	t.Logf("alice's row for %d, an id the stored history names, is still stored after %d page loads", a, maxUnlandedMintsADocument+1)
 
 	url := socketURL(serverURL, artifactID) + "&" + contracts.DocumentClientIdParameter + "=" + strconvU(uint64(a))
 	mallory, _ := openAndLeave(t, url, "mallory")

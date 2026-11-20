@@ -1241,8 +1241,9 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // header or delete set does not read refuses nothing there and falls through to the apply, whose
 // decoder refuses the same bytes, DocumentUpdateRefusedCloseReason. The second is an update
 // carrying structs under a client id that is not its sender's, refused
-// DocumentClientIdRefusedCloseReason, or one whose client ids the table could not be read for,
-// refused for a retry with the transient DocumentBusyCloseCode (judgeClients,
+// DocumentClientIdRefusedCloseReason, or one whose client ids the table could not be read or
+// written for, or whose id's mint found every row its sender holds unlanded in the document live
+// (errMintsLive), refused for a retry with the transient DocumentBusyCloseCode (judgeClients,
 // client_ids_judgement.go).
 //
 // Everything else is the apply's. The hook builds the allowance this update applies under
@@ -1835,14 +1836,16 @@ func documentUpdateRefused() *websocket.PeerClose {
 
 // documentClientIDRefused is the refusal of an update carrying an edit under a client id its
 // sender may not write under, every one of them made by refuseClient (client_ids_judgement.go):
-// structs under another person's id, under one no admission gave out, under one it may not claim
-// or past the claims' bounds, or under more ids than its socket may hold (judgeClients); structs
-// at clocks another person claimed that differ from what the room holds there, and a legacy
-// socket's update carrying structs at such clocks under more than maxComparedClaims claimed ids
-// (refusedDuplicates); and a delete range that would park under a client its socket does not hold
-// (parkJudge, refusedByApply). Permanent as documentTooLarge is and under the same code, with a
-// reason of its own: the editor drops the refused edit and rebuilds its document under a fresh
-// client id.
+// structs under another person's id, under one no admission gave out, under one from
+// mintedClientFloor up that no row names while the document holds a struct under it, under one
+// another person was given first as both updates' mints of it met (mintForSender), under one it
+// may not claim or past the claims' bounds, or under more ids than its socket may hold
+// (judgeClients); structs at clocks another person claimed that differ from what the room holds
+// there, and a legacy socket's update carrying structs at such clocks under more than
+// maxComparedClaims claimed ids (refusedDuplicates); and a delete range that would park under a
+// client its socket does not hold (parkJudge, refusedByApply). Permanent as documentTooLarge is
+// and under the same code, with a reason of its own: the editor drops the refused edit and
+// rebuilds its document under a fresh client id.
 func documentClientIDRefused() *websocket.PeerClose {
 	return &websocket.PeerClose{
 		Code:   contracts.DocumentTooLargeCloseCode,

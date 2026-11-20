@@ -306,7 +306,7 @@ export function ProofDocument({
   // The server refused this browser's last edit, as one that would take the document past its size
   // bound, one it could not merge quickly enough, one the document cannot take until it is
   // rebuilt, one typed against the history someone else's rebuild replaced, or one made under a
-  // client id Dispatch did not give this person: the close reason that says which, which the
+  // client id this page may not write under: the close reason that says which, which the
   // notice's sentence (`refusedEditNotice`) and its rebuild offer are read from, with how many
   // saved edits went with it where the connection says (`dropped`). The edit is gone and the
   // notice stays until the person dismisses it or rebuilds the document.

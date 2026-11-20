@@ -54,13 +54,20 @@ type socketClients struct {
 	stored  bool
 	landed  atomic.Bool
 	marking atomic.Bool
-	// mu guards confirmed and claims: the hook changes them on the peer's read loop, and reads
-	// confirmed inside the apply it waits for there (parkJudge), so the lock is never contended.
+	// mu guards confirmed, unmarked and claims: the hook changes them on the peer's read loop,
+	// and reads confirmed inside the apply it waits for there (parkJudge), so the lock is never
+	// contended but by a mark's end (markedConfirmed).
 	mu sync.Mutex
 	// confirmed is every id this socket holds besides own: the ids its updates claimed and have
 	// not given back, and those its updates showed the table names its person for. It keeps each
 	// while it is open, and holds at most maxConfirmedClients (mayHold).
 	confirmed map[crdt.ClientID]struct{}
+	// unmarked is the ids of confirmed from mintedClientFloor up whose rows said no edit had
+	// landed under them as this socket confirmed them - a closed tab's id whose saved rows the
+	// page replays - until this socket's mark of each is written (recordLanded), each true while
+	// its mark is in flight. A mark the store refused leaves its id here, and the next apply of
+	// the socket's that writes under it marks it again (settleClients). own is never among them.
+	unmarked map[crdt.ClientID]bool
 	// claims is how many claims this socket's updates hold: made by its updates (judgeClients)
 	// and not given back (settleClients). A socket holds at most maxClaimsASocket of them.
 	claims int
@@ -93,8 +100,10 @@ func (c *socketClients) mayHold(n int) bool {
 	return len(c.confirmed)+n <= maxConfirmedClients
 }
 
-// confirm remembers clients as this socket's person's. The judgement asks mayHold first.
-func (c *socketClients) confirm(clients []uint64) {
+// confirm remembers clients as this socket's person's, and unmarked, ids among them from
+// mintedClientFloor up whose rows say no edit landed under them, as awaiting the socket's mark
+// (settleClients). The judgement asks mayHold first.
+func (c *socketClients) confirm(clients, unmarked []uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, client := range clients {
@@ -102,6 +111,60 @@ func (c *socketClients) confirm(clients []uint64) {
 			c.confirmed = make(map[crdt.ClientID]struct{})
 		}
 		c.confirmed[crdt.ClientID(client)] = struct{}{}
+	}
+	for _, client := range unmarked {
+		if c.unmarked == nil {
+			c.unmarked = make(map[crdt.ClientID]bool)
+		}
+		c.unmarked[crdt.ClientID(client)] = false
+	}
+}
+
+// awaitsMark is whether client is an id this socket holds whose row awaits its mark (unmarked).
+func (c *socketClients) awaitsMark(client crdt.ClientID) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, awaits := c.unmarked[client]
+	return awaits
+}
+
+// awaitingMarks is the ids whose rows await this socket's mark (unmarked) among writes, the
+// clients an update writes structs under (crdt.ParseUpdateMeta): nil where none of them awaits
+// one, which is every update once the socket's marks are written.
+func (c *socketClients) awaitingMarks(writes crdt.StateVector) []crdt.ClientID {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var awaiting []crdt.ClientID
+	for client := range c.unmarked {
+		if _, written := writes[client]; written {
+			awaiting = append(awaiting, client)
+		}
+	}
+	return awaiting
+}
+
+// startMark is whether this call starts the mark of client, an id whose row awaits this socket's
+// mark and whose mark is not in flight; it is in flight from then until markedConfirmed.
+func (c *socketClients) startMark(client crdt.ClientID) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	inFlight, awaits := c.unmarked[client]
+	if !awaits || inFlight {
+		return false
+	}
+	c.unmarked[client] = true
+	return true
+}
+
+// markedConfirmed ends the mark of client that startMark started: a mark written takes client
+// out of unmarked, and one the store refused leaves it awaiting the next.
+func (c *socketClients) markedConfirmed(client crdt.ClientID, written bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if written {
+		delete(c.unmarked, client)
+	} else {
+		c.unmarked[client] = false
 	}
 }
 
@@ -274,18 +337,45 @@ func drawClient() (crdt.ClientID, error) {
 }
 
 // errMintsLive is a mint refused because actor holds maxUnlandedMintsADocument rows in the
-// document that no edit landed under and every one of them is live (mintClient). The admission is
-// refused with the transient DocumentBusyCloseCode, which the editor retries on its backoff: by
-// then a row whose socket has gone has lapsed, or the person's open pages have typed.
+// document that no edit landed under and every one of them is live (storeMint). The admission, or
+// the browser update whose id the judgement mints (judgeClients), is refused with the transient
+// DocumentBusyCloseCode, which the editor retries on its backoff: by then a row whose socket has
+// gone has lapsed, or the person's open pages have typed.
 var errMintsLive = errors.New("dispatch: every client id the person holds in the document unlanded is held by an open socket")
 
-// mintClient gives actor a client id for room, stored before it is returned: asked, where it is
-// not 0 - the id the page presented, in [mintedClientFloor, mintedClientCeiling), which no row of
-// actor's names (admitClients) - and otherwise, or where another person's row names asked, a
-// random id in that range the document has not given out (drawClient). An asked id no row names
-// is the one an earlier read-only admission drew for the page, or the page's own whose row a
-// give-back below or the sweep took; one another person's row names stores nothing, as a draw
-// the document gave out already does, and the mint draws.
+// mintClient gives actor a client id for room, stored before it is returned (storeMint): asked,
+// where it is not 0 - the id the page presented, in [mintedClientFloor, mintedClientCeiling),
+// which no row of actor's names (admitClients) - and otherwise, or where another person's row
+// names asked, a random id in that range the document has not given out (drawClient). An asked
+// id no row names is the one an earlier read-only admission drew for the page, or the page's own
+// whose row a give-back or the sweep took; one another person's row names stores nothing, as a
+// draw the document gave out already does, and the mint draws.
+func (s *Service) mintClient(ctx context.Context, room string, actor model.Actor, asked crdt.ClientID) (crdt.ClientID, error) {
+	for try := range mintTries {
+		client := asked
+		if try > 0 || asked == 0 {
+			drawn, err := drawClient()
+			if err != nil {
+				return 0, err
+			}
+			client = drawn
+		}
+		stored, err := s.storeMint(ctx, room, actor, client)
+		if err != nil {
+			return 0, err
+		}
+		if stored {
+			return client, nil
+		}
+	}
+	return 0, fmt.Errorf("give out a client id: %d draws were all taken", mintTries)
+}
+
+// storeMint stores client, an id in [mintedClientFloor, mintedClientCeiling), as actor's in room,
+// minted as an admission gives one out, and reports whether it did: an id a row names already,
+// actor's or another person's, stores nothing. The row's key is the binding's own lock, so of two
+// mints of one id, by an admission or a browser update's judgement (judgeClients), the first
+// stores it and the second stores nothing.
 //
 // It is held to maxUnlandedMintsADocument: where actor holds that many rows in room of ids an
 // admission gave out that no edit landed under, the same statement gives back the one presented
@@ -300,77 +390,64 @@ var errMintsLive = errors.New("dispatch: every client id the person holds in the
 // runs in, so two mints of one person in one document count each other's rows; the statement
 // reads them off document_client_ids_unlanded_mints. The delete reads its row's presentation and
 // landing again as it deletes, so a row presented or landed since the statement's snapshot is
-// not given back. An id the document gave out already stores nothing and is drawn again, a row
-// given back with it or not.
+// not given back. An id the document gave out already stores nothing, a row given back with it
+// or not.
 //
 // A landed row is not held to any count of its own: it is the record of whose structs the stored
 // history holds under its id, and is never given back or swept. A person adds one for each page
 // that writes under a fresh id, and the history gains that client's structs beside it, so such
 // rows grow with the history and stop with it at the decode cap (maxUpdateItems).
-func (s *Service) mintClient(ctx context.Context, room string, actor model.Actor, asked crdt.ClientID) (crdt.ClientID, error) {
+func (s *Service) storeMint(ctx context.Context, room string, actor model.Actor, client crdt.ClientID) (bool, error) {
 	lapse := clientPresenceLapses * presenceInterval()
-	for try := range mintTries {
-		client := asked
-		if try > 0 || asked == 0 {
-			drawn, err := drawClient()
-			if err != nil {
-				return 0, err
-			}
-			client = drawn
-		}
-		var atCap bool
-		var givenBack, minted *int64
-		batch := &pgx.Batch{}
-		batch.Queue(`select pg_advisory_xact_lock($1, hashtext($2::text)) as client_mints_lock`,
-			clientClaimsLockNamespace, "mints "+room+" "+ActorRef(actor))
-		batch.Queue(`
-			with unlanded as (
-				select client_id, presented_at from document_client_ids
-				where artifact_id = $1 and actor_kind = $3 and actor_id = $4 and minted and not landed
-			), cap as (
-				select count(*) >= $5::bigint as reached from unlanded
-			), given_back as (
-				delete from document_client_ids
-				where artifact_id = $1 and actor_kind = $3 and actor_id = $4 and minted and not landed
-					and presented_at < now() - $6::bigint * interval '1 microsecond'
-					and client_id = (
-						select client_id from unlanded
-						where (select reached from cap) and presented_at < now() - $6::bigint * interval '1 microsecond'
-						order by presented_at, client_id
-						limit 1
-					)
-				returning client_id
-			), minted as (
-				insert into document_client_ids (artifact_id, client_id, actor_kind, actor_id, minted)
-				select $1, $2::bigint, $3, $4, true
-				where not (select reached from cap) or exists (select 1 from given_back)
-				on conflict do nothing
-				returning client_id
-			)
-			select (select reached from cap), (select client_id from given_back), (select client_id from minted)
-		`, room, int64(client), actor.Kind, actor.ID, int64(maxUnlandedMintsADocument), lapse.Microseconds()).QueryRow(func(row pgx.Row) error {
-			return row.Scan(&atCap, &givenBack, &minted)
-		})
-		if err := s.store.Pool.SendBatch(ctx, batch).Close(); err != nil {
-			return 0, fmt.Errorf("give out a client id: %w", err)
-		}
-		if givenBack != nil {
-			slog.Info("dispatch: gave back a person's least recently presented client id no edit landed under, to give out another",
-				"room", room, "given_back", *givenBack, "most", maxUnlandedMintsADocument)
-		}
-		switch {
-		case minted != nil:
-			return client, nil
-		case atCap && givenBack == nil:
-			return 0, errMintsLive
-		}
+	var atCap bool
+	var givenBack, minted *int64
+	batch := &pgx.Batch{}
+	batch.Queue(`select pg_advisory_xact_lock($1, hashtext($2::text)) as client_mints_lock`,
+		clientClaimsLockNamespace, "mints "+room+" "+ActorRef(actor))
+	batch.Queue(`
+		with unlanded as (
+			select client_id, presented_at from document_client_ids
+			where artifact_id = $1 and actor_kind = $3 and actor_id = $4 and minted and not landed
+		), cap as (
+			select count(*) >= $5::bigint as reached from unlanded
+		), given_back as (
+			delete from document_client_ids
+			where artifact_id = $1 and actor_kind = $3 and actor_id = $4 and minted and not landed
+				and presented_at < now() - $6::bigint * interval '1 microsecond'
+				and client_id = (
+					select client_id from unlanded
+					where (select reached from cap) and presented_at < now() - $6::bigint * interval '1 microsecond'
+					order by presented_at, client_id
+					limit 1
+				)
+			returning client_id
+		), minted as (
+			insert into document_client_ids (artifact_id, client_id, actor_kind, actor_id, minted)
+			select $1, $2::bigint, $3, $4, true
+			where not (select reached from cap) or exists (select 1 from given_back)
+			on conflict do nothing
+			returning client_id
+		)
+		select (select reached from cap), (select client_id from given_back), (select client_id from minted)
+	`, room, int64(client), actor.Kind, actor.ID, int64(maxUnlandedMintsADocument), lapse.Microseconds()).QueryRow(func(row pgx.Row) error {
+		return row.Scan(&atCap, &givenBack, &minted)
+	})
+	if err := s.store.Pool.SendBatch(ctx, batch).Close(); err != nil {
+		return false, fmt.Errorf("give out a client id: %w", err)
 	}
-	return 0, fmt.Errorf("give out a client id: %d draws were all taken", mintTries)
+	if givenBack != nil {
+		slog.Info("dispatch: gave back a person's least recently presented client id no edit landed under, to give out another",
+			"room", room, "given_back", *givenBack, "most", maxUnlandedMintsADocument)
+	}
+	if minted == nil && atCap && givenBack == nil {
+		return false, errMintsLive
+	}
+	return minted != nil, nil
 }
 
 // keepPresenting presents clients' own id again every presenceInterval while its socket is open
 // and its row does not say an edit landed under it (presentClient), so the row stays live and no
-// mint gives it back (mintClient), on this process or another. A socket whose id no row of its
+// mint gives it back (storeMint), on this process or another. A socket whose id no row of its
 // own names - a legacy socket, a read-only admission's drawn id - presents nothing, and nor does
 // one whose row says an edit landed already, which no mint gives back. Each presentation is one
 // timer and one statement, and the timer is set again only once the statement has returned and

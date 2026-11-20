@@ -5490,7 +5490,7 @@ Each item below names a status and code, then its meaning.
 - `4413 DOC_CLIENT_ID_REFUSED`
 
   The same close for an update carrying an edit under a Yjs client id that is not its sender's:
-  one the document's admissions gave another person, one another person's edit claimed first, or one at 2^32 or above that no admission gave out;
+  one the document's admissions gave another person or another person's edit was given first, one another person's edit claimed first, one at 2^35 or above, which no admission gives out, or one from 2^32 up that no row names where the document holds an edit under it or the client presents no `client_id`;
   for an edit under an id below 2^32 that another person claimed, at clocks the room already holds from the claim on, whose content differs from what the room holds there;
   and for a claim past the bounds below, or an edit under more ids than one socket may hold.
 
@@ -5523,7 +5523,10 @@ Each item below names a status and code, then its meaning.
     A socket holds the id its page was given and each id its edits showed is its person's, claimed or named theirs in `document_client_ids`, and keeps every one while it is open, up to 128 besides its own, its claims among them: so a delete waits under any id the socket has written under, and an edit that would make the socket hold more is refused the same way.
 
   - A person holds at most 64 client ids in a document that no edit landed under - integrated, not only parked behind a clock the room lacks - and an admission past them gives back, in the statement that stores its own, the one presented least recently, never one an open socket holds: an open socket presents its id again every 5 minutes until its row records an edit landed under it, and only an id no admission or socket presented for 15 minutes is given back; where every one of them is that fresh, the admission is closed `4503 DOC_BUSY` for the editor to retry.
-    A page whose id was given back is given that id again at its next admission where no other row names it by then, and keeps what it typed offline under it; where one does, it is given a fresh one, and loses only what it typed offline under the old one that never landed.
+    A row records an edit landed under its id once the room holds one from any socket of its person's that holds the id, a page replaying a closed tab's saved edits under it included, and is then neither given back nor swept.
+    A page whose id was given back is given that id again at its next admission where no other row names it by then, and keeps what it typed offline under it.
+    So does another page of the same browser that replays what a closed tab saved under its given-back id: an edit under an id from 2^32 up and below 2^35 that no row names and the document holds nothing under stores that id as its sender's, counted against these 64 as an admission's is, and lands, and of two people whose edits reach such an id together, the first is given it and the second is refused.
+    Where another person's row names the id by then, the page is given a fresh one, or its replay is refused, and it loses only what it typed offline under the old one that never landed.
     A client id no edit landed under and nothing presented for 30 days is deleted by the hourly compaction sweep, and a page that presents it after that is given it again the same way.
     The socket's awareness carries presence only under the id its page was given, so a cursor cannot be announced under another person's id either.
 
@@ -5539,7 +5542,7 @@ Each item below names a status and code, then its meaning.
   The same close refuses for now an update whose rendering would end past the 1 MiB bound and its creep where the rendering of the commit it starts from is not known yet, since a commit no browser's apply made - a write of the server's own, a catch-up or ygo's format cleanup - has landed since and the room's rendered copy has not taken it;
   the edit is sent again on the backoff and weighed once the room's rendering is known, an edit that shortens the document taken and one that grows it past the bound refused `DOC_TOO_LARGE`.
   A waiting edit that lands behind an update that changed nothing itself is refused for now the same way where a write of the server's own has landed since the room's last rendering, and each browser whose waiting edit it held is closed with this code and sends the edit again.
-  It also closes, for a retry, a socket whose update's client ids the server could not read or write `document_client_ids` for, one whose first sync the pod's copy heap had no room to answer within the server's wait bound, and, at its upgrade, one whose person holds the 64 client ids no edit landed under that a document allows them, each held by an open socket.
+  It also closes, for a retry, a socket whose update's client ids the server could not read or write `document_client_ids` for, one whose first sync the pod's copy heap had no room to answer within the server's wait bound, and one whose person holds the 64 client ids no edit landed under that a document allows them, each held by an open socket: at its upgrade, or at an update under an id from 2^32 up that the server would store for them.
 
 ## Comment errors
 

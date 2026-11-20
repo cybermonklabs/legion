@@ -2758,8 +2758,10 @@ const (
 // a browser writes in a handful of bytes because a clock length in a V1 update is a varuint.
 // The client is the one the sending browser's admission gave it (openGivenBrowser), the id a
 // page of this build writes its structs under: an update with structs under an id at 2^32 or
-// above that no admission gave out is refused DOC_CLIENT_ID_REFUSED (docs' client_ids.go), and a
-// given id is one no stored document and no write of the server's own holds.
+// above that no row names is refused DOC_CLIENT_ID_REFUSED, but where its sender presented a
+// client id, the id is below 2^35 and the document holds nothing under it, which stores the id as
+// the sender's (docs' client_ids.go), and a given id is one no stored document and no write of
+// the server's own holds.
 // A hostile browser can send it today, so what it meets is observable behaviour whatever answers
 // it; what changed with INFRA-179 is only which code does. The pre-apply walk that read a struct
 // and a delete range at a time, and the running totals it fed, are gone: the frame now goes

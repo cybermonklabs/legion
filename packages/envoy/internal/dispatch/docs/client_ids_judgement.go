@@ -13,17 +13,19 @@ import (
 )
 
 // This file holds the client id rule's judgement of each browser update (client_ids.go): the
-// refusal or the claims judgeClients makes before the apply, and what settleClients does with
-// them once the apply has returned.
+// refusal, or the claims and mints judgeClients makes before the apply, and what settleClients
+// does with them once the apply has returned.
 
 // clientJudgement is what judgeClients decided of an update it let through: the ids it claimed
 // for the sender, which the hook gives back with the socket's count of them where the apply does
-// not stand (settleClients, releaseClaims), and whether the update writes under the socket's own
+// not stand (settleClients, releaseClaims); whether the update writes under the socket's own
 // given id, whose row the hook marks once an apply has left the room holding a struct under it
-// (settleClients, recordLanded).
+// (settleClients, recordLanded); and marks, the other ids the update writes under whose rows
+// await the socket's mark (socketClients.unmarked), which the hook marks the same way.
 type clientJudgement struct {
 	claimed   []uint64
 	writesOwn bool
+	marks     []crdt.ClientID
 }
 
 // roomHolds is whether room holds a struct of client: whether its clock of client is past 0. It
@@ -61,13 +63,24 @@ func roomHolds(room *crdt.Doc, client crdt.ClientID) bool {
 // is judged by nothing here, and neither is one whose header does not read: the apply refuses its
 // bytes.
 //
+// An id in [mintedClientFloor, mintedClientCeiling) that no row names is the sender's where its
+// socket presented a client id and neither the room nor the stored history holds a struct under
+// it (historyNames): it is minted for the sender as an admission mints the id its page presents
+// (mintForSender), and the socket holds it from then on. It is a closed tab's id whose row a
+// give-back or the sweep took, whose saved rows another page of the browser replays, and minting
+// it gives the sender no other person's edit to write over (client_ids.go). One the room or the
+// history holds a struct under is refused: an edit was written under it, and the row that said
+// whose is gone. So is one a legacy socket carries: a tab of the earlier build never held an id
+// from mintedClientFloor up, so it has no saved edits under one to replay.
+//
 // A keystroke costs a read of its header's first three numbers and nothing more: an update of
 // one client's structs under the id the socket was given passes there, and only an update
 // carrying another id - a saved row replayed, a sync step 2, a page of the earlier build - reads
 // the whole header (crdt.ParseUpdateMeta) and the room's state vector, and asks the table about
 // the ids its socket has not shown before that carry clocks the room lacks, and about the ids
 // below mintedClientFloor whose structs fall wholly at clocks the room holds (heldDuplicates,
-// refusedDuplicates).
+// refusedDuplicates). An update of one client's structs under another id the socket holds asks
+// the socket, besides, whether that id's row awaits its mark (socketClients.unmarked).
 func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudgement, refusal error) {
 	connection := connectionOf(info.Context)
 	if connection == nil || connection.clients == nil {
@@ -75,7 +88,11 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 	}
 	clients := connection.clients
 	if groups, client, read := soleClient(info.Update); read && (groups == 0 || groups == 1 && clients.holds(client)) {
-		return clientJudgement{writesOwn: groups == 1 && clients.isOwn(client)}, nil
+		judged.writesOwn = groups == 1 && clients.isOwn(client)
+		if groups == 1 && !judged.writesOwn && clients.awaitsMark(client) {
+			judged.marks = []crdt.ClientID{client}
+		}
+		return judged, nil
 	}
 	from, to, err := crdt.ParseUpdateMeta(info.Update)
 	if err != nil {
@@ -93,6 +110,7 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 	_, namesOwn := from[clients.own]
 	judged.writesOwn = namesOwn && clients.isOwn(clients.own)
 	if len(asked) == 0 && len(duplicated) == 0 {
+		judged.marks = clients.awaitingMarks(from)
 		return judged, nil
 	}
 	ctx, cancel := context.WithTimeout(info.Context, clientCheckTimeout)
@@ -104,15 +122,36 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 	if refusal := s.refusedDuplicates(info, connection, owners, duplicated, from, to); refusal != nil {
 		return clientJudgement{}, refusal
 	}
-	var claims, claimFrom []uint64
+	// unmarked is the ids from mintedClientFloor up the socket holds from this update on whose rows
+	// say no edit landed under them, which the socket marks once the room holds a struct under one
+	// (settleClients): an id only its own socket marked would keep an unmarked row while the
+	// history names it, and a give-back or the sweep could take that row.
+	var claims, claimFrom, mints, unmarked []uint64
 	for _, client := range asked {
 		owner, bound := owners[client]
 		switch {
 		case bound && !owner.is(connection.actor):
 			return clientJudgement{}, s.refuseClient(info, connection, client, "it names another person")
-		case !bound && client >= mintedClientFloor:
+		case bound:
+			if client >= mintedClientFloor && !owner.landed {
+				unmarked = append(unmarked, client)
+			}
+		case client >= mintedClientCeiling || client >= mintedClientFloor && clients.legacy:
 			return clientJudgement{}, s.refuseClient(info, connection, client, "no admission gave it out")
-		case !bound:
+		case client >= mintedClientFloor:
+			written := held[crdt.ClientID(client)] > 0
+			if !written {
+				_, _, named, err := s.historyNames(ctx, info.Room, info.Doc, crdt.ClientID(client))
+				if err != nil {
+					return clientJudgement{}, s.clientCheckFailed(info, err)
+				}
+				written = named
+			}
+			if written {
+				return clientJudgement{}, s.refuseClient(info, connection, client, "no row names it, and the document holds an edit under it")
+			}
+			mints = append(mints, client)
+		default:
 			heldTo, err := s.claimable(ctx, info.Room, info.Doc, held, connection.actor, clients.legacy, client)
 			if errors.Is(err, errClaimRefused) {
 				return clientJudgement{}, s.refuseClient(info, connection, client, err.Error())
@@ -129,11 +168,20 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 		return clientJudgement{}, s.refuseClient(info, connection, asked[0],
 			fmt.Sprintf("its socket holds %d ids besides its own, the most it may", maxConfirmedClients))
 	}
-	if len(claims) > 0 {
-		if !clients.mayClaim(len(claims)) {
-			return clientJudgement{}, s.refuseClient(info, connection, claims[0],
-				fmt.Sprintf("its socket holds claims of %d ids, the most it may", maxClaimsASocket))
+	if len(claims) > 0 && !clients.mayClaim(len(claims)) {
+		return clientJudgement{}, s.refuseClient(info, connection, claims[0],
+			fmt.Sprintf("its socket holds claims of %d ids, the most it may", maxClaimsASocket))
+	}
+	for _, client := range mints {
+		marks, refusal := s.mintForSender(ctx, info, connection, client)
+		if refusal != nil {
+			return clientJudgement{}, refusal
 		}
+		if marks {
+			unmarked = append(unmarked, client)
+		}
+	}
+	if len(claims) > 0 {
 		judged.claimed, err = s.claimClients(ctx, info.Room, connection.actor, claims, claimFrom)
 		if errors.Is(err, errClaimRefused) {
 			return clientJudgement{}, s.refuseClient(info, connection, claims[0], err.Error())
@@ -157,8 +205,41 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 		}
 		clients.countClaims(len(judged.claimed))
 	}
-	clients.confirm(asked)
+	clients.confirm(asked, unmarked)
+	judged.marks = clients.awaitingMarks(from)
 	return judged, nil
+}
+
+// mintForSender mints client, an id in [mintedClientFloor, mintedClientCeiling) the update writes
+// under that no row named and the document held no struct under as it was judged, for the
+// sender (storeMint), held to the same maxUnlandedMintsADocument as an admission's mint: past it,
+// with every row of the sender's live, the update is refused for a retry (errMintsLive,
+// clientCheckFailed). marks is whether the row awaits the socket's mark. A mint that stores
+// nothing met a row stored for the id since the read, which the row's key let in first: the id
+// is the update's only where that row names the sender - another socket of theirs replaying the
+// same rows - and the update is refused where it names another person, who was given it first.
+// A mint the update made stays the sender's whether its apply stands or not, as an admission's
+// does: a replay that did not stand is sent again under the same id.
+func (s *Service) mintForSender(ctx context.Context, info websocket.PeerUpdateInfo, connection *connectionState, client uint64) (marks bool, refusal error) {
+	stored, err := s.storeMint(ctx, info.Room, connection.actor, crdt.ClientID(client))
+	if err != nil {
+		return false, s.clientCheckFailed(info, err)
+	}
+	if stored {
+		return true, nil
+	}
+	owners, err := s.clientOwners(ctx, info.Room, []uint64{client})
+	if err != nil {
+		return false, s.clientCheckFailed(info, err)
+	}
+	switch owner, bound := owners[client]; {
+	case !bound:
+		return false, s.clientCheckFailed(info, fmt.Errorf("client id %d was given out and given back while an update under it was judged", client))
+	case !owner.is(connection.actor):
+		return false, s.refuseClient(info, connection, client, "another person was given it first")
+	default:
+		return !owner.landed, nil
+	}
 }
 
 // refusedDuplicates is the refusal of update for its structs under duplicated, the ids below
@@ -275,6 +356,14 @@ func heldBy(room *crdt.Doc) crdt.StateVector {
 // mark is written. A socket makes one mark at a time (socketClients.marking), and only a written
 // one sets landed: a mark the store refused leaves the socket presenting its row (keepPresenting),
 // and the next such apply marks it again.
+//
+// Each other id from mintedClientFloor up the update wrote under whose row awaits the socket's
+// mark (judged.marks: a closed tab's id whose saved rows the page replays) is marked the same
+// way, once an apply leaves the room holding a struct under it: the stored history names the id
+// from then on, so its row must say so, or a give-back or the sweep could take it and a mint give
+// the id to the next person to present it. Each such id has one mark in flight at a time
+// (socketClients.startMark), and a mark the store refused leaves it awaiting the next apply that
+// writes under it.
 func (s *Service) settleClients(info websocket.PeerUpdateInfo, judged clientJudgement, stood bool) {
 	connection := connectionOf(info.Context)
 	if connection == nil || connection.clients == nil {
@@ -298,6 +387,19 @@ func (s *Service) settleClients(info websocket.PeerUpdateInfo, judged clientJudg
 			}
 		}()
 	}
+	var marking []crdt.ClientID
+	for _, client := range judged.marks {
+		if roomHolds(info.Doc, client) && clients.startMark(client) {
+			marking = append(marking, client)
+		}
+	}
+	if len(marking) > 0 {
+		go func() {
+			for _, client := range marking {
+				clients.markedConfirmed(client, s.recordLanded(info.Room, connection.actor, client))
+			}
+		}()
+	}
 }
 
 // refuseClient is the refusal of an update carrying an edit under client - structs, or a delete
@@ -312,7 +414,9 @@ func (s *Service) refuseClient(info websocket.PeerUpdateInfo, connection *connec
 }
 
 // clientCheckFailed is the refusal of an update whose client ids the table could not be read or
-// written for: transient, DocumentBusyCloseCode, so the editor keeps the edit and sends it again.
+// written for, or whose id's mint found every row its sender holds unlanded in the document live
+// (errMintsLive, mintForSender): transient, DocumentBusyCloseCode, so the editor keeps the edit
+// and sends it again.
 func (s *Service) clientCheckFailed(info websocket.PeerUpdateInfo, err error) error {
 	refusal := documentBusy()
 	logRefusal(info, refusal, "dispatch: could not judge a browser's update's client ids; refused it for a retry",
