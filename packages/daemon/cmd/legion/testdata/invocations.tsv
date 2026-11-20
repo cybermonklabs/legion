@@ -22,7 +22,7 @@ legion:packages/daemon/docker/worker.Dockerfile:1248 the probe commit, through t
 legion:packages/daemon/docker/worker.Dockerfile:1260 runtime stage version check	legion version	0	51bb81c2759eee8fb6242c38b29d951dd90ca6dc709dc11a9200df1c358660cd	legion version	unchanged
 legion:packages/daemon/docker/worker.Dockerfile:1266 runtime stage image probe	legion probe-image --plugin-root /opt/legion/pi-legion --envoy-plugin-root /opt/legion/pi-envoy --claude-root /opt/legion/claude-envoy --claude-code-pin /opt/legion/claude-code --skip-agent-models	1	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	legion probe-image --plugin-root /opt/legion/pi-legion --envoy-plugin-root /opt/legion/pi-envoy --claude-root /opt/legion/claude-envoy --claude-code-pin /opt/legion/claude-code --skip-agent-models	unchanged
 legion:packages/daemon/docker/worker.Dockerfile:1277 ENTRYPOINT (every word handed on)	legion <args>	0	51bb81c2759eee8fb6242c38b29d951dd90ca6dc709dc11a9200df1c358660cd	legion <args>	unchanged
-legion:.github/workflows/release.yaml:335 legion build, smoke test	legion version	0	51bb81c2759eee8fb6242c38b29d951dd90ca6dc709dc11a9200df1c358660cd	legion version	unchanged
+legion:.github/workflows/release.yaml:186 legion build, smoke test	legion version	0	51bb81c2759eee8fb6242c38b29d951dd90ca6dc709dc11a9200df1c358660cd	legion version	unchanged
 legion:docs/site/generators/legion-cli.sh:43 help (every word handed on)	legion <args>	0	51bb81c2759eee8fb6242c38b29d951dd90ca6dc709dc11a9200df1c358660cd	legion <args>	unchanged
 legion:docs/site/generators/legion-cli.sh:64 the command list	legion --help	0	-	legion --help	this-pr
 legion:docs/site/generators/legion-cli.sh:116 section	legion <command> --help	0	-	legion <command> --help	this-pr

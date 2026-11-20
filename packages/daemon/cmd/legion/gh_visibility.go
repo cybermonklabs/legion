@@ -71,7 +71,7 @@ func answerVisibilityRead(ctx context.Context, repo ghrepo.Repository, stdout, s
 	}
 	bounded, cancel := context.WithTimeout(ctx, visibilityAnswerBound)
 	defer cancel()
-	visibility, err := leakguard.New(leakguard.Options{}).FreshVisibility(bounded, repo.String())
+	visibility, err := leakguard.New(leakguard.Options{Curl: leakguardCurl}).FreshVisibility(bounded, repo.String())
 	if status, ok := signalled(ctx); ok {
 		return status
 	}

@@ -518,6 +518,14 @@ rereads at once per session in each broker process, refilled one every ten secon
 `DefaultMissRereads` in `packages/envoy/internal/broker/requests/machine_state.go`), so a secret
 created a moment ago is served on its first request.
 
+The reread route tells a caller what the broker now serves only when an enrolled session signs
+the call. A call with no proof is answered `202` with `"accepted":true` and one fixed `reason` at
+once, the same for every name, and the reread runs after that answer, so neither its answer nor
+how long it takes says which secrets exist. `agent-secrets secret` signs its reread with a broker
+identity the process already holds, and reads the answer; with none, or where the broker cannot
+check the proof, it sends the reread unsigned all the same, and says the broker's view was not
+checked.
+
 A reread asked for over `POST /v1/secrets/{name}/reread` is the whole broker's, not one process's.
 A deployment may run several broker processes against one database, and the one such a reread
 reaches tells the others to read that same name again,
@@ -1153,8 +1161,10 @@ that person. Each request the person may decide has **Approve** and **Deny**, an
 all N shown** decides every request printed. A decision is posted to the broker's own origin and
 is bound to that sign-in and to the requests the page printed, so a page on another origin,
 Dispatch's among them, cannot make one, and no route a service calls decides a secret request: the
-broker refuses it `DECIDE_ON_BROKER_PAGE`, naming the page — or, for a request the model judge
-holds, `JUDGE_DECIDES`, naming no page.
+broker refuses it to the listed service `DECIDE_ON_BROKER_PAGE`, naming the page — or, for a
+request the model judge holds, `JUDGE_DECIDES`, naming no page. Those routes read no record for a
+caller the broker has not authenticated: one with no ServiceAccount token, or one it does not
+accept, is refused alike for every record id, so it learns nothing of which records exist.
 
 A broker that signs nobody in, `BROKER_SIGNIN=off`
 ([Operate](/legion/broker/operate/#a-broker-that-signs-nobody-in)), serves no such page, so no

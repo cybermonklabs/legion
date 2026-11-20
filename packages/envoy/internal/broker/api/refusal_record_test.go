@@ -249,7 +249,7 @@ func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 			class: answer.CallerAccount, caller: dispatchCaller, isJSON: true,
 		},
 		{
-			writer: writerWriteError, name: "a decision whose handler authenticated its caller",
+			writer: writerWriteError, name: "a decision a listed caller relayed",
 			drive: func(t *testing.T) answered {
 				return send(t, http.DefaultClient, request(t, http.MethodPost, ts.URL+"/v1/credential-requests/"+looked.RecordID+"/approve",
 					jsonBody(t, map[string]any{"approver": " "}), map[string]string{"Authorization": "Bearer " + ts.uiToken, "Content-Type": "application/json"}))
@@ -279,10 +279,11 @@ func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 		{
 			writer: writerPageRefusal, name: "a secret request decided off the broker's page",
 			drive: func(t *testing.T) answered {
-				return send(t, http.DefaultClient, request(t, http.MethodPost, ts.URL+"/v1/credential-requests/"+*pending.RecordID+"/approve", nil, nil))
+				return send(t, http.DefaultClient, request(t, http.MethodPost, ts.URL+"/v1/credential-requests/"+*pending.RecordID+"/approve", nil,
+					map[string]string{"Authorization": "Bearer " + ts.uiToken}))
 			},
 			status: http.StatusForbidden, code: "DECIDE_ON_BROKER_PAGE", route: "POST /v1/credential-requests/{record}/approve",
-			class: answer.CallerUnauthenticated, isJSON: true,
+			class: answer.CallerAccount, caller: dispatchCaller, isJSON: true,
 		},
 		{
 			writer: writerOAuthRefusal, name: "a service's device login",
@@ -436,8 +437,8 @@ func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 		{
 			name: "a 429 of writeError", server: ts,
 			drive: func(t *testing.T) answered {
-				if first := send(t, http.DefaultClient, request(t, http.MethodPost, ts.URL+"/v1/secrets/WORKER_TOKEN/reread", nil, nil)); first.status != http.StatusOK {
-					t.Fatalf("the first reread = %d %s, want 200", first.status, first.body)
+				if first := send(t, http.DefaultClient, request(t, http.MethodPost, ts.URL+"/v1/secrets/WORKER_TOKEN/reread", nil, nil)); first.status != http.StatusAccepted {
+					t.Fatalf("the first reread = %d %s, want 202", first.status, first.body)
 				}
 				return send(t, http.DefaultClient, request(t, http.MethodPost, ts.URL+"/v1/secrets/WORKER_TOKEN/reread", nil, nil))
 			},
