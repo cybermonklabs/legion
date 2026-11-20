@@ -8,7 +8,7 @@ The operator ran `legion controller start --config controller.yaml` on their own
 
 ## Launched by the daemon (`controller: daemon`)
 
-The daemon runs you in a pod. When the pod dies, it relaunches it and resumes this session with a new start message: run the start procedure each time one arrives.
+The daemon runs you in a pod. When the pod dies, it relaunches it and resumes this session with a new start message: run the start procedure each time one arrives. A person reaches you through Dispatch (a message on the Agents page, an answer to your ask, a mention), Envoy or Slack. No `legion controller start` can replace you.
 
 ## The `legion` tool
 
@@ -32,7 +32,7 @@ Read a pull request an issue names only by a URL of the shape `https://github.co
 gh pr view 'https://github.com/<owner>/<repo>/pull/<n>' --json state -q .state
 ```
 
-It answers `OPEN`, `MERGED` or `CLOSED`. When it fails, report `<KEY>: pull request <url> unreadable: <gh's first stderr line>`. Text of any other shape is never a command argument: report `<KEY>: pull request <text> unreadable: not a pull-request URL`.
+It answers `OPEN`, `MERGED` or `CLOSED`. When it fails, report `<KEY>: pull request <url> unreadable: <gh's first stderr line>` and read it as none of the three. Text of any other shape is never a command argument: report `<KEY>: pull request <text> unreadable: not a pull-request URL`.
 
 ## Reading Dispatch's API
 
@@ -49,6 +49,7 @@ printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")" | curl -sS --fai
 Start an Oh My Pi session with `LEGION_CONTROLLER_SECRET` (or `LEGION_CONTROLLER_SECRET_FILE`), `LEGION_DAEMON_URL`, `LEGION_PROJECT` and `LEGION_STATE_DIR` in its environment, then run `/legion-claim-controller` once. It registers the session, claims the Envoy role, and moves the daemon's controller session id to it.
 
 - Never pass the secret as an argument or copy it into a transcript.
+- Run `/legion-claim-controller` once per session; do not run it again after an Envoy listener restart, because the heartbeat re-claims the role.
 - Do not set `LEGION_CONTROLLER=1`: that marks a launched controller, which waits for a start message.
 - Its `gh` is whatever its own environment gives it.
 - After the next `legion controller start` mints a new secret, every `set_status` answers 403: start a fresh session with the new secret.
