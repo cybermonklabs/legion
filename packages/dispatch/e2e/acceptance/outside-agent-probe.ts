@@ -41,7 +41,7 @@
  *                            at once, and its plaintext is never printed.
  *    approve                 POST /api/v1/credential-requests/<a fresh id>/approve.
  *    trade                   one fresh trade: {traded: true, expires_at}, or {traded: false,
- *                            status, detail} when the broker refused it (row P10).
+ *                            status, detail} when the broker refused it (row T5).
  *    hold <seconds>          opens the session's relay socket and prints {opened_at}, then
  *                            {closed_at, code} when it closes, or code null after <seconds>.
  *    access <project> <person>
