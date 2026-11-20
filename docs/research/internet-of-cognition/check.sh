@@ -1732,10 +1732,10 @@ prepare_env() {
 # refused, or when a line here differs from what it measured; --self-test runs it.
 #
 #   form                            rows  what it is
-#   &&                               223  runs the next pipeline when this one exits 0
+#   &&                               225  runs the next pipeline when this one exits 0
 #   ||                                 9  runs the next pipeline when this one fails
-#   |                                466  joins the commands of a pipeline
-#   ;                                 64  ends a pipeline
+#   |                                471  joins the commands of a pipeline
+#   ;                                 73  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
 #   >                                  8  writes the output to a file
 #   2>                                23  writes the error output to a file
@@ -1748,9 +1748,9 @@ prepare_env() {
 #   in                                21  comes before a for loop's words
 #   do                                21  comes before a for loop's body
 #   done                              21  closes a for loop
-#   simple command                   659  a command word and its arguments
-#   pipeline                         466  two or more commands joined by |
-#   list                             251  two or more pipelines joined by ;, &&, || or newline
+#   simple command                   664  a command word and its arguments
+#   pipeline                         471  two or more commands joined by |
+#   list                             262  two or more pipelines joined by ;, &&, || or newline
 #   group                             28  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
 #   for loop                          21  for NAME in words; do list; done
@@ -1771,32 +1771,32 @@ prepare_env() {
 #   assigns o                          1  a name the rows assign
 #   assigns p                          5  a name the rows assign
 #   assigns r                          5  a name the rows assign
-#   program awk                       29  wrapped in a function that records its status
+#   program awk                       33  wrapped in a function that records its status
 #   program cat                       25  wrapped in a function that records its status
 #   program cd                        76  wrapped in a function that records its status
 #   program cmp                        2  wrapped in a function that records its status
 #   program cp                         1  wrapped in a function that records its status
-#   program curl                      33  wrapped in a function that records its status
+#   program curl                      34  wrapped in a function that records its status
 #   program cut                        5  wrapped in a function that records its status
-#   program dispatch                  76  wrapped in a function that records its status
-#   program echo                      16  wrapped in a function that records its status
-#   program git                      385  wrapped in a function that records its status
+#   program dispatch                  77  wrapped in a function that records its status
+#   program echo                      31  wrapped in a function that records its status
+#   program git                      388  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
-#   program grep                     246  wrapped in a function that records its status
-#   program jq                        72  wrapped in a function that records its status
+#   program grep                     247  wrapped in a function that records its status
+#   program jq                        73  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    12  wrapped in a function that records its status
 #   program python3                   37  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      308  wrapped in a function that records its status
+#   program sed                      310  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
 #   program sha256sum                  8  wrapped in a function that records its status
-#   program sort                      32  wrapped in a function that records its status
+#   program sort                      33  wrapped in a function that records its status
 #   program stat                       2  wrapped in a function that records its status
 #   program tail                       1  wrapped in a function that records its status
 #   program tr                        11  wrapped in a function that records its status
-#   program uniq                      18  wrapped in a function that records its status
+#   program uniq                      19  wrapped in a function that records its status
 #   program uv                         8  wrapped in a function that records its status
 #   program wc                        66  wrapped in a function that records its status
 #   program xargs                      5  wrapped in a function that records its status
@@ -1814,8 +1814,8 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               9  a command whose status is no read
-#   $NAME or ${NAME}                 451  a parameter, its name in braces or not
-#   $?                                12  the status of the last command
+#   $NAME or ${NAME}                 452  a parameter, its name in braces or not
+#   $?                                27  the status of the last command
 #   $( )                              12  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
 #
@@ -2169,12 +2169,13 @@ failed_read() {
 # The counts, at this tree's head: env.sh's read of the review corpus, a hundred reviews
 # to a page for each pull request of evidence/concord-prs.txt, printed "env.sh read the
 # review corpus: 5160 review bodies of 200 pull requests in 207 requests"; and the rows
-# whose commands curl api.github.com make seven, two by n-arms-precedent and one each by
-# n-3176-pr, tc-review-docs-only, tc-review-both-run, tc-input-1 and tc-input-2, and
-# evidence/concord-build-run.sh, which tc-rng-2 runs, makes two more. A row or a script that
-# comes to read that API, or a corpus that takes another page, changes them.
+# whose commands curl api.github.com make nine, two each by n-arms-precedent and
+# d-4544-merged and one each by n-3176-pr, tc-review-docs-only, tc-review-both-run,
+# tc-input-1 and tc-input-2, and evidence/concord-build-run.sh, which tc-rng-2 runs, makes
+# two more. A row or a script that comes to read that API, or a corpus that takes another
+# page, changes them.
 GITHUB_CORPUS_REQUESTS=207
-GITHUB_ROW_REQUESTS=9
+GITHUB_ROW_REQUESTS=11
 github_budget() {
     local answer remaining limit reset budget requests=$((GITHUB_CORPUS_REQUESTS + GITHUB_ROW_REQUESTS))
     # The self-test's fixture reads no GitHub, and it sets IOC_NO_ENV as it does for env.sh.
