@@ -291,7 +291,9 @@ func awsSDKWords(err error) string {
 //     set", sdkSaid);
 //   - an AWS API error by its code alone, where it is one this client names, and the permission
 //     it says is missing (awsAPIWords);
-//   - a call its context ended by that end alone;
+//   - a call its context ended by that end alone, beside the AWS address settings that are set
+//     for a deadline: a dial or a read that timed out ends that way too, and the address may be
+//     why;
 //   - a file call by the setting that names the file, and the call's operation and the system's
 //     reason (redact.File): the SDK formats a file's error with %v, which drops the file call's
 //     own error from the chain, so the file it names (SharedConfigLoadError.Filename), or the
@@ -315,7 +317,7 @@ func awsWords(err error, failed string) string {
 	var request *url.Error
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		return "context deadline exceeded"
+		return "context deadline exceeded" + awsAddressesSet()
 	case errors.Is(err, context.Canceled):
 		return "context canceled"
 	case errors.As(err, &load):

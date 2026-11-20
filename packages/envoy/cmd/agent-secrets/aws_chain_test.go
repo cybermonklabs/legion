@@ -5,14 +5,18 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 )
 
@@ -58,4 +62,32 @@ func TestAStoreCallFailsInTheSignInsWords(t *testing.T) {
 			wantNamedNotPrinted(t, "the store call's words", awsStoreFailure("ListSecrets", call(row.err(t))).Error(), []string{row.says}, planted)
 		})
 	}
+}
+
+// TestASignInThatTimedOutNamesTheAddressSettings: a sign-in whose STS call ran out of time, at an
+// AWS_ENDPOINT_URL_STS that takes the connection and never answers, names that setting beside
+// "context deadline exceeded", since the address may be why, and never prints its value, which
+// carries a made-up secret. Control: the call ran out of its own deadline, so the row read a real
+// timeout.
+func TestASignInThatTimedOutNamesTheAddressSettings(t *testing.T) {
+	planted := "hunter2pw-" + "stsdeadline-" + "1c4f"
+	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = silent.Close() })
+	awsSignInOnly(t)
+	t.Setenv("AWS_ENDPOINT_URL_STS", "http://"+silent.Addr().String()+"/"+planted)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_, identity, _, err := awsClients(ctx, "us-east-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = identity.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("control: the call failed with %v, not its deadline, so the row is blind", err)
+	}
+	wantNamedNotPrinted(t, "the sign-in's failure", awsSignInFailure("read your AWS sign-in", err).Error(),
+		[]string{"read your AWS sign-in: context deadline exceeded (the address is not printed; AWS_ENDPOINT_URL_STS is set)"}, planted)
 }
