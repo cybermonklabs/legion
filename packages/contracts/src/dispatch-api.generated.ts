@@ -598,7 +598,7 @@ export interface paths {
     get?: never;
     put?: never;
     post?: never;
-    /** @description Unsubscribe a session from a document. */
+    /** @description Unsubscribe a session from a document. A session the caller may not see is 404 SUBSCRIBER_NOT_FOUND, as one not subscribed, before the listener is asked anything. */
     delete: operations["deleteApiV1ArtifactsByIdSubscribersBySessionId"];
     options?: never;
     head?: never;
@@ -784,10 +784,10 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Follow an ask (a credential holding the person scope for any session; every other for its own session alone). */
+    /** @description Follow an ask (a credential holding the person scope for any session; every other for its own session alone). A session the caller may not see is 404 SESSION_NOT_FOUND, as one nobody holds. */
     put: operations["putApiV1AsksByIdFollowersBySessionId"];
     post?: never;
-    /** @description Unfollow an ask (a credential holding the person scope for any session; every other for its own session alone). */
+    /** @description Unfollow an ask (a credential holding the person scope for any session; every other for its own session alone). A session the caller may not see is 404 FOLLOWER_NOT_FOUND, as one that does not follow the ask. */
     delete: operations["deleteApiV1AsksByIdFollowersBySessionId"];
     options?: never;
     head?: never;
@@ -835,10 +835,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Recent broadcasts, newest first, with their recipient and reply counts. Only broadcasts the caller wrote, or whose every recipient it may see. */
+    /** @description Recent broadcasts, newest first, with their recipient and reply counts. Only broadcasts whose every recipient the caller may see, and that it wrote or, for a caller that sees every public project, any one. */
     get: operations["getApiV1Broadcasts"];
     put?: never;
-    /** @description Send one message to many sessions: {body, delivery, session_ids}, one targeted message per recipient under a shared broadcast, answered once it is committed while each recipient's delivery runs behind the answer. A selected session the Envoy listener knows and that is not running is a recipient like any other, its copy stored for it and its attempt recorded queued; one the listener knows nothing about, or that does not advertise the mode, is excluded and named in the response, never switched to another mode. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 at once with the broadcast the key made, every recipient's attempts as they stand and the first answer's exclusions, Idempotency-Replayed: ?1, and puts every recipient it still owes on its way behind the answer. A recipient a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not. */
+    /** @description Send one message to many sessions: {body, delivery, session_ids}, one targeted message per recipient under a shared broadcast, answered once it is committed while each recipient's delivery runs behind the answer. A selected session the Envoy listener knows and that is not running is a recipient like any other, its copy stored for it and its attempt recorded queued; one the listener knows nothing about, or that does not advertise the mode, is excluded and named in the response, never switched to another mode. One the sender may not see is excluded as one the listener knows nothing about, and the listener is asked nothing about it. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 at once with the broadcast the key made, every recipient's attempts as they stand and the first answer's exclusions, Idempotency-Replayed: ?1, and puts every recipient it still owes on its way behind the answer. A recipient a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not. */
     post: operations["postApiV1Broadcasts"];
     delete?: never;
     options?: never;
@@ -853,7 +853,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One broadcast with every recipient's delivery attempts and replies, recipients in the order the send named them; a broadcast from before that order was stored falls back to created_at, id. Only broadcasts the caller wrote, or whose every recipient it may see. */
+    /** @description One broadcast with every recipient's delivery attempts and replies, recipients in the order the send named them; a broadcast from before that order was stored falls back to created_at, id. Only broadcasts whose every recipient the caller may see, and that it wrote or, for a caller that sees every public project, any one; any other is 404 as an id nobody holds. */
     get: operations["getApiV1BroadcastsById"];
     put?: never;
     post?: never;
@@ -1230,7 +1230,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Create a Delivery session group {name, sessions}: the group becomes the Parent agent of every pull request whose first session it holds; 409 SESSION_IN_GROUP for a session another group holds, 409 SESSION_GROUP_NAME_TAKEN for a name another group has, 409 SESSION_GROUP_NAME_IS_SESSION_TITLE for a name that is the title of a session outside the group. The timeline lists every group whose every session the caller may see (session_groups). */
+    /** @description Create a Delivery session group {name, sessions}: the group becomes the Parent agent of every pull request whose first session it holds; 404 SESSION_NOT_FOUND for a session the caller may not see, as for one nobody holds, before any group is read; 409 SESSION_IN_GROUP for a session another group holds, 409 SESSION_GROUP_NAME_TAKEN for a name another group has, 409 SESSION_GROUP_NAME_IS_SESSION_TITLE for a name that is the title of a session outside the group. The timeline lists every group whose every session the caller may see (session_groups). */
     post: operations["postApiV1DeliverySessionGroups"];
     delete?: never;
     options?: never;
@@ -1252,7 +1252,7 @@ export interface paths {
     delete: operations["deleteApiV1DeliverySessionGroupsById"];
     options?: never;
     head?: never;
-    /** @description Rename a Delivery session group, add sessions to it and remove sessions from it {name?, add?, remove?}, with the create route's refusals; 400 SESSION_GROUP_INPUT for an edit that would leave it empty. */
+    /** @description Rename a Delivery session group, add sessions to it and remove sessions from it {name?, add?, remove?}, with the create route's refusals, a session it adds or removes among them; 400 SESSION_GROUP_INPUT for an edit that would leave it empty. */
     patch: operations["patchApiV1DeliverySessionGroupsById"];
     trace?: never;
   };
@@ -1955,7 +1955,7 @@ export interface paths {
     get?: never;
     put?: never;
     post?: never;
-    /** @description Unsubscribe a session from an issue. */
+    /** @description Unsubscribe a session from an issue. A session the caller may not see is 404 SUBSCRIBER_NOT_FOUND, as one not subscribed, before the listener is asked anything. */
     delete: operations["deleteApiV1IssuesByKeySubscribersBySessionId"];
     options?: never;
     head?: never;
