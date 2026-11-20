@@ -41,6 +41,15 @@ const COMMAND_TOKEN = fixtureSecret("dsp")
 /** The Dispatch token the command envoy.json names first prints, before it names another. */
 const BEFORE_TOKEN = fixtureSecret("dsp")
 
+// Each row's `60_000`, its hang guard and its afterEach's, is the package test script's own
+// `--timeout` (`bun test --timeout=60000`, package.json), given to each row so a run of this file
+// alone has it too. It is a number at each row, not a named constant, because Biome formats a
+// `test(…)` call whose last argument is a number as a test call and any other as a plain call. It
+// decides no verdict: each row waits for the event it needs (a refresher's outcome written and its
+// lock gone, a pid gone, a file another process writes) and decides on what that event shows.
+// Fixed bounds of 15 s and 20 s decided rows before: on a box at a load of 766, one row's first
+// refresher wrote no outcome within the 15 s that row waited for it.
+
 const cleanup: (() => Promise<void>)[] = []
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step()
@@ -152,7 +161,7 @@ async function scratch(): Promise<{
 
 /** Waits until the session's refresher (the process an answers hook starts to run a `!` token
  *  command) has finished: what it read written after `since` (epoch ms), and its lock gone. The
- *  case's own timeout is the only bound. */
+ *  row's hang guard is the only bound. */
 async function refresherFinished(state: string, since: number): Promise<void> {
   const directory = join(state, "sessions", SESSION)
   for (;;) {
@@ -201,7 +210,7 @@ const refreshers: number[] = []
 
 /** Waits until no refresher a hook started still runs, then forgets their pids, which the kernel
  *  may give to other processes once they ended. A refresher tells nobody it ended, so the wait
- *  polls each one's pid on the real clock; one that ended answers at once. The case's own timeout
+ *  polls each one's pid on the real clock; one that ended answers at once. The row's hang guard
  *  is the only bound. */
 async function refreshersEnded(): Promise<void> {
   while (refreshers.some(running)) await Bun.sleep(20)
@@ -471,7 +480,7 @@ test("puts the list into context at every SessionStart source and at SubagentSta
     const file = join(state, "sessions", SESSION, "answers.json")
     expect(JSON.parse(await readFile(file, "utf8")).items).toEqual(items)
   }
-}, 20_000)
+}, 60_000)
 
 test("with Dispatch hanging, answers by the hook's deadline with the list a hook read before", async () => {
   const dispatch = standinDispatch()
@@ -507,7 +516,7 @@ test("with Dispatch hanging, answers by the hook's deadline with the list a hook
   expectWithinDeadline(run)
   expectReadBudget(run, Number(waited?.[1]))
   expect(dispatch.requests).toHaveLength(2)
-}, 20_000)
+}, 60_000)
 
 test("with Dispatch hanging after a read gave an empty list, the failure line names the wait rather than nothing", async () => {
   const dispatch = standinDispatch()
@@ -532,7 +541,7 @@ test("with Dispatch hanging after a read gave an empty list, the failure line na
       context,
     )
   expect(waited).not.toBeNull()
-}, 20_000)
+}, 60_000)
 
 test("with Dispatch hanging and no list ever read, the failure line names the wait", async () => {
   const dispatch = standinDispatch()
@@ -557,7 +566,7 @@ test("with Dispatch hanging and no list ever read, the failure line names the wa
   )
   expectWithinDeadline(run)
   expectReadBudget(run, Number(waited?.[1]))
-}, 20_000)
+}, 60_000)
 
 test("a list past the cap stays under 8,000 characters with the left-out line", async () => {
   const dispatch = standinDispatch()
@@ -588,7 +597,7 @@ test("a list past the cap stays under 8,000 characters with the left-out line", 
   expect(shown).toMatch(
     /\n\n\d+ older items left out to stay under 8,000 characters: run `dispatch answers` to read every one in full\.$/,
   )
-}, 20_000)
+}, 60_000)
 
 test("adds nothing when the list is empty or Dispatch is not configured", async () => {
   const dispatch = standinDispatch()
@@ -620,7 +629,7 @@ test("adds nothing when the list is empty or Dispatch is not configured", async 
   // nothing.
   const expectedRequests = empty.stdout === "" ? [1] : [0, 1]
   expect(expectedRequests).toContain(dispatch.requests.length)
-}, 20_000)
+}, 60_000)
 
 /** What the hook writes to stderr, once, when Dispatch at `base` has no answers route. */
 function noRouteLine(base: string): string {
@@ -651,7 +660,7 @@ test("a Dispatch with no answers route adds nothing to the context, and the hook
   }
   expect(run.stdout).not.toContain("answers route")
   expect(existsSync(join(state, "sessions", SESSION, "answers.json"))).toBe(false)
-}, 20_000)
+}, 60_000)
 
 test("a 200 that is no answers list, and a proxy's 404 page, carry the failure line naming them", async () => {
   for (const [kind, reason] of [
@@ -674,7 +683,7 @@ test("a 200 that is no answers list, and a proxy's 404 page, carry the failure l
     expect(allowedOutcome(contextOf(run, "SessionStart"), [], named)).toBe("failure")
     expect(run.stderr).toBe("")
   }
-}, 20_000)
+}, 60_000)
 
 test("a refresher that met a Dispatch with no answers route hands the hook its notice, and no line", async () => {
   const dispatch = standinDispatch()
@@ -700,7 +709,7 @@ test("a refresher that met a Dispatch with no answers route hands the hook its n
   expect(starting.stdout).not.toContain("answers route")
   await refreshersEnded()
   expect(dispatch.requests).toContain(`Bearer ${COMMAND_TOKEN} /api/v1/agents/${SESSION}/answers`)
-}, 20_000)
+}, 60_000)
 
 test("a `!` token command runs outside the hook: a quick one gives the bearer, a slow one cannot hold the hook", async () => {
   const dispatch = standinDispatch()
@@ -774,7 +783,7 @@ test("a `!` token command runs outside the hook: a quick one gives the bearer, a
     `Bearer late /api/v1/agents/${SESSION}/answers`,
   ])
   expect(await readdir(tmp)).toEqual([])
-}, 20_000)
+}, 60_000)
 
 test("a token command slower than the hook's deadline finishes and cleans up after the hook, and the next hook carries the list it read", async () => {
   const dispatch = standinDispatch()
@@ -823,7 +832,7 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   await refresherFinished(state, secondSince)
   const secondCommand = await commandStarted(started)
   expect(running(-secondCommand)).toBe(false)
-}, 20_000)
+}, 60_000)
 
 test("with a slow token command, a list read from another Dispatch than envoy.json names now never stands in", async () => {
   const before = standinDispatch()
@@ -868,7 +877,7 @@ test("with a slow token command, a list read from another Dispatch than envoy.js
   await refresherFinished(state, since)
   expect(now.requests).toEqual([`Bearer now-token /api/v1/agents/${SESSION}/answers`])
   expect(before.requests).toHaveLength(1)
-}, 20_000)
+}, 60_000)
 
 test("a refresher started for the Dispatch envoy.json named before never hands its list to a hook for the Dispatch it names now", async () => {
   // The refresher is shared by every hook of the session, whatever Dispatch each resolves. A
@@ -937,7 +946,7 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
   // The refresher this hook started reads the Dispatch named now.
   await refreshersEnded()
   expect(now.requests).toEqual([`Bearer now-token /api/v1/agents/${SESSION}/answers`])
-}, 20_000)
+}, 60_000)
 
 test("a token command that fails gives the hook its error, not a Dispatch envoy.json no longer names", async () => {
   const dispatch = standinDispatch()
@@ -976,7 +985,7 @@ test("a token command that fails gives the hook its error, not a Dispatch envoy.
   await refreshersEnded()
   expect(dispatch.requests).toEqual([])
   expect(await readdir(tmp)).toEqual([])
-}, 20_000)
+}, 60_000)
 
 /** Writes, as a refresher would, what it read for `dispatchUrl` (null: no Dispatch), finished a
  *  minute from now so a hook started now takes it as its own refresher's. */
@@ -1026,7 +1035,7 @@ test("with envoy.json unreadable, a list read from another Dispatch never stands
   expectWithinDeadline(run)
   // No refresher started for a configuration that names no Dispatch.
   expect(other.requests).toHaveLength(1)
-}, 20_000)
+}, 60_000)
 
 test("a list read for the Dispatch envoy.json names stands in even when a refresher read none", async () => {
   const dispatch = standinDispatch()
@@ -1075,7 +1084,7 @@ test("a list read for the Dispatch envoy.json names stands in even when a refres
   expect(context).toContain("the refresher read no Dispatch, not the Dispatch envoy.json names now")
   expect(context).not.toContain("invalid JSON")
   expectWithinDeadline(run)
-}, 20_000)
+}, 60_000)
 
 test("hooks started together run a slow token command once", async () => {
   const dispatch = standinDispatch()
@@ -1116,7 +1125,7 @@ test("hooks started together run a slow token command once", async () => {
   expect(await readFile(runs, "utf8")).toBe("run\n")
   expect(dispatch.requests).toHaveLength(1)
   expect(await readdir(tmp)).toEqual([])
-}, 20_000)
+}, 60_000)
 
 test("a hook input it cannot read adds nothing and still exits 0", async () => {
   const { home } = await scratch()
@@ -1129,7 +1138,7 @@ test("a hook input it cannot read adds nothing and still exits 0", async () => {
   expect(run.exitCode).toBe(0)
   expect(run.stdout).toBe("")
   expect(run.stderr).toContain("envoy: people's answers were not added")
-}, 20_000)
+}, 60_000)
 
 test("a hook whose start-up took past 800 ms still gives Dispatch its least wait, never none", async () => {
   // Claude Code starts the open-asks, dispatch-first and answers hooks at once beside itself, so on
@@ -1165,4 +1174,4 @@ test("a hook whose start-up took past 800 ms still gives Dispatch its least wait
   const read = `Bearer ${DISPATCH_TOKEN} /api/v1/agents/${SESSION}/answers`
   if (outcome === "fresh") expect(dispatch.requests).toEqual([read])
   else expect(dispatch.requests.filter((request) => request !== read)).toEqual([])
-}, 20_000)
+}, 60_000)
