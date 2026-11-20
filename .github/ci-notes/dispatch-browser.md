@@ -1049,14 +1049,15 @@ repository's own package, so it fails here and says so.
 
 THE STACK'S POSTGRES IMAGE, PULLED HERE FOR THE SAME REASON. e2e/harness-pool.ts's
 startStack starts the stack's PostgreSQL with a `docker run` of DISPATCH_E2E_PG_IMAGE, the
-digest the "Browser-test dispatch dashboard against its baselines" step exports (.github/scripts/dispatch-browser-visual-suite.sh), and a pull the runner had not made yet counts
-inside that step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step spent
-120 s before the stack's first output, where five green visual jobs (134499880849,
+digest the two browser steps export (the first in .github/scripts/dispatch-browser-visual-suite.sh), and a pull the runner had not made yet counts
+inside the first step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step
+spent 120 s before the stack's first output, where five green visual jobs (134499880849,
 134479592234, 134451447710, 134451520100, 134547177192) spent 7 to 15 s, and the step ran
 past its budget at 250 s. Its log does not time the pull apart from the rest of that
 start, so the 120 s is the bound this pull is given, not a measure of the pull alone. The
-digest is the browser step's, written twice, and the two must stay the same: a pull of
-another digest here leaves that step to pull its own inside its budget again.
+digest is written three times, here and in the two browser steps (the normal order and
+the reverse), and the three must stay the same: a pull of another digest here leaves the
+browser steps to pull their own inside their budgets again.
 
 ## Why the visual job runs its rows again in reverse order
 
