@@ -43,8 +43,9 @@ import (
 // controllerLiveSizesEnv set to 1 has the test log the sum of each process's smaps `Anonymous:`
 // lines, which leaves out what the guard's own size adds (controllerLiveProcSizes), at each of the
 // guard's readings at or above the band's start (logSizes), as the traced scenarios always do: a
-// Job that runs a probe of its own in place of a scenario sets it. The band scenario logs none,
-// whatever it says (run).
+// Job that runs a probe of its own in place of a scenario sets it. startGeneration starts the log,
+// except in the band scenario, which logs none whatever it says; finish stops it at its end, or
+// the test's cleanup where finish never ran.
 const (
 	memoryGuardLiveEnv        = "LEGION_MEMORY_GUARD_LIVE"
 	controllerLiveScenarioEnv = "LEGION_CONTROLLER_LIVE_SCENARIO"
@@ -528,6 +529,10 @@ type controllerLiveRun struct {
 	frames  *controllerLiveFrames
 	sampler *controllerLiveSampler
 	watch   *controllerLiveWatch
+	// stopSizes stops the log of sizes where startGeneration started it (logSizes), and is nil
+	// where it did not. Its calls after the first do nothing: finish calls it at its end, and the
+	// test's cleanup calls it too, for a run that never reached finish.
+	stopSizes func()
 
 	mu sync.Mutex
 	// guardOff is the guard's first line that says it turned off, "" while it has not, and
@@ -541,24 +546,16 @@ type controllerLiveRun struct {
 	shim, agent, command int
 }
 
-// run takes the run's steps and answers why it passes, or why it fails. The launcher, and with it
-// every process of the generation, is ended by the test's cleanup, after the verdict line.
+// run takes the run's steps and answers why it passes, or why it fails. Its deferred finish stops
+// the log of sizes after the end line, so the log's last lines come before the verdict line. The
+// launcher, and with it every process of the generation, is ended by the test's cleanup, after the
+// verdict line.
 func (r *controllerLiveRun) run() (pass, fail string) {
 	ctx, cancel := controllerLiveDeadline(r.t)
 	defer cancel()
 	r.ctx = ctx
 	if reason := r.prepare(); reason != "" {
 		return "", reason
-	}
-	r.watch = &controllerLiveWatch{act: r.settings.ActPercent, traced: controllerLiveTraced(r.scenario)}
-	// The band scenario logs no sizes, whatever controllerLiveSizesEnv says: awaitBand measures the
-	// guard's CPU time over a minute as the test process's, and holds the test's own readings for
-	// it, and a read of every process's smaps at each of the guard's readings would count in it.
-	// Its stop is deferred before finish, so it runs after finish and before the verdict line.
-	if r.scenario != "band" && (r.watch.traced || os.Getenv(controllerLiveSizesEnv) == "1") {
-		r.watch.sizes = make(chan controllerLiveSizesAsk, controllerLiveSizesQueue)
-		stop := r.logSizes()
-		defer stop()
 	}
 	if reason := r.startGeneration(); reason != "" {
 		return "", reason
@@ -697,10 +694,13 @@ func controllerLiveBandStart(limit uint64, act int) uint64 {
 // answers its hello with the controller pod's default settings (controllerDefaultsAck, which
 // carries memoryguard.ControllerDefaults), reads its state, and starts its one generation, the
 // shim, whose pid the launcher's state names. From there the daemon end reads the connection on a
-// goroutine of its own (controllerLiveFrames). The guard the launcher builds is handed the run's
-// watch through newMemoryGuard: its Config.Observe, the guard's measurement seam, and its sink,
-// which goes on to the launcher's own, so the watch takes each reading and each kill on the
-// guard's own loop (controllerLiveWatch), and keeps the guard's trace in a scenario that prints it
+// goroutine of its own (controllerLiveFrames). Before it runs the launcher it makes the run's
+// watch and starts the log of sizes where the run logs them (logSizes): here and not in run,
+// since a probe Job's own test beside this file runs a generation through prepare and
+// startGeneration without run. The guard the launcher builds is handed the run's watch through
+// newMemoryGuard: its Config.Observe, the guard's measurement seam, and its sink, which goes on to
+// the launcher's own, so the watch takes each reading and each kill on the guard's own loop
+// (controllerLiveWatch), and keeps the guard's trace in a scenario that prints it
 // (controllerLiveTraced).
 func (r *controllerLiveRun) startGeneration() string {
 	self, err := os.Executable()
@@ -711,6 +711,17 @@ func (r *controllerLiveRun) startGeneration() string {
 	r.agentExe = filepath.Join(r.dir, "omp")
 	if err := copyExecutable(self, r.agentExe); err != nil {
 		return fmt.Sprintf("copy the test binary for the agent: %v", err)
+	}
+	r.watch = &controllerLiveWatch{act: r.settings.ActPercent, traced: controllerLiveTraced(r.scenario)}
+	// The band scenario logs no sizes, whatever controllerLiveSizesEnv says: awaitBand measures the
+	// guard's CPU time over a minute as the test process's, and holds the test's own readings for
+	// it, and a read of every process's smaps at each of the guard's readings would count in it.
+	// finish stops the log at its end, after its end line; the test's cleanup stops it where finish
+	// never ran, and the second stop does nothing.
+	if r.scenario != "band" && (r.watch.traced || os.Getenv(controllerLiveSizesEnv) == "1") {
+		r.watch.sizes = make(chan controllerLiveSizesAsk, controllerLiveSizesQueue)
+		r.stopSizes = sync.OnceFunc(r.logSizes())
+		r.t.Cleanup(r.stopSizes)
 	}
 	previous := newMemoryGuard
 	newMemoryGuard = func(guard memoryguard.Config) *memoryguard.Guard {
@@ -1780,13 +1791,17 @@ func (r *controllerLiveRun) commandStatus() (syscall.WaitStatus, bool) {
 }
 
 // finish stops the test's readings and prints the end line: how many it took, and the highest
-// AnonPages and counter among them.
+// AnonPages and counter among them. Then it stops the log of sizes where startGeneration started
+// it (stopSizes), which writes the readings still queued and its count before finish returns.
 func (r *controllerLiveRun) finish() {
 	samples := r.sampler.end()
 	highest, counter := controllerLiveHighest(samples)
 	r.out.printf("end samples=%d highest_anon_pages=%d highest_anon_share=%.2f%% highest_anon_at=%s highest_counter=%d highest_counter_share=%.2f%% kills=%d",
 		len(samples), highest.anon, controllerLivePercent(highest.anon, r.limit), controllerLiveTime(highest.at), counter.counter,
 		controllerLivePercent(counter.counter, r.limit), len(r.frames.kills()))
+	if r.stopSizes != nil {
+		r.stopSizes()
+	}
 }
 
 // printHighest prints the run's highest readings in one line (`live: highest …`), each in bytes,
@@ -1897,11 +1912,14 @@ const controllerLiveSizesQueue = 256
 // could read there, so a run where the guard went on with nothing after a kill shows whether a
 // grower had grown since it (INFRA-3531, verification version 37).
 //
-// It answers the stop, which closes the watch's queue and sets it nil under the watch's lock, so
-// the guard's later readings ask for no line: the guard reads on until the test's cleanup ends the
-// launcher, after the verdict line. The log then writes a line for each reading still queued, then
-// how many readings it read and how many the watch dropped because the log was too far behind
-// (`live: sizes readings=… dropped=…`), and the stop returns once it has.
+// It answers the stop, which closes the watch's queue and so runs once: startGeneration keeps it
+// on the run as stopSizes, whose calls after the first do nothing, and finish calls that at its
+// end, or the test's cleanup where finish never ran. The stop closes the queue and sets it nil
+// under the watch's lock, so the guard's later readings ask for no line: the guard reads on until
+// the test's cleanup ends the launcher, after the verdict line. The log then writes a line for
+// each reading still queued, then how many readings it read and how many the watch dropped
+// because the log was too far behind (`live: sizes readings=… dropped=…`), and the stop returns
+// once it has.
 func (r *controllerLiveRun) logSizes() (stop func()) {
 	asks, done := r.watch.sizes, make(chan struct{})
 	go func() {
