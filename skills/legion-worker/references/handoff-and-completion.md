@@ -1,6 +1,6 @@
 # The handoff, the completion, and a refused completion
 
-Read it before you record the handoff your role prompt names or complete (step 6 of `skill://legion-worker`), and when `handoff_complete` refuses your completion.
+Read it before you record the handoff your role prompt names or complete (step 6 of `skill://legion-worker`), when your phase ends, and when `handoff_complete` refuses your completion.
 
 ## The handoff
 
@@ -9,6 +9,10 @@ A handoff is never a commit and never a result: what you ran is a result you rec
 ## Push any work, then complete
 
 `handoff_complete` is your only way to end a phase: add no label, keep no status of your own and run no loop of your own, since the daemon owns the issue's state and the architect its decomposition and gates.
+
+## When your phase ends
+
+The workspace is read-only for you from the moment your phase ends, whether you ended it by completing or another role's move ended it while your turn ran: no commit, no `jj new`, no edit to a tracked file, in the turn still running when you learn it ended and in every turn after it, until a new task names your phase. Nothing stops that turn for you, so stopping is yours to do: drop the work in hand and leave whatever you have uncommitted. One write is the exception: the forward merge a merge-forward message asks of the implementer.
 
 ## A refused completion
 
