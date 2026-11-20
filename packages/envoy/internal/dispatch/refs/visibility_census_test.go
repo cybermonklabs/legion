@@ -177,7 +177,6 @@ const (
 // readsWithoutAViewer names each exported read of the store that takes no acting person, with
 // the reason it binds no predicate (storeReads lists them from the package's source).
 var readsWithoutAViewer = map[string]string{
-	"AskPartIDs":          nodeDetail,
 	"BlockChanges":        nodeDetail,
 	"BlockIndexing.Cited": serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
 	"BlockTargets":        serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
@@ -209,7 +208,6 @@ var readsWithoutAViewer = map[string]string{
 	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
 	"PlanItemIfOwed":     serverWork + " - a write's read phase plans the index an item it writes beside is owed",
 	"PlanReplace":        serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
-	"QueueAskPartIDs":    nodeDetail,
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
 	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",
 	"ReadItemIndex":      serverWork + " - a write's read phase reads the item's block index it plans against",
@@ -359,6 +357,21 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			return database.Pool.SendBatch(ctx, batch).Close()
 		})
 	}
+	// An ask's part ids, read only where the viewer sees the ask: both halves, the batched one as
+	// the count's is.
+	asked := []*model.Ask{{ID: "00000000-0000-4000-8000-000000000003"}}
+	record("AskPartIDs", "AskPartIDs of an ask", func() error {
+		_, err := AskPartIDs(ctx, recorder, who, asked)
+		return err
+	})
+	record("QueueAskPartIDs", "QueueAskPartIDs of an ask", func() error {
+		batch := &pgx.Batch{}
+		QueueAskPartIDs(batch, who, asked, make([]AskIDs, len(asked)))
+		for _, queued := range batch.QueuedQueries {
+			recorder.statements = append(recorder.statements, queued.SQL)
+		}
+		return database.Pool.SendBatch(ctx, batch).Close()
+	})
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
 		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec")
 		return err
