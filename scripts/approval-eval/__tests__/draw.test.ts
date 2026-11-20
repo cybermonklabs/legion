@@ -237,6 +237,17 @@ describe("drawSlices", () => {
     expect(() => drawSlices(cases, 7)).toThrow(/a-empty/);
   });
 
+  test("refuses a case that carries no answer of the rule, which a draw outside a read applies", () => {
+    const cases = corpus();
+    const first = cases[0];
+    if (first === undefined) throw new Error("the corpus is empty");
+    cases[0] = { ...first, hold: null };
+    expect(() => drawSlices(cases, 7)).toThrow(DrawError);
+    expect(() => drawSlices(cases, 7)).toThrow(
+      `the case ${first.row.caseId} carries no never-decide`
+    );
+  });
+
   test("writes an anchor descriptor for every anchor case", () => {
     const draw = drawSlices(corpus(), 7);
     expect(draw.anchors.map((one) => one.caseId).sort()).toEqual([...draw.slices.anchor].sort());
@@ -473,6 +484,14 @@ describe("drawSlices under a read of the reserve", () => {
         [...base, "--cut", "2026-11-18T00:00:00Z", ...claim],
         "takes a --cut at or before the reserve's cut, 2026-11-16T00:00:00Z",
       ],
+      [
+        [...base, "--cut", "2026-11-16T00:00:00Z", ...claim, "--backlog-roots", "/nowhere/c"],
+        "applies no never-decide rule, so it takes no --backlog-roots and no --cache",
+      ],
+      [
+        [...base, "--cut", "2026-11-16T00:00:00Z", ...claim, "--cache", "/nowhere/d"],
+        "applies no never-decide rule, so it takes no --backlog-roots and no --cache",
+      ],
     ];
     const before = process.env.APPROVAL_EVAL_RESERVE;
     process.env.APPROVAL_EVAL_RESERVE = "read:claim:test";
@@ -493,7 +512,7 @@ describe("drawSlices under a read of the reserve", () => {
     }
   });
 
-  test("an eligible tree whose every case the never-decide rule held is recorded in no slice", () => {
+  test("reads no never-decide answer: a case the rule would hold, or could not read, reaches report", () => {
     const held: NeverDecideAnswer = {
       ...DECIDED,
       held: true,
@@ -501,14 +520,37 @@ describe("drawSlices under a read of the reserve", () => {
       reason: "The change list asks for the spool directory to be removed.",
       answer: "destructive-act\nThe change list asks for the spool directory to be removed.",
     };
+    const unreadable: NeverDecideAnswer = { ...DECIDED, fault: "the answer named no kind" };
     const cases = [...corpus(), ...reserved(3)].map((one) =>
-      one.row.issueKey === "RES-1" ? drawCase(one.row, held) : one
+      one.row.issueKey === "RES-1"
+        ? drawCase(one.row, held)
+        : one.row.issueKey === "RES-2"
+          ? drawCase(one.row, unreadable)
+          : one
     );
+    const draw = drawSlices(cases, 7, source(cases));
+    expect(draw.held).toEqual([]);
+    expect(draw.undrawableByKind["rule-unreadable"]).toBe(0);
+    expect(draw.finalTest?.groups).toBe(3);
+    expect(draw.finalTest?.trees).toEqual([
+      { group: "tree:RES-0", slice: "report", cases: ["r-0-0", "r-0-1", "r-0-2"] },
+      { group: "tree:RES-1", slice: "report", cases: ["r-1-0", "r-1-1", "r-1-2"] },
+      { group: "tree:RES-2", slice: "report", cases: ["r-2-0", "r-2-1", "r-2-2"] },
+    ]);
+    // The draw the command makes under a read hands the cases no answer at all.
+    const unruled = cases.map((one) => ({ ...one, hold: null }));
+    expect(drawSlices(unruled, 7, source(unruled)).slices).toEqual(draw.slices);
+  });
+
+  test("an eligible tree whose every case no arm can be scored on is recorded in no slice", () => {
+    const unscorable = [0, 1].map((at) => drawCase(caseRow(`r-1-${at}`, "question", "RES-1", 1)));
+    const cases = [...corpus(), ...reserved(3).filter((one) => one.row.issueKey !== "RES-1")];
+    cases.push(...unscorable);
     const draw = drawSlices(cases, 7, source(cases));
     expect(draw.finalTest?.groups).toBe(2);
     expect(draw.finalTest?.trees).toEqual([
       { group: "tree:RES-0", slice: "report", cases: ["r-0-0", "r-0-1", "r-0-2"] },
-      { group: "tree:RES-1", slice: null, cases: ["r-1-0", "r-1-1", "r-1-2"] },
+      { group: "tree:RES-1", slice: null, cases: ["r-1-0", "r-1-1"] },
       { group: "tree:RES-2", slice: "report", cases: ["r-2-0", "r-2-1", "r-2-2"] },
     ]);
   });
