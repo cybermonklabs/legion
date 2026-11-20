@@ -1197,8 +1197,18 @@ ENV_ALLOWED = frozenset({
     "GH_TOKEN",
     "GOPROXY",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
-    "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN", "PREVIOUS_COMMIT",
+    "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
+    # The commit envoy-go-checks' edited-migrations step compares a bypass run's tree with:
+    # .github/scripts/edited-migrations-base.sh, which that step runs, reads it and hands the base
+    # it picks to the command as an argument, and go reads it nowhere.
+    "MIGRATION_BASE",
+    "PREVIOUS_COMMIT",
     "TESTCONTAINERS_RYUK_DISABLED",
+    # The deployment's term list .github/scripts/check-private-names.sh reads. The private-names
+    # jobs of ci-job-lint.yaml and docs-site.yaml map it from the secret of that name, and this
+    # check reads every step of a called file beside the go commands its other job runs. go reads
+    # it nowhere.
+    "PRIVATE_NAME_TERMS",
 })
 
 
@@ -2703,7 +2713,8 @@ def check() -> int:
     rules.check_push_conditions(documents, problems)
     rules.check_rerun_guard(document, problems)
     rules.check_cache_round_trip(documents, problems)
-    rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, problems)
+    rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, data.DAEMON_RACE_FILL_JOB, problems)
+    rules.check_race_fill_scripts(data.RACE_FILL_SCRIPTS, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
     expander, selection = Expander(files), Selection(filters, quantifiers, files)

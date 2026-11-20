@@ -12,6 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/steprecord"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -803,9 +805,20 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // deterministic because every time they record is one their own fact named. It is what
 // record.PullRequest.StateReadAt is written from, and a confirming read moves it exactly as a read
 // that changes something does, since it is the age of the knowledge and not the age of the last
-// change to it. A fact minted by anything that did not read GitHub - every test that states a
-// verdict rather than reading one - leaves it zero, and the engine then writes no stamp and erases
-// none.
+// change to it. A read whose ReadAt is before the stamp the record holds is dropped whole, as one
+// of another head is: GitHub answered the recorded read later, so the older answer can be one it
+// has since changed. A fact minted by anything that did not read GitHub - every test that states
+// a verdict rather than reading one - leaves it zero, and the engine then writes no stamp, erases
+// none and drops nothing for it.
+//
+// Rules is what the daemon read of the base branch's rules for its required status checks
+// (record.BaseRules), which a confirmed conflict is decided on (workflow's mergeability,
+// classify.ConflictNeedsMerge). It is set only on a read whose Mergeable is
+// record.MergeabilityConflicting, since a head that merges cleanly needs no decision of that kind,
+// and nil on every other read; the reader that fills it is the daemon's, which reads the base's
+// rulesets and its classic protection beside the pull request. A CONFLICTING read that carries
+// none is a read whose rules the daemon does not know, and it is decided as rules it could not
+// read are.
 type PullRequestMergeability struct {
 	Repo       string
 	Number     int
@@ -814,6 +827,7 @@ type PullRequestMergeability struct {
 	Mergeable  record.Mergeability
 	MergeState record.MergeState
 	ReadAt     time.Time
+	Rules      *record.BaseRules
 }
 
 func (PullRequestMergeability) namedIssue() (string, bool) { return "", false }
@@ -867,6 +881,26 @@ type MergeQueueReadDone struct {
 }
 
 func (f MergeQueueReadDone) namedIssue() (string, bool) { return f.Issue, true }
+
+// ConflictConfirmDone is the outbox's second read of a conflicting head (record.ConflictConfirm)
+// finishing with no answer that decides: never decoded from an event. GitHub answered UNKNOWN for
+// pull request Number of Issue at the row's last attempt, or, with Unread, no read of it
+// succeeded, so no second read confirmed the first read's conflict at Head, made at FirstReadAt
+// (record.ConflictConfirm.FirstReadAt), and none released it. The workflow then clears the first
+// read while the record still holds that one, of Head and made at FirstReadAt (workflow's
+// conflictConfirmDone), so the next read that finds the head conflicting is a first read again. A
+// first read of Head made at another time is one a later read made after this row's was released,
+// with a row of its own, and it is left standing. A CONFLICTING or MERGEABLE answer applies
+// PullRequestMergeability instead, as every read of the pull request does.
+type ConflictConfirmDone struct {
+	Issue       string
+	Number      int
+	Head        string
+	FirstReadAt time.Time
+	Unread      bool
+}
+
+func (f ConflictConfirmDone) namedIssue() (string, bool) { return f.Issue, true }
 
 // PullRequestMissing is the daemon's per-issue read of GitHub finding no open pull request on
 // Branch, the branch of Issue, whose implementer recorded its handoff at HandoffCommit while Issue
@@ -943,6 +977,18 @@ type HandoffComplete struct {
 	// Empty and zero for a phase that writes none.
 	HandoffRecord  string
 	HandoffVersion int
+	// PlanRating is the rating of the plan the issue ran, as the completion named it: the route held
+	// it to the scale and to a reason (api's planRatingOf, its one producer), and nil is a
+	// completion that named none. Only the completion that ends the retro carries one, and which
+	// completion that is the workflow judges where it ends the retro, on the issue as the fact's
+	// own transaction reads it (workflow's planRatingRefusal); it writes the rating onto the
+	// retro's record as it stands.
+	PlanRating *record.PlanRating
+	// MustRate is whether the completion that ends the retro must carry PlanRating: the claim's
+	// plugin declared the contract that added the rating (api.PlanRatingContract) or a later one,
+	// whose tool takes it. The route reads it from the claim, which no state of the issue changes;
+	// a plugin before that contract sends no rating, and its retro ends with none.
+	MustRate bool
 }
 
 func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
@@ -1483,6 +1529,25 @@ func ChildNotAdoptable(key, tree, reason string) *Refusal {
 // (api's handoffComplete), so a worker reads the same words from either.
 func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", role, p, issue)}
+}
+
+// PlanRatingRequired is the 400 PLAN_RATING_REQUIRED refusal of what, the completion that ends the
+// retro, which carries no rating of the plan though its caller must rate (HandoffComplete.MustRate).
+// The workflow answers it where it ends the retro (its planRatingRefusal), and records nothing.
+func PlanRatingRequired(what string) *Refusal {
+	return &Refusal{Status: 400, Code: "PLAN_RATING_REQUIRED", Message: fmt.Sprintf(
+		"%s carries no rating of the plan, and the completion that ends the retro rates it: rate the plan the issue ran from %d (the plan cost the work) to %d (the plan fit the work) in planRating, say why in planReason, and send it again; nothing was recorded", what, steprecord.RatingLeast, steprecord.RatingMost)}
+}
+
+// PlanRatingUnexpected is the 400 PLAN_RATING_UNEXPECTED refusal of what, a completion or a report
+// that names planRating or planReason and does not end the retro, which alone rates the plan.
+// Dropping them unread would let an agent believe it had rated the plan. The workflow answers it
+// for a completion that does not end the retro on the issue it reads (its planRatingRefusal), and
+// the completion route for a report on a look of a production check, which ends no phase (api's
+// checkReport), so an agent reads the same words from either. Neither records anything.
+func PlanRatingUnexpected(what string) *Refusal {
+	return &Refusal{Status: 400, Code: "PLAN_RATING_UNEXPECTED", Message: fmt.Sprintf(
+		"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
 }
 
 // Pool is the Postgres connection pool the intake applies its facts on, keeps its consumers'

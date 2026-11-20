@@ -395,7 +395,7 @@ func (r *idleRig) releasedArchitect(t *testing.T) *supervise.Machine {
 
 // The teardown acts on the answer the runtime took under its pod lock, not on the one this row
 // read before it. The two differ: the release's rows run on the issue's lifecycle lane, and a
-// notice or a phase-ended message runs on a lane of its own, so the wake one of those makes can
+// notice or a hook prompt runs on a lane of its own, so the wake one of those makes can
 // resume a role in between. A teardown that took the first answer and ignored the second
 // recorded a release of a pod that still stands, armed a backstop over it and forgot its wake
 // marks, and left the other roles released in a running pod with nothing to bring them back.

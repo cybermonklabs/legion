@@ -540,6 +540,7 @@ func main() {
 		slog.Info("token exchange", "state", "on", "kubernetes", cfg.ExchangeK8sAudience != "", "github", cfg.ExchangeGitHubIssuer != "",
 			"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "workflows", len(cfg.ExchangeWorkflows), "machines", len(cfg.ExchangeGoogleAccounts))
 	}
+	logPodRegistrars(cfg)
 	// Every claim on a session name, the exchange's and an enrollment's alike, is BindSession's,
 	// and it reads two things off the store: the pairs of BROKER_SESSION_ACCOUNT_PAIRS, either of
 	// whose accounts takes a name the other holds, set here, and the names the exchange's entries
@@ -659,6 +660,7 @@ func main() {
 	}
 	api.Register(mux, api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate,
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
+		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
 		Enroll: enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
@@ -907,8 +909,8 @@ func fatal(err error) {
 // minted from that configuration, so it is loaded before the database is opened; awsAlso asks for
 // it where the database does not, for the Secrets Manager and KMS clients of the AWS store, and
 // with neither the answer is the zero aws.Config. It migrates nothing: the server migrates after
-// this, and the end-sessions subcommand must not. Both of them open the store here, so the
-// subcommand reaches the same database and signs in to it the same way as the server.
+// this, and the end-sessions and versions subcommands must not. All three open the store here, so
+// each subcommand reaches the same database and signs in to it the same way as the server.
 func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Store, aws.Config, error) {
 	var awsCfg aws.Config
 	var err error
@@ -1316,6 +1318,23 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 		"dispatch", cfg.JudgeDispatchURL, "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
 }
 
+// logPodRegistrars logs, once at boot, what POST /v1/oauth/exchange/pod-sessions admits: how
+// many registrar and pod account pairs BROKER_POD_REGISTRARS holds, none being a route that admits
+// no registration, and whether BROKER_POD_REGISTRATION_AUDIENCE gives the route a second audience.
+// A registrar BROKER_SERVICE_LOGINS does not list cannot call the route, so it registers nothing.
+// The boot is not refused over one, since the list may be derived from another source than the
+// logins and a refusal would turn a mismatch into an outage; each such registrar gets a WARN line
+// naming it instead.
+func logPodRegistrars(cfg config.Config) {
+	slog.Info("pod-session registrars", "entries", len(cfg.PodRegistrars), "registration_audience", cfg.PodRegistrationAudience != "")
+	for _, registrar := range cfg.PodRegistrars.Registrars() {
+		if _, login := cfg.ServiceLogins[registrar]; !login {
+			slog.Warn("pod-session registrar cannot log in", "registrar", registrar,
+				"detail", "BROKER_POD_REGISTRARS names this account and BROKER_SERVICE_LOGINS does not list it, so it registers no pod")
+		}
+	}
+}
+
 // googleExchangeAudience is the Google audience GET /v1/settings publishes: BROKER_GOOGLE_OIDC_AUDIENCE
 // where BROKER_VM_SERVICES lists a machine the exchange may mint a launcher credential for, and ""
 // where the audience is set for an API caller alone (a google: entry in BROKER_API_ACCOUNTS). The
@@ -1349,6 +1368,10 @@ type verifiers struct {
 	Pod enroll.PodVerifier
 	// K8sKeys is the cluster issuer's published keys, nil where Pod is.
 	K8sKeys *oidc.Keys
+	// PodRegistration verifies a registration's pod token at BROKER_POD_REGISTRATION_AUDIENCE, on
+	// the cluster's key set Pod verifies with, nil on a broker with no such audience. Only the
+	// registration route reads it (api.Deps.PodRegistrationTokens).
+	PodRegistration enroll.PodVerifier
 	// GoogleKeys is the Google issuer's published keys, nil on a broker with no Google audience,
 	// which registers no Google subject token type.
 	GoogleKeys *oidc.Keys
@@ -1363,12 +1386,13 @@ type verifiers struct {
 // in production) and builds a verifier on each: the cluster's (BROKER_K8S_OIDC_ISSUER and
 // BROKER_K8S_OIDC_AUDIENCE), one verifier for both a pod's enrollment token and a service's login
 // token, which are the same cluster's projected tokens for the same audience, whose key set it
-// also answers for the RFC 8693 exchange; and Google's (BROKER_GOOGLE_OIDC_ISSUER), for a
-// machine's identity token, only when BROKER_GOOGLE_OIDC_AUDIENCE is set, whose key set the
-// exchange resolves a machine's subject token against, logging one line that names the issuer,
-// the audience, the machine services and how many machine entries the exchange holds. With no
-// Google audience it reads and logs nothing about Google, and answers no Google keys, so the
-// broker registers no Google subject token type.
+// also answers for the RFC 8693 exchange, and on that key set a second where
+// BROKER_POD_REGISTRATION_AUDIENCE is set, for a registration's pod token of that audience; and
+// Google's (BROKER_GOOGLE_OIDC_ISSUER), for a machine's identity token, only when
+// BROKER_GOOGLE_OIDC_AUDIENCE is set, whose key set the exchange resolves a machine's subject
+// token against, logging one line that names the issuer, the audience, the machine services and
+// how many machine entries the exchange holds. With no Google audience it reads and logs nothing
+// about Google, and answers no Google keys, so the broker registers no Google subject token type.
 func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc) (verifiers, error) {
 	var found verifiers
 	if cfg.K8sOIDCIssuer != "" {
@@ -1378,6 +1402,9 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 		}
 		found.K8sKeys = keys
 		found.Pod = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(cfg.K8sOIDCIssuer, cfg.K8sOIDCAudience, keys)}
+		if cfg.PodRegistrationAudience != "" {
+			found.PodRegistration = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(cfg.K8sOIDCIssuer, cfg.PodRegistrationAudience, keys)}
+		}
 	}
 	if cfg.GoogleOIDCAudience == "" {
 		return found, nil
@@ -1573,14 +1600,17 @@ func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.St
 	}
 }
 
-// endSessionsCommand is one of the two arguments the broker takes in place of serving; the other
-// is airlockCheckCommand (airlockcheck.go).
-const endSessionsCommand = "end-sessions"
+// endSessionsCommand and versionsCommand are two of the three arguments the broker takes in place
+// of serving; the third is airlockCheckCommand (airlockcheck.go).
+const (
+	endSessionsCommand = "end-sessions"
+	versionsCommand    = "versions"
+)
 
 // runSubcommand runs the subcommand args name and answers its exit code. It is every argument
 // this binary takes: an unknown name, a missing or malformed argument to a name it knows, is
-// refused with 2 and a usage line, never a fall-through to serving. There are two names, so a
-// switch still reads as one thing (cmd/dispatch/subcommands.go keeps a table for its nine).
+// refused with 2 and a usage line, never a fall-through to serving. There are three names, so a
+// switch still reads as one thing (cmd/dispatch/subcommands.go keeps a table for its eleven).
 func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case endSessionsCommand:
@@ -1589,18 +1619,57 @@ func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return 2
 		}
 		return endSessions(ctx, strings.TrimSpace(args[1]), stdout, stderr)
+	case versionsCommand:
+		if len(args) != 1 {
+			fmt.Fprintf(stderr, "broker: usage: broker %s, with no argument\n", versionsCommand)
+			return 2
+		}
+		return versions(ctx, stdout, stderr)
 	case airlockCheckCommand:
 		return airlockCheck(args[1:], stdout, stderr)
 	}
-	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login> and %s <file> [--against <old file>], and broker with no argument serves\n",
-		args[0], endSessionsCommand, airlockCheckCommand)
+	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login>, %s and %s <file> [--against <old file>], and broker with no argument serves\n",
+		args[0], endSessionsCommand, versionsCommand, airlockCheckCommand)
 	return 2
+}
+
+// versions prints what broker_schema_migrations records of each version against the migrations
+// this image embeds, and what this image's next boot would do with each row (store.CheckVersions):
+// the check to take, read-only, before an image with a different set rolls out. It reads the same
+// configuration the server does and signs in to the database the same way, the RDS IAM token
+// minter included (openStore), binds no listener and migrates nothing. It exits 0 when every
+// recorded version has a file of this image and the next boot refuses none, 1 when one has no file,
+// a row would be refused or the table records nothing, and 2 when the check could not be taken.
+func versions(ctx context.Context, stdout, stderr io.Writer) int {
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", versionsCommand, err)
+		return 2
+	}
+	st, _, err := openStore(ctx, cfg, false)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", versionsCommand, err)
+		return 2
+	}
+	defer st.Close()
+	check, err := st.CheckVersions(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", versionsCommand, err)
+		return 2
+	}
+	check.Write(stdout)
+	if !check.OK() {
+		return 1
+	}
+	return 0
 }
 
 // endSessions deletes every session login is signed in to the approval page with, wherever and
 // whenever it was made, and prints how many it deleted: the operator's way to end one person's
-// sign-ins everywhere at once, run in a broker pod by whoever holds pods/exec in the broker's
-// namespace.
+// sign-ins everywhere at once. It runs in any one-off process of the image that has the serving
+// broker's settings and a way to its database: an exec into a broker pod where the deployment
+// admits one, or a one-off pod, job or container of the image, with BROKER_SIGNIN=off in place of
+// the sign-in settings (docs/site/src/content/docs/broker/operate.md, "Running a subcommand").
 //
 // It reads the same configuration the server does and opens the database the same way, the RDS
 // IAM token minter included (openStore), and it binds no listener. It does not migrate: an image

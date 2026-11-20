@@ -134,8 +134,8 @@ func StartWithCallout(t testing.TB, keys CalloutKeys, static ...StaticUser) (url
 }
 
 // StartWithCalloutServer runs the server StartWithCallout runs and returns it with its client URL,
-// for a test that stops, starts or restarts it under connected clients. Its relay listens on a
-// loopback address of its own (calloutHost).
+// for a test that stops, starts or restarts it under connected clients. Its relay and its own
+// client port listen on a loopback address of their own (calloutHost).
 func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser) (*Server, string) {
 	t.Helper()
 	server := startOn(t, calloutHost(), CalloutConfig(keys, static...), []string{"-js"})
@@ -143,8 +143,9 @@ func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser
 	return server, server.URL()
 }
 
-// calloutHost is the address a callout server's relay listens on: on Linux, where every address
-// of 127.0.0.0/8 is the loopback, one chosen at random, and elsewhere 127.0.0.1.
+// calloutHost is the address a callout server's relay and the server's own client port listen on:
+// on Linux, where every address of 127.0.0.0/8 is the loopback, one chosen at random, and
+// elsewhere 127.0.0.1.
 //
 // A test of the auth service counts what its hub sends the service, and the hub sends it a
 // request for every client that reaches it. A relay holds its port only for its own test's life.
@@ -152,8 +153,12 @@ func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser
 // the kernel can give the same port to a later server's relay, in this test binary or in another
 // binary go test runs beside it. In the envoy-go-race step a client with no credential reached a
 // callout test's hub that way, and its replica counted three dropped requests where the test had
-// sent one. Such a client dials the address its own server had, so a relay on an address of its
-// own is out of its reach, whichever port it gets.
+// sent one. Such a client dials the address its own server had, so a hub on an address of its own
+// is out of its reach, whichever port it gets. The server's own client port reaches the hub as
+// its relay does, and the kernel gives that port from the same range: while it listened on
+// 127.0.0.1, such a client could still reach the hub there, and
+// TestAClosingReplicaLogsWhatItCountedSinceItsLastLine/drops counted five drops after its first
+// line where its two connects made two (job 135649687816). So both listen on this address.
 func calloutHost() string {
 	if runtime.GOOS != "linux" {
 		return "127.0.0.1"

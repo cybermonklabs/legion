@@ -1003,7 +1003,10 @@ an example, and `--dry-run` runs the call's own argument check (`checkDispatchCa
 strict schema, the cross-field checks and the picture files), refusing the arguments the call would
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
 them (an issue from LEGION_ISSUE or the ref). It reads neither Dispatch nor this session's state,
-so it runs with Dispatch off too, and a call it passed can still stop on either.
+so it runs with Dispatch off too, and a call it passed can still stop on either. The one exception
+is a `dispatch result` record: its dry run needs Dispatch on, as the record does, and after the
+arguments prints the pull-request body line Dispatch answers on `POST …/results/dry-run`, recording
+nothing. A retraction's dry run sends nothing.
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude
@@ -1039,7 +1042,7 @@ prints its URL, for proving what a command shows when a gateway, not Dispatch, a
 
 ## Command specs
 
-`@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-six
+`@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-seven
 Dispatch specs behind the `dispatch` command: each one's name, description, field schemas
 and example. `dispatch-command.ts` derives the command and its flags from them, and no host
 adds aliases or descriptions of its own.

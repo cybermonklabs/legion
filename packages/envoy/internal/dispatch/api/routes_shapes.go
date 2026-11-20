@@ -114,6 +114,16 @@ type relatedQuery struct {
 	KeywordsOnly bool `query:"keywords_only"`
 }
 
+// projectPlansQuery is GET /api/v1/projects/{key}/plans's query: the window on the finished
+// issues' close.
+type projectPlansQuery struct {
+	// Since lists only an issue closed at or after it, RFC 3339.
+	Since string `query:"since"`
+	// Until lists only an issue closed before it, RFC 3339; a since not before it is 400
+	// INVALID_QUERY.
+	Until string `query:"until"`
+}
+
 // deliveryWindowQuery is the query GET /api/v1/delivery/timeline and GET /api/v1/delivery/measures
 // share: the window, the search and the repeatable facets. The `session` facet is read by the
 // same code (deliveryFacets) and named here by no field, since `session` is the whole API's
@@ -722,6 +732,9 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/results": {
 		Status: http.StatusCreated, Response: checkResultRecorded{}, Request: checkResultInput{},
 	},
+	"POST /api/v1/issues/{key}/results/dry-run": {
+		Status: http.StatusOK, Response: checkResultDryRun{}, Request: checkResultInput{},
+	},
 	"POST /api/v1/results/{id}/retract": {
 		Status: http.StatusCreated, Response: model.CheckResultRetraction{},
 		Request: checkResultRetractionInput{},
@@ -747,7 +760,16 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/issues/{key}/steps/{id}": {
 		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRecordInput{},
 	},
-	"GET /api/v1/issues/{key}/steps":   {Status: http.StatusOK, Response: model.IssueSteps{}},
+	"PUT /api/v1/issues/{key}/steps/{id}/rating": {
+		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRatingInput{},
+	},
+	"GET /api/v1/issues/{key}/steps": {Status: http.StatusOK, Response: model.IssueSteps{}},
+	"PUT /api/v1/issues/{key}/plans/{id}": {
+		Status: http.StatusOK, Response: model.PlanRecord{}, Request: planRecordInput{},
+	},
+	"GET /api/v1/projects/{key}/plans": {
+		Status: http.StatusOK, Response: model.ProjectPlans{}, Params: projectPlansQuery{},
+	},
 	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
 	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
 	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},

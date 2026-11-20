@@ -25,7 +25,6 @@ import {
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
-import goUnicodeIsSpace from "../../../contracts/fixtures/go-unicode-isspace.json";
 import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
 import { linkFor } from "../dispatch-commands/links";
@@ -35,7 +34,6 @@ import {
   dispatchRefFromUrl,
   executeDispatchTool,
   formatOpenAsksSummary,
-  goBlankPattern,
   linkBaseOf,
   positionText,
   resolveIssueDocumentId,
@@ -8003,6 +8001,84 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // A Dispatch older than a result's dry run answers its path no route. The dry run says so and
+  // never falls back to the record's own path: an older build would drop what it does not know
+  // and record the result there.
+  test("a dispatch_result dry run that Dispatch answers no route records nothing and says why", async () => {
+    const asked: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      asked.push(`${init?.method ?? "GET"} ${pathname}`);
+      return response(
+        {
+          code: "NOT_FOUND",
+          error: `no route for ${init?.method ?? "GET"} ${pathname}`,
+          hint: "GET /api/v1 lists every route",
+        },
+        404
+      );
+    };
+
+    await expect(
+      executeDispatchTool({
+        tool: "dispatch_result",
+        args: {
+          issue: "DSP-42",
+          check: "k1",
+          role: "implementer",
+          verdict: "pass",
+          commit: "1".repeat(40),
+        },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        sessionId: "session-one",
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+        dryRun: true,
+        // The route no build answers is asked again before the message: no real wait.
+        sleep: async () => {},
+      })
+    ).rejects.toThrow(
+      "answered no route for POST /api/v1/issues/DSP-42/results/dry-run each time the dry run was sent: this build is older than a result's dry run, so it cannot show the pull-request body line before the record. Nothing was recorded."
+    );
+    expect(asked.length).toBeGreaterThan(0);
+    expect(
+      asked.filter((request) => request !== "POST /api/v1/issues/DSP-42/results/dry-run")
+    ).toEqual([]);
+  });
+
+  // Only a call whose dry run Dispatch answers is run as one: any other command, a retraction
+  // among them, would make its write.
+  test("executeDispatchTool refuses a dry run of a call whose dry run asks Dispatch nothing", async () => {
+    const asked: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      asked.push(new URL(String(url)).pathname);
+      return response({}, 500);
+    };
+    for (const [tool, args] of [
+      ["dispatch_message", { issue: "DSP-42", body: "hi" }],
+      ["dispatch_result", { retract: "res-2", reason: "The run was wrong." }],
+    ] as const) {
+      await expect(
+        executeDispatchTool({
+          tool,
+          args,
+          cwd: "/workspace",
+          host: "omp",
+          config,
+          env: {},
+          sessionId: "session-one",
+          exec: repoExec("owner/repo"),
+          fetchImpl: fetchImpl as typeof fetch,
+          dryRun: true,
+        })
+      ).rejects.toThrow(`dispatch ${tool}'s dry run asks Dispatch nothing`);
+    }
+    expect(asked).toEqual([]);
+  });
+
   // One check with the three shapes a reader must tell apart: a result that stands at the head
   // the check compared with, a result retracted after it was recorded, and a result at a commit
   // that head is not. Every result prints, in the order the API served them, because the gate is
@@ -11319,9 +11395,9 @@ describe("executeDispatchTool", () => {
   // Refusing it here would answer it with --force, which changes nothing for it.
   //
   // R11: that `blank` is Go's `unicode.IsSpace`, which JavaScript's `trim` is not
-  // (goBlankPattern's comment in ../dispatch-execute.ts names the two characters they differ
-  // on). The server empties U+0085, so this create writes no version, and reading `trim` here
-  // would refuse it and name --force instead.
+  // (goBlankPattern's comment in @legion/contracts/go-blank names the two characters they
+  // differ on). The server empties U+0085, so this create writes no version, and reading `trim`
+  // here would refuse it and name --force instead.
   test.each([
     ["empty", ""],
     ["spaces alone", "   "],
@@ -16148,59 +16224,5 @@ describe("positionText", () => {
         ],
       })
     ).toBe("bullet_list[7] › list_item[0] › paragraph[0]");
-  });
-});
-
-describe("goBlankPattern", () => {
-  // INFRA-1334: the pattern writes Go's `unicode.IsSpace` set out, and the create rows above pin
-  // the two characters a person meets. Nothing but this test holds the whole set, so a hand edit
-  // that drops one scalar, or a raise of Go that moves the set, would otherwise be silent on this
-  // side. The committed list is what both languages read: Go's own predicate is held to it by
-  // TestUnicodeIsSpaceReportsTheCommittedScalars
-  // (packages/envoy/internal/dispatch/text/whitespace_fixture_test.go).
-  test("calls blank exactly the scalars the committed list holds", () => {
-    const listed = new Set(goUnicodeIsSpace.scalars.map((written) => Number.parseInt(written, 16)));
-    // A code point written twice would make the list shorter than it reads.
-    expect(listed.size).toBe(goUnicodeIsSpace.scalars.length);
-
-    const blankNotListed: number[] = [];
-    const listedNotBlank: number[] = [];
-    for (let code = 0; code <= 0x10ffff; code++) {
-      const blank = goBlankPattern.test(String.fromCodePoint(code));
-      if (blank && !listed.has(code)) {
-        blankNotListed.push(code);
-      } else if (listed.has(code) && !blank) {
-        listedNotBlank.push(code);
-      }
-    }
-    if (blankNotListed.length === 0 && listedNotBlank.length === 0) return;
-
-    const codePoints = (codes: number[]): string =>
-      codes.map((code) => `U+${code.toString(16).toUpperCase().padStart(4, "0")}`).join(", ");
-    const moved: string[] = [];
-    if (blankNotListed.length > 0) {
-      moved.push(
-        `  goBlankPattern calls ${codePoints(blankNotListed)} blank, which the list does not hold.`
-      );
-    }
-    if (listedNotBlank.length > 0) {
-      moved.push(
-        `  the list holds ${codePoints(listedNotBlank)}, which goBlankPattern calls content.`
-      );
-    }
-    throw new Error(
-      `goBlankPattern and packages/contracts/fixtures/go-unicode-isspace.json disagree:\n` +
-        `${moved.join("\n")}\n` +
-        "This test ran the pattern over every scalar from 0 to 10FFFF, so the characters above " +
-        "are where the pattern in ../dispatch-execute.ts stands now; the list is what Go's " +
-        "unicode.IsSpace reported when the list was written. Which side moved is in the Go test " +
-        "that measures the same list (TestUnicodeIsSpaceReportsTheCommittedScalars, " +
-        "packages/envoy/internal/dispatch/text): green there and Go has not moved, so the " +
-        "pattern was edited; red there too and Go or its Unicode version moved, so both were " +
-        "measured from a Go that is gone. `dispatch artifact` reads this pattern to tell whether " +
-        "the Dispatch server will call a create's content blank, and the server reads " +
-        "strings.TrimSpace, which trims what the list holds: measure the pattern and the list " +
-        "again together, or the command and the server read the same text differently."
-    );
   });
 });

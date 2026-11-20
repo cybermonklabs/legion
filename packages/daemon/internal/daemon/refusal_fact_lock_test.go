@@ -77,7 +77,7 @@ func TestOnlyARefusedRowThatDropsAFenceWaitsOnTheFactLock(t *testing.T) {
 	if fence := fenceOf(t, pool, records, "LEGION-209"); fence != nil {
 		t.Fatalf("LEGION-209's fence after its hand-over's refusal finished = %+v, want it dropped", fence)
 	}
-	if rows := outboxRowsOfKind(t, pool, record.OutboxKindDispatchStatus); rows != 0 {
+	if rows := outboxRowsOfKindAnywhere(t, pool, record.OutboxKindDispatchStatus); rows != 0 {
 		t.Fatalf("%d status rows are left after both refusals finished, want none", rows)
 	}
 }
@@ -238,8 +238,8 @@ func noticesOf(t *testing.T, pool *store.Pool, issue string) int {
 	return notices
 }
 
-// outboxRowsOfKind is how many rows of kind the outbox holds.
-func outboxRowsOfKind(t *testing.T, pool *store.Pool, kind record.OutboxKind) int {
+// outboxRowsOfKindAnywhere is how many rows of kind the outbox holds, of every issue.
+func outboxRowsOfKindAnywhere(t *testing.T, pool *store.Pool, kind record.OutboxKind) int {
 	t.Helper()
 	var rows int
 	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = $1", string(kind)).Scan(&rows); err != nil {

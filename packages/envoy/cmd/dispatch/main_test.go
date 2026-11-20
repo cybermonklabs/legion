@@ -1524,6 +1524,31 @@ func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testi
 	}
 }
 
+// `envoy-dispatch versions` exits 2 when it cannot be taken, 0 over a database this image
+// migrated, and 1 when a recorded version names another file, which it prints. The control is the
+// migrated database itself, read before the row is changed.
+func TestVersionsSubcommandExitCodes(t *testing.T) {
+	ctx := context.Background()
+	var out, errOut bytes.Buffer
+	if code := versions(ctx, "", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "DATABASE_URL is required") {
+		t.Errorf("no URL: exit %d, stderr %q", code, errOut.String())
+	}
+	database := storetest.Open(t)
+	url := database.Pool.Config().ConnString()
+	out.Reset()
+	errOut.Reset()
+	if code := versions(ctx, url, &out, &errOut); code != 0 || !strings.HasSuffix(strings.TrimSpace(out.String()), "versions: ok") {
+		t.Fatalf("control, a migrated database: exit %d, stderr %q, stdout:\n%s", code, errOut.String(), out.String())
+	}
+	if _, err := database.Pool.Exec(ctx, "update schema_migrations set name = '0001_another_branch.up.sql' where version = 1"); err != nil {
+		t.Fatalf("record another file under version 1: %v", err)
+	}
+	out.Reset()
+	if code := versions(ctx, url, &out, &errOut); code != 1 || !strings.Contains(out.String(), "versions: REFUSED version 1 is recorded as 0001_another_branch.up.sql") {
+		t.Errorf("another file under version 1: exit %d, stdout:\n%s", code, out.String())
+	}
+}
+
 func TestWriteRebuildRefsReport(t *testing.T) {
 	var output bytes.Buffer
 	writeRebuildRefsReport(&output, refs.Rebuild{Documents: 4, Asks: 3, Comments: 2, Messages: 1, Orphans: 5, Edges: 9, BlocksOwed: 4, ItemsOwed: 6})

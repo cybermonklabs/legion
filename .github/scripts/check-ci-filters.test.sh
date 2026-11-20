@@ -117,6 +117,8 @@ EXCLUDED = {"image": "an image build another check proves"}
 PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
 WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
+DAEMON_RACE_FILL_JOB = "fill"
+RACE_FILL_SCRIPTS = []
 TAG_RUNS = []
 PY
   cat > "$root/.github/workflows/ci.yaml" <<'YAML'
@@ -608,6 +610,8 @@ EXCLUDED = {"image": "an image build another check proves"}
 PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
 WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
+DAEMON_RACE_FILL_JOB = "fill"
+RACE_FILL_SCRIPTS = []
 TAG_RUNS = []
 PY
   replace "$1/.github/workflows/ci.yaml" "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\"}'" \
@@ -1865,6 +1869,8 @@ EXCLUDED = {"image": "an image build another check proves"}
 PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
 WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
+DAEMON_RACE_FILL_JOB = "fill"
+RACE_FILL_SCRIPTS = []
 TAG_RUNS = []
 PY
   replace "$1/.github/workflows/ci.yaml" "        run: go test ./cmd/app ./lib" \
@@ -2048,6 +2054,8 @@ EXCLUDED = {"image": "an image build another check proves"}
 PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
 WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
+DAEMON_RACE_FILL_JOB = "fill"
+RACE_FILL_SCRIPTS = []
 TAG_RUNS = []
 PY
   replace "$1/.github/workflows/ci.yaml" "        run: go test ./cmd/app ./lib" \
@@ -2450,18 +2458,96 @@ check "fails" "$(is "$status" 1)"
 check "names both orders" \
   "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::job fill's race build names ./other/, ./lib/, where .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES has ./lib/, ./other/")"
 
-# A ci-caches.yaml with no race build in it at all is the drift this rule exists for, not a tree
-# it has nothing to say about, so it fails rather than passing quietly.
-echo "case: a ci-caches.yaml with no race build at all"
+# A fill job with no race build in it at all is the drift this rule exists for, not a tree it
+# has nothing to say about, so it fails rather than passing quietly.
+echo "case: the fill job with no race build at all"
 root=$(fixture race-fill-gone)
 cache_workflow "$root"
 replace "$root/.github/workflows/ci-caches.yaml" $'      - if: steps.go-app.outputs.cache-hit != \'true\'\n        run: go test -c -o /dev/null -race ./lib/\n        working-directory: mod\n' ""
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the workflow and what it no longer builds" \
-  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::no step of this workflow runs a \`go test\` with -race")"
+check "names the job and what it no longer builds" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::no step of job fill runs a \`go test\` with -race")"
 check "and the packages the race step then links from nothing" \
   "$(contains "$out" "that step links ./lib/ from nothing on every run")"
+
+# The rule holds the race build of the job DAEMON_RACE_FILL_JOB names, and that job only: a race
+# build of another job fills another family, for another lane, and names its own packages. The
+# control for this case is "a race build naming a package the lane does not" above, where the same
+# extra package in the fill job fails.
+echo "case: a race build of another job is not held to the daemon's list"
+root=$(fixture race-fill-other-job)
+cache_workflow "$root"
+cat >> "$root/.github/workflows/ci-caches.yaml" <<'YAML'
+  other-fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: go test -c -o /dev/null -race ./other/
+        working-directory: mod
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "says nothing of the other job's race build" "$(is "$(contains "$out" "job other-fill's race build")" false)"
+
+# A ci-caches.yaml with no job of the name DAEMON_RACE_FILL_JOB gives is a lane nothing fills too,
+# whatever race builds its other jobs run.
+echo "case: no job of the name DAEMON_RACE_FILL_JOB gives"
+root=$(fixture race-fill-job-gone)
+cache_workflow "$root"
+replace "$root/.github/scripts/ci_job_reads.py" 'DAEMON_RACE_FILL_JOB = "fill"' 'DAEMON_RACE_FILL_JOB = "daemon"'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the table and what the race step then builds" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::this workflow has no job daemon, which .github/scripts/ci_job_reads.py's DAEMON_RACE_FILL_JOB names")"
+
+# script_fill <root>: a second fill job, script-fill, that compiles a race step's script, mod's
+# scripts/race.sh, in its compile mode, and RACE_FILL_SCRIPTS naming it; script-fill also builds
+# something plain, which the rule reads past. The tree passes as written.
+script_fill() {
+  cat >> "$1/.github/workflows/ci-caches.yaml" <<'YAML'
+  script-fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          go vet ./...
+          scripts/race.sh compile
+        working-directory: mod
+YAML
+  replace "$1/.github/scripts/ci_job_reads.py" 'RACE_FILL_SCRIPTS = []' \
+    'RACE_FILL_SCRIPTS = [("script-fill", "mod/scripts/race.sh", "mod", "scripts/race.sh compile")]'
+}
+
+# The fill of a race step that runs a script compiles through that script, the one line
+# RACE_FILL_SCRIPTS names, and holds no race build of its own: a copy of the step's packages or
+# flags written in the fill is what drifts from the step with nothing failing.
+echo "case: a fill that compiles a race step's script through it"
+root=$(fixture race-script-fill)
+cache_workflow "$root"
+script_fill "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a fill that calls the script with another mode or flag"
+root=$(fixture race-script-fill-flag)
+cache_workflow "$root"
+script_fill "$root"
+replace "$root/.github/workflows/ci-caches.yaml" "scripts/race.sh compile" "scripts/race.sh compile -count=1"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job and the line it runs" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::job script-fill runs \`scripts/race.sh compile -count=1\`, where the fill runs \`scripts/race.sh compile\`")"
+
+echo "case: a fill that copies the race build in place of the script"
+root=$(fixture race-script-fill-copy)
+cache_workflow "$root"
+script_fill "$root"
+replace "$root/.github/workflows/ci-caches.yaml" "scripts/race.sh compile" "go list ./... | grep -Ev '/textcheck\$' | xargs go test -c -o /dev/null -race"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job and the copied line" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::job script-fill runs \`go list ./... | grep -Ev '/textcheck\\\$' | xargs go test -c -o /dev/null -race\`, a race build of its own")"
+check "and says the fill no longer calls the script" \
+  "$(contains "$out" "job script-fill runs \`scripts/race.sh compile\` 0 times in mod")"
 
 # Rule 20. darwin_vet <root> <set>...: a step of the app job that vets ./... of mod for
 # darwin/arm64 once per <set> (an empty one is no tag), pinned as an exact entry with one Run
@@ -2670,10 +2756,10 @@ READS = (
     ("pi_legion", "packages/dispatch/e2e/harness-real-broker.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-signin.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/claude-envoy/scripts/build.ts",
-     "packages/pi-legion/src/skills-guard.test.ts:24,275, which spawns that builder and asserts an "
+     "packages/pi-legion/src/skills-guard.test.ts:29,318, which spawns that builder and asserts an "
      "exact file list over what it writes"),
     ("pi_legion", "packages/claude-envoy/bin/envoy-channel.ts",
-     "that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:41-46), bundled into "
+     "that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:39-44), bundled into "
      "the tree the same test asserts over"),
     ("pi_legion", "packages/envoy-client/bin/dispatch.ts",
      "the same BUNDLE_ENTRYPOINTS entry, reached from another package again"),
@@ -3259,41 +3345,43 @@ check "names the step, the size and the cap" \
 check "and says what to do about it" \
   "$(contains "$out" 'move filters of it into another paths-filter step of the job')"
 
-echo "case: the slow-suite list a reader is given names the jobs the label gates"
-# AGENTS.md's "The slow test suites run in the merge queue, not on a pull-request push" item is
-# the only place a person is told which suites the full-ci label holds back, and it names them
-# one by one. The set it must equal is derivable from the jobs rather than from the outputs: a
-# slow suite is a job whose `if:` tests a changes output whose own expression carries the
-# `full-ci` term. Reading the outputs alone is not enough, because two jobs can share one output
-# - main's envoy-go-docs-finalizers rides envoy_go_race_docs - and then the guide can name seven
-# jobs while eight are held back. Nothing else holds the two together, so a job another tree adds
-# or deletes, which a forward merge then brings here, leaves the guide naming a job that does not
-# exist or missing one that does, in the file every agent of this repository loads.
-mismatch=$(PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir/../workflows/ci.yaml" "$script_dir/../../AGENTS.md" <<'PY'
-import re, sys, yaml
+echo "case: the files a table lists from a directory are the repository's, not the disk's"
+# ci_job_reads.py's files_but_tests lists a directory's files but its Go tests for the reads no
+# glob can write. A local e2e run leaves build outputs git ignores in packages/envoy (the
+# harness's lock, out/dispatch-e2e-broker); no checkout CI makes has them, and rule 9 refused the
+# envoy_smoke gate's read of each as matching no file. So the list is repo_files(): the tracked
+# files still on disk and the untracked ones git does not ignore, in the order a walk visits them.
+root="$work/files-but-tests"
+mkdir -p "$root/pkg/sub" "$root/pkg/testdata" "$root/pkg/out"
+printf 'pkg/out/\n' > "$root/.gitignore"
+for f in a.go a_test.go z.go notes.txt sub/b.go testdata/c.go gone.go out/build.go new.go; do
+  printf 'package x\n' > "$root/pkg/$f"
+done
+git -C "$root" init -q
+git -C "$root" add .gitignore pkg/a.go pkg/a_test.go pkg/z.go pkg/notes.txt pkg/sub/b.go pkg/testdata/c.go pkg/gone.go
+rm "$root/pkg/gone.go"
+# listed_files <root> <suffix> <tree|flat>: files_but_tests("pkg") run from <root>, as the check
+# runs from the repository's, skipping testdata.
+listed_files() {
+  (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
+import os
+import sys
 from pathlib import Path
 
-workflow = yaml.safe_load(Path(sys.argv[1]).read_text())
-outputs = {name for name, value in workflow["jobs"]["changes"].get("outputs", {}).items()
-           if "full-ci" in str(value)}
-gated = {job for job, body in workflow["jobs"].items()
-         if any(re.search(rf"needs\.changes\.outputs\.{output}\b", str(body.get("if", "")))
-                for output in outputs)}
+import ci_filter_coverage
+import ci_job_reads as reads
 
-guide = Path(sys.argv[2]).read_text()
-line = next((l for l in guide.splitlines() if "jobs of `ci.yaml`" in l and "held back" in l), "")
-named = set(re.findall(r"`([a-z0-9-]+)`", line.split("(", 1)[1].rsplit(")", 1)[0])) if "(" in line else set()
-
-problems = [f"AGENTS.md names {job}, which the full-ci label does not gate"
-            for job in sorted(named - gated)]
-problems += [f"the label gates {job}, which AGENTS.md's list does not name"
-             for job in sorted(gated - named)]
-if not line:
-    problems.append("AGENTS.md holds no slow-suite list to read")
-print("; ".join(problems))
-PY
-)
-check "the guide's list and the label's gates are the same set" \
-  "$(is "$mismatch" "")"
+os.chdir(sys.argv[1])
+ci_filter_coverage.REPO = Path.cwd()
+reads.repository_files.cache_clear()
+print(" ".join(reads.files_but_tests("pkg", suffix=sys.argv[2], tree=sys.argv[3] == "tree", skip=("testdata",))))
+' "$@")
+}
+check "lists the tracked and the new files, a directory's own before its subdirectory's" \
+  "$(is "$(listed_files "$root" .go tree)" "pkg/a.go pkg/new.go pkg/z.go pkg/sub/b.go")"
+check "and no ignored build output, test file, deleted file or skipped directory for any suffix" \
+  "$(is "$(listed_files "$root" "" tree)" "pkg/a.go pkg/new.go pkg/notes.txt pkg/z.go pkg/sub/b.go")"
+check "and without the tree, the directory's own files" \
+  "$(is "$(listed_files "$root" .go flat)" "pkg/a.go pkg/new.go pkg/z.go")"
 
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"

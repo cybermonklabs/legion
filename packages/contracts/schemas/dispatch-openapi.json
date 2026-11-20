@@ -4867,7 +4867,7 @@
     },
     "/api/v1/going/catalogue": {
       "get": {
-        "description": "The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-six tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
+        "description": "The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-seven tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
         "operationId": "getApiV1GoingCatalogue",
         "parameters": [
           {
@@ -7088,6 +7088,72 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/issues/{key}/plans/{id}": {
+      "put": {
+        "description": "Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps}]}: the Legion daemon writes it when the run's work starts, under the uuid it derives for the run's plan. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan, with neither; each task's id is unique in the plan and its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role. Each field the plan does not hold yet is set and every field it holds is left, so a plan sent again changes nothing. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
+        "operationId": "putApiV1IssuesByKeyPlansById",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanRecordInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanRecord"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/issues/{key}/references": {
       "get": {
         "description": "The eight-hop closure of documents the issue's content references: {members, truncated}, each member a document in the closure with its depth and the node it was reached via, under an ETag (If-None-Match answers 304). ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY.",
@@ -7199,7 +7265,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. A check reworded by a document version at each of the two attempts this write makes is 409 CHECK_CONTENDED with Retry-After: 1, the second the version that moved it needs to land, and nothing recorded: read the check and retry. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch.",
+        "description": "Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. A check reworded by a document version at each of the two attempts this write makes is 409 CHECK_CONTENDED with Retry-After: 1, the second the version that moved it needs to land, and nothing recorded: read the check and retry. The answer is {result, line}, line being the pull-request body line the result implies: its reading keeps only plain words, every rune a visible letter, a digit or one of . , ; : ! ? ' \" - ( ) /, and of those leaves out every one that holds a link (://), a host below or ending in .internal, a Tailscale MagicDNS host (.ts.net), this Dispatch's own host, or an issue key of a project this Dispatch holds, in any case, and judges the 80-rune cut again, so the line carries no link to Dispatch, no private host, no issue key and no markup.",
         "operationId": "postApiV1IssuesByKeyResults",
         "parameters": [
           {
@@ -7246,6 +7312,64 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CheckResultRecorded"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/issues/{key}/results/dry-run": {
+      "post": {
+        "description": "The dry run of a result's record: the record's body, refused as the record refuses it before it writes (400 RESULT_INPUT, 400 RESULT_CONTRADICTS, 400 UNKNOWN_CHECK, 409 CHECK_AMBIGUOUS, 409 CHECK_PROVED_BY_CI, 400 RESULT_COMMIT_UNKNOWN), and otherwise answered {line}, the pull-request body line the record would answer, with nothing recorded and no event appended. A closed issue, a screenshot and a check reworded while the record writes are refused by the record alone.",
+        "operationId": "postApiV1IssuesByKeyResultsDryRun",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordCheckResultInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckResultDryRun"
                 }
               }
             }
@@ -7360,7 +7484,7 @@
     },
     "/api/v1/issues/{key}/steps": {
       "get": {
-        "description": "Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report}, its attempt its place among the issue's runs of the same task, step and kind from 1. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it.",
+        "description": "Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, its attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it.",
         "operationId": "getApiV1IssuesByKeySteps",
         "parameters": [
           {
@@ -7440,6 +7564,72 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/StepRecordInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepRecord"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/issues/{key}/steps/{id}/rating": {
+      "put": {
+        "description": "Write the rating of a retro's run {actor, rating, rating_reason, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: rating, 1 to 5, is how well the plan the issue ran fit its work in the view of the agent that did the retro, and rating_reason its reason, not blank and at most 2000 characters counted as Unicode code points. The Legion daemon writes it under the id of the retro's run, with the fields PUT /api/v1/issues/{key}/steps/{id} takes, which make the record where the retro's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the rating is written once and lands before or after the retro's end. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A rating or reason left out or outside its form, and a record that is not a retro's, are 400 STEP_INPUT naming the field; an id whose record is a run of another issue is 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
+        "operationId": "putApiV1IssuesByKeyStepsByIdRating",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepRatingInput"
               }
             }
           },
@@ -11024,6 +11214,67 @@
         },
         "x-auth": "any",
         "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/projects/{key}/plans": {
+      "get": {
+        "description": "Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until.",
+        "operationId": "getApiV1ProjectsByKeyPlans",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectPlans"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
       }
     },
     "/api/v1/projects/{key}/related": {
@@ -16007,6 +16258,17 @@
         ],
         "type": "object"
       },
+      "CheckResultDryRun": {
+        "properties": {
+          "line": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "line"
+        ],
+        "type": "object"
+      },
       "CheckResultRecorded": {
         "properties": {
           "line": {
@@ -20206,6 +20468,74 @@
         },
         "required": [
           "url"
+        ],
+        "type": "object"
+      },
+      "FinishedIssue": {
+        "properties": {
+          "closed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "duration_seconds": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "ended_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "failed_steps": {
+            "type": "integer"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ratings": {
+            "items": {
+              "$ref": "#/components/schemas/PlanRating"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue",
+          "title",
+          "closed_at",
+          "plan",
+          "ratings",
+          "started_at",
+          "ended_at",
+          "duration_seconds",
+          "failed_steps"
         ],
         "type": "object"
       },
@@ -24734,6 +25064,185 @@
         ],
         "type": "object"
       },
+      "PlanRating": {
+        "properties": {
+          "ended_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "rating": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rating",
+          "reason",
+          "step_id",
+          "ended_at"
+        ],
+        "type": "object"
+      },
+      "PlanRecord": {
+        "properties": {
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "generation": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "default",
+              "owner"
+            ],
+            "type": "string"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/PlanTask"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "version": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "issue",
+          "generation",
+          "source",
+          "artifact_id",
+          "version",
+          "tasks"
+        ],
+        "type": "object"
+      },
+      "PlanRecordInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "generation": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "source": {
+            "enum": [
+              "default",
+              "owner",
+              null
+            ],
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/PlanTaskInput"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "version": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "generation",
+          "source",
+          "tasks"
+        ],
+        "type": "object"
+      },
+      "PlanTask": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "steps"
+        ],
+        "type": "object"
+      },
+      "PlanTaskInput": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "steps"
+        ],
+        "type": "object"
+      },
       "Priorities": {
         "properties": {
           "empty": {
@@ -25146,6 +25655,27 @@
         },
         "required": [
           "steps"
+        ],
+        "type": "object"
+      },
+      "ProjectPlans": {
+        "properties": {
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/FinishedIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "issues"
         ],
         "type": "object"
       },
@@ -26643,6 +27173,135 @@
         ],
         "type": "object"
       },
+      "StepRatingInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "agent": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ended_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "generation": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "step",
+              "retro",
+              "merge",
+              null
+            ],
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "model": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "rating": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "rating_reason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "report": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "result": {
+            "enum": [
+              "passed",
+              "failed",
+              "stopped",
+              null
+            ],
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "returned_to": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "role": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "session": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "step": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "task": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "type": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "rating",
+          "rating_reason"
+        ],
+        "type": "object"
+      },
       "StepRecord": {
         "properties": {
           "agent": {
@@ -26678,6 +27337,18 @@
           },
           "model": {
             "type": "string"
+          },
+          "rating": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "rating_reason": {
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "report": {
             "type": [
@@ -26740,7 +27411,9 @@
           "ended_at",
           "result",
           "returned_to",
-          "report"
+          "report",
+          "rating",
+          "rating_reason"
         ],
         "type": "object"
       },
