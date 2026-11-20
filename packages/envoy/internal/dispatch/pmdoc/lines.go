@@ -560,10 +560,12 @@ func columnOf(text []byte) int {
 
 // taskList reads a task list item's marker as the browser editor's parser does: `[ ]`, `[x]` or
 // `[X]` opening a list item's first paragraph, followed by a space or a tab and then more text on
-// the line, or by a line ending, after any spaces and tabs, that the paragraph continues past. The
-// marker takes the one space or tab after it, or the line ending when the line holds nothing more
-// but a hard break's spaces, which stay a hard break. Goldmark's reads a marker with anything after it, and takes every space
-// after it, so it read a link opening a list item (`- [x](https://…)`) as a checked task.
+// the line, or by a line ending, after any spaces and tabs, that the paragraph continues past.
+// With text after it, the marker takes the one space or tab after it. At a line ending it takes
+// the rest of the line and the line ending, unless two or more spaces follow it, which it leaves
+// to the paragraph as a hard break. Goldmark's reads a marker with anything after it, and takes
+// every space after it, so it read a link opening a list item (`- [x](https://…)`) as a checked
+// task.
 type taskList struct{}
 
 func (taskList) Extend(m goldmark.Markdown) {

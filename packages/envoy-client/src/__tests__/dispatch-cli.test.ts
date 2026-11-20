@@ -32,7 +32,8 @@ const human = { kind: "human", id: "h" };
  *  units long, past the bound it holds each block to, worded as `itemblocks.CapExceeded` words
  *  it. The fake server below answers it, and the command prints it as it came. */
 function blockCapRefusal(block: number, units: number): string {
-  return `body block ${block} (paragraph): ${units} of at most ${DISPATCH_BLOCK_UNITS}`;
+  const trim = units - DISPATCH_BLOCK_UNITS;
+  return `body block ${block} (paragraph): trim ${trim} UTF-16 code ${trim === 1 ? "unit" : "units"} (${units}/${DISPATCH_BLOCK_UNITS})`;
 }
 
 /** The same refusal as the command prints it: a refusal Dispatch gives a code is printed with

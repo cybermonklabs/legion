@@ -1,5 +1,5 @@
 kind: Fixed
-body: The Dispatch tool descriptions name the unit their caps count, UTF-16 code units, and a schema refusal of a string reads `trim 2 UTF-16 code units (1002/1000)` or `1 of at least 2`, where it called those counts characters. The contracts guide says once that the caps count UTF-16 code units, so a character outside the Basic Multilingual Plane counts two. No cap changes.
+body: The Dispatch tool descriptions name the unit their caps count, UTF-16 code units, and a schema refusal of a string reads `1002 of at most 1000` or `1 of at least 2`, where it called those counts characters. The contracts guide says once that the caps count UTF-16 code units, so a character outside the Basic Multilingual Plane counts two. No cap changes.
 time: 2026-11-18T03:17:08.152773756Z
 custom:
     Issue: pr4376

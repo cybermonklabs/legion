@@ -1525,18 +1525,12 @@ func (s *server) requireCallerScope(w http.ResponseWriter, r *http.Request, scop
 	return true
 }
 
-// capExceededError names how much to trim, in the unit the cap counts, so one trim lands:
-// "<field>: trim N UTF-16 code unit(s) (L/M)". overCapMessage in
-// packages/contracts/src/tool-schema.ts is its twin: a tool call a client refuses for the same
-// cap reads alike.
+// capExceededError names a text field's length and its cap, so one trim lands:
+// "<field>: L of at most M". Lengths are UTF-16 units (itemblocks.Units16), and the words name
+// no unit. overCapMessage in packages/contracts/src/tool-schema.ts is its twin: a tool call a
+// client refuses for the same cap reads "<field>: L of at most M" too.
 func capExceededError(field string, length, limit int) *apiError {
-	trim := length - limit
-	unit := "units"
-	if trim == 1 {
-		unit = "unit"
-	}
-	return errorf(http.StatusBadRequest, "CAP_EXCEEDED",
-		"%s: trim %d UTF-16 code %s (%d/%d)", field, trim, unit, length, limit)
+	return errorf(http.StatusBadRequest, "CAP_EXCEEDED", "%s: %d of at most %d", field, length, limit)
 }
 
 // countExceededError is capExceededError for item counts (options, labels).

@@ -569,16 +569,10 @@ func atCapCases(limit int) map[string]string {
 }
 
 // assertCapExceeded requires response to be the 400 CAP_EXCEEDED capExceededError writes for a
-// field of length units past a cap of limit, followed by "; hint" when hint is not empty. The trim
-// amount is "unit" for 1 and "units" for more.
+// field of length units past a cap of limit, followed by "; hint" when hint is not empty.
 func assertCapExceeded(t *testing.T, request string, response *httptest.ResponseRecorder, field string, length, limit int, hint string) {
 	t.Helper()
-	trim := length - limit
-	unit := "units"
-	if trim == 1 {
-		unit = "unit"
-	}
-	want := fmt.Sprintf("%s: trim %d UTF-16 code %s (%d/%d)", field, trim, unit, length, limit)
+	want := fmt.Sprintf("%s: %d of at most %d", field, length, limit)
 	if hint != "" {
 		want += "; " + hint
 	}
