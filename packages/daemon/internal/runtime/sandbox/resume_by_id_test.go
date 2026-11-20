@@ -78,6 +78,7 @@ func TestAResumeByIDNamesTheSessionToALauncherThatCanLookItUp(t *testing.T) {
 		if resumes := resumesIn(start.Argv); !slices.Equal(resumes, []string{"--resume=" + resumeSessionID}) {
 			t.Errorf("the agent command resumes %q, want --resume=%s once", resumes, resumeSessionID)
 		}
+		wantHeldToItsSession(t, start)
 		if err := start.Validate(); err != nil {
 			t.Errorf("the launcher refuses the start command: %v", err)
 		}
@@ -142,6 +143,17 @@ func TestAResumeByIDThroughALauncherWithoutTheLookupStartsOhMyPiWithTheSessionID
 	}
 	if resumes := resumesIn(start.Argv); !slices.Equal(resumes, []string{"--resume=" + resumeSessionID}) {
 		t.Errorf("the agent command resumes %q, want --resume=%s once", resumes, resumeSessionID)
+	}
+	wantHeldToItsSession(t, start)
+}
+
+// wantHeldToItsSession is what holds a resumed Oh My Pi to the session it resumes
+// (runtime.SessionExclusiveVariable): a start that resumes a session by its id resumes a recorded
+// session, as one naming its file does, and is told the variable in its command's environment.
+func wantHeldToItsSession(t *testing.T, start shimwire.LauncherStart) {
+	t.Helper()
+	if held := runtime.SessionExclusiveVariable + "=" + runtime.SessionExclusiveValue; !slices.Contains(start.Env, held) {
+		t.Errorf("the start command's environment holds no %s; a resume of a recorded session by its id is held to it", held)
 	}
 }
 

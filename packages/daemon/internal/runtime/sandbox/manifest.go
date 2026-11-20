@@ -1661,11 +1661,13 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// A launch that resumes a recorded Oh My Pi session holds its Oh My Pi to that session
 	// (runtime.SessionExclusiveVariable): a resume of a session another live process still holds
 	// exits non-zero after the lease wait rather than moving the role onto a session id the daemon
-	// never recorded. A fresh launch is told nothing of it, and neither is a Claude role, whose
-	// resume is Claude Code's. The name is the runtime's (runtimeOwned), so neither a spec nor an
-	// operator's pod env may set it, and it comes after both. It is plain, so it travels in the
-	// start command alone (launchEnvironment) and changes nothing of the pod.
-	if !l.runsClaude() && spec.ResumeSessionFile != "" {
+	// never recorded. A resume of a session named by its id alone (spec.ResumeSession, the file the
+	// launcher finds or Oh My Pi's own lookup) resumes a recorded session too, so it is held the
+	// same way. A fresh launch is told nothing of it, and neither is a Claude role, whose resume is
+	// Claude Code's. The name is the runtime's (runtimeOwned), so neither a spec nor an operator's
+	// pod env may set it, and it comes after both. It is plain, so it travels in the start command
+	// alone (launchEnvironment) and changes nothing of the pod.
+	if !l.runsClaude() && (spec.ResumeSessionFile != "" || spec.ResumeSession != "") {
 		add(runtime.SessionExclusiveVariable, runtime.SessionExclusiveValue)
 	}
 	return env
