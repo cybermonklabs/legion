@@ -126,6 +126,30 @@ test(
   rowLimit("short")
 );
 
+// The line names the directory as given: a backslash in it is printed as written, where an `echo`
+// in dash would read `\t` as a tab.
+test(
+  "a directory with a backslash in it is printed as written",
+  async () => {
+    const run = await visualRun(1, undefined, ["--output=e2e/a\\tb"]);
+    expect(run.code).toBe(1);
+    expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/a\\tb"));
+  },
+  rowLimit("short")
+);
+
+// A directory given with a trailing slash is named once with it, as `e2e/x/.`, not `e2e/x//.`.
+test(
+  "a directory given with a trailing slash is named with one slash before the dot",
+  async () => {
+    const run = await visualRun(1, undefined, ["--output=e2e/x/"]);
+    expect(run.code).toBe(1);
+    expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/x"));
+    expect(run.stderr).not.toContain("e2e/x//.");
+  },
+  rowLimit("short")
+);
+
 // Playwright reads the word after an option that takes a value as that value, whatever it looks
 // like, so an `--output=` there names no directory; written as `--grep-invert=x`, or as a short
 // option with its value in its cluster, the option takes no next word and the `--output` counts.
@@ -203,25 +227,28 @@ test(
   rowLimit("short")
 );
 
-// The status is the container's even when the lines cannot be written: a closed stderr makes
-// `echo` fail, and under `set -e` that would end the script with echo's status instead.
+// The status is the container's, and the stack stops, even when the lines cannot be written: a
+// closed stderr makes the write fail, and under `set -e` an unguarded write would end the script
+// with the write's status instead.
 test(
-  "a failed run whose stderr is closed still exits with the container's status",
+  "a failed run whose stderr is closed still exits with the container's status and stops its stack",
   async () => {
-    const run = await runBounded({
-      argv: ["sh", "-c", 'sh e2e/visual-run.sh "$@" 2>&-', "visual-run", "--output=e2e/x"],
+    const dir = mkdtempSync(join(stubs, "closed-"));
+    await runBounded({
+      argv: [
+        "sh",
+        "-c",
+        `sh e2e/visual-run.sh "$@" 2>&-; echo $? > "$TMPDIR/status"; ${stackAfter}`,
+        "visual-run",
+        "--output=e2e/x",
+      ],
       bound: "short",
       cwd: dispatchPackage,
-      env: {
-        DISPATCH_E2E_VISUAL_ORDER: "reverse",
-        HOME: process.env.HOME,
-        PATH: `${stubs}:/usr/bin:/bin`,
-        STUB_DOCKER_STATUS: "130",
-        TMPDIR: stubs,
-      },
+      env: { ...heldRun(dir, 130, undefined), DISPATCH_E2E_VISUAL_ORDER: "reverse" },
       from: import.meta.url,
     });
-    expect(run.code).toBe(130);
+    expect(read(dir, "status")).toBe("130");
+    expect(read(dir, "stack-after")).toBe("down");
   },
   rowLimit("short")
 );
@@ -278,12 +305,13 @@ test(
   rowLimit("short")
 );
 
-// A Ctrl-C reaches the run's whole process group: the container stops at once, the stack - a job
-// the script started in the background, so one that ignores SIGINT - does not, and the script's
-// own INT trap must stop it. The run goes in a session of its own (`setsid --wait`, which forks
-// when its caller already leads a group, as a spawned child does), so the signal reaches the
-// run's group, read from the container's pid, and not this test's; it waits for the container to
-// start. The group is signalled with procps's `kill`, since dash's takes no negative pid.
+// A Ctrl-C reaches the run's whole process group: the container stops at once, and the stand-in
+// stack - a job the script started in the background, which a non-interactive shell starts with
+// SIGINT ignored - does not, so the script's own INT trap must stop it. (The real harness keeps a
+// SIGINT listener of its own; this row holds the script's trap, not the harness's.) The run goes
+// in a session of its own (`setsid`), so the signal reaches the run's group, read from the
+// container's pid, and not this test's; it waits for the container to start. The group is
+// signalled with `/usr/bin/kill -s INT -- -PGID`.
 test(
   "a Ctrl-C to a running run stops its stack and exits 130",
   async () => {
