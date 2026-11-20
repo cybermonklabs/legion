@@ -10,3 +10,5 @@ body: |-
   `AGENT_SECRETS_PROJECTS` lists. Each trade runs under the login's lock, so two sessions of one
   machine never spend one refresh token, and none refreshes while another presents the access
   token that refresh would end.
+  A stale lock is taken by one caller alone. A second `dispatch login --device` names the earlier
+  login's credential, which stays live until it lapses or is revoked, and says where to revoke it.

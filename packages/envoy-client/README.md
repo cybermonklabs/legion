@@ -861,7 +861,10 @@ A refresh rotates the login's refresh token and revokes every access token the l
 before, and the broker revokes the whole login when a rotated refresh token is presented again
 after its five-minute grace. So each trade runs under the login's lock, the file beside it with
 `.lock` added: it is created exclusively, its holder touches it every 10 s, and a lock untouched
-for 30 s is taken as one whose holder died. Under the lock a process reads the file again,
+for 30 s is taken as one whose holder died. Only one caller takes a stale lock: it first creates
+the take-over's own lock, `.lock.steal`, and looks at the lock again under it, so a second caller
+that found the same stale lock finds the first one's fresh lock and waits. A `.lock.steal` left
+for 5 s by a caller that died taking over is removed. Under the lock a process reads the file again,
 refreshes only when the access token kept there has less than a minute left, keeps the rotated
 login, and trades. Two sessions of one machine never spend one refresh token, and none refreshes
 while another still presents the access token that the refresh would end. The broker's
@@ -1038,9 +1041,13 @@ it in a terminal, once per machine, so it reads no host, no session and no envoy
 `AGENT_SECRETS_PERSON`. It prints the broker's page and the code to type there, waits while that
 person approves it in Dispatch, and keeps the login (above). Without `--device`, a person or a
 broker, it exits 2 before any request. It exits 1 when the broker refuses the login, the person
-denies it or its code expires, and then writes no file. The host it names is this machine's name
-in the form the broker takes (`Adas-MacBook-Pro.local` is `adas-macbook-pro.local`). On a machine
-whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
+denies it, its code expires, or the broker refuses a poll with any other OAuth error of a 4xx
+(its 429 and a 5xx are polled again), and then writes no file. The host it names is this
+machine's name in the form the broker takes (`Adas-MacBook-Pro.local` is
+`adas-macbook-pro.local`). A second login of the machine replaces the file, and the earlier
+login's credential stays live at the broker until it lapses or is revoked, so the command names
+that credential and says to revoke it in Machine logins on the page the code was typed into. On a
+machine whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude

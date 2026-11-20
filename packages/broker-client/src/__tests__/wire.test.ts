@@ -240,12 +240,12 @@ function checkNames(what: string, want: readonly string[], got: readonly string[
  *  what the broker may ever receive of a client's key. */
 function checkProof(exchange: CorpusExchange, endpoint: string, request: StubRequest): void {
   checkNames(
-    "the proof's header",
+    `${exchange.name}: the proof's header`,
     Object.keys(exchange.proof.header),
     Object.keys(request.proofHeader)
   );
   checkNames(
-    "the proof's claims",
+    `${exchange.name}: the proof's claims`,
     Object.keys(exchange.proof.claims),
     Object.keys(request.proofClaims)
   );
@@ -297,7 +297,7 @@ function checkRequest(exchange: CorpusExchange, brokerUrl: string, request: Stub
       `the trade carries ${name} more than once, and the corpus names one value for each field`
     ).toBe(1);
   }
-  checkNames("the trade's form", Object.keys(exchange.form), names);
+  checkNames(`${exchange.name}: the trade's form`, Object.keys(exchange.form), names);
   for (const [name, corpusValue] of Object.entries(exchange.form)) {
     const [want] = resolvePlaceholder(exchange, corpusValue);
     expect(request.form.get(name), `the trade's ${name}`).toBe(want);
@@ -380,7 +380,11 @@ test("the wire corpus holds this client", async () => {
       expect(refusal, `${exchange.name}: ${refusal}`).toBeUndefined();
       const got = tokenAsCorpus(token as BrokerToken);
       const want = exchange.expect.token as Record<string, unknown>;
-      checkNames("the token the client took", Object.keys(want), Object.keys(got));
+      checkNames(
+        `${exchange.name}: the token the client took`,
+        Object.keys(want),
+        Object.keys(got)
+      );
       for (const [name, value] of Object.entries(want)) {
         expect(String(got[name]), `${exchange.name}: the client read ${name}`).toBe(String(value));
       }
