@@ -905,8 +905,10 @@ trades that person, as the Go client does:
   the broker's sign-in domain, so the broker asks Dispatch no member kind for this trade. A value
   that is no list fails the call naming the variable. The machine's own trade names no project.
 
-Dispatch gives the token that names a person the `person` and `approve` scopes, so the session
-writes as that person.
+Dispatch gives the token that names a person the `person` scope, so the session writes as that
+person. It never gives a broker token `approve`: a review, an answer to an approval request, a
+machine login's decision and a personal token's mint need the person's browser, or a personal
+token (`DISPATCH_TOKEN`) the person gave `approve`.
 
 The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
 `AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
@@ -975,9 +977,11 @@ calling trades about every ten minutes. Every `dispatch` command, Claude Code ho
 `envoy-send` is a process of its own, so each one trades once.
 
 A revoke of the sign-in on Dispatch ends the tokens of that sign-in, and the next trade is
-refused with words that name `agent-secrets login`. The revoke does not end a personal agent
-token that an agent made with the person's `approve` scope before the revoke. It does not end a
-machine-login approval that an agent made with that scope before the revoke.
+refused with words that name `agent-secrets login`. Dispatch gives the sign-in's tokens no
+`approve` (above), so an agent under it makes no personal token and decides no machine login. A
+Dispatch release before that rule did give them `approve`: a personal token or a machine-login
+approval an agent made under one then is not ended by the revoke, so revoke each on its own
+Dispatch page.
 
 `DISPATCH_TOKEN_BROKER=1` makes the broker route the only one. No bearer is read at all: not the
 variables, not the chosen file's `dispatch.token`, not a checkout's pair. A machine that can trade
@@ -1106,11 +1110,12 @@ minute later before reading the refusal as an older Dispatch. In a rollout, a se
 build took but whose answer was lost, and was then sent again to an older build, may still have
 recorded the review, at the version named: `dispatch doc-read` shows the document's approval.
 A review records an approval or a request for changes in the person's name, so it works only with
-a token that names a person who holds `approve`. A session gets such a token from a person's
-sign-in on the machine (above). Dispatch refuses any other token with `403 OAUTH_SCOPE_REQUIRED`
-or `403 SIGN_IN_REQUIRED`. `--version` is the version the caller read, and it must be the version
-the review would record: the document's latest settled version, or the version an open approval
-request names for the document. Dispatch refuses any other version with `409 REVIEW_VERSION_MOVED`,
+a token that names a person who holds `approve`: a personal token (`DISPATCH_TOKEN`) the person
+gave `approve`. A broker token, a person's sign-in included, never holds it. Dispatch refuses any
+other token with `403 OAUTH_SCOPE_REQUIRED` or `403 SIGN_IN_REQUIRED`. `--version` is the version
+the caller read, and it must be the version the review would record: the document's latest
+settled version, or the version an open approval request names for the document. Dispatch
+refuses any other version with `409 REVIEW_VERSION_MOVED`,
 which names the version to read, and records nothing. With an approval request open, the review
 answers that request and records the same verdict on every document the request names, each at
 the version the request names. The output names the state, the version and the actor that

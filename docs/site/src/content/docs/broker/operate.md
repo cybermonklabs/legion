@@ -1199,6 +1199,14 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   anyone. It cannot decide a secret request. List Dispatch's own account under that name and
   nothing else, never one an agent's pod runs as. An account listed as `listener` reads tokens
   back and decides nothing, which is the whole of what that name carries.
+- A Dispatch access token the token exchange mints never holds Dispatch's OAuth scope `approve`,
+  whatever its project scope: Dispatch gives a token that acts as its person the scope `person`
+  alone, and every other token none. So no agent's token, a person's sign-in on a box and a
+  machine login included, can decide or look up a machine login, revoke a grant, a machine login
+  or a sign-in, mint, change or revoke a personal token, review a document or answer an approval
+  request in Dispatch (`403 OAUTH_SCOPE_REQUIRED`). The person does those in a browser signed in
+  to Dispatch, or with a personal token they gave `approve`. A copy of a machine's file
+  (`AGENT_SECRETS_MACHINE_FILE`) or of a sign-in record therefore holds none of those decisions.
 - Behind a reverse proxy, set `BROKER_TRUSTED_PROXY_HEADER` so the machine-login, token-endpoint
   and secret-reread rate limiters see each caller's address rather than the proxy's. The token
   endpoint (`POST /v1/oauth/token`) has its own per-address bucket in each process, a burst of 60

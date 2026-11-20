@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  Dispatch gives no access token the secrets broker issued the OAuth scope `approve`, whatever its project scope. A token that acts for its person, which a person's `agent-secrets login` sign-in and a person's machine login trade for, holds `person` alone, and every other broker token holds none. Each such token is made from a file on the machine that holds it, so a copy of that file no longer decides what only the person decides.
+
+  So every route that needs `approve` refuses every broker token before its handler runs: a document review, a credential approve, deny or machine lookup, the revoke of a credential grant, a machine login or a sign-in, and a personal token's mint, change or revoke. A token that acts for its person gets `403 OAUTH_SCOPE_REQUIRED` naming `approve`, and it is refused the same way when it answers an approval request. It still answers an ordinary question and writes as its person. Make those calls from a browser signed in to Dispatch, or with a personal token (`DISPATCH_TOKEN`) that holds `approve`; `dispatch review` from a session works only with such a personal token.

@@ -77,6 +77,11 @@ func errNoBrokerConfigured() *apiError {
 	return errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
 }
 
+// brokerPersonScopes is what a broker-issued token that acts for its person holds: the person
+// scope alone, never approve (brokerTokenActor). Every such credential shares this one slice, as
+// personCredential shares model.Scopes, so a request allocates none; nothing writes it.
+var brokerPersonScopes = []string{model.ScopePerson}
+
 // brokerTokenActor authenticates a caller presenting an access token the secrets broker issued,
 // under the DPoP scheme: the broker is asked whether the token is live and the caller is held to
 // the key that token is bound to (internal/brokertoken). A verified caller is the session the
@@ -154,18 +159,23 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "BROKER_UNAVAILABLE",
 			"the secrets broker cannot be reached; try again in a minute")
 	}
-	// Both scopes go to a token the broker scoped to its person: that token is the person's own
-	// agent acting for them, so it may do what they may, approvals included. A token scoped to a
-	// project gets none, because the deployment mapped that token to a project and not to the
-	// person: it proves a session, not that any person stands behind the request. A token that
-	// names a service and no person gets none either, whatever scope the broker answered: there
-	// is no person for it to act as, and a scope that said otherwise would let it act as the
-	// session's own id on the routes that read what belongs to a person. A read-only token is
-	// one of those, and its one scope, read, is carried as the credential's ReadOnly mark and
-	// never as a scope a route could require.
+	// A token the broker scoped to its person holds the person scope: that token is the person's
+	// own agent acting for them, so it reads, writes and answers their questions as they do. No
+	// broker-issued token holds approve, whatever its project scope (brokerPersonScopes): every
+	// one is made from a file on the machine that holds it, a machine login or a person's sign-in,
+	// so whoever copies that file holds it, and approve settles what only the person settles - an
+	// approval, a credential decision or revoke, a personal token. Those need the person's browser
+	// session or a personal token the person gave approve. A token scoped to a project gets no
+	// scope, because the deployment mapped that token to a project and not to the person: it
+	// proves a session, not that any person stands behind the request. A token that names a
+	// service and no person gets none either, whatever scope the broker answered: there is no
+	// person for it to act as, and a scope that said otherwise would let it act as the session's
+	// own id on the routes that read what belongs to a person. A read-only token is one of those,
+	// and its one scope, read, is carried as the credential's ReadOnly mark and never as a scope a
+	// route could require.
 	var scopes []string
 	if caller.Person != "" && caller.ProjectScope == brokertoken.ProjectScopePerson {
-		scopes = model.Scopes
+		scopes = brokerPersonScopes
 	}
 	actor := model.Actor{
 		Kind: "session",

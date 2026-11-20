@@ -213,6 +213,12 @@ The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
 
+No broker-issued token holds the OAuth scope `approve`, whatever its project scope: one acting for its person holds `person` alone, and every other holds none (`brokerTokenActor`).
+Each such token is made from a file on the machine that holds it, a machine login or a person's sign-in, so whoever copies that file holds it, and `approve` settles what only the person settles.
+So every route that needs `approve` — a document review, a credential approve, deny or machine lookup, a revoke of a credential grant, a machine login or a sign-in, and a personal token's mint, change or revoke — and the answer to an approval request refuse every broker-issued token before the handler runs and before anything is relayed to the broker:
+`403 OAUTH_SCOPE_REQUIRED` naming `approve` for a token acting for its person, naming `person` for one that holds no scope, and `403 READ_ONLY_TOKEN` for a read-only token (below).
+The person makes those calls from their browser session, or with a personal token they gave `approve`.
+
 A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
 It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
 `brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.

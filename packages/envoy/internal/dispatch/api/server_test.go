@@ -161,6 +161,10 @@ type testServerOptions struct {
 	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
 	// none, as every test that reads no gauge leaves it.
 	metrics *metrics.Registry
+	// agentSecretsURL points the credential routes' relay at a stand-in secrets broker
+	// (Deps.AgentSecrets), presenting credentialTestAccountToken; empty is the deployment with
+	// no broker, whose credential routes answer 404 FEATURE_OFF.
+	agentSecretsURL string
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -229,6 +233,17 @@ func testEnvoyAccountTokenFile(t testing.TB, envoyURL string) string {
 		t.Fatalf("write Dispatch's test account token: %v", err)
 	}
 	return path
+}
+
+// testAgentSecretsAccountTokenFile is a file holding credentialTestAccountToken, the stand-in for
+// Dispatch's projected token at the secrets broker, for a server whose credential relay is
+// configured (agentSecretsURL set), and "" otherwise.
+func testAgentSecretsAccountTokenFile(t testing.TB, agentSecretsURL string) string {
+	t.Helper()
+	if agentSecretsURL == "" {
+		return ""
+	}
+	return accountTokenFile(t, credentialTestAccountToken)
 }
 
 // newTestServer builds the mux an API test drives and hands back the store behind it and the
@@ -307,6 +322,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		// one it refuses every send for a role (envoy.ErrNoListenerIdentity). The tests' stand-in listeners
 		// check no bearer.
 		EnvoyAccountTokenFile:  testEnvoyAccountTokenFile(t, options.envoyURL),
+		AgentSecretsURL:        options.agentSecretsURL,
+		AgentSecretsTokenFile:  testAgentSecretsAccountTokenFile(t, options.agentSecretsURL),
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the

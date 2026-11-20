@@ -190,8 +190,10 @@ func TestABrokerTokensAnswerActsAsTheSessionTheBrokerProved(t *testing.T) {
 	if answer.Act == nil || answer.Act.Session != brokerTestSession || answer.Act.TokenID != "" {
 		t.Fatalf("the stored answer's act = %+v, want the session the broker proved and no token row", answer.Act)
 	}
-	if !slices.Equal(answer.Act.Scopes, []string{model.ScopePerson, model.ScopeApprove}) {
-		t.Fatalf("the stored answer's act scopes = %v, want both", answer.Act.Scopes)
+	// The act records the scopes the credential held, and a broker token holds person alone,
+	// never approve (brokerTokenActor).
+	if !slices.Equal(answer.Act.Scopes, []string{model.ScopePerson}) {
+		t.Fatalf("the stored answer's act scopes = %v, want person alone", answer.Act.Scopes)
 	}
 }
 
