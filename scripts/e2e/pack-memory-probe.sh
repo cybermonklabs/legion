@@ -43,15 +43,25 @@
 #   7. On the original and the 0.45.1 copy, the same edits to the walk file and to a file of
 #      another directory, with JJ_TIMESTAMP and JJ_OP_TIMESTAMP fixed and JJ_RANDOMNESS_SEED fixed
 #      per command, then `jj diff`, `jj diff --name-only`, a commit made with `git commit` and
-#      pushed with `git push`, handoff-record.ts's STANDING read, and the shim's describedArgs and
-#      adoptionArgs as packages/daemon/internal/shim/commands.go builds them: with the image's jj,
-#      JJ_PACK_MAPPED_LIMIT unset, on the original, with jj 0.45.1 on its copy.
+#      pushed with `git push`, handoff-record.ts's STANDING read, the fetch of the feed's heads,
+#      and the shim's describedArgs and adoptionArgs as packages/daemon/internal/shim/commands.go
+#      builds them: with the image's jj, JJ_PACK_MAPPED_LIMIT unset, on the original, with jj
+#      0.45.1 on its copy. The fetch is one unmeasured `git fetch --no-tags <the feed>
+#      +refs/heads/*:refs/remotes/feed/*` into the copy's shared clone, by the setup git and
+#      outside every measured tree: every branch head of the feed as a remote-tracking ref the
+#      clone does not hold, since the clone, made from the feed, holds each as origin's. The clone
+#      holds their objects, so the fetch writes refs and no pack, which it prints; its setup verdict
+#      holds when it exits 0 and writes at least one ref the clone did not hold. describedArgs, the
+#      next command, imports those refs at its start, as jj does in a workspace colocated with
+#      git, which a workspace whose .git is a worktree of the clone is: the import a role's jj
+#      makes once git has fetched new branches into the shared clone.
 #   8. R3 to R5's verdicts.
 #   9. R10's role commands on each R10 copy, with its jj and budget, JJ_TIMESTAMP and
 #      JJ_OP_TIMESTAMP fixed, and a JJ_RANDOMNESS_SEED for each command, the same on every copy:
-#      `jj --ignore-working-copy file list -r @-`, the STANDING read, describedArgs, adoptionArgs,
-#      `jj new`, `jj diff` after the same edits in two directories, and `jj --ignore-working-copy
-#      log -r '::@-' -- <walk file>`.
+#      `jj --ignore-working-copy file list -r @-`, the STANDING read, step 7's fetch of the feed's
+#      heads into the copy's clone, describedArgs, adoptionArgs, `jj new`, `jj diff` after the
+#      same edits in two directories, and `jj --ignore-working-copy log -r '::@-' --
+#      <walk file>`.
 #  10. R10's provisioning rows, for R10's control and for each budget, each on a fresh root: a `git
 #      clone --no-checkout` of the feed, its packs hardlinked, then every jj command the measuring
 #      jj recorded for the original's provision, in its order and with its argv, run with that jj
@@ -145,6 +155,11 @@ jj_timestamp=2026-11-19T00:00:00+00:00
 adopter_name='Pack Memory Adopter'
 adopter_email=adopter@example.invalid
 
+# The remote of the refs the fetch before each describedArgs writes, one for each branch head of
+# the feed: a remote the clone does not hold, since the clone, made from the feed, holds each of
+# those heads as origin's already.
+feed_remote=feed
+
 # R10: the four JJ_PACK_MAPPED_LIMIT budgets, each in KiB; one chunk of the chunked mapping; and
 # the 32 MiB its bound allows beyond the budget and the chunks.
 budgets=(64m 256m 512m 1g)
@@ -203,6 +218,9 @@ done
 for copy in "${copies[@]}"; do
   expected+=("setup $copy jj reads the copied store")
 done
+for copy in image control; do
+  expected+=("setup $copy fetch of the feed's heads")
+done
 expected+=(
   "c-jj-snapshot-memory diff image"
   "c-jj-snapshot-memory diff control"
@@ -224,6 +242,9 @@ expected+=(
   "c-shim-adoption-memory adoption control"
   "c-shim-adoption-memory author control"
 )
+for copy in "${r10_copies[@]}"; do
+  expected+=("setup $copy fetch of the feed's heads")
+done
 for copy in "${r10_copies[@]}"; do
   expected+=("setup $copy fresh root")
 done
@@ -1189,9 +1210,45 @@ edit_two_dirs() {
   printf 'pack-memory probe: an edit the jj rows snapshot\n' >> "$1/$second_file"
 }
 
+# fetch_feed_heads <copy> <clone>: the unmeasured fetch each copy's describedArgs follows. The setup
+# git fetches, outside every measured tree, every branch head of the feed the clone was made from
+# into the copy's shared clone, as refs of feed_remote, which the clone does not hold: it holds
+# origin's already, at the same tips. So the jj command after it imports new refs at its start, as
+# a role's jj does once git has fetched new branches into the shared clone. The clone holds the
+# feed's objects, so the fetch should write refs and no object, and the probe prints what it wrote.
+# Its setup verdict holds when it exits 0 and writes at least one ref the clone did not hold.
+fetch_feed_heads() {
+  local copy=$1 git_dir=$2/.git refs_before refs_after brought count packs_before new_packs loose_before loose_after status
+  echo "the fetch of the feed's heads into the $copy clone, as refs/remotes/$feed_remote/*, unmeasured:"
+  refs_before=$(setup_git --git-dir="$git_dir" for-each-ref --format='%(refname) %(objectname)' | sort)
+  packs_before=$(find "$git_dir/objects/pack" -maxdepth 1 -name '*.pack' | sort)
+  loose_before=$(setup_git --git-dir="$git_dir" count-objects -v 2>&1 | awk '$1 == "count:" { print $2 }')
+  setup_git -c gc.auto=0 -c maintenance.auto=false --git-dir="$git_dir" fetch --no-tags --no-write-fetch-head --quiet \
+    "$feed_repo" "+refs/heads/*:refs/remotes/$feed_remote/*" > "$scratch/logs/$copy-feed-heads.log" 2>&1
+  status=$?
+  cat "$scratch/logs/$copy-feed-heads.log"
+  refs_after=$(setup_git --git-dir="$git_dir" for-each-ref --format='%(refname) %(objectname)' | sort)
+  brought=$(comm -13 <(echo "$refs_before") <(echo "$refs_after"))
+  count=$(grep -c . <<< "$brought")
+  echo "exit $status; $count refs the clone did not hold:"
+  [ -z "$brought" ] || printf '  %s\n' "${brought//$'\n'/$'\n'  }"
+  new_packs=$(comm -13 <(echo "$packs_before") <(find "$git_dir/objects/pack" -maxdepth 1 -name '*.pack' | sort))
+  loose_after=$(setup_git --git-dir="$git_dir" count-objects -v 2>&1 | awk '$1 == "count:" { print $2 }')
+  if [ -z "$new_packs" ] && [ "$loose_after" = "$loose_before" ]; then
+    echo "it wrote no pack and no loose object: the clone held their objects ($loose_after loose objects before and after)"
+  else
+    echo "it wrote objects: packs [${new_packs:-none}]; loose objects $loose_before before, $loose_after after"
+  fi
+  if [ "$status" -eq 0 ] && [ "$count" -gt 0 ]; then
+    verdict "setup $copy fetch of the feed's heads" pass "exit 0, $count refs the clone did not hold" "exit 0, at least one ref the clone did not hold"
+  else
+    verdict "setup $copy fetch of the feed's heads" fail "exit $status, $count refs the clone did not hold" "exit 0, at least one ref the clone did not hold"
+  fi
+}
+
 declare -A pushed=()
-jj_rows() { # jj_rows <copy> <workspace> <jj>
-  local copy=$1 dir=$2 jj=$3
+jj_rows() { # jj_rows <copy> <workspace> <jj> <clone>
+  local copy=$1 dir=$2 jj=$3 shared=$4
   echo
   say "== the jj rows on the $copy copy, with $jj ($("$jj" --version 2>&1))"
   cd "$dir" || {
@@ -1209,7 +1266,8 @@ jj_rows() { # jj_rows <copy> <workspace> <jj>
   # handoff-record.ts's STANDING read.
   measure "$copy-standing" --env JJ_RANDOMNESS_SEED=103 -- "$jj" -R "$dir" "${standing_args[@]}"
   # The shim's adoption: the working copy is undescribed, so the shim runs adoptionArgs and not
-  # `jj new`.
+  # `jj new`. describedArgs runs right after the fetch, so it is the command that imports its refs.
+  fetch_feed_heads "$copy" "$shared"
   measure "$copy-described" --env JJ_RANDOMNESS_SEED=104 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
     -- "$jj" "${described_args[@]}" -R "$dir"
   measure "$copy-adoption" --env JJ_RANDOMNESS_SEED=105 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
@@ -1219,10 +1277,10 @@ jj_rows() { # jj_rows <copy> <workspace> <jj>
 }
 
 if going; then
-  jj_rows image "$ws" "$image_jj"
+  jj_rows image "$ws" "$image_jj" "$clone"
 fi
 if going; then
-  jj_rows control "$control_ws" "$control_jj"
+  jj_rows control "$control_ws" "$control_jj" "$control_clone"
 fi
 
 # --------------------------------------------------------------------------------------------
@@ -1281,6 +1339,7 @@ r10_rows() { # r10_rows <copy>
   }
   measure "$copy-file-list" "${limit[@]}" --env JJ_RANDOMNESS_SEED=201 -- "$jj" --ignore-working-copy -R "$dir" file list -r @-
   measure "$copy-standing" "${limit[@]}" --env JJ_RANDOMNESS_SEED=202 -- "$jj" -R "$dir" "${standing_args[@]}"
+  fetch_feed_heads "$copy" "$(copy_clone "$copy")"
   measure "$copy-described" "${limit[@]}" --env JJ_RANDOMNESS_SEED=203 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
     -- "$jj" "${described_args[@]}" -R "$dir"
   measure "$copy-adoption" "${limit[@]}" --env JJ_RANDOMNESS_SEED=204 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
