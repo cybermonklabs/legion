@@ -43,10 +43,11 @@ import (
 // verifies them itself; chosen only to read clearly in a failure message.
 const podAudience = "legion-broker-pod"
 
-// exchangeAudience is the audience every Rig's token exchange takes a pod's subject token for,
+// ExchangeAudience is the audience every Rig's token exchange takes a pod's subject token for,
 // the one MintSubjectToken signs: a second audience of the same issuer, as a deployment gives an
-// exchanging pod a token beside the one it enrols with.
-const exchangeAudience = "legion-broker-exchange"
+// exchanging pod a token beside the one it enrols with. Tests read it to mint a subject token of
+// their own for a provider NewOAuthProvider builds.
+const ExchangeAudience = "legion-broker-exchange"
 
 // githubAudience is the audience every Rig's token exchange takes a workflow run's token for.
 // The Rig's own issuer stands in for GitHub's, as it stands in for the cluster's: a test mints
@@ -81,7 +82,8 @@ const (
 
 // The second account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: its entry fixes no session, as
 // a Legion issue pod's does, so each pod of it trades only for a session a registrar registered for
-// that pod (POST /v1/oauth/exchange/pod-sessions), with the key the registration names.
+// that pod (POST /v1/oauth/exchange/pod-sessions), with the key the registration names. Every
+// Rig's BROKER_POD_REGISTRARS lists DaemonAccount as a registrar of its pods.
 const ExchangeRolesAccount = "system:serviceaccount:example-ns:example-roles"
 
 // The one workflow every Rig's BROKER_EXCHANGE_WORKFLOWS lists and what a run of it may write. It
@@ -134,17 +136,24 @@ type Rig struct {
 	// signing key they are minted under.
 	podIssuer *oidctest.Issuer
 	podKey    *oidctest.Key
-	// serviceLogins is the broker's live BROKER_SERVICE_LOGINS: DaemonAccount, as legion-daemon.
+	// serviceLogins is the broker's live BROKER_SERVICE_LOGINS: DaemonAccount, as legion-daemon,
+	// and each account WithPersonPod names, as the service it names.
 	serviceLogins map[string]string
+	// podOperators is the broker's live BROKER_POD_OPERATORS: each account WithPersonPod names,
+	// answering its person, and no account by default. It is one map, which the enroll.Service
+	// and the requests.Machine share, and which the machine.Service reads through that
+	// enroll.Service. So a change SetPodOperator makes reaches all three.
+	podOperators map[string]string
 }
 
 // Option changes how NewRig wires its broker.
 type Option func(*rigConfig)
 
 type rigConfig struct {
-	lease    time.Duration
-	maxConns int
-	minters  map[string]requests.Minter
+	lease      time.Duration
+	maxConns   int
+	minters    map[string]requests.Minter
+	personPods []personPod
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -164,6 +173,22 @@ func WithPoolMaxConns(n int) Option {
 // upstream; none by default.
 func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
+}
+
+// personPod is one WithPersonPod: an account that BROKER_POD_OPERATORS maps to person, and the
+// service the account logs in as.
+type personPod struct {
+	account, service, person string
+}
+
+// WithPersonPod maps account to person, as a BROKER_POD_OPERATORS entry does, and lets account
+// log in as service with its own token, as the BROKER_SERVICE_LOGINS entry does that the setting
+// needs for each account it maps. Without the second entry, a token login of account is refused
+// ACCOUNT_NOT_LISTED before any rule of the mapping applies. Give the option once for each account
+// to map. config.Load refuses a mapped account that BROKER_SERVICES binds, or whose service it
+// names, so give an account other than WorkerAccount and a service other than legion-daemon.
+func WithPersonPod(account, service, person string) Option {
+	return func(c *rigConfig) { c.personPods = append(c.personPods, personPod{account, service, person}) }
 }
 
 // NewRig holds two secrets the person ada@example.com owns: TEST_SECRET, human-tier, which a
@@ -209,11 +234,32 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 
 	serviceLogins := map[string]string{DaemonAccount: "legion-daemon"}
+	// BROKER_POD_OPERATORS: one map, empty unless WithPersonPod names an account. An empty map
+	// maps no account, as nil does, so a Rig without the option decides as a broker with the
+	// setting unset does. Each mapped account logs in with its own token as its service, as
+	// config.Load requires.
+	podOperators := map[string]string{}
+	for _, pod := range config.personPods {
+		serviceLogins[pod.account] = pod.service
+		podOperators[pod.account] = pod.person
+	}
 	// BROKER_SERVICES: the account every pod MintPodToken mints a token for runs as, bound to the
 	// service DaemonAccount logs in as, which is what lets that login enrol those pods
 	// (enroll.Service.podUnderTokenLogin).
 	servicesByAccount := map[string]string{WorkerAccount: "legion-daemon"}
-	enr := &enroll.Service{Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
+	// BROKER_POD_REGISTRARS: DaemonAccount, the one registrar, listed for WorkerAccount and both
+	// accounts BROKER_EXCHANGE_ACCOUNTS lists, so a registration a test makes as that daemon reaches
+	// the step it is about rather than 403 POD_REGISTRAR_NOT_LISTED: the exchange policy's refusal
+	// of a WorkerAccount pod (POD_ACCOUNT_NOT_LISTED) or of an ExchangeAccount pod, whose entry
+	// fixes its session (SESSION_FIXED), and the write itself for an ExchangeRolesAccount pod.
+	podRegistrars := api.PodRegistrars{}
+	for _, pod := range []string{WorkerAccount, ExchangeRolesAccount, ExchangeAccount} {
+		podRegistrars[api.PodRegistrar{Registrar: DaemonAccount, Pod: pod}] = struct{}{}
+	}
+	enr := &enroll.Service{
+		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
+		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
+	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	// A session name is held here as the real broker holds one with no account paired
 	// (oauthstore.Store.SetSessionPairs never called, BROKER_SESSION_ACCOUNT_PAIRS unset), so it
@@ -225,6 +271,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
+		PodOperators: podOperators,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := NewOAuthProvider(t, st, issuer)
@@ -243,7 +290,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		// The one verifier serves both, as the broker's own wiring does: a pod enrolling and a
 		// listed caller present tokens of the same issuer for the same audience.
 		AccountTokens: enroll.K8sPodVerifier{Verifier: podVerifier},
-		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
+		Enroll:        enr, Machine: reqMachine, MachineLogin: mach, PodRegistrars: podRegistrars,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
@@ -262,7 +309,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Registry:  registry,
 		Policy:    cur,
 		podIssuer: issuer, podKey: podKey,
-		serviceLogins: serviceLogins,
+		serviceLogins: serviceLogins, podOperators: podOperators,
 	}
 	rig.UIToken = rig.MintAccountToken(t, APIAccount, time.Hour)
 	rig.ListenerToken = rig.MintAccountToken(t, ListenerAccount, time.Hour)
@@ -288,7 +335,7 @@ const MachineLoginURL = "https://dispatch.example/credentials/machine"
 // cmd/broker/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
 // MachineLoginURL. Its token exchange reads issuer for both kinds of subject token — a pod's, for
-// exchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
+// ExchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
 // one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
 // one, and an unlisted one to be refused as.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
@@ -323,7 +370,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
 		Exchange: oauth.ExchangeConfig{
 			Policy:     policy,
-			Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: exchangeAudience, Keys: keys},
+			Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys},
 			GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
 		},
 	}, oauthStore)
@@ -478,12 +525,16 @@ func (r *Rig) MintPodToken(t *testing.T, podUID string) string {
 
 // DaemonAccount is the ServiceAccount every Rig's BROKER_SERVICE_LOGINS lets log in as
 // legion-daemon with its token (POST /v1/launcher-credentials/token), as a Legion daemon's own
-// account does.
+// account does, and the one registrar every Rig's BROKER_POD_REGISTRARS lists: for WorkerAccount,
+// ExchangeRolesAccount and ExchangeAccount, so its token registers a pod of any of the three at
+// POST /v1/oauth/exchange/pod-sessions and no other account's does.
 const DaemonAccount = "system:serviceaccount:legion-system:legion-daemon-test"
 
 // WorkerAccount is the ServiceAccount the pods MintPodToken mints tokens for run as, which every
 // Rig's BROKER_SERVICES binds to the service DaemonAccount logs in as, as a Legion worker pod's
-// account is bound to legion-daemon.
+// account is bound to legion-daemon. BROKER_POD_REGISTRARS lists DaemonAccount for it and no
+// BROKER_EXCHANGE_ACCOUNTS entry lists it, so a registration of one of its pods is refused by the
+// exchange policy (403 POD_ACCOUNT_NOT_LISTED), past the route's own checks.
 const WorkerAccount = "system:serviceaccount:legion:worker"
 
 // MintAccountToken mints a projected ServiceAccount token for account, expiring lifetime from now
@@ -517,7 +568,7 @@ func (r *Rig) MintAccountPodToken(t *testing.T, account, podUID string, lifetime
 // Kubernetes token type. A podUID of "" mints one bound to no pod, which the exchange refuses.
 func (r *Rig) MintSubjectToken(t *testing.T, account, podUID string) string {
 	t.Helper()
-	claims := r.podIssuer.Claims(account, exchangeAudience)
+	claims := r.podIssuer.Claims(account, ExchangeAudience)
 	if podUID != "" {
 		claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": podUID}}
 	}
@@ -544,4 +595,17 @@ func (r *Rig) MintWorkflowToken(t *testing.T, repository, workflow, ref, runID s
 // line and redeploying the broker does.
 func (r *Rig) DropServiceLogin(account string) {
 	delete(r.serviceLogins, account)
+}
+
+// SetPodOperator changes account's entry in this Rig's BROKER_POD_OPERATORS, as an operator
+// editing that entry and redeploying the broker does: a person maps account to that person, and
+// "" drops the entry. The broker reads the setting at each decision, so the next call that reads
+// it sees the change. A login that a pod made before the change keeps its operator until the pod
+// logs in again. account stays in BROKER_SERVICE_LOGINS.
+func (r *Rig) SetPodOperator(account, person string) {
+	if person == "" {
+		delete(r.podOperators, account)
+		return
+	}
+	r.podOperators[account] = person
 }

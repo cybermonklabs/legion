@@ -112,15 +112,22 @@ type LauncherCredentialResp struct {
 	// The machine's host name, as a person's machine login named it; for a token login, its
 	// ServiceAccount's <namespace>/<name>, or a machine's <project>/<zone>/<instance name>.
 	Host string `json:"host"`
-	// The service a service's login is for (legion-daemon), whose sessions are its pods, or the
-	// fleet a machine belongs to; null for a person's own machine.
+	// The service a service's login is for (legion-daemon), whose sessions are its pods, the
+	// login service of a person's pod login, or the fleet a machine belongs to; null for a
+	// person's own machine.
 	Service *string `json:"service"`
 	// What a token login proved: its ServiceAccount
 	// (system:serviceaccount:<namespace>:<name>), or a machine as the token exchange names it
 	// (exchange.MachineSubject); null for every login a person approved.
 	Subject *string `json:"subject"`
+	// For a person's pod login, the person it acts for. A person's pod login is the token login
+	// of a Kubernetes ServiceAccount that BROKER_POD_OPERATORS maps to a person, and this is that
+	// person as the setting maps the account now. Only that person lists and revokes the login.
+	// Null for every other login, a service's and a person's own machine's among them.
+	Person *string `json:"person"`
 	// The login of the person who approved the login (anyone signed in may have approved a service's
-	// login before token logins); "" for a service's token login, which no person approves.
+	// login before token logins); "" for every token login, a service's and a person's pod login
+	// among them, which no person approves.
 	ApprovedBy string `json:"approved_by"`
 	// When the login was approved, or a token login's first login.
 	IssuedAt time.Time `json:"issued_at"`
@@ -137,8 +144,9 @@ type LauncherCredentialResp struct {
 // answer.
 type LauncherCredentialsResponse struct {
 	// The machine logins that are not revoked and are either unexpired or expired with a session
-	// still running, newest first: every service's and the named person's own machines' on
-	// Dispatch's page, the calling operator's own machines' alone on the operator route.
+	// still running, newest first: every service's, the named person's own machines' and that
+	// person's pod logins on Dispatch's page; the calling operator's own machines' and pod logins
+	// alone on the operator route. A person's pod login is on its person's list alone.
 	Credentials []LauncherCredentialResp `json:"credentials"`
 }
 
@@ -203,7 +211,9 @@ type RecordEnrollmentResp struct {
 	// The session's runtime: whatever names the session on its machine (the helper's
 	// host:pid:start time, a container's id), or a pod's UID.
 	RuntimeID string `json:"runtime_id"`
-	// The person the session runs for; empty for a pod.
+	// The person the session runs for, as its enrollment row held it when the request was made.
+	// For a pod it is the person that a person's pod login (enroll.PersonPodLogin) carried when it
+	// enrolled the pod, and empty for any other pod.
 	Operator string `json:"operator"`
 	// The pod slot it holds; null for every enrollment without one.
 	Slot *string `json:"slot"`

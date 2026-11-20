@@ -201,19 +201,33 @@ func accountAuthAfterRecordKind(needs power, h func(*server, http.ResponseWriter
 
 // serviceAuth is a route for a service calling the broker with its own Kubernetes ServiceAccount
 // token, the account BROKER_SERVICE_LOGINS lets log in as that service — a deployment's Legion
-// daemon, which registers the pods it starts. The token is verified and mapped to its service by
-// the check a token login makes (machine.Service.VerifyServiceToken). The handler is given that
-// check's own answer, one machine.ServiceAccount: the service the caller logs in as, the
-// account whose token it presented, and the pod that token was bound to. The account and the
-// pod come with it because BROKER_SERVICE_LOGINS may name an account BROKER_SERVICES binds to a
-// service: every pod of such an account logs that service in, so a caller here may be the very
-// pod a request names, and the account and the pod uid are what tell the two apart.
+// daemon, which registers the pods it starts and releases the session names it registered. The
+// token is verified and mapped to its service by the check a token login makes
+// (machine.Service.VerifyServiceToken). The handler is given that check's own answer, one
+// machine.ServiceAccount: the service the caller logs in as, the account whose token it
+// presented, and the pod that token was bound to. The account and the pod come with it because
+// BROKER_SERVICE_LOGINS may name an account BROKER_SERVICES binds to a service: every pod of such
+// an account logs that service in, so a caller here may be the very pod a request names, and the
+// account and the pod uid are what tell the two apart.
+//
+// An account that BROKER_POD_OPERATORS maps to a person is refused, 403 PERSON_ACCOUNT
+// (serviceCaller), for a token bound to a pod and for a token bound to no pod. A person's pod
+// calls no route of this class.
 //
 // It is a class of its own rather than a power of accountAuth's because the two lists are two
 // authorities: BROKER_API_ACCOUNTS names the callers that relay a person's decisions and read
 // tokens back, and a daemon that registers its own pods is not one of them. A deployment already
-// lists its per-project daemons in BROKER_SERVICE_LOGINS for their token logins, so these routes
-// need no new setting and no new account.
+// lists its per-project daemons in BROKER_SERVICE_LOGINS for their token logins, so the class
+// needs no new login. The login is all a release needs, and a registration needs an entry of
+// BROKER_POD_REGISTRARS too (registerPodSession), since a session pod logs in as a service as
+// well. A release is the login account's (releasePodSessions): it releases every registration
+// that account wrote of the names it sends, whichever of its pods wrote it. So every pod of an
+// account paired with itself in BROKER_POD_REGISTRARS logs in as that registrar and can release
+// every registration the account wrote, by session name alone, with no token of the pod whose
+// trade it ends. Every pod that runs as any registrar's account logs in as that registrar in the
+// same way and can release every registration that account wrote. So a deployment lists as a
+// registrar only an account whose pods may end the trades of every pod that account registers. An
+// account paired with itself is the common case of an account whose pods may not.
 func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, machine.ServiceAccount)) routeHandler {
 	return routeHandler{auth: authService, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.service)
@@ -301,9 +315,17 @@ func routes() []apiRoute {
 		{http.MethodPost, "/v1/oauth/revoke", accountAuth(relaysDecisions, (*server).revokeOAuthToken)},
 		// Register that one pod may exchange under one session name: the row the token exchange
 		// reads before it mints a token for a pod of an account that fixes no session, written by
-		// the deployment's own daemon as it starts that pod. Mounted only when the broker runs its
-		// OAuth provider.
+		// the deployment's own daemon as it starts that pod. A name's first registration binds it,
+		// for good, to the daemon that wrote it, and another daemon's registration of the name is
+		// 409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR. Mounted only when the broker runs its OAuth
+		// provider.
 		{http.MethodPost, "/v1/oauth/exchange/pod-sessions", serviceAuth((*server).registerPodSession)},
+		// Release session names the caller's login account registered: each live registration of
+		// each name that the account wrote, whichever of its pods wrote it, is marked released, so
+		// the token exchange refuses the trade under it of the pod the registration names, and the
+		// name stays bound to that account, as it is for good. Mounted only when the broker runs
+		// its OAuth provider.
+		{http.MethodPost, "/v1/oauth/exchange/pod-sessions/release", serviceAuth((*server).releasePodSessions)},
 		// Extend the calling session's lease.
 		{http.MethodPost, "/v1/enrollments/{id}/renew", renewAuth((*server).renewEnrollment)},
 		// Describe the calling session's enrollment and its live grants.
@@ -354,15 +376,22 @@ func routes() []apiRoute {
 		// Find a pending machine login by the confirmation code its machine shows.
 		{http.MethodPost, "/v1/machine-logins/lookup", accountAuth(relaysDecisions, (*server).lookupMachineLogin)},
 		// List the machine logins the named person may revoke, every service's, such as the Legion
-		// daemon's, whoever approved it, and the person's own machines', that are not revoked and
-		// are unexpired or expired with a session still running, each naming who approved it. The
-		// person is the one the caller names.
+		// daemon's, whoever approved it, the person's own machines', and the logins of the person's
+		// own pods, that are not revoked and are unexpired or expired with a session still running,
+		// each naming who approved it. A person's pod login is a token login of a Kubernetes account
+		// that BROKER_POD_OPERATORS maps to a person, made with a token of one of its pods or with
+		// one bound to no pod. It carries a service and a subject, but only that person's list holds
+		// it, and its person field names that person. The person is the one the caller names.
 		{http.MethodGet, "/v1/launcher-credentials", accountAuth(relaysDecisions, (*server).listLauncherCredentials)},
 		// End a machine login, expired or not: a service's (its token login, or one a person approved
 		// before token logins) as anyone signed in, a person's machine's as the person who approved
-		// it. Its launcher proofs stop authenticating and every session it enrolled, pods included,
-		// ends with its grants and pending requests. The revoking person is the login the request
-		// names, which the broker still takes on the caller's word: a revoke only takes power away.
+		// it, and a person's pod login as the person BROKER_POD_OPERATORS maps the pod's account to,
+		// and as nobody else. Its launcher proofs stop authenticating and every session it enrolled,
+		// pods included, ends with its grants and pending requests. The revoke does not keep a pod
+		// out: the pod logs in again with its token under a new login while BROKER_SERVICE_LOGINS
+		// names its account, and that login acts for the person only while BROKER_POD_OPERATORS
+		// still maps the account to the person. The revoking person is the login the request names,
+		// which the broker still takes on the caller's word: a revoke only takes power away.
 		{http.MethodPost, "/v1/launcher-credentials/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeLauncherCredential)},
 		// List the live grants of the named person's sessions, automatic or approved, and those the
 		// person approved. The person is the one the caller names.
@@ -395,10 +424,13 @@ func routes() []apiRoute {
 		// period has committed before the review reads it. It is the one route readsGrantLog
 		// reaches: the review reads the broker's record and changes nothing in it.
 		{http.MethodGet, "/v1/grant-log", accountAuth(readsGrantLog, (*server).listGrantLog)},
-		// List the logins of the calling credential's operator's own machines, as Dispatch's
-		// machine-logins page lists them, without the service logins that page also lists.
+		// List the calling credential's operator's own logins, their machines' logins and the token
+		// logins of the accounts BROKER_POD_OPERATORS maps to them, as Dispatch's machine-logins
+		// page lists them, without the service logins that page also lists. This route, the machine
+		// revoke below and the two grant routes refuse a person's pod login 403 PERSON_POD_LOGIN
+		// and a service's login 403 SERVICE_CREDENTIAL (operatorOf). The retire refuses neither.
 		{http.MethodGet, "/v1/operator/machines", launcherAuth((*server).listOperatorMachines)},
-		// End one of the operator's own machines' logins: no proof signed with it authenticates again
+		// End one of the operator's own logins: no proof signed with it authenticates again
 		// and every session it enrolled ends. A service's login is not found here, like an unknown
 		// id. Revoking the calling machine's own login ends this machine's access.
 		{http.MethodPost, "/v1/operator/machines/{id}/revoke", launcherAuth((*server).revokeOperatorMachine)},

@@ -176,6 +176,8 @@ export const realStackReasons: Record<string, string> = {
     "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
+  "issue-page-d.e2e.ts":
+    "each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
   "judged-grant.e2e.ts":
@@ -204,6 +206,8 @@ export const realStackReasons: Record<string, string> = {
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",
   "live.e2e.ts": "live delivery of writes made after the page loaded",
   "machine-login.e2e.ts": "device grants decided on the real broker",
+  "machine-logins-person-pod.e2e.ts":
+    "the machine logins it reads are written into the fake broker and the page is asserted against what the server relays back",
   "machines.e2e.ts":
     "the draw and drawing-age rows read the wall clock against last_seen, which a recording freezes",
   "margin-composer-hold.e2e.ts": "live document margin with sends out and server refusals",

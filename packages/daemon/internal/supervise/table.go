@@ -181,6 +181,12 @@ const (
 	// TimerPromptRetry is the wait before a task a provider error took back is sent to the same
 	// session again (promptRetryDelay), armed on that task's own delivery id.
 	TimerPromptRetry TimerKind = "prompt_retry"
+	// TimerPause is the gate's own stop of a claim whose launch it held while the project is paused
+	// (pauseGate, pauseStopDue): armed at once by the decision that held the launch, so the stop is
+	// the claim's next decision, and again at the probe interval when that stop fails. A claim with
+	// no process of its own waits launching until it fires; one whose process runs waits as the
+	// gate found it.
+	TimerPause TimerKind = "pause"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -410,17 +416,46 @@ type RequestReady struct {
 // turn's end, behind an answer that told the caller its request did nothing (api's freshSession).
 // Every other suspension leaves it false and is held as above: the outbox retries its rows until
 // the claim answers nil, and `legion claims suspend` waits the hold out.
+//
+// Pause is the project pause this suspension stops the claim for (store.Pause.ID, decision 4 of
+// dispatch://INFRA-3759's plan), 0 for a suspension of no pause. It is set by the daemon's
+// `pause_stop` row and by the gate's own stop of a launch it held (pauseStopDue), only with By
+// SuspendedByReleased — any other source with a pause, or a negative id, is refused
+// (suspendRequest). A suspension that carries one ends in the pause's stop transaction rather than
+// the plain claim write (Deps.PauseStopped, suspendedFor), and a hold of one is the pause's: kept
+// across a start while its pause is open (StartedBy), and dropped at the start of the claim's next
+// decision once that pause has ended (dropEndedPauseHold), the resume's event (ResumePause) among
+// them.
 type RequestSuspend struct {
 	Claim     claim.Token
 	Reason    string
 	By        SuspendSource
 	Deadline  time.Time
 	NeverHold bool
+	Pause     int64
 }
 
 // RequestResume is the operator's resume: it relaunches a suspended claim's session, whoever
 // suspended it.
 type RequestResume struct{ Claim claim.Token }
+
+// ResumePause is the daemon's word, posted to every machine of its project once a resume of the
+// project has committed (decision 22 of dispatch://INFRA-3759's plan), that pause Pause is over.
+// The daemon clears its flag (Deps.Paused) before it posts this, so the decision drops a
+// suspension the machine holds for that pause before its row runs, as every decision drops the
+// hold of a pause that has ended (dropEndedPauseHold): a role in a turn runs on and a launch held
+// until its agent is ready goes ahead. The row takes a launch the pause's gate held for that pause
+// into the wake pacing — a reservation from the limiter, then its timer — or, where a later pause
+// holds the project by then, stops the claim for that one (pauseStopDue); and it sends the task
+// the claim holds where it may now go (sendPending), so the daemon's resume needs nothing else to
+// hand a role its held task.
+// It touches nothing of any other pause: a hold or a held launch a later pause took over carries
+// that pause's id, so an event that arrives after the next pause began finds nothing of its own.
+// Pause is the ended pause's id (store.Pause.ID), never 0, which is refused.
+type ResumePause struct {
+	Claim claim.Token
+	Pause int64
+}
 
 // RequestRuleResume is the daemon's own resume, by rule: it relaunches a suspended claim's session
 // unless an operator suspended it (Claim.RuleMayResume): that suspension holds until the operator
@@ -641,6 +676,7 @@ func (RequestExit) isEvent()          {}
 func (RequestTurnOutcome) isEvent()   {}
 func (RequestCompact) isEvent()       {}
 func (CompactEnded) isEvent()         {}
+func (ResumePause) isEvent()          {}
 
 // eventKind is what the table is keyed on beside the state: an event's type, with a Timer split
 // by its kind, because each wait means a different thing.
@@ -668,6 +704,8 @@ const (
 	onWakeTimer     eventKind = timerPrefix + eventKind(TimerWake)
 	// The wait a turn that ended in a provider error arms (promptResulted).
 	onPromptRetryTimer eventKind = timerPrefix + eventKind(TimerPromptRetry)
+	// The gate's own stop of a launch it held while the project is paused (pauseGate).
+	onPauseTimer eventKind = timerPrefix + eventKind(TimerPause)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -695,6 +733,8 @@ const (
 	onPodUpdateOpen      eventKind = "pod_update_open"
 	onPodUpdateEnded     eventKind = "pod_update_ended"
 	onPodUpdateSignalled eventKind = "pod_update_signalled"
+
+	onResumePause eventKind = "resume_pause"
 
 	timerPrefix eventKind = "timer:"
 )
@@ -773,6 +813,8 @@ func kindOf(ev Event) eventKind {
 		return onCompact
 	case CompactEnded:
 		return onCompactEnded
+	case ResumePause:
+		return onResumePause
 	}
 	return ""
 }
@@ -834,7 +876,10 @@ var (
 	prompted    = []ClaimState{StateReady, StateIdle}
 	processless = []ClaimState{StateQueued, StateLaunchUncertain, StateSuspended, StateFailed, StateRetired}
 	unready     = []ClaimState{StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered}
-	gone        = []ClaimState{StateSuspended, StateFailed, StateRetired}
+	// gone is where a claim's process has been let go: suspended, failed or retired. It is the one
+	// statement of the set: Claim.Gone reads it in memory, and the store's queries take it as a
+	// parameter (GoneStates).
+	gone = []ClaimState{StateSuspended, StateFailed, StateRetired}
 	// runsNothing is where a claim has no process of its own, running or coming up: queued, for which
 	// nothing was launched, or gone. A launch whose outcome is uncertain may still run, so it is not
 	// here. It is the one statement of the set: Claim.RunsNothing reads it in memory, and the store's
@@ -853,6 +898,15 @@ func LiveStates() []ClaimState {
 func RunsNothingStates() []ClaimState {
 	return slices.Clone(runsNothing)
 }
+
+// GoneStates are the states of a claim whose process has been let go (gone). It is a copy, so no
+// caller changes the table's own set.
+func GoneStates() []ClaimState {
+	return slices.Clone(gone)
+}
+
+// IsGone is whether state is one of GoneStates: a claim in it has had its process let go.
+func IsGone(state ClaimState) bool { return slices.Contains(gone, state) }
 
 // TakesCompaction is whether the machine takes a compaction of a claim in this state, read off
 // the table's own onCompact rows rather than from a second list of them: the api's refusals
@@ -1004,6 +1058,16 @@ func fillTable(t *builder) {
 	t.row(onWakeTimer, "the wake the pacing held runs its launch now, or a suspension held meanwhile ends it instead", wakeNow,
 		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, live...)
 	t.ignore(onWakeTimer, "no wake is waiting: a paced wake of a claim with no process is written launching before it waits, and a suspension, a failure, a retirement and an undecided pane each leave the claim without one",
+		processless...)
+
+	// The gate's own stop of a launch it held while the project is paused (pauseGate). A claim
+	// with no process of its own waits launching for it; one whose process still runs waits in
+	// the state the gate found it, which is every other live state. The stop ends the claim
+	// suspended, or holds it for a turn's deadline of now (holdSuspension); a launch whose pause
+	// has ended by then goes to the pacing instead, and may launch here (letOutHeldLaunch).
+	t.row(onPauseTimer, "the gate held this claim's launch while the project is paused: stop the claim for the pause, or let the launch out if the pause is over", pauseStopDue,
+		[]ClaimState{StateSuspended, StateLaunching, StateFailed}, live...)
+	t.ignore(onPauseTimer, "no launch is held by the pause's gate: a claim with no process it holds is written launching, and a suspension, a failure, a retirement and an undecided pane each leave the claim without one",
 		processless...)
 
 	// A re-adopted claim found still speaking another plugin contract, at boot or at a later sweep.
@@ -1184,6 +1248,14 @@ func fillTable(t *builder) {
 	t.ignore(onCompactEnded, "the claim is not in a compaction: the process it ran on was let go first", prompted...)
 	t.ignore(onCompactEnded, "the agent is not ready, so the compaction's process is gone", unready...)
 	t.ignore(onCompactEnded, "no process of this claim is running, so the compaction's own is gone", gone...)
+
+	// The project's resume, which the daemon posts to every machine of the project (ResumePause),
+	// so every state takes it. A claim that holds nothing of the pause it names is changed by
+	// nothing but the send of the task it holds (sendPending); one whose held launch is let out
+	// launches, or fails, or is suspended by a tree whose cleanup is reserved, as a wake's turn is
+	// (runWake), and one that is sent its task can be found in a turn already (sendPending).
+	t.row(onResumePause, "the project's pause is over: drop that pause's held suspension, let out the launch its gate held, and send the task that waits", resumePause,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended, StateWorking}, slices.Concat(live, processless)...)
 }
 
 type builder struct{ rules map[key]rule }
@@ -1656,8 +1728,11 @@ func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 
 // agentBusy is Oh My Pi's own refusal of a prompt for a turn already running, which it words
 // exactly this way. Every other rejection — a provider that answered before any turn began among
-// them — is the agent failing to take the work. Reading the message is the daemon's only handle
-// on which it is: the wire carries a string, not a kind.
+// them — is the agent failing to take the work. Reading the message is the daemon's one handle on
+// which it is. The pinned Oh My Pi also gives the refusal a kind, `code: "session_busy"`
+// (shimwire.Response.Code, shimwire.PromptError.Code), but that kind covers two refusals besides
+// this one, a session busy with maintenance or user work and a prompt that waited 30 s while
+// another run held the agent (rpc-busy-code.ts), so it does not tell this one apart.
 func agentBusy(reason string) bool {
 	return strings.HasPrefix(reason, "Agent is already processing")
 }
@@ -1979,7 +2054,11 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // A suspension held for the turn runs here, now that the turn is over (holdSuspension). Its stop
 // cuts off no turn, so what the let-go records reads the claim as idle, the state this end gives
 // it (suspendHeldAtEnd): the next process is told it was in no turn, and the task the turn
-// confirmed is no task cut off in its turn (recordEnd).
+// confirmed is no task cut off in its turn (recordEnd). A project pause's hold waits instead for
+// the result of the turn's prompt where Oh My Pi has not written it yet (stopWaitsForResult), and
+// runs from that result (promptResulted, stopAtResult): only the result says whether the turn
+// finished its task or a provider refused it, and a stop made first would retire a refused task
+// the role is still owed.
 //
 // Every end this records is counted (TurnsEnded), the compaction's below included, so the daemon
 // can post it to the issue's other claims once this decision is published (its wakeIssue): a phase
@@ -2006,7 +2085,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 		return nil
 	}
 	m.askFirst, m.busyTurn = false, false
-	if m.held != nil {
+	if m.held != nil && !m.stopWaitsForResult() {
 		if err := m.suspendHeldAtEnd(ctx, StateIdle); err != nil {
 			if m.held == nil {
 				// The stop landed and let the process go; only its write failed, and the claim is
@@ -2138,7 +2217,10 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // A turn already ended is over for its delivery here, so this is where what was held for that
 // turn runs when the end found the result still outstanding (afterTurn): settle first, so the
 // round's end and the stale-plugin relaunch read a worker whose hands are empty. A result that
-// beat its turn's end leaves both to that end.
+// beat its turn's end leaves both to that end. A project pause's hold that waited for this result
+// (stopWaitsForResult) stops the claim here instead (stopAtResult), once the result has decided
+// the task: a refused task taken back is one the stop owes the role a launch for, and a finished
+// one is retired by the settle that follows every decision (Handle).
 func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamPromptResult)
 	if !r.AgentInvoked {
@@ -2165,7 +2247,10 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	}
 	m.outstanding = nil
 	if r.Error != "" {
-		return m.providerErrored(ctx, r)
+		if err := m.providerErrored(ctx, r); err != nil {
+			return err
+		}
+		return m.stopAtResult(ctx)
 	}
 	if m.claim.ProviderErrorRun != 0 {
 		m.log.Info("supervise: a turn of this task ended with no provider error; the run of provider errors is over",
@@ -2186,6 +2271,9 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	}
 	if m.claim.State == StateWorking {
 		return m.sendPending(ctx)
+	}
+	if m.pauseHoldAtResult() {
+		return m.suspendHeld(ctx)
 	}
 	if err := m.settle(ctx); err != nil {
 		return err
@@ -2786,7 +2874,7 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 			m.log.Error("supervise: could not suspend the exited root's process; suspending its claim anyway",
 				"incarnation", incarnation, "error", err)
 		}
-		return m.suspended(ctx, SuspendedByExit)
+		return m.suspended(ctx, SuspendedByExit, nil)
 	}
 	if err := m.release(ctx); err != nil {
 		m.log.Error("supervise: could not release the exited agent's process; retiring its claim anyway", "error", err)

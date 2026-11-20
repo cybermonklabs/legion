@@ -43,12 +43,24 @@ var (
 )
 
 // ServiceAccount is a verified token whose identity is listed to log in as a service: the
-// token's claims, the service it logs in as, and the host its credential names.
+// token's claims, the service it logs in as, the host its credential names, and the person it
+// acts for.
 type ServiceAccount struct {
 	enroll.AccountClaims
 	Service string
 	// Host is the account's <namespace>/<name>.
 	Host string
+	// Person is the person that BROKER_POD_OPERATORS (enroll.Service.PodOperators) maps the
+	// account to, in record.CanonicalLogin's form. It is "" for an account that the setting does
+	// not map. A daemon account that BROKER_EXCHANGE_ACCOUNTS maps to a person is such an
+	// account, because only BROKER_POD_OPERATORS gives an account a person at the broker.
+	//
+	// TokenLogin writes Person as the credential's operator only when the token is bound to a pod
+	// (PodUID). That pod's enrollment then acts as the person, on the terms of the person's dev
+	// box. verifyKubernetes reads the setting at each login. So when the deployment removes the
+	// account's entry, or moves it to another person, the change takes effect at the pod's next
+	// login.
+	Person string
 }
 
 // TokenCredential is what a token login issued: the launcher credential's id and its expiry.
@@ -61,12 +73,18 @@ type TokenCredential struct {
 // to the service it logs in as: the token goes to the cluster's verifier (s.Enroll.Pod, the one
 // pod enrollment uses) and its subject must be in BROKER_SERVICE_LOGINS. It is held to
 // MaxTokenLoginLifetime from its issue, and AuthenticateLauncher reads the same setting for
-// every credential a login issues. It is both the check a token login makes and the check a
-// route whose callers are a deployment's daemons makes (api's serviceAuth class,
-// POST /v1/oauth/exchange/pod-sessions), so the two refuse the same accounts for the same
-// reasons. With no Kubernetes issuer it is ErrTokenLoginsOff. The other refusals are
-// ErrTokenExpired, ErrTokenInvalid, ErrTokenTooLongLived and ErrAccountNotListed; none repeats
-// the token.
+// every credential a login issues. It is both the check a token login makes and the check the
+// routes whose callers are a deployment's daemons make (api's serviceAuth class,
+// POST /v1/oauth/exchange/pod-sessions and POST /v1/oauth/exchange/pod-sessions/release), so
+// they refuse the same accounts for the same reasons. With no Kubernetes issuer it is
+// ErrTokenLoginsOff. The other refusals are ErrTokenExpired, ErrTokenInvalid,
+// ErrTokenTooLongLived and ErrAccountNotListed; none repeats the token.
+//
+// The answer also names the person that BROKER_POD_OPERATORS maps the account to
+// (ServiceAccount.Person), as the setting is at this call. It names no person for an account that
+// the setting does not map. A pod-bound token of a mapped account logs in with that person as the
+// credential's operator (TokenLogin), which makes that pod's enrollment act as the person on the
+// terms of the person's dev box.
 func (s *Service) VerifyServiceToken(ctx context.Context, token string) (ServiceAccount, error) {
 	if s.Enroll.Pod == nil {
 		return ServiceAccount{}, ErrTokenLoginsOff
@@ -99,7 +117,10 @@ func (s *Service) lifetimeProblem(claims enroll.AccountClaims) string {
 	return ""
 }
 
-// verifyKubernetes maps a verified ServiceAccount token through BROKER_SERVICE_LOGINS.
+// verifyKubernetes maps a verified ServiceAccount token through BROKER_SERVICE_LOGINS to the
+// service it logs in as, and through BROKER_POD_OPERATORS to the person it acts for
+// (ServiceAccount.Person, "" for an account that the setting does not map). It reads both settings
+// at each login, so a removed or moved entry takes effect at the pod's next login.
 func (s *Service) verifyKubernetes(claims enroll.AccountClaims) (ServiceAccount, error) {
 	if problem := s.lifetimeProblem(claims); problem != "" {
 		return ServiceAccount{}, fmt.Errorf("%w: it %s", ErrTokenTooLongLived, problem)
@@ -109,7 +130,10 @@ func (s *Service) verifyKubernetes(claims enroll.AccountClaims) (ServiceAccount,
 		return ServiceAccount{}, fmt.Errorf("%w: %s is not in BROKER_SERVICE_LOGINS", ErrAccountNotListed, claims.Subject)
 	}
 	namespace, name, _ := strings.Cut(strings.TrimPrefix(claims.Subject, "system:serviceaccount:"), ":")
-	return ServiceAccount{AccountClaims: claims, Service: service, Host: namespace + "/" + name}, nil
+	return ServiceAccount{
+		AccountClaims: claims, Service: service, Host: namespace + "/" + name,
+		Person: s.Enroll.PodOperator(&claims.Subject),
+	}, nil
 }
 
 // TokenLogin logs account (VerifyServiceToken's answer) in, and no person approves it.
@@ -117,6 +141,16 @@ func (s *Service) verifyKubernetes(claims enroll.AccountClaims) (ServiceAccount,
 // exactly one launcher_credential detail naming account's service, verified and replay-checked as
 // LoginDevice's is (verifyLauncherRequest). The account's one credential (enroll.Service.IssueTokenLogin)
 // moves to that key and expires with the token, at most MaxTokenLoginLifetime after the login.
+//
+// A pod-bound token (account.PodUID) of an account that BROKER_POD_OPERATORS maps logs in with
+// that person (account.Person) as the credential's operator. The credential is then a person's
+// pod login (enroll.PersonPodLogin), which makes that pod's enrollment act as the person on the
+// terms of the person's dev box. A token bound to no pod, such as one `kubectl create token`
+// mints, logs in with no operator, also for a mapped account. An account that the setting does
+// not map logs in with no operator. Each login writes the operator again, from the setting as
+// VerifyServiceToken read it. So after the deployment removes the account's entry, the pod's next
+// login writes no operator. After the deployment moves the entry to another person, the pod's
+// next login writes that person.
 //
 // Refusals: record.ErrRequestInvalid (a request object that does not verify, names no single
 // launcher_credential detail, or repeats a jti), ErrAccountNotListed (it names another service),
@@ -141,10 +175,14 @@ func (s *Service) TokenLogin(ctx context.Context, account ServiceAccount, compac
 		expires = account.Expiry
 	}
 	expires = expires.UTC().Truncate(time.Microsecond)
-	id, err := s.Enroll.IssueTokenLogin(ctx, enroll.TokenLogin{
+	login := enroll.TokenLogin{
 		Subject: account.Subject, Service: account.Service, Host: account.Host, PodUID: account.PodUID, TokenExpires: account.Expiry,
 		Thumbprint: obj.Thumbprint, JWK: jwk, Expires: expires,
-	})
+	}
+	if account.PodUID != "" {
+		login.Operator = account.Person
+	}
+	id, err := s.Enroll.IssueTokenLogin(ctx, login)
 	if store.IsUniqueViolation(err) {
 		return TokenCredential{}, ErrKeyHoldsLiveCredential
 	}
