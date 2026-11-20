@@ -1808,7 +1808,10 @@ func copyWaitsForRole(ctx context.Context, deps Deps, role, session string) bool
 // in one statement: for update skip locked, so a second process's pass skips them, and
 // next_attempt_at pushed out by fallbackClaim in the same breath, which each row returns as its
 // claim. It reads the partial index of unsettled rows, so a pass with nothing to decide reads no
-// row.
+// row. While the private-delivery hold is on (Deps.holdsPrivate) it claims no copy of an event
+// whose owner's project the database holds private (privateOwnerSQL), as the batch's read chooses
+// no such owner: the row is left as it stands, unclaimed and unwritten, for a pass after the hold,
+// and the retry timer looks again meanwhile (Outbox.nextRetry).
 //
 // The statement runs outside the pass's context, under claimTimeout of its own, as the record
 // step does: a context that ends once it has committed would answer context canceled and lose the
@@ -1821,8 +1824,10 @@ func claimFallbackCopies(ctx context.Context, deps Deps) ([]fallbackCopy, error)
 		with claimed as (
 			update comment_fallback_copies set next_attempt_at = now() + $2
 			where (comment_id, destination) in (
-				select comment_id, destination from comment_fallback_copies
+				select comment_id, destination from comment_fallback_copies waiting
 				where settled_at is null and (next_attempt_at is null or next_attempt_at <= now())
+				  and not ($3::boolean and exists (
+				      select 1 from events e where e.id = waiting.event_id and `+privateOwnerSQL("e")+`))
 				order by created_at
 				limit $1
 				for update skip locked
@@ -1831,7 +1836,7 @@ func claimFallbackCopies(ctx context.Context, deps Deps) ([]fallbackCopy, error)
 		)
 		select comment_id::text, destination, event_id, session_id, target, attempt_count, next_attempt_at
 		from claimed
-	`, batchSize, fallbackClaim)
+	`, batchSize, fallbackClaim, deps.holdsPrivate())
 	if err != nil {
 		return nil, err
 	}
