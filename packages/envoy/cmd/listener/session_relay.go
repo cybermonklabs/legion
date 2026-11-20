@@ -176,8 +176,9 @@ const (
 //
 // The relay judges no frame by the listener's caches, with one exception: a frame that is a role
 // message is read against the role's claim, and one whose role another session holds, or none
-// does, is copied to the role's kept lane and acknowledged rather than delivered (takeOverFrame).
-// Every other frame it pulls is published whatever the caches hold.
+// does, is copied to the role's kept lane, or ended when its envelope does not decode, and
+// acknowledged rather than delivered (takeOverFrame). Every other frame it pulls is published
+// whatever the caches hold.
 //
 // One loop goroutine owns the set of relays (relays) and applies the events it is sent in order;
 // each relay runs on a goroutine of its own.

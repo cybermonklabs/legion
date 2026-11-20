@@ -546,6 +546,10 @@ session. It reads the claim from the role bucket for each frame that is a role m
 claim names another session, or none, it copies the frame to the role's kept lane as a pass does,
 acknowledges it only once the stream stored the copy, and logs `listener session relay copied a
 role message to the role's kept lane` with the session, the role, the holder and the event id. A
+frame under such a claim whose envelope the listener does not decode reaches no session: the relay
+acknowledges it, logs `listener session relay ended a role message that cannot be decoded` with
+the session, the role, the holder, the stream sequence and the decode error, and counts it in
+`envoy_role_kept_undecodable_total{path="relay"}`. A
 claim read or a copy that failed gives the frame back with a delay, neither delivered nor
 acknowledged. A frame that is no role message costs the decode of its topic and role and nothing
 else. A forward to a holder from the role lane, the publish route or Dispatch's outbox whose

@@ -161,6 +161,37 @@ func (rig *delivererRig) storeDispatchMessage(t *testing.T, sessionID, role stri
 	return item.EventID
 }
 
+// storeUndecodableRoleMessage stores on sessionID's own subject a role message of role, as a
+// forward to the role's holder is stored, whose envelope the listener does not decode
+// (decodeStoredEnvelope): its urgency is present and empty, which the wire rules refuse
+// (contracts.ValidateWire), while its role mark reads (decodeRoleMark) and a reader that applies no
+// wire rule, as the session stand-in's does, reads it as an envelope. It returns the message's
+// event id and stream sequence.
+func (rig *delivererRig) storeUndecodableRoleMessage(t *testing.T, sessionID, role string) (string, uint64) {
+	t.Helper()
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, roleForwardDedupePrefix+"undecodable-"+id.New())
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(marshalListenerEnvelope(t, item), &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["urgency"] = json.RawMessage(`""`)
+	data, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marked, _, ok := decodeRoleMark(data); !ok || marked != role {
+		t.Fatalf("the message's role mark reads role %q (a role message: %t), want role %s", marked, ok, role)
+	}
+	if err := decodeStoredEnvelope(data, &contracts.Envelope{}); err == nil {
+		t.Fatalf("the listener decodes the envelope %s, want a decode error", data)
+	}
+	ack, err := rig.harness.client.JS().Publish(contracts.LegacyAgentSubject(sessionID), data)
+	if err != nil {
+		t.Fatalf("store a message on %s's own subject: %v", sessionID, err)
+	}
+	return item.EventID, ack.Sequence
+}
+
 // storeOn stores item on sessionID's own subject and returns its stream sequence.
 func (rig *delivererRig) storeOn(t *testing.T, sessionID string, item contracts.Envelope) uint64 {
 	t.Helper()
@@ -334,19 +365,31 @@ func aSessionMessageIsDeliveredWithNoClaimRead(t *testing.T, rig *delivererRig, 
 	})
 }
 
+// relayUndecodableLine is the session relay's line for a role message it ended because its
+// envelope does not decode while another session holds the role, or none does, and
+// relayUndecodableSeries is that count's series in the harness's registry
+// (envoy_role_kept_undecodable_total{path="relay"} in main.go).
+const (
+	relayUndecodableLine   = "listener session relay ended a role message that cannot be decoded: another session holds the role, or none does"
+	relayUndecodableSeries = `test_role_kept_undecodable{path="relay"}`
+)
+
 // The listener delivers a role message to a session only while the role's claim names that
 // session. A role message that reaches a session's relay while another session holds the role, or
 // none does, is copied to the role's kept lane and acknowledged, and the session receives none
 // of it; a holder that continues while it holds its role receives its role messages; and a claim
 // read or a copy that does not answer leaves the message neither delivered nor acknowledged,
-// until it answers. A message to the session that is no role message is delivered as before, and
-// costs no claim read.
+// until it answers. A role message whose envelope the listener does not decode, while another
+// session holds the role, reaches no session: the relay acknowledges it, logs it once and counts
+// it. A message to the session that is no role message is delivered as before, and costs no claim
+// read.
 //
 // Each row is a listener of its own over an account of its own. A session is a stand-in of its
 // process (startSessionStandIn) registered in consumer mode through the listener's own route, and
 // a crash is its connection closing. The role messages of a row are two publishes to the role
 // through the publish route, which the route stores on the holder's own subject, and one message
-// as Dispatch's API sends a holder for a route to the role, whose role mark names the role.
+// as Dispatch's API sends a holder for a route to the role, whose role mark names the role. Rows 5a
+// and 5b store one role message whose envelope does not decode on the session's own subject.
 func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 	t.Run("1 after a takeover the previous holder registers again and receives none of the role's messages, each reaches the new holder, one relay line per message", func(t *testing.T) {
 		rig := newDelivererRig(t)
@@ -562,6 +605,87 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 		}
 		aSessionMessageIsDeliveredWithNoClaimRead(t, rig, previous, heardPrevious)
 		requireNoneHeard(t, heardPrevious, "the previous holder "+previous, late.EventID)
+	})
+
+	t.Run("5a a role message whose envelope does not decode, while another session holds the role, reaches no session: the relay acknowledges it, logs it once and counts it", func(t *testing.T) {
+		rig := newDelivererRig(t)
+		const (
+			sessionID = "ses_deliverer_fivea_session"
+			holder    = "ses_deliverer_fivea_holder"
+			role      = "deliverer-fivea"
+		)
+		standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+		heard := hear(t, standIn)
+		rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+		holderStandIn := startSessionStandIn(t, rig.url, holder, answerDone)
+		heardHolder := hear(t, holderStandIn)
+		rig.subscribe(t, consumerRegistration(holder, "epoch-1"))
+		rig.claim(t, holder, role, "")
+
+		eventID, seq := rig.storeUndecodableRoleMessage(t, sessionID, role)
+		if !rig.awaitAckedThrough(sessionID, seq, 15*time.Second) {
+			t.Errorf("the consumer of %s did not acknowledge the role message at sequence %d within 15s of its store", sessionID, seq)
+		}
+		// The message to the session came after the role message in stream order, so the relay
+		// had judged the role message when the session received it.
+		aSessionMessageIsDeliveredWithNoClaimRead(t, rig, sessionID, heard)
+		requireNoneHeard(t, heard, "the session "+sessionID+", which does not hold role "+role, eventID)
+		requireNoneHeard(t, heardHolder, "the holder "+holder, eventID)
+		if copies := rig.keptCopies(t, role, eventID); copies != 0 {
+			t.Errorf("role %s's kept lane holds %d copies of event %s, whose envelope does not decode, want none", role, copies, eventID)
+		}
+
+		// The count and the line are exact. The relay ends the message after one claim read,
+		// bounded at 2s (roleHolderReadTimeout), and acknowledges it at once; the row reads both
+		// only after the server holds that acknowledgement, which the wait above bounds at 15s.
+		// A second delivery needs the session consumer's ack wait (bus.SessionConsumerAckWait,
+		// 60s) to pass with no acknowledgement, and this path sends no nak, so no repeat reaches
+		// either.
+		body := ""
+		if !testwait.Holds(5*time.Second, 20*time.Millisecond, func() bool {
+			body = metricsBody(t, rig.harness)
+			return counterValue(t, body, relayUndecodableSeries) == 1
+		}) {
+			t.Errorf("%s = %d, want 1:\n%s", relayUndecodableSeries, counterValue(t, body, relayUndecodableSeries), body)
+		}
+		lines := linesIn(rig.harness.logs.String(), relayUndecodableLine, map[string]any{"session_id": sessionID})
+		if len(lines) != 1 {
+			t.Fatalf("the listener logged %d lines %q for session %s, want exactly one: %v", len(lines), relayUndecodableLine, sessionID, lines)
+		}
+		line := lines[0]
+		if line["role"] != role || line["holder"] != holder || line["event_id"] != eventID || line["stream_seq"] != float64(seq) {
+			t.Errorf("the line names role %v, holder %v, event %v and stream sequence %v, want %s, %s, %s and %d: %v",
+				line["role"], line["holder"], line["event_id"], line["stream_seq"], role, holder, eventID, seq, line)
+		}
+		if reason, _ := line["error"].(string); !strings.Contains(reason, "urgency must not be empty") {
+			t.Errorf("the line's error is %q, want the decode error naming the empty urgency: %v", reason, line)
+		}
+	})
+
+	t.Run("5b a role message whose envelope does not decode, while the session holds the role, is delivered to it as before", func(t *testing.T) {
+		rig := newDelivererRig(t)
+		const (
+			holder = "ses_deliverer_fiveb_holder"
+			role   = "deliverer-fiveb"
+		)
+		standIn := startSessionStandIn(t, rig.url, holder, answerDone)
+		heard := hear(t, standIn)
+		rig.subscribe(t, consumerRegistration(holder, "epoch-1"))
+		rig.claim(t, holder, role, "")
+
+		eventID, seq := rig.storeUndecodableRoleMessage(t, holder, role)
+		if !heard.await(15*time.Second, eventID) {
+			t.Errorf("the holder %s did not receive its role message %s within 15s: it received %v", holder, eventID, heard.all())
+		}
+		if !rig.awaitAckedThrough(holder, seq, 15*time.Second) {
+			t.Errorf("the consumer of %s did not acknowledge the role message at sequence %d within 15s of its delivery", holder, seq)
+		}
+		if lines := linesIn(rig.harness.logs.String(), relayUndecodableLine, nil); len(lines) != 0 {
+			t.Errorf("the listener logged %q for a role message its session holds, want no such line: %v", relayUndecodableLine, lines)
+		}
+		if body := metricsBody(t, rig.harness); counterValue(t, body, relayUndecodableSeries) != -1 {
+			t.Errorf("%s has a series for a role message its session holds, want none:\n%s", relayUndecodableSeries, body)
+		}
 	})
 }
 

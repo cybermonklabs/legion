@@ -91,7 +91,9 @@ type listenerDeliveryHandlerConfig struct {
 	// for one the stream took, refused for one it refused for good, which is not sent again.
 	roleDeadLetters *metrics.Counter
 	// roleKeptUndecodable counts the kept copies a walk ended because no read can decode them
-	// (envoy_role_kept_undecodable_total, judgeKeptRoleCopy).
+	// (envoy_role_kept_undecodable_total, judgeKeptRoleCopy), and, by path relay, the role messages
+	// a session relay ended for a session that does not hold the role because their envelope does
+	// not decode (sessionRelays.takeOverFrame).
 	roleKeptUndecodable *metrics.Counter
 	// takeoverFaults holds the takeover copy's test seams (takeoverFaultSet), shared by every copy
 	// of this configuration - its routes, relays and sweep - and nil in main.go, which forces no
