@@ -90,6 +90,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A restricted member names no issue's repository (refuseRepoOfRestrictedMember): refused
+	// here, before the body's project, parent or external ref is read and before anything, the
+	// related-item record of an issue already imported included, is written.
+	if refuseRepoOfRestrictedMember(w, who, input.Repo) {
+		return
+	}
 	blockers, err := normalizeIssueBlockers(input.BlockedBy)
 	if err != nil {
 		s.writeHandlerError(w, err)
