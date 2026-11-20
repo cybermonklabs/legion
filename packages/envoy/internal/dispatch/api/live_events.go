@@ -461,9 +461,9 @@ func (s *server) resolveAgain(ctx context.Context, view *eventsReader, caller mo
 	if err != nil {
 		return false, err
 	}
-	held := view.reader.Viewer
+	held := view.reader
 	view.reader = next
-	return sightMoved(held, next.Viewer, event), nil
+	return sightMoved(held, next, event), nil
 }
 
 // mayPredatePage reports whether event, an access change at or below eventsReader.through that the
@@ -506,16 +506,24 @@ func accessChangeOf(event model.Event) (string, bool) {
 
 // sightMoved reports whether next sees otherwise than held, past what event explains. A
 // project.created event's project, which a full member comes to see as it is made, moves nothing:
-// the page owes no refresh for it, since that event tells the page the project is there.
-func sightMoved(held, next *model.Viewer, event model.Event) bool {
-	if held.Open != next.Open {
-		return true
-	}
-	if sameSet(held.Sees, next.Sees) {
+// the page owes no refresh for it, since that event tells the page the project is there. A reader
+// that saw every object (seesEveryObject) and still does moved nothing either: each project it sees
+// now and did not then was made since, and the feed sends it that project's events from its
+// project.created on, as every feed did before a project could be private (R9), however many
+// projects were made before the reader was resolved again.
+func sightMoved(held, next model.Actor, event model.Event) bool {
+	if seesEveryObject(held) && seesEveryObject(next) {
 		return false
 	}
-	if event.Type == projectCreatedEvent && !slices.Contains(held.Sees, event.Project) {
-		return !sameSet(append(slices.Clone(held.Sees), event.Project), next.Sees)
+	was, now := held.Viewer, next.Viewer
+	if was.Open != now.Open {
+		return true
+	}
+	if sameSet(was.Sees, now.Sees) {
+		return false
+	}
+	if event.Type == projectCreatedEvent && !slices.Contains(was.Sees, event.Project) {
+		return !sameSet(append(slices.Clone(was.Sees), event.Project), now.Sees)
 	}
 	return true
 }

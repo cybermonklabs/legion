@@ -201,6 +201,12 @@ func (h *deliveryHub) recheckReaders(g *hubGeneration) {
 // whose new reader its view's GET row refuses (liveReadRefusal) is dropped and sent that refusal
 // instead. A sub replaced or dropped meanwhile is left as it is; a reader that does not resolve
 // keeps its view until the next re-check.
+//
+// The key of a reader that sees every object (seesEveryObject) names none of the projects it sees,
+// so a new project moves no such sub: its view is read again, for the reader that sees the project
+// now, which the statements that bind the viewer read (the unowned P0 list, the unfetchable count,
+// a Legion board's project), and its pages are sent what changed, as before a project could be
+// private (R9).
 func (h *deliveryHub) recheckSubs(g *hubGeneration, subs []*deliverySub) {
 	for _, sub := range subs {
 		reader, err := sub.resolve(g.readContext())
@@ -224,6 +230,9 @@ func (h *deliveryHub) recheckSubs(g *hubGeneration, subs []*deliverySub) {
 			spec.readFor(reader)
 			g.leaveLocked(sub)
 			h.joinLocked(g, sub.conn, sub.id, spec, nil, sub.resolve, sub.holds, h.clock.Now())
+		case seesEveryObject(reader) && !sameSet(sub.view.spec.reader.Viewer.Sees, reader.Viewer.Sees):
+			sub.view.spec.reader = reader
+			h.markDirtyLocked(g, sub.view, h.clock.Now(), deliveryCauseChange)
 		}
 		h.mu.Unlock()
 	}
