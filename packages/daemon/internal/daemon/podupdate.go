@@ -273,10 +273,14 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	if open != "" && open != round {
 		// The pod went without the round: it was replaced where it stood for a failure of its
 		// own — a terminal pod, a failed init container, a superseded disk, a lost launcher
-		// binding — and its disk went with it while a worker still had work to push. The claims
-		// record the pod that replaced it, which is the evidence. A round that lost nothing —
-		// every member of it pushed its work before the pod went — is written on no issue, and
-		// ends below.
+		// binding — while a worker still had work to push. Its work stays only where the issue's
+		// Sandbox still holds the kept volume that it held when the round opened, and the issue's
+		// next launch keeps that volume (podWentWithoutItsRound, roundKeptVolume). An ephemeral
+		// disk went with the pod. A reset of a kept volume or a change of the disk's shape made a
+		// new Sandbox, which holds a new, empty volume, or makes one at the next launch. The claims
+		// record the pod that replaced the round's pod, which is the evidence. A round that lost
+		// nothing — every member of it pushed its work before the pod went — is written on no
+		// issue, and ends below.
 		//
 		// What was lost is counted here exactly as the message counts it (lostClaims), so the
 		// message is written when, and only when, there is a role to name. Counted as the claims
@@ -1254,9 +1258,15 @@ func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group 
 
 // podWentWithoutItsRound is the round's pod gone before the round could finish: the message the
 // issue's spec requires is written on the issue, naming what was lost, and the round ends.
-// Nothing here can bring the work back — the disk went with the pod — so the message is the whole
-// of it. On another project's issue, the pod of the operator's spawn of it, no message is written
-// (writeOnIssue), and the daemon's log lines are the whole of it.
+// Nothing here can bring the work back, so the message is the whole of it. The work stays only
+// where the issue's Sandbox still holds the kept volume that it held when the round opened, and the
+// issue's next launch keeps that volume (roundKeptVolume). The issue's next pod mounts that volume,
+// so the message says where the work is. An ephemeral disk went with the pod, and the work on it
+// with it. A reset of a kept volume or a change of the disk's shape made a new Sandbox, which holds
+// a new, empty volume, so the work is lost there too. So is a Sandbox that carries the reset mark,
+// or whose disk shape is not the one the configuration now renders: the next launch deletes it,
+// with its volume. On another project's issue, the pod of the operator's spawn of it, no message is
+// written (writeOnIssue), and the daemon's log lines are the whole of it.
 //
 // Three readings say the pod went. The claims recording a pod other than the round's own is one
 // (reconcileIssuePodUpdate), which calls this with the claims it decided from; the runtime
@@ -1275,9 +1285,15 @@ func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group 
 func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, group []supervise.Claim, round, pod string) {
 	lost := lostClaims(group, round)
 	reasons := roundReasons(group, round)
-	s.log.Warn("supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
-		"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
-	written, err := s.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(round, reasons, lost)})
+	kept := s.roundKeptVolume(issue, group, round)
+	if kept {
+		s.log.Warn("supervise: the pod of an open update round is gone; its disk is a kept volume, so what the roles that had not answered did not push is still on it",
+			"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
+	} else {
+		s.log.Warn("supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
+			"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
+	}
+	written, err := s.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(round, reasons, lost, kept)})
 	switch {
 	case err != nil:
 		s.log.Error("supervise: write on the issue that its pod went without its update round",
@@ -1287,6 +1303,24 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 			"issue", issue, "round", round)
 	}
 	s.endPodUpdates(group, round)
+}
+
+// roundKeptVolume is whether the pod of the round that went had a kept volume that is still there
+// and that the issue's next launch keeps, as the runtime answers it (runtime.IssueVolumeReader) for
+// the time the round opened: a Sandbox made after that time holds a new volume, which holds nothing
+// of the round's pod, and the next launch deletes a Sandbox that carries the reset mark or has
+// another disk shape. Where no claim records when the round opened, or the runtime keeps no volume,
+// the answer is false.
+func (s *supervision) roundKeptVolume(issue string, group []supervise.Claim, round string) bool {
+	volumes, ok := s.runtime.(runtime.IssueVolumeReader)
+	if !ok {
+		return false
+	}
+	opened := roundOpenedAt(group, round)
+	if opened == nil {
+		return false
+	}
+	return volumes.IssueKeepsVolume(issue, *opened)
 }
 
 // endRoundOverAGonePod ends the round the sweep has just read the pod of as gone. The report is
@@ -2051,17 +2085,22 @@ func roleStates(claims []supervise.Claim) string {
 }
 
 // podWentMessage is what the issue is told when its pod went before its round was over: the pod
-// was replaced where it stood for a failure of its own, and the disk went with it. The issue's
-// spec requires this message. Another agent reads it, so it follows ASD-STE100.
-func podWentMessage(round, reasons string, lost []supervise.Claim) string {
+// was replaced where it stood for a failure of its own. Its disk went with it, or, where kept is
+// true, its disk is a kept volume that is still there and holds what the roles did not push. The
+// issue's spec requires this message. Another agent reads it, so it follows ASD-STE100.
+func podWentMessage(round, reasons string, lost []supervise.Claim, kept bool) string {
 	opened := "The daemon did not record why."
 	if reasons != "" {
 		opened = "The reasons were: " + reasons + "."
 	}
+	disk := "The pod's disk went with the pod. Work that these roles did not push is lost."
+	if kept {
+		disk = "The pod's disk is a kept volume, and the volume is still there. Work that these roles did not push is on that volume. The next pod of this issue mounts the volume."
+	}
 	return fmt.Sprintf(`The pod that ran this issue's roles is gone. The daemon opened an update round over that pod (%s). %s The pod went before the round was over.
 
-These roles did not answer the update ask before the pod went: %s. The pod's disk went with the pod. Work that these roles did not push is lost.
+These roles did not answer the update ask before the pod went: %s. %s
 
 The daemon starts each role again, in the same session, on a new pod. Each role must read its issue branch at origin to see the work that it pushed.`,
-		round, opened, roleStates(lost))
+		round, opened, roleStates(lost), disk)
 }

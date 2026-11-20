@@ -1160,9 +1160,10 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   5 minutes, serving nothing until one is placed and passes, and then reports the `pool-capacity`
   capability open with the count and the reason. Make room in the pool, or raise its limits; the
   probe pod itself needs only 500m and 1Gi.
-- **The `workspace-init` container fails.** It provisions the issue's workspace on the pod's own
-  disk, and its refusals name what to do, sometimes a `jj` command to run against the issue's
-  clone (a local bookmark deleted and never pushed, or a conflicted one). Read it with
+- **The `workspace-init` container fails.** It provisions the issue's workspace on the pod's disk
+  (the pod's own, or a kept volume, below), and its refusals name what to do, sometimes a `jj`
+  command to run against the issue's clone (a local bookmark deleted and never pushed, or a
+  conflicted one). Read it with
 
   ```sh
   kubectl -n legion logs <pod> -c workspace-init
@@ -1171,16 +1172,35 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   Nothing is registered before a refusal, so every later attempt in that pod refuses the same way.
   A pod whose `workspace-init` refuses runs no `roles` container, so there is no shell in which to
   run the commands it names; the remedy is letting the pod be replaced, and the issue's next launch
-  provisions a fresh clone and workspace from its pushed branch on a disk of its own. Run no `jj`,
-  `git` or `omp` in a running issue pod either: any role can plant configuration in its clone or
-  workspace that starts a program with every role's credentials in reach (`docs/kubernetes.md` in
-  the repository, "A shell on an issue's disk").
+  provisions a fresh clone and workspace from its pushed branch on a disk of its own, except on a
+  kept volume (below). Run no `jj`, `git` or `omp` in a running issue pod either: any role can
+  plant configuration in its clone or workspace that starts a program with every role's
+  credentials in reach (`docs/kubernetes.md` in the repository, "A shell on an issue's disk").
+
+  On a kept volume (`runtime.kubernetes.sandbox.microvm.keep_volume`), a failure of an init
+  container can come from the volume itself. So the issue's next launch gives the issue a new,
+  empty volume, except in these cases, which keep the volume:
+
+  - The container exited with code 2 or 3.
+  - The container ended as `OOMKilled`, or as `ContainerStatusUnknown`, which the kubelet writes
+    when the node or its container runtime restarts.
+  - The pod is being deleted.
+  - The kubelet ended the pod itself, for example in an eviction for node pressure or for a
+    storage limit, or in a graceful node shutdown.
+
+  The full rule is in `docs/kubernetes.md` in the repository ("A kept volume on a microVM pod",
+  "The reset").
 - **An issue's work is gone after its pod was replaced.** That is the shape of the runtime, not a
   failure: an issue's disk is its pod's own and is deleted with the pod, so a stop, a close, a
   node loss or a launch that replaces the pod takes the workspace with it. What survives is what
   was pushed to `legion/<issue>` and each role's conversation, which lives in the session
   database; the next pod provisions the workspace from that branch, and the agent is told its
   workspace is newer than its conversation before its next turn.
+  A microVM issue pod under `runtime.kubernetes.sandbox.microvm.keep_volume` is the exception: its
+  volume stays through a node loss and a replacement of the pod, and the next pod finds the
+  workspace as the last pod left it. That volume goes when the issue leaves the workflow, when its
+  disk's shape changes, or when the daemon resets it after a failed init container
+  (`docs/kubernetes.md` in the repository, "A kept volume on a microVM pod").
 - **`worker-stream: rejected hello (stale worker generation)`** in the daemon's log is the fence
   working: a pod from an older generation of a claim tried to connect after a newer one replaced it.
   Nothing to do.
@@ -1193,7 +1213,12 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   (`worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals`, 6 minutes at the
   defaults), often because the registration's answer never reached it. The daemon resumes the same
   session one generation later and counts a launch failure; after `launch_failure_limit` of them
-  the claim fails.
+  the claim fails. The line carries `claim`, and `launchFailure` with `limit`, the launch failure
+  this retirement counts and the limit it counts toward. A daemon-launched controller whose Envoy
+  role claim the listener keeps answering `503` at its start lands here, and its waits are in the
+  Oh My Pi log of its session; a controller whose Oh My Pi session changed is refused when it
+  registers the new session (`SameAgentRefusal`, `409`), exits, and is relaunched on its recorded
+  session.
   While the tree's cleanup is reserved (the tree is closing), the retirement waits: the process is
   kept, nothing is counted, and the deadline is tried again at the probe interval
   (`probe_interval_seconds`, 30 seconds at the default). Each try logs **`supervise: timer`** at

@@ -243,7 +243,7 @@ func (c *Branches) DefaultBranchOf(
 // commit the repository does not hold, which a result can be recorded at — the record route
 // refuses a commit only on GitHub's 422 proof that the repository does not hold it, so a
 // result recorded while the App could not read the repository is recorded whatever the commit
-// (api/results.go, refuseUnknownCommit). One such commit must not hold the branch that every
+// (api/results_linked.go, refuseUnknownCommit). One such commit must not hold the branch that every
 // `default_branch` result of the repository, and every `after_merge` result of it no stored
 // row answers, is measured against.
 //
@@ -515,13 +515,13 @@ func (c *Branches) markSeen(pair repoBranch, readAt time.Time) {
 	c.compares[pair] = held
 }
 
-// cannotSeeRepository is repositoryUnreadable — the App is installed on no repository covering
+// cannotSeeRepository is RepositoryUnreadable — the App is installed on no repository covering
 // this one, or its token is refused it — and the deployment holding no App key at all. Each
 // means Dispatch cannot see the repository, which is an answer rather than a fault worth
-// logging; repositoryUnreadable alone is the reconcile's rule for a row it stamps instead of
+// logging; RepositoryUnreadable alone is the reconcile's rule for a row it stamps instead of
 // warning about, and a deployment with no key has no rows to stamp.
 func cannotSeeRepository(err error) bool {
-	return repositoryUnreadable(err) || errors.Is(err, githubapp.ErrNoAppKey)
+	return RepositoryUnreadable(err) || errors.Is(err, githubapp.ErrNoAppKey)
 }
 
 // readBranchCommit is what branch_commits holds for one commit of one branch, and whether it
@@ -532,7 +532,7 @@ func cannotSeeRepository(err error) bool {
 // and writes rows nobody else can find. One repository reaches the table under two spellings.
 // A merge's seed carries GitHub's own (`Acme/Widgets`), since refs.CanonicalRepo gives a
 // caller's spelling back unchanged where no rename is recorded, while the results read asks
-// under the lowercased name repo_projects stores (api's canonicalRepo, through
+// under the lowercased name repo_projects stores (refs.ExternalRepo, through
 // comparisonReader.repositoryOf), so a table holding both spellings would place every
 // `after_merge` result of a repository whose owner writes their name with capitals at another
 // commit for good — the squash-merged, branch-deleted case the seed exists for above all
@@ -587,19 +587,27 @@ func writeBranchCommit(ctx context.Context, db refs.Execer, repoFull, branch, sh
 // repositoryRead is the prologue of every read the App makes about one repository, here, in
 // commit_held.go and in pull_request_heads.go's ReadThroughCommitPulls: it splits repoFull
 // into the owner and repo GitHub's paths take and mints that repository's installation token.
-// A malformed name comes back as splitRepo's own error and a refused mint as that error
-// wrapped, which cannotSeeRepository and repositoryUnreadable classify.
+// A name GitHub's names do not allow comes back as refs.SplitGitHubRepo's own error, before any
+// GitHub call, and a refused mint as that error wrapped under ErrTokenMint: cannotSeeRepository
+// and RepositoryUnreadable classify the mint's own error, and the results route reads
+// ErrTokenMint to name the mint as the read that failed (api/results_linked.go,
+// linkedReadRefusal).
 func repositoryRead(ctx context.Context, client *githubapp.Client, repoFull string) (owner, repo, token string, err error) {
-	owner, repo, err = splitRepo(repoFull)
+	owner, repo, err = refs.SplitGitHubRepo(repoFull)
 	if err != nil {
 		return "", "", "", err
 	}
 	token, err = client.RepositoryToken(ctx, owner, repo)
 	if err != nil {
-		return "", "", "", fmt.Errorf("mint installation token for %s: %w", repoFull, err)
+		return "", "", "", fmt.Errorf("%w for %s: %w", ErrTokenMint, repoFull, err)
 	}
 	return owner, repo, token, nil
 }
+
+// ErrTokenMint is repositoryRead's failure to mint the installation token a read of a repository
+// is made with (githubapp.Client.RepositoryToken: its installation lookup and the mint), wrapped
+// around the mint's own error, so the read that failed is the mint and not the repository's.
+var ErrTokenMint = errors.New("mint installation token")
 
 // repositoryDefaultBranch is the name of repoFull's default branch, read through the App.
 func repositoryDefaultBranch(ctx context.Context, client *githubapp.Client, repoFull string) (string, error) {

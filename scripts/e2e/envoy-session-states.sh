@@ -225,6 +225,8 @@ begin() { echo "== $1"; }
 . "$root/scripts/e2e/lib/model-endpoint.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
 . "$root/scripts/e2e/lib/run-verdict.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
+. "$root/scripts/e2e/lib/dispatch-identity.sh"
 
 # ---- the selection ------------------------------------------------------------------------------
 selected=()
@@ -374,6 +376,7 @@ cleanup() {
   stop_pid "$listener_a_keeper_pid"
   stop_pid "$listener_b_keeper_pid"
   stop_pid "$dispatch_keeper_pid"
+  stop_pid "$dispatch_identity_issuer_pid"
   stop_pid "$natsd_pid"
   # What outlived its stop, a member of an agent's group that outlived the TERM among them: every
   # process the run marked (both agents carry LEGION_E2E_RUN).
@@ -669,6 +672,7 @@ if [ -n "$needs_dispatch" ]; then
   go -C "$root/packages/envoy" build -o "$work/bin/envoy-dispatch" ./cmd/dispatch ||
     fail "./cmd/dispatch did not build"
   note "built envoy-dispatch from this checkout"
+  dispatch_identity_start
 fi
 if [ -n "$needs_omp" ] || [ -n "$needs_claude" ]; then
   (cd "$root" && bun install --frozen-lockfile) >"$evidence/logs/bun-install.log" 2>&1 ||
@@ -739,7 +743,8 @@ start_listener() {
     ENVOY_MACHINE_ID="envoy-session-states-$$-$1" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
     ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
     ENVOY_SESSION_REAP_INTERVAL="$reap_interval" \
-    ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_reap_interval" "$work/bin/envoy-listener"
+    ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_reap_interval" "${dispatch_identity_listener_env[@]}" \
+    "$work/bin/envoy-listener"
 }
 
 serving() { curl -fsS --max-time 3 -H "@$work/envoy-auth-header" "http://127.0.0.1:$1/v1/sessions"; }
@@ -799,7 +804,8 @@ if [ -n "$needs_dispatch" ]; then
     DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
     DISPATCH_WEB_DIST="$work/web-dist" ENVOY_URL="http://127.0.0.1:$port_a" \
     ENVOY_TOKEN="$(cat "$work/envoy-token")" ENVOY_SESSION_LIVE_WINDOW="$live_window" \
-    ENVOY_SESSION_GONE_HORIZON="$gone_horizon" NATS_URLS="$nats_url" "$work/bin/envoy-dispatch"
+    ENVOY_SESSION_GONE_HORIZON="$gone_horizon" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
+    "$work/bin/envoy-dispatch"
   dispatch_url=http://127.0.0.1:$dispatch_port
   await_start dispatch "$dispatch_pid" 120 "Dispatch to serve" \
     curl -fsS --max-time 3 "$dispatch_url/healthz"

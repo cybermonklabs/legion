@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -148,13 +149,16 @@ type provedCI struct {
 // readCIRuns reads every page of the check runs of head's commit, in head's own repository,
 // under one ciReadDeadline, and answers the run of the highest id of each name in names: GitHub
 // keeps every attempt of a run, and the newest decides (classify.mergeAttemptSets in the daemon
-// keeps one name's run the same way). A deployment holding no App key, a token GitHub would not
-// mint, an HTTP error, a rate limit and the deadline are each the error, worded as GitHub
-// answered it. The token never reaches it: it is sent in a header, and no answer names it.
+// keeps one name's run the same way). A row whose repository is no name GitHub allows
+// (refs.SplitGitHubRepo) is the error before any GitHub call: a rename stored before the routes
+// held names to that rule can make `acme/..` the canonical name of a row, and its halves would go
+// into the paths as they are. A deployment holding no App key, a token GitHub would not mint, an
+// HTTP error, a rate limit and the deadline are each the error, worded as GitHub answered it. The
+// token never reaches it: it is sent in a header, and no answer names it.
 func (s *server) readCIRuns(ctx context.Context, head delivery.NewestHead, names map[string]struct{}) (map[string]*ciRun, error) {
-	owner, repo, split := strings.Cut(head.Repo, "/")
-	if !split || owner == "" || repo == "" {
-		return nil, fmt.Errorf("the pull request row names repository %q, which is not owner/repo", head.Repo)
+	owner, repo, err := refs.SplitGitHubRepo(head.Repo)
+	if err != nil {
+		return nil, fmt.Errorf("the pull request row's %w", err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, ciReadDeadline)
 	defer cancel()
@@ -198,22 +202,48 @@ func (s *server) readCIRunPages(ctx context.Context, owner, repo, sha string, na
 }
 
 // ciUnreadDetail is the detail of a check whose runs at head GitHub could not be read for, err
-// the read's error. Where GitHub refused the read (githubapp.StatusError) or rate-limited it
-// (githubapp.RateLimitError), the error's text ends with GitHub's whole body, up to the 16 MiB a
-// page of check runs may take: the body is replaced by the `message` GitHub writes in the JSON it
-// refuses a request with, and left out where it holds none, so the status stays. Any other error
-// keeps its text. The sentence is then cut to ciUnreadDetailRunes.
+// the read's error, worded by gitHubErrorText: the error's text ends with GitHub's whole body
+// where GitHub refused or rate-limited the read, up to the 16 MiB a page of check runs may take,
+// and that body gives way to GitHub's `message`, so the status stays. The sentence is then cut
+// to ciUnreadDetailRunes.
 func ciUnreadDetail(head delivery.NewestHead, err error) string {
-	reason := err.Error()
+	return text.HeadRunes(fmt.Sprintf("GitHub could not be read for the check runs of %s at %s: %s.",
+		head.Repo, head.HeadSHA, gitHubErrorText(err)), ciUnreadDetailRunes)
+}
+
+// gitHubErrorText is the text of err, a GitHub read's error. Where GitHub refused the read
+// (githubapp.StatusError) or rate-limited it (githubapp.RateLimitError), the body the error's
+// text ends with is replaced by the `message` GitHub writes in the JSON it refuses a request
+// with, and left out where it holds none (withGitHubMessage). Any other error keeps its text.
+func gitHubErrorText(err error) string {
 	var refused *githubapp.StatusError
 	if errors.As(err, &refused) {
-		reason = withGitHubMessage(reason, refused.Body, refused.Message())
-	} else if limited, ok := githubapp.AsRateLimit(err); ok {
-		reason = withGitHubMessage(reason, limited.Body, limited.Message())
+		return withGitHubMessage(err.Error(), refused.Body, refused.Message())
 	}
-	return text.HeadRunes(fmt.Sprintf("GitHub could not be read for the check runs of %s at %s: %s.",
-		head.Repo, head.HeadSHA, reason), ciUnreadDetailRunes)
+	if limited, ok := githubapp.AsRateLimit(err); ok {
+		return withGitHubMessage(err.Error(), limited.Body, limited.Message())
+	}
+	return err.Error()
 }
+
+// gitHubReason is err's text as a refusal sentence carries it: gitHubErrorText, cut to its first
+// gitHubReasonBytes at a whole character (text.HeadBytes) where it is longer, saying so. The cut
+// is the one bound of every 502 GITHUB_UNREADABLE that names GitHub's error (linkedReadRefusal,
+// getAppInstallation), since an error GitHub answered with a page that is no JSON carries that
+// whole page, up to the megabyte githubapp reads of an answer.
+func gitHubReason(err error) string {
+	reason := gitHubErrorText(err)
+	head, cut := text.HeadBytes(reason, gitHubReasonBytes)
+	if !cut {
+		return reason
+	}
+	return fmt.Sprintf("%s… (GitHub's error, cut to its first %d of %d bytes)", head, len(head), len(reason))
+}
+
+// gitHubReasonBytes is the most bytes of GitHub's error gitHubReason keeps, about a kilobyte:
+// room for the status and a message as GitHub writes one, while the refusal stays a sentence a
+// caller prints whole.
+const gitHubReasonBytes = 1024
 
 // withGitHubMessage is reason, an error's text, with body, which ends it after ": ", replaced by
 // ": " and message, or by nothing where message is "". A text that does not end so is kept.

@@ -274,23 +274,67 @@ const documentEditValidation: NonNullable<DispatchToolSpec["validation"]> = {
     documentEditProblem(value) ?? `${documentEditOwner.message} ${PRECONDITION_RULE}`,
 };
 
-/** dispatch_comment: the document-owner rule plus `turn` only alongside `reply_to_ask`. */
+/** dispatch_comment: the document-owner rule, `turn` only alongside `reply_to_ask`, and the
+ *  mention rules below. */
 const commentOwner = documentOwnerValidation(true);
 const COMMENT_TURN_RULE =
   "turn requires reply_to_ask: turn says who holds an open ask's thread after the reply. Pass reply_to_ask with the open ask's id, or drop turn.";
 
+/** The most mentions one comment carries, and the refusal of one more, both as Dispatch states
+ *  them (`validateCommentMentions` in packages/envoy/internal/dispatch/api/comment_create.go). */
+const MAX_COMMENT_MENTIONS = 10;
+const COMMENT_MENTION_LIMIT_RULE = `mentions allow at most ${MAX_COMMENT_MENTIONS} targets`;
+
+/** The two forms of a mention's target and the refusal of any other, as Dispatch reads them
+ *  (`model.ParseRoute`'s roleRoutePattern and sessionRoutePattern in
+ *  packages/envoy/internal/dispatch/model/model.go, and `validateCommentMentions`). */
+const MENTION_TARGET_PATTERNS = [/^role:[a-z0-9-]+$/, /^session:[A-Za-z0-9_-]+$/] as const;
+const COMMENT_MENTION_TARGET_RULE = "mention target must be role:<name> or session:<id>";
+
+/** The refusal of a target named twice in one comment's mentions, as Dispatch states it
+ *  (`validateCommentMentions`). */
+const COMMENT_MENTION_REPEAT_RULE = "mentions must not repeat a target";
+
+/** The mention rule a comment's mentions break, in Dispatch's words and in its order: the count
+ *  first, then each target in turn, its form before whether an earlier one named it. Undefined
+ *  when they keep all three, or name none. */
+function mentionProblem(mentions: unknown): string | undefined {
+  if (!Array.isArray(mentions)) return undefined;
+  if (mentions.length > MAX_COMMENT_MENTIONS) return COMMENT_MENTION_LIMIT_RULE;
+  const seen = new Set<string>();
+  for (const target of mentions) {
+    if (
+      typeof target !== "string" ||
+      !MENTION_TARGET_PATTERNS.some((pattern) => pattern.test(target))
+    ) {
+      return COMMENT_MENTION_TARGET_RULE;
+    }
+    if (seen.has(target)) return COMMENT_MENTION_REPEAT_RULE;
+    seen.add(target);
+  }
+  return undefined;
+}
+
 function commentProblem(value: unknown): string | undefined {
-  const input = value as { readonly turn?: unknown; readonly reply_to_ask?: unknown };
+  const input = value as {
+    readonly turn?: unknown;
+    readonly reply_to_ask?: unknown;
+    readonly mentions?: unknown;
+  };
+  const mention = mentionProblem(input.mentions);
   return brokenParts([
     [commentOwner.check(value), commentOwner.message],
     [input.turn === undefined || typeof input.reply_to_ask === "string", COMMENT_TURN_RULE],
+    [mention === undefined, mention ?? ""],
   ]);
 }
 
+const COMMENT_RULE = `${commentOwner.message} ${COMMENT_TURN_RULE} ${COMMENT_MENTION_LIMIT_RULE}, each ${COMMENT_MENTION_TARGET_RULE}, and ${COMMENT_MENTION_REPEAT_RULE}.`;
+
 const commentValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => commentProblem(value) === undefined,
-  message: `${commentOwner.message} ${COMMENT_TURN_RULE}`,
-  refusal: (value) => commentProblem(value) ?? `${commentOwner.message} ${COMMENT_TURN_RULE}`,
+  message: COMMENT_RULE,
+  refusal: (value) => commentProblem(value) ?? COMMENT_RULE,
 };
 
 const ISSUE_UPDATE_FIELDS_RULE =
@@ -1299,6 +1343,15 @@ export const dispatchToolSpecs = [
             "request-approval hands it back at the current version."
         )
         .optional(),
+      mentions: z
+        .array(z.string())
+        .describe(
+          "Optional targets the comment mentions: role:<name> (lowercase letters, digits and -), " +
+            "which reaches the session holding that role, or session:<id> (letters, digits, _ " +
+            "and -); at most 10, none named twice. Dispatch delivers the comment to each target, " +
+            "retries a send that does not go through, and records every attempt on the comment."
+        )
+        .optional(),
       images: imagesArgument(z, "the issue (or the project document's project)"),
     }),
     validation: commentValidation,
@@ -1732,10 +1785,28 @@ export const dispatchToolSpecs = [
       "CHECK_PROVED_BY_CI from every role, which names the check and the run. " +
       "A pass that counts a failed, a skipped or an excluded case contradicts itself, and is " +
       "400 RESULT_CONTRADICTS. " +
-      "Dispatch asks GitHub whether the repository of the check's issue holds the commit. A " +
-      "commit that repository does not hold is 400 RESULT_COMMIT_UNKNOWN, which names the " +
-      "commit and that owner/repo. Record the result after the commit is pushed. A repository " +
-      "Dispatch cannot read records the result as before. " +
+      "Dispatch asks GitHub whether the repository of the check's issue holds the commit. If " +
+      "GitHub does not say that it does, Dispatch reads the external links of the check's issue: " +
+      "a link to a GitHub pull request (https://github.com/<owner>/<repo>/pull/<n>) that is open " +
+      "or merged, in a repository that Dispatch's GitHub App is installed on and can read, adds " +
+      "the repository of that pull request. One record reads at most 10 linked pull requests. A " +
+      "commit that none of these repositories holds is 400 RESULT_COMMIT_UNKNOWN, which names the " +
+      "commit and each owner/repo that Dispatch asked. It also names, with its reason " +
+      "(owner/repo#n (repository_unreadable)), each linked pull request that Dispatch could not " +
+      "read, at most 10 and a count of the rest, and every linked pull request in whose " +
+      "repository it could not read the commit, since each of those spent one of the record's 10 " +
+      "reads, and says to grant Dispatch's GitHub App that repository or to link a readable pull " +
+      "request. It says how many linked pull requests it left unread past that bound. Record the " +
+      "result after the commit is pushed. A linked repository that the App is not installed on " +
+      "or cannot read does " +
+      "not count. Where a read of " +
+      "a linked pull request or of a linked repository does not answer, and no repository is shown " +
+      "to hold the commit, the record is 502 GITHUB_UNREADABLE and nothing is recorded: record the " +
+      "result again, after the wait the refusal names for a rate limit. Where the issue has no " +
+      "repository, the result is recorded as before. Where Dispatch cannot read the repository " +
+      "of the check's issue, the result is recorded as before only when every linked read " +
+      "answers and no linked repository holds the commit: a linked read that does not answer " +
+      "is 502 GITHUB_UNREADABLE and nothing is recorded. " +
       "The result is recorded against the check's own issue, so a child's run of a parent's " +
       "check appears under that check. A closed issue takes a result only for a check whose " +
       "when is after_merge or default_branch, the production check after the merge. It refuses " +
