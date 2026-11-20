@@ -5,9 +5,9 @@ name: CI job daemon-go
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
 # What runs here is the Go daemon's own tests — the plain step over every package of
-# packages/daemon but the four concurrent ones and the text checks, less the two pure table
+# packages/daemon but the five concurrent ones and the text checks, less the two pure table
 # pins of internal/supervise, which the text-check job runs by name and this step skips by name,
-# the race step over those four packages, and the Stage 1 live proof, which builds ./cmd/legion
+# the race step over those five packages, and the Stage 1 live proof, which builds ./cmd/legion
 # and boots it against this job's Postgres. They left ci.yaml's `test` job, which runs
 # thirty-two shell-script harnesses and a handful of Bun suites behind one filter: that filter
 # had to cover everything the daemon's Go closure reads, so a change to a shell script or to
@@ -176,8 +176,8 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare --user --map-root-user true
 
-      # The step runs every package of the module except the four the race step below tests and
-      # internal/textcheck, whose tests are the text-check job's: so each of the four runs once
+      # The step runs every package of the module except the five the race step below tests and
+      # internal/textcheck, whose tests are the text-check job's: so each of the five runs once
       # per job, under the detector, and the text checks run once per run of the router, in a
       # job with no database. `set -o pipefail` is what makes a failed go list, or a pattern
       # that matches every package, fail the step rather than pass it with nothing tested. The
@@ -196,7 +196,7 @@ jobs:
       - name: Test the Go daemon
         run: |
           set -o pipefail
-          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/intake|internal/textcheck)$' | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/intake|internal/shimwire|internal/textcheck)$' | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
         working-directory: packages/daemon
 
       # The outbox's lane registry, lease renewal and held clock are the daemon's first goroutines
@@ -210,7 +210,12 @@ jobs:
       # while Lag's read of the oldest waiting message reads it, so each read of the stream's
       # info, DispatchTarget's and createConsumer's, goes through a handle of its own; here,
       # TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn fails when either
-      # read is put back on the shared handle, which a run without the detector passes.
+      # read is put back on the shared handle, which a run without the detector passes. The shim's
+      # wire, internal/shimwire, runs here too: the shim's two pumps (internal/shim reads the
+      # daemon's stream and the wrapped process's stdout on goroutines of their own) share its
+      # dedupe's delivery record under Dedupe.mu, and its Writer writes each frame whole under
+      # Writer.mu; here, TestTheDedupeIsSafeForTheShimsTwoPumps fails when the dedupe's lock is
+      # taken out, which a run without the detector passes.
       # internal/record is not here: the lanes' store is the package's subject, but its product
       # code starts no goroutine and uses no sync, so the detector had only the package's own test
       # goroutines to watch, and that cover is what leaving it out gives up. It runs in the plain
@@ -218,7 +223,7 @@ jobs:
       # a fake clock, so they are deterministic under it.
       #
       # The step carries a package deadline of its own, as the envoy race lanes do: under go
-      # test's ten-minute default, internal/daemon, by far the slowest of the four packages, took
+      # test's ten-minute default, internal/daemon, by far the slowest of the five packages, took
       # up to 570 s on the green runs of 2026-11-02 and 2026-11-03 and ran the ten minutes out on
       # main at job 125691048644 (run 41562777668). No single test dominates it: a local run timed
       # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
@@ -234,7 +239,7 @@ jobs:
       # other job's from the one list and holds each step to it, so the skip and the run cannot
       # come to name different tests.
       - name: Test the concurrent packages under the race detector
-        run: go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/
+        run: go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
         working-directory: packages/daemon
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one
