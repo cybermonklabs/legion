@@ -50,8 +50,9 @@ body: |-
   `GET /api/v1/github/app-installation/{owner}/{repo}` holds the path's repository to the names
   GitHub allows, which earlier releases read as a reference alone: a path such as `acme/...git`
   or `acme/.git`, whose name is `..` or empty once `.git` is trimmed, or whose name is longer
-  than 100 characters, is `400 INVALID_REPO_PROJECT`. Delivery, the CI reconcile, the
-  architecture importer and the results read of a check CI proves each refuse a stored
-  repository name GitHub does not allow, naming it, before they make any GitHub request, so a
-  mapping or a `renamed_to` stored before this release, and a pull request row stored under one,
-  never reaches GitHub.
+  than 100 characters, is `400 INVALID_REPOSITORY`, where earlier releases answered
+  `400 INVALID_REPO_PROJECT`. Delivery, the CI reconcile, the architecture importer and the
+  results read of a check CI proves each refuse a stored repository name GitHub does not allow,
+  naming it, before they make any GitHub request, so a project's default repository, an issue's
+  own repository or a `renamed_to` stored before this release, and a pull request row stored
+  under one, never reaches GitHub.

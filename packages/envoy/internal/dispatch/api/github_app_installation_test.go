@@ -110,7 +110,7 @@ func TestAppInstallationGitHubFailureWithAPageIsCutToTheBound(t *testing.T) {
 // `.git` are no dot segments, so the mux does not clean them, while the trailing `.git` trimmed
 // leaves `..` or an empty name, which would ask GitHub about `/repos/acme/../installation`.
 // `.git.git` and `...git.git` are the same names once canonicalising has trimmed one `.git`. Each
-// is refused 400 INVALID_REPO_PROJECT, and GitHub is asked nothing.
+// is refused 400 INVALID_REPOSITORY, and GitHub is asked nothing.
 func TestAppInstallationPathIsHeldToTheNamesGitHubAllows(t *testing.T) {
 	var asked atomic.Int32
 	handler := appInstallationServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -121,8 +121,8 @@ func TestAppInstallationPathIsHeldToTheNamesGitHubAllows(t *testing.T) {
 	})
 	for _, path := range []string{"acme/...git", "acme/.git", "acme/.git.git", "acme/...git.git"} {
 		response := agentRequest(t, handler, http.MethodGet, "/api/v1/github/app-installation/"+path, nil, "agent-token")
-		if code, _ := refusalOf(t, response); response.Code != http.StatusBadRequest || code != "INVALID_REPO_PROJECT" {
-			t.Errorf("GET app-installation %s: status=%d body=%s, want 400 INVALID_REPO_PROJECT", path, response.Code, response.Body.String())
+		if code, _ := refusalOf(t, response); response.Code != http.StatusBadRequest || code != "INVALID_REPOSITORY" {
+			t.Errorf("GET app-installation %s: status=%d body=%s, want 400 INVALID_REPOSITORY", path, response.Code, response.Body.String())
 		}
 	}
 	if requests := asked.Load(); requests != 0 {

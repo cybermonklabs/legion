@@ -18,17 +18,17 @@ import (
 // trimmed of the space around it → its canonical `owner/name`, provided GitHub could hold a
 // repository of that name (refs.ParseGitHubRepo, which lowercases, drops a `.git` suffix and
 // holds the stored form to GitHub's names); anything else → 400 with code, the write's own
-// invalid-input code (INVALID_ISSUE, INVALID_PROJECT). Since migration 20261112004945 no
-// repo_projects row stands behind an issue's own repository, and a project's default repository
-// is a column of the project, so this is the whole gate on the value, and the value goes on to
-// GitHub reads of its own: the CI repair asks GitHub about every distinct repository an issue
-// names or a project has as its default (cireconcile's covered), once a pass, and the Legion
-// daemon prepares a working copy from it. A name GitHub's rule refuses can only answer "no such
-// repository" there, every pass, so it is refused at the write instead. The rule is held here
-// and not in the reading of an issue reference's repository (refs.ParseExternalRef), because
-// externalRef resolves a reference to an external issue already linked (resolveIssueRef): a row
-// written before this gate existed is still to be found by the reference that names it, and
-// refusing the rule there would answer INVALID_ISSUE_REF for a link the server itself stored.
+// invalid-input code (INVALID_ISSUE, INVALID_PROJECT). An issue's own repository is a column of
+// the issue and a project's default repository a column of the project, so this is the whole
+// gate on the value, and the value goes on to GitHub reads of its own: the CI repair asks GitHub
+// about every distinct repository an issue names or a project has as its default (cireconcile's
+// covered), once a pass, and the Legion daemon prepares a working copy from it. A name GitHub's
+// rule refuses can only answer "no such repository" there, every pass, so it is refused at the
+// write instead. The rule is held here and not in the reading of an issue reference's repository
+// (refs.ParseExternalRef), because externalRef resolves a reference to an external issue already
+// linked (resolveIssueRef): a row written before this gate existed is still to be found by the
+// reference that names it, and refusing the rule there would answer INVALID_ISSUE_REF for a link
+// the server itself stored.
 func parseIssueRepo(raw json.RawMessage, code string) (repo *string, provided bool, err error) {
 	if len(raw) == 0 {
 		return nil, false, nil
