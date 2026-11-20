@@ -216,9 +216,7 @@
           "sentence": "- `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand"
         }
       ],
-      "record": [
-        "dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760"
-      ],
+      "record": ["dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760"],
       "comment": "A step of R12 that lands outside this pull request: cybermonklabs/legion#4636, from main, makes it, and merged to main as fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69, the squash of its head 8111f001f386abbcd67644dc55c9dab7e92973c1, so the step lives in skills/legion-worker/references/pr-body.md on main and not in this tree, which changes no skill file. The gate fetches that commit into a scratch git directory and names it IOC_MERGED_REPO; the proof reads the file there at that commit and holds each sentence published lists, so it exits 0 only when every sentence stands. A page's Proven by is a code span, which holds no backtick, so the proof takes the backticks out of the file with tr -d '\\140' and greps each sentence as written, its backticks taken out; published holds each sentence whole, backticks and all. The record is this tree's reading of how a step landed this way satisfies c-landed-steps (verification.md version 4). The guard test of the step ran in #4636's CI at 8111f001, the job pi-legion / pi-legion, with success (https://github.com/cybermonklabs/legion/actions/runs/44760760061/job/136376541199); it is a run of the step, not its proof. check.sh --landed holds the page to name this commit and this command."
     },
     {
@@ -237,9 +235,7 @@
           "sentence": "Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code (the whole change, or the difference from the last reviewed commit to the head)."
         }
       ],
-      "record": [
-        "dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760"
-      ],
+      "record": ["dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760"],
       "comment": "A step of R12 that lands outside this pull request: cybermonklabs/legion#4636, from main, makes it, and merged to main as fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69, the squash of its head 8111f001f386abbcd67644dc55c9dab7e92973c1, so the step lives in skills/legion-worker/references/merge-gate.md on main and not in this tree, which changes no skill file. The gate fetches that commit into a scratch git directory and names it IOC_MERGED_REPO; the proof reads the file there at that commit and holds each sentence published lists, so it exits 0 only when every sentence stands. A page's Proven by is a code span, which holds no backtick, so the proof takes the backticks out of the file with tr -d '\\140' and greps each sentence as written, its backticks taken out; published holds each sentence whole, backticks and all. The record is this tree's reading of how a step landed this way satisfies c-landed-steps (verification.md version 4). The guard test of the step ran in #4636's CI at 8111f001, the job pi-legion / pi-legion, with success (https://github.com/cybermonklabs/legion/actions/runs/44760760061/job/136376541199); it is a run of the step, not its proof. check.sh --landed holds the page to name this commit and this command."
     }
   ]
