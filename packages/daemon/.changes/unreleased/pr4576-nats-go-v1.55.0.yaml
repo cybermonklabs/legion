@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  Bump `github.com/nats-io/nats.go` from v1.53.1 to v1.55.0. The terminal-error test uses
+  `Maximum Control Line Exceeded`, since `Unknown Protocol Operation` now triggers a reconnect
+  instead of a close. Source citations updated to v1.55.0 line numbers.
+time: 2026-11-20T05:13:00Z
+custom:
+    Issue: pr4576

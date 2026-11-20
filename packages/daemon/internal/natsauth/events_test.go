@@ -145,9 +145,9 @@ func fakeServer(t *testing.T, then string) string {
 	return "nats://" + ln.Addr().String()
 }
 
-// A server's fatal -ERR closes the connection and hands its cause to no handler (the disconnect
-// handler gets nil), so the close is logged once at error with it, and an error that ends the
-// daemon's consumers names it from the connection.
+// A server's fatal -ERR closes the connection and, in nats.go v1.55.0, passes its cause to the
+// async error handler before the close, so the close is logged once at error with it, and an
+// error that ends the daemon's consumers names it from the connection.
 func TestAFatalServerErrorIsNamedFromTheConnection(t *testing.T) {
 	var out lockedBuffer
 	closed := make(chan struct{}, 1)

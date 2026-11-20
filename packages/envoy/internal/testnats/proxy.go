@@ -124,8 +124,8 @@ func (p *Proxy) FreezeServerReplies() {
 	}
 }
 
-// Restore ends a Cut and a Freeze: the proxy accepts and relays connections again, and the bytes a
-// freeze held move on.
+// Restore ends a Cut, a Freeze and a FreezeServerReplies: the proxy accepts and relays connections
+// again, the bytes a freeze held move on, and server replies resume.
 func (p *Proxy) Restore() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -242,6 +242,8 @@ func (p *Proxy) relay(dst, src net.Conn, serverToClient bool) {
 	}
 }
 
+// pass waits for any active gate before a relay read or write proceeds. serverToClient selects the
+// server-to-client gate in addition to the bidirectional one.
 func (p *Proxy) pass(serverToClient bool) {
 	p.mu.Lock()
 	gate := p.gate
