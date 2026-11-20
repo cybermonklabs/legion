@@ -75,7 +75,11 @@ const maxWaitingMemoryKills = 32
 // are the launcher's own, behind no role's prefix (roleLog.linef), because it watches every role's
 // processes and the launcher's together. The controller pod's (INFRA-3531) has one role, which
 // owns every process of the container (controllerClassifier), and its lines are that role's own
-// (manager.logf): the container's log, where no line carries a prefix.
+// (manager.logf): the container's log, where no line carries a prefix. Where the session database
+// names a writer audience, the controller's pod runs the roles-dir form instead, whose role-init
+// starts the controller's generation as it starts an issue pod role's, so its watch there is that
+// form's: podClassifier, the roles log's lines and the role-init's drain, at that form's defaults
+// until the controller's first acknowledgement hands it the controller pod's settings (serve).
 //
 // The watch runs only where the launcher is the container's first process (containerInit). Any
 // other launcher logs one line, through its form's writer, and runs none: no manager then holds a
@@ -293,7 +297,7 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 		}
 		protected[init.PID] = true
 		session[init.PID] = true
-		shim := c.shim(t, init)
+		shim := roleShim(t, init, c.exe)
 		if shim == nil {
 			continue
 		}
@@ -460,12 +464,16 @@ func (c *podClassifier) isTestPG(t *memoryguard.Table, pid int) bool {
 	return err == nil && slices.Contains(c.testPGData, cwd)
 }
 
-// shim is the role's shim: the oldest direct child of its role-init that is this binary run as
-// `worker-shim`. Any younger one is an orphan of the role's that the role-init adopted, as the
-// init of the role's PID namespace, and whatever it calls itself it is the role's work.
-func (c *podClassifier) shim(t *memoryguard.Table, init *memoryguard.Process) *memoryguard.Process {
+// roleShim is the shim of the role whose role-init is init: the oldest direct child of init that
+// is exe run as `worker-shim` (isShim), where exe is the launcher's own executable, since a role's
+// shim is the launcher's binary. Any younger one is an orphan of the role's that the role-init
+// adopted, as the init of the role's PID namespace, and whatever it calls itself it is the role's
+// work. It is the one rule for the shim: the pod's classifier (podClassifier.classify) and a
+// generation's session peer check (sessionPeer) both call it. With no exe, which a launcher that
+// cannot read its own executable has, no process is the shim.
+func roleShim(t *memoryguard.Table, init *memoryguard.Process, exe string) *memoryguard.Process {
 	for _, p := range t.Children(init.PID) {
-		if isShim(c.exe, p) {
+		if isShim(exe, p) {
 			return p
 		}
 	}

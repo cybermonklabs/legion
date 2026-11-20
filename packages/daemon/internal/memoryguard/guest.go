@@ -578,7 +578,7 @@ func (g *Guest) look() (*Table, map[int]Class) {
 	if !g.watching {
 		return nil, nil
 	}
-	t, err := scan(g.proc)
+	t, err := Scan(g.proc)
 	if err != nil {
 		g.watching = false
 		clear(g.known)
@@ -625,7 +625,7 @@ func (g *Guest) score(t *Table, classes map[int]Class) {
 		} else if adj >= raisedScore {
 			continue
 		}
-		if start, err := readStartTime(g.proc, pid); err != nil || start != p.StartTime {
+		if start, err := ReadStartTime(g.proc, pid); err != nil || start != p.StartTime {
 			continue
 		}
 		if err := g.writeScore(path, text); err != nil {
@@ -838,7 +838,7 @@ func (g *Guest) sessionEnded(role string) bool {
 // which took w's pid. A zombie has not left: its stat stays, with its start time, until its parent
 // reaps it. A read that fails otherwise does not say that w left.
 func (g *Guest) gone(w *watched) bool {
-	start, err := readStartTime(g.proc, w.key.pid)
+	start, err := ReadStartTime(g.proc, w.key.pid)
 	if err != nil {
 		return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
 	}
@@ -855,7 +855,7 @@ func (g *Guest) showsKill(w *watched) bool {
 	if err != nil || !sigkillPending(status) {
 		return false
 	}
-	start, err := readStartTime(g.proc, w.key.pid)
+	start, err := ReadStartTime(g.proc, w.key.pid)
 	return err == nil && start == w.key.start
 }
 

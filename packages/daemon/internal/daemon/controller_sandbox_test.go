@@ -341,7 +341,7 @@ func newControllerSandboxRig(t *testing.T, first controllerSandboxSetting) *cont
 	r := &controllerSandboxRig{t: t, cfg: cfg, token: token, name: sandbox.SandboxName(token), project: project,
 		kube: kube, legion: controllerSandboxLegionTool(t, tools), agent: idleRigAgentTool(t, tools), logs: &syncBuffer{}}
 	r.pods = newControllerSandboxPods(t, kube, tools, cfg.DaemonURL, pool, k.SessionStore.Database,
-		func(context.Context, string) (sessionproxy.Dialer, error) {
+		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
 		})
 	kube.onPodReady = r.pods.podReady
@@ -772,7 +772,7 @@ type controllerSandboxPods struct {
 // the controller's (launch): each launcher dials the stream its pod's own command names, not one
 // of the rig's. The part is made first, so that its launch is the one its launchers are made with.
 func newControllerSandboxPods(t *testing.T, kube *issueSandboxAPI, tools, daemonURL string, pool *store.Pool, session ompsessions.Database,
-	dial func(ctx context.Context, account string) (sessionproxy.Dialer, error),
+	dial func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error),
 ) *controllerSandboxPods {
 	t.Helper()
 	p := &controllerSandboxPods{kube: kube, tools: tools, daemonURL: daemonURL, pool: pool, shims: map[uint64]*controllerSandboxShim{}}

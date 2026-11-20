@@ -2623,7 +2623,7 @@ func (g *Guard) signalKill(target candidate) Handle {
 		g.killFailed(target.Process, err)
 		return nil
 	}
-	if start, err := readStartTime(g.proc, target.PID); err != nil || start != target.StartTime {
+	if start, err := ReadStartTime(g.proc, target.PID); err != nil || start != target.StartTime {
 		_ = h.Close()
 		return nil
 	}
@@ -2913,7 +2913,7 @@ func (a *assessment) leaveOut(key procKey) {
 // from the reads kept before it (keepSizes). again is the reads made at that reading before it
 // (readAgain).
 func (g *Guard) assess(now time.Time, again readAgain) (assessment, error) {
-	t, err := scan(g.proc)
+	t, err := Scan(g.proc)
 	if err != nil {
 		return assessment{}, err
 	}
@@ -3765,7 +3765,7 @@ func (g *Guard) scanLargest(start time.Time, shmem uint64) {
 		g.scanBusy = false
 		g.scanMu.Unlock()
 	}()
-	t, err := scan(g.proc)
+	t, err := Scan(g.proc)
 	if err != nil {
 		return
 	}

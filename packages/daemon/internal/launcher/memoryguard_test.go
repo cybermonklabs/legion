@@ -3576,6 +3576,127 @@ func TestControllerPodMemoryGuardTurnsOffOnAnAcknowledgementWithNoSettings(t *te
 	}
 }
 
+// The pids of TestControllerPodMemoryGuardRunsInTheRolesDirFormAtTheControllerPodsSettings: the
+// controller's generation under a role-init of its own, in the roles-dir form.
+const (
+	rolesDirCtlInit = 1680 + iota
+	rolesDirCtlShim
+	rolesDirCtlOmp
+	rolesDirCtlKernel
+	rolesDirCtlCommand
+)
+
+// Where the session database names a writer audience the controller's pod runs the launcher's
+// roles-dir form, and the controller's generation runs under a role-init of its own. In gVisor
+// that launcher, the container's first process, runs that form's guard over the controller's
+// role-init (podClassifier), and the daemon's first answer to the controller's hello hands it the
+// settings of runtime.kubernetes.memory_guard.controller_pod, here an act share of 70% with that
+// block's other defaults, its wait of 1 second among them. The guard takes them in place, with one
+// settings line, and acts at 75% of the limit, below the 85% it starts at. It ends, largest first,
+// the Python kernel and then the shell command the controller's Oh My Pi started, and never the
+// role-init, the shim or Oh My Pi, though each is larger than both; with only those three left it
+// ends nothing more and writes its stopped line. Each kill is the controller's: its ended line
+// reads role=controller, and its report goes on the controller's connection, in the guard's order.
+func TestControllerPodMemoryGuardRunsInTheRolesDirFormAtTheControllerPodsSettings(t *testing.T) {
+	exe := launcherExe(t)
+	launcher := os.Getpid()
+	pod := newGuardPod(t)
+	pod.addLauncher(exe, 0)
+	pod.add(
+		guardProcess{pid: rolesDirCtlInit, ppid: launcher, exe: exe, args: []string{"legion", "launcher", "role-init", "--role", "controller"}, anon: 1900 * guardMiB},
+		guardProcess{pid: rolesDirCtlShim, ppid: rolesDirCtlInit, exe: exe, args: []string{"legion", shimArgument, "--connect", "tcp://daemon", "--", controllerOmp}, anon: 1800 * guardMiB},
+		guardProcess{pid: rolesDirCtlOmp, ppid: rolesDirCtlShim, exe: controllerOmp, args: []string{controllerOmp, "--mode", "rpc"}, anon: 1700 * guardMiB},
+		guardProcess{pid: rolesDirCtlKernel, ppid: rolesDirCtlOmp, exe: "/usr/bin/python3.13", args: []string{"python3", "-u", "/tmp/omp-python-kernel.py"}, anon: 900 * guardMiB},
+		guardProcess{pid: rolesDirCtlCommand, ppid: rolesDirCtlOmp, exe: "/usr/bin/bash", args: []string{"bash", "-c", "make -j8"}, anon: 800 * guardMiB},
+	)
+	rig := useGuardPod(t, pod, nil)
+
+	// The roles-dir form for the controller alone, built as Run builds it (newManagers), with the
+	// controller's generation running: its role-init is the manager's child.
+	rolesDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rolesDir, "controller", RoleLauncherDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rolesDir, "controller", RoleLauncherDir, LauncherTokenFile), []byte(roleToken("controller")+"\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	stderr := &lockedBuffer{}
+	cfg := Config{
+		Connect: "tcp://" + listener.Addr().String(), Sandbox: "legion-legion-controller", PodUID: "pod-1",
+		RolesDir: rolesDir, Roles: []string{"controller"}, Stdout: stderr, Stderr: stderr, StopGrace: 2 * time.Second,
+	}
+	pids := &pidGuard{}
+	managers, err := newManagers(cfg, pids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := managers[0]
+	m.mu.Lock()
+	m.child = &child{generation: 1, pid: rolesDirCtlInit}
+	m.mu.Unlock()
+	// The guard and the controller's connection, as Run's roles-dir branch serves them. The
+	// connection is served once (serve, not serveUntil), so its end stops no generation: this one
+	// is no process of the test's.
+	ctx, cancel := context.WithCancel(context.Background())
+	guarded := serveMemoryGuard(ctx, cfg, managers, pids)
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = m.serve(ctx, listener.Addr().String())
+	}()
+	t.Cleanup(func() {
+		cancel()
+		for what, done := range map[string]<-chan struct{}{"the controller's connection": served, "the memory guard": guarded} {
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				t.Errorf("%s did not return after its context ended; the launcher's log: %s", what, stderr.String())
+			}
+		}
+	})
+	rig.started()
+	conn := acceptRole(t, listener)
+	if conn.hello.Role != "controller" || conn.hello.Token != roleToken("controller") {
+		t.Fatalf("hello = %#v, want the controller's from its roles directory", conn.hello)
+	}
+	conn.acknowledgeWith(memoryGuardAck(70, shimwire.MemoryGuardFloorDefault, shimwire.MemoryGuardControllerWaitDefault, shimwire.MemoryGuardIntervalDefault))
+	at70 := "launcher: memory guard: settings act_percent=70 floor_percent=10 wait=1s interval=100ms"
+	if got := guardLines(stderr, "settings "); !slices.Equal(got, []string{at70}) {
+		t.Fatalf("after the controller's first acknowledgement the guard's settings lines are %q, want %q; the launcher's log:\n%s", got, at70, stderr.String())
+	}
+
+	rise := func(want ...int) {
+		t.Helper()
+		pod.setAnon(guardLimit / 100 * 75)
+		rig.tick()
+		if kills := rig.signal.kills(); !slices.Equal(kills, want) {
+			t.Fatalf("at 75%% of the limit the guard killed %v, want %v and never the role-init, the shim or Oh My Pi; its log:\n%s", kills, want, rig.log())
+		}
+		pod.setAnon(guardLow)
+		rig.tick()
+	}
+	rise(rolesDirCtlKernel)
+	rise(rolesDirCtlKernel, rolesDirCtlCommand)
+	rise(rolesDirCtlKernel, rolesDirCtlCommand)
+	if stopped := guardLines(stderr, "stopped for this rise reason=nothing to end "); len(stopped) != 1 || !strings.Contains(stopped[0], " endable=0 ") {
+		t.Fatalf("the stopped lines are %q, want one with nothing it may end; its log:\n%s", stopped, rig.log())
+	}
+	ended := guardLines(stderr, "ended ")
+	for i, pid := range []int{rolesDirCtlKernel, rolesDirCtlCommand} {
+		if r := conn.nextMemoryKill(); r.PID != pid || r.Sequence != uint64(i+1) || r.Guard != rig.id() {
+			t.Errorf("the controller's connection carries %+v as its report %d, want pid %d, sequence %d of guard %s", r, i+1, pid, i+1, rig.id())
+		}
+		if want := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller ", pid); i >= len(ended) || !strings.HasPrefix(ended[i], want) {
+			t.Errorf("the guard's ended lines are %q, want line %d to start %q", ended, i, want)
+		}
+	}
+}
+
 // A panic on the controller pod's guard's loop, here in its Config.Observe at a reading at the
 // mark, turns the guard off for good with one off line that names the panic and where it was
 // raised, and the launcher, its container's first process, serves on: the guard ends nothing and

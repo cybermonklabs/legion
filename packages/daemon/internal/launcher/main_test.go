@@ -14,14 +14,16 @@ import (
 // test binary runs as a launcher's child (TestLauncherChild), as a launcher of its own
 // (TestLauncherProcess, TestLauncherPIDOneHelper), as PID 1 of a PID namespace of its own
 // (runAsPIDOne's helpers), as a generation that waits for a SIGTERM
-// (TestLauncherTermDialer) and as role-init in a role's namespaces (TestRoleInitHelper and the
-// helpers of roleinit_test.go, which register their own markers here). Each reads its
-// instructions from a LEGION_ variable its test hands it, and Guard takes every LEGION_ variable
-// out, so a process that is one of these children runs no Guard of its own: it was started by a
-// guarded test process, whose environment it inherits, so it holds nothing of the pod's either.
+// (TestLauncherTermDialer), as role-init in a role's namespaces (TestRoleInitHelper and the
+// helpers of roleinit_test.go, which register their own markers here), and as a role's shim,
+// agent and agent's child under that role-init (sessionPeerShim, TestSessionPeerStandInHelper).
+// Each reads its instructions from a LEGION_ variable its test hands it, and Guard takes every
+// LEGION_ variable out, so a process that is one of these children runs no Guard of its own: it
+// was started by a guarded test process, whose environment it inherits, so it holds nothing of
+// the pod's either.
 var helperChildVariables = []string{
 	launcherChildEnv, launcherProcessEnv, launcherTermDialerEnv, namespaceHelperEnv, pidOneHelperEnv,
-	roleInitEnv, roleProbeEnv,
+	roleInitEnv, roleProbeEnv, peerPlanEnv, peerStandInEnv,
 }
 
 // mainHelpers are this package's helper children that no test can re-enter: one started as the
@@ -60,12 +62,20 @@ var guardKeep []string
 // and OMP_SESSION_STORAGE name the deployment's shared sessions database, a test of this package
 // would connect to and query the store every agent of the deployment reads and writes. Each test
 // here that needs a session database names its own (testdb.DSNFile).
+//
+// The shim stand-in of the session peer test is this binary run as `<binary> worker-shim`, the
+// argv a shim has (roleShim). The test framework would read that argument as no test flag and run
+// every test, so TestMain runs the stand-in before anything else, and only in a process that
+// carries the test's marker (sessionPeerShim).
 func TestMain(m *testing.M) {
 	for name, helper := range mainHelpers {
 		if os.Getenv(name) != "" {
 			helper()
 			os.Exit(0)
 		}
+	}
+	if len(os.Args) > 1 && os.Args[1] == shimArgument && os.Getenv(peerPlanEnv) != "" {
+		os.Exit(sessionPeerShim())
 	}
 	for _, name := range helperChildVariables {
 		if os.Getenv(name) != "" {

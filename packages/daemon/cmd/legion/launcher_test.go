@@ -175,6 +175,34 @@ func TestTheLauncherCommandRefusesAServiceAccountWithoutItsSessionDatabase(t *te
 	}
 }
 
+// A writer audience needs the roles-dir form: the single-role form runs its agent in the
+// container's own namespaces, where the writer token would be in the agent's view. So the
+// single-role form told the four other session flags and a writer audience of the right form
+// refuses before it dials anything, and names the roles-dir form. A launcher that did not know
+// the flag would exit 2 on its usage, and one that parsed it and dropped it would dial the
+// unreachable daemon until its context ends.
+func TestTheLauncherCommandRefusesAWriterAudienceInTheSingleRoleForm(t *testing.T) {
+	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
+	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	code := run(ctx, []string{
+		"legion", "launcher", "--connect", "tcp://127.0.0.1:1", "--sandbox", "s", "--pod-uid", "p",
+		"--token-file", token, "--role", "controller", "--private-dir", t.TempDir(),
+		"--session-instance", "example-project:us-central1:example-instance", "--session-database", "legion_sessions",
+		"--session-user", "legion-sessions@example-project.iam",
+		"--session-impersonate-service-account", "legion-sessions@example-project.iam.gserviceaccount.com",
+		"--session-writer-audience", "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-pool/providers/example-provider",
+	}, &stdout, &stderr)
+	const want = "launcher: --session-writer-audience needs the roles-dir form (--roles-dir)"
+	if code != 1 || !strings.Contains(stderr.String(), want) {
+		t.Fatalf("exit %d, stderr %q; want 1 naming %q", code, stderr.String(), want)
+	}
+}
+
 // The metadata endpoint is a microVM pod's alone, in either of the launcher's forms, and named
 // whole: both of its flags, with --microvm. Each other mixture is refused before anything is
 // dialled or listened on, naming what it lacks, which proves each flag reaches the launcher: one

@@ -46,12 +46,12 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// It names shapedAnswersContract rather than 193 because 193's entry was the last one when that
-// change landed: a renumber of it moved shapedAnswersContract and this list together, and moving
-// one of the two alone would describe a shape at a contract no entry declares. A later entry
-// follows it as a number: 202 is version.go's entry for dispatch://INFRA-3531 and
-// dispatch://INFRA-4567.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 202}
+// 193 is the constant rather than its number, because the entry that added the shaped answers
+// names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
+// one of the two alone would describe a shape at a contract no entry declares. The later entries
+// follow it as numbers: 199 is version.go's entry for INFRA-4605, and 202 its entry for
+// dispatch://INFRA-3531 and dispatch://INFRA-4567.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, 202}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer

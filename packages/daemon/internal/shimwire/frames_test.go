@@ -214,6 +214,13 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			LauncherStart{ID: "start-1", Generation: 7, Argv: []string{"omp", "--mode", "rpc"}, Env: []string{"A=B"}, Files: map[string]string{"LEGION_BOOT_TOKEN": "boot-7"}, ResumeFile: "/sessions/test.jsonl"},
 		},
 		{
+			// An Oh My Pi launch wrapped in the deployment's setup: the agent's executable is not
+			// the first word of Argv, so the start names it.
+			"launcher_start of an Oh My Pi launch",
+			`{"type":"launcher_start","id":"start-2","generation":8,"argv":["/bin/sh","-c","exec \"$@\"","legion-start","/opt/omp/bin/omp"],"env":["A=B"],"agentExecutable":"/opt/omp/bin/omp"}`,
+			LauncherStart{ID: "start-2", Generation: 8, Argv: []string{"/bin/sh", "-c", `exec "$@"`, "legion-start", "/opt/omp/bin/omp"}, Env: []string{"A=B"}, AgentExecutable: "/opt/omp/bin/omp"},
+		},
+		{
 			"launcher_start_result",
 			`{"type":"launcher_start_result","id":"start-1","ok":true,"runningGeneration":7}`,
 			LauncherStartResult{ID: "start-1", OK: true, RunningGeneration: 7},

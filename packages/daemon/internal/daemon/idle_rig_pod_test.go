@@ -46,7 +46,7 @@ type idleRigPods struct {
 	launch func(pod, podUID string) (connect string, microVM, ok bool)
 	// session is the Cloud SQL session database the launchers proxy to, and dial is its upstream.
 	session ompsessions.Database
-	dial    func(ctx context.Context, account string) (sessionproxy.Dialer, error)
+	dial    func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)
 
 	mu sync.Mutex
 	// running is each live pod's launchers, by pod name.
@@ -86,7 +86,7 @@ func (processes *idleRigPodProcesses) run(f func(ctx context.Context)) {
 	}()
 }
 
-func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect string, microVM, ok bool), session ompsessions.Database, dial func(ctx context.Context, account string) (sessionproxy.Dialer, error)) *idleRigPods {
+func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect string, microVM, ok bool), session ompsessions.Database, dial func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)) *idleRigPods {
 	t.Helper()
 	// Each launcher's private directory is a numbered subdirectory of this root, and the unix
 	// socket of a generation's session database proxy is `<dir>/g<n>/.s.PGSQL.5432`. A unix
