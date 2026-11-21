@@ -101,9 +101,10 @@ func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string) *CodeFlow 
 // discoverCodeFlow reads issuer's discovery document. An issuer whose document names no
 // authorization_endpoint or token_endpoint offers no sign-in, and fails discovery. One that names
 // no revocation_endpoint is accepted, and Revoke fails against it. One whose revocation_endpoint
-// is not a string, or whose token_endpoint_auth_methods_supported is not an array of strings
-// (authMethods), fails discovery. The config every grant starts from, the code exchanges',
-// Refresh's and CheckClient's, authenticates as tokenAuthStyle says.
+// is not a string, a null included (endpointString), or whose
+// token_endpoint_auth_methods_supported is not an array of strings (authMethods), fails discovery.
+// The config every grant starts from, the code exchanges', Refresh's and CheckClient's,
+// authenticates as tokenAuthStyle says.
 func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string) (*codeFlowIssuer, error) {
 	provider, err := gooidc.NewProvider(ctx, issuer)
 	if err != nil {
@@ -114,8 +115,8 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 		return nil, fmt.Errorf("oidc: issuer %s names no authorization_endpoint or token_endpoint in its discovery document, so it offers no sign-in", issuer)
 	}
 	var metadata struct {
-		RevocationEndpoint string      `json:"revocation_endpoint"`
-		TokenAuthMethods   authMethods `json:"token_endpoint_auth_methods_supported"`
+		RevocationEndpoint endpointString `json:"revocation_endpoint"`
+		TokenAuthMethods   authMethods    `json:"token_endpoint_auth_methods_supported"`
 	}
 	if err := provider.Claims(&metadata); err != nil {
 		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint and token_endpoint_auth_methods_supported: %w", issuer, err)
@@ -129,8 +130,27 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 			Endpoint:     endpoint,
 			Scopes:       signInScopes,
 		},
-		revocationURL: metadata.RevocationEndpoint,
+		revocationURL: string(metadata.RevocationEndpoint),
 	}, nil
+}
+
+// endpointString is a discovery document's revocation_endpoint, read only as RFC 8414 section 2
+// writes it, a JSON string. Decoding into a string alone is not that check: encoding/json reads a
+// null into a string as the empty one, which would read as a document naming no revocation
+// endpoint. A document with no such member leaves it empty.
+type endpointString string
+
+// UnmarshalJSON reads data as a JSON string, and fails on anything else, a null included.
+func (s *endpointString) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return errors.New("revocation_endpoint is null, not a string")
+	}
+	var endpoint string
+	if err := json.Unmarshal(data, &endpoint); err != nil {
+		return fmt.Errorf("revocation_endpoint is not a string: %w", err)
+	}
+	*s = endpointString(endpoint)
+	return nil
 }
 
 // authMethods is a discovery document's token_endpoint_auth_methods_supported, read only as RFC

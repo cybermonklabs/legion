@@ -814,6 +814,53 @@ func TestCodeFlowDiscoveryRefusesATokenAuthMethodsListItCannotRead(t *testing.T)
 	}
 }
 
+// A discovery document whose revocation_endpoint is not a string is one the code flow cannot read:
+// its discovery fails, naming the member. A null is not a string, though Go's encoding/json reads
+// it into a string as the empty one, which would read as a document naming no revocation endpoint.
+// A string, and a document with no such member, are read.
+func TestCodeFlowDiscoveryRefusesARevocationEndpointItCannotRead(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		member   string // the revocation_endpoint member with its leading comma, or none
+		readable bool
+	}{
+		{"null", `,"revocation_endpoint":null`, false},
+		{"a number", `,"revocation_endpoint":1`, false},
+		{"an array", `,"revocation_endpoint":["https://issuer.example/revoke"]`, false},
+		{"a string", `,"revocation_endpoint":"https://issuer.example/revoke"`, true},
+		{"no member", ``, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/.well-known/openid-configuration" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"issuer":"` + server.URL + `","jwks_uri":"` + server.URL + `/keys",` +
+					`"authorization_endpoint":"` + server.URL + `/authorize","token_endpoint":"` + server.URL + `/token"` +
+					c.member + `}`))
+			}))
+			t.Cleanup(server.Close)
+			flow := NewCodeFlow(server.URL, flowClientID, flowClientSecret, "")
+			err := flow.Discover(context.Background())
+			if c.readable {
+				if err != nil || !flow.Discovered() {
+					t.Fatalf("Discover against a document with %q: err = %v, discovered = %t, want it read", c.member, err, flow.Discovered())
+				}
+				return
+			}
+			if !errors.Is(err, ErrIssuerUnavailable) || !strings.Contains(err.Error(), "revocation_endpoint") {
+				t.Fatalf("Discover against a document with %q: err = %v, want ErrIssuerUnavailable naming revocation_endpoint", c.member, err)
+			}
+			if flow.Discovered() {
+				t.Fatal("a document the code flow cannot read reads as discovered")
+			}
+		})
+	}
+}
+
 // onlineSignIn is an online-mode sign-in hinting the account of googleClaims, with a fresh PKCE
 // verifier and nonce as its ID token's nonce.
 func onlineSignIn(nonce string) OnlineSignIn {
