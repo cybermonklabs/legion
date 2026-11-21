@@ -242,6 +242,11 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 // request deadline, which brokerCredentialMargin covers. A caller who lost the address is refused
 // as their next request is: 401 NO_IDENTITY for a cookie, 401 TOKEN_REVOKED for a personal token;
 // a read that fails is 503 IDENTITY_UNAVAILABLE. It writes nothing.
+//
+// Each account check, and the account it answers, is the account binding's, and holds only while
+// the binding does (accountsHeld, read in the same transaction after the address's lock): beside a
+// build without the binding in the fleet the re-read checks no account and answers none, so the
+// approve is relayed naming no account, as that build relays it.
 func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject string, generation int64, err error) {
 	cookieLogin, cookieGeneration := s.mintCookie(r, actor)
 	var tokenID *string
@@ -262,13 +267,17 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 	if _, err := tx.Exec(r.Context(), store.AddressLockSharedSQL, actor.ID); err != nil {
 		return unread(err)
 	}
+	held, err := s.accountsHeld(r.Context(), tx)
+	if err != nil {
+		return unread(err)
+	}
 	if err := tx.QueryRow(r.Context(), `
 		select exists (select 1 from user_sessions where login = $2::text and generation <> $3::bigint),
 			exists (select 1 from agent_tokens left join people on people.email = canonical_login(agent_tokens.owner)
 				where agent_tokens.id = $4::uuid and (agent_tokens.revoked_at is not null or `+tokenAccountReplaced("$5::boolean")+`)),
 			coalesce(`+credentialSubjectSQL("$1::text", "$2::text", "$4::uuid", "$5::boolean")+`, ''),
 			coalesce((select generation from user_sessions where login = $1::text), 0)
-	`, actor.ID, cookieLogin, cookieGeneration, tokenID, s.deps.SignInIssuer != "").
+	`, actor.ID, cookieLogin, cookieGeneration, tokenID, held).
 		Scan(&cookieGone, &tokenGone, &subject, &generation); err != nil {
 		return unread(err)
 	}

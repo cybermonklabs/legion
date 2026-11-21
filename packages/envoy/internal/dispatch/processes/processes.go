@@ -21,7 +21,8 @@
 // which every owner lock's fleet read takes (store.LockOwner): a row at 0 counts there until it is
 // deregistered or pruned (store.OwnerLockLegacyWindow, PruneAge), and its insert, an earlier
 // build's registration or the return of its lapsed row, takes the owner lock gate (migration
-// 20261115200014).
+// 20261115200014); and the account binding it serves under (migration 20261120222130), which
+// the binding's fleet read takes the same way (store.AccountBindingHolds).
 package processes
 
 import (
@@ -329,10 +330,11 @@ func tryRegister(ctx context.Context, pool *pgxpool.Pool, id string, instance In
 // instance, or, where the row is there already (a lapsed heartbeat, Registration.renew), stamps its
 // heartbeat. The second result is a failure to reach a decision. The caller commits.
 //
-// The row names this build's owner lock protocol, store.OwnerLockProtocol, which no Instance
-// carries: the column's default, 0, is an earlier build's, whose insert takes the owner lock gate
-// and stamps the earlier build's mark (migration 20261115200014), which a registration of this
-// build must never do.
+// The row names this build's owner lock protocol, store.OwnerLockProtocol, and its account
+// binding, store.AccountBindingProtocol, which no Instance carries: each column's default, 0, is
+// an earlier build's, whose insert takes that column's gate and stamps its earlier build's mark
+// (migrations 20261115200014 and 20261120222130), which a registration of this build must never
+// do.
 func admit(ctx context.Context, tx pgx.Tx, id string, instance Instance) (refusal error, err error) {
 	live, err := Live(ctx, tx)
 	if err != nil {
@@ -349,12 +351,12 @@ func admit(ctx context.Context, tx pgx.Tx, id string, instance Instance) (refusa
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into server_processes (instance, commit, dashboard_build, signing_keys,
-			schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol, account_binding)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		on conflict (instance) do update set heartbeat_at = now()`,
 		id, instance.Commit, instance.DashboardBuild, instance.SigningKeys,
 		instance.SchemaVersion, instance.SchemaCreatable, instance.EmbedderIdentity, instance.FileStore,
-		store.OwnerLockProtocol); err != nil {
+		store.OwnerLockProtocol, store.AccountBindingProtocol); err != nil {
 		return nil, err
 	}
 	return nil, nil

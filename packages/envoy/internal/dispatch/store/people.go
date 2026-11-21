@@ -206,6 +206,18 @@ func signInMemberKind(email string, kind model.MemberKind) error {
 // for the next sign-in to revoke again; one that commits is logged at WARN with the address, and
 // with how many tokens it revoked when it replaced an account or revoked another account's tokens.
 //
+// All of that revoking and owing is the account binding's, and it runs only while the binding
+// holds over the fleet (AccountBindingHolds, read under the address's lock, which keeps the
+// binding's gate to the commit): while a build without the binding is in the fleet, which revokes
+// nothing when another account signs in, the sign-in records the account and ends the sessions as
+// that build does (the database's triggers end them, and stamp sub_recorded_at, whichever build
+// changes sub) and revokes and owes nothing, logged at WARN with the account it replaced, so no
+// revocation stands on a replacement that build would have recorded without it. The database keeps
+// such a replacement, whichever build makes it (account_binding_replacements, migration
+// 20261121121717), and a sign-in that finds the binding holding catches up the address's kept
+// replacements first (CatchUpAccountBinding, logged at WARN), then deletes the one its own
+// replacement keeps, which it revokes and owes itself.
+//
 // A restricted sign-in (an account outside the Workspace) never takes a full member's address
 // (takesAMembersAddress): it writes nothing and returns auth.ErrAddressHeldByMember, read once
 // before the plain token's retirement (refuseAMembersAddress), so the member's token is never
@@ -229,6 +241,10 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	if _, err := tx.Exec(ctx, addressLockSQL, email); err != nil {
 		return fmt.Errorf("record sign-in of %q: lock the address: %w", email, err)
 	}
+	binding, err := AccountBindingHolds(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("record sign-in of %q: %w", email, err)
+	}
 	inserted, err := tx.Exec(ctx, `insert into people (email) values ($1) on conflict (email) do nothing`, email)
 	if err != nil {
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
@@ -243,17 +259,23 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	}
 	replaced := stored != "" && stored != subject
 	firstRecording := stored == "" && subject != ""
+	var caught AccountBindingCatchUp
+	if binding {
+		if caught, err = CatchUpAccountBinding(ctx, tx, email, s.brokerRevocationIssuer); err != nil {
+			return err
+		}
+	}
 	var tokensRevoked int64
 	var owed []string
 	switch {
-	case replaced:
+	case binding && replaced:
 		tokens, err := tx.Exec(ctx, revokeAddressTokensSQL, email)
 		if err != nil {
 			return fmt.Errorf("revoke the personal tokens of %q, which another Google account signs in to now: %w", email, err)
 		}
 		tokensRevoked = tokens.RowsAffected()
 		owed = []string{stored}
-	case firstRecording:
+	case binding && firstRecording:
 		if tokensRevoked, owed, err = revokeOtherAccountsTokens(ctx, tx, email, subject); err != nil {
 			return err
 		}
@@ -273,6 +295,11 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	if err := announceMemberKindChange(ctx, tx, storedKind, kind); err != nil {
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
+	if binding {
+		if _, err := tx.Exec(ctx, `delete from account_binding_replacements where email = $1`, email); err != nil {
+			return fmt.Errorf("record sign-in of %q: delete the replacement it revokes and owes itself: %w", email, err)
+		}
+	}
 	if len(owed) > 0 && s.brokerRevocationIssuer != "" {
 		if _, err := tx.Exec(ctx, settleReclaimedBrokerRevocationsSQL, email, s.brokerRevocationIssuer, subject); err != nil {
 			return fmt.Errorf("settle the broker revocations of %q owed for the Google account that takes it back: %w", email, err)
@@ -288,7 +315,14 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
+	if caught.Found() {
+		LogAccountBindingCatchUp(email, caught)
+	}
 	switch {
+	case !binding && replaced:
+		slog.Warn("dispatch: a sign-in under another Google account ended every session of the address and revoked nothing: a build without the account binding is in the fleet", "email", email, "replaced_subject", stored)
+	case !binding && firstRecording:
+		slog.Warn("dispatch: the first Google account recorded for the address revoked nothing of it: a build without the account binding is in the fleet", "email", email, "subject", subject)
 	case replaced:
 		slog.Warn("dispatch: a sign-in under another Google account ended every session and revoked every personal token of the address", "email", email, "tokens_revoked", tokensRevoked)
 	case tokensRevoked > 0:
@@ -299,6 +333,15 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 		slog.Warn("dispatch: a sign-in under another Google account ended every session of the address", "email", email)
 	}
 	return nil
+}
+
+// LogAccountBindingCatchUp logs, at WARN, a catch-up of email's account changes kept while the
+// account binding was off (CatchUpAccountBinding), by a sign-in or by the revocation loop: the
+// accounts they replaced, whether one was the address's first recording, how many personal tokens
+// it revoked, the accounts it owes the broker a revocation of, and the holder.
+func LogAccountBindingCatchUp(email string, caught AccountBindingCatchUp) {
+	slog.Warn("dispatch: the account binding holds and caught up the account changes of the address made while it was off: it revoked the personal tokens of the address a sign-in with the binding on would have, and owes the broker a revocation of each account they replaced",
+		"email", email, "replaced_subjects", caught.Replaced, "first_recording", caught.FirstRecording, "tokens_revoked", caught.TokensRevoked, "owed", caught.Owed, "holder", caught.Holder)
 }
 
 // addressLockSQL takes the advisory lock on $1, an address, in the form people.email holds it

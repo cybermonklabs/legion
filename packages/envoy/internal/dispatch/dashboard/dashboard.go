@@ -131,12 +131,13 @@ func Publish(ctx context.Context, pool *store.Pool, distDir, commit string) (Pub
 	}); err != nil {
 		return Published{}, fmt.Errorf("read build %s's assets: %w", build, err)
 	}
-	// The row names this build's owner lock protocol, so the insert does not take the owner lock
-	// gate as an earlier build's publish, whose row reads the column's default 0, takes it
-	// (store.OwnerLockProtocol, migration 20261115200014_owner_lock_legacy_gate).
+	// The row names this build's owner lock protocol and account binding, so the insert takes
+	// neither gate an earlier build's publish, whose row reads each column's default 0, takes
+	// (store.OwnerLockProtocol, migration 20261115200014_owner_lock_legacy_gate;
+	// store.AccountBindingProtocol, migration 20261120222130_account_binding_fleet).
 	if _, err := tx.Exec(ctx, `
-		insert into dashboard_builds (build, entry, commit, owner_lock_protocol) values ($1, $2, $3, $4)
-		on conflict (build) do update set last_started_at = now()`, build, entry, commit, store.OwnerLockProtocol); err != nil {
+		insert into dashboard_builds (build, entry, commit, owner_lock_protocol, account_binding) values ($1, $2, $3, $4, $5)
+		on conflict (build) do update set last_started_at = now()`, build, entry, commit, store.OwnerLockProtocol, store.AccountBindingProtocol); err != nil {
 		return Published{}, fmt.Errorf("record build %s: %w", build, err)
 	}
 	var missing []asset

@@ -198,8 +198,10 @@ func laneDatabaseAfter(t *testing.T, build previousBuild, current string) *store
 // text refuses wherever the later one edits a migration it holds: the lane would be red for every
 // pull request that edits a shipped migration, its replaces line in place
 // (TestTheReleaseBeforeBootsOverTheLaneDatabaseOfAPullRequestThatEditsAShippedMigration, which runs
-// this function with such a pair). The arrival mark a boot of a build before the owner lock stamps
-// (owner_lock_legacy_mark) is cleared after the boots, as every test database starts without one.
+// this function with such a pair). The arrival marks a boot of a build before the owner lock, or
+// before the account binding, stamps (owner_lock_legacy_mark, account_binding_legacy_mark; the
+// later build's own migration stamps the second from the earlier build's publish) are cleared after
+// the boots, as every test database starts without them.
 func laneDatabase(t *testing.T, key, earlier, later string) *store.Store {
 	t.Helper()
 	return storetest.OpenFrom(t, key, func(url string) error {
@@ -210,7 +212,7 @@ func laneDatabase(t *testing.T, key, earlier, later string) *store.Store {
 			return err
 		}
 		defer conn.Close(ctx)
-		_, err = conn.Exec(ctx, "delete from owner_lock_legacy_mark")
+		_, err = conn.Exec(ctx, "delete from owner_lock_legacy_mark; delete from account_binding_legacy_mark")
 		return err
 	})
 }
@@ -360,33 +362,48 @@ func jsonBody(t *testing.T, value any) string {
 	return string(body)
 }
 
-// ───── the previous build's owner lock protocol ─────────────────────────────
+// ───── the previous build's protocols ───────────────────────────────────────
 
-// registeredOwnerLockProtocol waits up to within for the one server process database's registry
-// holds (server_processes) and answers the owner lock protocol it registered with
-// (owner_lock_protocol: store.OwnerLockProtocol for this tree, 0, the column's default, for a build
-// before the owner lock, which writes no such column). process is that process, and name what a
-// failure calls it. The read polls, since a build may serve a moment before its registration
-// commits. It fails the test when the registry holds more than one process, when process exits
-// before its row reads, or when within passes first.
+// registeredProtocols is what a server process registers in server_processes that tells its build
+// apart from this tree's: its owner lock protocol (owner_lock_protocol: store.OwnerLockProtocol for
+// this tree, 0, the column's default, for a build before the owner lock, which writes no such
+// column) and its account binding (account_binding: store.AccountBindingProtocol for this tree, 0
+// for a build without the binding). The fields are exported for pgx.RowToStructByPos, which scans
+// exported fields alone.
+type registeredProtocols struct {
+	OwnerLock, AccountBinding int
+}
+
+// registeredOwnerLockProtocol is the owner lock protocol of the one server process database's
+// registry holds (registeredProcessProtocols).
 func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *dispatchProcess, name string, within time.Duration) int {
+	t.Helper()
+	return registeredProcessProtocols(t, database, process, name, within).OwnerLock
+}
+
+// registeredProcessProtocols waits up to within for the one server process database's registry
+// holds (server_processes) and answers the protocols it registered with (registeredProtocols).
+// process is that process, and name what a failure calls it. The read polls, since a build may
+// serve a moment before its registration commits. It fails the test when the registry holds more
+// than one process, when process exits before its row reads, or when within passes first.
+func registeredProcessProtocols(t *testing.T, database *store.Store, process *dispatchProcess, name string, within time.Duration) registeredProtocols {
 	t.Helper()
 	deadline := time.Now().Add(within)
 	for {
-		rows, err := database.Pool.Query(context.Background(), `select owner_lock_protocol from server_processes`)
+		rows, err := database.Pool.Query(context.Background(), `select owner_lock_protocol, account_binding from server_processes`)
 		if err != nil {
 			t.Fatalf("read the registered server processes: %v", err)
 		}
-		protocols, err := pgx.CollectRows(rows, pgx.RowTo[int])
+		registered, err := pgx.CollectRows(rows, pgx.RowToStructByPos[registeredProtocols])
 		if err != nil {
 			t.Fatalf("read the registered server processes: %v", err)
 		}
 		switch {
-		case len(protocols) == 1:
-			return protocols[0]
-		case len(protocols) > 1:
-			t.Fatalf("the registry holds %d server processes, at owner lock protocols %v, where the %s's should be its only one",
-				len(protocols), protocols, name)
+		case len(registered) == 1:
+			return registered[0]
+		case len(registered) > 1:
+			t.Fatalf("the registry holds %d server processes, at owner lock protocols and account bindings %+v, where the %s's should be its only one",
+				len(registered), registered, name)
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the %s registered no server process within %s:\n%s", name, within, process.Output.String())
@@ -399,38 +416,52 @@ func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *d
 	}
 }
 
-// probedOwnerLockProtocols is the owner lock protocol each previous build registered when
-// previousBuildOwnerLockProtocol booted it, by the build's directory. It lasts as long as the test
-// binary, so the rows that ask boot one probe between them.
-var probedOwnerLockProtocols = struct {
+// probedProtocols is the protocols each previous build registered when previousBuildProtocols
+// booted it, by the build's directory. It lasts as long as the test binary, so the rows that ask
+// boot one probe between them.
+var probedProtocols = struct {
 	sync.Mutex
-	byDir map[string]int
-}{byDir: map[string]int{}}
+	byDir map[string]registeredProtocols
+}{byDir: map[string]registeredProtocols{}}
 
-// previousBuildOwnerLockProtocol answers the owner lock protocol build registers, for a row that
-// must know it before build boots on the row's own database. A probe there would be the very thing
-// such a row tests: a build before the owner lock that boots on a database is an arrival there,
-// which stamps the database's mark of an earlier build (owner_lock_legacy_mark) for an hour
-// (store.OwnerLockMarkWindow) and puts every process of this tree on it in the mode beside an
-// earlier build. So the probe boots build once alone, on a database of its own (laneDatabaseAfter, a
-// clone the row's database is not, at this tree's schema in production's order, which build boots
-// on) and a NATS server of its own, reads the protocol its process registers
-// (registeredOwnerLockProtocol), and kills the process. The answer is kept by the build's directory
-// for the rest of the test binary, and a later row reads it without a boot.
+// previousBuildOwnerLockProtocol answers the owner lock protocol build registers
+// (previousBuildProtocols).
 func previousBuildOwnerLockProtocol(t *testing.T, build previousBuild) int {
 	t.Helper()
-	probed := &probedOwnerLockProtocols
+	return previousBuildProtocols(t, build).OwnerLock
+}
+
+// previousBuildAccountBinding answers the account binding build registers
+// (previousBuildProtocols).
+func previousBuildAccountBinding(t *testing.T, build previousBuild) int {
+	t.Helper()
+	return previousBuildProtocols(t, build).AccountBinding
+}
+
+// previousBuildProtocols answers the protocols build registers, for a row that must know them
+// before build boots on the row's own database. A probe there would be the very thing such a row
+// tests: a build before the owner lock, or without the account binding, that boots on a database
+// is an arrival there, which stamps the database's mark of an earlier build (owner_lock_legacy_mark,
+// account_binding_legacy_mark) for an hour (store.OwnerLockMarkWindow) and puts every process of
+// this tree on it in the mode beside an earlier build. So the probe boots build once alone, on a
+// database of its own (laneDatabaseAfter, a clone the row's database is not, at this tree's schema
+// in production's order, which build boots on) and a NATS server of its own, reads the protocols
+// its process registers (registeredProcessProtocols), and kills the process. The answer is kept by
+// the build's directory for the rest of the test binary, and a later row reads it without a boot.
+func previousBuildProtocols(t *testing.T, build previousBuild) registeredProtocols {
+	t.Helper()
+	probed := &probedProtocols
 	probed.Lock()
 	defer probed.Unlock()
-	if protocol, known := probed.byDir[build.dir]; known {
-		return protocol
+	if protocols, known := probed.byDir[build.dir]; known {
+		return protocols
 	}
 	name := "probe of the previous build (" + shortCommit(build.commit) + ")"
 	database := laneDatabaseAfter(t, build, cmdtest.Build(t, "envoy-dispatch"))
 	_, nats := multiprocessNATS(t)
 	probe := startDispatchProcessWith(t, databaseURLOf(t, database),
 		dispatchOptions{NATSURL: nats, SigningKey: multiprocessSigningKey, Binary: build.path("envoy-dispatch")})
-	protocol := registeredOwnerLockProtocol(t, database, probe, name, 60*time.Second)
+	protocols := registeredProcessProtocols(t, database, probe, name, 60*time.Second)
 	if err := probe.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill the %s: %v", name, err)
 	}
@@ -439,6 +470,6 @@ func previousBuildOwnerLockProtocol(t *testing.T, build previousBuild) int {
 	case <-time.After(30 * time.Second):
 		t.Fatalf("the %s was still running 30s after it was killed:\n%s", name, probe.Output.String())
 	}
-	probed.byDir[build.dir] = protocol
-	return protocol
+	probed.byDir[build.dir] = protocols
+	return protocols
 }

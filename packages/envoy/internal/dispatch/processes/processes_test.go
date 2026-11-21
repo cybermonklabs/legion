@@ -802,13 +802,15 @@ func waitForConnectionHeld(t *testing.T, registration *Registration) {
 	}
 }
 
-// A process registers at this build's owner lock protocol (store.OwnerLockProtocol), which no
-// Instance carries, so neither a registration that names nothing but its build and keys nor the
-// heartbeat that writes its pruned row again is an earlier build's arrival: the row reads 1, no
-// earlier build's mark is stamped (owner_lock_legacy_mark), and the owner lock's fleet read
-// (public.owner_lock_fleet) finds no earlier build in the fleet. A row at the column's default, 0,
-// would fire owner_lock_legacy_registration and put every owner lock of the database beside an
-// earlier build for store.OwnerLockMarkWindow (migration 20261115200014).
+// A process registers at this build's owner lock protocol (store.OwnerLockProtocol) and account
+// binding (store.AccountBindingProtocol), which no Instance carries, so neither a registration
+// that names nothing but its build and keys nor the heartbeat that writes its pruned row again is
+// an earlier build's arrival: the row reads 1 and 1, neither earlier build's mark is stamped
+// (owner_lock_legacy_mark, account_binding_legacy_mark), the owner lock's fleet read
+// (public.owner_lock_fleet) finds no earlier build in the fleet, and the account binding holds
+// (public.account_binding_fleet). A row at either column's default, 0, would fire that column's
+// registration trigger and put every owner lock, or every account check, of the database beside
+// an earlier build for store.OwnerLockMarkWindow (migrations 20261115200014 and 20261120222130).
 func TestARegistrationOfThisBuildMarksNoEarlierBuild(t *testing.T) {
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
 	database := storetest.Open(t)
@@ -819,19 +821,26 @@ func TestARegistrationOfThisBuildMarksNoEarlierBuild(t *testing.T) {
 	t.Cleanup(func() { _ = registration.Deregister(context.Background()) })
 	noEarlierBuild := func(what string) {
 		t.Helper()
-		var protocol int
-		var marked, legacy bool
+		var protocol, binding int
+		var marked, legacy, bindingMarked, unbound bool
 		if err := database.Pool.QueryRow(context.Background(), `
 			select (select owner_lock_protocol from server_processes where instance = $1),
+				(select account_binding from server_processes where instance = $1),
 				exists (select from owner_lock_legacy_mark),
-				public.owner_lock_fleet($2, $3)`,
+				public.owner_lock_fleet($2, $3),
+				exists (select from account_binding_legacy_mark),
+				public.account_binding_fleet($2, $3)`,
 			registration.ID, store.OwnerLockLegacyWindow.Seconds(), store.OwnerLockMarkWindow.Seconds(),
-		).Scan(&protocol, &marked, &legacy); err != nil {
-			t.Fatalf("read %s's owner lock protocol and the owner lock's fleet: %v", what, err)
+		).Scan(&protocol, &binding, &marked, &legacy, &bindingMarked, &unbound); err != nil {
+			t.Fatalf("read %s's protocols and the fleet: %v", what, err)
 		}
 		if protocol != store.OwnerLockProtocol || marked || legacy {
 			t.Errorf("%s: owner_lock_protocol %d, an earlier build's mark stamped %v, an earlier build in the owner lock's fleet %v; want %d, no mark and no earlier build",
 				what, protocol, marked, legacy, store.OwnerLockProtocol)
+		}
+		if binding != store.AccountBindingProtocol || bindingMarked || unbound {
+			t.Errorf("%s: account_binding %d, the binding's mark stamped %v, a build without the binding in the fleet %v; want %d, no mark and none",
+				what, binding, bindingMarked, unbound, store.AccountBindingProtocol)
 		}
 	}
 	noEarlierBuild("the registered row")

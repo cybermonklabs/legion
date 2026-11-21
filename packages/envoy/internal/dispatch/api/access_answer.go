@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -127,12 +128,14 @@ func readAccessQuestion(w http.ResponseWriter, r *http.Request, personRequired b
 // (people.sub_recorded_at), less than brokerCredentialMargin after it, or at a time the question
 // did not give: the two times come from two databases' clocks, so a skew refuses. It is true
 // otherwise: no account recorded for the person (no row included), no recording time to compare a
-// credential recording none with (a row from before the column), or a deployment whose sign-in
-// records no account. Whether an account is recorded is read as the admission reads it, `sub is
-// not null`; the database refuses an empty sub (migration 20261118041916), so no row reads as
-// recorded to one and as unrecorded to the other. It is nil for a question naming no person, and
-// for one that does not say which account the credential records, which the answer then leaves
-// out, as it always did.
+// credential recording none with (a row from before the column), a deployment whose sign-in
+// records no account, or a build without the account binding in the fleet
+// (store.AccountBindingHoldsSQL, read in the same statement), which holds no credential to an
+// account either. Whether an account is recorded is read as the admission reads it, `sub is not
+// null`; the database refuses an empty sub (migration 20261118041916), so no row reads as recorded
+// to one and as unrecorded to the other.
+// It is nil for a question naming no person, and for one that does not say which account the
+// credential records, which the answer then leaves out, as it always did.
 func (s *server) accountHolder(ctx context.Context, q access.Querier, question accessQuestion) (*bool, error) {
 	if question.person == "" || !question.describes {
 		return nil, nil
@@ -143,9 +146,10 @@ func (s *server) accountHolder(ctx context.Context, q access.Querier, question a
 	}
 	var recorded, recordedAt, madeAfter bool
 	var sub string
-	err := q.QueryRow(ctx, `select sub is not null, coalesce(sub, ''), sub_recorded_at is not null,
+	legacyWindow, markWindow := store.AccountBindingWindows()
+	err := q.QueryRow(ctx, `select sub is not null and `+store.AccountBindingHoldsSQL("$3", "$4")+`, coalesce(sub, ''), sub_recorded_at is not null,
 			coalesce($2::timestamptz >= sub_recorded_at + `+brokerCredentialMarginSQL+`, false)
-		from people where email = $1`, model.CanonicalLogin(question.person), timeOrNull(question.createdAt)).Scan(&recorded, &sub, &recordedAt, &madeAfter)
+		from people where email = $1`, model.CanonicalLogin(question.person), timeOrNull(question.createdAt), legacyWindow, markWindow).Scan(&recorded, &sub, &recordedAt, &madeAfter)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("read the Google account recorded for %s: %w", model.CanonicalLogin(question.person), err)
 	}

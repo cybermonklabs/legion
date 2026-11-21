@@ -99,7 +99,9 @@ func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broke
 //
 // A token is held to the account its credential records (brokerTokenSubject), read in the same
 // snapshot, on a deployment whose sign-in records accounts (Deps.SignInIssuer set; elsewhere
-// people.sub may be a Google account left from before a switch to a pool, and names nothing):
+// people.sub may be a Google account left from before a switch to a pool, and names nothing) and
+// while no build without the account binding is in the fleet (accountsHeldSQL), which admits such a
+// token whatever account it records:
 //
 //   - a token recording the account people records for the person now, the holder's own, acts:
 //     the broker answers the account the token's own trade recorded on it when it was minted, and
@@ -148,11 +150,13 @@ func (s *server) brokerPersonAdmitted(ctx context.Context, caller ciphertoken.Ca
 	var replaced, named bool
 	subject, foreign := s.brokerTokenSubject(caller), s.brokerForeignAccount(caller)
 	held := s.deps.SignInIssuer != "" && caller.ProjectScope != ciphertoken.ProjectScopeNamed
+	legacyWindow, markWindow := store.AccountBindingWindows()
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select coalesce((select member_kind from people where email = $1), ''),
-			`+brokerAccountReplaced("$1", "$2::text", "$5::boolean", "$3::timestamptz", "$4::boolean")+`,
+			`+brokerAccountReplaced("$1", "$2::text", "$5::boolean", "$3::timestamptz", accountsHeldSQL("$4::boolean", "$6", "$7"))+`,
 			`+brokerAccountNamed("$1", "$2::text")+`
-	`, model.CanonicalLogin(caller.Person), subject, timeOrNull(caller.CredentialCreatedAt), held, foreign).
+	`, model.CanonicalLogin(caller.Person), subject, timeOrNull(caller.CredentialCreatedAt), held, foreign,
+		legacyWindow, markWindow).
 		Scan(&kind, &replaced, &named)
 	if err != nil {
 		slog.Warn("dispatch: a broker token naming a person was refused: their member kind and recorded account could not be read", "error", err)
@@ -272,21 +276,22 @@ type brokerAdmission struct {
 // address, over five SQL expressions the statement names: the address, the token's own account
 // (brokerTokenSubject, "" for none), whether that account is of another issuer
 // (brokerForeignAccount), when its credential was made (null for a time the broker did not
-// record) and whether the token is held to an account at all: the deployment's sign-in records
-// accounts, and, at an admission, the token is no operator entry's. With accounts held and people
-// recording one for the address, it holds for a token recording another account (the replaced
-// account's, or an account's that has not signed in since Google gave it the address), for one
-// recording an account of another issuer, and for one recording none whose credential was made
+// record) and whether the token is held to an account at all: the account binding holds (the
+// deployment's sign-in records accounts and no build without the binding is in the fleet,
+// accountsHeldSQL), and, at an admission, the token is no operator entry's. With accounts held and
+// people recording one for the address, it holds for a token recording another account (the
+// replaced account's, or an account's that has not signed in since Google gave it the address), for
+// one recording an account of another issuer, and for one recording none whose credential was made
 // before people recorded the address's account or less than brokerCredentialMargin after it, or at
 // an unrecorded time. It is false for an address recording no account, and, for a token recording
 // none, with no recording time, so nothing is refused that predates the column. An admission reads
 // it (brokerPersonAdmitted), the one place it is read: a broker token neither decides nor mints
 // (brokerPersonScopes), so no read made again once a request's body has arrived asks it.
 func brokerAccountReplaced(address, subject, foreign, createdAt, held string) string {
-	return "(" + held + " and exists (select 1 from people where email = " + address + " and sub is not null and (" +
+	return "(exists (select 1 from people where email = " + address + " and sub is not null and (" +
 		foreign + " or (nullif(" + subject + ", '') is not null and sub <> " + subject + ")" +
 		" or (nullif(" + subject + ", '') is null and sub_recorded_at is not null and (" + createdAt + " is null or " +
-		createdAt + " < sub_recorded_at + " + brokerCredentialMarginSQL + ")))))"
+		createdAt + " < sub_recorded_at + " + brokerCredentialMarginSQL + ")))) and " + held + ")"
 }
 
 // brokerAccountNamed is the predicate that a broker revocation of the person address names

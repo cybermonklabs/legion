@@ -193,6 +193,29 @@ func (b *BrokerRevocations) Settle(ctx context.Context, owed OwedBrokerRevocatio
 	return tag.RowsAffected() == 1, nil
 }
 
+// SettleHeld settles owed, which a pass claimed, when the account it names holds its address again
+// (people.sub records it), and reports whether it did. A sign-in that takes an address back settles
+// the account's owed revocations in its own transaction (settleReclaimedBrokerRevocationsSQL), but a
+// build without the account binding signs it in with no such statement, so its revocation stays
+// owed; paid, it would end the holder's broker credentials and have the broker refuse the holder
+// any new one. An account that holds the address is owed nothing, so a pass settles such a row
+// rather than sending it. It settles only the generation the claim read, as Settle does, so a
+// later replacement of the account, recorded as the next generation, stays owed and is paid; and
+// it reads the holder in its own statement, so it sees every sign-in committed before it. Every
+// revocation is recorded under the deployment's one sign-in issuer, so the account is compared by
+// its `sub` alone. It writes done_at alone, as a settlement does, so it wakes nothing.
+func (b *BrokerRevocations) SettleHeld(ctx context.Context, owed OwedBrokerRevocation) (bool, error) {
+	tag, err := b.pool.Exec(ctx, `
+		update broker_revocations set done_at = now()
+		where email = $1 and issuer = $2 and subject = $3 and generation = $4 and done_at is null
+			and subject = (select sub from people where email = $1)
+	`, owed.Email, owed.Issuer, owed.Subject, owed.Generation)
+	if err != nil {
+		return false, fmt.Errorf("settle the broker revocation of %s if its account holds the address again: %w", owed.Email, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // Sendable reports whether a pass may still call the broker for owed, which it claimed: the row is
 // still owed at the generation the claim read (Settle's condition), and its claim (tried_at, on the
 // database's clock) is younger than within. A pass gives within as the retry window less the broker
