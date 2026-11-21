@@ -28,10 +28,10 @@ import (
 // promptJobWait bounds each wait of these tests for a fact they expect: a line on the terminal, a
 // stop, a process's end, the terminal's foreground. A fact that comes ends its wait at once, so the
 // bound costs a passing test nothing; it only delays the report of one that never comes. It is a
-// minute, as testwait.Eventually's is, and a wait discounts the long gaps between its polls
-// (waitBudget), because a loaded machine is slow in every step and sometimes stops a process for
-// minutes: on a dev box at a load average of 800 to 1,100 on 288 processors, 2 runs of this family
-// in 25 failed in a 10 s wait for a terminal line, and one of those tests took 270 s.
+// minute, and a wait discounts the long gaps between its polls (waitBudget), because a loaded
+// machine is slow in every step and sometimes stops a process for minutes: on a dev box at a load
+// average of 800 to 1,100 on 288 processors, 2 runs of this family in 25 failed in a 10 s wait for
+// a terminal line, and one of those tests took 270 s.
 const promptJobWait = time.Minute
 
 // waitBudget is one wait's bound. Each gap between two polls counts at most a second of

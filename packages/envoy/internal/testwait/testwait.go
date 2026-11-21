@@ -7,12 +7,13 @@
 // own; Holds answers rather than fails, for a caller whose failure text is its own; and Bounded
 // is the clamp alone, for a wait that holds the rest itself.
 //
-// Until and Receive take no bound at all, not even Eventually's minute: each gives up margin (30 s)
+// Eventually, Until and Receive take no bound of their own: each gives up margin (30 s)
 // before the test binary's deadline, the one go test's -timeout sets, and at no other moment, so
 // only the fact it waits for ends it, and under -timeout 0 it has no end. A wait that begins with
 // 30 s or less of the binary's deadline left, as every wait does under a -timeout of 30 s or less,
-// has already passed that moment: Until asks once, Receive takes only a value already sent or a
-// close, and either fails the test at once when that answer is not there. Until waits until a
+// has already passed that moment: Eventually and Until ask once, Receive takes only a value
+// already sent or a close, and each fails the test at once when that answer is not there.
+// Eventually waits until a condition holds, asking every Poll. Until waits until a
 // reading holds and returns it, asking every Poll, and its failure prints the last value it read;
 // UntilPolling is Until at a pace the caller gives, for a reading that costs something, such as a
 // request to a cluster. Receive waits for one receive from a channel. A wait that gives up writes
@@ -35,18 +36,20 @@ import (
 // milliseconds still does, and long enough that a waiting test costs a loaded machine little.
 const Poll = 10 * time.Millisecond
 
-// Eventually waits for condition, failing the test with what it waited for when the deadline
-// passes. The deadline is a minute, or the test binary's own less a second when that is sooner,
-// so a `-timeout` smaller than a minute still reports the wait rather than the binary's panic.
+// Eventually waits until condition holds, asking every Poll. Its one bound is the test binary's
+// deadline less margin, as Until's is, and its failure names what it waited for: it is Until for
+// a condition with no reading worth printing.
 func Eventually(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	WithinPolling(t, Bounded(t, time.Minute, time.Second), Poll, what, condition)
+	end, bounded := giveUpAt(t)
+	if !asked(end, bounded, Poll, condition) {
+		gaveUp(t, what, nil)
+	}
 }
 
 // Bounded is bound, or what is left of the test binary's own deadline less margin when that is
 // sooner, so a -timeout smaller than bound still reports the wait rather than the binary's panic.
-// Eventually is Bounded of a minute and a second; a wait with a span or a margin of its own takes
-// those.
+// A wait with a span or a margin of its own takes those; Eventually, Until and Receive have none.
 func Bounded(t *testing.T, bound, margin time.Duration) time.Duration {
 	if testDeadline, ok := t.Deadline(); ok {
 		if left := time.Until(testDeadline) - margin; left < bound {
@@ -58,8 +61,7 @@ func Bounded(t *testing.T, bound, margin time.Duration) time.Duration {
 
 // WithinPolling waits for condition under the caller's own bound and its own pace, with no
 // clamp to the test binary's deadline, failing the test with what it waited for when the bound
-// passes: a wait whose span is the thing under test, or one that must outlast a minute, says
-// how long it means to wait.
+// passes: a wait whose span is the thing under test says how long it means to wait.
 func WithinPolling(t *testing.T, bound, poll time.Duration, what string, condition func() bool) {
 	t.Helper()
 	if waitUntil(time.Now().Add(bound), poll, condition) {
@@ -91,9 +93,9 @@ func waitUntil(deadline time.Time, poll time.Duration, condition func() bool) bo
 	return condition()
 }
 
-// margin is how long before the test binary's deadline Until and Receive give up: the time the
-// failing test's cleanups and the failure itself have to run in before Go's alarm panics the
-// binary.
+// margin is how long before the test binary's deadline Eventually, Until and Receive give up: the
+// time the failing test's cleanups and the failure itself have to run in before Go's alarm panics
+// the binary.
 const margin = 30 * time.Second
 
 // Until waits until read reports true, asking every Poll, and returns what it read then. Its one
@@ -166,8 +168,8 @@ func expiry(t *testing.T) (<-chan time.Time, func() bool) {
 	return timer.C, timer.Stop
 }
 
-// giveUpAt is the moment Until and Receive give up in t: the test binary's deadline less margin,
-// and false when the binary has no deadline (-timeout 0).
+// giveUpAt is the moment Eventually, Until and Receive give up in t: the test binary's deadline
+// less margin, and false when the binary has no deadline (-timeout 0).
 func giveUpAt(t *testing.T) (time.Time, bool) {
 	deadline, bounded := t.Deadline()
 	if !bounded {
