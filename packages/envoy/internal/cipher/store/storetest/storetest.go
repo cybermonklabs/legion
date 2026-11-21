@@ -23,7 +23,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
-	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -68,9 +67,10 @@ func randomName(t testing.TB) string {
 // URL creates a fresh schema in the test binary's own database on the DatabaseURLEnv server
 // (testdb.ProcessDatabaseOn: the package comment says why), migrates it, drops it when t ends, and
 // returns a connection string whose connections use that schema. params are extra connection
-// parameters as key=value (e.g. "pool_max_conns=2"). It skips t when DatabaseURLEnv is unset, and
-// fails it when the package's TestMain does not run its tests through Main. The server's login
-// needs CREATEDB.
+// parameters as key=value (e.g. "pool_max_conns=2"), set with search_path by
+// testdb.WithQueryPairs, which keeps every other pair of the server URL as it was. It skips t when
+// DatabaseURLEnv is unset, and fails it when the package's TestMain does not run its tests
+// through Main. The server's login needs CREATEDB.
 func URL(t testing.TB, params ...string) string {
 	t.Helper()
 	raw := testdb.ProcessDatabaseOn(t, serverURL(t), "broker_test_binary")
@@ -79,23 +79,10 @@ func URL(t testing.TB, params ...string) string {
 	admin(t, raw, "create schema "+schema)
 	t.Cleanup(func() { admin(t, raw, "drop schema "+schema+" cascade") })
 
-	parsed, err := url.Parse(raw)
+	dsn, err := testdb.WithQueryPairs(raw, append([]string{"search_path=" + schema}, params...)...)
 	if err != nil {
-		t.Fatalf("parse %s: %v", DatabaseURLEnv, err)
+		t.Fatalf("the test schema's connection URL: %v", err)
 	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	for _, param := range params {
-		values, err := url.ParseQuery(param)
-		if err != nil {
-			t.Fatalf("connection parameter %q: %v", param, err)
-		}
-		for key := range values {
-			query.Set(key, values.Get(key))
-		}
-	}
-	parsed.RawQuery = query.Encode()
-	dsn := parsed.String()
 
 	st, err := store.Open(ctx, dsn)
 	if err != nil {

@@ -176,14 +176,11 @@ func TestMigrateLockWatchSignsInWithAFreshToken(t *testing.T) {
 	role, schema, databaseURL := passwordRole(t, "fake-iam-token-1")
 	adminExec(t, raw, "create schema "+schema+" authorization "+role)
 	withSchema := func(databaseURL string) string {
-		parsed, err := url.Parse(databaseURL)
+		dsn, err := testdb.WithQueryPairs(databaseURL, "search_path="+schema)
 		if err != nil {
 			t.Fatal(err)
 		}
-		query := parsed.Query()
-		query.Set("search_path", schema)
-		parsed.RawQuery = query.Encode()
-		return parsed.String()
+		return dsn
 	}
 
 	minter := &fakeMinter{token: "fake-iam-token-1"}

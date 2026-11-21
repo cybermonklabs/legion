@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // The broker's set is numbered 1 to N with none missing; pgmigratetest.CheckNumberedOneToN says
@@ -385,30 +385,21 @@ func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing
 
 // emptySchemaStore opens a store on a schema of its own in the test binary's database on the
 // BROKER_TEST_DATABASE_URL server (testDatabaseURL), created empty and dropped when t ends, with
-// params, extra connection parameters as key=value (e.g. "pool_max_conns=4"), added to the URL. A
-// test that migrates a set of its own needs one: the database's shared schema already records the
-// broker's real versions, which would pass over the test set's numbers as applied.
+// params, extra connection parameters as key=value (e.g. "pool_max_conns=4"), set in the URL with
+// search_path by testdb.WithQueryPairs, which keeps every other pair as it was. A test that
+// migrates a set of its own needs one: the database's shared schema already records the broker's
+// real versions, which would pass over the test set's numbers as applied.
 func emptySchemaStore(t *testing.T, params ...string) *Store {
 	t.Helper()
 	raw := testDatabaseURL(t)
 	schema := "broker_migrate_test_" + randomSuffix(t)
 	adminExec(t, raw, "create schema "+schema)
 	t.Cleanup(func() { adminExec(t, raw, "drop schema "+schema+" cascade") })
-	parsed, err := url.Parse(raw)
+	dsn, err := testdb.WithQueryPairs(raw, append([]string{"search_path=" + schema}, params...)...)
 	if err != nil {
-		t.Fatalf("parse BROKER_TEST_DATABASE_URL: %v", err)
+		t.Fatalf("the test schema's connection URL: %v", err)
 	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	for _, param := range params {
-		key, value, ok := strings.Cut(param, "=")
-		if !ok {
-			t.Fatalf("connection parameter %q is not key=value", param)
-		}
-		query.Set(key, value)
-	}
-	parsed.RawQuery = query.Encode()
-	s, err := Open(context.Background(), parsed.String())
+	s, err := Open(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open the test schema: %v", err)
 	}

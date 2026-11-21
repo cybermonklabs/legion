@@ -221,18 +221,51 @@ func TestAChildBinaryThatFailsStillDropsItsDatabase(t *testing.T) {
 	}
 }
 
-// databaseURL replaces the path and drops each dbname or database pair of the query, whatever its
-// escapes, and keeps every other pair byte for byte and in order: an options value whose space is
-// %20 stays %20, where re-encoding the query writes it as +, which pgx reads as a plus. An empty
-// pair goes.
+// databaseURL replaces the path and drops each dbname or database pair of the query, its key read
+// as pgx reads it (escapes undone, raw spaces at either end trimmed), and keeps every other pair
+// byte for byte and in order: an options value whose space is %20 stays %20, where re-encoding the
+// query writes it as +, which pgx reads as a plus. An empty pair goes. pgx then selects the new
+// database from the URL. Controls: compare keys untrimmed and `dbname =postgres` is kept, and pgx
+// selects postgres; re-encode the query and options reads -c+statement_timeout.
 func TestADatabaseURLDropsOnlyTheQuerysDatabasePairs(t *testing.T) {
-	server, err := url.Parse("postgres://u@h:5432/postgres?sslmode=disable&options=-c%20statement_timeout%3D5000&dbname=postgres&&db%6Eame=x&database=other&application_name=a+b")
+	server, err := url.Parse("postgres://u@h:5432/postgres?sslmode=disable&options=-c%20statement_timeout%3D5000&dbname=postgres&&db%6Eame=x&database=other&dbname =postgres& database=other&application_name=a+b")
 	if err != nil {
 		t.Fatal(err)
 	}
 	const want = "postgres://u@h:5432/t_db?sslmode=disable&options=-c%20statement_timeout%3D5000&application_name=a+b"
-	if got := databaseURL(*server, "t_db"); got != want {
+	got := databaseURL(*server, "t_db")
+	if got != want {
 		t.Errorf("databaseURL =\n  %s\nwant\n  %s", got, want)
+	}
+	if config, err := pgx.ParseConfig(got); err != nil {
+		t.Errorf("pgx does not parse databaseURL's answer: %v", err)
+	} else if config.Database != "t_db" || config.RuntimeParams["options"] != "-c statement_timeout=5000" {
+		t.Errorf("pgx reads database %q and options %q from databaseURL's answer, want t_db and %q", config.Database, config.RuntimeParams["options"], "-c statement_timeout=5000")
+	}
+}
+
+// WithQueryPairs sets each key=value it is given, escaped as pgx reads it back (a space as %20),
+// in place of every pair of the query with that key as pgx reads keys, and keeps the other pairs
+// byte for byte and in order. Control: re-encode the query (url.Values.Encode) and options reads
+// -c+work_mem, and search_path's space a plus.
+func TestWithQueryPairsSetsItsPairsAndKeepsTheOthers(t *testing.T) {
+	got, err := WithQueryPairs("postgres://u:p@h:5432/db?options=-c%20work_mem%3D7MB&search_path=old& search_path =older&pool_max_conns=2", "search_path=a b", "pool_max_conns=4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "postgres://u:p@h:5432/db?options=-c%20work_mem%3D7MB&search_path=a%20b&pool_max_conns=4"
+	if got != want {
+		t.Errorf("WithQueryPairs =\n  %s\nwant\n  %s", got, want)
+	}
+	config, err := pgx.ParseConfig(got)
+	if err != nil {
+		t.Fatalf("pgx does not parse WithQueryPairs' answer: %v", err)
+	}
+	if config.RuntimeParams["options"] != "-c work_mem=7MB" || config.RuntimeParams["search_path"] != "a b" {
+		t.Errorf("pgx reads options %q and search_path %q, want %q and %q", config.RuntimeParams["options"], config.RuntimeParams["search_path"], "-c work_mem=7MB", "a b")
+	}
+	if _, err := WithQueryPairs("postgres://h/db", "no-separator"); err == nil || !strings.Contains(err.Error(), `"no-separator" is not key=value`) {
+		t.Errorf("WithQueryPairs of a pair with no = answered %v, want it refused by name", err)
 	}
 }
 
