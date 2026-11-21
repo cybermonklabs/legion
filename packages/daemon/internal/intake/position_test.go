@@ -2,6 +2,7 @@ package intake
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -35,6 +36,14 @@ import (
 func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t *testing.T) {
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
+	// A diagnostic for a failure whose cause is not yet known: one loaded run of this package
+	// under the race detector failed the precondition below with "delivered 0, with 2 pending
+	// and 0 awaiting an ack", which is what a durable that already existed before the two
+	// publishes reads (a planted DeliverNew durable reproduces that line exactly), while
+	// CreateStream had found the stream with no consumer moments before. The row's claim is
+	// about a consumer OpenConsumers creates after the publishes, so any consumer here is
+	// another's, and the failure names each by what it carries.
+	requireNoConsumers(t, stream)
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.comment.created", envelopeJSON(t, "dispatch-comment", "dispatch",
 		`{"id":2,"issue_key":"CAPTURE-3","seq":9,"notify":true,"type":"comment.created","payload":{"body":"hi"}}`))
@@ -77,6 +86,29 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 	if !position.Idle {
 		t.Fatalf("idle = false for a freshly (re)created consumer with nothing it can ever deliver from before it existed, want true: ack floor %d, target %d",
 			position.AckFloorStream, target)
+	}
+}
+
+// requireNoConsumers fails t when stream holds a consumer, naming each by its name, when the
+// server created it, its config and what it has delivered, so a consumer some other actor made
+// says who it is.
+func requireNoConsumers(t *testing.T, stream jetstream.Stream) {
+	t.Helper()
+	var held []string
+	listed := stream.ListConsumers(context.Background())
+	for info := range listed.Info() {
+		config, err := json.Marshal(info.Config)
+		if err != nil {
+			config = []byte(fmt.Sprintf("%+v", info.Config))
+		}
+		held = append(held, fmt.Sprintf("consumer %s, created %s, delivered %d (stream sequence %d), %d pending, config %s",
+			info.Name, info.Created.Format(time.RFC3339Nano), info.Delivered.Consumer, info.Delivered.Stream, info.NumPending, config))
+	}
+	if err := listed.Err(); err != nil {
+		t.Fatalf("list the stream's consumers before the row's publishes: %v", err)
+	}
+	if len(held) != 0 {
+		t.Fatalf("the stream holds %d consumers before the row's publishes, want none: %s", len(held), strings.Join(held, "; "))
 	}
 }
 
