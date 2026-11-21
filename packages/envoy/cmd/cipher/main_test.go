@@ -1271,12 +1271,16 @@ func writePendingMarker(t *testing.T, dir string, age time.Duration) string {
 	return marker
 }
 
+// launcherWaitStart is how a call's first line about waiting on the launcher starts, whatever it
+// names its key dir and its wait: a row in which no call may wait fails on it.
+const launcherWaitStart = "agent-secrets: the launcher is still enrolling this process ("
+
 // launcherWaitLine is the line a call prints as it starts to wait on the launcher still enrolling
 // its key dir, which the line names as named (keyDirName: the setting, never the path), for wait at
 // most (a time.Duration's text), while the key dir holds neither key.pem nor enrollment
 // (awaitEnrollment).
 func launcherWaitLine(named, wait string) string {
-	return "agent-secrets: the launcher is still enrolling this process (" + named + " holds enrollment.pending); waiting up to " + wait + " for its key.pem and enrollment\n"
+	return launcherWaitStart + named + " holds enrollment.pending); waiting up to " + wait + " for its key.pem and enrollment\n"
 }
 
 // enrollmentWaitLine is the line a waiting call prints once key.pem is there and enrollment is
@@ -1348,17 +1352,17 @@ func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 }
 
 // TestEnrollWaitGivesUpAtItsBound pins the wait's end: a marker nothing ever follows (a launcher
-// stuck without removing it) holds a call for AGENT_SECRETS_ENROLL_WAIT at most, and the call then
-// fails naming the marker and the wait. A fresh marker is a launcher still enrolling, which is
-// present: the call stops there rather than go on to a later source of the chain. The call says
-// that it waits before it reads its deadline (awaitEnrollment), so the row requires that line
-// however late a loaded machine runs the call. The call's "(waited 1s while ...)" says it gave up
-// with the marker there, but it names the configured bound, not the time waited, so the row also
-// requires the call to end no sooner than its bound after a start read before the call starts.
-// Load can only lengthen that span, so the row reads no upper limit, which load could pass. The
-// two things that end a wait earlier are checked absent: the marker is still fresh, and key.pem
-// never came. The shared wait (runExecForm) only guards against a call whose bound never ends its
-// wait.
+// stuck without removing it) holds a call until its AGENT_SECRETS_ENROLL_WAIT has passed, and the
+// call then fails naming the marker and the wait. A fresh marker is a launcher still enrolling,
+// which is present: the call stops there rather than go on to a later source of the chain. The
+// call says that it waits before it reads its deadline (awaitEnrollment), so the row requires that
+// line however late a loaded machine runs the call. The call's "(waited 1s while ...)" says it
+// gave up with the marker there, but it names the configured bound, not the time waited, so the
+// row also requires the call to end no sooner than its bound after a start read before the call
+// starts. Load can only lengthen that span, so the row reads no upper limit, which load could
+// pass; only the shared wait (runExecForm) stands against a call whose bound never ends its wait.
+// The two things that end a wait earlier are checked absent: the marker is still fresh, and
+// key.pem never came.
 func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
@@ -1387,9 +1391,10 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 // TestEnrollWaitNeedsAFreshMarker pins that only the launcher's live marker makes a call wait: an
 // empty key dir (a machine session's, a pod's), a marker older than the launcher's own setup bound
 // (a launcher killed outright), and a failed enrollment the launcher has already reported
-// (enrollment.error, marker removed) all fail at once, as they did before the wait existed. Each
-// call is given a day to wait in, so a call that waited at all would not come back within the
-// shared wait, which would fail naming it, and none may say that it waits.
+// (enrollment.error, marker removed) all fail at once, as they did before the wait existed. The
+// row fails as soon as a call says that it waits. Each call is given a day to wait in, so a call
+// that waited without saying so would not come back within the shared wait, which would fail
+// naming it.
 func TestEnrollWaitNeedsAFreshMarker(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
@@ -1412,12 +1417,16 @@ func TestEnrollWaitNeedsAFreshMarker(t *testing.T) {
 		{"reported failure", failed, "postgres unreachable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			exit, stderr := runExecForm(t, binary, broker.URL, tc.keyDir, "AGENT_SECRETS_ENROLL_WAIT=24h")
+			c := startExecForm(t, binary, broker.URL, tc.keyDir, "AGENT_SECRETS_ENROLL_WAIT=24h")
+			testwait.Eventually(t, "the call to end or say that it waits", func() bool {
+				return c.ended() || strings.Contains(c.stderr.String(), launcherWaitStart)
+			})
+			if stderr := c.stderr.String(); strings.Contains(stderr, launcherWaitStart) {
+				t.Fatalf("stderr = %q; with no fresh marker the call must not wait", stderr)
+			}
+			exit, stderr := c.end(t), c.stderr.String()
 			if exit == 0 || !strings.Contains(stderr, tc.want) {
 				t.Fatalf("exit = %d, stderr = %q, want a failure naming %q", exit, stderr, tc.want)
-			}
-			if strings.Contains(stderr, "the launcher is still enrolling this process (") {
-				t.Fatalf("stderr = %q; with no fresh marker the call must not wait", stderr)
 			}
 		})
 	}
