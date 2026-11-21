@@ -69,7 +69,7 @@ func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo
 	return kv
 }
 
-// AwaitBucket waits, within connectTimeout, until every running member of the cluster both
+// AwaitBucket waits, until testDeadline, until every running member of the cluster both
 // answers for the stream of bucket and holds the interest a write to the bucket is routed by. A
 // member answers a lookup out of the metadata it has applied, and routes a write by the
 // subscription the bucket's stream holds on its subjects, which reaches a member that does not
@@ -100,7 +100,7 @@ func (c *Cluster) awaitBucketOn(t testing.TB, i int, server *Server, stream, sub
 	if err != nil {
 		t.Fatalf("open JetStream on member %s: %v", c.Name(i), err)
 	}
-	deadline := time.Now().Add(connectTimeout)
+	deadline, bounded := testDeadline(t)
 	for {
 		_, err := js.StreamInfo(stream)
 		routed := false
@@ -110,8 +110,8 @@ func (c *Cluster) awaitBucketOn(t testing.TB, i int, server *Server, stream, sub
 		if err == nil && routed {
 			return
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("member %s did not answer for stream %s and route %s within %s: %v (routed %t)", c.Name(i), stream, subject, connectTimeout, err, routed)
+		if bounded && time.Now().After(deadline) {
+			t.Fatalf("member %s did not answer for stream %s and route %s by %s, short of the test's deadline: %v (routed %t)", c.Name(i), stream, subject, deadline.Format(time.RFC3339), err, routed)
 		}
 		time.Sleep(retryInterval)
 	}

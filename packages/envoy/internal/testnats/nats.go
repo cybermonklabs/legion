@@ -660,27 +660,38 @@ func (s *Server) launch(t testing.TB) {
 	}
 }
 
-// startMargin is how long before the test's own deadline (go test's -timeout) awaitReady stops
-// waiting, so a server that never comes up fails its test, with its log, rather than the binary
-// panicking with every goroutine's stack. With less than twice that left, it stops halfway to the
-// deadline instead, so a short -timeout still leaves the start most of what remains.
+// startMargin is how long before the test's own deadline (go test's -timeout) a wait on a server's
+// own fact gives up (testDeadline), so a server that never gets there fails its test, naming the
+// wait, rather than the binary panicking with every goroutine's stack. With less than twice that
+// left, the wait gives up halfway to the deadline instead, so a short -timeout still leaves it most
+// of what remains.
 const startMargin = 30 * time.Second
 
+// testDeadline is when a wait of t on a server's own fact gives up: startMargin before t's
+// deadline, or halfway to it, as startMargin says, and never when t has no deadline (bounded
+// false), so the wait lasts as long as the binary does. Each such wait ends on its fact: a server
+// accepting connections (awaitReady), a cluster's JetStream ready (Cluster.AwaitReady), a bucket
+// every member answers for (Cluster.AwaitBucket), a seed the server admits (awaitSeed). On a
+// loaded machine any of these can take longer than a fixed wait allows: at a load near 1,000,
+// cmd/listener's start of a server took past the 30 s these waits once had, its log ending at the
+// JetStream banner, and failed its test before the test began.
+func testDeadline(t testing.TB) (deadline time.Time, bounded bool) {
+	timed, ok := t.(interface{ Deadline() (time.Time, bool) })
+	if !ok {
+		return time.Time{}, false
+	}
+	if deadline, bounded = timed.Deadline(); !bounded {
+		return time.Time{}, false
+	}
+	return deadline.Add(-min(startMargin, time.Until(deadline)/2)), true
+}
+
 // awaitReady returns once srv, just started, accepts connections: the server's own readiness
-// (ReadyForConnections), asked every retryInterval. A JetStream start on a loaded machine can take
-// longer than any fixed wait allows: at a load near 1,000, cmd/listener's start of a server took
-// past the 30 s this wait once had, its log ending at the JetStream banner, and failed its test
-// before the test began. So it waits for as long as the test may run, until startMargin before
-// t's deadline when t has one, and with none for as long as the binary does. A server that logged
-// a fatal error, a listener it could not open among them, fails its start at once, whether or not
+// (ReadyForConnections), asked every retryInterval, until testDeadline. A server that logged a
+// fatal error, a listener it could not open among them, fails its start at once, whether or not
 // its client listener came up.
 func awaitReady(t testing.TB, srv *natsserver.Server, log *logCapture) error {
-	deadline, bounded := time.Time{}, false
-	if timed, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
-		if deadline, bounded = timed.Deadline(); bounded {
-			deadline = deadline.Add(-min(startMargin, time.Until(deadline)/2))
-		}
-	}
+	deadline, bounded := testDeadline(t)
 	for {
 		ready := srv.ReadyForConnections(retryInterval)
 		if log.fatalLogged() {
@@ -914,7 +925,7 @@ func StartConfig(t testing.TB, config string, serverArgs []string, anonymous boo
 	return server, server.URL()
 }
 
-// awaitAuth waits, within connectTimeout, for the server at uri to answer a connection with no
+// awaitAuth waits, until testDeadline, for the server at uri to answer a connection with no
 // credential the way its configuration says: to admit it when admit is set, as a server with a
 // no_auth_user does, and otherwise to refuse it with its own authorization violation, the proof it
 // enforces its nkey users. Either answer also proves it speaks the client protocol. A server can
@@ -924,11 +935,9 @@ func StartConfig(t testing.TB, config string, serverArgs []string, anonymous boo
 // it would pass for the wrong reason; one that refuses it has no no_auth_user.
 func awaitAuth(t testing.TB, uri string, admit bool) {
 	t.Helper()
-	deadline := time.Now().Add(connectTimeout)
-	var err error
-	for time.Now().Before(deadline) {
-		var conn *natsgo.Conn
-		conn, err = natsgo.Connect(uri, natsgo.Timeout(dialTimeout), natsgo.NoReconnect())
+	deadline, bounded := testDeadline(t)
+	for {
+		conn, err := natsgo.Connect(uri, natsgo.Timeout(dialTimeout), natsgo.NoReconnect())
 		switch {
 		case err == nil:
 			conn.Close()
@@ -942,12 +951,14 @@ func awaitAuth(t testing.TB, uri string, admit bool) {
 			}
 			t.Fatalf("NATS at %s refused a client with no credential: it has no no_auth_user", uri)
 		}
+		if bounded && time.Now().After(deadline) {
+			if admit {
+				t.Fatalf("NATS at %s did not admit a client with no credential by %s, short of the test's deadline: %v", uri, deadline.Format(time.RFC3339), err)
+			}
+			t.Fatalf("NATS at %s did not answer by %s, short of the test's deadline: %v", uri, deadline.Format(time.RFC3339), err)
+		}
 		time.Sleep(retryInterval)
 	}
-	if admit {
-		t.Fatalf("NATS at %s did not admit a client with no credential within %s: %v", uri, connectTimeout, err)
-	}
-	t.Fatalf("NATS at %s did not answer within %s: %v", uri, connectTimeout, err)
 }
 
 // ConnectSeed connects to uri as the nkey user whose seed is seed, or with no credential when seed
@@ -976,26 +987,25 @@ const (
 	dialTimeout    = time.Second
 )
 
-// Connect waits for a test NATS server to accept a real connection and JetStream to answer an
-// operation before returning it. The relay accepts a connection before the server behind it has
-// finished its protocol handshake, and NATS can complete that handshake while JetStream is still
-// starting; a KV test needs both readiness boundaries.
+// Connect waits, until testDeadline, for a test NATS server to accept a real connection and
+// JetStream to answer an operation before returning it. The relay accepts a connection before the
+// server behind it has finished its protocol handshake, and NATS can complete that handshake while
+// JetStream is still starting; a KV test needs both readiness boundaries.
 func Connect(t testing.TB, uri string) *natsgo.Conn {
 	t.Helper()
-
-	deadline := time.Now().Add(connectTimeout)
+	deadline, bounded := testDeadline(t)
 	var conn *natsgo.Conn
-	var err error
-	for time.Now().Before(deadline) {
+	for {
+		var err error
 		conn, err = natsgo.Connect(uri, natsgo.Timeout(dialTimeout), natsgo.NoReconnect())
 		if err == nil {
 			break
 		}
+		if bounded && time.Now().After(deadline) {
+			t.Fatalf("failed to connect to NATS by %s, short of the test's deadline: %v", deadline.Format(time.RFC3339), err)
+			return nil
+		}
 		time.Sleep(retryInterval)
-	}
-	if conn == nil {
-		t.Fatalf("failed to connect to NATS within %s: %v", connectTimeout, err)
-		return nil
 	}
 	waitForJetStream(t, func() error {
 		js, err := conn.JetStream()
@@ -1008,19 +1018,21 @@ func Connect(t testing.TB, uri string) *natsgo.Conn {
 	return conn
 }
 
-// waitForJetStream retries a real JetStream operation rather than trusting a successful core-NATS
-// connect. Kept separate so its transient boundary has a direct unit test.
+// waitForJetStream retries a real JetStream operation, until testDeadline, rather than trusting a
+// successful core-NATS connect. Kept separate so its transient boundary has a direct unit test.
 func waitForJetStream(t testing.TB, check func() error) {
 	t.Helper()
-	deadline := time.Now().Add(connectTimeout)
-	var err error
-	for time.Now().Before(deadline) {
-		if err = check(); err == nil {
+	deadline, bounded := testDeadline(t)
+	for {
+		err := check()
+		if err == nil {
 			return
+		}
+		if bounded && time.Now().After(deadline) {
+			t.Fatalf("JetStream was not ready by %s, short of the test's deadline: %v", deadline.Format(time.RFC3339), err)
 		}
 		time.Sleep(retryInterval)
 	}
-	t.Fatalf("JetStream was not ready within %s: %v", connectTimeout, err)
 }
 
 // nats-server answers a stream create it could not make a file store for with streamStoreFailed,
