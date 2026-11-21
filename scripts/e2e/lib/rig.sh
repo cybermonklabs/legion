@@ -183,10 +183,16 @@ port_answers() {
 }
 
 # listening_holders PORT prints, one per line in order, the pid of every process holding the one
-# socket that listens on PORT: its inode from the LISTEN row (state 0A) of /proc/net/tcp and
-# /proc/net/tcp6, and each process of `${proc_root:-/proc}` with a descriptor naming
-# socket:[<inode>] (the host's /proc, unless a test points proc_root at a proc root of its own,
-# scripts/e2e/lib/proc-root.ts). It fails with 1 when no socket listens on PORT, or more than one
+# socket that listens on 127.0.0.1:PORT, where every service of a rig listens (held-port.py's
+# default host, port_answers' address): its inode from the LISTEN row (state 0A) of /proc/net/tcp
+# whose local address is 127.0.0.1:PORT, and each process of `${proc_root:-/proc}` with a
+# descriptor naming socket:[<inode>] (the host's /proc, unless a test points proc_root at a proc
+# root of its own, scripts/e2e/lib/proc-root.ts). A socket on the same port of another address is
+# none of it: the kernel's bind of port 0 on 127.0.0.1 hands out a port another process already
+# listens on at another loopback address, as a Go test of this box does on a random 127.x.y.z, and
+# a count of every row with that port read two sockets and failed. The address is the table's
+# hexadecimal of the address in host byte order, 0100007F on a little-endian host and 7F000001 on
+# a big-endian one. It fails with 1 when no socket listens on 127.0.0.1:PORT, or more than one
 # does, and with 2, saying why, when /proc/net/tcp cannot be read, so an unread table is never
 # read as a port nothing listens on, and when the proc root lists no process at all.
 # The shell's glob hands the <pid>/fd entries to find on stdin (-files0-from -), never as its
@@ -195,23 +201,20 @@ port_answers() {
 # (another user's process) or whose process ended during the walk is none of the answer; any other
 # complaint of the walk's (proc_walk_complaint) prints and fails with 2.
 listening_holders() {
-  local proc=${proc_root:-/proc} inodes err status=0 complaint holder table
-  local -a holders=() tables=() entries=()
-  for table in /proc/net/tcp /proc/net/tcp6; do
-    [ ! -e "$table" ] || tables+=("$table")
-  done
+  local proc=${proc_root:-/proc} inodes err status=0 complaint holder
+  local -a holders=() entries=()
   [ -r /proc/net/tcp ] || {
-    echo "listening_holders: /proc/net/tcp cannot be read, so the socket listening on port $1 was not looked for" >&2
+    echo "listening_holders: /proc/net/tcp cannot be read, so the socket listening on 127.0.0.1:$1 was not looked for" >&2
     return 2
   }
-  inodes=$(awk -v port=":$(printf '%04X' "$1")" \
-    '$4 == "0A" && substr($2, length($2) - 4) == port { print $10 }' "${tables[@]}") || {
-    echo "listening_holders: awk could not read ${tables[*]}, so the socket listening on port $1 was not looked for" >&2
+  inodes=$(awk -v port="$(printf '%04X' "$1")" \
+    '$4 == "0A" && ($2 == "0100007F:" port || $2 == "7F000001:" port) { print $10 }' /proc/net/tcp) || {
+    echo "listening_holders: awk could not read /proc/net/tcp, so the socket listening on 127.0.0.1:$1 was not looked for" >&2
     return 2
   }
   case "$inodes" in
     '' | *[!0-9]*)
-      echo "listening_holders: $(wc -w <<<"$inodes") sockets listen on port $1, not one" >&2
+      echo "listening_holders: $(wc -w <<<"$inodes") sockets listen on 127.0.0.1:$1, not one" >&2
       return 1
       ;;
   esac
@@ -245,18 +248,18 @@ listening_holders() {
   done | sort -un
 }
 
-# held_only_by PORT PID... succeeds when the processes holding the socket listening on PORT
-# (listening_holders) are exactly the PIDs given, and otherwise prints each holder with its command
-# and fails: a descriptor that leaked into another process (a tmux server, a pane, a CLI call) keeps
-# the port listening after the service stops. A reading listening_holders could not make fails with
-# its status and its reason.
+# held_only_by PORT PID... succeeds when the processes holding the socket listening on
+# 127.0.0.1:PORT (listening_holders) are exactly the PIDs given, and otherwise prints each holder
+# with its command and fails: a descriptor that leaked into another process (a tmux server, a pane,
+# a CLI call) keeps the port listening after the service stops. A reading listening_holders could
+# not make fails with its status and its reason.
 held_only_by() {
   local port=$1 holders want pid
   shift
   holders=$(listening_holders "$port") || return
   want=$(printf '%s\n' "$@" | sort -un)
   [ "$holders" != "$want" ] || return 0
-  echo "the socket listening on port $port is held by:" >&2
+  echo "the socket listening on 127.0.0.1:$port is held by:" >&2
   for pid in $holders; do echo "  $pid $(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)" >&2; done
   echo "and should be held by $(tr '\n' ' ' <<<"$want")alone" >&2
   return 1

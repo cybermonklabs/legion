@@ -1,7 +1,14 @@
 import { afterEach, beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
@@ -103,6 +110,37 @@ async function gone(pid: number): Promise<boolean> {
   }
   return false;
 }
+// untilExecDone resolves once PID has finished its exec of PROGRAM as far as a walk of the marks
+// reads it: its exe link (/proc/<pid>/exe) names PROGRAM and its /proc/<pid>/environ reads
+// non-empty. Inside an exec Linux gives the process its new memory, and the exe link with it,
+// before it sets where that memory's arguments and environment end (create_elf_tables in
+// fs/binfmt_elf.c): first the arguments' end, then a placeholder end of the environment, which lets
+// /proc/<pid>/cmdline read in full (get_mm_cmdline in fs/proc/base.c reads once that end is not 0),
+// and only after it has counted each variable the environment's real end. Until then environ reads
+// empty and a walk of the marks names nothing, so a wait on the exe link or on the command line can
+// end inside the exec. Nothing signals the end of another process's exec, so it reads both every
+// 50 ms, as gone and untilRunning (lib/own-group.ts) do. It rejects naming the pid, what its exe
+// link read and how many bytes its environ held when that is not so within 3 s: the row's 5 s (bun
+// test's default, which CI's `bun test scripts/e2e/lib` keeps) less 2 s for the walk after.
+async function untilExecDone(pid: number, program: string): Promise<void> {
+  const want = realpathSync(hostTool(program) ?? program);
+  let exe = "";
+  let environ = 0;
+  for (let i = 0; i < 60; i++) {
+    try {
+      exe = readlinkSync(`/proc/${pid}/exe`);
+      environ = exe === want ? readFileSync(`/proc/${pid}/environ`).length : 0;
+    } catch {
+      exe = "";
+      environ = 0;
+    }
+    if (exe === want && environ > 0) return;
+    await Bun.sleep(50);
+  }
+  throw new Error(
+    `pid ${pid} did not finish its exec of ${want} within 3 s: its exe link read ${exe || "nothing"} and its environ ${environ} bytes`
+  );
+}
 
 // harness runs BODY in a bash with lib/rig.sh and lib/arg-max-force.sh sourced for the run
 // directory WORK, marked as a run marks itself (LEGION_E2E_RUN), under the drivers' `set -Eeuo
@@ -197,9 +235,12 @@ test.skipIf(skip)(
 
 test.skipIf(skip)(
   "names a marked process of the run that left every tree the run started, double-forked to pid 1 or a subreaper",
-  () => {
+  async () => {
     // run_processes is the run's search for its leftovers: a daemon that forked twice and whose
     // parent ended belongs to no tree the run recorded, and only a walk of every process finds it.
+    // The walk starts once the escaped subshell's exec of sleep is done (untilExecDone): inside the
+    // exec its /proc/<pid>/environ reads empty, so the walk names nothing, while its exe link already
+    // reads sleep. On a loaded devbox the row read [] where it wants the pid in 1 to 2 of 10 runs.
     const work = join(dir, "escaped");
     mkdirSync(work);
     const pidFile = join(dir, "escaped.pid");
@@ -220,6 +261,7 @@ test.skipIf(skip)(
     expect(forked.exitCode).toBe(0);
     const pid = Number(readFileSync(pidFile, "utf8").trim());
     started.push(pid);
+    await untilExecDone(pid, "sleep");
     // Its parent, the subshell, has ended, so nothing the test started is its parent any more.
     const parent = readFileSync(`/proc/${pid}/stat`, "utf8")
       .replace(/^[\s\S]*\) /, "")
@@ -275,6 +317,69 @@ listening_holders ${listener.port}`
       expect(r.err).toBe("");
       expect(r.code).toBe(0);
       expect(pids(r.out)).toContain(String(process.pid));
+    } finally {
+      listener.stop(true);
+    }
+  }
+);
+
+// otherLoopback says whether this host lets a socket listen on 127.0.0.2, an address of the
+// loopback network other than 127.0.0.1. Linux routes all of 127.0.0.0/8 to lo; a host that does
+// not skips the row that needs it, by this name.
+const otherLoopback = (() => {
+  try {
+    Bun.listen({ hostname: "127.0.0.2", port: 0, socket: { data() {} } }).stop(true);
+    return true;
+  } catch {
+    return false;
+  }
+})();
+if (!otherLoopback) {
+  console.warn(
+    `Skipped the same-port row of ${import.meta.path}: this host lets no socket listen on 127.0.0.2.`
+  );
+}
+
+test.skipIf(skip || !otherLoopback)(
+  "listening_holders counts only the socket on 127.0.0.1:PORT: one another process listens with on the same port of another loopback address is none of it",
+  async () => {
+    // The kernel's bind of port 0 on 127.0.0.1 can hand out a port another process already listens
+    // on at another loopback address. On a devbox a Go test (buckets.test) listened on
+    // 127.162.56.110:41869 while the killed-reader row's own listener had 127.0.0.1:41869, and a
+    // count of every LISTEN row with that port read "2 sockets listen" and failed the row. Here the
+    // collision is made every time: this test process listens on 127.0.0.1 with a port the kernel
+    // chooses, and another process (a bun of its own) then listens on 127.0.0.2 with the same port
+    // and says so once it listens. Both LISTEN rows are read from /proc/net/tcp before the walk.
+    const work = join(dir, "same-port");
+    mkdirSync(work);
+    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    try {
+      const port = listener.port;
+      const other = Bun.spawn(
+        ownGroup([
+          process.execPath,
+          "-e",
+          'Bun.listen({ hostname: "127.0.0.2", port: Number(process.argv[1]), socket: { data() {} } }); console.log("listening"); setTimeout(() => {}, 60000);',
+          String(port),
+        ]),
+        { cwd: dir, env: { PATH: process.env.PATH ?? "" }, stdout: "pipe", stderr: "pipe" }
+      );
+      started.push(other.pid);
+      const said = await other.stdout.getReader().read();
+      expect(new TextDecoder().decode(said.value)).toBe("listening\n");
+      const hex = port.toString(16).toUpperCase().padStart(4, "0");
+      const listening = readFileSync("/proc/net/tcp", "utf8")
+        .split("\n")
+        .map((line) => line.trim().split(/\s+/))
+        .filter((fields) => fields[3] === "0A" && fields[1]?.endsWith(`:${hex}`))
+        .map((fields) => fields[1]);
+      expect(listening).toEqual(expect.arrayContaining([`0100007F:${hex}`, `0200007F:${hex}`]));
+      const r = harness(work, `listening_holders ${port}`);
+      expect({ code: r.code, out: r.out, err: r.err }).toEqual({
+        code: 0,
+        out: `${process.pid}\n`,
+        err: "",
+      });
     } finally {
       listener.stop(true);
     }
@@ -394,6 +499,9 @@ test.skipIf(skip)(
     );
     const escaped = Number(readFileSync(pidFile, "utf8").trim());
     started.push(escaped);
+    // A sweep made inside the escaped process's exec of sleep reads no mark in its environment and
+    // leaves it running, as the double-forked row's walk names nothing then (untilExecDone).
+    await untilExecDone(escaped, "sleep");
     const shell = spawn(["sleep", "60"], { cwd: work });
     const tail = spawn(["tail", "-f", join(work, "transcript.log")], { cwd: work });
     const r = harness(work, `stop_marked_processes "$work"; echo "status $?"`);
