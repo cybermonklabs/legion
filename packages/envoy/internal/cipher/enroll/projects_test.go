@@ -91,21 +91,56 @@ func TestASessionNamingAProjectItsPersonCannotSeeIsRefused(t *testing.T) {
 	}
 }
 
-// TestARestrictedMembersSessionEnrollsNothingNamingProjectsOrNot: a restricted member's machine
-// login enrolls no session, naming no project or naming one they may see
-// (ErrRestrictedMember, checkMember), so no project list lets such a person's agents be released
-// a secret. A full member's session naming none enrolls as before.
-func TestARestrictedMembersSessionEnrollsNothingNamingProjectsOrNot(t *testing.T) {
+// TestARestrictedMembersSignInSessionMustNameItsProjects: a session under a restricted member's
+// sign-in, which checkMember does not hold (the broker checked the sign-in's domain itself), is
+// held to #4135's list rule: naming no project it is refused ErrProjectsRequired, since such a
+// person sees only the projects that name them, and naming PRIV, whose list names bob, it enrolls
+// with that list. While Dispatch refuses the broker's own account, or answers a member kind the
+// broker does not know, the empty list is refused ErrProjectsUnchecked, wrapping the cause. A full
+// member's session naming none enrolls as before. (A restricted member's machine login and pod
+// login enroll nothing at all: TestARestrictedMembersLauncherEnrollsNothing.)
+func TestARestrictedMembersSignInSessionMustNameItsProjects(t *testing.T) {
+	ctx := context.Background()
+	enrolUnder := func(t *testing.T, svc *Service, cred Credential, runtimeID string, projects ...string) (Enrollment, error) {
+		t.Helper()
+		return svc.Create(ctx, cred, Enrollment{Kind: "session", RuntimeID: runtimeID, Thumbprint: "tp-" + runtimeID, Projects: projects})
+	}
 	svc := newService(t)
 	withProjects(t, svc)
-	if _, err := enrolSession(t, svc, bobLogin, "box-bob-none"); !errors.Is(err, ErrRestrictedMember) {
-		t.Fatalf("bob's session naming no project = %v; want ErrRestrictedMember", err)
+	signIn := personsSignIn(t, svc, bobLogin)
+	if _, err := enrolUnder(t, svc, signIn, "box-bob-signin-none"); !errors.Is(err, ErrProjectsRequired) {
+		t.Fatalf("a session under bob's sign-in naming no project = %v; want ErrProjectsRequired", err)
 	}
-	if _, err := enrolSession(t, svc, bobLogin, "box-bob-priv", "PRIV"); !errors.Is(err, ErrRestrictedMember) {
-		t.Fatalf("bob's session naming PRIV = %v; want ErrRestrictedMember", err)
+	enr, err := enrolUnder(t, svc, signIn, "box-bob-signin-priv", "PRIV")
+	if err != nil || !slices.Equal(enr.Projects, []string{"PRIV"}) {
+		t.Fatalf("a session under bob's sign-in naming PRIV = projects %v, %v; want it enrolled naming [PRIV]", enr.Projects, err)
 	}
 	if enr, err := enrolSession(t, svc, aliceLogin, "box-alice-none"); err != nil || enr.Projects != nil {
 		t.Fatalf("alice's session naming no project = %+v, %v; want it enrolled naming none", enr, err)
+	}
+
+	for _, c := range []struct {
+		name  string
+		serve func(t *testing.T, svc *Service)
+		cause error
+	}{
+		{"Dispatch refuses the broker's account", func(t *testing.T, svc *Service) {
+			dispatch := withProjects(t, svc)
+			svc.Projects = projectaccess.New(dispatch.URL, projectaccesstest.StaticAccount("not-the-stand-ins-token"), nil)
+		}, projectaccess.ErrBrokerRefused},
+		{"Dispatch answers a member kind the broker does not know", func(t *testing.T, svc *Service) {
+			dispatch := projectaccesstest.NewServer(t, nil, map[string]string{bobLogin: "guest"})
+			svc.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
+		}, projectaccess.ErrUnknownMemberKind},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			svc := newService(t)
+			c.serve(t, svc)
+			signIn := personsSignIn(t, svc, bobLogin)
+			if _, err := enrolUnder(t, svc, signIn, "box-bob-signin-unchecked"); !errors.Is(err, ErrProjectsUnchecked) || !errors.Is(err, c.cause) {
+				t.Fatalf("a session under bob's sign-in naming no project = %v; want ErrProjectsUnchecked wrapping %v", err, c.cause)
+			}
+		})
 	}
 }
 

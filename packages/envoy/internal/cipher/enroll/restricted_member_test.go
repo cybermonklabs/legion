@@ -65,22 +65,30 @@ func TestARestrictedMembersLauncherEnrollsNothing(t *testing.T) {
 		}
 	})
 
-	t.Run("a restricted member's machine login enrolls nothing", func(t *testing.T) {
+	t.Run("a restricted member's machine login enrolls nothing, naming a project or not", func(t *testing.T) {
 		cred := mintCredential(t, svc, str(outsider), nil, "outsider-laptop")
-		if err := enrol(t, svc, cred, "outsider-laptop-1"); !errors.Is(err, ErrRestrictedMember) {
-			t.Fatalf("Create under %s's machine login = %v, want ErrRestrictedMember", outsider, err)
+		for _, projects := range [][]string{nil, {"PRIV"}} {
+			_, err := svc.Create(ctx, cred, Enrollment{Kind: "session", RuntimeID: "outsider-laptop-1", Thumbprint: "tp-outsider-laptop-1", Projects: projects})
+			if !errors.Is(err, ErrRestrictedMember) {
+				t.Fatalf("Create under %s's machine login naming %v = %v, want ErrRestrictedMember", outsider, projects, err)
+			}
 		}
 		if n := enrolled(t, svc, cred); n != 0 {
-			t.Fatalf("the refused enrollment left %d rows under %s's machine login, want none", n, outsider)
+			t.Fatalf("the refused enrollments left %d rows under %s's machine login, want none", n, outsider)
 		}
 	})
 
 	for _, schema := range personPodSchemas() {
-		t.Run("on "+schema.name+" a restricted member's pod login enrolls nothing, and a full member's enrolls", func(t *testing.T) {
+		t.Run("on "+schema.name+" a restricted member's pod login enrolls nothing, naming a project or not, and a full member's enrolls", func(t *testing.T) {
 			for _, row := range []struct {
-				kind string
-				want error
-			}{{projectaccess.MemberFull, nil}, {projectaccess.MemberRestricted, ErrRestrictedMember}} {
+				kind     string
+				projects []string
+				want     error
+			}{
+				{projectaccess.MemberFull, nil, nil},
+				{projectaccess.MemberRestricted, nil, ErrRestrictedMember},
+				{projectaccess.MemberRestricted, []string{"PRIV"}, ErrRestrictedMember},
+			} {
 				r := newPersonPodRig(t, schema)
 				stand := projectaccesstest.NewServer(t, nil, map[string]string{adaPerson: row.kind})
 				r.svc.Projects = projectaccess.New(stand.URL, stand.Account, nil)
@@ -88,13 +96,13 @@ func TestARestrictedMembersLauncherEnrollsNothing(t *testing.T) {
 				if !PersonPodLogin(cred) {
 					t.Fatalf("%s's pod login = %+v, want a person's pod login", adaPerson, cred)
 				}
-				_, err := r.enroll(t, cred, adaPodAccount, "pod-uid-ada")
+				_, err := r.enrollNaming(t, cred, adaPodAccount, "pod-uid-ada", row.projects...)
 				n := enrolled(t, r.svc, cred)
 				switch {
 				case row.want == nil && (err != nil || n != 1):
 					t.Fatalf("Create(ada's pod) under the pod login of %s, a %s member, = %v with %d enrollments, want one enrollment", adaPerson, row.kind, err, n)
-				case row.want != nil && (!errors.Is(err, row.want) || n != 0):
-					t.Fatalf("Create(ada's pod) under the pod login of %s, a %s member, = %v with %d enrollments, want ErrRestrictedMember and none", adaPerson, row.kind, err, n)
+				case row.want != nil && (!errors.Is(err, row.want) || errors.Is(err, ErrProjectsRequired) || n != 0):
+					t.Fatalf("Create(ada's pod) naming %v under the pod login of %s, a %s member, = %v with %d enrollments, want ErrRestrictedMember and none", row.projects, adaPerson, row.kind, err, n)
 				}
 			}
 		})

@@ -609,30 +609,11 @@ func (r podRig) enrollNaming(t *testing.T, cred Credential, account, podUID stri
 	return r.svc.Create(context.Background(), cred, in)
 }
 
-// TestARestrictedMembersPodEnrollsNothingAsItsSessionDoes: ada is a restricted member, and her
-// pod acts for her. Her pod's login enrolls nothing, naming no project or naming PRIV, which her
-// access list gives her: ErrRestrictedMember, the refusal her own machine login gets
-// (checkMember), and never ErrProjectsRequired, whose words would lead to a second refusal.
-// Nothing is enrolled.
-func TestARestrictedMembersPodEnrollsNothingAsItsSessionDoes(t *testing.T) {
-	r, _ := newPersonPodProjectsRig(t, projectaccess.MemberRestricted)
-	cred := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)
-	for _, projects := range [][]string{nil, {"PRIV"}} {
-		_, err := r.enrollNaming(t, cred, adaPodAccount, "pod-uid-ada", projects...)
-		if !errors.Is(err, ErrRestrictedMember) || errors.Is(err, ErrProjectsRequired) {
-			t.Fatalf("Create(ada's pod, naming %v) = %v; want ErrRestrictedMember", projects, err)
-		}
-	}
-	if got := r.rows(t, "pod-uid-ada"); got != 0 {
-		t.Fatalf("enrollments naming pod-uid-ada after the refusals = %d, want none", got)
-	}
-}
-
 // TestAPersonsPodNamingAProjectItsPersonCannotSeeIsRefused: ada is a full member. Her pod
 // naming ELSE, a private project whose access list does not name her, is refused
 // ErrProjectNotVisible naming ELSE. So is a list of PRIV and ELSE. Nothing is enrolled. Her
 // session gets the same refusals. (A restricted member's pod enrolls nothing at all:
-// TestARestrictedMembersPodEnrollsNothingAsItsSessionDoes.)
+// TestARestrictedMembersLauncherEnrollsNothing.)
 func TestAPersonsPodNamingAProjectItsPersonCannotSeeIsRefused(t *testing.T) {
 	r, _ := newPersonPodProjectsRig(t, projectaccess.MemberFull)
 	cred := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)

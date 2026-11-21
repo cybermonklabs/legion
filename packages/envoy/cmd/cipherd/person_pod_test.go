@@ -8,7 +8,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -184,11 +183,11 @@ func TestAPersonsPodReadsThePersonsAgentSecretWithNoApproval(t *testing.T) {
 // Ada's pod run as `enroll --pod` with AGENT_SECRETS_PROJECTS=PRIV enrols, `agent-secrets self`
 // prints PRIV, and the pod reads PRIV's secret. It is denied ELSE's secret project-not-named, and
 // the command it would run never runs. So the pod sees what her own session naming PRIV sees, and
-// no more. A second broker, whose Dispatch calls ada a restricted member, enrolls no pod of hers,
-// naming PRIV or naming no project: the CLI prints RESTRICTED_MEMBER_ENROLLS_NOTHING, as her
-// machine login gets. The other refusals of a pod's list are enroll.Service.Create's
-// (internal/cipher/enroll/person_pod_test.go), each answered by its own code
-// (internal/cipher/api/enroll_projects_test.go).
+// no more. A restricted member's pod enrolls nothing at all (internal/cipher/enroll's
+// TestARestrictedMembersLauncherEnrollsNothing; this package's
+// TestARestrictedMembersMachineLoginEnrollsNothing for the machine login). The other refusals of
+// a pod's list are enroll.Service.Create's (internal/cipher/enroll/person_pod_test.go), each
+// answered by its own code (internal/cipher/api/enroll_projects_test.go).
 //
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestAPersonsPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
@@ -282,14 +281,6 @@ func TestAPersonsPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 	}
 	if dispatch.ProjectCalls() == 0 {
 		t.Fatal("the broker asked Dispatch nothing of a project, so no answer above read one: the run is blind")
-	}
-
-	t.Log("--- a broker whose Dispatch calls ada a restricted member enrols no pod of hers, naming PRIV or no project")
-	restrictedBase, _ := brokerAsking(projectaccess.MemberRestricted)
-	for i, env := range [][]string{{"AGENT_SECRETS_PROJECTS=" + privProject}, nil} {
-		if _, code, stderr := enrol(restrictedBase, fmt.Sprintf("ada-pod-restricted-%d", i), env); code == 0 || !strings.Contains(stderr, "RESTRICTED_MEMBER_ENROLLS_NOTHING") {
-			t.Fatalf("enroll --pod as ada's pod (%v) on a broker that calls her restricted exited %d, want a refusal RESTRICTED_MEMBER_ENROLLS_NOTHING\nstderr: %s", env, code, stderr)
-		}
 	}
 }
 

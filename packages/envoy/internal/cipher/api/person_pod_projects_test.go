@@ -1,8 +1,8 @@
 // person_pod_projects_test.go drives POST /v1/enrollments for a person's pod that names
 // projects, on the real handlers api_test.go mounts. BROKER_POD_OPERATORS maps the pod's account
-// to bob. The pod logs in with its own token and names its projects as bob's own session does:
-// the broker takes them while bob is a full member, and enrolls nothing while Dispatch calls him
-// a restricted member, whatever the pod names. The refusals of a pod's list are
+// to bob, a full member. The pod logs in with its own token and names its projects as bob's own
+// session does, and the broker takes them. A restricted member's pod enrolls nothing at all
+// (enroll/restricted_member_test.go); the refusals of a pod's list are
 // enroll.Service.Create's, which enroll/person_pod_test.go drives for a person's pod.
 package api_test
 
@@ -10,7 +10,6 @@ import (
 	"crypto/ecdsa"
 	"net/http"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -103,19 +102,5 @@ func TestAPersonsPodEnrollsNamingItsProjects(t *testing.T) {
 	}](t, body)
 	if status != http.StatusOK || self.Kind != "pod" || self.Operator == nil || *self.Operator != projectsPodPerson || !slices.Equal(self.Projects, []string{"PRIV"}) {
 		t.Fatalf("GET /v1/enrollments/self of bob's pod = %d %s; want a pod of %s naming [PRIV]", status, body, projectsPodPerson)
-	}
-}
-
-// TestARestrictedMembersPodEnrollsNothingNamingItsProjects: while Dispatch calls bob a restricted
-// member, his pod enrolls nothing, naming PRIV, whose access list names him, or naming no project:
-// 403 RESTRICTED_MEMBER_ENROLLS_NOTHING each time, as his machine login gets.
-func TestARestrictedMembersPodEnrollsNothingNamingItsProjects(t *testing.T) {
-	ts := newPersonPodProjectsServer(t, projectaccess.MemberRestricted)
-	for _, projects := range [][]string{{"PRIV"}, nil} {
-		pod := logInBobsPod(t, ts, "pod-uid-bob-"+strings.Join(append([]string{"none"}, projects...), "-"))
-		status, body := pod.enrol(t, ts, projects)
-		if status != http.StatusForbidden || decode[wireError](t, body).Code != "RESTRICTED_MEMBER_ENROLLS_NOTHING" {
-			t.Fatalf("POST /v1/enrollments for bob's pod naming %v = %d %s; want 403 RESTRICTED_MEMBER_ENROLLS_NOTHING", projects, status, body)
-		}
 	}
 }
