@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -31,11 +32,12 @@ func scrape(t *testing.T, registry *metrics.Registry) string {
 // last publish error. The cause is logged too: the outbox's own ERROR for the earlier event's
 // failed topic send names that event and its topic. While it waits, each try of the parked lane
 // reads the rule once and writes nothing of the attempt: the test steps the lane one try at a
-// time, holding each park's timer and running it itself, and a traced pool counts the server's
-// statements between one park and the next - one read of the rule (model.MentionCopyRuleSQL) and
-// no statement on comment_deliveries each. Once the topic family is captured again the send
-// lands, the gauges read none and no second WARN comes. The controls are the scrape before the
-// comment and the one after the send landed.
+// time, holding each park's timer and running it itself, and a traced pool sees every statement
+// the server makes between one park and the next. Each try makes one statement on the events
+// table, the rule's one table, and it is the rule's own (model.MentionCopyRuleSQL); any other
+// statement on events fails the test, whatever its text, and so does any on comment_deliveries.
+// Once the topic family is captured again the send lands, the gauges read none and no second
+// WARN comes. The controls are the scrape before the comment and the one after the send landed.
 func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
@@ -100,9 +102,13 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	// The parked lane stepped one try at a time: each park's timer is held and the test runs it,
 	// so the statements between one park and the next are one try's, with nothing else of the
 	// lane in flight.
+	if !eventsStatement.MatchString(model.MentionCopyRuleSQL) {
+		t.Fatal("the statement matcher does not see the rule's own statement on events, so it would see no read of the rule")
+	}
 	stepping.Store(true)
 	unpark := nextPark(t, parked)
 	var readsPerTry []int
+	var unrecognised []string
 	attemptWrites := 0
 	for range 3 {
 		before := len(recorder.Statements())
@@ -113,6 +119,8 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 			switch {
 			case statement == model.MentionCopyRuleSQL:
 				reads++
+			case eventsStatement.MatchString(statement):
+				unrecognised = append(unrecognised, statement)
 			case strings.Contains(statement, "comment_deliveries"):
 				attemptWrites++
 			}
@@ -124,12 +132,15 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	body := scrape(t, registry)
 	stepping.Store(false)
 	unpark()
-	t.Logf("three tries of the parked send: reads of the rule %v, %d statements on comment_deliveries; gauges:\n%s",
-		readsPerTry, attemptWrites, heldLines(body))
+	t.Logf("three tries of the parked send: reads of the rule %v, %d other statements on events, %d statements on comment_deliveries; gauges:\n%s",
+		readsPerTry, len(unrecognised), attemptWrites, heldLines(body))
 	for try, reads := range readsPerTry {
 		if reads != 1 {
 			t.Errorf("try %d of the parked send read the rule %d times, want once: a parked lane reads it once each try", try+1, reads)
 		}
+	}
+	for _, statement := range unrecognised {
+		t.Errorf("a try of the parked send made a statement on events that is not the rule's own: %q", firstChars(statement, 160))
 	}
 	if attemptWrites != 0 {
 		t.Errorf("three tries of the parked send made %d statements on comment_deliveries, want none: a try of a held send reads the rule alone", attemptWrites)
@@ -203,4 +214,17 @@ func nextPark(t *testing.T, parked <-chan func()) func() {
 		t.Fatal("the held send did not park again within 30 s")
 		return nil
 	}
+}
+
+// eventsStatement matches a statement that reads or writes the events table, the one table the
+// copy rule reads (model.MentionCopyRuleSQL), however its text is spelled or spaced.
+var eventsStatement = regexp.MustCompile(`(?i)\b(from|join|update|into)\s+(public\.)?events\b`)
+
+// firstChars is statement's first n characters, its runs of white space each one space.
+func firstChars(statement string, n int) string {
+	text := strings.Join(strings.Fields(statement), " ")
+	if len(text) > n {
+		return text[:n] + "..."
+	}
+	return text
 }

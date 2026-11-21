@@ -20,12 +20,14 @@ import (
 // *mentionHeldForOrder) until the test opens it, and whose every other send takes a moment and
 // records itself. Its timers are the sender's own (after, which starts a time.AfterFunc), counted:
 // pending is how many parks' timers have been started and not run, which the sender starts only
-// once no goroutine serves the parked lane (serve), and fired how many have run.
+// once no goroutine serves the parked lane (serve), and fired how many have run. parked has a
+// value once a park's timer has started since it was last read (awaitPark).
 type parkRig struct {
 	sender  *mentionSender
 	open    atomic.Bool
 	pending atomic.Int32
 	fired   atomic.Int64
+	parked  chan struct{}
 	mu      sync.Mutex
 	tries   []time.Time
 	sent    []string
@@ -38,7 +40,7 @@ type parkRig struct {
 func newParkRig(t *testing.T, capacity int) *parkRig {
 	t.Helper()
 	lifetime, stop := context.WithCancel(context.Background())
-	rig := &parkRig{written: map[mentionKey]int{}}
+	rig := &parkRig{written: map[mentionKey]int{}, parked: make(chan struct{}, 1)}
 	rig.sender = newMentionSender(lifetime, 100*time.Millisecond,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			if item.mention.Target == "session:parked" && !rig.open.Load() {
@@ -84,6 +86,10 @@ func newParkRig(t *testing.T, capacity int) *parkRig {
 			rig.fired.Add(1)
 			f()
 		})
+		select {
+		case rig.parked <- struct{}{}:
+		default:
+		}
 	}
 	rig.sender.mu.Unlock()
 	t.Cleanup(func() {
@@ -99,6 +105,15 @@ func (r *parkRig) enqueue(id, target string) mentionSend {
 	}
 	r.sender.enqueue(context.Background(), item)
 	return item
+}
+
+// awaitPark waits for the sender's next park - which, in a synctest bubble, moves the bubble's
+// clock on to the timers that make the next tries - and then for every goroutine of the bubble to
+// block. Nothing bounds how far the clock moves: a lane that would never try again leaves every
+// goroutine blocked with no timer to run, which synctest reports as a deadlock.
+func (r *parkRig) awaitPark() {
+	<-r.parked
+	synctest.Wait()
 }
 
 // state is what the sender holds now: how many goroutines serve lanes, whether session:parked's
@@ -196,9 +211,10 @@ func shortWaits(tries []time.Time) (waits []time.Duration, short []string) {
 // its two in order.
 //
 // The test runs in a synctest bubble, so its clock is the bubble's: each wait is read as the
-// sender scheduled it, whatever the machine's load. The lane is read each time every goroutine of
-// the bubble is blocked (synctest.Wait), which is when a goroutine that slept a park's wait out on
-// the lane would still be on it.
+// sender scheduled it, whatever the machine's load, and the test waits for parkedTries tries
+// however long the schedule makes them take, with no deadline on the bubble's clock. The lane is
+// read after each park, once every goroutine of the bubble is blocked (awaitPark), which is when a
+// goroutine that slept a park's wait out on the lane would still be on it.
 func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rig := newParkRig(t, 2)
@@ -241,23 +257,19 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 			return sent == 10 && queued == 2 && serving == 0
 		})
 
-		// The parked send's tries until it has made parkedTries, the lane read every 10 ms of the
-		// bubble's clock, each time every goroutine is blocked.
-		for deadline := time.Now().Add(time.Minute); ; time.Sleep(10 * time.Millisecond) {
-			synctest.Wait()
-			serving, parked, onLane, queued := rig.state()
-			if !parked || serving != 0 || onLane != 2 || queued != 2 {
-				t.Fatalf("once every goroutine is blocked the lane is parked %v, with %d goroutines serving, %d sends on it and %d queued; want parked, 0, 2 and 2",
-					parked, serving, onLane, queued)
-			}
+		// The parked send's tries until it has made parkedTries, the lane read after each park.
+		for {
 			rig.mu.Lock()
 			tried := len(rig.tries)
 			rig.mu.Unlock()
 			if tried >= parkedTries {
 				break
 			}
-			if !time.Now().Before(deadline) {
-				t.Fatalf("the parked send was tried %d times in a minute, want %d", tried, parkedTries)
+			rig.awaitPark()
+			serving, parked, onLane, queued := rig.state()
+			if !parked || serving != 0 || onLane != 2 || queued != 2 {
+				t.Fatalf("once every goroutine is blocked the lane is parked %v, with %d goroutines serving, %d sends on it and %d queued; want parked, 0, 2 and 2",
+					parked, serving, onLane, queued)
 			}
 		}
 		if stacks := serveStacks(); stacks != 0 {
@@ -288,12 +300,21 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 			t.Errorf("the parked sends' claims were written again %d and %d times, want both kept live", writtenFirst, writtenSecond)
 		}
 
+		// Once open, the lane's next try sends both, whenever its timer runs.
 		rig.open.Store(true)
-		waitUntil(t, time.Minute, "the parked lane's two sends", func() bool {
+		for {
+			synctest.Wait()
 			rig.mu.Lock()
-			defer rig.mu.Unlock()
-			return len(rig.sent) == 12
-		})
+			sent := len(rig.sent)
+			rig.mu.Unlock()
+			if sent == 12 {
+				break
+			}
+			if serving, parked, _, _ := rig.state(); !parked && serving == 0 {
+				t.Fatalf("the lane sent %d of its two once open and is neither parked nor served, so it never will", sent-10)
+			}
+			time.Sleep(time.Second)
+		}
 		rig.mu.Lock()
 		order := append([]string(nil), rig.sent[10:]...)
 		rig.mu.Unlock()
@@ -308,9 +329,10 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 // that on the database), so N lanes held behind a stuck topic family read the rule at most N
 // times each parkedReadEvery once their waits have ramped up - here 200 lanes, each tried at least
 // parkedTries times, every wait between two tries of one lane read. It runs in a synctest bubble,
-// as the test above does: each wait is the one the sender scheduled, and each time every
-// goroutine of the bubble is blocked no goroutine serves a lane. A park that held its goroutine
-// (slept its wait out on it) would keep one on every lane it serves.
+// as the test above does: each wait is the one the sender scheduled, the test waits for the tries
+// however long the schedule makes them take, and after each park, with every goroutine of the
+// bubble blocked, no goroutine serves a lane. A park that held its goroutine (slept its wait out
+// on it) would keep one on every lane it serves.
 func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const lanes = 200
@@ -327,12 +349,7 @@ func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
 		for index := range lanes {
 			rig.enqueue(fmt.Sprintf("held-%d", index), fmt.Sprintf("session:held-%d", index))
 		}
-		for deadline := time.Now().Add(time.Minute); ; time.Sleep(10 * time.Millisecond) {
-			synctest.Wait()
-			if serving, _, _, queued := rig.state(); serving != 0 || queued != lanes {
-				t.Fatalf("once every goroutine is blocked %d goroutines serve the parked lanes and %d sends are queued; want none serving and the %d parked sends queued",
-					serving, queued, lanes)
-			}
+		for {
 			triesMu.Lock()
 			fewest := parkedTries
 			if len(tries) < lanes {
@@ -345,8 +362,10 @@ func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
 			if fewest >= parkedTries {
 				break
 			}
-			if !time.Now().Before(deadline) {
-				t.Fatalf("in a minute a lane was tried %d times, want each of the %d lanes tried at least %d times", fewest, lanes, parkedTries)
+			rig.awaitPark()
+			if serving, _, _, queued := rig.state(); serving != 0 || queued != lanes {
+				t.Fatalf("once every goroutine is blocked %d goroutines serve the parked lanes and %d sends are queued; want none serving and the %d parked sends queued",
+					serving, queued, lanes)
 			}
 		}
 		elapsed := time.Since(started)
