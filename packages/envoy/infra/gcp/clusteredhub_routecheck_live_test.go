@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/routes"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestRouteCheckRefusesARouteThatIsNotTheHubs runs `envoy-infra routes record` and `routes check`'s
@@ -126,11 +127,13 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		// reservePorts stops a second bind, not a dial. The check reads nothing of it, since it
 		// skips a route connection from a pod IP and counts a pod IP's refused route login only
 		// when the mesh is split (routes/log.go, routeConnections). Each server logs the stray's
-		// refused login, so the stray reached it, and the check stays clean.
+		// refused login, so the stray reached it, and the check stays clean. The wait ends on that
+		// line, and fails only at the row's deadline, less 30 s to report: a loaded runner logs
+		// late, and nothing else bounds when the line comes.
 		for _, s := range h.servers {
 			before := strings.Count(s.proc.Output.String(), `authentication error - User "route"`)
 			strayRouteLogin(t, s)
-			within(t, 15*time.Second, s.name+" logging the stray's refused route login", func() error {
+			within(t, testwait.Bounded(t, 24*time.Hour, 30*time.Second), s.name+" logging the stray's refused route login", func() error {
 				if strings.Count(s.proc.Output.String(), `authentication error - User "route"`) == before {
 					return fmt.Errorf("%s has logged no refused route login since a stray dialed its route port at 127.0.0.1:%d", s.name, s.route)
 				}
