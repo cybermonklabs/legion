@@ -83,6 +83,9 @@ func (d *gatePublishDispatch) taken() []gatePublished {
 func (d *gatePublishDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return nil, nil
 }
+func (d *gatePublishDispatch) ListChildren(context.Context, string) ([]dispatch.IssueSummary, error) {
+	return nil, nil
+}
 func (d *gatePublishDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
 	return dispatch.Issue{Key: key}, nil
 }

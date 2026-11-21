@@ -1272,7 +1272,7 @@ func (e *Engine) withBaseMergeRun(ctx context.Context, tx pgx.Tx, issue record.I
 	if issue.Phase != phase.Testing {
 		return work, nil
 	}
-	parent, err := e.store.HasDispatchChildren(ctx, tx, e.cfg.Project, issue.Key)
+	parent, err := e.store.HasDispatchChildren(ctx, tx, issue.Key)
 	if err != nil {
 		return "", err
 	}

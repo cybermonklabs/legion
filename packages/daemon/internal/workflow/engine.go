@@ -2258,7 +2258,7 @@ func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Iss
 // (acceptanceHeld), and nil for one to read it only when Dispatch shows a child under issue at
 // all, which is what the guard on every phase start reads (childrenHolding).
 func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue, members []record.Issue) ([]record.OpenChild, error) {
-	mirrored, err := e.store.DispatchChildren(ctx, tx, e.cfg.Project, []string{issue.Key})
+	mirrored, err := e.store.DispatchChildren(ctx, tx, []string{issue.Key})
 	if err != nil {
 		return nil, err
 	}
