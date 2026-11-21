@@ -203,8 +203,19 @@ work=''
 background=''
 # shellcheck disable=SC2329 # run by the EXIT trap below
 cleanup() {
-  local pid
+  local pid pane
   for pid in $background; do kill "$pid" 2>/dev/null; done
+  # The peer's tmux server and the Oh My Pi in it stop before the directory goes: a server left
+  # running keeps the peer registered at the edge after the leg ends (the edge-on run found ten
+  # such peers alive), and the peer writes its session files under $work as it exits.
+  if [ -n "${peer_tmux:-}" ] && [ -S "$peer_tmux" ]; then
+    pane=$(PATH="${tools:+$tools:}$PATH" tmux -S "$peer_tmux" display-message -p '#{pane_pid}' 2>/dev/null)
+    PATH="${tools:+$tools:}$PATH" tmux -S "$peer_tmux" kill-server 2>/dev/null
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      { [ -n "$pane" ] && kill -0 "$pane" 2>/dev/null; } || break
+      sleep 1
+    done
+  fi
   [ -z "$work" ] || rm -rf "$work"
 }
 trap cleanup EXIT

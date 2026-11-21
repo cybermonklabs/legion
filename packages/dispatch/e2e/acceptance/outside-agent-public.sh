@@ -174,10 +174,17 @@ tmux_socket=''
 background=''
 # shellcheck disable=SC2329 # run by the EXIT trap below
 cleanup() {
-  local pid
+  local pid pane
   for pid in $background; do kill "$pid" 2>/dev/null; done
+  # The Oh My Pi session exits before the directory goes, since it writes under its HOME there as
+  # it exits, and a directory removed first is made again behind the leg.
   if [ -n "$tmux_socket" ] && [ -S "$tmux_socket" ]; then
+    pane=$(tmux -S "$tmux_socket" display-message -p '#{pane_pid}' 2>/dev/null)
     tmux -S "$tmux_socket" kill-server 2>/dev/null
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      { [ -n "$pane" ] && kill -0 "$pane" 2>/dev/null; } || break
+      sleep 1
+    done
   fi
   [ -z "$work" ] || rm -rf "$work"
 }
