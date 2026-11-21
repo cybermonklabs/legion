@@ -34,6 +34,7 @@ import { readEnvoyConfig } from "../envoy-config";
 import { type EnvoyEnvironment, envoySettings } from "../envoy-settings";
 import {
   BROKER_REDIAL_CAP_MS,
+  BROKER_REDIAL_POLL_MS,
   brokerRedialWaitBounds,
   natsConnectionOptions,
 } from "../nats-connection";
@@ -560,16 +561,18 @@ describe.skipIf(!envoyStackEnabled)(
         // How long the connection may take to come back, from the token client's schedule: only a
         // token landing starts it over (`BrokerTokenClient.#run`), so the next trade is due at most
         // RETRY_FIRST_WAIT_MS doubled once for each trade that failed while the broker was away,
-        // capped at RETRY_MAX_WAIT_MS, after the last of them. The connection presents the token it
-        // took when its redial loop next asks for a wait (`brokerRedialDelays` dials a new token at
-        // once), at the end of the wait it is in, at most BROKER_REDIAL_CAP_MS; and 5 s more for the
-        // handshake on a loaded machine.
+        // capped at RETRY_MAX_WAIT_MS, after the last of them. The credential holds the traded
+        // token only once something takes it: unless the keeper's retry takes it first, the next
+        // dial due, at most BROKER_REDIAL_CAP_MS on, finds nothing live to present, is refused,
+        // and starts the trade that takes it; the token then goes out the next time the redial
+        // loop asks (`brokerRedialDelays`), within BROKER_REDIAL_POLL_MS; and 5 s more for the
+        // handshakes on a loaded machine.
         const failedTrades = Math.max(broker.state.trades - broker.state.minted.length, 1);
         const nextTradeMs = Math.min(
           RETRY_FIRST_WAIT_MS * 2 ** (failedTrades - 1),
           RETRY_MAX_WAIT_MS
         );
-        const backBy = back + nextTradeMs + BROKER_REDIAL_CAP_MS + 5_000;
+        const backBy = back + nextTradeMs + BROKER_REDIAL_CAP_MS + BROKER_REDIAL_POLL_MS + 5_000;
         broker.state.seconds = 900;
         broker.state.down = false;
         while (!reconnected.some((at) => at > back) && Date.now() < backBy) await Bun.sleep(100);
@@ -625,14 +628,17 @@ describe.skipIf(!envoyStackEnabled)(
         broker.state.revoked.add(revoked);
         const at = Date.now();
         await opened.reconnect();
-        // Two refusals and the redial that presents the token traded at the second, each on the
-        // backoff: the connection is under a minute old, so it keeps its place in the backoff, and
-        // those are the second, third and fourth dials of the connection's outage, the first due at
-        // most `brokerRedialWaitBounds(1)` after it opened and each later one at most the next
-        // wait after the one before; with 10 s for the handshakes on a loaded machine.
+        // Two refusals on the backoff, then the token traded at the second, which goes out the
+        // next time the redial loop asks: the connection is under a minute old, so it keeps its
+        // place in the backoff, and the two refusals are its first two redials, the first due at
+        // most `brokerRedialWaitBounds(1)` after it opened and the second at most
+        // `brokerRedialWaitBounds(2)` after that; then BROKER_REDIAL_POLL_MS, and 10 s for the
+        // trade and the handshakes on a loaded machine.
         const backBy =
           at +
-          [1, 2, 3].reduce((sum, wait) => sum + brokerRedialWaitBounds(wait).highestMs, 0) +
+          brokerRedialWaitBounds(1).highestMs +
+          brokerRedialWaitBounds(2).highestMs +
+          BROKER_REDIAL_POLL_MS +
           10_000;
         while (!reconnected.some((when) => when > at) && Date.now() < backBy) await Bun.sleep(100);
         if (!reconnected.some((when) => when > at))

@@ -167,16 +167,24 @@ path that freezes without closing is left within 30 s and redialed at once, and 
 within 42 s when that redial also hangs for its 10 s timeout and the 2 s wait; nats.js's
 default 120 s interval left a frozen path for up to 6 minutes. A session that presents its broker
 token never gives up over a refused credential, and redials on `brokerRedialDelays` instead of
-2 s apart: at once when it loses its connection or has a new token to present (a renewal, a
-session switch), then after waits drawn anew between half and all of 4 s, 8 s, 16 s, then 20 s for
-good (`brokerRedialWaitBounds`), so a hub that refuses every session at once is asked again about
-73 times a second by 1,100 of them rather than 550, and each one's next redial comes within 20 s
-of the hub admitting again. A seed or no credential keeps the flat 2 s.
+2 s apart: at once when it loses a connection that lived a minute or more past its last dial,
+then after waits drawn anew between half and all of 4 s, 8 s, 16 s, then 20 s for good
+(`brokerRedialWaitBounds`), so a hub that refuses every session at once is asked again about 73
+times a second by 1,100 of them rather than 550, and each one's next redial comes within 20 s of
+the hub admitting again. A connection lost less than a minute after its last dial (for one that
+was admitted at once, the dial that opened it) keeps its place in the backoff: its first redial
+waits out the rest of the wait drawn at that dial. A token the connection has yet to present (a
+renewal, a session switch) goes out within about a second (`BROKER_REDIAL_POLL_MS`), in the middle
+of a wait too, once for each token and at most once between two planned redials, whose schedule
+it does not move. A seed or no credential keeps the flat 2 s.
 A plugin opens its connection with
 `connectNats(connect, options, plan, hooks)`: one bound around the whole `connect()` (the name
 lookup, every address and every server, which nats.js times one at a time), and a failed dial
 dialed again 250 ms later, doubling to 4 s, inside a budget (`NATS_DIAL_PLAN`, `natsDialBudget`),
-unless no redial can cure the failure. A server that closes a dial during its handshake, as
+unless no redial can cure the failure. A hub's refusal of a broker token waits on the broker-token
+backoff instead, 2-4 s, 4-8 s, 8-16 s, then 10-20 s, and a token it refuses twice is dropped and
+another traded before the next dial (`hooks.credential`), as the keeper does once the connection is
+open. A server that closes a dial during its handshake, as
 nats-server does to a CONNECT that comes more than 2 s after its INFO, fails it at once
 (`patches/nats@2.29.3.patch`). A failed connect is logged as
 `natsDialFailure(named, error, presenting)`: `could not connect to NATS at <servers> presenting

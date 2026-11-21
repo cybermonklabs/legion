@@ -7,7 +7,12 @@ import { NatsConnectionImpl } from "nats/lib/nats-base-client/nats";
 import { hostPort } from "nats/lib/nats-base-client/servers";
 import { LoggableError, natsFailureReason } from "./errors";
 import { natsAuthOptions } from "./nats-auth";
-import type { BrokerNatsCredential, NatsCredential } from "./nats-credential";
+import {
+  type BrokerNatsCredential,
+  brokerTokenRefusals,
+  type NatsCredential,
+  TRADE_DEADLINE_MS,
+} from "./nats-credential";
 
 /**
  * How often a session pings its NATS server, and how many pings may go unanswered. nats.js 2.29.3
@@ -86,15 +91,25 @@ export const BROKER_REDIAL_FIRST_MS = 4_000;
 export const BROKER_REDIAL_CAP_MS = 20_000;
 
 /**
- * How long nats.js leaves its redial handler uncalled, at most, while it redials: the longest wait
- * (the cap) or a failed dial that hangs on up to five addresses, `NATS_DIAL_TIMEOUT_MS` for each
- * address the server's name resolves to (`protocol.js:417`; `_doDial` dials them in turn), and a
- * margin. A call later than this after the one before it finds that the connection was up in
- * between, so it starts a new outage. A dial that hangs on six or more addresses outlasts it:
- * that session's next redial is then at once and its waits start over, which costs the auth service
- * nothing, since a dial that hangs never reaches it.
+ * How long nats.js leaves its redial handler uncalled, at most, while it redials: a failed dial
+ * that hangs on up to five addresses, `NATS_DIAL_TIMEOUT_MS` for each address the server's name
+ * resolves to (`protocol.js:417`; `_doDial` dials them in turn), and a margin; between dials it
+ * asks at least every `BROKER_REDIAL_POLL_MS`. A call later than this after the one before it
+ * finds that the connection was up in between, so it starts a new outage. A dial that hangs on six
+ * or more addresses outlasts it: that session's next redial is then at once and its waits start
+ * over, which costs the auth service nothing, since a dial that hangs never reaches it.
  */
 export const BROKER_REDIAL_OUTAGE_GAP_MS = 60_000;
+
+/**
+ * The longest a broker-token session's redial loop sleeps before it asks its handler again: an
+ * answer other than 0 reaches at most this far past the call that gave it. nats.js reads a token
+ * the connection has yet to present only through the handler, and its `reconnect()` does nothing
+ * while the connection redials (`protocol.js:368-377`), so a session switch made while the loop
+ * sleeps out a wait of up to 20 s would otherwise wait for its end, past the 8 s the switch gives
+ * the connection to come back (`followNatsCredential`).
+ */
+export const BROKER_REDIAL_POLL_MS = 1_000;
 
 /** How early a redial may go out before it is due: more than nats.js takes between the handler's
  *  answer and its own read of the clock, and too little to change any wait. */
@@ -112,20 +127,23 @@ export function brokerRedialWaitBounds(wait: number): { lowestMs: number; highes
 }
 
 /** What the redial handler reads of the session's broker token (`BrokerNatsCredential`): whether
- *  the connection has yet to present the token in hand, and that token's expiry, which tells one
- *  token from the next. */
-export type RedialCredential = Pick<BrokerNatsCredential, "needsReconnect" | "expiresAt">;
+ *  the connection has yet to present the token in hand, and that token's generation, which tells
+ *  one token from the next as the keeper's refusal count does. */
+export type RedialCredential = Pick<BrokerNatsCredential, "needsReconnect" | "tokenGeneration">;
 
 /**
  * The `reconnectDelayHandler` of a session that presents its broker token: it redials at once on
  * losing its connection, then waits `brokerRedialWaitBounds(1)`, `(2)` and so on between the starts
- * of its redials, each drawn anew, until one is admitted. A redial to present a token the
- * connection has not presented yet (`credential`: the keeper's renewal, a session switch's
- * `followNatsCredential`, or the trade a refused CONNECT started) is also at once, the next time
- * nats.js asks (after a failed dial, or at the end of the wait it is in), and starts the waits
- * over, once for each such token. One handler serves one connection, so `natsConnectionOptions`
- * makes a new one each time; the dials `connectNats` makes to open that connection share it, and
- * keep `NATS_DIAL_PLAN`'s schedule, since nats.js dials a server it has never dialed at once.
+ * of its planned redials, each drawn anew, until one is admitted. A token the connection has not
+ * presented yet (`credential`: the keeper's renewal, a session switch's `followNatsCredential`, or
+ * the trade a refused CONNECT started) is dialed the next time nats.js asks, within
+ * `BROKER_REDIAL_POLL_MS` (at once after a failed dial, and within about a second in the middle of
+ * a wait): once for each such token, and at most once between two planned redials, whose schedule
+ * it does not move. So tokens that come faster than the waits, as a short-lived token's renewals
+ * do, add at most one dial to each wait and leave the waits growing. One handler serves one
+ * connection, so `natsConnectionOptions` makes a new one each time; the dials `connectNats` makes
+ * to open that connection share it, and keep their own schedule, since nats.js dials a server it
+ * has never dialed at once.
  *
  * Sized to the auth service's measured refusal throughput: one replica at its 0.5 CPU decided
  * 1,200 refusals a second, every one inside its budget, began to shed at about 1,350, and decided
@@ -133,46 +151,61 @@ export type RedialCredential = Pick<BrokerNatsCredential, "needsReconnect" | "ex
  * together redial at once, as they did before; their next redials spread over 2-4 s, about 550 a
  * second; and once at the cap they redial 1,100 / 15 s, about 73 a second. Those are refusals per
  * redial of a session that dials one server at one address, as sessions dial the hub today; nats.js
- * dials each address a server's name resolves to in one redial, and keeps the wait for each server
- * it knows by that server's own last dial, so a session that reaches several pays a decision at
- * each. A session's next redial comes within 20 s of the hub admitting again.
+ * dials each address a server's name resolves to in one redial, and takes the next server it knows
+ * at each call of the handler, dialing it once its own last dial plus the answer has passed, so a
+ * session that reaches several pays a decision at each in every round, each within about a second
+ * of the round's first. A session's next redial comes within 20 s of the hub admitting again.
  *
  * nats.js asks the handler for a wait on every turn of its redial loop and dials only when the
  * server's last dial plus that wait has passed (`protocol.js:519-559`): so the handler answers 0
  * to dial now, which places that server's last dial at this call, and otherwise the time from this
- * call's dial to the next one due, which the loop sleeps out before asking again. A server nats.js
- * has never dialed is dialed at once whatever the answer (`srv.lastConnect === 0`).
+ * call's dial to the next one due, or to `BROKER_REDIAL_POLL_MS` past this call where that comes
+ * first, which the loop sleeps out before asking again. A server nats.js has never dialed is
+ * dialed at once whatever the answer (`srv.lastConnect === 0`).
  *
  * nats.js calls the handler only while it redials, so a call more than
  * `BROKER_REDIAL_OUTAGE_GAP_MS` after the one before it starts a new outage, at once. A connection
- * that is admitted and lost again inside that gap keeps its place in the backoff, so a hub that
- * flaps keeps its sessions slowed. `random` and `now` are for a test.
+ * lost again inside that gap of the handler's last call, which is its last dial for a connection
+ * that opened then, keeps its place in the backoff: its first redial waits out what is left of the
+ * wait drawn at that dial, and the waits go on from there, so a hub that flaps keeps its sessions
+ * slowed. `random`, `now` and `pollMs` are for a test.
  */
 export function brokerRedialDelays(
   credential: RedialCredential,
   random: () => number = Math.random,
-  now: () => number = Date.now
+  now: () => number = Date.now,
+  pollMs: number = BROKER_REDIAL_POLL_MS
 ): () => number {
   let lastCall = Number.NEGATIVE_INFINITY;
   let dialedAt = 0;
   let dueAt = Number.NEGATIVE_INFINITY;
   let waits = 0;
-  // The expiry of the last unpresented token a redial was made at once for.
+  // The generation of the last unpresented token a dial went out for, and whether a new token was
+  // dialed since the last planned redial.
   let rushed: number | undefined;
+  let rushedInWait = false;
   return () => {
     const at = now();
-    const unpresented = credential.needsReconnect() ? credential.expiresAt().getTime() : undefined;
-    const newToken = unpresented !== undefined && unpresented !== rushed;
-    if (newToken) rushed = unpresented;
-    if (newToken || at - lastCall > BROKER_REDIAL_OUTAGE_GAP_MS) {
+    if (at - lastCall > BROKER_REDIAL_OUTAGE_GAP_MS) {
       dueAt = Number.NEGATIVE_INFINITY;
       waits = 0;
     }
     lastCall = at;
+    const unpresented = credential.needsReconnect() ? credential.tokenGeneration() : undefined;
     // nats.js reads its own clock after this answer (`protocol.js:519-536`), so a dial due in
     // between would go out on a nonzero answer, which this handler would not count; a dial due
     // within `DUE_SLACK_MS` goes out now, on this answer, instead.
-    if (at < dueAt - DUE_SLACK_MS) return dueAt - dialedAt;
+    if (at < dueAt - DUE_SLACK_MS) {
+      if (unpresented === undefined || unpresented === rushed || rushedInWait) {
+        return Math.min(dueAt, at + pollMs) - dialedAt;
+      }
+      rushed = unpresented;
+      rushedInWait = true;
+      dialedAt = at;
+      return 0;
+    }
+    if (unpresented !== undefined) rushed = unpresented;
+    rushedInWait = false;
     waits += 1;
     const { lowestMs, highestMs } = brokerRedialWaitBounds(waits);
     dialedAt = at;
@@ -245,7 +278,8 @@ export interface NatsDialPlan {
  * that refuses at once in an outage to about 10 dials in the budget. The budget is the most a dial
  * may take when its caller can give it more; a session pass gives it less (`natsDialBudget`).
  * There is no jitter: sessions start at different times and each waits from its own failure, and a
- * connection that was up redials through nats.js's own reconnect wait instead.
+ * connection that was up redials through nats.js's own reconnect wait instead. A broker token's
+ * authorization refusal waits on the broker-token backoff instead (`connectNats`).
  */
 export const NATS_DIAL_PLAN: NatsDialPlan = {
   firstDelayMs: 250,
@@ -273,6 +307,12 @@ export interface NatsDialHooks {
   readonly stopped?: () => boolean;
   /** A dial failed and another starts `delayMs` from now; `attempt` counts from 1. */
   readonly onRetry?: (error: unknown, delayMs: number, attempt: number) => void;
+  /** The credential `options` present (`natsConnectionOptions`'): a broker token the hub refuses
+   *  twice is dropped and another traded at once (`brokerTokenRefusals`), as the keeper does once
+   *  the connection is open, so a revoked token is not presented on every dial until it lapses. */
+  readonly credential?: NatsCredential;
+  /** The draw of a refused broker token's wait, uniform in [0, 1): `Math.random`, or a test's. */
+  readonly random?: () => number;
 }
 
 /**
@@ -308,26 +348,41 @@ const NEVER_CURED: Record<string, true> = {
  * Whether dialing again can cure `error`: a dial past its bound, a socket's or a resolver's
  * failure (`ECONNRESET`, `EAI_AGAIN`), or nats.js's for the server's close or refusal. An
  * authorization refusal is dialed again only under a broker token (which sets
- * `ignoreAuthErrorAbort`), whose authenticator mints a new token once the held one expires: while
- * the held token is live it is presented again on every redial, the same as any other credential,
- * which never changes between dials, so only its expiry can cure the refusal. Never cured:
- * an error with no code (a hub that runs no auth service, `noAuthService`; an INFO that does not
- * parse), a runtime's programming error (`ERR_INVALID_URL`), and nats.js's errors for its own
- * options.
+ * `ignoreAuthErrorAbort`), whose authenticator mints a new token once the held one expires, and
+ * which `connectNats` drops and trades again at its second refusal: until either, the held token
+ * is presented again on every redial, the same as any other credential, which never changes
+ * between dials. Never cured: an error with no code (a hub that runs no auth service,
+ * `noAuthService`; an INFO that does not parse), a runtime's programming error
+ * (`ERR_INVALID_URL`), and nats.js's errors for its own options.
  */
 function redialCures(error: unknown, options: ConnectionOptions): boolean {
   if (error instanceof NatsDialBoundError) return true;
-  if (!(error instanceof Error) || !("code" in error) || typeof error.code !== "string")
-    return false;
-  const { code } = error;
+  const code = errorCode(error);
+  if (code === undefined) return false;
   if (AUTHORIZATION_REFUSALS[code] === true) return options.ignoreAuthErrorAbort === true;
   return NEVER_CURED[code] !== true && !code.startsWith("ERR_");
+}
+
+/** The code of an error nats.js or the runtime gave, where it carries one. */
+function errorCode(error: unknown): string | undefined {
+  return error instanceof Error && "code" in error && typeof error.code === "string"
+    ? error.code
+    : undefined;
 }
 
 /**
  * Opens a NATS connection with `connect` and `options`, dialing again after a failed dial as
  * `plan` says while a redial can cure the failure (`redialCures`). It answers the first connection
  * that opens, and otherwise fails with the last dial's own error, unchanged.
+ *
+ * An authorization refusal under a broker token (`ignoreAuthErrorAbort`) waits as the open
+ * connection's own redials do rather than as `plan` says: the wait after the `n`-th refusal is
+ * drawn anew, uniformly, from `brokerRedialWaitBounds(n)`, 2-4 s, 4-8 s, 8-16 s, then 10-20 s. A
+ * hub that refuses every session refuses each one's first dial too, and the plan's 4 s cap would
+ * ask its auth service every 4 s, in step, for as long as the caller dials, which for the channel
+ * server is its life. Every other failure keeps the plan's waits. Under `hooks.credential`, a
+ * broker token the hub refuses twice is dropped and another traded at once
+ * (`brokerTokenRefusals`), so the dials that follow present the new one.
  *
  * Each dial has one bound around its whole `connect()`: nats.js resolves the server's name outside
  * its own timer and gives each resolved address and each configured server a `timeout` of its own,
@@ -350,7 +405,11 @@ export async function connectNats(
   const elapsed = () => performance.now() - started;
   const timeout = options.timeout ?? NATS_DIAL_TIMEOUT_MS;
   const servers = Array.isArray(options.servers) ? Math.max(1, options.servers.length) : 1;
+  const random = hooks.random ?? Math.random;
+  const broker = hooks.credential?.kind === "broker" ? hooks.credential.broker : undefined;
+  const tokenRefusals = broker === undefined ? undefined : brokerTokenRefusals(broker);
   let delayMs = plan.firstDelayMs;
+  let refusals = 0;
   let failed: unknown;
   for (let attempt = 1; ; attempt += 1) {
     if (hooks.stopped?.() === true) {
@@ -378,19 +437,34 @@ export async function connectNats(
       return nc;
     } catch (error) {
       failed = error;
-      const waitEnds = elapsed() + delayMs;
+      const code = errorCode(error);
+      // Traded now, so the token is in hand well before the next dial, which waits at least 4 s;
+      // a trade that fails is the next dial's authenticator's to start again.
+      if (broker !== undefined && code !== undefined && tokenRefusals?.refused(code)?.dropped) {
+        void broker.renew(AbortSignal.timeout(TRADE_DEADLINE_MS)).catch(() => {});
+      }
+      const refused =
+        code !== undefined &&
+        AUTHORIZATION_REFUSALS[code] === true &&
+        options.ignoreAuthErrorAbort === true;
+      let waitMs = delayMs;
+      if (refused) {
+        refusals += 1;
+        const { lowestMs, highestMs } = brokerRedialWaitBounds(refusals);
+        waitMs = Math.round(lowestMs + random() * (highestMs - lowestMs));
+      }
       if (
         !redialCures(error, options) ||
-        waitEnds + NATS_MIN_REDIAL_BOUND_MS > plan.budgetMs ||
+        elapsed() + waitMs + NATS_MIN_REDIAL_BOUND_MS > plan.budgetMs ||
         hooks.stopped?.() === true
       ) {
         throw error;
       }
-      hooks.onRetry?.(error, delayMs, attempt);
-      await delay(delayMs);
+      hooks.onRetry?.(error, waitMs, attempt);
+      await delay(waitMs);
       // A wait can run long (a blocked event loop): a later dial starts only with time to answer.
       if (plan.budgetMs - elapsed() < NATS_MIN_REDIAL_BOUND_MS) throw error;
-      delayMs = Math.min(delayMs * 2, plan.maxDelayMs);
+      if (!refused) delayMs = Math.min(delayMs * 2, plan.maxDelayMs);
     }
   }
 }

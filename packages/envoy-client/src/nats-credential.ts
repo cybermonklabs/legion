@@ -362,13 +362,13 @@ const RETRY_FIRST_MS = 2_000;
 const RETRY_LAST_MS = 60_000;
 /** How often the keeper repeats a warning while its cause lasts. */
 const WARN_AGAIN_MS = 30 * 60_000;
-/** How many refusals of the live token in hand the keeper waits for before it drops that token
- *  and trades for another: one refusal can be the auth service's own outage, which a new token
- *  does not cure, and nats.js redials within 20 s (`brokerRedialDelays`). */
+/** How many refusals of the live token in hand `brokerTokenRefusals` waits for before it drops
+ *  that token and has another traded: one refusal can be the auth service's own outage, which a
+ *  new token does not cure, and nats.js redials within 20 s (`brokerRedialDelays`). */
 const REFUSALS_BEFORE_DROP = 2;
-/** The codes nats.js gives a status when the server refused the credential a CONNECT presented
- *  (`ErrorCode.AuthorizationViolation`, `ErrorCode.AuthenticationExpired`), written out as
- *  `RECONNECTED` is. */
+/** The codes nats.js gives a status, or a dial's error, when the server refused the credential a
+ *  CONNECT presented (`ErrorCode.AuthorizationViolation`, `ErrorCode.AuthenticationExpired`),
+ *  written out as `RECONNECTED` is. */
 const REFUSED_CODES: ReadonlySet<string> = new Set<`${ErrorCode}`>([
   "AUTHORIZATION_VIOLATION",
   "AUTHENTICATION_EXPIRED",
@@ -379,6 +379,61 @@ const ERRORED: `${Events.Error}` = "error";
 /** nats.js's status of a connection that is back (`Events.Reconnect`), written out so this module
  *  imports nats.js's types alone; the type holds it to the enum's own value. */
 const RECONNECTED: `${Events.Reconnect}` = "reconnect";
+
+/** What one refusal of the session's broker token did (`brokerTokenRefusals`). */
+export interface BrokerTokenRefusal {
+  /** This session's token was dropped and another traded once already since the count was last
+   *  reset, so this refusal drops none. */
+  readonly droppedBefore: boolean;
+  /** This refusal was the token's second, and dropped it: another is to be traded. */
+  readonly dropped: boolean;
+}
+
+/**
+ * Counts a NATS server's refusals of the live broker token in hand, for the keeper of an open
+ * connection (`keepNatsCredential`) and for the dials that open one (`connectNats`).
+ * `refused(code)` reads one refusal's nats.js code, and answers undefined where it is no refusal
+ * of the credential (`AUTHORIZATION_VIOLATION`, `AUTHENTICATION_EXPIRED`) or none of the live token
+ * in hand: a refusal of a token that lapsed, or of one the connection is about to move off, is the
+ * renewal's to cure. Refusals are counted per token (`tokenGeneration`), so a refusal of one token
+ * and a refusal of the next are no two refusals of either. At a token's second refusal it drops
+ * that token, here and in the token client, so a revoked token is not presented again until it
+ * lapses; the caller has another traded. It drops one token per session until `reset`, which a
+ * caller calls once the connection is admitted: an auth service that is away refuses every token
+ * whatever it is, and costs each session one trade for the outage, never one every second refusal.
+ */
+export function brokerTokenRefusals(credential: BrokerNatsCredential): {
+  readonly refused: (code: string) => BrokerTokenRefusal | undefined;
+  readonly reset: () => void;
+} {
+  let refusals = 0;
+  let counting = credential.tokenGeneration();
+  const droppedFor = new Set<string>();
+  return {
+    refused: (code) => {
+      const live = credential.expiresAt().getTime() > Date.now();
+      if (!REFUSED_CODES.has(code) || !live || credential.needsReconnect()) return undefined;
+      const token = credential.tokenGeneration();
+      if (token !== counting) {
+        counting = token;
+        refusals = 0;
+      }
+      refusals += 1;
+      const session = credential.tokenSession();
+      const droppedBefore = session !== undefined && droppedFor.has(session);
+      if (refusals !== REFUSALS_BEFORE_DROP || session === undefined || droppedBefore) {
+        return { droppedBefore, dropped: false };
+      }
+      droppedFor.add(session);
+      credential.drop();
+      return { droppedBefore, dropped: true };
+    },
+    reset: () => {
+      refusals = 0;
+      droppedFor.clear();
+    },
+  };
+}
 
 function warnedEvery(warn: (text: string) => void): {
   readonly warn: (text: string) => void;
@@ -520,43 +575,26 @@ export function keepNatsCredential(
     if (renewing) renewAgain = true;
     else schedule(0);
   };
-  const live = () => credential.expiresAt().getTime() > Date.now();
   void (async () => {
-    // Counted per token: a refusal of one token and a refusal of the next are no two refusals of
-    // either. A drop is made once per session until the connection is back: a token traded for a
-    // session the outage dropped one of is refused for the outage, not for the token.
-    let refusals = 0;
-    let counting = credential.tokenGeneration();
-    const droppedFor = new Set<string>();
+    const refusals = brokerTokenRefusals(credential);
     for await (const status of statuses) {
       if (stopped) return;
       if (status.type === RECONNECTED) {
-        refusals = 0;
-        droppedFor.clear();
+        refusals.reset();
         refusal.reset();
         continue;
       }
       if (status.type !== ERRORED || typeof status.data !== "string") continue;
-      if (!REFUSED_CODES.has(status.data) || !live() || credential.needsReconnect()) continue;
-      const token = credential.tokenGeneration();
-      if (token !== counting) {
-        counting = token;
-        refusals = 0;
-      }
-      refusals += 1;
-      const session = credential.tokenSession();
-      const dropped = session !== undefined && droppedFor.has(session);
+      const counted = refusals.refused(status.data);
+      if (counted === undefined) continue;
       refusal.warn(
         `the NATS server refused the connection's live broker token (${status.data}): the auth service is away, or the token was revoked; the connection keeps redialling, and ${
-          dropped
+          counted.droppedBefore
             ? "this session's token was dropped and another traded once already, so none is dropped again until the connection is back"
             : "at the second refusal the token is dropped and another traded"
         }`
       );
-      if (refusals !== REFUSALS_BEFORE_DROP || session === undefined || dropped) continue;
-      droppedFor.add(session);
-      credential.drop();
-      renewNow();
+      if (counted.dropped) renewNow();
     }
   })().catch((error: unknown) => {
     if (!stopped) warn(`the NATS connection's status reader failed: ${natsFailureReason(error)}`);

@@ -1242,6 +1242,9 @@ export default function envoyExtension(hostApi: PiApi): void {
       {
         firstBoundMs: left,
         stopped: () => shuttingDown || limit?.stopped() === true,
+        // A broker token the hub refuses twice is dropped and another traded before the next
+        // dial, as the keeper does once the connection is open.
+        credential: natsCredential,
         // Said before the wait: a pass that stops, or runs out of time, during it dials no more,
         // so the line says the next dial waits on that.
         onRetry: (error, delayMs, attempt) =>

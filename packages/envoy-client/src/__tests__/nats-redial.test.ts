@@ -1,12 +1,14 @@
 // packages/envoy-client/src/__tests__/nats-redial.test.ts
 //
 // How a session that presents its broker token redials a hub that refuses it (`brokerRedialDelays`,
-// `natsConnectionOptions`): at once when an outage starts or when it has a token to present, then
-// after waits that double from 2-4 s to 10-20 s, each drawn anew, and never giving up; and, on real
-// nats.js against a hub that refuses it twice and more, that it comes back by itself once the hub
-// admits it again, where the options without `ignoreAuthErrorAbort` close at the second refusal and
-// the flat 2 s redials several times as often, and that a session switch right after it is back
-// does not wait out the backoff.
+// `natsConnectionOptions`): at once when an outage starts, then after waits that double from 2-4 s
+// to 10-20 s, each drawn anew, and never giving up; a token it has yet to present within a second,
+// mid-wait too, at most once in each wait; and, on real nats.js against a hub that refuses it twice
+// and more, that it comes back by itself once the hub admits it again, where the options without
+// `ignoreAuthErrorAbort` close at the second refusal and the flat 2 s redials several times as
+// often, that a session switch right after it is back, or while it waits, does not wait out the
+// backoff, and that a first dial the hub refuses (`connectNats`) waits the same and drops a token
+// refused twice.
 
 import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
@@ -16,9 +18,14 @@ import {
   BROKER_REDIAL_CAP_MS,
   BROKER_REDIAL_FIRST_MS,
   BROKER_REDIAL_OUTAGE_GAP_MS,
+  BROKER_REDIAL_POLL_MS,
   brokerRedialDelays,
   brokerRedialWaitBounds,
+  connectNats,
+  NATS_DIAL_PLAN,
+  NATS_DIAL_TIMEOUT_MS,
   natsConnectionOptions,
+  type RedialCredential,
 } from "../nats-connection";
 import {
   type BrokerNatsCredential,
@@ -31,27 +38,34 @@ import { natsBrokerStandIns } from "./broker-stand-ins";
 // (`fixtureSecret`); its file's cleanup forgets every broker client and stops the broker.
 const { stubBroker, podEnvironment } = natsBrokerStandIns("nats-redial");
 
+/** A token the connection has not presented: its generation, which tells it from the next, and
+ *  its expiry, which does not (two tokens may lapse at the same moment). */
+interface Unpresented {
+  readonly generation: number;
+  readonly expiry: number;
+}
+
 /** A clock, a draw and the token the connection has yet to present, each set by hand. */
 function handled(draw: () => number) {
   let at = 1_000_000;
-  let unpresented: number | undefined;
-  const handler = brokerRedialDelays(
-    {
-      needsReconnect: () => unpresented !== undefined,
-      expiresAt: () => new Date(unpresented ?? 0),
-    },
-    draw,
-    () => at
-  );
+  let unpresented: Unpresented | undefined;
+  // The credential's expiry too, though the handler's type leaves it out: a handler that read it
+  // as the token's identity would fail the row below where two tokens lapse together.
+  const credential: RedialCredential & Pick<BrokerNatsCredential, "expiresAt"> = {
+    needsReconnect: () => unpresented !== undefined,
+    tokenGeneration: () => unpresented?.generation ?? 0,
+    expiresAt: () => new Date(unpresented?.expiry ?? 0),
+  };
+  const handler = brokerRedialDelays(credential, draw, () => at);
   return {
     /** Moves the clock to `ms` past its start and asks the handler, as nats.js's loop does. */
     ask(ms: number) {
       at = 1_000_000 + ms;
       return handler();
     },
-    /** Holds a token, known by its expiry, that the connection has not presented; or none. */
-    hold(expiry: number | undefined) {
-      unpresented = expiry;
+    /** Holds a token the connection has not presented; or none. */
+    hold(token: Unpresented | undefined) {
+      unpresented = token;
     },
   };
 }
@@ -72,6 +86,8 @@ function plannedDials(draw: () => number, count: number, refusedAfterMs = 30): n
       at += refusedAfterMs;
     } else {
       expect(lastDial + wait).toBeGreaterThan(at);
+      // The loop is asked again within a second, whatever is due (a microsecond for rounding).
+      expect(lastDial + wait).toBeLessThanOrEqual(at + BROKER_REDIAL_POLL_MS + 1e-3);
       at = lastDial + wait;
     }
   }
@@ -125,11 +141,13 @@ describe("brokerRedialDelays", () => {
     }
   });
 
-  test("an answer other than 0 sleeps nats.js's loop until the next dial is due, not past it", () => {
+  test("an answer other than 0 sleeps nats.js's loop at most a second, and never past the next dial due", () => {
     const clock = handled(() => 0);
     expect(clock.ask(0)).toBe(0);
-    // Refused 30 ms after the dial: the loop sleeps to its last dial (0) plus the answer.
-    expect(clock.ask(30)).toBe(2_000);
+    // Refused 30 ms after the dial: the loop sleeps to its last dial (0) plus the answer, a second
+    // past this call while the dial due at 2,000 is further off than that.
+    expect(clock.ask(30)).toBe(1_030);
+    expect(clock.ask(1_030)).toBe(2_000);
     expect(clock.ask(1_900)).toBe(2_000);
     // Due a little early, so a dial nats.js would make on its own clock, which it reads after the
     // answer, is one the handler made too.
@@ -137,38 +155,89 @@ describe("brokerRedialDelays", () => {
   });
 
   test("a call after the outage gap starts a new outage, at once; one inside it keeps its place", () => {
+    // The gap outlasts the longest the loop leaves the handler uncalled: five addresses' hung
+    // dials, with a second between two calls of a wait.
+    expect(BROKER_REDIAL_OUTAGE_GAP_MS).toBe(60_000);
+    expect(BROKER_REDIAL_OUTAGE_GAP_MS).toBeGreaterThan(
+      5 * NATS_DIAL_TIMEOUT_MS + BROKER_REDIAL_POLL_MS
+    );
     const clock = handled(() => 0);
     for (const at of [0, 30, 2_000, 2_030, 6_000]) clock.ask(at);
     // The dial at 6,000 is admitted, and nats.js asks nothing until the connection is lost: lost
-    // inside the gap, the next redial is due at 6,000 + 8,000 and the one after waits 10 s.
+    // inside the gap, the redial due at 6,000 + 8,000 is past, so it goes at once, and the one
+    // after waits 10 s, which the answer names once it is due within a second.
     const inside = 6_000 + BROKER_REDIAL_OUTAGE_GAP_MS;
     expect(clock.ask(inside)).toBe(0);
-    expect(clock.ask(inside + 30)).toBe(10_000);
+    expect(clock.ask(inside + 30)).toBe(1_030);
+    expect(clock.ask(inside + 9_030)).toBe(10_000);
     // Lost past the gap: a new outage, redialed at once, its first wait 2 s again.
-    const past = inside + 30 + BROKER_REDIAL_OUTAGE_GAP_MS + 1;
+    const past = inside + 9_030 + BROKER_REDIAL_OUTAGE_GAP_MS + 1;
     expect(clock.ask(past)).toBe(0);
-    expect(clock.ask(past + 30)).toBe(2_000);
+    expect(clock.ask(past + 30)).toBe(1_030);
+    expect(clock.ask(past + 1_030)).toBe(2_000);
   });
 
-  test("a token the connection has yet to present is dialed at once, and starts the waits over, once per token", () => {
+  test("a connection lost less than a minute after the dial that opened it waits out the rest of that dial's wait", () => {
     const clock = handled(() => 0);
-    for (const at of [0, 30, 2_000, 2_030, 6_000, 6_030]) clock.ask(at);
-    // Waiting 8 s for the dial due at 14,000: a renewal or a session switch lands a token the
-    // connection has not presented, and the reconnect it asks for is not held to that wait.
-    clock.hold(900_000);
-    expect(clock.ask(7_000)).toBe(0);
+    // The dial that opened the connection, admitted.
+    expect(clock.ask(0)).toBe(0);
+    // Lost 500 ms later: its first redial is the one due 2 s after that dial, not at once.
+    expect(clock.ask(500)).toBe(1_500);
+    expect(clock.ask(1_500)).toBe(2_000);
+    expect(clock.ask(2_000)).toBe(0);
+  });
+
+  test("a token the connection has yet to present goes out at the next ask, within a second mid-wait, once per token and once in each wait, and moves no planned redial", () => {
+    const clock = handled(() => 0);
+    for (const at of [0, 30, 2_000, 2_030, 6_000]) clock.ask(at);
+    // Refused, with the dial due at 14,000 (8 s after the one at 6,000): the loop is asked again a
+    // second on, not at 14,000.
+    expect(clock.ask(6_030)).toBe(1_030);
+    // Meanwhile a renewal or a session switch lands a token the connection has not presented: the
+    // next ask dials it, not held to the wait.
+    clock.hold({ generation: 1, expiry: 900_000 });
+    expect(clock.ask(7_030)).toBe(0);
     // That dial did not get as far as presenting it (the hub was away): the same token is no
-    // reason to dial at once again, and the waits run from the first.
-    expect(clock.ask(7_030)).toBe(2_000);
-    expect(clock.ask(8_000)).toBe(2_000);
-    expect(clock.ask(9_000)).toBe(0);
-    expect(clock.ask(9_030)).toBe(4_000);
-    // The next token is a new one.
-    clock.hold(1_800_000);
-    expect(clock.ask(10_000)).toBe(0);
+    // reason to dial again before the planned redial at 14,000.
+    expect(clock.ask(7_060)).toBe(1_030);
+    // A second new token in the same wait waits for the planned redial too.
+    clock.hold({ generation: 2, expiry: 900_000 });
+    expect(clock.ask(8_060)).toBe(2_030);
+    expect(clock.ask(13_000)).toBe(6_970);
+    // The planned redial is where it was, and the wait after it is the fourth, 10 s: no new token
+    // started the waits over.
+    expect(clock.ask(13_950)).toBe(0);
+    expect(clock.ask(23_000)).toBe(10_000);
+    // In the next wait, the next new token is dialed at once again, though it lapses when the one
+    // before does: a token is its generation, not its expiry.
+    clock.hold({ generation: 3, expiry: 900_000 });
+    expect(clock.ask(23_030)).toBe(0);
     // Presented, it is no reason at all.
     clock.hold(undefined);
-    expect(clock.ask(10_030)).toBe(2_000);
+    expect(clock.ask(23_060)).toBe(920);
+  });
+
+  test("tokens renewed every half second add at most one dial to each wait, and the waits still reach the cap", () => {
+    // A short-lived token's renewals come faster than the waits: each one a token the connection
+    // has not presented. On one server that refuses each dial 30 ms after it starts, for 120 s.
+    const clock = handled(() => 0);
+    const dials: number[] = [];
+    let at = 0;
+    let lastDial = 0;
+    while (at < 120_000) {
+      clock.hold({ generation: Math.floor(at / 500) + 1, expiry: at + 1_000 });
+      const wait = clock.ask(at);
+      if (wait === 0) {
+        dials.push(at);
+        lastDial = at;
+        at += 30;
+      } else at = lastDial + wait;
+    }
+    // The planned redials at the lowest draws are at 0, 2, 6 and 14 s, then every 10 s to 114 s:
+    // 14 of them, and one new token's dial at most in each wait.
+    expect(dials.length).toBeLessThanOrEqual(2 * 14);
+    // At the cap, in the last 30 s: three planned redials and three more at most.
+    expect(dials.filter((one) => one >= 90_000).length).toBeLessThanOrEqual(6);
   });
 });
 
@@ -179,7 +248,7 @@ const untraded = {
   broker: {
     authenticator: () => undefined,
     needsReconnect: () => false,
-    expiresAt: () => new Date(0),
+    tokenGeneration: () => 0,
   } as unknown as BrokerNatsCredential,
 } as const;
 
@@ -194,8 +263,10 @@ describe("natsConnectionOptions' redials", () => {
     const redial = options.reconnectDelayHandler as () => number;
     expect(redial()).toBe(0);
     const first = redial();
-    expect(first).toBeGreaterThanOrEqual(2_000);
-    expect(first).toBeLessThan(4_000);
+    // Asked again at once after the dial, nothing is due for 2 s: the loop is told to ask again
+    // within a second.
+    expect(first).toBeGreaterThanOrEqual(BROKER_REDIAL_POLL_MS);
+    expect(first).toBeLessThan(2_000);
   });
 
   test("each call makes a handler of its own, which one connection's outage does not move", () => {
@@ -209,7 +280,7 @@ describe("natsConnectionOptions' redials", () => {
     const two = options();
     expect(one).not.toBe(two);
     expect(one()).toBe(0);
-    expect(one()).toBeGreaterThanOrEqual(2_000);
+    expect(one()).toBeGreaterThanOrEqual(BROKER_REDIAL_POLL_MS);
     expect(two()).toBe(0);
   });
 
@@ -229,18 +300,23 @@ describe("natsConnectionOptions' redials", () => {
   });
 });
 
-/** One TCP connection to {@link stubHub}: its CONNECT's name, and whether it was admitted. */
+/** One TCP connection to {@link stubHub}: its CONNECT's name and token, and whether it was
+ *  admitted. */
 interface StubSocket {
   buffered: string;
   name: string;
+  token: string;
   decided: boolean;
 }
 
-/** One CONNECT the stub hub answered: the client's name, when it answered, and how. */
+/** One CONNECT the stub hub answered: the client's name, when it answered, how, and which token
+ *  the CONNECT presented, by the order the hub first saw each (1 for the first; 0 for none), so a
+ *  failure's trace prints no token. */
 interface Answered {
   readonly name: string;
   readonly at: number;
   readonly admitted: boolean;
+  readonly token: number;
 }
 
 /**
@@ -253,13 +329,14 @@ function stubHub() {
   let admitting = true;
   const answered: Answered[] = [];
   const admitted = new Set<Socket<StubSocket>>();
+  const tokens: string[] = [];
   const decoder = new TextDecoder();
   const server = Bun.listen<StubSocket>({
     hostname: "127.0.0.1",
     port: 0,
     socket: {
       open(socket) {
-        socket.data = { buffered: "", name: "", decided: false };
+        socket.data = { buffered: "", name: "", token: "", decided: false };
         const info = {
           server_id: "STUBHUB",
           server_name: "stub",
@@ -284,13 +361,22 @@ function stubHub() {
             if (fields !== null && typeof fields === "object" && "name" in fields) {
               state.name = String(fields.name);
             }
+            if (fields !== null && typeof fields === "object" && "auth_token" in fields) {
+              state.token = String(fields.auth_token);
+            }
           } else if (line === "PING") {
             if (state.decided) {
               socket.write("PONG\r\n");
               continue;
             }
             state.decided = true;
-            answered.push({ name: state.name, at: Date.now(), admitted: admitting });
+            if (state.token !== "" && !tokens.includes(state.token)) tokens.push(state.token);
+            answered.push({
+              name: state.name,
+              at: Date.now(),
+              admitted: admitting,
+              token: tokens.indexOf(state.token) + 1,
+            });
             if (admitting) {
               admitted.add(socket);
               socket.write("PONG\r\n");
@@ -341,7 +427,7 @@ interface Dialed {
 }
 
 describe("a broker-token session refused by its hub", () => {
-  test("is refused twice and more on the backoff's schedule, comes back by itself once admitted, and moves to a switch's token at once", async () => {
+  test("is refused twice and more on the backoff's schedule, comes back by itself once admitted, and moves to a switch's token within a second, mid-wait too", async () => {
     const hub = stubHub();
     const broker = stubBroker(600);
     const env = podEnvironment(broker.url);
@@ -408,10 +494,27 @@ describe("a broker-token session refused by its hub", () => {
         ...options,
         reconnectDelayHandler: brokerRedialDelays(credential, () => 0, clock),
       }));
-      const blind = { needsReconnect: () => false, expiresAt: () => new Date(0) };
+      const blind = { needsReconnect: () => false, tokenGeneration: () => 0 };
       const switchingBlind = await dial("redial-switch-blind", (options) => ({
         ...options,
         reconnectDelayHandler: brokerRedialDelays(blind, () => 0, clock),
+      }));
+      // A session switch 200 ms after the hub admits again, while the session sleeps toward its
+      // next redial, and its control, the same handler with no poll, whose loop sleeps out each
+      // wait whole: both draw the highest waits, so both redial at once, at 4 s and at 12 s, and
+      // the next is due at 28 s, past the 8 s the switch gives the connection to come back.
+      const midWait = await dial("redial-mid-wait", (options, credential) => ({
+        ...options,
+        reconnectDelayHandler: brokerRedialDelays(credential, () => 1 - 1e-12, clock),
+      }));
+      const midWaitUnpolled = await dial("redial-mid-wait-unpolled", (options, credential) => ({
+        ...options,
+        reconnectDelayHandler: brokerRedialDelays(
+          credential,
+          () => 1 - 1e-12,
+          clock,
+          Number.POSITIVE_INFINITY
+        ),
       }));
 
       shift = BROKER_REDIAL_OUTAGE_GAP_MS + 1;
@@ -423,6 +526,8 @@ describe("a broker-token session refused by its hub", () => {
       await Bun.sleep(13_000);
       const admitted = Date.now();
       hub.admit();
+      await Bun.sleep(200);
+      const midWaitSwitches = Promise.all([follow(midWait), follow(midWaitUnpolled)]);
       const deadline = admitted + BROKER_REDIAL_CAP_MS + 2_000;
       const back = (client: { reconnected: number[] }) => client.reconnected.length > 0;
       while (!(back(switching) && back(switchingBlind)) && Date.now() < deadline) {
@@ -432,6 +537,7 @@ describe("a broker-token session refused by its hub", () => {
         follow(switching),
         follow(switchingBlind),
       ]);
+      const [switchedMidWait, switchedMidWaitUnpolled] = await midWaitSwitches;
       while (!back(backoff) && Date.now() < deadline) await Bun.sleep(100);
 
       const refused = (name: string) =>
@@ -486,9 +592,83 @@ describe("a broker-token session refused by its hub", () => {
         "the NATS connection did not come back as the new session within"
       );
       expect(switchedBlind.ms, trace).toBeGreaterThan(5_000);
+
+      // A session switch while the session sleeps toward its redial at 28 s: the loop asks within
+      // a second, so the new token goes out then (the trade and the handshakes aside), where the
+      // loop with no poll sleeps on, and that switch fails at the 8 s its connection is given.
+      // The poll adds no refusal: both were refused at once, at 4 s and at 12 s.
+      expect(switchedMidWait.error, trace).toBeUndefined();
+      expect(switchedMidWait.ms, trace).toBeLessThan(BROKER_REDIAL_POLL_MS + 2_000);
+      expect(String(switchedMidWaitUnpolled.error), trace).toContain(
+        "the NATS connection did not come back as the new session within"
+      );
+      expect(switchedMidWaitUnpolled.ms, trace).toBeGreaterThan(5_000);
+      expect(refused("redial-mid-wait").length, trace).toBe(3);
+      expect(refused("redial-mid-wait-unpolled").length, trace).toBe(3);
     } finally {
       for (const connection of connections) await connection.close().catch(() => {});
       hub.stop();
     }
   }, 90_000);
+});
+
+describe("a broker-token session's first dial refused by its hub", () => {
+  test("waits 2-4 s, 4-8 s, 8-16 s, then 10-20 s between dials, and drops its token at the second refusal, once", async () => {
+    // Real time, as the row above: what is under test is how long `connectNats` waits between
+    // dials of the real nats.js. The lowest draws hold the row to the lowest waits, 24 s in all.
+    const hub = stubHub();
+    hub.refuseAndDrop();
+    const broker = stubBroker(600);
+    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_first_dial");
+    await credential.ready();
+    const presenting = { kind: "broker", broker: credential } as const;
+    const name = "first-dial";
+    const dialStarts: number[] = [];
+    const delays: number[] = [];
+    try {
+      const error = await connectNats(
+        (options) => {
+          dialStarts.push(Date.now());
+          return connect(options);
+        },
+        natsConnectionOptions({ servers: [hub.url], name, credential: presenting }),
+        // The channel server's plan: its first dial is dialed again for the server's life.
+        { ...NATS_DIAL_PLAN, budgetMs: Number.POSITIVE_INFINITY },
+        {
+          credential: presenting,
+          random: () => 0,
+          // Five dials: the fifth one's refusal ends the row, with no wait after it.
+          stopped: () => dialStarts.length >= 5,
+          onRetry: (_error, delayMs) => delays.push(delayMs),
+        }
+      ).then(
+        () => undefined,
+        (failed: unknown) => failed
+      );
+      const trace = JSON.stringify(
+        hub.answered.map((one) => ({ ...one, at: one.at - (dialStarts[0] ?? 0) })),
+        null,
+        0
+      );
+      expect((error as { code?: unknown } | undefined)?.code, trace).toBe(
+        "AUTHORIZATION_VIOLATION"
+      );
+      // Each wait is the backoff's, at its lowest, where the plan's would be 250 ms doubling to
+      // 4 s; between two dials' starts there is the wait and the refused dial itself.
+      expect(delays, trace).toEqual([2_000, 4_000, 8_000, 10_000]);
+      const dialGaps = gaps(dialStarts);
+      for (const [index, wait] of delays.entries()) {
+        expect(dialGaps[index], trace).toBeGreaterThanOrEqual(wait - 5);
+      }
+      // The first token is refused twice, dropped and traded again at once, so the third dial
+      // presents the next; that one is refused twice too and kept: one drop per session.
+      expect(
+        hub.answered.filter((one) => one.name === name).map((one) => one.token),
+        trace
+      ).toEqual([1, 1, 2, 2, 2]);
+      expect(broker.state.minted.length, trace).toBe(2);
+    } finally {
+      hub.stop();
+    }
+  }, 60_000);
 });

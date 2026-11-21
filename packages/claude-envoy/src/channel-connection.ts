@@ -124,13 +124,15 @@ export interface ChannelNatsSettings {
  * signed into the CONNECT itself, so a live one is taken before the dial; and the connection is
  * then kept on a token the auth service admits (`keepNatsCredential`, warnings through `warn`,
  * with no dial error, which tells them from a redial's), until `stop` or the connection closing.
- * A dial that fails is dialed again as `plan` says, which by default is for the server's life;
+ * A dial that fails is dialed again as `plan` says, which by default is for the server's life, and
+ * a hub's refusal of the session's broker token on the broker-token backoff (`connectNats`);
  * each redial is warned of, naming the servers by their setting and the credential it presented
  * beside why it failed, as a log may print both
  * (`natsDialFailure`: no part of a server's text, and the reason nats.js's code or the server's
  * fixed refusal, never text derived from what the servers were set to or what the client sent),
  * and `warn` is handed the failed dial's error with its line. A dial that fails for good (an
- * authorization refusal, or the end of a finite `plan`) throws the same line, as a
+ * authorization refusal of a seed or of no credential, or the end of a finite `plan`) throws the
+ * same line, as a
  * `LoggableError`; the error keeps no cause: nats.js's own error still carries them. A token that
  * cannot be taken fails with the credential's own line (`BrokerNatsCredential.ready`). `dial` is
  * nats.js's `connect`, or a test's.
@@ -186,13 +188,16 @@ export async function dialChannelNats(
     // A dial that fails is dialed again for the server's life, as the token wait above is:
     // Claude Code starts no channel server again once one ended, and a hub closes a dial whose
     // CONNECT came after its 2 s authentication timeout, then answers the next one. Each dial has
-    // its own bound (`connectNats`); a stop ends the redials.
+    // its own bound (`connectNats`); a stop ends the redials. A hub's refusal of the session's
+    // broker token waits on the broker-token backoff, 2-4 s doubling to 10-20 s, and a token it
+    // refuses twice is dropped and another traded before the next dial.
     const dialing = connectNats(
       dial,
       natsConnectionOptions({ servers: inbound.natsUrls, name, credential: natsCredential }),
       plan,
       {
         stopped: () => signal?.aborted === true,
+        credential: natsCredential,
         onRetry: (error, delayMs) =>
           warn(`${failed(error)}; dialing again in ${delayMs} ms`, error),
       },

@@ -47,6 +47,8 @@ async function dialWith(
     readonly stoppedFromStart?: boolean;
     /** The token of a broker credential is renewed between dials, and it sets this. */
     readonly ignoreAuthErrorAbort?: boolean;
+    /** The draw of a refused broker token's wait (`NatsDialHooks.random`). */
+    readonly random?: () => number;
     /** How long the event loop is blocked as the first wait begins. */
     readonly blockOnRetryMs?: number;
   } = {}
@@ -76,6 +78,7 @@ async function dialWith(
       plan,
       {
         stopped: () => stopped,
+        ...(extra.random === undefined ? {} : { random: extra.random }),
         onRetry: (_error, delayMs) => {
           delays.push(delayMs);
           waitStarts.push(performance.now());
@@ -206,16 +209,19 @@ describe("connectNats", () => {
   }, 30_000);
 
   // A broker token is renewed between dials, so the hub's refusal of an expired one is cured by
-  // the next dial's new token, as nats.js's `ignoreAuthErrorAbort` says for its own reconnects.
+  // the next dial's new token, as nats.js's `ignoreAuthErrorAbort` says for its own reconnects;
+  // the wait before it is the broker-token backoff's first, 2-4 s, not the plan's (here at its
+  // lowest draw).
   test("dials again after an authorization refusal of a credential renewed between dials", async () => {
     const server = fake((n) => (n === 0 ? "refuse-authorization" : "serve"));
     const dial = await dialWith(
       server.url,
-      { firstDelayMs: 20, maxDelayMs: 20, budgetMs: 2_000 },
-      { ignoreAuthErrorAbort: true }
+      { firstDelayMs: 20, maxDelayMs: 20, budgetMs: 5_000 },
+      { ignoreAuthErrorAbort: true, random: () => 0 }
     );
     expect(dial.error).toBeUndefined();
-    expect(dial.delays).toEqual([20]);
+    expect(dial.delays).toEqual([2_000]);
+    waitedAtLeast(dial.waited, [2_000]);
     expect(server.connections()).toBe(2);
   }, 30_000);
 
