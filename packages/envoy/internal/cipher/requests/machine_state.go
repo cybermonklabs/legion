@@ -362,11 +362,11 @@ type Machine struct {
 	// Projects asks Dispatch whether a project is private, whether a person may see it and what
 	// kind of member a person is (projectaccess.Client, BROKER_PROJECT_ACCESS_URL), the client
 	// enroll.Service.Projects is. Create, every release, decision and airlock connection read the
-	// member kind of the person a session acts for (restrictedOperator), and a restricted member's
-	// session is denied every secret; a project is read only for a request, release, decision or
-	// airlock connection holding a project-tagged secret (projectFacts). Both are read before any
-	// transaction. nil on a broker with no such client, which asks nothing and serves no tagged
-	// secret (policy.Loader.ProjectChecks).
+	// member kind of the person a session was made for (restrictedOperator), and a restricted
+	// member's session is denied every secret; a project is read only for a request, release,
+	// decision or airlock connection holding a project-tagged secret (projectFacts). Both are read
+	// before any transaction. nil on a broker with no such client, which asks nothing and serves
+	// no tagged secret (policy.Loader.ProjectChecks).
 	Projects projectaccess.Access
 	// Exchange is the broker's token exchange configuration, read for the project an operator's
 	// entry maps a pod's or a machine's account to (exchange.Set.MappedProjects), which is the
@@ -495,7 +495,7 @@ type enrollmentRow struct {
 	// for the Legion daemon, the role claim token whose issue's assignee is asked for a shared
 	// secret's request (claimAssignee). The live-enrollment read (enrollment) fills it.
 	Claim string
-	// Restricted is whether Dispatch called the person this enrollment acts for a restricted
+	// Restricted is whether Dispatch called the person this enrollment was made for a restricted
 	// member when the caller asked, before any transaction (restrictedOperator): Create and every
 	// release ask, and requester hands it to the policy, which denies such a session every
 	// secret. It is false wherever nobody asked.
@@ -531,8 +531,10 @@ type enrollmentRow struct {
 // withheld_secrets rows to the enrollment it moves to, so these are the names withheld from the
 // session rather than from a box it has left.
 // A session whose person the caller found a restricted member (enrollmentRow.Restricted) is
-// marked so, and the policy denies it every secret (policy.ReasonRestrictedMember); a pod that
-// acts for no person is never marked.
+// marked so, and the policy denies it every secret (policy.ReasonRestrictedMember). That person is
+// the one the enrollment was made for (restrictedOperator), so a person's pod the setting no
+// longer maps is marked too; a service's pod and a machine's own session, made for no person, are
+// never marked.
 func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow, facts projectFacts) (policy.Requester, error) {
 	rows, err := q.Query(ctx, `select name from withheld_secrets where enrollment_id=$1`, e.ID)
 	if err != nil {
@@ -562,8 +564,8 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow, fac
 
 // actingPerson is the person the session e acts for: its operator, and no one for a pod whose
 // account BROKER_POD_OPERATORS no longer maps (unmappedPersonPod), a service's pod and a
-// machine's own session. requester decides by that person, and restrictedOperator asks Dispatch
-// about that same person and no other.
+// machine's own session. requester decides by that person. restrictedOperator does not: it asks
+// Dispatch about the person e was made for, whom the setting does not change.
 func (m *Machine) actingPerson(e enrollmentRow) string {
 	if m.unmappedPersonPod(e) {
 		return ""
@@ -571,14 +573,21 @@ func (m *Machine) actingPerson(e enrollmentRow) string {
 	return deref(e.Operator)
 }
 
-// restrictedOperator reports whether Dispatch calls the person e acts for a restricted member
+// restrictedOperator reports whether Dispatch calls the person e was made for (its operator, the
+// person of the launcher credential that enrolled it) a restricted member
 // (projectaccess.Restricted), asked through m.Projects on no transaction, as the rule
 // internal/cipher/projectaccess states for every caller is: Create asks it before it reads a
 // live grant to reuse, every release before it re-checks the grant, and every airlock proxy
 // connection before it carries anything (AirlockConnection), since the proxy holds a grant's
-// values past the release that read them. The person is the one requester reads, so a pod whose
-// account BROKER_POD_OPERATORS no longer maps, a service's pod and a machine's own session ask
-// nothing, and neither does a machine with no client of Dispatch.
+// values past the release that read them. A service's pod and a machine's own session, made for
+// no person, ask nothing, and neither does a machine with no client of Dispatch.
+//
+// The person is the operator the enrollment recorded, not the one requester reads
+// (actingPerson). A person's pod whose account BROKER_POD_OPERATORS drops, or maps to another
+// person, acts for no person from then on, which decides whose owned secrets it may have; it is
+// still the pod that person's login enrolled, so it is still asked about as that person. Were it
+// asked about the person it acts for, a restricted member's pod would ask nothing once the setting
+// changed, and be given every shared agent-tier secret again.
 //
 // It is the second half of the rule that a restricted member's agents get no secret, the first
 // being that such a person's machine login enrolls nothing (enroll.Service.checkMember). This
@@ -595,7 +604,7 @@ func (m *Machine) actingPerson(e enrollmentRow) string {
 // grant is written for it; and so does the model judge's read of the policy (JudgePolicy), which
 // then answers deny before any model is asked.
 func (m *Machine) restrictedOperator(ctx context.Context, e enrollmentRow) (bool, error) {
-	person := m.actingPerson(e)
+	person := deref(e.Operator)
 	if m.Projects == nil || person == "" {
 		return false, nil
 	}

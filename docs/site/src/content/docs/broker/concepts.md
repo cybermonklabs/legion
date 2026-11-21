@@ -783,7 +783,12 @@ the policy gave the pod without asking names no approver either, so it is listed
 pod's is, to every signed-in person who may see it, and its row reads **Ends with its machine
 login**: revoking the pod's login ends it. A grant of a private project they are not on, which
 the pod may now get through its exchange entry, is hidden from them as from anyone outside the
-project, and is on the pages of that project's people.
+project, and is on the pages of that project's people. The person it was made for still decides
+whether it gets anything at all: a broker with `BROKER_PROJECT_ACCESS_URL` asks Dispatch about that
+person at each request, approval, release and airlock connection of the pod, so the pod of a person
+Dispatch calls a restricted member is denied every secret `restricted-member` after the change as
+before it, and the pod's requests and releases are refused `503 MEMBER_KIND_UNCHECKABLE` while
+Dispatch cannot say what kind of member that person is.
 [Operate](/legion/broker/operate/#what-to-run) says what else a removal or a move does.
 
 ## Requests and grants

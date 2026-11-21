@@ -537,7 +537,7 @@ type AirlockGrantName struct {
 // enrollment's operator withheld, and refuses with ErrAirlockNoNames when that leaves none, which
 // the proxy answers 407.
 //
-// It asks, on every connection, whether Dispatch calls the person the enrollment acts for a
+// It asks, on every connection, whether Dispatch calls the person the enrollment was made for a
 // restricted member (restrictedOperator), because the proxy serves a grant's values from what it
 // read once for as long as its pod holds them (AirlockValues), and this is the one read every
 // call makes. A restricted member's grant ends for good here (errRestrictedMember), answered

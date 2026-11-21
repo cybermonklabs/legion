@@ -316,6 +316,175 @@ func TestAJudgesApprovalIsRefusedWhileTheMemberKindCannotBeRead(t *testing.T) {
 	}
 }
 
+// TestARestrictedMembersPodGetsNoSecretAfterTheSettingChanges: a person's pod enrolled for a
+// restricted member before the broker asked Dispatch, whose account BROKER_POD_OPERATORS then
+// drops or maps to another person, is still held to the person it was enrolled for. The setting
+// decides whom the pod acts for, and so whose owned secrets it gets (actingPerson). It does not
+// change whose launcher credential enrolled the pod, and that person's member kind is what decides
+// that the pod gets no secret at all. So once the machine asks Dispatch, the pod's ask for a
+// shared agent-tier secret is denied restricted-member, an ask for a name it holds a grant of is
+// denied and the grant ended rather than reused, the release of its other grant is refused and the
+// grant ended, the airlock proxy's next connection for its airlocked grant is refused and the
+// grant ended, the model judge's read of the policy answers deny, and an approval of the request
+// it left pending is the policy's denial. While Dispatch cannot be asked about that person, the
+// release is refused *projectaccess.MemberKindUncheckable naming the person, and the grant is
+// left live.
+//
+// The control is a full member's pod under the same change. Dispatch is asked about the person
+// it was enrolled for, as the outage step shows, and the pod is given, reuses and is released
+// what it was (as TestPersonPodGrantsFollowTheSetting has it), its airlock connection is carried,
+// and its pending request is granted.
+func TestARestrictedMembersPodGetsNoSecretAfterTheSettingChanges(t *testing.T) {
+	const outsider = "outsider@outside.example"
+	outsidersPod := personPod{person: outsider, service: "person-outsider", account: "system:serviceaccount:people:outsider"}
+	for _, change := range []struct {
+		name  string
+		apply func(operators map[string]string, account string)
+	}{
+		{"the setting drops the account", func(operators map[string]string, account string) { delete(operators, account) }},
+		{"the setting maps the account to another person", func(operators map[string]string, account string) { operators[account] = otherPerson }},
+	} {
+		for _, pod := range []struct {
+			name       string
+			of         personPod
+			restricted bool
+		}{
+			{"a restricted member's pod", outsidersPod, true},
+			{"a full member's pod", samisPod, false},
+		} {
+			t.Run(change.name+", "+pod.name, func(t *testing.T) {
+				ctx := t.Context()
+				m, _, _, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AWS_KEY", "aws")}})
+				retag(t, m,
+					policytest.Secret("AWS_KEY", policy.OwnerShared, policy.TierAgent, `{"acc`+`ess_key_id":"AKI`+`AONE","sec`+`ret_acc`+`ess_key":"real-secret"}`),
+					policytest.Secret("SHARED_TOKEN", policy.OwnerShared, policy.TierAgent, "shared-token-v1"),
+					policytest.Secret("SHARED_OTHER", policy.OwnerShared, policy.TierAgent, "shared-other-v1"),
+					policytest.Secret("SHARED_FRESH", policy.OwnerShared, policy.TierAgent, "shared-fresh-v1"))
+				m.PodOperators = map[string]string{pod.of.account: pod.of.person}
+				enr, key := pod.of.enroll(t, m.Store, "pod-"+t.Name())
+
+				// What the pod holds was given while the setting mapped its account to the person and
+				// before the machine asked Dispatch anything: a pod a broker with no project-access
+				// client enrolled, or one enrolled before the member-kind rule.
+				_, heldToken := grantOf(t, m, enr, key, "needs the token", "SHARED_TOKEN")
+				_, heldOther := grantOf(t, m, enr, key, "needs the other", "SHARED_OTHER")
+				_, airlocked := grantOf(t, m, enr, key, "carried by the airlock", "AWS_KEY")
+				release, err := m.Values(ctx, airlocked, enr, nil, ReleaseCall{})
+				if err != nil || release.Airlock == nil || release.Airlock.ProxyPassword == "" {
+					t.Fatalf("Values(AWS_KEY) = %+v, %v; want a placeholder release", release, err)
+				}
+				placeholder := release.Airlock.ProxyPassword
+				pending, err := m.Create(ctx, enr, signRequest(t, m, key, "needs the shared key", "SHARED_KEY"), "", nil)
+				if err != nil || pending.State != "pending" || pending.RecordID == nil {
+					t.Fatalf("Create(SHARED_KEY) = %+v, %v; want pending with a record", pending, err)
+				}
+
+				change.apply(m.PodOperators, pod.of.account)
+				// The case under test: the pod acts for no person now, and its row keeps the person
+				// it was enrolled for.
+				if row, err := m.enrollment(ctx, enr); err != nil || m.actingPerson(row) != "" || deref(row.Operator) != pod.of.person {
+					t.Fatalf("after %s, enrollment %s = %+v, %v, acting for %q; want it acting for no person and recording %s", change.name, enr, row, err, m.actingPerson(row), pod.of.person)
+				}
+				dispatch := projectaccesstest.NewServer(t, nil, map[string]string{
+					outsider:        projectaccess.MemberRestricted,
+					fixtureOperator: projectaccess.MemberFull,
+					otherPerson:     projectaccess.MemberFull,
+				})
+				// A client of its own for each step, as a broker reads Dispatch again once a kept
+				// answer, or a kept failure, has aged out.
+				asking := func() { m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil) }
+
+				t.Run("a release while Dispatch cannot say what the person is", func(t *testing.T) {
+					dispatch.SetDown(true)
+					asking()
+					defer func() { dispatch.SetDown(false); asking() }()
+					released, err := m.Values(ctx, heldOther, enr, nil, ReleaseCall{})
+					var uncheckable *projectaccess.MemberKindUncheckable
+					if !errors.As(err, &uncheckable) || uncheckable.Person != pod.of.person || len(released.Values) != 0 {
+						t.Fatalf("Values(SHARED_OTHER) while Dispatch is down = %v, %v; want *projectaccess.MemberKindUncheckable naming %s and no value", released.Values, err, pod.of.person)
+					}
+					var revoked bool
+					if err := m.Store.Pool.QueryRow(ctx, `select revoked_at is not null from grants where id=$1`, heldOther).Scan(&revoked); err != nil || revoked {
+						t.Fatalf("grant %s revoked = %t, %v after an uncheckable release; want it left live", heldOther, revoked, err)
+					}
+				})
+
+				t.Run("an ask for a shared agent-tier secret", func(t *testing.T) {
+					req, err := m.Create(ctx, enr, signRequest(t, m, key, "needs it", "SHARED_FRESH"), "", nil)
+					switch {
+					case pod.restricted && (err != nil || req.State != "denied" || req.GrantID != nil || req.Detail == nil || !strings.Contains(*req.Detail, "SHARED_FRESH: "+policy.ReasonRestrictedMember)):
+						t.Fatalf("Create(SHARED_FRESH) = %+v, %v; want it denied naming %s", req, err, policy.ReasonRestrictedMember)
+					case !pod.restricted && (err != nil || req.State != "granted" || req.GrantID == nil):
+						t.Fatalf("Create(SHARED_FRESH) = %+v, %v; want it granted at once", req, err)
+					}
+				})
+
+				t.Run("an ask for a name it holds a grant of", func(t *testing.T) {
+					req, err := m.Create(ctx, enr, signRequest(t, m, key, "needs the token again", "SHARED_TOKEN"), "", nil)
+					if !pod.restricted {
+						if err != nil || req.GrantID == nil || *req.GrantID != heldToken {
+							t.Fatalf("Create(SHARED_TOKEN) = %+v, %v; want grant %s reused", req, err, heldToken)
+						}
+						return
+					}
+					if err != nil || req.State != "denied" || req.GrantID != nil || req.Detail == nil || !strings.Contains(*req.Detail, "SHARED_TOKEN: "+policy.ReasonRestrictedMember) {
+						t.Fatalf("Create(SHARED_TOKEN) = %+v, %v; want it denied naming %s, not grant %s reused", req, err, policy.ReasonRestrictedMember, heldToken)
+					}
+					requireGrantEnded(t, m, heldToken)
+				})
+
+				t.Run("the release of a grant it holds", func(t *testing.T) {
+					released, err := m.Values(ctx, heldOther, enr, nil, ReleaseCall{})
+					if !pod.restricted {
+						if err != nil || released.Values["SHARED_OTHER"] != "shared-other-v1" {
+							t.Fatalf("Values(SHARED_OTHER) = %v, %v; want shared-other-v1", released.Values, err)
+						}
+						return
+					}
+					if !errors.Is(err, ErrGrantNotLive) || !errors.Is(err, errRestrictedMember) || len(released.Values) != 0 {
+						t.Fatalf("Values(SHARED_OTHER) = %v, %v; want ErrGrantNotLive for a restricted member and no value", released.Values, err)
+					}
+					requireGrantEnded(t, m, heldOther)
+				})
+
+				t.Run("the airlock proxy's next connection", func(t *testing.T) {
+					conn, err := m.AirlockConnection(ctx, placeholder)
+					if !pod.restricted {
+						if err != nil || conn.GrantID != airlocked {
+							t.Fatalf("AirlockConnection = %+v, %v; want grant %s", conn, err, airlocked)
+						}
+						return
+					}
+					if !errors.Is(err, ErrGrantNotLive) || !errors.Is(err, errRestrictedMember) {
+						t.Fatalf("AirlockConnection = %+v, %v; want ErrGrantNotLive for a restricted member", conn, err)
+					}
+					requireGrantEnded(t, m, airlocked)
+				})
+
+				t.Run("the model judge's read of the policy", func(t *testing.T) {
+					decision, _, _, err := m.JudgePolicy(ctx, enr, "SHARED_KEY")
+					switch {
+					case pod.restricted && (err != nil || decision.Outcome != policy.Deny || decision.Reason != policy.ReasonRestrictedMember):
+						t.Fatalf("JudgePolicy(SHARED_KEY) = %+v, %v; want deny %s", decision, err, policy.ReasonRestrictedMember)
+					case !pod.restricted && (err != nil || decision.Outcome != policy.Approval):
+						t.Fatalf("JudgePolicy(SHARED_KEY) = %+v, %v; want an approval", decision, err)
+					}
+				})
+
+				t.Run("an approval of the request it left pending", func(t *testing.T) {
+					dec, err := m.ApplyDecision(ctx, *pending.RecordID, true, "bob@example.com")
+					switch {
+					case pod.restricted && (err != nil || dec.State != "denied" || dec.GrantID != "" || !strings.Contains(dec.Detail, "SHARED_KEY: "+policy.ReasonRestrictedMember)):
+						t.Fatalf("ApplyDecision(approve SHARED_KEY) = %+v, %v; want it denied naming %s and no grant", dec, err, policy.ReasonRestrictedMember)
+					case !pod.restricted && (err != nil || dec.State != "granted" || dec.GrantID == ""):
+						t.Fatalf("ApplyDecision(approve SHARED_KEY) = %+v, %v; want it granted", dec, err)
+					}
+				})
+			})
+		}
+	}
+}
+
 // requireGrantEnded fails t unless grant is revoked.
 func requireGrantEnded(t *testing.T, m *Machine, grant string) {
 	t.Helper()
