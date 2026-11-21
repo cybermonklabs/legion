@@ -622,3 +622,25 @@ func TestAFixedModeReconnectReadsTheMarkerAgainAndStopsOnAConversion(t *testing.
 		t.Fatal("a reconnect over a converted bucket did not stop the process")
 	}
 }
+
+// A call refused for its own key never reached the store, so it says nothing of the bucket: a
+// missing bucket stays named by the health read after it. The control is the same read before the
+// refused call, which names the bucket too.
+func TestARefusedKeyLeavesTheSelectionHealthAsItWas(t *testing.T) {
+	_, consumers, _ := freshSessionConsumersWithoutBucket(t)
+	ctx := context.Background()
+	if err := consumers.CheckSelection(ctx); !consumernames.IsSelectionStateLost(err) {
+		t.Fatalf("CheckSelection with no bucket = %v, want the missing bucket", err)
+	}
+	if err := consumers.SelectionHealth(ctx); err == nil {
+		t.Fatal("control: SelectionHealth with no bucket names nothing")
+	}
+	for _, key := range []string{"ses.dotted", strings.Repeat("a", 254)} {
+		if _, err := consumers.Info(ctx, key); err == nil {
+			t.Fatalf("Info of %q was served", key)
+		}
+		if err := consumers.SelectionHealth(ctx); err == nil || !strings.Contains(err.Error(), "KV_"+consumernames.SessionBucket) {
+			t.Fatalf("SelectionHealth after a refused key %.20q = %v, want the missing bucket still named", key, err)
+		}
+	}
+}

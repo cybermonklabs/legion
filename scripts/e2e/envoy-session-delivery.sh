@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # envoy-session-delivery.sh — live proof that every Envoy event reaches a real Oh My Pi session and
 # a real Claude Code session exactly once, also when it was published while the session, its NATS
-# connection, either listener or Dispatch was down (INFRA-594), and when it was stored for a
-# session before that session first registered (INFRA-771).
+# connection, either listener or Dispatch was down, and when it was stored for a session before
+# that session first registered.
 #
 # The stack runs in the pod, every part of it built from a checkout: natsd
 # (packages/envoy/internal/testnats/cmd/natsd, JetStream on a store directory of the run's own),
@@ -64,7 +64,7 @@
 # Window h publishes none of those. Its one event is a core NATS publish of an Envoy envelope on
 # notifications.agent.<the new Claude Code session id>, counted in that session alone.
 #
-# Window g is the deletion INFRA-2365 added, proved live. Oh My Pi's rpc host ends its session
+# Window g is a clean stop's consumer delete, proved live. Oh My Pi's rpc host ends its session
 # when its stdin reaches end of file, and that is the whole of a clean stop: closing the write end
 # of the fifo this script holds runs the host's session_shutdown handlers to their end, awaits and
 # all, and omp exits 0 (measured here on omp v18.16.0 with an extension that recorded the event;
@@ -174,7 +174,7 @@
 #
 # --issue-topic-form old|new names the form of the issue topic each session is told to follow: old
 # (the default) is notifications.dispatch.issue.<KEY>.>, new is the form that names the key's
-# project first, notifications.dispatch.issue.<PROJECT>.<KEY>.> (dispatch://INFRA-3862). Dispatch
+# project first, notifications.dispatch.issue.<PROJECT>.<KEY>.>. Dispatch
 # publishes in the old form until its producers move, so the new form's run is the proof that a
 # session following the new form receives what is published in the old one.
 #
@@ -547,9 +547,6 @@ if [[ -n "$build_from" ]]; then
   tree_label="$rev (git archive into $tree)"
 fi
 readonly tree
-# The fresh naming mode needs a listener that knows ENVOY_CONSUMER_NAMES: a --build-from tree from
-# before it names every consumer s-<session> whatever it is handed, and writes no selection record
-# for any fresh reading below to find.
 if [[ "$consumer_names" == fresh ]] &&
   ! grep -rqs --include='*.go' --exclude='*_test.go' ENVOY_CONSUMER_NAMES "$tree/packages/envoy"; then
   refuse "ENVOY_CONSUMER_NAMES=fresh needs a listener that knows that setting, and the one in ${tree_label} does not"
@@ -1592,7 +1589,7 @@ run_window() {
     publish_rest f "$via"
     ;;
   g)
-    # The clean stop dispatch://INFRA-2365 is about: Oh My Pi ends on its stdin's end of file,
+    # The clean stop that deletes a session's consumer: Oh My Pi ends on its stdin's end of file,
     # pi-envoy deregisters the session, and the listener removes the registration and deletes the
     # session's consumer with it. The Claude Code session stays up throughout, so every event of
     # this window has one session that is there to take it live and one that is not. The resumed
@@ -1853,7 +1850,7 @@ fi
 # ---- the sessions stop ------------------------------------------------------------------------
 # The table is printed and judged, so nothing more is published and nothing more is counted. Both
 # sessions are stopped as a clean shutdown stops them, each plugin deregisters, and the listener
-# deletes the consumer it answered each registration with (dispatch://INFRA-2365): the stream must
+# deletes the consumer it answered each registration with: the stream must
 # then carry a consumer for neither of them, so a hub's consumer cap is spent on no session that
 # ended. The judgement names those two session ids rather than every `s-` consumer on the stream:
 # a window that SIGKILLs a session (a, b, g) leaves one that deregistered nothing, and such a

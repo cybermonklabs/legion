@@ -158,6 +158,9 @@ func (f *fakeServer) infoLocked(name string, c *fakeConsumer) *jetstream.Consume
 		info.Config.OptStartSeq = c.start.Seq
 	}
 	info.AckFloor.Stream = c.floor
+	// A consumer that delivered nothing yet reports its delivered stream sequence at its floor, as
+	// nats-server does for a consumer created at deliver policy new (TestTheNativeOptionSavesTheStartTheServerReports).
+	info.Delivered.Stream = c.floor
 	return info
 }
 
@@ -1038,4 +1041,160 @@ func TestANativeAllFirstCreateIsKeptUnderTheBoundary(t *testing.T) {
 			t.Errorf("a %s first create under boundary 12 started at %+v, want %+v", native, got, want)
 		}
 	}
+}
+
+// A replacement whose predecessor the server confirmed deleted keeps no record of it: a session
+// restarted many times keeps a record of one size. The control is a predecessor whose delete
+// failed, which stays retired for the cleanup.
+func TestAPredecessorTheReplacementDeletedIsRetiredNoLonger(t *testing.T) {
+	h := newHarness()
+	names := h.names("p1")
+	sel, _, err := names.Ensure(context.Background(), "ses-1", CreateRequest{Create: h.server.create("ses-1"), First: first(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for round := range 5 {
+		if sel, err = names.Replace(context.Background(), sel, 1, h.server.create("ses-1")); err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+	}
+	if retired := h.store.record(t, "ses-1").Retired; len(retired) != 0 {
+		t.Fatalf("after five replacements whose predecessors were deleted the record retires %v, want none", retired)
+	}
+	// Control: a predecessor whose delete failed stays retired.
+	old := sel.Record.Current
+	names.cfg.Server = deleteFails{h.server, errors.New("the delete timed out")}
+	if _, err := names.Replace(context.Background(), sel, 1, h.server.create("ses-1")); err != nil {
+		t.Fatal(err)
+	}
+	if retired := h.store.record(t, "ses-1").Retired; !contains(retired, old) || len(retired) != 1 {
+		t.Fatalf("after a replacement whose predecessor's delete failed the record retires %v, want only %s", retired, old)
+	}
+}
+
+// nativeNew is a first-create rule that keeps deliver policy new and reads no stream: the daemon's.
+func nativeNew(context.Context) (Start, error) { return Start{Native: NativeNew}, nil }
+
+// With Config.NativeFirstCreate, a logical name that never existed is created at deliver policy
+// new even when the cutover boundary is set, and the publish saves the start the created consumer
+// reports. The control is the same first create without the option, which the boundary turns into
+// a create by start sequence at B, as the sessions family keeps it.
+func TestANativeFirstCreateKeepsDeliverNewUnderTheBoundaryWithTheOption(t *testing.T) {
+	const key = "legion-go-p-github"
+	h := newHarness()
+	h.store.state.Boundary = 12
+	sel, _, err := h.names("p1").Ensure(context.Background(), key, CreateRequest{Create: h.server.create(key), First: nativeNew})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start := h.server.startOf(sel.Record.Current); start != (Start{Seq: 12}) {
+		t.Fatalf("control: without the option the first create started at %+v, want by start sequence at the boundary 12", start)
+	}
+
+	h = newHarness()
+	h.store.state.Boundary = 12
+	h.server.lastSeq = 100
+	names := h.names("p1")
+	names.cfg.NativeFirstCreate = true
+	sel, created, err := names.Ensure(context.Background(), key, CreateRequest{Create: h.server.create(key), First: nativeNew})
+	if err != nil || !created {
+		t.Fatalf("Ensure with the option = %v, created %t", err, created)
+	}
+	if start := h.server.startOf(sel.Record.Current); start != (Start{Native: NativeNew}) {
+		t.Fatalf("with the option the first create started at %+v, want deliver policy new", start)
+	}
+	if rec := h.store.record(t, key); rec.Start != 101 || sel.Record.Start != 101 {
+		t.Fatalf("the published record's start is %d (selection %d), want 101, the start the consumer reports", rec.Start, sel.Record.Start)
+	}
+}
+
+// A native first create whose candidate landed is adopted with the start it reports, whether its
+// create's answer was lost or another process left it open for Step 0.
+func TestAnAdoptedNativeFirstCreateSavesItsOwnStart(t *testing.T) {
+	const key = "legion-go-p-github"
+	t.Run("its create's answer lost", func(t *testing.T) {
+		h := newHarness()
+		h.store.state.Boundary = 12
+		h.server.lastSeq = 100
+		h.server.createFault = func(string) (bool, error) { return true, errAnswerLost }
+		names := h.names("p1")
+		names.cfg.NativeFirstCreate = true
+		sel, created, err := names.Ensure(context.Background(), key, CreateRequest{Create: h.server.create(key), First: nativeNew})
+		if err != nil || !created {
+			t.Fatalf("Ensure = %v, created %t; want the landed candidate adopted", err, created)
+		}
+		if start := h.server.startOf(sel.Record.Current); start != (Start{Native: NativeNew}) || h.store.record(t, key).Start != 101 {
+			t.Fatalf("adopted %+v with record start %d, want deliver policy new and start 101", start, h.store.record(t, key).Start)
+		}
+		h.server.createdTwice(t)
+	})
+	t.Run("Step 0", func(t *testing.T) {
+		h := newHarness()
+		h.store.state.Boundary = 12
+		h.server.lastSeq = 100
+		if _, err := h.server.create(key)(context.Background(), "session~N", Start{Native: NativeNew}); err != nil {
+			t.Fatal(err)
+		}
+		h.store.put(key, Record{Op: &Op{Kind: OpCreate, Owner: "p1", Candidate: "session~N", Native: NativeNew, ReservedAt: h.clock.Now()}})
+		names := h.names("p2")
+		names.cfg.NativeFirstCreate = true
+		sel, err := names.Select(context.Background(), key, h.server.create(key))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sel.Record.Current != "session~N" || h.store.record(t, key).Start != 101 {
+			t.Fatalf("Step 0 selected %q with record start %d, want session~N at 101", sel.Record.Current, h.store.record(t, key).Start)
+		}
+		h.server.createdTwice(t)
+	})
+}
+
+// A native first create whose candidate never landed, its start still unknown, is retired and
+// created natively again, as today's first create is: never by start sequence at 0.
+func TestANativeFirstCreateThatNeverLandedIsCreatedNativelyAgain(t *testing.T) {
+	const key = "legion-go-p-github"
+	check := func(t *testing.T, h *harness, sel Selection, lost string) {
+		t.Helper()
+		if sel.Record.Current == lost || h.server.startOf(sel.Record.Current) != (Start{Native: NativeNew}) {
+			t.Fatalf("current %q started at %+v, want a fresh candidate at deliver policy new", sel.Record.Current, h.server.startOf(sel.Record.Current))
+		}
+		if rec := h.store.record(t, key); rec.Start != 101 || !contains(rec.Retired, lost) {
+			t.Fatalf("record %+v, want start 101 and %s retired", rec, lost)
+		}
+		h.server.createdTwice(t)
+	}
+	t.Run("Step 0", func(t *testing.T) {
+		h := newHarness()
+		h.store.state.Boundary = 12
+		h.server.lastSeq = 100
+		h.store.put(key, Record{Op: &Op{Kind: OpCreate, Owner: "p1", Candidate: "session~lost", Native: NativeNew, ReservedAt: h.clock.Now()}})
+		h.clock.advance(3 * time.Second)
+		names := h.names("p2")
+		names.cfg.NativeFirstCreate = true
+		sel, err := names.Select(context.Background(), key, h.server.create(key))
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(t, h, sel, "session~lost")
+	})
+	t.Run("its create's answer lost", func(t *testing.T) {
+		h := newHarness()
+		h.store.state.Boundary = 12
+		h.server.lastSeq = 100
+		var lost string
+		h.server.createFault = func(name string) (bool, error) {
+			if lost == "" {
+				lost = name
+				return false, errAnswerLost
+			}
+			return true, nil
+		}
+		names := h.names("p1")
+		names.cfg.NativeFirstCreate = true
+		sel, _, err := names.Ensure(context.Background(), key, CreateRequest{Create: h.server.create(key), First: nativeNew})
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(t, h, sel, lost)
+	})
 }

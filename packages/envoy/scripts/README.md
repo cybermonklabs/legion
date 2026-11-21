@@ -578,6 +578,7 @@ packages/envoy/scripts/forced-order.sh ./internal/testnats/hooktest/
 packages/envoy/scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
 packages/envoy/scripts/forced-order.sh -C packages/daemon ./internal/testnats/
 packages/envoy/scripts/forced-order.sh -drop write.preIO ./internal/testnats/hooktest/
+packages/envoy/scripts/forced-order.sh -timeout 25m ./internal/bus/
 ```
 
 It copies nats-server's module at the version it runs out of the module cache, applies
@@ -610,13 +611,18 @@ since the stop then waits for the parked goroutine. A name no hook of that versi
 refused before anything is built, so a mistyped point cannot fail a test on a compile error. It
 fails, naming the package, when a package declares no `TestForcedOrder` test, or runs none
 because every one skipped (that package's `ok` line is printed as a `FAIL` line).
-`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` holds it to those
-refusals, with the fixture package `internal/testnats/hooktest/skiponly`.
-`ci.yaml`'s `envoy-go-race` job runs that test, then the script on `./internal/testnats/hooktest/`
-twice: with no `-server`, so on the version the workspace links, and with `-server 2.10.29`. Its
-`daemon-go` job runs it with `-C packages/daemon` and no `-server`. So when `go.mod` moves to a
-nats-server with no hooks, both unversioned steps fail until the hooks are ported. Each job counts
-the 10 minutes in its time budget.
+`-timeout <duration>` replaces go test's 10-minute `-timeout`, and an empty value is refused;
+`GO_TEST_TIMEOUT` does the same where the flag is not given, but a CI step gives the flag, since a
+`GO*` name in a step's env leaves its job's go commands unreduced. `forced-order.test.sh` holds
+it to those refusals, with the fixture package `internal/testnats/hooktest/skiponly`.
+`ci.yaml`'s `envoy-go-race` job runs that test, then the script twice: with no `-server`, so on
+the version the workspace links, on `./internal/testnats/hooktest/`, `./internal/bus/`,
+`./consumernames/` and `./cmd/listener/` with `-timeout 25m`, since every session row runs on one
+copy, an R1 cluster and R3; and with `-server 2.10.29` on `./internal/testnats/hooktest/` and
+`./consumernames/` alone, since the session consumers and the listener refuse 2.10.29 and their
+rows would all skip there. Its `daemon-go` job runs it with `-C packages/daemon` and no
+`-server`. So when `go.mod` moves to a nats-server with no hooks, both unversioned steps fail
+until the hooks are ported. Each job counts each step's timeout in its time budget.
 
 ## aws-moto-check.sh
 

@@ -71,6 +71,9 @@ refused drop-not-a-point 'forced-order.sh: -drop stream: no hook of nats-server 
 # -server with an empty value is no version, not the default.
 refused server-empty "forced-order.sh: -server '' names no version" \
   '^=== RUN' -server '' ./internal/testnats/hooktest/
+# -timeout with an empty value is no duration, not go test's 10 minutes.
+refused timeout-empty "forced-order.sh: -timeout '' names no duration" \
+  '^=== RUN' -timeout '' ./internal/testnats/hooktest/
 # A module whose go.mod replaces nats-server requires one version and links another, and the
 # hooked copy would take the replacement's place: the script refuses it rather than hook the
 # version the requirement names. The fixture replaces it with a local module, so no go command

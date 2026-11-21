@@ -90,7 +90,8 @@ type Op struct {
 	// FloorRecorded is set once a delete wrote Old's floor into Record.Start.
 	FloorRecorded bool `json:"floor_recorded,omitempty"`
 	// Native is the native policy the candidate's create keeps, for a native first create, whose
-	// Record.Start is then the numeric boundary recovery creates at instead.
+	// Record.Start is then the numeric boundary recovery creates at instead, or 0 where the first
+	// create read no stream (Config.NativeFirstCreate): a retry then keeps the native policy too.
 	Native Native `json:"native,omitempty"`
 	// ReservedAt is when the operation was reserved, on the reserving process's clock.
 	ReservedAt time.Time `json:"reserved_at"`
@@ -146,6 +147,11 @@ type StoreState struct {
 	// Boundary is the cutover boundary B: a session key with no record starts no later than it.
 	// 0 where the family has none.
 	Boundary uint64 `json:"boundary,omitempty"`
+	// StreamID is the identity of ENVOY_NOTIFICATIONS as the operator recorded it when it wrote
+	// the sentinel (the stream's StreamIdentityMetadataKey): the cutover's convert and enroll and a
+	// hub restore's finish write it. A family that does not read the stream's info tags each last
+	// floor with it instead. "" where none was recorded.
+	StreamID string `json:"stream_id,omitempty"`
 	// ReplayFrom, while set, is where a key with no record starts, never at its first-create rule
 	// (a recovery after a lost store).
 	ReplayFrom uint64 `json:"replay_from,omitempty"`
@@ -181,7 +187,8 @@ type Server interface {
 // Start is where a consumer is created.
 type Start struct {
 	// Seq is the stream sequence the consumer starts at, by start sequence. For a native create
-	// it is the numeric boundary a recovery creates at instead.
+	// it is the numeric boundary a recovery creates at instead, or 0 where the first-create rule
+	// read no stream (Config.NativeFirstCreate), and the publish saves the start the consumer reports.
 	Seq uint64
 	// Native, when set, is the native policy the create keeps.
 	Native Native

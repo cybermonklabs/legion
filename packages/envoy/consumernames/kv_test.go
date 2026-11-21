@@ -199,22 +199,25 @@ func TestTheKVStoreWritesOnlyOverTheRevisionItRead(t *testing.T) {
 	}
 }
 
+// The sentinel round-trips through the bucket: what the operator writes (the cutover, replay_from
+// and its orphans, the stream's identity) reads back, and EndReplay, which rewrites it, clears only
+// replay_from and the orphans.
 func TestReplayModeEndsOnlyWhenNoListedOrphanIsHeld(t *testing.T) {
-	live := newLiveStore(t, testnats.URL(t), &StoreState{Cutover: CutoverDone, ReplayFrom: 4, Orphans: []string{"s-a", "session~b"}})
+	live := newLiveStore(t, testnats.URL(t), &StoreState{Cutover: CutoverDone, ReplayFrom: 4, Orphans: []string{"s-a", "session~b"}, StreamID: "stream-1"})
 	ctx := context.Background()
 	held := map[string]bool{"session~b": true, "session~selected": true}
 	if over, err := live.store.EndReplay(ctx, func(name string) bool { return held[name] }); err != nil || over {
 		t.Fatalf("EndReplay with an orphan held = %t, %v; want replay mode kept", over, err)
 	}
-	if state, _ := live.store.State(ctx); state.ReplayFrom != 4 {
-		t.Fatalf("replay_from %d, want 4 kept", state.ReplayFrom)
+	if state, _ := live.store.State(ctx); state.ReplayFrom != 4 || state.StreamID != "stream-1" {
+		t.Fatalf("sentinel %+v, want replay_from 4 and stream_id stream-1 kept", state)
 	}
 	delete(held, "session~b")
 	if over, err := live.store.EndReplay(ctx, func(name string) bool { return held[name] }); err != nil || !over {
 		t.Fatalf("EndReplay with no orphan held = %t, %v; want replay mode over", over, err)
 	}
-	if state, _ := live.store.State(ctx); state.ReplayFrom != 0 || len(state.Orphans) != 0 || state.Cutover != CutoverDone {
-		t.Fatalf("sentinel %+v, want replay_from and the orphans cleared, the cutover kept", state)
+	if state, _ := live.store.State(ctx); state.ReplayFrom != 0 || len(state.Orphans) != 0 || state.Cutover != CutoverDone || state.StreamID != "stream-1" {
+		t.Fatalf("sentinel %+v, want replay_from and the orphans cleared, the cutover and stream_id kept", state)
 	}
 }
 
@@ -491,5 +494,122 @@ func TestTheKVStoreReadsAReplicatedBucketsWrongLastSequenceAsAConflict(t *testin
 				t.Fatalf("a stale write on %d copies = %v (code %d), want ErrConflict", replicas, err, api.ErrorCode)
 			}
 		})
+	}
+}
+
+// answeringRequester answers every request with reply, as a server would.
+type answeringRequester struct{ reply string }
+
+func (r answeringRequester) Request(context.Context, *natsgo.Msg) (*natsgo.Msg, error) {
+	return &natsgo.Msg{Data: []byte(r.reply)}, nil
+}
+
+// A replicated stream answers a conditional write that meets another in flight on the same key with
+// 10164, "wrong last sequence" (nats-server's checkMsgHeadersPreClusteredProposal), where one copy
+// answers 10071: both mean the record changed under the write, so both are ErrConflict, and Names
+// reads the record again. The control is another refusal, which stays an error of its own.
+func TestTheKVStoreReadsEitherWrongLastSequenceAnswerAsAConflict(t *testing.T) {
+	for code, description := range map[int]string{10071: "wrong last sequence: 5", 10164: "wrong last sequence"} {
+		store := NewKVStore(SessionBucket, answeringRequester{fmt.Sprintf(`{"error":{"code":400,"err_code":%d,"description":%q}}`, code, description)})
+		if _, err := store.Write(context.Background(), "ses-1", Record{Start: 1}, 4); !errors.Is(err, ErrConflict) {
+			t.Errorf("a write answered %d = %v, want ErrConflict", code, err)
+		}
+	}
+	// Control: a refusal that is no wrong last sequence is no conflict.
+	store := NewKVStore(SessionBucket, answeringRequester{`{"error":{"code":503,"err_code":10008,"description":"jetstream temporarily unavailable"}}`})
+	if _, err := store.Write(context.Background(), "ses-1", Record{Start: 1}, 4); err == nil || errors.Is(err, ErrConflict) {
+		t.Fatalf("a write answered 10008 = %v, want an error that is no conflict", err)
+	}
+}
+
+// Two writers racing on one key of a three-copy bucket, at the revision both read, end each round
+// with one write and one ErrConflict, whichever of the server's two answers the loser gets.
+func TestTwoWritersRacingOnAThreeCopyBucketEndWithOneWriteAndOneConflict(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	ctx := context.Background()
+	admin := testnats.Connect(t, cluster.URL())
+	t.Cleanup(admin.Close)
+	if _, err := CreateSessionBucket(ctx, admin, 3, StoreState{Cutover: CutoverDone}); err != nil {
+		t.Fatal(err)
+	}
+	writer := func() *KVStore {
+		conn := testnats.Connect(t, cluster.URL())
+		t.Cleanup(conn.Close)
+		return NewKVStore(SessionBucket, ConnRequester{conn})
+	}
+	first, second := writer(), writer()
+	if _, err := first.Write(ctx, "ses-race", Record{Start: 1}, 0); err != nil {
+		t.Fatal(err)
+	}
+	for round := range 50 {
+		_, revision, err := first.Read(ctx, "ses-race")
+		if err != nil {
+			t.Fatalf("round %d: read: %v", round, err)
+		}
+		start := make(chan struct{})
+		results := make(chan error, 2)
+		for _, store := range []*KVStore{first, second} {
+			go func() {
+				<-start
+				_, err := store.Write(ctx, "ses-race", Record{Start: uint64(round + 2)}, revision)
+				results <- err
+			}()
+		}
+		close(start)
+		var wrote, conflicts int
+		for range 2 {
+			switch err := <-results; {
+			case err == nil:
+				wrote++
+			case errors.Is(err, ErrConflict):
+				conflicts++
+			default:
+				t.Fatalf("round %d: a racing write answered %v, want a write or ErrConflict", round, err)
+			}
+		}
+		if wrote != 1 || conflicts != 1 {
+			t.Fatalf("round %d: %d writes and %d conflicts, want one of each", round, wrote, conflicts)
+		}
+	}
+}
+
+// On a real nats-server, a consumer created at deliver policy new reports a delivered stream
+// sequence one before the first message it delivers, so the start NativeFirstCreate's publish saves
+// is the first message published after the create. The boundary is set to 1 and the stream holds
+// earlier messages, none of which the consumer delivers.
+func TestTheNativeOptionSavesTheStartTheServerReports(t *testing.T) {
+	live := newLiveStore(t, testnats.URL(t), &StoreState{Cutover: CutoverDone, Boundary: 1})
+	ctx := context.Background()
+	for i := range 3 {
+		if _, err := live.js.Publish(ctx, "names.native", fmt.Appendf(nil, "before %d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	names := live.names("p1")
+	names.cfg.NativeFirstCreate = true
+	sel, _, err := names.Ensure(ctx, "legion-go-p-github", CreateRequest{Create: live.family.create("legion-go-p-github"), First: nativeNew})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack, err := live.js.Publish(ctx, "names.native", []byte("after"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sel.Record.Start != ack.Sequence {
+		t.Fatalf("the saved start is %d, want %d, the first message published after the create", sel.Record.Start, ack.Sequence)
+	}
+	consumer, err := live.js.Consumer(ctx, testStream, sel.Record.Current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy := consumer.CachedInfo().Config.DeliverPolicy; policy != jetstream.DeliverNewPolicy {
+		t.Fatalf("the consumer was created at %v, want deliver policy new", policy)
+	}
+	msg, err := consumer.Next(jetstream.FetchMaxWait(10 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta, err := msg.Metadata(); err != nil || meta.Sequence.Stream != sel.Record.Start {
+		t.Fatalf("the consumer delivered %+v (%v) first, want stream sequence %d", meta, err, sel.Record.Start)
 	}
 }

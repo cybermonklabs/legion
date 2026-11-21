@@ -85,6 +85,14 @@ type Config struct {
 	// whose keys are made by a rule of its own (DurableKey) passes that rule's check
 	// (CheckDurableKey).
 	CheckKey func(logical string) error
+	// NativeFirstCreate keeps a family's native first create (CreateRequest.First answering a
+	// Start with Native set) for a logical name with no record, whatever the cutover boundary: the
+	// daemon's durables keep today's deliver policy new. A saved start and replay_from still win.
+	// Such a first create may answer Seq 0, so its rule reads no stream; the publish then saves the
+	// start the created consumer reports (its delivered stream sequence plus one), and a candidate
+	// that never landed is created natively again. Off, the default and the session family's, a
+	// native first create starts by start sequence at the boundary when one is set.
+	NativeFirstCreate bool
 	// Reserved, when set, runs after each write that reserves a candidate (a create, a replace,
 	// and Step 0's or a retry's fresh candidate), before any server call or create of that
 	// operation, with the operation as written. An error ends the call with the operation open
@@ -336,15 +344,15 @@ func (n *Names) write(ctx context.Context, sel Selection, record Record) (Select
 }
 
 // settleOp is Step 0: it settles sel's open operation. waited reports, for a candidate the server
-// does not hold, whether this call has waited the settle age for it itself.
+// does not hold, whether this call has waited the settle age for it itself. A replace reserved with
+// no start has destroyed nothing, so its candidate is retired, a fresh one reserved, and the start
+// read from the predecessor then.
 func (n *Names) settleOp(ctx context.Context, sel Selection, create CreateFunc, waited func(string) bool) (Selection, error) {
 	op := sel.Record.Op
 	if op.Kind == OpDelete {
 		return n.settleDelete(ctx, sel)
 	}
 	if op.Kind == OpReplace && sel.Record.Start == 0 {
-		// A replace with no start yet has destroyed nothing: its candidate is retired, a fresh
-		// one reserved, and the start read from the predecessor now.
 		if create == nil {
 			return n.abandon(ctx, sel)
 		}
@@ -370,7 +378,7 @@ func (n *Names) settleOp(ctx context.Context, sel Selection, create CreateFunc, 
 	if create == nil {
 		return n.abandon(ctx, sel)
 	}
-	next, err := n.rereserve(ctx, sel, "")
+	next, err := n.rereserve(ctx, sel, retryNative(sel))
 	if err != nil {
 		return next, err
 	}
@@ -513,8 +521,9 @@ func (n *Names) safeStart(ctx context.Context, sel Selection) (uint64, error) {
 
 // Ensure returns logical's current consumer, and creates one when the record selects none: at the
 // saved start, or the caller's lower one; for a key with no record at replay_from while the store
-// is in replay mode, else at the family's first-create rule, no later than the cutover boundary.
-// created says this call created the current.
+// is in replay mode, else at the family's first-create rule, no later than the cutover boundary
+// unless the rule is native and Config.NativeFirstCreate keeps it. created says this call created
+// the current.
 func (n *Names) Ensure(ctx context.Context, logical string, req CreateRequest) (Selection, bool, error) {
 	for conflicts := 0; ; {
 		sel, err := n.Select(ctx, logical, req.Create)
@@ -550,6 +559,9 @@ func (n *Names) startFor(ctx context.Context, sel Selection, req CreateRequest) 
 	start, err := req.First(ctx)
 	if err != nil {
 		return Start{}, err
+	}
+	if n.cfg.NativeFirstCreate && start.Native != "" {
+		return start, nil
 	}
 	if b := sel.State.Boundary; b > 0 {
 		switch {
@@ -629,7 +641,6 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 			case attempt == 0:
 				n.deleteRetiredHeld(ctx, sel)
 			case op.Kind == OpReplace && op.Old != "" && !predecessorDeleted:
-				// The start is saved, so the predecessor goes first and frees its slot.
 				if err := n.cfg.Server.Delete(ctx, op.Old); err != nil {
 					n.observe(operation, OutcomeError)
 					return sel, stepError(sel.Logical, operation, op.Old, err)
@@ -659,7 +670,7 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 			return sel, stepError(sel.Logical, operation, op.Candidate, err)
 		}
 		retried = true
-		next, werr := n.rereserve(ctx, sel, "")
+		next, werr := n.rereserve(ctx, sel, retryNative(sel))
 		if werr != nil {
 			n.observeErr(operation, werr)
 			return next, werr
@@ -683,6 +694,17 @@ func (n *Names) rereserve(ctx context.Context, sel Selection, native Native) (Se
 	return next, n.reserved(ctx, next)
 }
 
+// retryNative is the native policy a fresh candidate retried in place of sel's open operation's
+// keeps: none, so the retry starts by start sequence at the saved start, unless no start is saved
+// (a native first create of Config.NativeFirstCreate whose candidate never reported one), where it
+// keeps the operation's native policy, as today's first create does.
+func retryNative(sel Selection) Native {
+	if sel.Record.Start == 0 {
+		return sel.Record.Op.Native
+	}
+	return ""
+}
+
 // answered reports whether err is the server's answer to a create rather than a create whose
 // outcome is unknown.
 func answered(err error) bool {
@@ -691,13 +713,21 @@ func answered(err error) bool {
 }
 
 // publish makes sel's candidate, created as info, the current, and retires and deletes a
-// replace's predecessor. Delivery from the candidate begins only after this returns.
+// replace's predecessor. Delivery from the candidate begins only after this returns. A predecessor
+// whose delete the server confirmed is dropped from the retired names again, so a session replaced
+// many times keeps a record of one size; one whose delete failed stays retired, for the cleanup. A
+// refused drop leaves it retired too, and the cleanup finds it gone.
 func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.ConsumerInfo, operation Operation, outcome Outcome) (Selection, error) {
 	op := sel.Record.Op
 	record := sel.Record.clone()
 	record.Current = op.Candidate
 	if info != nil && info.Config.DeliverPolicy == jetstream.DeliverByStartSequencePolicy && info.Config.OptStartSeq > 0 {
 		record.Start = info.Config.OptStartSeq
+	} else if info != nil && op.Native != "" && record.Start == 0 {
+		// A native first create with no start saved: the consumer's own, the sequence after the
+		// last one it reports delivered, which for a consumer that delivered nothing yet is the
+		// first it will deliver.
+		record.Start = info.Delivered.Stream + 1
 	}
 	record.LastFloor = nil
 	old := ""
@@ -713,11 +743,21 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 	}
 	next.Info, next.Created, next.Missing = info, true, false
 	n.observe(operation, outcome)
-	if old != "" {
-		if err := n.cfg.Server.Delete(ctx, old); err != nil {
-			// The predecessor is retired, so the cleanup deletes it.
-			n.observe(OperationCleanup, OutcomeError)
-		}
+	if old == "" {
+		return next, nil
+	}
+	if err := n.cfg.Server.Delete(ctx, old); err != nil {
+		n.observe(OperationCleanup, OutcomeError)
+		return next, nil
+	}
+	kept := next.Record.clone()
+	kept.Retired = slices.DeleteFunc(kept.Retired, func(name string) bool { return name == old })
+	if len(kept.Retired) == 0 {
+		kept.Retired = nil
+	}
+	if dropped, err := n.write(ctx, next, kept); err == nil {
+		dropped.Info, dropped.Created = next.Info, next.Created
+		next = dropped
 	}
 	return next, nil
 }
@@ -793,13 +833,13 @@ func (n *Names) RecordLastFloor(ctx context.Context, logical, name string, floor
 		if err != nil {
 			return err
 		}
+		if sel.Record.Current != name || sel.Record.Op != nil {
+			return nil
+		}
+		if lf := sel.Record.LastFloor; lf != nil && *lf == (Floor{Floor: floor, Name: name, StreamID: streamID}) {
+			return nil
+		}
 		record := sel.Record.clone()
-		if record.Current != name || record.Op != nil {
-			return nil
-		}
-		if lf := record.LastFloor; lf != nil && *lf == (Floor{Floor: floor, Name: name, StreamID: streamID}) {
-			return nil
-		}
 		record.LastFloor = &Floor{Floor: floor, Name: name, StreamID: streamID}
 		_, err = n.write(ctx, sel, record)
 		if errors.Is(err, ErrConflict) {
@@ -814,14 +854,15 @@ func (n *Names) RecordLastFloor(ctx context.Context, logical, name string, floor
 
 // Cleanup deletes logical's retired names that the server holds, and drops from the record each
 // retired name the server no longer holds. It answers how many it deleted. Only retired names are
-// deleted, never the current, never by name pattern.
+// deleted, never the current, never by name pattern. A refused write of the record leaves the
+// names for the next cleanup, which finds them gone.
 func (n *Names) Cleanup(ctx context.Context, logical string) (int, error) {
 	sel, err := n.selectRecord(ctx, logical, nil, false)
 	if err != nil || len(sel.Record.Retired) == 0 {
 		return 0, err
 	}
 	deleted := 0
-	var gone []string
+	gone := map[string]bool{}
 	for _, name := range sel.Record.Retired {
 		if name == sel.Record.Current {
 			continue
@@ -838,17 +879,16 @@ func (n *Names) Cleanup(ctx context.Context, logical string) (int, error) {
 		case !errors.Is(err, ErrNotFound):
 			continue
 		}
-		gone = append(gone, name)
+		gone[name] = true
 	}
 	if len(gone) == 0 {
 		return deleted, nil
 	}
 	record := sel.Record.clone()
-	record.Retired = slices.DeleteFunc(record.Retired, func(name string) bool { return slices.Contains(gone, name) })
+	record.Retired = slices.DeleteFunc(record.Retired, func(name string) bool { return gone[name] })
 	if len(record.Retired) == 0 {
 		record.Retired = nil
 	}
-	// A refused write leaves the names for the next cleanup, which finds them gone.
 	if _, err := n.write(ctx, sel, record); err != nil && !errors.Is(err, ErrConflict) {
 		return deleted, err
 	}

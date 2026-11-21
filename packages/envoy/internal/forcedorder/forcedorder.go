@@ -67,7 +67,10 @@ func Start(t *testing.T, topo Topology) *Servers {
 }
 
 // Hosts are the servers that store consumer on stream: the lone server, or the members its cluster
-// information names, its leader and its replicas, read on conn.
+// information names, its leader and its replicas, read on conn. A consumer created a moment ago can
+// answer its info before its replica group has formed, with no cluster information or no leader,
+// so Hosts reads it again until the group names a leader and every replica the topology stores,
+// for up to 30 s.
 func (s *Servers) Hosts(t *testing.T, conn *natsgo.Conn, stream, consumer string) []*testnats.Server {
 	t.Helper()
 	if s.Cluster == nil {
@@ -77,9 +80,28 @@ func (s *Servers) Hosts(t *testing.T, conn *natsgo.Conn, stream, consumer string
 	if err != nil {
 		t.Fatal(err)
 	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		hosts, why := s.hostsOf(js, stream, consumer)
+		if why == "" {
+			return hosts
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s's replica group did not form within 30 s: %s", consumer, why)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// hostsOf is one read of Hosts: the members consumer's cluster information names, or why it names
+// no leader, a member the cluster does not have, or fewer members than the topology stores.
+func (s *Servers) hostsOf(js natsgo.JetStreamContext, stream, consumer string) ([]*testnats.Server, string) {
 	info, err := js.ConsumerInfo(stream, consumer)
-	if err != nil || info.Cluster == nil {
-		t.Fatalf("read %s's cluster information: %+v, %v", consumer, info, err)
+	switch {
+	case err != nil:
+		return nil, err.Error()
+	case info.Cluster == nil || info.Cluster.Leader == "":
+		return nil, "its info names no leader yet"
 	}
 	names := []string{info.Cluster.Leader}
 	for _, peer := range info.Cluster.Replicas {
@@ -89,14 +111,14 @@ func (s *Servers) Hosts(t *testing.T, conn *natsgo.Conn, stream, consumer string
 	for _, name := range names {
 		i := s.Cluster.Member(name)
 		if i < 0 {
-			t.Fatalf("%s's host %q is no member of the cluster", consumer, name)
+			return nil, fmt.Sprintf("its host %q is no member of the cluster", name)
 		}
 		hosts = append(hosts, s.Servers[i])
 	}
 	if len(hosts) != s.Topology.Replicas {
-		t.Fatalf("%s is stored on %d members, want %d", consumer, len(hosts), s.Topology.Replicas)
+		return nil, fmt.Sprintf("it names %d members, want %d", len(hosts), s.Topology.Replicas)
 	}
-	return hosts
+	return hosts, ""
 }
 
 // StoredState is consumer's state on stream as srv's o.dat holds it, or nil while there is none or
@@ -237,15 +259,44 @@ func (s *Servers) Restart(t *testing.T, stream string) *natsgo.Conn {
 	t.Cleanup(conn.Close)
 	deadline := time.Now().Add(60 * time.Second)
 	for {
-		js, err := conn.JetStream()
-		if err == nil {
-			if _, err = js.StreamInfo(stream); err == nil {
-				return conn
-			}
+		ready, why := s.consumersReady(conn, stream)
+		if ready {
+			return conn
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s did not answer within 60 s of the restart: %v", stream, err)
+			t.Fatalf("%s's consumers did not all answer within 60 s of the restart: %s", stream, why)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// consumersReady reports whether stream answers and every one of its consumers answers its info,
+// with a leader on a cluster: until then a row's read of a consumer after the restart would time
+// out on a replica group still electing, and read as nothing delivered. The consumers it reads must
+// number what the stream's own state counts, so a listing cut short is not read as every consumer.
+// why says what is not ready.
+func (s *Servers) consumersReady(conn *natsgo.Conn, stream string) (bool, string) {
+	js, err := conn.JetStream(natsgo.MaxWait(5 * time.Second))
+	if err != nil {
+		return false, err.Error()
+	}
+	info, err := js.StreamInfo(stream)
+	if err != nil {
+		return false, "the stream: " + err.Error()
+	}
+	read := 0
+	for name := range js.ConsumerNames(stream) {
+		consumer, err := js.ConsumerInfo(stream, name)
+		if err != nil {
+			return false, fmt.Sprintf("consumer %s: %v", name, err)
+		}
+		if s.Cluster != nil && (consumer.Cluster == nil || consumer.Cluster.Leader == "") {
+			return false, fmt.Sprintf("consumer %s has no leader yet", name)
+		}
+		read++
+	}
+	if read != info.State.Consumers {
+		return false, fmt.Sprintf("read %d consumers of the %d the stream counts", read, info.State.Consumers)
+	}
+	return true, ""
 }

@@ -42,11 +42,14 @@ jobs:
     # flow (internal/oidc) adds one test binary and one package, whose run under -race took 11 s
     # on a dev box, all of it in-process against oidctest's issuer. Each forced-order step then
     # compiles a hooked nats-server and the packages above it under the detector again, up to 5
-    # minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each, so 66; the
-    # listener's and consumernames' rows add their own race test binaries to each step's compile,
-    # 10 minutes more apiece, so 86. The script's own test compiles one more hooked build, of a
-    # fixture with one test that skips, up to 5 minutes, and runs it at once, so 91 in all.
-    timeout-minutes: 100
+    # minutes. The first step adds the bus's, the listener's and consumernames' race test binaries
+    # to that compile, 10 minutes more, and runs under its -timeout of 25 minutes, since every row
+    # of internal/bus runs on one copy, an R1 cluster and R3 (45 subtests, 440 s on a loaded dev
+    # box), so 40; the second, over the hooks' own tests and consumernames alone, under
+    # forced-order.sh's 10 minutes, 15 as before, so 91. The script's own test compiles one more
+    # hooked build, of a fixture with one test that skips, up to 5 minutes, and runs it at once, so
+    # 96 in all.
+    timeout-minutes: 105
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -79,21 +82,24 @@ jobs:
       # test of the packages named, built with -tags odatrace and -race against a nats-server whose
       # own code carries the hold points internal/testnats/hooks.go drives. The script's own test
       # runs first: scripts/forced-order.test.sh holds it to refusing a package whose every
-      # forced-order test skips, a -drop name that is no hook point and an empty -server. The
-      # first forced-order step names no version, so it hooks the nats-server the workspace
-      # links, which the hub runs; when go.mod moves to a version internal/testnats/testdata/hooked
-      # has no hooks for, the script refuses it and the step fails until the hooks are ported. The
-      # second step hooks v2.10.29. The script also fails a package that declares no such test. No
-      # step sets an environment variable: check-ci-filters.sh reduces no go command of a job one
-      # of whose steps sets a GO* name.
+      # forced-order test skips, a -drop name that is no hook point, an empty -server and an empty
+      # -timeout. The first forced-order step names no version, so it hooks the nats-server the
+      # workspace links, which the hub runs; when go.mod moves to a version
+      # internal/testnats/testdata/hooked has no hooks for, the script refuses it and the step
+      # fails until the hooks are ported. It gives -timeout 25m, since every session row runs on one
+      # copy, an R1 cluster and R3. The second step hooks v2.10.29, over the hooks' own tests and
+      # the protocol's rows alone: the session consumers and the listener refuse 2.10.29, so their
+      # rows would all skip, which the script refuses. The script also fails a package that
+      # declares no such test. No step sets an environment variable: check-ci-filters.sh reduces
+      # no go command of a job one of whose steps sets a GO* name.
       - name: Test forced-order.sh's refusals
         run: scripts/forced-order.test.sh
         working-directory: packages/envoy
       - name: Forced-order tests on the hooked nats-server the module links
-        run: scripts/forced-order.sh ./internal/testnats/hooktest/ ./internal/bus/ ./consumernames/ ./cmd/listener/
+        run: scripts/forced-order.sh -timeout 25m ./internal/testnats/hooktest/ ./internal/bus/ ./consumernames/ ./cmd/listener/
         working-directory: packages/envoy
       - name: Forced-order tests on the hooked nats-server v2.10.29
-        run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/ ./internal/bus/ ./consumernames/ ./cmd/listener/
+        run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/ ./consumernames/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

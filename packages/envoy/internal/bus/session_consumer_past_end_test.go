@@ -273,7 +273,7 @@ func TestASessionConsumerIsNeverCreatedPastTheStreamsEnd(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Ensure: %v", err)
 			}
-			if want := (SessionConsumerStart{Created: true, StartSeq: first, StreamID: id, AckFloor: first - 1}); start != want {
+			if want := (SessionConsumerStart{Name: fixedName(t, tc.session), Created: true, StartSeq: first, StreamID: id, AckFloor: first - 1}); start != want {
 				t.Errorf("Ensure asked for a start of %d, past the stream's last sequence %d = %+v; want %+v, the consumer created at the stream's first sequence", asked, lastSeq, start, want)
 			}
 			requireConsumerStart(t, consumers, tc.session, first, "the stream's first sequence")
@@ -419,7 +419,7 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequen
 	// the floor the server reports, lastSeq + 2^20 - 1.
 	restarted := func(t *testing.T, session string, lastSeq uint64, start SessionConsumerStart) {
 		t.Helper()
-		if want := (SessionConsumerStart{Created: true, StartSeq: first, StreamID: id, AckFloor: first - 1}); start != want {
+		if want := (SessionConsumerStart{Name: fixedName(t, session), Created: true, StartSeq: first, StreamID: id, AckFloor: first - 1}); start != want {
 			t.Errorf("RestartAtFloor of a consumer created at %d, past the stream's last sequence %d = %+v; want %+v, the consumer created again at the stream's first sequence", lastSeq+pastTheEnd, lastSeq+2, start, want)
 		}
 		requireConsumerStart(t, consumers, session, first, "the stream's first sequence, where the restart created it again")

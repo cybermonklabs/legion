@@ -250,7 +250,10 @@ func (s *KVStore) put(ctx context.Context, key string, data []byte, revision uin
 		return 0, fmt.Errorf("consumer names: read the acknowledgement of %s's write to %s: %w", key, s.bucket, err)
 	}
 	switch {
-	case ack.Error != nil && ack.Error.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence:
+	// A replicated stream answers a write that meets another in flight on the same key with 10164,
+	// one copy a stale write with 10071: either is the record changed under the write.
+	case ack.Error != nil && (ack.Error.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence ||
+		ack.Error.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequenceConstant):
 		return 0, fmt.Errorf("%w: %s in %s is past revision %d (%w)", ErrConflict, key, s.bucket, revision, ack.Error)
 	case ack.Error != nil:
 		return 0, fmt.Errorf("consumer names: write %s to %s: %w", key, s.bucket, ack.Error)

@@ -666,8 +666,6 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		}
 		response["num_pending"] = consumerInfo.NumPending
 		response["num_ack_pending"] = consumerInfo.NumAckPending
-		// The process's consumer naming mode (ENVOY_CONSUMER_NAMES), so a reader sees which names
-		// this listener runs without reading its environment.
 		response["consumer_names"] = string(d.client.ConsumerNames())
 		// Last, so that no fault above is reported as this one: every check before it that can
 		// answer 503 has passed. The answer keeps the fields above it, so a reader of the counters
@@ -1031,6 +1029,8 @@ func main() {
 	// meets them.
 	warnIgnoredEnv(logger, "ENVOY_HOST_BRIDGE", "the listener no longer pushes a message to a session's serve port, so it opens no connection this would address")
 	warnIgnoredEnv(logger, "ENVOY_SUBSCRIBE_ALL_TOPICS", "the listener no longer holds a live topics subscription, so there is no such subscription to turn on")
+	// Before any NATS connect, so a listener the writer hold refuses still names its mode.
+	logger.Info("session consumer naming mode", slog.String("consumer_names", string(cfg.ConsumerNames)))
 	apiToken := os.Getenv("ENVOY_API_TOKEN")
 	oidcIssuer, oidcAudience, err := resolveListenerOIDCConfig(os.Getenv)
 	if err != nil {
@@ -1595,11 +1595,6 @@ func main() {
 		client.Conn.Close()
 		os.Exit(1)
 	}
-	// The mode is the process's, read once from ENVOY_CONSUMER_NAMES (config.Load), and every
-	// start names it. A fixed-mode start over a selection bucket the cutover converted refuses, and
-	// so does a fixed-mode process whose connection, made again, finds one: today's names must not
-	// run over a store whose sessions hold fresh ones (awaitFixedNaming, WatchConversion).
-	logger.Info("session consumer naming mode", slog.String("consumer_names", string(client.ConsumerNames())))
 	if !delivery.consumers.Fresh() {
 		if err := awaitFixedNaming(context.Background(), delivery.consumers, logger, fixedNamingRetry); err != nil {
 			logger.Error("session consumer naming refuses the start: "+err.Error(), slog.String("error", err.Error()))
@@ -1613,8 +1608,6 @@ func main() {
 		})
 	}
 	if delivery.consumers.Fresh() {
-		// The fresh mode's selection steps, counted by step and outcome (consumernames.Operation,
-		// consumernames.Outcome); the fixed mode takes none and registers no such counter.
 		names := met.NewCounter("envoy_session_consumer_names_total", "Session consumer selection steps in the fresh naming mode, by op (select, create, replace, delete, recover, missing_current, last_floor, cleanup) and outcome (ok, adopted, retired, refused, conflict, limit, error)")
 		delivery.consumers.ObserveNames(func(op consumernames.Operation, outcome consumernames.Outcome) {
 			names.Inc([2]string{"op", string(op)}, [2]string{"outcome", string(outcome)})

@@ -208,6 +208,28 @@ func TestListenerOnPortZeroLogsThePortTheKernelChose(t *testing.T) {
 	(&listenerProcess{Process: process, port: port}).waitHealthy(t)
 }
 
+// The listener logs its consumer naming mode before its first NATS connect, so a reader of its log
+// learns the mode of a listener whose every connect is refused, as a writer hold refuses it: here
+// nothing listens at NATS_URLS. Each mode is logged as it was set.
+func TestTheListenerLogsItsNamingModeBeforeItsFirstNATSConnect(t *testing.T) {
+	binary := cmdtest.Build(t, "envoy-listener")
+	for _, mode := range []string{"fixed", "fresh"} {
+		t.Run(mode, func(t *testing.T) {
+			cmd := exec.Command(binary)
+			cmd.Env = []string{
+				"PORT=0",
+				"ENVOY_LISTEN_HOST=127.0.0.1",
+				"ENVOY_MACHINE_ID=naming-mode-" + mode,
+				"NATS_URLS=nats://127.0.0.1:1",
+				"ENVOY_API_TOKEN=" + listenerTestToken,
+				"ENVOY_CONSUMER_NAMES=" + mode,
+			}
+			process := cmdtest.Start(t, "the listener", cmd)
+			process.WaitForOutput(t, `"msg":"session consumer naming mode"`, `"consumer_names":"`+mode+`"`)
+		})
+	}
+}
+
 // An inherited socket on every interface is judged by the API auth fence as ENVOY_LISTEN_HOST=0.0.0.0
 // is, though ENVOY_LISTEN_HOST is unset and would mean loopback: with no bearer, no OIDC pair and
 // no ENVOY_API_ALLOW_UNAUTHENTICATED, the listener refuses to start and serves nothing.

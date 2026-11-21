@@ -1177,9 +1177,14 @@ FORCED_ORDER_HOOKS = f"{ENVOY}/internal/testnats/testdata/hooked/**"
 FORCED_ORDER_GO_TEST = ('"${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" '
                         "-run '^TestForcedOrder' \"$@\"")
 # The envoy steps: one on the nats-server the workspace links (no -server, so a go.mod that moves
-# to a version with no hooks fails the step), and one on 2.10.29.
+# to a version with no hooks fails the step), and one on 2.10.29, each with the packages it runs:
+# the hooks' own tests, the protocol's rows, and on the linked version alone the session consumers'
+# and the listener durable's, which refuse 2.10.29 and would all skip there.
 ENVOY_FORCED_ORDER_SERVERS = ("", "2.10.29")
-ENVOY_FORCED_ORDER_PKGS = ["./internal/testnats/hooktest/"]
+ENVOY_FORCED_ORDER_PKGS = {
+    "": ["./internal/testnats/hooktest/", "./internal/bus/", "./consumernames/", "./cmd/listener/"],
+    "2.10.29": ["./internal/testnats/hooktest/", "./consumernames/"],
+}
 DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
 DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/", "./internal/intake/"]
 # The script's own test, envoy-go-race's step before the two above: packages/envoy/scripts/
@@ -3523,7 +3528,7 @@ GATES = [
     gate("envoy_go_race", "envoy-go-race",
          runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")]
          + [forced_order_run("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP, ENVOY, ENVOY_FORCED_ORDER_TEST_PKGS)]
-         + [forced_order_run("envoy-go-race", envoy_forced_order_step(server), ENVOY, ENVOY_FORCED_ORDER_PKGS)
+         + [forced_order_run("envoy-go-race", envoy_forced_order_step(server), ENVOY, ENVOY_FORCED_ORDER_PKGS[server])
             for server in ENVOY_FORCED_ORDER_SERVERS],
          reads=ceiling_reads("envoy-go-race")
          + reads((FORCED_ORDER_TEST, f"{at('envoy-go-race', ENVOY_FORCED_ORDER_TEST_STEP)} runs it"))

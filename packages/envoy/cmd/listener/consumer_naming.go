@@ -1,6 +1,3 @@
-// The fixed consumer naming mode's start (ENVOY_CONSUMER_NAMES unset or fixed): the read of the
-// selection bucket's marker that decides whether today's names may run at all.
-
 package main
 
 import (

@@ -832,6 +832,21 @@ func (s *SessionConsumers) ListSessionConsumers(ctx context.Context) (map[string
 		return s.freshList(ctx)
 	}
 	listed := map[string]*jetstream.ConsumerInfo{}
+	err := s.eachListedConsumer(ctx, func(info *jetstream.ConsumerInfo) {
+		if sessionID, ok := strings.CutPrefix(info.Name, sessionConsumerPrefix); ok {
+			listed[sessionID] = info
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return listed, nil
+}
+
+// eachListedConsumer hands each consumer of the stream to each, in the order the paged consumer
+// list ($JS.API.CONSUMER.LIST) answers them, until a page is empty or the list's total is reached.
+// A list the NATS user may not make is ErrConsumerNotGranted (consumerRequest).
+func (s *SessionConsumers) eachListedConsumer(ctx context.Context, each func(*jetstream.ConsumerInfo)) error {
 	for offset := 0; ; {
 		var page struct {
 			Total     int                       `json:"total"`
@@ -841,19 +856,17 @@ func (s *SessionConsumers) ListSessionConsumers(ctx context.Context) (map[string
 		if err := s.consumerRequest(ctx, "$JS.API.CONSUMER.LIST."+Stream, struct {
 			Offset int `json:"offset"`
 		}{offset}, &page); err != nil {
-			return nil, err
+			return err
 		}
 		if page.Error != nil {
-			return nil, fmt.Errorf("bus: list the consumers of %s: %w", Stream, page.Error)
+			return fmt.Errorf("bus: list the consumers of %s: %w", Stream, page.Error)
 		}
 		for _, info := range page.Consumers {
-			if sessionID, ok := strings.CutPrefix(info.Name, sessionConsumerPrefix); ok {
-				listed[sessionID] = info
-			}
+			each(info)
 		}
 		offset += len(page.Consumers)
 		if len(page.Consumers) == 0 || offset >= page.Total {
-			return listed, nil
+			return nil
 		}
 	}
 }
