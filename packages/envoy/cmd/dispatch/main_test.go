@@ -2172,19 +2172,32 @@ func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
 }
 
 // requireNoKeywordFillWrite fails the test when the keyword fill took its hold or wrote: a
-// duty_holds row of the hold of the fill, a row of the keyword table, or a cursor above 0. when
-// says at which moment the test reads them.
+// duty_holds row of the hold of the fill, a row of the keyword table, or a cursor row, whatever
+// event the cursor row names (a row at event 0 is a write as much as one at event 50). when says
+// at which moment the test reads them.
 func requireNoKeywordFillWrite(t *testing.T, database *store.Store, when string) {
 	t.Helper()
-	var holds, rows int
+	if writes := readKeywordFillWrites(t, database); writes != (keywordFillWrites{}) {
+		t.Fatalf("%s, the keyword fill has %d holds, %d rows and %d cursor rows; want none of each", when, writes.holds, writes.rows, writes.cursors)
+	}
+}
+
+// keywordFillWrites counts what the keyword fill takes and writes: the duty_holds rows of its hold
+// (search-text-versions-fill), the rows of search_text_versions, and the rows of
+// search_text_versions_fill, the table of its cursor.
+type keywordFillWrites struct{ holds, rows, cursors int }
+
+// readKeywordFillWrites reads keywordFillWrites in one statement.
+func readKeywordFillWrites(t *testing.T, database *store.Store) keywordFillWrites {
+	t.Helper()
+	var writes keywordFillWrites
 	if err := database.Pool.QueryRow(context.Background(), `
 		select (select count(*) from duty_holds where name = 'search-text-versions-fill'),
-		       (select count(*) from search_text_versions)`).Scan(&holds, &rows); err != nil {
-		t.Fatalf("read the hold and the rows of the keyword fill: %v", err)
+		       (select count(*) from search_text_versions),
+		       (select count(*) from search_text_versions_fill)`).Scan(&writes.holds, &writes.rows, &writes.cursors); err != nil {
+		t.Fatalf("read the hold, the rows and the cursor row of the keyword fill: %v", err)
 	}
-	if cursor := textversionstest.Cursor(t, database); holds != 0 || rows != 0 || cursor != 0 {
-		t.Fatalf("%s, the keyword fill has %d holds, %d rows and the cursor %d; want no hold, no row and the cursor 0", when, holds, rows, cursor)
-	}
+	return writes
 }
 
 // writeKeywordFillComments commits count comment.created events of textversionstest.Issue, each a
@@ -2220,9 +2233,10 @@ const keywordFillDeferredWatch = 15 * time.Second
 // DISPATCH_SEARCH_FILL decides whether a serving process starts the keyword fill. Booted with it
 // off, a process that the registry of live server processes admitted, and so serves, logs once
 // that the fill is deferred, and for keywordFillDeferredWatch takes no hold of the fill's and
-// writes no row and no cursor, though 50 events wait for their rows and 50 more are written while
-// it serves. Booted with it on, on a database of its own holding the same events, a process takes
-// the hold, writes every event's row, and logs no deferral.
+// writes no row and no cursor row, though 50 events wait for their rows and 50 more are written
+// while it serves. Booted with it on, on a database of its own holding the same events, a process
+// takes the hold, writes every event's row and the cursor row, and logs no deferral; the same read
+// that finds none of them in the off row counts each of them there.
 func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 	t.Run("off", func(t *testing.T) {
 		database := storetest.Open(t)
@@ -2256,6 +2270,9 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 		process.waitForLog(t, 30*time.Second, keywordFillTookLine)
 		after := writeKeywordFillComments(t, database, 50)
 		textversionstest.AwaitRows(t, database, append(before, after...), time.Minute, nil)
+		if writes := readKeywordFillWrites(t, database); writes.holds == 0 || writes.rows == 0 || writes.cursors == 0 {
+			t.Fatalf("the fill wrote every event's row, and the read counts %d holds, %d rows and %d cursor rows; want each above 0", writes.holds, writes.rows, writes.cursors)
+		}
 		if process.logged(keywordFillDeferredLine) {
 			t.Fatalf("the process logged the deferral with DISPATCH_SEARCH_FILL=on:\n%s", process.Output.String())
 		}
