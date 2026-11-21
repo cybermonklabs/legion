@@ -303,6 +303,38 @@ func brokerCaller(r *http.Request) (ciphertoken.Caller, bool) {
 	return caller, ok
 }
 
+// daemonSessionPrefix opens the session a Legion daemon's own broker token names,
+// legion-daemon:<PROJECT>: the session the daemon's exchange row fixes, which the daemon writes
+// Dispatch and calls this listener as (packages/daemon's dispatch.DaemonSession). No shared copy
+// of it reaches both modules, so the two spellings change together.
+const daemonSessionPrefix = "legion-daemon:"
+
+// daemonCaller is the project of the Legion daemon whose own broker token r presented, and
+// whether r presented one at all: a token whose session is legion-daemon:<P>, whose scope is the
+// named one only an exchange account row mints, and whose one project is P. The broker issues
+// such a token only under the daemon's own exchange row, which fixes both the session and the
+// project, and its name hold keeps that session from every other principal; a session that named
+// itself legion-daemon:<P>, or a person's token whose trade listed P, is no daemon's. A read-only
+// token names no project, so it is none either.
+//
+// What it lets a daemon do beyond its own session is what the shared bearer it replaces did,
+// and one thing more: make the clean stop of another session's registration
+// (deleteSessionHandler), send its notices uncounted by the sender limit (senderLimit.take),
+// since they have no sender, and withhold a role of its own project from a session and lift that
+// withhold (roleWithholdHandler), which no other caller may. Each route that reads it says which
+// of these it is.
+func daemonCaller(r *http.Request) (project string, ok bool) {
+	caller, proved := brokerCaller(r)
+	if !proved || caller.ProjectScope != ciphertoken.ProjectScopeNamed || len(caller.Projects) != 1 {
+		return "", false
+	}
+	project = caller.Projects[0]
+	if project == "" || caller.Session != daemonSessionPrefix+project {
+		return "", false
+	}
+	return project, true
+}
+
 // sessionNotBound is the refusal a write that acts as session gets from the credential the
 // request presented: empty when the request presented no broker token, or when the token names
 // this very session, and otherwise the message the route answers 403 with. It logs that refusal

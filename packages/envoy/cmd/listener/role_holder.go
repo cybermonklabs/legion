@@ -52,6 +52,12 @@ func (s roleHolderSessions) Holder(ctx context.Context, sessionID string) (sessi
 // writeRoleHolderError writes the 404 of a role whose claim has no live holder
 // (listenerwire.RoleRefusal), naming the holder and its state where a claim names one.
 func writeRoleHolderError(w http.ResponseWriter, role string, result roles.Resolution) {
+	writeJSON(w, http.StatusNotFound, roleHolderRefusal(role, result))
+}
+
+// roleHolderRefusal is the body writeRoleHolderError writes, for the one route that adds to it
+// (GET /v1/roles/<role>, which tells the session a role is withheld from so).
+func roleHolderRefusal(role string, result roles.Resolution) listenerwire.RoleRefusal {
 	response := listenerwire.RoleRefusal{
 		Reason:        result.State,
 		ClaimRevision: result.ClaimRevision,
@@ -78,7 +84,7 @@ func writeRoleHolderError(w http.ResponseWriter, role string, result roles.Resol
 			lastSeen,
 		)
 	}
-	writeJSON(w, http.StatusNotFound, response)
+	return response
 }
 
 // writeRoleClaimUnreadable answers a role-holder resolution that read a claim record it cannot

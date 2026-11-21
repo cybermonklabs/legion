@@ -459,9 +459,9 @@ export function observedClient(client: FakeClient): {
             throw error
           }
         }),
-      getRole: (role) =>
+      getRole: (role, options) =>
         observe(`getRole ${role}`, async () => {
-          const info = await client.getRole(role)
+          const info = await client.getRole(role, options)
           answeredHolder = info.holder
           return info
         }),

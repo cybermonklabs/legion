@@ -80,7 +80,9 @@ import {
   mayActOnRoleRecord,
   mergeInterestSources,
   newClientInstanceID,
+  type RoleInfo,
   roleHeldBy,
+  roleWithheld,
   type SubscribeResult,
 } from "@legion/envoy-client/transport"
 import { findPushedBranchHead, paneHandoffReport } from "@legion/pi-shared/handoff-record"
@@ -210,6 +212,16 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Pr
  */
 function undefinedOnNotFound(error: unknown): undefined {
   if (error instanceof EnvoyApiError && error.details.status === 404) return undefined
+  throw error
+}
+
+/**
+ * The same for a role lookup, which keeps its 404 rather than reading it as `undefined`: that
+ * answer is still no live holder, and it is also where the listener says a role nobody holds is
+ * withheld from the session that asked (`roleWithheld`).
+ */
+function refusalOnNotFound(error: unknown): EnvoyApiError {
+  if (error instanceof EnvoyApiError && error.details.status === 404) return error
   throw error
 }
 
@@ -819,6 +831,16 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   })
   const userTopics = new Set<string>()
   let heldRole: string | undefined
+  /**
+   * The role the listener withholds from this session, as its last answer about the role said (a
+   * Legion daemon's word, while this session's claim does not hold its session). The role is lost:
+   * `heldRole` is cleared, so no registration carries it, and no claim of it goes out while a read
+   * says it is withheld. The heartbeat reads it every tick (`reassertRole`), and claims it at the
+   * first tick whose read says the withhold is lifted, which clears this. Its record stays where it
+   * is: the role is this session's to come back to, and a claim refused this way says nothing of
+   * another session holding it.
+   */
+  let withheldRole: string | undefined
   let shuttingDown = false
   const handoffFile =
     options.handoffPid === undefined
@@ -1533,11 +1555,18 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       clientInstanceID: options.clientInstanceID,
     })
     if (!claim.claimed) {
+      // A role the listener withholds from this session is lost, not anyone else's: the record
+      // stays, and the heartbeat claims the role once a read says the withhold is lifted.
+      if ("withheld" in claim) {
+        loseWithheldRole(persisted.role)
+        return "settled"
+      }
       if (claim.holder === identity.id) return "pending"
       if (claim.holder !== persisted.session_id) await rm(previousFile, { force: true })
       return "settled"
     }
     heldRole = persisted.role
+    withheldRole = undefined
     const currentFile = roleStateFile(options.stateDirectory, identity.id)
     if (previousFile !== currentFile) await rm(previousFile, { force: true })
     await writeRoleRecord(currentFile, persisted.role)
@@ -1589,6 +1618,21 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   }
 
   /**
+   * The listener withholds `role` from this session (`withheldRole`): the role is lost, as any
+   * role this session no longer holds, and no claim of it goes out until a read says the withhold
+   * is lifted. The listener freed the claim itself, so nothing is handed back, and the record is
+   * left alone. Said once per withhold, on the pane's log.
+   */
+  const loseWithheldRole = (role: string): void => {
+    heldRole = undefined
+    if (withheldRole === role) return
+    withheldRole = role
+    process.stderr.write(
+      `envoy-channel: role ${role} is withheld from session ${identity.id}: this session no longer holds it, and claims it again once the listener lifts the withhold\n`,
+    )
+  }
+
+  /**
    * Re-establishes this session as the live holder of the role it holds, on every heartbeat.
    * `afterOutage`: the last tick's registration failed, so a holder the listener still names may
    * have been answered "no holder" meanwhile.
@@ -1605,12 +1649,26 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * the moment that process stops renewing it; the role and its record stay, and the next
    * heartbeat asks again. The record's mtime is refreshed as it is on a confirmed holder, so the
    * age sweep never expires a record this process is still pressing a claim for.
+   *
+   * The lookup is made for this session, so the listener says when it withholds the role from
+   * it: that answer, or a claim refused as withheld, is a lost role (`loseWithheldRole`). While it
+   * stands each tick reads the role and claims nothing; the first tick whose read says the
+   * withhold is lifted claims it, soft, and a claim that lands writes the record as this
+   * process's. That claim is a fresh one, as `restoreRole`'s is, and runs no regain hook.
    */
   const reassertRole = async (afterOutage: boolean): Promise<void> => {
-    if (heldRole === undefined) return
-    const role = heldRole
-    const holding = await options.client.getRole(role).catch(undefinedOnNotFound)
-    if (roleHeldBy(holding, identity.id, options.clientInstanceID)) {
+    const role = heldRole ?? withheldRole
+    if (role === undefined) return
+    const lookup: RoleInfo | EnvoyApiError = await options.client
+      .getRole(role, { sessionID: identity.id })
+      .catch(refusalOnNotFound)
+    if (roleWithheld(lookup)) {
+      loseWithheldRole(role)
+      return
+    }
+    const lifted = heldRole === undefined
+    const holding = lookup instanceof EnvoyApiError ? undefined : lookup
+    if (!lifted && roleHeldBy(holding, identity.id, options.clientInstanceID)) {
       await refreshRoleRecord()
       if (afterOutage) fireRegained(role, "reregistered")
       return
@@ -1622,12 +1680,24 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       clientInstanceID: options.clientInstanceID,
     })
     if (!result.claimed) {
+      if ("withheld" in result) {
+        loseWithheldRole(role)
+        return
+      }
+      withheldRole = undefined
       if (result.holder !== identity.id) {
         heldRole = undefined
         await rm(roleStateFile(options.stateDirectory, identity.id), { force: true })
         return
       }
+      heldRole = role
       await refreshRoleRecord()
+      return
+    }
+    withheldRole = undefined
+    heldRole = role
+    if (lifted) {
+      await writeRoleRecord(roleStateFile(options.stateDirectory, identity.id), role)
       return
     }
     fireRegained(role, "reclaimed")
@@ -2229,6 +2299,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     async rememberRole(role) {
       await serialized(async () => {
         heldRole = role
+        // A claim landed: whatever the listener withheld before is not what this session holds
+        // now, and the heartbeat reads only the role it holds.
+        withheldRole = undefined
         await writeRoleRecord(roleStateFile(options.stateDirectory, identity.id), role)
       })
     },
@@ -2370,7 +2443,13 @@ export async function executeEnvoyTool(
         role: args.role,
         clientInstanceID: runtime.clientInstanceID,
       })
-      if (!result.claimed) throw new Error(`role ${args.role} is held by ${result.holder}`)
+      if (!result.claimed) {
+        throw new Error(
+          "withheld" in result
+            ? `role ${args.role} is withheld from session ${identity.id} by the listener; it was not claimed`
+            : `role ${args.role} is held by ${result.holder}`,
+        )
+      }
       await runtime.session.rememberRole(args.role)
       return result.interest
     }

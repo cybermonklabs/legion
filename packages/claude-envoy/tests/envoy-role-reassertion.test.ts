@@ -194,7 +194,7 @@ test("the role read's 404 still means no live holder: the kept lane changed only
   // INFRA-839 gave a role publish a kept lane, so POST /v1/messages/publish answers 202 where it
   // used to answer 404. GET /v1/roles/<role> is untouched and still answers 404, with the
   // role-holder body, when no live session holds the role. The heartbeat's re-assertion reads
-  // that route (`undefinedOnNotFound`), so it stays as it is.
+  // that route (`refusalOnNotFound`), so it stays as it is.
   const stateDirectory = scratchState()
   const regains: string[] = []
   const regained = Promise.withResolvers<void>()

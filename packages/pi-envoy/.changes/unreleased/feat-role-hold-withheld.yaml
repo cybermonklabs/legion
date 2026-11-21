@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  A role the listener withholds from this session is a lost role. When a role read or a claim says
+  the role is withheld, the session stops holding it, and the log and the pane say so once. From
+  then on no claim of that role is sent while a read of it says it is withheld; the first pass
+  after a read says the withhold is lifted claims it again. `envoy_role_set` and the Legion
+  plugin's claim fail with the withhold named, and `envoy_role_set` no longer reports a role it
+  did not get. In a session a pod's launch names for its role, the launch's role now wins over a
+  newer transcript record of another role that another process wrote; a record this process wrote,
+  such as a move made with `envoy_role_set`, still stands.

@@ -2163,6 +2163,16 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				writeJSONError(w, http.StatusServiceUnavailable, err.Error())
 				return
 			}
+			// The role is withheld from this session (a Legion daemon's withhold,
+			// PUT /v1/role-withholds): nothing was written and nothing was taken from a holder,
+			// so no decision above is logged. The answer names no holder; the claimant's
+			// client stops claiming the role until GET /v1/roles/<role> answers it not withheld.
+			if errors.Is(err, store.ErrRoleWithheld) {
+				writeJSON(w, http.StatusConflict, listenerwire.RoleWithheldRefusal{
+					Error: listenerwire.RoleWithheldError, Role: body.Role, Withheld: true,
+				})
+				return
+			}
 			var stale *store.ErrRoleClaimRevisionMismatch
 			mismatch := errors.As(err, &stale)
 			if mismatch && attempt == 0 && body.Soft && body.IfClaimRevision == nil {
@@ -2262,6 +2272,15 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 // out where the claim carries no mark, as
 // client_instance_id is left out where it names no process, so a client reads an absent field as
 // "this claim is still its holder's" rather than having to tell false from missing.
+//
+// Both answers carry withheld: true to the session the role is withheld from
+// (store.RoleClaim.WithheldFrom, a Legion daemon's PUT /v1/role-withholds), and to no other: the
+// key is left out for every other caller, so no answer names the withheld session to anyone
+// else. The session asking is the one a broker access token names, or under any other credential
+// the session the request states in ?session_id=, as every route believes the session a request
+// under such a credential names (brokerauth.go); a broker token that states another session is
+// refused 403 (roleReadActingSession). A withhold that names no holder leaves the role unclaimed,
+// so its 404 is where that session reads it, with the withhold record's claim_revision.
 func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -2271,6 +2290,11 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 		name := strings.TrimPrefix(r.URL.Path, "/v1/roles/")
 		if name == "" {
 			writeJSONError(w, http.StatusBadRequest, "role is required", "role")
+			return
+		}
+		acting, refusal := roleReadActingSession(r)
+		if refusal != "" {
+			writeJSONError(w, http.StatusForbidden, refusal, "session_id")
 			return
 		}
 		// The path names the role in either form, its project first or its name alone, and a
@@ -2288,8 +2312,11 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 			writeBusUnavailable(w, err)
 			return
 		}
+		withheld := acting != "" && result.WithheldFrom == acting
 		if result.State != roles.Live {
-			writeRoleHolderError(w, role, result)
+			refused := roleHolderRefusal(role, result)
+			refused.Withheld = withheld
+			writeJSON(w, http.StatusNotFound, refused)
 			return
 		}
 		// holder_state is the state the holder's own record puts it in, live on this answer, and
@@ -2309,6 +2336,7 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 			MachineID:        result.Entry.MachineID,
 			Role:             role,
 			Title:            result.Entry.Title,
+			Withheld:         withheld,
 		})
 	}
 }
@@ -3184,6 +3212,7 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 	})
 	v1.HandleFunc("/v1/roles/set", roleSetHandler(d, machineID, logger))
 	v1.HandleFunc("/v1/roles/", roleGetHandler(d))
+	v1.HandleFunc("/v1/role-withholds", roleWithholdHandler(d, logger))
 	v1.HandleFunc("/v1/registry/", sessionEntryHandler(d))
 	v1.HandleFunc("/v1/legion/agents", legionAgentsHandler(d))
 	v1.HandleFunc("/v1/legion/agents/sessions/", legionAgentSessionHandler(d))

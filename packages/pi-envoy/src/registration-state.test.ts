@@ -3,8 +3,10 @@ import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import {
+  createEnvoyClient,
   EnvoyApiError,
   type EnvoyClient,
+  type GetRoleOptions,
   type Interest,
   type RoleInfo,
   type SetRoleInput,
@@ -91,7 +93,7 @@ interface HarnessControl {
   deadlineMs: number;
   subscribe: (input: SubscribeInput) => Promise<SubscribeResult>;
   setRole: (input: SetRoleInput) => Promise<SetRoleResult>;
-  getRole: (role: string) => Promise<RoleInfo>;
+  getRole: (role: string, options?: GetRoleOptions) => Promise<RoleInfo>;
   getInterest: (sessionID: string) => Promise<Interest>;
   unsubscribe: (input: UnsubscribeInput) => Promise<void>;
   dial: (limit?: DialLimit) => Promise<NatsConnection>;
@@ -122,6 +124,8 @@ interface Harness {
     readonly timeoutMs?: number;
   }[];
   readonly claims: SetRoleInput[];
+  /** Each role lookup, with the session it was made for. */
+  readonly roleReads: { readonly role: string; readonly sessionID: string | undefined }[];
   readonly fakeConnection: (name: string) => NatsConnection;
   /** Claims `role` for `id` through a settled role move, as a healthy pass does. */
   readonly hold: (role: string, id: string) => Promise<boolean | undefined>;
@@ -143,6 +147,7 @@ function createHarness(): Harness {
     readonly timeoutMs?: number;
   }[] = [];
   const claims: SetRoleInput[] = [];
+  const roleReads: { readonly role: string; readonly sessionID: string | undefined }[] = [];
 
   const fakeConnection = (name: string): NatsConnection =>
     ({
@@ -190,7 +195,10 @@ function createHarness(): Harness {
       claims.push(input);
       return control.setRole(input);
     },
-    getRole: async (role) => control.getRole(role),
+    getRole: async (role, options) => {
+      roleReads.push({ role, sessionID: options?.sessionID });
+      return control.getRole(role, options);
+    },
     listSessions: notUsed("listSessions"),
   };
 
@@ -224,6 +232,7 @@ function createHarness(): Harness {
     releases,
     deregistrations,
     claims,
+    roleReads,
     fakeConnection,
     hold: async (role, id) => {
       control.open = id;
@@ -1628,6 +1637,95 @@ describe("a claim the listener refuses", () => {
       return handle.claimRole("alpha", { soft: true });
     });
     expect(harness.state.heldRole()).toBe("alpha");
+  });
+});
+
+describe("a role the listener withholds", () => {
+  /** A listener client whose every call `status` answers with `body`, so what a call returns or
+   *  throws is what the real client makes of the listener's own words. */
+  const answering = (status: number, body: unknown): EnvoyClient =>
+    createEnvoyClient({
+      baseUrl: "http://listener",
+      fetch: async () => Response.json(body, { status }),
+    });
+  /** The 404 of a role no claim stands for. */
+  const UNCLAIMED = { error: "no holder for role alpha", reason: "unclaimed", claim_revision: 4 };
+  /** The 409 a claim from the session the role is withheld from gets, soft or hard. */
+  const WITHHELD_CLAIM = { error: "role_withheld", role: "alpha", withheld: true };
+
+  /**
+   * One heartbeat pass's role step for session ses_a, whose records name `alpha`, as `settleRole`
+   * (extensions/envoy.ts) takes it: no role while a refusal of `alpha` stands (`desiredRole`), a
+   * held role re-asserted, and one that is not held claimed softly. A step that throws fails that
+   * pass, and the next heartbeat runs, as there.
+   */
+  const heartbeat = (harness: Harness): Promise<unknown> =>
+    harness.state.roleMoves
+      .run(async (handle) => {
+        handle.actFor("ses_a");
+        if (harness.state.refusalFor("ses_a") === "alpha") return undefined;
+        return harness.state.heldRole() === "alpha"
+          ? handle.reassertRole("alpha", false)
+          : handle.claimRole("alpha", { soft: true });
+      })
+      .catch((error: unknown) => ({ failed: messageFor(error) }));
+
+  // A Legion daemon withholds a role from a session whose claim does not hold it, which frees the
+  // session's standing claim and refuses its every claim of the role. The session has lost the
+  // role: a claim at every heartbeat would be refused at every heartbeat, and only the daemon
+  // lifts the withhold, so the session reads the role and claims it once the read says it may.
+  test("a withheld role is lost until the listener lifts it", async () => {
+    const harness = createHarness();
+    const { state, control, claims, roleReads } = harness;
+    await harness.hold("alpha", "ses_a");
+    claims.length = 0;
+
+    // The heartbeat's read lands before the withhold freed the claim's renewal, or after it freed
+    // the claim and before the mark: it finds no holder and claims, and the claim is refused.
+    control.getRole = (role, options) => answering(404, UNCLAIMED).getRole(role, options);
+    control.setRole = (input) => answering(409, WITHHELD_CLAIM).setRole(input);
+    await heartbeat(harness);
+    expect(claims).toHaveLength(1);
+
+    // While the read answers withheld, no heartbeat sends a claim.
+    control.getRole = (role, options) =>
+      answering(404, { ...UNCLAIMED, withheld: true }).getRole(role, options);
+    roleReads.length = 0;
+    await heartbeat(harness);
+    await heartbeat(harness);
+    expect(claims.slice(1)).toEqual([]);
+    expect(roleReads).toEqual([
+      { role: "alpha", sessionID: "ses_a" },
+      { role: "alpha", sessionID: "ses_a" },
+    ]);
+    expect(state.heldRole()).toBeUndefined();
+
+    // The daemon lifts the withhold: the first heartbeat after it reads that the role is not
+    // withheld, and claims it.
+    control.getRole = (role, options) => answering(404, UNCLAIMED).getRole(role, options);
+    control.setRole = (input) =>
+      answering(200, { ...interestFor("ses_a"), topics: [ALPHA] }).setRole(input);
+    await heartbeat(harness);
+    expect(claims.slice(1)).toEqual([
+      { sessionID: "ses_a", role: "alpha", soft: true, clientInstanceID: state.clientInstanceID },
+    ]);
+    expect(state.heldRole()).toBe("alpha");
+
+    // The loss is said once, in the log and on the pane, however many heartbeats it lasted.
+    expect(harness.warnings).toEqual([
+      {
+        message:
+          "envoy: role withheld from this session; not claimed until the listener lifts the withhold",
+        context: { role: "alpha", sessionID: "ses_a" },
+      },
+    ]);
+    expect(harness.notices).toEqual([
+      {
+        message:
+          "envoy: role alpha is withheld from session ses_a: this session no longer holds it, and claims it again once the listener lifts the withhold",
+        level: "warning",
+      },
+    ]);
   });
 });
 

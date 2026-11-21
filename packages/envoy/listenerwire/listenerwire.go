@@ -519,6 +519,12 @@ type RoleHolder struct {
 	MachineID string `json:"machine_id"`
 	Role      string `json:"role"`
 	Title     string `json:"title"`
+	// Withheld is true only on the answer to the session the role is withheld from (a Legion
+	// daemon's withhold, PUT /v1/role-withholds): that session may not claim the role, and its
+	// client stops claiming it until this reads false again. It is left out on every other
+	// answer, so no answer names the withheld session to anyone else, and an absent field reads
+	// as not withheld, as a listener predating it answers.
+	Withheld bool `json:"withheld,omitempty"`
 }
 
 // RoleRefusal is the 404 of a role with no live holder, which GET /v1/roles/<role> answers and a
@@ -547,16 +553,41 @@ type RoleRefusal struct {
 	// lapsed, a live window and up to one reap interval later.
 	// Absent for a role no claim stands for, and for a claim no such release reached.
 	HandedBack bool `json:"handed_back,omitempty"`
+	// Withheld is RoleHolder.Withheld on this answer: true only to the session the role is
+	// withheld from, which a withhold that names no holder leaves unclaimed and so answers here.
+	Withheld bool `json:"withheld,omitempty"`
 	// ClaimRevision is the role's claim revision, as the 200 reports it: the revision of the
-	// claim a lapsed holder still holds, and zero for an unclaimed role, so a scheduler
-	// reading this 404 can claim the role with if_claim_revision and have that claim refused
-	// if the role moved in between.
+	// claim a lapsed holder still holds, zero for an unclaimed role, and for an unclaimed role
+	// a withhold stands on, the revision of that withhold's record, so a scheduler reading this
+	// 404 can claim the role with if_claim_revision and have that claim refused if the role
+	// moved in between.
 	ClaimRevision uint64 `json:"claim_revision"`
 	// LastSeen is the lapsed holder's last registration in unix milliseconds, absent when the
 	// listener can no longer name one.
 	LastSeen      *int64 `json:"last_seen,omitempty"`
 	ClaimReleased *bool  `json:"claim_released,omitempty"`
 }
+
+// RoleWithholdRequest is the body of PUT /v1/role-withholds, which withholds Role from Session,
+// and of DELETE /v1/role-withholds, which lifts that withhold. Only a Legion daemon's own broker
+// access token may send either, for a role of its own project. The listener answers 204 with no
+// body, and an APIError otherwise.
+type RoleWithholdRequest struct {
+	Role    string `json:"role"`
+	Session string `json:"session"`
+}
+
+// RoleWithheldRefusal is the 409 POST /v1/roles/set answers the session a role is withheld from,
+// whether its claim is soft or hard: Error is RoleWithheldError, Role the role refused, and
+// Withheld always true. It names no holder.
+type RoleWithheldRefusal struct {
+	Error    string `json:"error"`
+	Role     string `json:"role"`
+	Withheld bool   `json:"withheld"`
+}
+
+// RoleWithheldError is RoleWithheldRefusal's Error.
+const RoleWithheldError = "role_withheld"
 
 // RoleSendFailure is the 504 of a role send through POST /v1/messages/publish whose delivery
 // window ended with no forward the stream stored for its holder. Reason is delivery_failed: no

@@ -327,7 +327,7 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 
 // v1RoutePatterns is how many patterns registerV1Routes registers today, each of which the walk
 // below must visit at least once.
-const v1RoutePatterns = 15
+const v1RoutePatterns = 16
 
 // R4 on a real bus, with no change to the listener's own code: a read-only token — the project
 // scope none beside the one scope read, which a read entry mints for Dispatch's read list — is
@@ -374,6 +374,8 @@ func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 			`{"session_id":"<session>","topics":["notifications.github.rig"]}`},
 		{http.MethodPost, "/v1/roles/set", "/v1/roles/set", `{"session_id":"<session>","role":"rig-walk-role"}`},
 		{http.MethodGet, "/v1/roles/rig-walk-role", "/v1/roles/", ""},
+		{http.MethodPut, "/v1/role-withholds", "/v1/role-withholds", `{"role":"legion-infra-infra-3825-tester","session":"<session>"}`},
+		{http.MethodDelete, "/v1/role-withholds", "/v1/role-withholds", `{"role":"legion-infra-infra-3825-tester","session":"<session>"}`},
 		{http.MethodGet, "/v1/registry/<session>", "/v1/registry/", ""},
 		{http.MethodGet, "/v1/legion/agents?issue=INFRA-3825", "/v1/legion/agents", ""},
 		{http.MethodPut, "/v1/legion/agents", "/v1/legion/agents", `{"entries":[]}`},

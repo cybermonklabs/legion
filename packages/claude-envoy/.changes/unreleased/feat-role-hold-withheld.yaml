@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  A role the listener withholds from this session is a lost role. When the heartbeat's role read
+  or its claim says the role is withheld, the session stops holding it and says so once on the
+  pane's log; its role record stays. No claim of that role is sent while a read says it is
+  withheld, and the first heartbeat after a read says the withhold is lifted claims it again.
+  `envoy_role_set` names the withhold in its error, and the Legion claim stops the pane naming it.

@@ -6,7 +6,9 @@ import {
   expandSubscriptionTopics,
   type Interest,
   newClientInstanceID,
+  type RoleInfo,
   roleHeldBy,
+  roleWithheld,
   type SubscribeInput,
   type SubscribeResult,
 } from "@legion/envoy-client/transport";
@@ -214,6 +216,13 @@ export interface TaskHandle {
    * instance keeps the role. A soft claim is also granted when the role is unheld, and when its
    * holder is no longer live. Answers whether the claim landed.
    *
+   * A claim the listener refuses because it withholds `role` from this session ends the role
+   * here as a lost one and latches the withhold for this session: the log and the pane are told
+   * once. While that latch stands, no claim of `role` goes out: the role is read for this session
+   * first, and the claim goes out only once the read says it is not withheld, which clears the
+   * latch. Every pass that wants the role reads it, so the first heartbeat after the listener
+   * lifts the withhold claims it.
+   *
    * A claim the listener granted after this task's deadline fired is left as a pending hand-back,
    * and one granted after the session moved is adopted under the id the listener names.
    */
@@ -229,7 +238,9 @@ export interface TaskHandle {
    * one's. A refusal naming a different session ends the role here and records it. A refusal
    * naming this session's own id is that other process's standing claim, which the listener
    * grants the moment it stops renewing it: the role stays held here, nothing is recorded or
-   * said, and the next heartbeat asks again.
+   * said, and the next heartbeat asks again. A lookup or a refusal that says the role is withheld
+   * from this session is a lost role, as `claimRole` takes it: the role ends here and the
+   * withhold is latched, so the passes after it read before they claim.
    */
   readonly reassertRole: (role: string, afterOutage: boolean) => Promise<RoleReassertion>;
   /** Says, once, that the notices a plugin opened for `role` stay closed, and forgets that it
@@ -367,6 +378,9 @@ export interface RegistrationState {
   readonly roleSnapshot: (topic: string) => RoleSnapshot;
   /** The role the listener refused to this session's automatic claim, if any. */
   readonly refusalFor: (sessionID: string) => string | undefined;
+  /** The role the listener withholds from this session, as the last answer about it said; a
+   *  claim of it reads the role before it goes out. */
+  readonly withheldFor: (sessionID: string) => string | undefined;
   /** How many roles have ended, which a role-bound subscribe compares against. */
   readonly roleEndCount: () => number;
   /** Whether the hold came back from a hand-back rather than from a claim the listener granted. */
@@ -404,6 +418,13 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
   // this id, which the listener grants the moment it stops renewing it, so neither `claimRole`
   // nor `reassertRole` records it and the next pass asks again.
   const refusedRoles = new Map<string, string>();
+  // Per session, a role the listener withholds from that session (a Legion daemon's word, while a
+  // claim of this process does not hold its session): the role is lost, and no claim of it goes
+  // out until a read of it for that session says it is not withheld. Unlike `refusedRoles`, a
+  // session event landing on the session leaves it standing: the withhold is the listener's, and
+  // only the daemon that set it lifts it, so nothing a session does says it is gone. The latch
+  // costs one read per pass that wants the role, and that read is what clears it.
+  const withheldRoles = new Map<string, string>();
   // The role a plugin last opened role-bound notices for: a pass that claims that role back after
   // a role end closed them says they stay closed until that plugin claims it again.
   let roleNoticesFor: string | undefined;
@@ -441,6 +462,39 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     roleEnds += 1;
     roleNoticeSubjects.clear();
     if (closed.length > 0) deps.closeSubjects(held, closed);
+  };
+
+  // A role lookup made for session `id`: its answer, or the 404 it threw, which says no live
+  // session holds the role and can say the role is withheld from `id` (`roleWithheld`). Any other
+  // failure is thrown.
+  const lookUpRole = (role: string, id: string): Promise<RoleInfo | EnvoyApiError> =>
+    deps
+      .client()
+      .getRole(role, { sessionID: id })
+      .then(
+        (info): RoleInfo | EnvoyApiError => info,
+        (error: unknown) => {
+          if (error instanceof EnvoyApiError && error.details.status === 404) return error;
+          throw error;
+        }
+      );
+
+  // The listener withholds `role` from session `id`: the session has lost the role, as it loses
+  // any role it no longer holds, and the withhold is latched for that session, so no claim of it
+  // goes out until a read says it is lifted (`claimRole`). The listener freed the claim itself,
+  // so nothing is left to hand back. Said once per latch, in the log and on the pane.
+  const loseWithheldRole = (id: string, role: string): void => {
+    endRole();
+    if (withheldRoles.get(id) === role) return;
+    withheldRoles.set(id, role);
+    deps.log.warn(
+      "envoy: role withheld from this session; not claimed until the listener lifts the withhold",
+      { role, sessionID: id }
+    );
+    deps.notify(
+      `envoy: role ${role} is withheld from session ${id}: this session no longer holds it, and claims it again once the listener lifts the withhold`,
+      "warning"
+    );
   };
 
   const refreshRegistration = (input: RegistrationInput): Promise<SubscribeResult> => {
@@ -589,6 +643,15 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       const id = actingFor();
       guard();
       const topic = ROLE_TOPIC_PREFIX + role;
+      if (withheldRoles.get(id) === role) {
+        // The withhold this session last heard of may stand still, so the role is read first and
+        // no claim goes out while the read says it does: the claim would only be refused. A read
+        // that says it is lifted clears the latch, and the claim below goes out in this pass.
+        const lookup = await lookUpRole(role, id);
+        guard();
+        if (roleWithheld(lookup)) return false;
+        withheldRoles.delete(id);
+      }
       const previousTopic = claimedRoleTopic;
       const previousHoldID = claimedRoleSessionID;
       const result = await deps.client().setRole({
@@ -629,6 +692,11 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         refuse(`the session moved on while its claim of role ${role} was in flight`);
       }
       if (!result.claimed) {
+        // The listener withholds the role from this session, soft claim or hard: a lost role.
+        if ("withheld" in result) {
+          loseWithheldRole(id, role);
+          return false;
+        }
         endRole();
         // A refusal naming this task's own session id is the standing claim of another process
         // under that id, which the listener grants the moment that process stops renewing it.
@@ -679,16 +747,14 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       // event can end it while the listener is read or claimed, and the task that ends it owns
       // the role from there.
       const stillHolds = (): boolean => claimedRoleTopic === topic;
-      const holding = await client.getRole(role).then(
-        (info) => info,
-        (error: unknown) => {
-          // 404 is the listener's answer for "no live holder", not a failure.
-          if (error instanceof EnvoyApiError && error.details.status === 404) return undefined;
-          throw error;
-        }
-      );
+      const lookup = await lookUpRole(role, id);
       guard();
       if (!stillHolds()) return { decided: false };
+      if (roleWithheld(lookup)) {
+        loseWithheldRole(id, role);
+        return { decided: true };
+      }
+      const holding = lookup instanceof EnvoyApiError ? undefined : lookup;
       // This session *and* this process (`roleHeldBy`, the one rule both clients read): a claim
       // standing under this very session id that another process made is not this one's to
       // renew, while a holder naming no process at all is read as this one's.
@@ -699,6 +765,10 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       guard();
       if (!stillHolds()) return { decided: false };
       if (!result.claimed) {
+        if ("withheld" in result) {
+          loseWithheldRole(id, role);
+          return { decided: true };
+        }
         if (result.holder === id) {
           // The standing claim of another process under this session's id, which the listener
           // grants the moment that process stops renewing it. Nothing says another session took
@@ -973,6 +1043,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       endsBefore: roleEnds,
     }),
     refusalFor: (sessionID) => refusedRoles.get(sessionID),
+    withheldFor: (sessionID) => withheldRoles.get(sessionID),
     roleEndCount: () => roleEnds,
     holdIsUnconfirmed: () => holdUnconfirmed,
     establishedFor: () => establishedSession,

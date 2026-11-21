@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `getRole(role, { sessionID })` makes the lookup for the caller's own session: it sends
+  `?session_id=` and presents that session's credential, and its answer carries `withheld: true`
+  where the listener withholds the role from that session. `setRole` answers
+  `{ claimed: false, withheld: true }` to the listener's `409 role_withheld`, which a claim from
+  that session gets whether soft or hard. `roleWithheld` reads a role lookup's answer, or the
+  `EnvoyApiError` of its 404, and says whether the role is withheld from the caller: the one rule
+  both plugins keep, as `roleHeldBy` is.

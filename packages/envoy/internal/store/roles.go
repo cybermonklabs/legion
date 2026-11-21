@@ -62,6 +62,17 @@ type RoleClaim struct {
 	// has reached this claim: a claim granted since clears the mark, because every grant writes
 	// a fresh record (SetRoleWithPrevious).
 	HandedBack bool `json:"handed_back,omitempty"`
+	// WithheldFrom is the session this role is withheld from (Registry.WithholdRole): a Legion
+	// daemon could not stop a process whose claim does not hold its session, so no claim of this
+	// role by that session lands (ErrRoleWithheld) and no message on the role's topic reaches it.
+	// WithheldBy is the daemon's own session, legion-daemon:<project>, the one writer that may
+	// lift it (Registry.LiftRoleWithhold). A claim of another session carries both over, and so
+	// do the renewal, the hand-back mark and a release, which leaves the withhold where a claim
+	// carrying none is deleted (sendRoleClaimRelease): only the lift clears them. A record that
+	// carries a withhold may name no holder at all, which is a role no session holds that is
+	// still withheld. Both are absent on a record no daemon withheld.
+	WithheldFrom string `json:"withheld_from,omitempty"`
+	WithheldBy   string `json:"withheld_by,omitempty"`
 	// Revision is the role bucket revision the claim was read at, which RoleClaim stamps on
 	// every claim it decodes and nothing stores: it belongs to the entry, not to the record,
 	// so it is never marshalled back into the bucket. Zero means no claim record was read -
@@ -205,13 +216,17 @@ func (r *Registry) roleClaimsUntil(ctx context.Context) ([]scannedRoleClaim, err
 }
 
 // ErrMalformedRoleClaim is a role claim record the bucket holds and this build cannot read: one
-// that names no holder, or JSON that is not a claim. The bus answered it, so it is not a read that
-// failed, and reading it again returns the same record; each error wrapping it names which.
+// that names no holder and carries no withhold, or JSON that is not a claim. The bus answered it,
+// so it is not a read that failed, and reading it again returns the same record; each error
+// wrapping it names which.
 var ErrMalformedRoleClaim = errors.New("malformed role claim")
 
-// DecodeRoleClaim reads a stored role claim record: a structured claim naming a holder, or a bare
-// session id an earlier build stored. Any other record is ErrMalformedRoleClaim. Dispatch's outbox
-// reads the role bucket through it too (roles.Buckets), so the two readers cannot drift.
+// DecodeRoleClaim reads a stored role claim record: a structured claim naming a holder, a
+// structured record that names no holder and carries a withhold (RoleClaim.WithheldFrom), which
+// is a role no session holds that is withheld all the same, or a bare session id an earlier build
+// stored. Any other record is ErrMalformedRoleClaim. Dispatch's outbox reads the role bucket
+// through it too (roles.Buckets), so the two readers cannot drift. Every reader of a holder reads
+// a withhold's empty holder as no session holding the role.
 //
 // A record that carries no client instance id, no renewal, or neither is read, not refused: a
 // claim an earlier build wrote names no process and no renewal, and both fields are left zero, as
@@ -221,6 +236,9 @@ func DecodeRoleClaim(value []byte) (RoleClaim, error) {
 	var claim RoleClaim
 	err := json.Unmarshal(value, &claim)
 	if err == nil {
+		if claim.HolderSessionID == "" && claim.WithheldFrom != "" {
+			return claim, nil
+		}
 		if strings.TrimSpace(claim.HolderSessionID) == "" {
 			return RoleClaim{}, fmt.Errorf("%w: it names no holder", ErrMalformedRoleClaim)
 		}
@@ -240,16 +258,16 @@ func DecodeRoleClaim(value []byte) (RoleClaim, error) {
 
 // newRoleHolderCopy is an empty copy of the role claim bucket, which keeps the session each claim
 // it can read names. A claim this build cannot read (ErrMalformedRoleClaim) gives its role to
-// nobody, so the copy keeps no entry for it, as a delete marker leaves none. Each entry it removes
-// is handed to r's repair (roleClaimRepair.swept), which counts the ones a repairing read's sweep
-// took out.
+// nobody, so the copy keeps no entry for it, as a delete marker leaves none, and so does a withhold
+// that names no holder (RoleClaim.WithheldFrom). Each entry it removes is handed to r's repair
+// (roleClaimRepair.swept), which counts the ones a repairing read's sweep took out.
 func newRoleHolderCopy(r *Registry) kvwatch.Copy[string] {
 	return kvwatch.NewCopy(kvwatch.Rows[string]{Decode: func(entry kvwatch.Entry) (string, bool, error) {
 		claim, err := DecodeRoleClaim(entry.Value)
 		if err != nil {
 			return "", false, err
 		}
-		return claim.HolderSessionID, true, nil
+		return claim.HolderSessionID, claim.HolderSessionID != "", nil
 	}, Removed: r.roleRepair.swept})
 }
 
@@ -344,6 +362,19 @@ func (r *Registry) forgetRoleHolder(role string, revision, epoch uint64) {
 	r.holdersMu.Lock()
 	defer r.holdersMu.Unlock()
 	r.roleHolders.Evict(r.roleWatcher, epoch, role, revision+1)
+}
+
+// clearOwnRoleHolder records a write this registry made through a handle of epoch that left role
+// with a record at revision and no holder: a withhold (RoleClaim.WithheldFrom), which the view
+// keeps no entry for, as it keeps none for a delete. The write answered its revision, so the view
+// is fenced at that revision rather than one past it.
+func (r *Registry) clearOwnRoleHolder(role string, revision, epoch uint64) {
+	if r.roleWatcher == nil {
+		return
+	}
+	r.holdersMu.Lock()
+	defer r.holdersMu.Unlock()
+	r.roleHolders.Evict(r.roleWatcher, epoch, role, revision)
 }
 
 // roleViewEpoch is the epoch a claim write through the role handle carries, and 0 when no watcher

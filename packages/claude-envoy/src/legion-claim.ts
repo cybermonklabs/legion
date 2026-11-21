@@ -291,7 +291,9 @@ export function startLegionClaim(deps: {
         // that window passes with no answer for it. So the claim is asked again on the
         // channel server's own heartbeat cadence until it is granted. Only a refusal naming a
         // different session throws, which stops the pane: that role is another session's, and
-        // no amount of asking changes it.
+        // no amount of asking changes it. A role the listener withholds from this session throws
+        // too: this claim does not hold its session, and the daemon that withheld the role is
+        // the one to lift it.
         const deadline = Date.now() + roleWaitMs
         let waited = false
         for (;;) {
@@ -302,6 +304,9 @@ export function startLegionClaim(deps: {
             clientInstanceID: deps.clientInstanceID,
           })
           if (claimed.claimed) break
+          if ("withheld" in claimed) {
+            throw new Error(`Envoy role ${role} is withheld from this session by the listener`)
+          }
           if (claimed.holder !== sessionID) {
             throw new Error(`Envoy role ${role} is held by live session ${claimed.holder}`)
           }

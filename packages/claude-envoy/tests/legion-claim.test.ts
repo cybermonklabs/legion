@@ -307,6 +307,53 @@ test("a role another live session holds stops the pane after it has said it is r
   expect(stops).toBe(1)
 })
 
+test("a role the listener withholds from this session stops the pane after it has said it is ready, logging why", async () => {
+  // The daemon withholds a role from a session its claim does not hold: this claim's process is
+  // not the one the role is for, and the daemon that withheld it is the one to lift it, so no
+  // amount of asking changes it.
+  const configDir = await tempDir()
+  await mkdir(join(configDir, "projects", "p"), { recursive: true })
+  await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
+  const registered = await daemonFixture("register.json")
+  const { fetch } = daemonAnswering((path) =>
+    path.endsWith("/claims/register")
+      ? Response.json(registered)
+      : new Response(null, { status: 204 }),
+  )
+  const lines: string[] = []
+  let stops = 0
+  const setRoles: SetRoleInput[] = []
+  const claim = startLegionClaim({
+    pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
+    sessionID: SESSION,
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: legion.daemonApiVersion,
+      fetch,
+    }),
+    clientInstanceID: INSTANCE,
+    client: {
+      setRole: async (input) => {
+        setRoles.push(input)
+        return { claimed: false, withheld: true }
+      },
+    },
+    session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
+    signal: new AbortController().signal,
+    log: (line) => lines.push(line),
+    stop: () => {
+      stops += 1
+    },
+    onFirstTurn: firstTurnNow,
+  })
+  await claim.claimed
+  expect(lines).toEqual([
+    `claim boot failed after claims/register registered ${registered["claimToken"]}; stopping the pane so the daemon launches it again: Envoy role ${registered["claimToken"]} is withheld from this session by the listener`,
+  ])
+  expect(stops).toBe(1)
+  // Asked once: a withhold is not waited out as a standing claim under this session's id is.
+  expect(setRoles).toHaveLength(1)
+})
+
 test("a claim refused by a standing claim under this session's own id is asked again, not thrown on", async () => {
   // The pane the daemon relaunched with `--resume`: the process it replaced renewed the claim at
   // its last heartbeat, so the listener refuses this one 409 naming this very session until

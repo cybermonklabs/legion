@@ -325,10 +325,11 @@ Every call whose body names the session it acts for — `subscribe`, `unsubscrib
 presents that session's own credential, since the listener holds such a write to the session its
 broker token names and answers 403 to any other. That is what lets a process that has switched
 sessions hand back a role the session it left still holds: the old session's credential is a
-client of its own and answers out of the token it already has. A read of another session's
-record (`getInterest`, `getRole`, `listSessions`) names no session and is answered the
-credential the client was built with. A bearer is the same header whichever session a call acts
-for.
+client of its own and answers out of the token it already has. A role lookup made for the
+caller's own session (`getRole(role, { sessionID })`) presents that session's credential too. A
+read of another session's record (`getInterest`, `listSessions`, and `getRole` with no
+`sessionID`) names no session and is answered the credential the client was built with. A bearer
+is the same header whichever session a call acts for.
 
 `subscribe` sends the host's `plugin` (`{name, version}`, required) as `plugin` and
 `plugin_version` on every registration, and exposes listener warnings, including a topic that has
@@ -347,6 +348,12 @@ a claim standing at a deploy is kept by a client that cannot say which process i
 claim names a process, the `client_instance_id` of that process; a claim that names none leaves
 the field out, on the 200 as on a lapsed holder's 404. It also returns `handed_back` where the
 claim carries the listener's hand-back mark, on both answers and left out where it carries none.
+`getRole(role, { sessionID })` makes the lookup for that session, the caller's own: it sends
+`?session_id=` and presents that session's credential, and the listener answers `withheld: true`,
+on the 200 and on the 404 alike, where it withholds the role from that session, and leaves the
+key out otherwise. A Legion daemon withholds a role from a session its claim does not hold: the
+listener frees that session's standing claim, refuses its every claim of the role, and finds no
+holder for a publish to it. No answer names the session a role is withheld from.
 `listSessions` accepts optional directory
 and title filters; its rows carry `plugin` and `plugin_version` when the session registered them.
 
@@ -365,6 +372,12 @@ that names the holder's process. A soft claim over a marked claim that names no 
 weighed by that claim's renewal and refused until the renewal is older than the live window or
 the reaper frees the claim; the way back is an outright claim (`setRole` without `soft`), which
 lands at once and writes a fresh record with no mark.
+
+`roleWithheld(lookup)` is exported beside them as the rule both plugins keep over a withhold: it
+reads a role lookup's answer, or the `EnvoyApiError` its 404 threw, and says whether the role is
+withheld from the caller. Each plugin takes a withheld answer, the lookup's or a claim's, as a
+lost role: it sends no claim of the role while a lookup made for its session says the role is
+withheld, and claims it again at the first heartbeat whose lookup says it is not.
 
 `setRole` and `unsubscribe` take a `clientInstanceID` of their own, sent as `client_instance_id`
 and omitted from the wire when the caller states none: the listener records the claim's as the
@@ -386,7 +399,9 @@ already held under the claimant's own session id is decided on the standing clai
 the session record: granted when that claim names this very process, granted when nobody renewed
 it inside the listener's live window, and otherwise `{claimed: false, holder}` naming that same
 session — which `getRole`'s `client_instance_id` tells apart from a different session holding
-the role. Any other live holder keeps the role and is answered as `{claimed: false, holder}`.
+the role. Any other live holder keeps the role and is answered as `{claimed: false, holder}`. A
+claim from a session the listener withholds the role from, soft or hard, is answered as
+`{claimed: false, withheld: true}`, from the listener's `409 role_withheld`, which names no holder.
 `unregisterSession({sessionID, clientInstanceID?})` deletes the session's registry entry: with an
 instance id the listener deletes it only when the entry carries the same id or none, so a
 departing client instance never deletes the registration a successor instance made under the

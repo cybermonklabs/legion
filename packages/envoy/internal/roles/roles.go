@@ -118,7 +118,9 @@ type Resolution struct {
 	// GET /v1/roles/<role> reports as claim_revision and a conditional claim names as its
 	// precondition. A claim record stands behind every resolution that names a holder, since no
 	// resolution here takes one away, so it is the revision that record was read at on Live and
-	// Lapsed alike, and zero for Unclaimed.
+	// Lapsed alike. For Unclaimed it is zero, unless the record read is a withhold that names no
+	// holder (store.RoleClaim.WithheldFrom), whose revision a conditional claim of the role must
+	// name.
 	ClaimRevision uint64
 	// HolderClientInstanceID is the client instance of the process the claim this resolution
 	// read names as its holder (store.RoleClaim.ClientInstanceID), which GET /v1/roles/<role>
@@ -135,6 +137,11 @@ type Resolution struct {
 	// one live window and up to one reap interval later. False where no such release reached
 	// the claim, and for Unclaimed, where there is no claim at all.
 	HolderHandedBack bool
+	// WithheldFrom is the session the record this resolution read withholds its role from
+	// (store.RoleClaim.WithheldFrom), on every state, Unclaimed included: a withhold may stand on
+	// a record that names no holder. GET /v1/roles/<role> tells only that session the role is
+	// withheld from it, and names it to nobody. Empty where the record carries no withhold.
+	WithheldFrom string
 }
 
 // Step names the read a resolution failed at.
@@ -229,7 +236,7 @@ func ResolveHolder(ctx context.Context, claims ClaimStore, sessions SessionLooku
 	}
 	holder := claim.HolderSessionID
 	if holder == "" {
-		return Resolution{State: Unclaimed}, nil
+		return Resolution{State: Unclaimed, ClaimRevision: claim.Revision, WithheldFrom: claim.WithheldFrom}, nil
 	}
 	entry, err := sessions.Holder(ctx, holder)
 	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
@@ -262,6 +269,7 @@ func ResolveHolder(ctx context.Context, claims ClaimStore, sessions SessionLooku
 		ClaimRevision:          claim.Revision,
 		HolderClientInstanceID: claim.ClientInstanceID,
 		HolderHandedBack:       claim.HandedBack,
+		WithheldFrom:           claim.WithheldFrom,
 	}
 	if state == session.Live {
 		resolved.State = Live

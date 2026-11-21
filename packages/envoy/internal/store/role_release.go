@@ -173,7 +173,10 @@ const roleClaimReleaseAttempts = 3
 //
 // The delete is conditional on the revision read and waits no longer than ctx (bus.Bounded). A
 // delete ctx abandoned may still land after this answer, and that is safe: it deletes only the
-// revision it read, the claim this release authorised, and a claim written since is kept.
+// revision it read, the claim this release authorised, and a claim written since is kept. A
+// claim that carries a withhold (RoleClaim.WithheldFrom) is not deleted but written back as the
+// withhold alone, at the same condition (sendRoleClaimRelease): the release frees the holder's
+// claim and leaves what only the daemon's lift clears.
 //
 // A delete that lost that condition (nats.ErrKeyExists) met a record written since the read, and
 // the writers it could have met are told apart by reading the claim again rather than by
@@ -209,10 +212,8 @@ func (r *Registry) releaseReadRoleClaim(ctx context.Context, sessionID, role str
 		role:     role,
 		attempts: roleClaimReleaseAttempts,
 		writes:   func(claim RoleClaim) bool { return release.frees(claim, sessionID) },
-		send: func(claim RoleClaim) (uint64, error) {
-			return 0, r.roles().Delete(role, nats.LastRevision(claim.Revision))
-		},
-		landed: func(claim RoleClaim, _, epoch uint64) { r.forgetRoleHolder(role, claim.Revision, epoch) },
+		send:     func(claim RoleClaim) (uint64, error) { return r.sendRoleClaimRelease(role, claim) },
+		landed:   func(claim RoleClaim, revision, epoch uint64) { r.releasedRoleHolder(role, claim, revision, epoch) },
 	})
 	switch {
 	case err != nil:
@@ -338,7 +339,9 @@ func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role 
 // safe to leave running: it deletes the claim only if the bucket still holds the very revision
 // that read returned, naming the holder the caller has just judged to have lost the claim, so
 // at worst a lapsed holder's claim is released a moment after the caller was told the
-// bus did not answer, and a fresh claim that landed meanwhile is never touched.
+// bus did not answer, and a fresh claim that landed meanwhile is never touched. A claim that
+// carries a withhold (RoleClaim.WithheldFrom) is written back as the withhold alone rather than
+// deleted (sendRoleClaimRelease), under the same condition and with the same answers.
 func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string, claim RoleClaim, sessionTTL time.Duration) (ExpiredRoleClaimRelease, error) {
 	if claim.Revision == 0 {
 		return ExpiredRoleClaimMissing, nil
@@ -350,13 +353,10 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 		return ExpiredRoleClaimRetained, nil
 	}
 	epoch := r.roleViewEpoch()
-	roles := r.roles()
-	_, _, err := bus.Bounded(ctx, func() (struct{}, error) {
-		return struct{}{}, roles.Delete(role, nats.LastRevision(claim.Revision))
-	})
+	revision, _, err := bus.Bounded(ctx, func() (uint64, error) { return r.sendRoleClaimRelease(role, claim) })
 	switch {
 	case err == nil:
-		r.forgetRoleHolder(role, claim.Revision, epoch)
+		r.releasedRoleHolder(role, claim, revision, epoch)
 		return ExpiredRoleClaimReleased, nil
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return ExpiredRoleClaimMissing, nil
@@ -365,6 +365,35 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 	default:
 		return ExpiredRoleClaimRetained, fmt.Errorf("release role %s's expired claim held by %s: %w", role, claim.HolderSessionID, err)
 	}
+}
+
+// sendRoleClaimRelease frees claim, the record of role a release has read, conditional on the
+// revision it was read at: a delete of the record, or, where the record carries a withhold
+// (RoleClaim.WithheldFrom), a write of the withhold alone with no holder, since no release may
+// drop what only the daemon's lift clears (Registry.LiftRoleWithhold). A delete would let the
+// session the role is withheld from claim it at its next heartbeat. It answers the revision the
+// write left, and 0 for a delete, which answers none; the bucket's answers are the delete's, a
+// record written since the read being nats.ErrKeyExists either way. The caller bounds the call.
+func (r *Registry) sendRoleClaimRelease(role string, claim RoleClaim) (uint64, error) {
+	if claim.WithheldFrom == "" {
+		return 0, r.roles().Delete(role, nats.LastRevision(claim.Revision))
+	}
+	data, err := json.Marshal(RoleClaim{WithheldFrom: claim.WithheldFrom, WithheldBy: claim.WithheldBy})
+	if err != nil {
+		return 0, err
+	}
+	return r.roles().Update(role, data, claim.Revision)
+}
+
+// releasedRoleHolder moves this registry's copy of role's holder to what sendRoleClaimRelease
+// left of claim through a handle of epoch: no holder either way, fenced one past the revision
+// deleted for a delete (forgetRoleHolder), and at the revision of the withhold it wrote otherwise.
+func (r *Registry) releasedRoleHolder(role string, claim RoleClaim, revision, epoch uint64) {
+	if revision == 0 {
+		r.forgetRoleHolder(role, claim.Revision, epoch)
+		return
+	}
+	r.clearOwnRoleHolder(role, revision, epoch)
 }
 
 // releaseAllRoleClaims is a deregistration's release of sessionID's role claims: it releases

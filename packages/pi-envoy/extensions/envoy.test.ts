@@ -11811,6 +11811,37 @@ console.log(JSON.stringify(args));
     ]);
   });
 
+  // A claim whose session another claim holds can run on in a process of its own and write its
+  // role's claim into the same transcript: the newest record there is then that other claim's,
+  // written by another process. A restarted process of the session the launch named must not
+  // take that role from the record: the launch named the session's role, and it wins over a
+  // record another process wrote. A move this process makes is a record of its own, which still
+  // stands (the row above).
+  test("a launch's own role wins over another claim's recorded role", async () => {
+    const listener = sessionPodListener();
+    const pod = await bootSessionPod(
+      "session-role-contained",
+      "ses_pod_rightful",
+      listener,
+      { role: "fan-cloud", session: "ses_pod_rightful" },
+      [
+        {
+          type: "custom",
+          customType: "envoy-role-claim",
+          data: {
+            role: "contained-role",
+            session_id: "ses_pod_rightful",
+            client_instance_id: "c0ffee00c0ffee00c0ffee00c0ffee00",
+          },
+        },
+      ]
+    );
+    await pod.heartbeat();
+    await pod.shutdown();
+    const claim = roleClaimBody("ses_pod_rightful", "fan-cloud");
+    expect(listener.claims()).toEqual([claim, claim]);
+  });
+
   // The role is that one session's alone. Any other session that runs with the pod's environment
   // — an `omp -p` review the agent starts, an ACP host's other session, an id a `/new` mints — is
   // another id, so it claims nothing while the named session is live, and nothing once that
@@ -12047,6 +12078,51 @@ console.log(JSON.stringify(args));
     expect(moved.isError).not.toBe(true);
     expect(listener.claims()).toEqual([roleClaimBody("ses_pod_asked", "librarian")]);
     await review.shutdown();
+  });
+
+  // A role the listener withholds from the session is not held, whoever asks for it: the
+  // model's envoy_role_set and the Legion plugin's claim each fail naming the withhold, rather
+  // than reporting a role the session does not hold. The first claim is refused, which latches
+  // the withhold; the second reads the role first and sends no claim while it is withheld.
+  test("envoy_role_set and the Legion claim say a role the listener withholds from the session is not held", async () => {
+    const role = "legion-acme-1-implementer";
+    const claims: unknown[] = [];
+    const reads: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.pathname === "/v1/roles/set") {
+        claims.push(JSON.parse(init?.body?.toString() ?? "{}"));
+        return Response.json({ error: "role_withheld", role, withheld: true }, { status: 409 });
+      }
+      if (url.pathname === `/v1/roles/${role}`) {
+        reads.push(url.search);
+        return Response.json(
+          { error: `no holder for role ${role}`, reason: "unclaimed", withheld: true },
+          { status: 404 }
+        );
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?role-withheld-asked");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const context = sessionContext("ses_withheld");
+    await fixture.handlers.get("session_start")?.({}, context);
+    const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
+    if (roleTool === undefined) throw new Error("envoy_role_set was not registered");
+
+    const asked = await roleTool.execute("", { role });
+    const bridged = await claimEnvoyRole("ses_withheld", role, context).then(
+      () => undefined,
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+
+    const refusal = `envoy: role ${role} is withheld from session ses_withheld by the listener; it was not claimed`;
+    expect(asked.isError).toBe(true);
+    expect(asked.content[0]?.text).toContain(refusal);
+    expect(bridged).toBe(refusal);
+    expect(claims).toHaveLength(1);
+    expect(reads).toEqual(["?session_id=ses_withheld"]);
   });
 
   // A launch that names the role and no session names no holder: no session claims the role. The

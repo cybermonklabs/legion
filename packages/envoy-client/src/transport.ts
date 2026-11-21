@@ -145,12 +145,31 @@ const RoleWireSchema = z.object({
   // the listener omits it where the claim carries no mark, and a listener predating the field
   // sends none, so an absent one means no mark.
   handed_back: z.boolean().optional(),
+  // Whether the role is withheld from the session the lookup was made for (`getRole`'s
+  // `sessionID`): the listener sends `true` only to that session, on the 200 and on the 404 alike,
+  // and leaves the key out otherwise, so an absent one means not withheld, as it does from a
+  // listener predating the field. No answer names the session a role is withheld from.
+  withheld: z.boolean().optional(),
 });
+
+/** The one field of a role lookup's 404 that {@link roleWithheld} reads. */
+const RoleWithheldMarkWireSchema = z.object({ withheld: z.boolean().optional() });
 
 const RoleHeldWireSchema = z.object({
   error: z.string(),
   role: z.string(),
   holder: z.string(),
+});
+
+/**
+ * The 409 `POST /v1/roles/set` answers a session the role is withheld from, soft claim or hard:
+ * `role_withheld`, naming the role and no holder. Read before {@link RoleHeldWireSchema}, whose
+ * `holder` it does not carry.
+ */
+const RoleWithheldWireSchema = z.object({
+  error: z.literal("role_withheld"),
+  role: z.string(),
+  withheld: z.literal(true),
 });
 
 /**
@@ -444,6 +463,31 @@ export function mayActOnRoleRecord(
   return !holdsRole;
 }
 
+/**
+ * Whether a role lookup made for this caller's session (`getRole(role, { sessionID })`) says the
+ * role is withheld from that session: its answer, or the `EnvoyApiError` its 404 threw, carries
+ * `withheld: true`. The listener withholds a role from a session at a Legion daemon's word, while
+ * a claim of that session's process does not hold its session: the session's standing claim is
+ * freed, its every claim of the role is refused (`setRole`'s `{ claimed: false, withheld: true }`),
+ * and a publish to the role finds no holder. A role nobody holds answers the 404, which carries
+ * the mark too, so both answers are read here. Any other error says nothing about a withhold.
+ *
+ * A withheld answer is a lost role, and the client claims it no more until a lookup says it is
+ * not withheld: a claim at every heartbeat would be refused at every heartbeat, and the withhold
+ * is lifted only by the daemon that set it. One rule for every client, as {@link roleHeldBy} is.
+ */
+export function roleWithheld(lookup: RoleInfo | EnvoyApiError): boolean {
+  if (!(lookup instanceof EnvoyApiError)) return lookup.withheld === true;
+  if (lookup.details.status !== 404) return false;
+  try {
+    const parsed = RoleWithheldMarkWireSchema.safeParse(JSON.parse(lookup.details.responseBody));
+    return parsed.success && parsed.data.withheld === true;
+  } catch {
+    // A body that is not JSON is no answer of the listener's.
+    return false;
+  }
+}
+
 export type SubscribeInput = {
   readonly sessionID: string;
   readonly directory: string;
@@ -620,9 +664,28 @@ export type SetRoleInput = {
   readonly clientInstanceID?: string;
 };
 
+/**
+ * What a claim decided. `{ claimed: false, holder }` is a soft claim a live holder kept the role
+ * from, or a claim of a role standing under the claimant's own session id that another process
+ * still renews. `{ claimed: false, withheld: true }` is a claim from the session the listener
+ * withholds the role from, which is refused whether soft or hard and names no holder: that
+ * session has lost the role until a lookup says it is no longer withheld ({@link roleWithheld}).
+ */
 export type SetRoleResult =
   | { readonly claimed: true; readonly interest: Interest }
-  | { readonly claimed: false; readonly holder: string };
+  | { readonly claimed: false; readonly holder: string }
+  | { readonly claimed: false; readonly withheld: true };
+
+export type GetRoleOptions = {
+  /**
+   * The session this lookup is made for, the caller's own: sent as the `session_id` query and
+   * presented as the session the call acts for (`RequestOptions.actingSession`), so the listener
+   * answers `withheld: true` where the role is withheld from that session. Under a broker token
+   * the listener reads the session from the token and refuses one naming another session 403.
+   * Omitted, the lookup names no session and no answer says withheld.
+   */
+  readonly sessionID?: string;
+};
 
 export type ListSessionsInput = {
   readonly directory?: string;
@@ -882,10 +945,11 @@ export type EnvoyClient = {
    * (`previousSessionID`) takes the role from it only when that predecessor has no live registry
    * entry, when its live entry carries this client instance's own instance id, or when either
    * side carries no instance id; any other live holder keeps the role and is reported as
-   * `{ claimed: false, holder }`.
+   * `{ claimed: false, holder }`. A claim from a session the role is withheld from is reported as
+   * `{ claimed: false, withheld: true }`, soft or hard.
    */
   readonly setRole: (input: SetRoleInput) => Promise<SetRoleResult>;
-  readonly getRole: (role: string) => Promise<RoleInfo>;
+  readonly getRole: (role: string, options?: GetRoleOptions) => Promise<RoleInfo>;
   readonly listSessions: (input?: ListSessionsInput) => Promise<readonly SessionInfo[]>;
 };
 
@@ -911,9 +975,11 @@ type RequestOptions = {
    * its broker token does not (`sessionNotBound`, packages/envoy/cmd/listener/brokerauth.go), so
    * the credential is asked for that session's own headers rather than the caller's current
    * ones; a call this process makes for the session it has just left — the hand-back of a role
-   * that session still holds — is the one that needs it. A read of another session's record
-   * names none: those are not narrowed, and asking for a credential of a session this process
-   * never acted as would trade for a name the broker refuses.
+   * that session still holds — is the one that needs it. A role lookup made for the caller's own
+   * session (`GetRoleOptions.sessionID`) names it too, in its query, which the listener holds to
+   * the token's session the same way. A read of another session's record names none: those are
+   * not narrowed, and asking for a credential of a session this process never acted as would
+   * trade for a name the broker refuses.
    */
   readonly actingSession?: string;
 };
@@ -1345,8 +1411,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       try {
         raw = await post("/v1/roles/set", body, { actingSession: input.sessionID });
       } catch (error) {
-        // A soft claim refused by a live holder is an outcome, not a failure:
-        // the listener answers 409 with the holder's id.
+        // A soft claim refused by a live holder is an outcome, not a failure: the listener
+        // answers 409 with the holder's id. So is any claim from a session the role is withheld
+        // from, which the listener answers 409 `role_withheld`.
         if (error instanceof EnvoyApiError && error.details.status === 409) {
           let answer: unknown;
           try {
@@ -1354,6 +1421,11 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           } catch {
             // A 409 whose body did not arrive, or is not JSON, names no holder: it stays the refusal.
             throw error;
+          }
+          // A withheld claim names no holder, so it is read first: the held shape would not
+          // parse it, and the refusal would be thrown as a failure.
+          if (RoleWithheldWireSchema.safeParse(answer).success) {
+            return { claimed: false, withheld: true };
           }
           const held = RoleHeldWireSchema.safeParse(answer);
           if (held.success) return { claimed: false, holder: held.data.holder };
@@ -1365,14 +1437,26 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         interest: InterestWireSchema.parse(answerJson(raw, "POST", "/v1/roles/set")),
       };
     },
-    getRole: async (role) =>
-      RoleWireSchema.parse(
+    getRole: async (role, options = {}) => {
+      // The query is omitted for a lookup made for no session, so that request stays what an
+      // older client sent and no answer says withheld.
+      const path = `/v1/roles/${encodeURIComponent(role)}${
+        options.sessionID === undefined
+          ? ""
+          : `?session_id=${encodeURIComponent(options.sessionID)}`
+      }`;
+      return RoleWireSchema.parse(
         answerJson(
-          await request(`/v1/roles/${encodeURIComponent(role)}`, { method: "GET" }),
+          await request(
+            path,
+            { method: "GET" },
+            options.sessionID === undefined ? {} : { actingSession: options.sessionID }
+          ),
           "GET",
-          `/v1/roles/${encodeURIComponent(role)}`
+          path
         )
-      ),
+      );
+    },
     listSessions: async (input = {}) => {
       const search = new URLSearchParams();
       if (input.directory !== undefined) search.set("dir", input.directory);

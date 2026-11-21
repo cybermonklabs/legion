@@ -125,7 +125,14 @@ func (r *Registry) SetRole(sessionID, machineID, role string, soft bool, superse
 // The record it writes is a fresh claim and never the standing one amended, so the hand-back
 // mark goes with the claim it was written on (RoleClaim.HandedBack): a role granted again to
 // the very process that handed it back is that process's to renew from this write on, which is
-// how a holder takes back a role it gave up without waiting out the role claim reaper.
+// how a holder takes back a role it gave up without waiting out the role claim reaper. The one
+// thing the fresh record carries over is a withhold (RoleClaim.WithheldFrom and WithheldBy),
+// which only the daemon's lift clears (Registry.LiftRoleWithhold).
+//
+// A claim by the session the role is withheld from is refused ErrRoleWithheld, soft or hard and
+// whoever holds the role, before anything of it is written; so is one whose write lost to a
+// withhold that landed after its read, its topic rolled back as a claim that did not land rolls
+// it back.
 //
 // Each bucket call waits no longer than ctx (bus.Bounded): POST /v1/roles/set passes its request's
 // own context. A call ctx abandoned may still land after this answer. Every claim writes with the
@@ -171,6 +178,11 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 	if err != nil {
 		return Interest{}, err
 	}
+	// Before anything else this call weighs: a session the role is withheld from takes it by no
+	// claim, soft or hard, whoever holds it (RoleClaim.WithheldFrom).
+	if oldClaim.WithheldFrom == req.SessionID {
+		return Interest{}, roleWithheldFrom(req.Role, req.SessionID)
+	}
 	// Before the soft rules and before any write: the caller's own precondition, weighed on the
 	// read this call made itself, so the revision compared is the one its conditional write is
 	// conditional on.
@@ -199,6 +211,11 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		epoch    uint64
 	)
 	for {
+		// A record re-read after a lost write can carry a withhold that landed meanwhile.
+		if oldClaim.WithheldFrom == req.SessionID {
+			r.rollBackClaimTopic(ctx, req, roleTopic)
+			return Interest{}, roleWithheldFrom(req.Role, req.SessionID)
+		}
 		if req.BeforeTry != nil {
 			if hookErr := req.BeforeTry(tries, oldClaim); hookErr != nil {
 				r.rollBackClaimTopic(ctx, req, roleTopic)
@@ -212,6 +229,10 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 			PreviousSessionID: "",
 			ClientInstanceID:  req.ClientInstanceID,
 			RenewedAt:         now,
+			// A withhold from another session stays with the role whoever claims it: only the
+			// daemon's lift clears it (Registry.LiftRoleWithhold).
+			WithheldFrom: oldClaim.WithheldFrom,
+			WithheldBy:   oldClaim.WithheldBy,
 		}
 		if req.Soft {
 			claim.PreviousSessionID = req.PreviousSessionID
@@ -310,6 +331,11 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		}
 		if holderErr != nil {
 			return Interest{}, errors.Join(err, holderErr)
+		}
+		// A write that lost to a withhold of this very session is refused as the withhold, as a
+		// claim that read it first is.
+		if current.WithheldFrom == req.SessionID {
+			return Interest{}, roleWithheldFrom(req.Role, req.SessionID)
 		}
 		if conditionalLoss {
 			return Interest{}, &ErrRoleClaimRevisionMismatch{

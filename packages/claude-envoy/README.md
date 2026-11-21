@@ -157,7 +157,13 @@ message from Dispatch's Agents page as that person's own turn.
   built before a release stated its process can hand this session's role lane back without
   freeing the claim, which the listener marks rather than frees, so the mark is read as a role
   this process does not hold and the next heartbeat claims it back, its grant a fresh record
-  with no mark. This process hands no lane back itself. Shutdown (stdin end, SIGTERM, SIGINT, or the SIGHUP a
+  with no mark. A role the listener withholds from this session (a Legion daemon's word, while
+  this session's claim does not hold its session) is a lost role: when the heartbeat's lookup,
+  made for this session, or its claim says the role is withheld, the session stops holding it and
+  says so once on stderr; the record stays. No claim of the role is sent while a lookup says it is
+  withheld, and the first heartbeat whose lookup says the withhold is lifted claims it and writes
+  the record. `envoy_role_set` names the withhold in its error, and the Legion claim stops the pane
+  naming it. This process hands no lane back itself. Shutdown (stdin end, SIGTERM, SIGINT, or the SIGHUP a
   closing pane sends the whole process group) drains NATS and deregisters the session, naming
   this process's client instance id, so the listener removes the registry entry only while it
   still carries that id or none, and every topic hand-back names it too, so a release frees only

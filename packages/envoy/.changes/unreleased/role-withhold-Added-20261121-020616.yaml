@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  `PUT /v1/role-withholds` and `DELETE /v1/role-withholds`, body `{"role", "session"}`, withhold
+  a role from a session and lift that withhold, each answered `204`. A Legion daemon uses them
+  when its boot could not stop the process of a claim that does not hold its session, so no
+  message on the role's topic reaches that process. A withhold frees the session's standing claim
+  in the same conditional write that marks the role's record in `envoy_roles` (`withheld_from`,
+  `withheld_by`). While it stands, `POST /v1/roles/set` answers that session's soft and hard
+  claims `409 {"error":"role_withheld","role","withheld":true}`, and `GET /v1/roles/{role}`
+  answers `"withheld": true` to that session alone, named by its broker token or by
+  `?session_id=` under any other credential; a broker token stating another session there is
+  `403`. Another session's claim, a renewal, a hand-back and a release keep the withhold, and a
+  release writes it back with no holder rather than delete the record. Only a broker token whose
+  session is `legion-daemon:<K>`, with the named project scope and the one project `K`, may call
+  the routes, for a role of project `K`, and only the same daemon lifts its own withhold. Every
+  other caller is `403`, the withheld session's own token and the shared bearer among them, and a
+  withhold another daemon wrote is `409 role_withheld_by_another` on a PUT and `403` on a DELETE.
+time: 2026-11-21T02:06:16Z
+custom:
+    Issue: role-withhold

@@ -33,6 +33,7 @@ import {
   parseSubscribeAnswer,
   type RoleInfo,
   roleHeldBy,
+  roleWithheld,
 } from "../transport";
 
 /** The grace the unresponsive rule names, in minutes, from the constant the Dispatch server
@@ -1065,6 +1066,35 @@ describe("EnvoyClient", () => {
       client.setRole({ sessionID: "ses_x", role: "controller", soft: true })
     ).rejects.toBeInstanceOf(EnvoyApiError);
     expect(calls).toBe(1);
+  });
+
+  // A session the listener withholds a role from is refused its claim, soft or hard, with a 409
+  // that names no holder: no session holds the role on that session's behalf, and the answer
+  // must not read as a refusal by a live holder.
+  test("a 409 role_withheld is a not-claimed result that says the role is withheld", async () => {
+    const recorded = recordFetch([
+      Response.json(
+        { error: "role_withheld", role: "controller", withheld: true },
+        { status: 409 }
+      ),
+      Response.json(
+        { error: "role_withheld", role: "controller", withheld: true },
+        { status: 409 }
+      ),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const soft = await client.setRole({
+      sessionID: "ses_withheld",
+      role: "controller",
+      soft: true,
+    });
+    const hard = await client.setRole({ sessionID: "ses_withheld", role: "controller" });
+
+    expect(soft).toEqual({ claimed: false, withheld: true });
+    expect(hard).toEqual({ claimed: false, withheld: true });
+    // A refusal is the listener's answer, never sent again.
+    expect(recorded.requests).toHaveLength(2);
   });
 
   test("lists listener sessions and retains their registration metadata, plugin or none", async () => {
@@ -2108,6 +2138,60 @@ describe("EnvoyClient", () => {
     expect(unnamed).toMatchObject({ role: "controller", holder: "ses_holder" });
   });
 
+  // The listener answers `withheld` only to the session a role is withheld from, which it reads
+  // from the `session_id` query under the shared bearer and from the broker token otherwise, so a
+  // lookup made for a session names it both ways. A lookup made for no session names neither, as
+  // every lookup did before.
+  test("a role lookup made for a session names it in the query and presents its credential", async () => {
+    const presentedFor: (string | undefined)[] = [];
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: (_method, _url, session) => {
+        presentedFor.push(session);
+        return { Authorization: "DPoP token-7d1f", DPoP: "proof" };
+      },
+      secret: () => "token-7d1f",
+    };
+    const answer = { role: "controller", holder: "ses_holder", last_seen: 42, state: "live" };
+    const recorded = recordFetch([jsonResponse(answer), jsonResponse(answer)]);
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      fetch: recorded.fetch,
+      credential,
+    });
+
+    await client.getRole("controller", { sessionID: "ses a/1" });
+    await client.getRole("controller");
+
+    expect(recorded.requests[0]?.url).toBe(
+      "http://listener/v1/roles/controller?session_id=ses%20a%2F1"
+    );
+    expect(recorded.requests[1]?.url).toBe("http://listener/v1/roles/controller");
+    expect(presentedFor).toEqual(["ses a/1", undefined]);
+  });
+
+  test("a role lookup carries withheld where the listener answers it, and none where it does not", async () => {
+    const recorded = recordFetch([
+      jsonResponse({
+        role: "controller",
+        holder: "ses_other",
+        last_seen: 42,
+        state: "live",
+        withheld: true,
+      }),
+      jsonResponse({ role: "controller", holder: "ses_other", last_seen: 42, state: "live" }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const withheld = await client.getRole("controller", { sessionID: "ses_withheld" });
+    const plain = await client.getRole("controller", { sessionID: "ses_withheld" });
+
+    expect(withheld.withheld).toBe(true);
+    // The listener leaves the key out for a session nothing is withheld from, and a listener
+    // predating the field never sends it.
+    expect(Object.hasOwn(plain, "withheld")).toBe(false);
+  });
+
   test("surfaces listener error text and expected fields without retrying a 400", async () => {
     const recorded = recordFetch([
       Response.json(
@@ -2351,6 +2435,56 @@ describe("roleHeldBy", () => {
     ).toBe(true);
     // A listener predating the field sends none, which reads as no mark.
     expect(Object.hasOwn(answer("ses_a", "proc-one"), "handed_back")).toBe(false);
+  });
+});
+
+describe("roleWithheld", () => {
+  /** A role lookup's 200 naming `holder`, with the listener's `withheld` where given. */
+  const answer = (withheld?: boolean): RoleInfo => ({
+    role: "legion-controller",
+    holder: "ses_other",
+    last_seen: 2,
+    state: "live",
+    ...(withheld === undefined ? {} : { withheld }),
+  });
+
+  /** The error a role lookup throws for the listener's `status` answering `body`. */
+  const refusal = (status: number, body: Record<string, unknown>): EnvoyApiError =>
+    new EnvoyApiError({
+      method: "GET",
+      url: "http://listener/v1/roles/legion-controller?session_id=ses_a",
+      status,
+      responseBody: JSON.stringify(body),
+    });
+
+  test("a 200 that says withheld is withheld, and one that does not is not", () => {
+    expect(roleWithheld(answer(true))).toBe(true);
+    expect(roleWithheld(answer(false))).toBe(false);
+    expect(roleWithheld(answer())).toBe(false);
+  });
+
+  test("the 404 of an unclaimed role that says withheld is withheld, and one that does not is not", () => {
+    const unclaimed = {
+      error: "no holder for role legion-controller",
+      reason: "unclaimed",
+      claim_revision: 7,
+    };
+    expect(roleWithheld(refusal(404, { ...unclaimed, withheld: true }))).toBe(true);
+    expect(roleWithheld(refusal(404, unclaimed))).toBe(false);
+  });
+
+  test("only a lookup's own answers are read: another status is no withhold whatever its body", () => {
+    expect(roleWithheld(refusal(403, { error: "forbidden", withheld: true }))).toBe(false);
+    expect(
+      roleWithheld(
+        new EnvoyApiError({
+          method: "GET",
+          url: "http://listener/v1/roles/legion-controller",
+          status: 404,
+          responseBody: "404 page not found",
+        })
+      )
+    ).toBe(false);
   });
 });
 

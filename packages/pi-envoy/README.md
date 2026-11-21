@@ -53,9 +53,16 @@ stated its process hands a role's lane topic back under this session id without 
 free the claim, and the listener marks the claim rather than freeing it, after which no
 registration renews it. The pass that reads the mark claims the role again at once, and that
 grant writes a fresh record with no mark, so a hold marked this way is back before the role
-claim reaper could free it. Each extension instance mints its client instance id when it starts
-and sends it on every registration, on every claim and release, and on the deregistration at
-shutdown, where the listener removes the registration only while it carries the same id or none.
+claim reaper could free it. A role the listener withholds from this session — a Legion daemon's
+word, while this session's claim does not hold its session — is a lost role: when the heartbeat's
+lookup, made for this session, or any claim says the role is withheld, the session stops holding
+it, and the log and the pane say so once (`envoy: role <role> is withheld from session <id>: …`).
+While that stands no claim of the role is sent: each pass that wants the role reads it first, and
+the first one whose read says the withhold is lifted claims it. `envoy_role_set` and the Legion
+plugin's claim fail naming the withhold. Each extension instance mints its client instance id
+when it starts and sends it on every registration, on every claim and release, and on the
+deregistration at shutdown, where the listener removes the registration only while it carries the
+same id or none.
 A registration also renews every role claim this session holds that names this same instance,
 whatever topics it carries and unless the listener has marked that claim handed back;
 a release frees only the claims naming it, so a second process that resumed
@@ -80,8 +87,11 @@ that very session. A holder that is another session is stale or wrong, such as a
 session the registry still lists as live for some minutes, so the role comes back to the live
 session at its next registration. The claim writes its transcript record once: a later claim the
 newest record already names writes none. A move the model makes with `envoy_role_set` is a
-record of its own, which no pass undoes. Without the variables no pass claims a role the
-session's records do not name.
+record of its own, which no pass undoes. A newer record of another role that another process
+wrote on the same transcript does not stand against the launch's role: that is a claim whose
+session another claim holds, run on in a process of its own, and the named session's process
+claims the launch's role whatever that record says. Without the variables no pass claims a role
+the session's records do not name.
 
 The role is that one session's alone, and each pass compares the session open then. Nothing
 takes the variables out of the environment, so every process the agent starts in the pod gets

@@ -3291,6 +3291,15 @@ export default function envoyExtension(hostApi: PiApi): void {
     },
   });
 
+  // What a claim the model or a plugin asked for fails with when the listener withholds the role
+  // from session `id` (`claimRole` latched the withhold, from the claim's refusal or from the
+  // read it made first): the session does not hold the role, and a caller told it did would act
+  // on a role whose messages never reach it. `undefined` when no withhold of `role` stands.
+  const withheldClaimRefusal = (id: string, role: string): string | undefined =>
+    registrationState.withheldFor(id) === role
+      ? `envoy: role ${role} is withheld from session ${id} by the listener; it was not claimed`
+      : undefined;
+
   // Follows `topic` unless it served a role that has ended since `snapshot` was taken: a
   // role-bound subject is not followed again, and one whose role ends meanwhile is dropped
   // before any registration can carry it. Answers whether the topic is still wanted.
@@ -3761,11 +3770,18 @@ export default function envoyExtension(hostApi: PiApi): void {
   //    (`recordedRole`): the transcript entry written at claim time is the durable record (it
   //    survives `omp --resume` after the listener has reaped a dead session's rows), and a
   //    recorded release is final. A fork's branch is a copy of its parent's, so it records its
-  //    parent's role; a `/new` records none; a resume or branch records its own.
+  //    parent's role; a `/new` records none; a resume or branch records its own. One record does
+  //    not stand: where `id` is the session the launch named for its role (`sessionRole`), a
+  //    record of another role that another process wrote — its `client_instance_id` names a
+  //    process that is not this one — gives way to the launch's role. That is a claim whose
+  //    session another claim holds, run on in a process of its own and writing its role into the
+  //    same transcript; a restarted process of the session the launch named must not take that
+  //    role from the record. A record this process wrote stands, and so does one that names no
+  //    writer (a build before the record named one): a move the model makes here with
+  //    `envoy_role_set` is such a record, which no pass undoes.
   //  - Otherwise, when `id` is the session the launch named for it, the role a session pod's
   //    launch named (`sessionRole`), which the pass claims outright (`settleRole`), so the
-  //    listener never refuses it. A move the model makes with `envoy_role_set` is a record, which
-  //    no pass undoes.
+  //    listener never refuses it.
   //  - Otherwise the role this process holds, when its hold is under `id` or a session `id`
   //    continues (a tree navigation to before the claim, or a fork from before it).
   //  - Otherwise, once when a pass establishes a resumed or switched session (`readRows`), the
@@ -3793,7 +3809,20 @@ export default function envoyExtension(hostApi: PiApi): void {
         : role;
     const recorded = recordedRole(branch);
     if (recorded === null) return undefined;
-    if (recorded !== undefined) return want(recorded);
+    if (recorded !== undefined) {
+      const writer = transcriptRoleRecord(branch)?.client_instance_id;
+      const writtenElsewhere =
+        writer !== undefined && writer !== "" && writer !== registrationState.clientInstanceID;
+      if (
+        sessionRole !== undefined &&
+        id === sessionRoleSession &&
+        listenerRoleName(recorded) !== sessionRole &&
+        writtenElsewhere
+      ) {
+        return sessionRole;
+      }
+      return want(recorded);
+    }
     if (sessionRole !== undefined && sessionRoleRefusal(id, sessionRole) === undefined) {
       return sessionRole;
     }
@@ -4233,8 +4262,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     const claimed = await registrationState.roleMoves.run(
       async (handle) => {
         handle.actFor(targetSessionID);
-        await handle.claimRole(role);
-        return true;
+        return handle.claimRole(role);
       },
       (refusal) => {
         claimAdopted = refusal.claimAdopted;
@@ -4244,6 +4272,10 @@ export default function envoyExtension(hostApi: PiApi): void {
     // one: the plugin that asked hears that, as it hears a claim that failed, and hears whether
     // the listener granted the claim all the same.
     if (claimed === undefined) throw sessionLeftDuringClaim(targetSessionID, role, claimAdopted);
+    // A role the listener withholds from this session is one it cannot hold, which the plugin
+    // logs and stops on (`LegionClaimHost.claimRole`).
+    const withheld = claimed ? undefined : withheldClaimRefusal(targetSessionID, role);
+    if (withheld !== undefined) throw new Error(withheld);
   };
 
   const subscribeNotice: LegionNoticeSubscription = async (
@@ -5360,8 +5392,8 @@ export default function envoyExtension(hostApi: PiApi): void {
                   `This session holds role ${held}, and ${bound.join(", ")} lasts only while it does; envoy_role_set does not move it to ${role}`
                 );
               }
-              await handle.claimRole(role);
-              return { released: moving ? held : undefined };
+              const claimed = await handle.claimRole(role);
+              return { claimed, released: moving ? held : undefined };
             },
             (refusal) => {
               claimAdopted = refusal.claimAdopted;
@@ -5371,7 +5403,16 @@ export default function envoyExtension(hostApi: PiApi): void {
           // open one: the tool says so rather than report a role it never took, and says which
           // of the two the listener left behind.
           if (moved === undefined) throw sessionLeftDuringClaim(target, role, claimAdopted);
-          const { released } = moved;
+          const { claimed, released } = moved;
+          // A claim that did not land holds no role, so the tool says why rather than report one.
+          // This claim is outright, so beside a withhold the one refusal it can get is a claim
+          // standing under this very session id that another process still renews.
+          if (!claimed) {
+            throw new Error(
+              withheldClaimRefusal(target, role) ??
+                `envoy: role ${role} was not claimed: another process holds it under session ${target}, and the listener grants it once that process stops renewing its claim`
+            );
+          }
           return toolSuccess(
             released === undefined
               ? `Now holding role: ${role}`
