@@ -96,6 +96,10 @@ const READS = {
   comments: { key: ["comments", "CORE-1"] },
   components: { key: ["components", "CORE"] },
   conversationMessages: { key: ["issue-messages", "CORE-1"] },
+  // The issue's decisions: its Decisions view reads them under this key with a query of its own
+  // (`DecisionsPanel.tsx`), and its outline, the margin beside its spec and the spec's marks
+  // through `issueDecisionsQuery`.
+  decisions: { key: ["decisions", "CORE-1"] },
   detail: { key: issueQuery("CORE-1").queryKey },
   docAskPanel: {
     data: { edges: [], node: { id: "ask-7", kind: "ask" } },
@@ -1083,6 +1087,29 @@ const rules: Record<string, Rule> = {
     event: event("artifact.version", { artifact_id: "artifact-3", name: "Plan" }),
     refreshes: ["summary", "detail"],
     spares: ["projects", "inbox", "docSummary", "parentSummary"],
+  },
+  "the first upload of an issue's decisions document refreshes the issue's decisions": {
+    event: event("artifact.created", {
+      artifact: { id: "artifact-4", name: "decisions.md", role: "decisions", slug: "decisions-md" },
+    }),
+    refreshes: ["decisions", "summary", "detail"],
+    spares: ["projects", "inbox", "docSummary"],
+  },
+  // A server built before document roles sends the decisions document with no role, and names it
+  // by its slug alone.
+  "the first upload of a decisions document with no role refreshes the issue's decisions": {
+    event: event("artifact.created", {
+      artifact: { id: "artifact-4", name: "decisions.md", slug: "decisions-md" },
+    }),
+    refreshes: ["decisions", "summary", "detail"],
+    spares: ["projects", "inbox", "docSummary"],
+  },
+  "the upload of another document of the issue leaves the issue's decisions alone": {
+    event: event("artifact.created", {
+      artifact: { id: "artifact-4", name: "notes.md", slug: "notes-md" },
+    }),
+    refreshes: ["summary", "detail"],
+    spares: ["decisions"],
   },
   "a version of a project document refreshes that document's summary and page alone": {
     event: event("artifact.version", { artifact_id: "artifact-1", name: "Plan" }, documentOwner),

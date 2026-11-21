@@ -26,6 +26,7 @@ import type {
   MessageRead,
   ReferenceQuestions,
 } from "../../api/types";
+import { useMarginDrawer } from "../issue-page/margin-slot";
 import { useAgentText } from "./AgentName";
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
@@ -67,6 +68,58 @@ const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryS
   query.state.status === "error" ? "always" : false;
 
 export { refetchFailedOnFocus };
+
+/**
+ * The options of a read that events keep fresh, spread into its query: window focus fetches it
+ * again only while it is in error (`refetchFailedOnFocus`), and it is never stale by its age, so
+ * no mount reads it again while it holds an answer. What reads it again is an event whose refresh
+ * rule names its key (`api/event-refresh.ts`), a gap in the feed, which refreshes every read the
+ * app holds (`refreshQueries`), or a write that invalidates its key. Staleness is per observer,
+ * so a view that observes such a read takes these options too: under the app's defaults
+ * (`main.tsx`: a 30 s `staleTime`, and a window focus fetches a stale read) a focus more than
+ * 30 s after the load would read it again for that view alone.
+ */
+export const EVENT_FRESH = {
+  refetchOnWindowFocus: refetchFailedOnFocus,
+  staleTime: Number.POSITIVE_INFINITY,
+} as const;
+
+/**
+ * `EVENT_FRESH` while the shell shows the new issue page, and `undefined` on every other page,
+ * spread into a read's query: there the read is kept fresh by events, and elsewhere it keeps the
+ * app's defaults. The shell hands its margin the Details drawer for as long as the new page is
+ * open, and on no other page (`app.tsx`), so the drawer's presence (`useMarginDrawer`) is that
+ * page's. There the outline reads the issue's asks, comments and decisions under the margin's
+ * keys and keeps them fresh by events (`useIssueTree.ts`), and the event refresh rules name what
+ * references a record (`api/event-refresh.ts`), so a window focus 30 s after the read, the app's
+ * staleness, would read it again for nothing. The drawer is the whole shell's, so the rule holds
+ * for every view drawn while the new page is open, Details or not: an ask card's Referenced by in
+ * the inbox drawer takes it too.
+ */
+export function useNewIssuePageFreshness(): typeof EVENT_FRESH | undefined {
+  return useMarginDrawer() === undefined ? undefined : EVENT_FRESH;
+}
+
+/**
+ * Whether a read stands failed, by its state (TanStack Query's; a read's observer gives the same
+ * fields): it holds no answer, and a fetch of it has failed (`errorUpdateCount`). That count goes
+ * back to 0 only with the read's answer - the read reset, or taken out of the cache - so a
+ * failure it counts came after the read last held an answer.
+ *
+ * The read's status is not the rule, for two reasons. A read that holds an answer and whose
+ * refresh failed reads `error`, though its rows are still drawn from that answer: it is not
+ * failed, and draws no line, which would stand over rows that are all drawn and take the page's
+ * opening. And TanStack sets a read that holds no answer back to `pending`, its error cleared,
+ * the moment it fetches again: a failed read goes on standing failed while it runs again - its
+ * Retry, or window focus - so its line stays, with the focus its Retry holds, until the read
+ * answers.
+ */
+export function standsFailed(state: {
+  readonly data: unknown;
+  readonly errorUpdateCount: number;
+}): boolean {
+  return state.data === undefined && state.errorUpdateCount > 0;
+}
 
 export interface ReferenceTarget {
   readonly title: string | undefined;

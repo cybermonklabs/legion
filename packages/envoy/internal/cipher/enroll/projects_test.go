@@ -45,7 +45,8 @@ func enrolSession(t *testing.T, svc *Service, person, runtimeID string, projects
 
 // TestASessionEnrollsWithProjectsItsPersonSees: a session whose person may see every project it
 // names enrolls with that list, held sorted whatever order it was named in, and the enrollment's
-// own read answers it.
+// own read answers it. A restricted member's session enrolls nothing, whatever it names
+// (TestARestrictedMembersSessionEnrollsNothingNamingProjectsOrNot).
 func TestASessionEnrollsWithProjectsItsPersonSees(t *testing.T) {
 	svc := newService(t)
 	withProjects(t, svc)
@@ -54,7 +55,6 @@ func TestASessionEnrollsWithProjectsItsPersonSees(t *testing.T) {
 		projects []string
 	}{
 		{carolLogin, []string{"PUB", "PRIV"}},
-		{bobLogin, []string{"PRIV"}},
 		{aliceLogin, []string{"PUB"}},
 	} {
 		enr, err := enrolSession(t, svc, c.person, "box-"+c.person, c.projects...)
@@ -92,30 +92,76 @@ func TestASessionNamingAProjectItsPersonCannotSeeIsRefused(t *testing.T) {
 	}
 }
 
-// TestARestrictedMembersSessionMustNameItsProjects: a restricted member's session naming no
-// project is refused, since such a person sees only the projects that name them; naming one they
-// may see enrolls. A full member's session naming none enrolls as before.
-func TestARestrictedMembersSessionMustNameItsProjects(t *testing.T) {
+// TestARestrictedMembersSignInSessionMustNameItsProjects: a session under a restricted member's
+// sign-in, which checkMember does not hold (the broker checked the sign-in's domain itself), is
+// held to #4135's list rule: naming no project it is refused ErrProjectsRequired, since such a
+// person sees only the projects that name them, and naming PRIV, whose list names bob, it enrolls
+// with that list. While Dispatch refuses the broker's own account, or answers a member kind the
+// broker does not know, the empty list is refused ErrProjectsUnchecked, wrapping the cause. A full
+// member's session naming none enrolls as before. (A restricted member's machine login and pod
+// login enroll nothing at all: TestARestrictedMembersLauncherEnrollsNothing.)
+func TestARestrictedMembersSignInSessionMustNameItsProjects(t *testing.T) {
+	ctx := context.Background()
+	enrolUnder := func(t *testing.T, svc *Service, cred Credential, runtimeID string, projects ...string) (Enrollment, error) {
+		t.Helper()
+		return svc.Create(ctx, cred, Enrollment{Kind: "session", RuntimeID: runtimeID, Thumbprint: "tp-" + runtimeID, Projects: projects})
+	}
 	svc := newService(t)
 	withProjects(t, svc)
-	if _, err := enrolSession(t, svc, bobLogin, "box-bob-none"); !errors.Is(err, ErrProjectsRequired) {
-		t.Fatalf("bob's session naming no project = %v; want ErrProjectsRequired", err)
+	signIn := personsSignIn(t, svc, bobLogin)
+	if _, err := enrolUnder(t, svc, signIn, "box-bob-signin-none"); !errors.Is(err, ErrProjectsRequired) {
+		t.Fatalf("a session under bob's sign-in naming no project = %v; want ErrProjectsRequired", err)
 	}
-	if _, err := enrolSession(t, svc, bobLogin, "box-bob-priv", "PRIV"); err != nil {
-		t.Fatalf("bob's session naming PRIV: %v", err)
+	enr, err := enrolUnder(t, svc, signIn, "box-bob-signin-priv", "PRIV")
+	if err != nil || !slices.Equal(enr.Projects, []string{"PRIV"}) {
+		t.Fatalf("a session under bob's sign-in naming PRIV = projects %v, %v; want it enrolled naming [PRIV]", enr.Projects, err)
 	}
 	if enr, err := enrolSession(t, svc, aliceLogin, "box-alice-none"); err != nil || enr.Projects != nil {
 		t.Fatalf("alice's session naming no project = %+v, %v; want it enrolled naming none", enr, err)
 	}
+
+	for _, c := range []struct {
+		name  string
+		serve func(t *testing.T, svc *Service)
+		cause error
+	}{
+		{"Dispatch refuses the broker's account", func(t *testing.T, svc *Service) {
+			dispatch := withProjects(t, svc)
+			svc.Projects = projectaccess.New(dispatch.URL, projectaccesstest.StaticAccount("not-the-stand-ins-token"), nil)
+		}, dispatchread.ErrBrokerRefused},
+		{"Dispatch answers a member kind the broker does not know", func(t *testing.T, svc *Service) {
+			dispatch := projectaccesstest.NewServer(t, nil, map[string]string{bobLogin: "guest"})
+			svc.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
+		}, projectaccess.ErrUnknownMemberKind},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			svc := newService(t)
+			c.serve(t, svc)
+			signIn := personsSignIn(t, svc, bobLogin)
+			if _, err := enrolUnder(t, svc, signIn, "box-bob-signin-unchecked"); !errors.Is(err, ErrProjectsUnchecked) || !errors.Is(err, c.cause) {
+				t.Fatalf("a session under bob's sign-in naming no project = %v; want ErrProjectsUnchecked wrapping %v", err, c.cause)
+			}
+		})
+	}
 }
 
 // TestAnEmptyListEnrollsWhenK3IsDownOrUnset: a broker with no client of Dispatch's project
-// access, and one whose Dispatch does not answer, enrol a session naming no project exactly as
-// before, a restricted member's included, and refuse one naming a project, which could not be
-// checked (ErrProjectsUnchecked). A Dispatch that refuses the broker's own account is a deployment
-// that has not listed the broker, not an outage (dispatchread.ErrBrokerRefused): no session is
-// enrolled through it, not even one naming no project.
+// access enrols a session naming no project exactly as before, a restricted member's included, and
+// refuses one naming a project, which could not be checked (ErrProjectsUnchecked). With a client,
+// a person's machine login enrolls nothing while Dispatch cannot say what kind of member the
+// person is (*projectaccess.MemberKindUncheckable, checkMember): Dispatch down, Dispatch refusing
+// the broker's own account (a deployment that has not listed the broker), a member kind the broker
+// does not know, or a token file it cannot read. A person's sign-in, which checkMember does not
+// hold, enrolls a session naming no project while Dispatch is down, unchecked, and is refused one
+// naming a project (ErrProjectsUnchecked).
 func TestAnEmptyListEnrollsWhenK3IsDownOrUnset(t *testing.T) {
+	uncheckable := func(t *testing.T, err error, cause error, what string) {
+		t.Helper()
+		var refused *projectaccess.MemberKindUncheckable
+		if !errors.As(err, &refused) || cause != nil && !errors.Is(err, cause) {
+			t.Fatalf("%s = %v; want *projectaccess.MemberKindUncheckable (%v)", what, err, cause)
+		}
+	}
 	t.Run("no client", func(t *testing.T) {
 		svc := newService(t)
 		if _, err := enrolSession(t, svc, bobLogin, "box-bob-unset"); err != nil {
@@ -129,20 +175,22 @@ func TestAnEmptyListEnrollsWhenK3IsDownOrUnset(t *testing.T) {
 		svc := newService(t)
 		dispatch := withProjects(t, svc)
 		dispatch.SetDown(true)
-		if _, err := enrolSession(t, svc, bobLogin, "box-bob-down"); err != nil {
-			t.Fatalf("a restricted member's session naming no project while Dispatch is down: %v; want it enrolled as before", err)
+		_, err := enrolSession(t, svc, bobLogin, "box-bob-down")
+		uncheckable(t, err, nil, "a restricted member's machine-login session naming no project while Dispatch is down")
+		signIn := personsSignIn(t, svc, carolLogin)
+		if _, err := svc.Create(context.Background(), signIn, Enrollment{Kind: "session", RuntimeID: "box-carol-signin-down", Thumbprint: "tp-box-carol-signin-down"}); err != nil {
+			t.Fatalf("a sign-in's session naming no project while Dispatch is down: %v; want it enrolled as before", err)
 		}
-		if _, err := enrolSession(t, svc, carolLogin, "box-carol-down", "PRIV"); !errors.Is(err, ErrProjectsUnchecked) {
-			t.Fatalf("a session naming PRIV while Dispatch is down = %v; want ErrProjectsUnchecked", err)
+		if _, err := svc.Create(context.Background(), signIn, Enrollment{Kind: "session", RuntimeID: "box-carol-signin-priv", Thumbprint: "tp-box-carol-signin-priv", Projects: []string{"PRIV"}}); !errors.Is(err, ErrProjectsUnchecked) {
+			t.Fatalf("a sign-in's session naming PRIV while Dispatch is down = %v; want ErrProjectsUnchecked", err)
 		}
 	})
 	t.Run("Dispatch refuses the broker's account", func(t *testing.T) {
 		svc := newService(t)
 		dispatch := withProjects(t, svc)
 		svc.Projects = projectaccess.New(dispatch.URL, projectaccesstest.StaticAccount("not-the-stand-ins-token"), nil)
-		if _, err := enrolSession(t, svc, aliceLogin, "box-alice-refused"); !errors.Is(err, ErrProjectsUnchecked) || !errors.Is(err, dispatchread.ErrBrokerRefused) && !strings.Contains(err.Error(), "refused the broker") {
-			t.Fatalf("a session naming no project while Dispatch refuses the broker's account = %v; want ErrProjectsUnchecked saying Dispatch refused the broker", err)
-		}
+		_, err := enrolSession(t, svc, aliceLogin, "box-alice-refused")
+		uncheckable(t, err, dispatchread.ErrBrokerRefused, "a session naming no project while Dispatch refuses the broker's account")
 	})
 	// Base #4119's cfe6a5f216 adds two answers that are neither an outage nor a refusal of the
 	// list: a member kind the broker does not know (projectaccess.ErrUnknownMemberKind), and a
@@ -152,17 +200,15 @@ func TestAnEmptyListEnrollsWhenK3IsDownOrUnset(t *testing.T) {
 		svc := newService(t)
 		dispatch := projectaccesstest.NewServer(t, nil, map[string]string{aliceLogin: "guest"})
 		svc.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
-		if _, err := enrolSession(t, svc, aliceLogin, "box-alice-guest"); !errors.Is(err, ErrProjectsUnchecked) || !errors.Is(err, projectaccess.ErrUnknownMemberKind) && !strings.Contains(err.Error(), "guest") {
-			t.Fatalf("a session naming no project while Dispatch answers an unknown member kind = %v; want ErrProjectsUnchecked naming it", err)
-		}
+		_, err := enrolSession(t, svc, aliceLogin, "box-alice-guest")
+		uncheckable(t, err, projectaccess.ErrUnknownMemberKind, "a session naming no project while Dispatch answers an unknown member kind")
 	})
 	t.Run("the broker cannot read its token file", func(t *testing.T) {
 		svc := newService(t)
 		dispatch := withProjects(t, svc)
 		svc.Projects = projectaccess.New(dispatch.URL, ciphertoken.NewAccountToken(filepath.Join(t.TempDir(), "missing-token")), nil)
-		if _, err := enrolSession(t, svc, aliceLogin, "box-alice-no-token"); !errors.Is(err, ErrProjectsUnchecked) {
-			t.Fatalf("a session naming no project while the broker cannot read its token file = %v; want ErrProjectsUnchecked", err)
-		}
+		_, err := enrolSession(t, svc, aliceLogin, "box-alice-no-token")
+		uncheckable(t, err, dispatchread.ErrBrokerRefused, "a session naming no project while the broker cannot read its token file")
 		if calls := dispatch.Calls(); calls != 0 {
 			t.Errorf("Dispatch was asked %d times; want none, since there is no token to ask with", calls)
 		}

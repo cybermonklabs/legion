@@ -2,7 +2,11 @@ import { isIdPrefix } from "@legion/contracts";
 
 import { askProject } from "../features/inbox/list-row";
 import { routeItem } from "../features/refs/block-reference";
-import { buildDispatchReference, parseNodeReference } from "../features/refs/routes";
+import {
+  buildDispatchReference,
+  DECISIONS_DOCUMENT_SLUG,
+  parseNodeReference,
+} from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
@@ -1207,6 +1211,15 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     } else {
       // An uploaded document is an `attached_to` edge into its issue.
       targets.push(referencePanel(issueReference));
+      // An issue's decisions.md sends this event alone on its first upload, no version, and the
+      // outline and the margin beside the spec read the decisions under events alone
+      // (`EVENT_FRESH`), so without this they draw none of them until a reload. The server names
+      // that document by its role, which it writes as it creates the row; a server built before
+      // roles sends none, and names it by its slug alone.
+      const { role, slug } = event.payload.artifact;
+      if (role === "decisions" || (role === undefined && slug === DECISIONS_DOCUMENT_SLUG)) {
+        targets.push({ exact: true, queryKey: ["decisions", key] });
+      }
     }
     return targets;
   }
@@ -1696,10 +1709,10 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * delete of a comment or an issue message (its body, which a delete empties, and the marks the
  * read answers for the post, `edited_at`, `deleted_at` and `deleted_by`), an ask's edit (its
  * question) and a document's new version (its blocks' words), and none on any other event. The
- * issue page's names reads are kept fresh by events (`useIssueTree`'s `EVENT_FRESH`), never by
- * their age, and a names read's key is the set of addresses it names, so a page that comes to
- * hold another set reads again under a key of its own: only a change of words under the same
- * address needs a rule.
+ * issue page's names reads are kept fresh by events (`reference-target.ts`'s `EVENT_FRESH`),
+ * never by their age, and a names read's key is the set of addresses it names, so a page that
+ * comes to hold another set reads again under a key of its own: only a change of words under the
+ * same address needs a rule.
  * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or
  * naming none, as an older server sends it) renames the issue's own address, since a names read
  * names an issue by its title, so it refreshes the reads naming that address, and only those

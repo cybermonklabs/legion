@@ -13,7 +13,7 @@ import {
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import type { PostDeletion } from "../refs/post-marks";
-import { refetchFailedOnFocus } from "../refs/reference-target";
+import { EVENT_FRESH } from "../refs/reference-target";
 import {
   buildIssueTree,
   type DocumentBlocks,
@@ -246,27 +246,6 @@ function useNamesFailures(reads: readonly NamesRead[]): number {
   return failures;
 }
 
-/**
- * Whether a read stands failed, by its state (TanStack Query's; a read's observer gives the same
- * fields): it holds no answer, and a fetch of it has failed (`errorUpdateCount`). That count goes
- * back to 0 only with the read's answer - the read reset, or taken out of the cache - so a
- * failure it counts came after the read last held an answer.
- *
- * The read's status is not the rule, for two reasons. A read that holds an answer and whose
- * refresh failed reads `error`, though its rows are still drawn from that answer: it is not
- * failed, and draws no line, which would stand over rows that are all drawn and take the page's
- * opening. And TanStack sets a read that holds no answer back to `pending`, its error cleared,
- * the moment it fetches again: a failed read goes on standing failed while it runs again - its
- * Retry, or window focus - so its line stays, with the focus its Retry holds, until the read
- * answers.
- */
-export function standsFailed(state: {
-  readonly data: unknown;
-  readonly errorUpdateCount: number;
-}): boolean {
-  return state.data === undefined && state.errorUpdateCount > 0;
-}
-
 /** The issue's asks as the tree reads them: every ask, open or closed (`listIssueAsks` with
  *  `all`), under the key the margin, a document's ask blocks and the feed's ask rules read and
  *  refresh (`["asks", key]`). One definition, so a view that observes the same read takes the
@@ -278,42 +257,21 @@ export const issueAsksQuery = (key: string) =>
     queryFn: () => api.listIssueAsks(key, "all"),
   });
 
-/**
- * What every read of the tree takes: it is kept fresh by events, never by its age. The page's
- * stage mounts the tree's slot again on every press of a view, so under the app's 30 s
- * `staleTime` (`main.tsx`) a press more than 30 s after the load would read every one of the
- * tree's reads again, though nothing they hold has changed. Staleness is per observer, so the
- * page's writer (`outline-writer.tsx`), which observes the asks, the comments and the messages
- * under the tree's keys, takes it too: under the app's defaults a window focus more than 30 s
- * after the load would read all three again for the writer alone.
- * The feed's rules (`api/event-refresh.ts`) refresh each read when an event can change it; among
- * them, `["comments", key]` on a comment event and on a document's upload or new version;
- * `["asks", key]` on an ask event, a reply on an ask, a review of a document and a block
- * repaired or found invalid; `["decisions", key]` on an ask event, a Keep and a document's new
- * version; `["issue-messages", key]` on a message event; `["issue", key, "coverage"]` on a
- * document's upload or new version; `["issue", key, "results"]` on those too, on a result
- * recorded or retracted and on a pull request moved to another issue; `["artifact", id]`, a
- * prefix of the document's blocks read (`["artifact", id, "blocks"]`), on its new version, its
- * rename, removal or review, and an ask or comment in it; and a names read
- * (`["reference-targets", …]`) on an event that changes the words or the name under an address
- * its key holds, on the issue or project document that address is of: a comment's or an issue
- * message's edit or delete, an ask's edit, a document's creation, new version, rename or removal,
- * and an issue's write that changes its title (`referenceNameTargets`). A post's edit or delete
- * also reaches an address that names the post by its whole id under another owner, which the
- * server reads as the post, and writes its own marks into every answer the cache holds that names
- * the post, the one the page draws while a read under a new set is out or has failed among them
- * (`useLastAnswered`), so a read that fails leaves no deleted post's words, and no edited one's
- * without its mark (`markCorrectedPost`). A names read's key is the set of addresses it names,
- * so a tree that comes to hold another set reads again under a key of its own, and only a change
- * under an address the tree already names needs a rule. No rule there names `["whoami"]`: the
- * reader's login does not change while the page is open. A gap in the feed refreshes every read
- * the app holds (`refreshQueries`), these among them, and window focus fetches again only a read
- * in error (`refetchFailedOnFocus`).
- */
-export const EVENT_FRESH = {
-  refetchOnWindowFocus: refetchFailedOnFocus,
-  staleTime: Number.POSITIVE_INFINITY,
-} as const;
+/** The issue's comments as the tree reads them (`listComments`), under the key the feed's rules
+ *  refresh (`["comments", key]`); a view of the same read takes its key from here. */
+export const issueCommentsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["comments", key],
+    queryFn: () => api.listComments(key),
+  });
+
+/** The issue's messages as the tree reads them (`listIssueMessages`), under the key the feed's
+ *  rules refresh (`["issue-messages", key]`); a view of the same read takes its key from here. */
+export const issueMessagesQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["issue-messages", key],
+    queryFn: () => api.listIssueMessages(key),
+  });
 
 /**
  * The issue's tree, from the page's reads. This hook is where the reads are; `buildIssueTree` is
@@ -349,22 +307,35 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const key = issue.key;
   // Every read here takes `EVENT_FRESH`: events refresh it, and a slot mounted again reads
   // nothing.
+  // The page's stage mounts the tree's slot again on every press of a view, so under the app's
+  // 30 s `staleTime` (`main.tsx`) a press more than 30 s after the load would read each one
+  // again, though nothing it holds had changed.
+  //
+  // Of the feed's rules (`api/event-refresh.ts`), these refresh the reads the tree is built from:
+  // `["comments", key]` on a comment event and on a document's upload or new version;
+  // `["asks", key]` on an ask event, a reply on an ask, a review of a document and a block
+  // repaired or found invalid; `["decisions", key]` on an ask event, a Keep and a document's new
+  // version; `["issue-messages", key]` on a message event; `["issue", key, "coverage"]` on a
+  // document's upload or new version; `["issue", key, "results"]` on those too, on a result
+  // recorded or retracted and on a pull request moved to another issue; `["artifact", id]`, a
+  // prefix of the document's blocks read (`["artifact", id, "blocks"]`), on its new version, its
+  // rename, removal or review, and an ask or comment in it; and a names read
+  // (`["reference-targets", …]`) on an event that changes the words or the name under an address
+  // its key holds, on the issue or project document that address is of: a comment's edit, an
+  // ask's edit, a document's creation, new version, rename or removal, and an issue's write that
+  // changes its title (`referenceNameTargets`). A names read's key is the set of addresses it
+  // names, so a tree that comes to hold another set reads again under a key of its own, and only
+  // a change under an address the tree already names needs a rule. No rule names `["whoami"]`,
+  // which the tree reads with `EVENT_FRESH` too: the reader's login does not change while a page
+  // is open.
   const coverage = useQuery({ ...issueCoverageQuery(key), ...EVENT_FRESH });
   const decisions = useQuery({ ...issueDecisionsQuery(key, true), ...EVENT_FRESH });
   const results = useQuery({ ...issueResultsQuery(key), ...EVENT_FRESH });
   const asks = useQuery({ ...issueAsksQuery(key), ...EVENT_FRESH });
   // Under the keys the margin, the history and the focused row's facts read too, so a reader
   // opening the panel after the tree finds them answered rather than read a second time.
-  const comments = useQuery({
-    queryKey: ["comments", key],
-    queryFn: () => api.listComments(key),
-    ...EVENT_FRESH,
-  });
-  const messages = useQuery({
-    queryKey: ["issue-messages", key],
-    queryFn: () => api.listIssueMessages(key),
-    ...EVENT_FRESH,
-  });
+  const comments = useQuery({ ...issueCommentsQuery(key), ...EVENT_FRESH });
+  const messages = useQuery({ ...issueMessagesQuery(key), ...EVENT_FRESH });
   // The reader, whose own turn an open question may be (`IssueTreeReads.viewer`): the shell's
   // one read of who is signed in, so it costs no request of its own.
   const who = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
