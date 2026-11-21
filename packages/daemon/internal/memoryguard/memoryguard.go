@@ -1401,8 +1401,10 @@ func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
 	}
 	g.sinceStayKill(g.held, g.heldTable)
 	rank(g.held)
-	if !sent && !g.sendFirst(now, s, reading, g.held[0]) {
-		return false
+	if !sent {
+		if !g.sendFirst(now, s, reading, g.held[0]) {
+			return false
+		}
 	}
 	// Whether the decision holds a process that is not new to the stay, taken once on the set it
 	// decides on (urgentEnds).
@@ -3651,8 +3653,10 @@ func (g *Guard) hour(now time.Time, reading, limit uint64) {
 	if (first && g.counterAt.Before(now)) || now.Sub(g.counterAt) >= counterEvery {
 		g.readCounter(now)
 	}
-	if reading == w.readingHigh && (!w.scanned || reading >= w.scannedHigh+limit/100) && g.startScan(w.start) {
-		w.scanned, w.scannedHigh = true, reading
+	if reading == w.readingHigh && (!w.scanned || reading >= w.scannedHigh+limit/100) {
+		if g.startScan(w.start) {
+			w.scanned, w.scannedHigh = true, reading
+		}
 	}
 }
 
