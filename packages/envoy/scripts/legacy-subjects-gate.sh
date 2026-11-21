@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record <file>
 #   [--since <earlier record>] [--listener <machine>=<url>]... [--insecure]
-#   [--token-file <path>] [--inbox-prefix <prefix>]
+#   [--bus-alias <nats-urls>]... [--token-file <path>] [--inbox-prefix <prefix>]
 #
 # Says whether any reader or writer of the bus still uses the old form of a name the rename moved
 # (an issue event named by its key alone, an agent's or a role's name with no project, a kept lane
@@ -21,8 +21,11 @@
 #     run, not by name: every container, in any namespace, of an image whose path ends legion/envoy
 #     that runs the image's own entrypoint (envoy-listener; a command of envoy-listener counts too,
 #     and any other command is the Dispatch server, the broker or a helper), on the bus the reading
-#     is about: the NATS_URLS of the envoy-listener Deployment. A listener container on another bus
-#     (a load-test stack's, on its own NATS) is named (SKIP) and not read. Each is read from its
+#     is about: the NATS_URLS of the envoy-listener Deployment, or another NATS_URLS the operator
+#     names with --bus-alias as an address of the same NATS servers (a hub in the cluster that the
+#     Service envoy-listener dials and a Service of the hub's own both select, so a listener that
+#     dials the second is on the bus). A listener container on another bus (a load-test stack's, on
+#     its own NATS) is named (SKIP), with its machine, and not read. Each is read from its
 #     pod's log: the listener logs the two metrics, as /metrics serves them, on a line "listener
 #     legacy subjects" every minute (cmd/listener startLegacySubjectsLog), and the gate takes the
 #     newest from the last five minutes, which must be at most three minutes older than the
@@ -103,8 +106,8 @@
 # the namespace does not already log.
 #
 # It prints the identity the NATS reads ran as (`IDENTITY`), one line per surface, `READ`, `SKIP` (a
-# listener on another bus), `PASS`, `FOUND` (an old-form name a first reading found), `GATE SHUT` or
-# `UNKNOWN`, the Job's creation and
+# listener on another bus, with its machine), `PASS`, `FOUND` (an old-form name a first reading
+# found), `GATE SHUT` or `UNKNOWN`, the Job's creation and
 # deletion, and the verdict alone on the last line: `GATE OPEN` (exit 0) at a clean second reading,
 # `GATE SHUT` (exit 1) when anything shut it, `UNKNOWN` (exit 3) otherwise when anything was not
 # read, and at a first reading that read every surface `FIRST READING`, naming how many old-form
@@ -124,12 +127,13 @@ set -euo pipefail
 
 usage() {
   [ -z "${1:-}" ] || echo "legacy-subjects-gate.sh: $1" >&2
-  echo "usage: legacy-subjects-gate.sh --context <kube-context> --record <file> [--since <earlier record>] [--listener <machine>=<url>]... [--insecure] [--token-file <path>] [--inbox-prefix <prefix>]" >&2
+  echo "usage: legacy-subjects-gate.sh --context <kube-context> --record <file> [--since <earlier record>] [--listener <machine>=<url>]... [--insecure] [--bus-alias <nats-urls>]... [--token-file <path>] [--inbox-prefix <prefix>]" >&2
   echo "  <kube-context> is the kubectl context of the cluster that runs the listeners and the hub bridge" >&2
   echo "  <file> is where this reading is written; it must not exist" >&2
   echo "  <earlier record> is the first reading's --record, read at least the stream's retention (72 h) before" >&2
   echo "  <machine>=<url> names a listener outside the cluster: its ENVOY_MACHINE_ID and its https://host[:port]" >&2
   echo "  --insecure takes an http:// listener URL, whose answer anyone on the way could read or change" >&2
+  echo "  <nats-urls> is a NATS_URLS that reaches the NATS servers the listener Deployment's NATS_URLS reaches, by another name: a listener container that dials it is read as one of the bus's" >&2
   echo "  <path> is where the listener Deployment mounts its projected NATS token, for a hub that is not static" >&2
   echo "  <prefix> is the inbox prefix the listener identity's grant subscribes, for a hub that is not static" >&2
   exit 2
@@ -142,12 +146,14 @@ insecure=0
 token_file=""
 inbox_prefix=""
 outside=()
+aliases=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --context) [ "$#" -ge 2 ] || usage "--context takes a value"; context=$2; shift 2 ;;
     --record) [ "$#" -ge 2 ] || usage "--record takes a value"; record=$2; shift 2 ;;
     --since) [ "$#" -ge 2 ] || usage "--since takes a value"; since=$2; shift 2 ;;
     --listener) [ "$#" -ge 2 ] || usage "--listener takes a value"; outside+=("$2"); shift 2 ;;
+    --bus-alias) [ "$#" -ge 2 ] || usage "--bus-alias takes a value"; aliases+=("$2"); shift 2 ;;
     --insecure) insecure=1; shift ;;
     --token-file) [ "$#" -ge 2 ] || usage "--token-file takes a value"; token_file=$2; shift 2 ;;
     --inbox-prefix) [ "$#" -ge 2 ] || usage "--inbox-prefix takes a value"; inbox_prefix=$2; shift 2 ;;
@@ -163,6 +169,10 @@ for entry in ${outside[@]+"${outside[@]}"}; do
   [[ $entry =~ ^[A-Za-z0-9._-]+=https?://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]] || usage "--listener $entry is not <machine>=https://host[:port]"
   [[ $entry =~ =https:// ]] || [ "$insecure" = 1 ] ||
     usage "--listener $entry is plain http: anyone on the way could read or change the count the gate opens on; give its https URL, or --insecure to take it as it is"
+done
+for alias in ${aliases[@]+"${aliases[@]}"}; do
+  [[ $alias =~ ^[a-z][a-z0-9+.-]*://[A-Za-z0-9.-]+(:[0-9]+)?(,[a-z][a-z0-9+.-]*://[A-Za-z0-9.-]+(:[0-9]+)?)*$ ]] ||
+    usage "--bus-alias $alias is not a NATS_URLS: one or more scheme://host[:port], comma-separated"
 done
 [ -z "$token_file" ] || [[ $token_file =~ ^/[A-Za-z0-9._/-]+$ ]] || usage "--token-file $token_file is not an absolute path"
 case "$token_file/" in
@@ -263,15 +273,19 @@ else
        credential: (if $token != "" then "token" else "seed" end), file: $file, mount: $mount, volume: $volume}' \
     "$work/deployment.json" >"$work/identity.json"
 fi
-# The bus the reading is about: the listener Deployment's NATS_URLS. A listener container on
-# another bus (a load-test stack's listeners on their own NATS) is named and not read; one on this
-# bus that is missed is named by its durable instead (the judge's census), so nothing opens on it.
+# The bus the reading is about: the listener Deployment's NATS_URLS, and each NATS_URLS --bus-alias
+# names as another address of the same NATS servers. A listener container on another bus (a
+# load-test stack's listeners on their own NATS) is named and not read; one on this bus that is
+# missed, by an address no --bus-alias named, is named by its durable instead (the judge's census),
+# so nothing opens on it.
 bus_urls=$(jq -r '.urls // ""' "$work/identity.json")
+bus_aliases=$(jq -cn '$ARGS.positional' --args ${aliases[@]+"${aliases[@]}"})
 
 # --- the listeners in the cluster -----------------------------------------------------------------
 pods_error=""
 if ! { kc get pods --all-namespaces -o json >"$work/pods.json" 2>"$work/pods.err" &&
-  jq -c --arg urls "$bus_urls" "$listener_container"'
+  jq -c --arg urls "$bus_urls" --argjson aliases "$bus_aliases" "$listener_container"'
+    def on_bus: .urls as $u | $urls == "" or $u == $urls or any($aliases[]; . == $u);
     [.items[] | . as $p | ($p.status.containerStatuses // []) as $statuses
       | $p.spec.containers[]
       | listener_container
@@ -282,7 +296,7 @@ if ! { kc get pods --all-namespaces -o json >"$work/pods.json" 2>"$work/pods.err
          restarts: ($s.restartCount // null),
          machine: ([$c.env[]? | select(.name == "ENVOY_MACHINE_ID") | .value // empty] | first // null),
          urls: ([$c.env[]? | select(.name == "NATS_URLS") | .value // empty] | first // null)}]
-    | {bus: map(select($urls == "" or .urls == $urls)), other: map(select($urls != "" and .urls != $urls))}' \
+    | {bus: map(select(on_bus)), other: map(select(on_bus | not))}' \
     "$work/pods.json" >"$work/listener-sets.json" 2>"$work/pods.err" &&
   jq -c '.bus' "$work/listener-sets.json" >"$work/listeners.json" &&
   jq -c '.other' "$work/listener-sets.json" >"$work/other-bus.json"; }; then
@@ -425,13 +439,14 @@ jq -n \
   --slurpfile pods "$work/pod-reads.jsonl" \
   --slurpfile other_bus "$work/other-bus.json" \
   --arg bus "$bus_urls" \
+  --argjson bus_aliases "$bus_aliases" \
   --slurpfile outside "$work/outside-reads.jsonl" \
   --slurpfile lines "$work/job-lines.jsonl" \
   --argjson job_ok "$job_ok" \
   --arg job_error "$job_error" \
   '{context: $context, started_at: $started, finished_at: $finished, earlier: $earlier,
     pods_error: (if $pods_error == "" then null else $pods_error end),
-    pods: $pods, other_bus: ($other_bus[0] // []), bus: $bus, outside: $outside,
+    pods: $pods, other_bus: ($other_bus[0] // []), bus: $bus, bus_aliases: $bus_aliases, outside: $outside,
     job: {ok: ($job_ok == 1), error: (if $job_error == "" then null else $job_error end), lines: $lines}}' >"$work/input.json"
 # A judgement that fails on what it was given (a fault in the judge itself) is a reading that could
 # not be judged: UNKNOWN, with a line and a record naming the failure, never a bare jq exit.

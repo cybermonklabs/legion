@@ -18,9 +18,11 @@
 # gauge shows, a listener offline at the reading, a list that moved between its pages, a stream that
 # is not the first reading's or does not hold the whole window, and an answer that is no JSON
 # object. A first reading on a bus that still holds old-form messages, interests and consumer
-# filters is a first reading that names each. Every case runs from the same clean fixture with one
-# thing changed, so each fails for its own reason. The old-form rule itself is held row by row. The
-# summary counts cases.
+# filters is a first reading that names each. A listener that dials the bus by another address
+# than the listener Deployment's is skipped, and its durable unread, until --bus-alias names that
+# address, while a listener on another bus stays skipped. Every case runs from the same clean
+# fixture with one thing changed, so each fails for its own reason. The old-form rule itself is
+# held row by row. The summary counts cases.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -345,11 +347,21 @@ done_case() {
 # first_reading_of HOURS_AGO takes a first reading of the case and writes it, moved HOURS_AGO hours
 # into the past, to $FAKE/earlier.json, as a reading taken then would read.
 first_reading_of() {
+  first_reading_with "$1" reading
+}
+
+# first_reading_with HOURS_AGO READER [ARG...] does the same with the reading READER [ARG...] takes.
+# A first reading that wrote no record fails the case and leaves no $FAKE/earlier.json, so the
+# case's second reading fails too and the test goes on to count the cases after it.
+first_reading_with() {
   local hours=$1
-  reading
+  shift
+  "$@"
   [ "$status" = 4 ] || fail "the first reading exited $status, want 4 (FIRST READING); output:"$'\n'"$output"
-  jq --argjson s "$((hours * 3600))" '.started_at -= $s | .finished_at -= $s | .read_at = (.started_at | todate)
-    | .listeners |= map(.read_at -= $s)' "$FAKE/record.json" >"$FAKE/earlier.json"
+  if [ -f "$FAKE/record.json" ]; then
+    jq --argjson s "$((hours * 3600))" '.started_at -= $s | .finished_at -= $s | .read_at = (.started_at | todate)
+      | .listeners |= map(.read_at -= $s)' "$FAKE/record.json" >"$FAKE/earlier.json"
+  fi
   rm -f "$FAKE/record.json"
   : >"$FAKE/calls"
 }
@@ -479,6 +491,13 @@ new_case "a --token-file with a .. segment is refused"
 run_gate --context example-cluster --record "$FAKE/record.json" --token-file /var/run/secrets/envoy/../../etc/token
 expect_status 2
 expect_line "holds a . or .. segment"
+[ ! -s "$FAKE/calls" ] || fail "the gate called $(head -n 1 "$FAKE/calls")"
+done_case
+
+new_case "a --bus-alias that is not a NATS_URLS is refused before anything is read"
+run_gate --context example-cluster --record "$FAKE/record.json" --bus-alias envoy-nats.envoy.svc.cluster.local:4222
+expect_status 2
+expect_line "--bus-alias envoy-nats.envoy.svc.cluster.local:4222 is not a NATS_URLS"
 [ ! -s "$FAKE/calls" ] || fail "the gate called $(head -n 1 "$FAKE/calls")"
 done_case
 
@@ -1349,6 +1368,74 @@ reading
 expect_status 4
 expect_line "SKIP: listener pod loadtest/envoy-listener-lt1 container envoy-listener is on another bus (NATS_URLS nats://loadtest-nats.loadtest.svc.cluster.local:4222), not the listener Deployment's $bus_url, and is not read"
 ! grep -qF -- "-n loadtest logs" "$FAKE/calls" || fail "the listener on another bus was read"
+done_case
+
+# A hub moved into the cluster is one bus by two names: Service envoy-hub, which the listener
+# Deployment dials, selects the hub's own pods, and the hub's session listener, which serves as
+# machine envoy-hub and is bound to its durable listener-envoy-hub, dials the hub's own Service.
+# The listener outside the cluster that served as envoy-hub before has left the bus, so these
+# readings name no --listener.
+readonly hub_service_url="nats://envoy-nats.envoy.svc.cluster.local:4222"
+
+# moved_cluster adds the hub's session listener, on the hub's own Service, to the case's cluster.
+moved_cluster() {
+  jq --argjson p "$(pod envoy envoy-nats-listener-5c7d hub-listener-uid-1 listener "$envoy_image" null 0 running envoy-hub "$hub_service_url")" \
+    '.items += [$p]' "$base/pods.json" >"$FAKE/pods.json"
+  metrics 7 0 "$hub_start" 0 envoy-hub >"$FAKE/metrics/envoy.envoy-nats-listener-5c7d"
+}
+
+# moved_reading [ARG...] runs the gate as a reading of the case, naming no listener outside the
+# cluster, writing $FAKE/record.json.
+moved_reading() {
+  run_gate --context example-cluster --record "$FAKE/record.json" "$@"
+}
+
+new_case "a listener that dials the bus by another name is skipped, its durable UNKNOWN, until --bus-alias names that name"
+moved_cluster
+moved_reading
+expect_status 3
+expect_line "SKIP: listener pod envoy/envoy-nats-listener-5c7d container listener is on another bus (NATS_URLS $hub_service_url), not the listener Deployment's $bus_url, and is not read (machine envoy-hub; if its NATS_URLS reaches the same NATS servers, name it with --bus-alias)"
+expect_line "UNKNOWN: listener machine envoy-hub is bound to its durable listener-envoy-hub on the bus, and no listener this reading read serves as that machine"
+! grep -qF -- "-n envoy logs envoy-nats-listener-5c7d" "$FAKE/calls" || fail "the listener on the hub's own Service was read with no --bus-alias"
+rm -f "$FAKE/record.json"
+: >"$FAKE/calls"
+moved_reading --bus-alias "$hub_service_url"
+expect_status 4
+expect_line "READ: listener pod envoy/envoy-nats-listener-5c7d container listener: {kind=\"interest\"} 7 since its start $(jq -rn --argjson s "$hub_start" '$s | todate')"
+expect_no_line "SKIP: listener pod envoy/envoy-nats-listener-5c7d"
+expect_no_line "listener machine envoy-hub"
+grep -qF -- "-n envoy logs envoy-nats-listener-5c7d -c listener --since=5m" "$FAKE/calls" || fail "the listener on the hub's own Service was not read from its log"
+[ "$(jq -c '[.listeners[].machine] | sort' "$FAKE/record.json")" = '["dispatch","envoy-hub","gke"]' ] ||
+  fail "the record holds the listeners of machines $(jq -c '[.listeners[].machine] | sort' "$FAKE/record.json"), want dispatch, envoy-hub and gke"
+done_case
+
+new_case "--bus-alias reads no listener on a bus it does not name"
+moved_cluster
+jq --argjson p "$(pod loadtest envoy-listener-lt1 lt-uid-1 envoy-listener "$envoy_image" null 0 running lt-1 nats://loadtest-nats.loadtest.svc.cluster.local:4222)" \
+  '.items += [$p]' "$FAKE/pods.json" >"$FAKE/pods.json.new"
+mv "$FAKE/pods.json.new" "$FAKE/pods.json"
+moved_reading --bus-alias "$hub_service_url"
+expect_status 4
+expect_line "SKIP: listener pod loadtest/envoy-listener-lt1 container envoy-listener is on another bus (NATS_URLS nats://loadtest-nats.loadtest.svc.cluster.local:4222), not the listener Deployment's $bus_url or a --bus-alias ($hub_service_url), and is not read (machine lt-1;"
+! grep -qF -- "-n loadtest logs" "$FAKE/calls" || fail "the listener on another bus was read"
+done_case
+
+new_case "a moved cluster read twice, 73 hours apart, with --bus-alias naming the hub's own Service, opens"
+moved_cluster
+first_reading_with 73 moved_reading --bus-alias "$hub_service_url"
+moved_reading --since "$FAKE/earlier.json" --bus-alias "$hub_service_url"
+expect_status 0
+expect_last "GATE OPEN"
+expect_line "PASS: listener pod envoy/envoy-nats-listener-5c7d container listener counted no old-form name between the readings"
+done_case
+
+new_case "a second reading that drops the first reading's --bus-alias is UNKNOWN"
+moved_cluster
+first_reading_with 73 moved_reading --bus-alias "$hub_service_url"
+moved_reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: listener pod envoy/envoy-nats-listener-5c7d container listener served at the first reading and was not read now"
+expect_last "UNKNOWN"
 done_case
 
 # nsc's output on a failure may echo the seed it read: the Job logs a fixed line instead.

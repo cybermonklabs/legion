@@ -444,8 +444,12 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
       + [$listeners[] | select(.unknown | not) | "READ: \(.id): \(if .counts == {} then "no old-form name counted" else (.counts | to_entries | map("\(.key | printable) \(.value)") | join(", ")) end) since its start \(if .start then (.start | todate) else "(no start-time gauge)" end)"]
       # A listener container on another bus than the listener Deployment's (a load-test stack's,
       # on its own NATS) is no listener of the bus this reading is about; one on this bus that
-      # is missed leaves its durable unread, which the census names.
-      + [($in.other_bus // [])[] | "SKIP: listener pod \(.ns)/\(.pod) container \(.container) is on another bus (NATS_URLS \(.urls // "unset")), not the listener Deployment's \($in.bus // ""), and is not read" | printable]
+      # is missed leaves its durable unread, which the census names. The line names its machine,
+      # which the census names too, and how to read it when its NATS_URLS is another address of
+      # this bus.
+      + [($in.bus_aliases // []) as $aliases
+        | ($in.other_bus // [])[]
+        | "SKIP: listener pod \(.ns)/\(.pod) container \(.container) is on another bus (NATS_URLS \(.urls // "unset")), not the listener Deployment's \($in.bus // "")\(if ($aliases | length) > 0 then " or a --bus-alias (\($aliases | join(", ")))" else "" end), and is not read (machine \(.machine // "unset"); if its NATS_URLS reaches the same NATS servers, name it with --bus-alias)" | printable]
       + [$all[] | select(.pass) | "PASS: " + .pass]
       + [$foundlines[] | "FOUND: " + .]
       + [$shut[] | "GATE SHUT: " + .shut]

@@ -954,16 +954,23 @@ cannot show that nothing moved, so the gate is read twice, at least the stream's
 (`ENVOY_NOTIFICATIONS`' `max_age`, 72 hours):
 
 ```bash
-packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record first.json [--listener <machine>=<url>]...
+packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record first.json [--listener <machine>=<url>]... [--bus-alias <nats-urls>]...
 # at or after the time the first run names:
-packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record second.json --since first.json [--listener <machine>=<url>]...
+packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record second.json --since first.json [--listener <machine>=<url>]... [--bus-alias <nats-urls>]...
 ```
 
 A listener outside the cluster is read over `https`; `--insecure` takes an `http://` URL, whose
-answer anyone on the way could read or change. Once the hub is not static, `--token-file <path>`
-names where the listener Deployment mounts its projected NATS token, which the Job then connects
-with in place of the seed, and `--inbox-prefix <prefix>` the inbox prefix the listener identity's
-grant subscribes, which every `nats` call of the Job then takes.
+answer anyone on the way could read or change. `--bus-alias <nats-urls>` names another `NATS_URLS`
+that reaches the same NATS servers as the listener Deployment's: a listener container that dials
+it is read as one of the bus's. When Service `envoy-hub`, which `envoy-listener` dials, selects a
+hub's pods in the cluster, the hub's own Service `envoy-nats` reaches the same servers, and the
+hub's session listener `envoy-nats-listener` dials that one, so a reading of such a cluster names
+it: `--bus-alias nats://envoy-nats.envoy.svc.cluster.local:4222`. Give the same `--bus-alias` at
+both readings: a listener the first reading read and the second skips prints `UNKNOWN`. Once the
+hub is not static, `--token-file <path>` names where the listener Deployment mounts its projected
+NATS token, which the Job then connects with in place of the seed, and `--inbox-prefix <prefix>`
+the inbox prefix the listener identity's grant subscribes, which every `nats` call of the Job then
+takes.
 
 What it reads, all of it read-only:
 
@@ -973,11 +980,12 @@ What it reads, all of it read-only:
   `envoy_listener_start_time_seconds`, whose one label, `machine`, is the listener's
   `ENVOY_MACHINE_ID`. The listeners in the cluster are found by what they run, not by name: every
   container, in any namespace, of an image whose path ends `legion/envoy` that runs the image's own
-  entrypoint (`envoy-listener`), on the bus the reading is about, the `NATS_URLS` of the
-  `envoy-listener` Deployment; a listener container on another bus (a load-test stack's, on its own
-  NATS) is named (`SKIP`) and not read. Each is read from its pod's log: a listener logs the two
-  metrics, as `/metrics` serves them, on a `listener legacy subjects` line every minute, and the
-  gate takes the newest of the last five minutes, which must be at most three minutes older than
+  entrypoint (`envoy-listener`), on the bus the reading is about: the `NATS_URLS` of the
+  `envoy-listener` Deployment, or a `NATS_URLS` named with `--bus-alias`. A listener container on
+  another bus (a load-test stack's, on its own NATS) is named (`SKIP`), with its machine, and not
+  read. Each is read from its pod's log: a listener logs the two metrics, as `/metrics` serves
+  them, on a `listener legacy subjects` line every minute, and the gate takes the newest of the
+  last five minutes, which must be at most three minutes older than
   the reading. The log and not `/metrics`, because the operator may read every listener pod's log
   and may not reach Dispatch's listener's `/metrics`: the API server's pod proxy is refused in
   namespace `dispatch`, and that listener's NetworkPolicy admits its port from Dispatch's own pods
@@ -1064,8 +1072,9 @@ keeps that log in its logging backend after the Job is deleted, as it keeps the 
 which already logs every topic it delivers, so the Job adds no kind of text the namespace does not
 log.
 
-It prints `IDENTITY` (whom the NATS reads ran as), `READ`, `PASS`, `FOUND` (an old-form name a
-first reading found), `GATE SHUT` or `UNKNOWN` per surface, the Job's creation and deletion, and the
+It prints `IDENTITY` (whom the NATS reads ran as), `READ`, `SKIP` (a listener container on another
+bus, with its machine), `PASS`, `FOUND` (an old-form name a first reading found), `GATE SHUT` or
+`UNKNOWN` per surface, the Job's creation and deletion, and the
 verdict alone on the last line: `GATE OPEN` (exit 0) at a clean second reading, `GATE SHUT` (exit
 1), `UNKNOWN` (exit 3), and at a first reading that read every surface `FIRST READING`, naming its
 `FOUND` count, the stream sequence the second reading reads after, and when to read again (exit 4).
