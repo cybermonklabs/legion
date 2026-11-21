@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -152,15 +153,24 @@ func TestTLSServerServesEachChainByItsServerName(t *testing.T) {
 // site's host name, at a port of its own, and fails every handshake at the server's signature,
 // since its key is the server's own: a client that gets past the chain (here by skipping its check,
 // since Go 1.27.3 refuses these chains even against their roots) gets no further, and one that
-// trusts no root refuses the chain itself. Each handshake counts for its site.
+// trusts no root refuses the chain itself. Each handshake counts for its site. Each site's root is
+// the CA-published root the probe embeds, which the server writes into its state directory byte for
+// byte, so no image can lack it.
 func TestTLSServerServesTheVendoredChainsItCannotSignFor(t *testing.T) {
-	server, _ := startTLSServer(t)
+	server, stateDir := startTLSServer(t)
 	sites := server.sites()
 	fixtures, vendored := sites[0], sites[3:]
 	for index, site := range vendored {
 		public := publicTLSSites[index]
-		if site.name != "vendored "+strings.TrimPrefix(public.name, "public ") || site.kind != tlsVendoredSite || site.url != public.url || site.root != public.root || site.via == fixtures.via {
+		if site.name != "vendored "+strings.TrimPrefix(public.name, "public ") || site.kind != tlsVendoredSite || site.url != public.url || site.root != filepath.Join(stateDir, public.root) || site.via == fixtures.via {
 			t.Fatalf("vendored site %d = %+v, want the public site %s's URL and root at a listener of its own", index, site, public.name)
+		}
+		embedded, err := tlsPublishedRoots.ReadFile("tls-fixtures/" + public.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if written, err := os.ReadFile(site.root); err != nil || !bytes.Equal(written, embedded) {
+			t.Errorf("%s's root %s = %q, %v; want the embedded %s", site.name, site.root, written, err, public.root)
 		}
 		file := map[string]string{"vendored emSign": "emsign", "vendored AAA": "aaa"}[site.name]
 		vendoredPEM, err := tlsVendoredChains.ReadFile("tls-fixtures/vendored-" + file + "-chain.pem")
@@ -259,7 +269,7 @@ func TestTLSFixturesAreNamedAsTheDistrustedRoots(t *testing.T) {
 		{"aaa-certificate-services.pem", []string{tlsAAAHost, "EM DV TLS CA - G3B"}},
 	} {
 		site := sites[index]
-		publishedPEM, err := os.ReadFile(filepath.Join("..", "..", "docker", "tls-roots", fixture.published))
+		publishedPEM, err := tlsPublishedRoots.ReadFile("tls-fixtures/" + fixture.published)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -305,7 +315,7 @@ func TestTLSFixturesAreNamedAsTheDistrustedRoots(t *testing.T) {
 			name  string
 			pool  *x509.CertPool
 			valid bool
-		}{{"fixture root", tlsCertPool(t, site.root), true}, {"CA-published root", tlsCertPool(t, filepath.Join("..", "..", "docker", "tls-roots", fixture.published)), false}} {
+		}{{"fixture root", tlsCertPool(t, site.root), true}, {"CA-published root", tlsCertPool(t, filepath.Join("tls-fixtures", fixture.published)), false}} {
 			_, err := chain[0].Verify(x509.VerifyOptions{DNSName: host, Roots: roots.pool, Intermediates: intermediates})
 			if (err == nil) != roots.valid {
 				t.Errorf("%s fixture chain verified with the %s: %v, want valid %v", site.name, roots.name, err, roots.valid)

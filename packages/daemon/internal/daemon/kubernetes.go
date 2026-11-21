@@ -269,11 +269,18 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 // runs), with a peak of 374 MiB; on that host main's probe took 66.5–91.1 s at 1 CPU, slower than
 // under gVisor. A public test site that hangs, as a blackhole does, costs at most one run at each
 // of the two, a client's, or the site's positive control's where it hangs from the start, since no
-// client asks a site that gave no verdict (probeTLSClients): each run stops at its 20 s limit, up
-// to procgroup.StopGrace and procgroup.WaitDelay more for the stop, so the two add at most 44 s,
-// which would end the slowest run above at about 191 s, 49 s inside the budget, short of the 60 s
-// but inside it, so it takes no exit 75. On 2026-11-21, on the same host at 500m and a one-minute
-// load of 660 to 1,079 on 288 CPUs, a run whose public sites moved to a blackhole once their
+// client asks a site that gave no verdict (probeTLSClients). While the served copies of the public
+// chains are asked, only node, CodeGraph's node, wget and git ask the public sites, each with a
+// 20 s limit, so such a run stops at 20 s, up to procgroup.StopGrace and procgroup.WaitDelay more
+// for the stop, and the two add at most 44 s, which would end the slowest run above at about 191 s,
+// 49 s inside the budget, short of the 60 s but inside it, so it takes no exit 75. Once a served
+// copy is unasked, as every one is once its leaf has expired (2027-05-03 for the leaves vendored on
+// 2026-11-20; the probe warns of a leaf 30 days before its end), every client asks that public
+// site, so a site that starts to hang at bq's turn costs 60 s and at Chromium's 90 s, each up to
+// 2 s more: at Chromium's turn at both sites that ends the slowest run near 331 s and at bq's near
+// 271 s, past the budget, so the probe's deadline cuts it and it exits 75. On 2026-11-21, on the
+// same host at 500m and a one-minute load of 660 to 1,079 on 288 CPUs, a run whose public sites
+// moved to a blackhole once their
 // positive controls passed took 264.6 s and one beside it with the sites left alone 245.5 s: the
 // blackhole cost 19 s, since node, the first client asked, gave up at each after its own 10 s
 // connect timeout; at that load neither run, which had no probe budget, kept inside 240 s, so the

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
@@ -1745,7 +1746,8 @@ func TestTLSProbeCurlReadsNoCurlrc(t *testing.T) {
 // with the CA-published root alone is asked, and so is one that verified that chain and answered an
 // error status, which curl --fail names "The requested URL returned error: 503": an outage or a rate
 // limit at the site leaves the chain the clients must refuse in place. One that refuses the chain,
-// or cannot be reached, is not asked, and says why.
+// or cannot be reached, is not asked, and says why. Each is held to its CA-published root in the
+// state directory, where the probe's server writes the roots the probe embeds.
 func TestPublicTLSSitesAreAskedOnlyWhereTheirPositiveControlAccepts(t *testing.T) {
 	bin := t.TempDir()
 	script := "#!/bin/sh\ncase \"$*\" in *" + tlsAAAHost + "*) echo 'curl: (6) Could not resolve host: " + tlsAAAHost + "' >&2; exit 6 ;; esac\nexit 0\n"
@@ -1753,9 +1755,15 @@ func TestPublicTLSSitesAreAskedOnlyWhereTheirPositiveControlAccepts(t *testing.T
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	sites := probePublicTLSSites(context.Background(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir())
+	stateDir := t.TempDir()
+	sites := probePublicTLSSites(context.Background(), []string{"PATH=" + os.Getenv("PATH")}, stateDir)
 	if len(sites) != 2 || sites[0].name != "public emSign" || sites[0].unasked != "" {
 		t.Fatalf("public sites = %+v, want public emSign asked", sites)
+	}
+	for index, site := range sites {
+		if want := filepath.Join(stateDir, publicTLSSites[index].root); site.root != want {
+			t.Errorf("%s's root = %q, want %q in the state directory", site.name, site.root, want)
+		}
 	}
 	if want := "its positive control was unavailable: exit status 6: curl: (6) Could not resolve host: " + tlsAAAHost; sites[1].unasked != want {
 		t.Errorf("public AAA unasked = %q, want %q", sites[1].unasked, want)
@@ -1780,14 +1788,14 @@ func TestPublicTLSSitesAreAskedOnlyWhereTheirPositiveControlAccepts(t *testing.T
 
 // A vendored chain's positive control decides whether clients are held to it: one whose curl,
 // given the CA-published root alone, gets past the chain to the server's signature, and refuses the
-// control's chain with that root, is asked; one that gets no further, as once its leaf has expired,
-// is not, and its line says why as UNKNOWN. A curl that gets past every chain, as `curl -k` does,
-// also gets to the server's signature, so only the isolation at the control shows it trusts nothing
-// but the root: where the control is accepted with that root, neither vendored chain is asked. Only
-// a control run that exited by itself marks a chain unasked: one its own limit or a signal ended,
-// at the chain or at its isolation, says nothing of the chain and fails the probe, as a built
-// chain's positive control does, and one the probe's deadline ended has no verdict, which fails
-// nothing and leaves the chain unasked.
+// control's chain with that root, is asked; one that refuses the chain as expired, as every one
+// does once its leaf has expired, is not, and its line says why as UNKNOWN. Every other control run
+// that does not pass fails the probe, as a built chain's positive control does, since the copy is
+// served on the pod's own loopback from roots the probe embeds: a curl that gets past every chain,
+// as `curl -k` does, which only the isolation at the control shows; a curl that cannot read its
+// root (exit 77), as when the probe ran with the image's roots and an image lacked them; a refusal
+// for another cause; and a run its own limit or a signal ended, at the chain or at its isolation.
+// A run the probe's deadline ended has no verdict, which fails nothing and leaves the chain unasked.
 func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t *testing.T) {
 	bin := t.TempDir()
 	install := func(script string) {
@@ -1815,15 +1823,21 @@ func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t
 		t.Errorf("tlsSiteLine(vendored AAA) = %q, want %q", got, want)
 	}
 
-	install("#!/bin/sh\ncase \"$*\" in *" + tlsControlHost + "*) exit 0 ;; esac\n" + pastTheChain)
-	sites, err = probeVendoredTLSSites(context.Background(), env, stateDir, testTLSSites(stateDir))
-	if err != nil || len(sites) != 2 {
-		t.Fatalf("vendored sites with a curl that accepts every chain = %+v, %v; want both, and no failure", sites, err)
-	}
-	for _, site := range sites {
-		if want := "its positive control's isolation at https://" + tlsControlHost + "/ was accepted: the command returned no output"; site.unasked != want {
-			t.Errorf("%s with a curl that accepts every chain: unasked %q, want %q", site.name, site.unasked, want)
-		}
+	for _, row := range []struct{ name, script, want string }{
+		{name: "a curl that accepts every chain", script: "#!/bin/sh\ncase \"$*\" in *" + tlsControlHost + "*) exit 0 ;; esac\n" + pastTheChain,
+			want: "vendored emSign positive control isolation at https://" + tlsControlHost + "/ was accepted: the command returned no output"},
+		{name: "a curl that cannot read its root", script: "#!/bin/sh\necho 'curl: (77) error setting certificate file: emsign-ecc-root-ca-g3.pem' >&2\nexit 77\n",
+			want: "vendored emSign positive control at " + publicEmSignTLSSite.url + " was unavailable: exit status 77: curl: (77) error setting certificate file: "},
+		{name: "a refusal for another cause", script: "#!/bin/sh\necho 'curl: (60) SSL certificate problem: unable to get local issuer certificate' >&2\nexit 60\n",
+			want: "vendored emSign positive control at " + publicEmSignTLSSite.url + " was refused: exit status 60: curl: (60) SSL certificate problem: unable to get local issuer certificate"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			install(row.script)
+			sites, err := probeVendoredTLSSites(context.Background(), env, stateDir, testTLSSites(stateDir))
+			if want := "worker TLS probe cannot verify test chains: " + row.want; err == nil || !strings.Contains(err.Error(), want) || sites != nil {
+				t.Fatalf("probeVendoredTLSSites() = %+v, %v; want no sites and the failure %q", sites, err, want)
+			}
+		})
 	}
 
 	// stalls is a curl that runs action where its arguments match pattern, refuses the control
@@ -1866,6 +1880,52 @@ func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t
 			t.Errorf("vendored sites past the deadline = %+v, want both unasked: nothing verified them", sites)
 		}
 	})
+
+	// The one exception: a first run a signal ended after its output showed the server's signature
+	// failing got past the chain, so the isolation decides the copy, and here it is asked.
+	t.Run("a signal ended the run at the chain after the server's signature failed", func(t *testing.T) {
+		install(stalls(atTheChain, "echo 'curl: (35) TLS connect error: error:030000EA:digital envelope routines::provider signature failure' >&2; kill -9 $$"))
+		tlsPositiveControlSpec.timeout = time.Minute
+		sites, err := probeVendoredTLSSites(context.Background(), env, stateDir, testTLSSites(stateDir))
+		if err != nil || len(sites) != 2 || sites[0].unasked != "" || sites[1].unasked != "" {
+			t.Fatalf("probeVendoredTLSSites() = %+v, %v; want both copies asked and no failure", sites, err)
+		}
+	})
+}
+
+// The probe warns of a served leaf whose end is within 30 days, or past, so the chains are vendored
+// again before every client moves to the public sites: a leaf planted 29 days from its end, or past
+// it, draws the WARNING line and the GitHub warning command, each naming the site, the leaf, its
+// end and the command that vendors the chains; one planted 31 days from its end draws none. The
+// leaves the probe embeds are read as served, and draw the warning 29 days from their end and none
+// 31 days from it. Each row gives the time it reads, so no verdict depends on the day it runs.
+func TestTLSProbeWarnsOfAServedLeafNearItsEnd(t *testing.T) {
+	const day = 24 * time.Hour
+	end := time.Date(2027, 5, 3, 1, 4, 36, 0, time.UTC)
+	planted := []tlsServedLeaf{{site: "vendored emSign", leaf: &x509.Certificate{Subject: pkix.Name{CommonName: tlsEmSignHost}, NotAfter: end}}}
+	text := "the served vendored emSign chain's leaf, CN=" + tlsEmSignHost + ", is valid until 2027-05-03T01:04:36Z, within 30 days or past: vendor the chains again (" +
+		tlsVendorCommand + ") and commit what it writes, or from then every client is held to the public site in its place"
+	for _, now := range []time.Time{end.Add(-29 * day), end.Add(day)} {
+		if got, want := tlsServedLeafWarnings(planted, now), []string{"probe-image: WARNING: " + text, "::warning title=TLS probe::" + text}; !slices.Equal(got, want) {
+			t.Errorf("tlsServedLeafWarnings() at %s = %q, want %q", now, got, want)
+		}
+	}
+	if got := tlsServedLeafWarnings(planted, end.Add(-31*day)); len(got) != 0 {
+		t.Errorf("tlsServedLeafWarnings() 31 days before the leaf's end = %q, want none", got)
+	}
+
+	served := tlsServedLeaves(testTLSSites("")[3:5])
+	if len(served) != 2 || served[0].site != "vendored emSign" || served[1].site != "vendored AAA" {
+		t.Fatalf("tlsServedLeaves() = %+v, want the leaves of the vendored emSign and AAA chains", served)
+	}
+	for _, leaf := range served {
+		if got := tlsServedLeafWarnings([]tlsServedLeaf{leaf}, leaf.leaf.NotAfter.Add(-29*day)); len(got) != 2 || !strings.Contains(got[0], "the served "+leaf.site+" chain's leaf, ") {
+			t.Errorf("tlsServedLeafWarnings() 29 days before the embedded %s leaf's end = %q, want its warning", leaf.site, got)
+		}
+		if got := tlsServedLeafWarnings([]tlsServedLeaf{leaf}, leaf.leaf.NotAfter.Add(-31*day)); len(got) != 0 {
+			t.Errorf("tlsServedLeafWarnings() 31 days before the embedded %s leaf's end = %q, want none", leaf.site, got)
+		}
+	}
 }
 
 // The probe holds every client to the fixture chains and the control, each client that verifies a
@@ -2449,6 +2509,41 @@ func TestTLSProbeFailsAPositiveControlThatPassesItsLimit(t *testing.T) {
 	}
 }
 
+// The probe holds the served copies' positive controls to their verdict: a failure there fails the
+// probe at once, exit 1 naming it, before any client runs, and a run of theirs with no verdict
+// takes the no-verdict exit (bootprobe.NoVerdictExit) where nothing fails, naming that run. A
+// positive control's curl that cannot read its root, as when an image lacked the roots the probe
+// once read from it, fails the probe through the served copies' own controls, exit 1, rather than
+// marking both copies unasked and passing.
+func TestTLSProbeTakesTheServedCopiesPositiveControlsVerdict(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	const failed = "worker TLS probe cannot verify test chains: vendored emSign positive control at https://" + tlsEmSignHost + "/ was unavailable: its 20s limit ended it after 20.0s: signal: terminated"
+	failing := func(context.Context, []string, string, []tlsSite) ([]tlsSite, error) { return nil, errors.New(failed) }
+	code, stdout, stderr := probeImageWithSites(passingImageTLSClients, passingTLSPositiveControls, failing, unaskedPublicTLSSites, img.flags()...)
+	if code != 1 || !strings.Contains(stderr, failed) || strings.Contains(stdout, bootprobe.OKPrefix) || strings.Contains(stdout, "probe-image: TLS client ") {
+		t.Fatalf("probe-image with a served copy's control failed = %d, stdout %q, stderr %q; want exit 1 naming %q before any client runs", code, stdout, stderr, failed)
+	}
+
+	const cut = "vendored emSign positive control at https://" + tlsEmSignHost + "/: the probe's deadline ended it after 0.1s: signal: terminated"
+	noVerdict := func(ctx context.Context, env []string, stateDir string, sites []tlsSite) ([]tlsSite, error) {
+		vendored, _ := askedVendoredTLSSites(ctx, env, stateDir, sites)
+		vendored[0].unasked = "its positive control was no verdict"
+		return vendored, tlsNoVerdicts{cut}
+	}
+	code, stdout, stderr = probeImageWithSites(passingImageTLSClients, passingTLSPositiveControls, noVerdict, unaskedPublicTLSSites, img.flags()...)
+	detail, ok := bootprobe.NoVerdict(stderr)
+	if code != bootprobe.NoVerdictExit || !ok || !strings.Contains(detail, cut) || strings.Contains(stdout, bootprobe.OKPrefix) {
+		t.Fatalf("probe-image with a served copy's control cut by the deadline = %d, stdout %q, stderr %q; want exit %d naming %q", code, stdout, stderr, bootprobe.NoVerdictExit, cut)
+	}
+
+	img.install(t, "curl", "#!/bin/sh\necho 'curl: (77) error setting certificate file: '\"$3\" >&2\nexit 77\n")
+	code, stdout, stderr = probeImageWithSites(passingImageTLSClients, passingTLSPositiveControls, probeVendoredTLSSites, unaskedPublicTLSSites, img.flags()...)
+	if want := "worker TLS probe cannot verify test chains: vendored emSign positive control at https://" + tlsEmSignHost + "/ was unavailable: exit status 77: curl: (77) error setting certificate file: "; code != 1 || !strings.Contains(stderr, want) || strings.Contains(stdout, bootprobe.OKPrefix) {
+		t.Fatalf("probe-image with a curl that cannot read its root = %d, stdout %q, stderr %q; want exit 1 naming %q", code, stdout, stderr, want)
+	}
+}
+
 // c-slow-probe-passes case (7): a failure fails the probe beside a TLS run with no verdict, and
 // decides it: a client that accepts the emSign chain on its second run, one that exits at emSign
 // with no certificate error before its limit, one a signal kills before its limit, one a signal
@@ -2523,7 +2618,7 @@ func TestTLSProbeFailsWhenAFailureStandsBesideARunWithNoVerdict(t *testing.T) {
 // (TestTLSProbeFailsWhenAFailureStandsBesideARunWithNoVerdict).
 func TestTLSProbeFailsAnAcceptanceASignalEndedAtAPublicSite(t *testing.T) {
 	client := func(script string) tlsCommandClient {
-		return tlsCommandClient{clientName: "node", timeout: tlsDefaultProbeTimeout, applicationSeen: tlsFetchHTTPError.MatchString,
+		return tlsCommandClient{clientName: "node", timeout: tlsDefaultProbeTimeout, applicationSeen: tlsFetchAnswer.MatchString,
 			command: func(tlsSite) (string, []string, []string) { return "sh", []string{"-c", script}, nil }}
 	}
 	signalled := client(`printf 'Error: HTTP 503\n' >&2; kill -9 $$`)
@@ -2551,6 +2646,91 @@ func TestTLSProbeFailsAnAcceptanceASignalEndedAtAPublicSite(t *testing.T) {
 				t.Fatalf("probeTLSClients() = %v, want a failure naming %q", err, row.want)
 			}
 		})
+	}
+}
+
+// Chromium's answer is the page it dumps (--dump-dom, on stdout), which it prints only once the
+// page has loaded (chromiumDOMDumped): a run that dumped the page and was then ended by a signal
+// accepted the chain, so at a public site it fails the probe by name, as at a fixture chain, and at
+// the control it is the acceptance the control needs. The stand-in prints the DOM Chromium dumped
+// for the compromised sites' page. A run a signal ended after a refused navigation, which dumps
+// nothing, is unavailable, so unknown at a public site.
+func TestTLSProbeFailsAChromiumAcceptanceASignalEndedAtAPublicSite(t *testing.T) {
+	const dom = `<html><head><meta name="color-scheme" content="light dark"></head><body><pre style="word-wrap: break-word; white-space: pre-wrap;">Your client successfully connected to the site. That's bad!` + "\n" + `</pre></body></html>`
+	chromium := func(script string) tlsClient {
+		return tlsChromiumClient{tlsCommandClient: tlsCommandClient{clientName: "chromium", timeout: tlsChromiumProbeTimeout, applicationSeen: chromiumHTTPAnswer,
+			command: func(tlsSite) (string, []string, []string) { return "sh", []string{"-c", script, "sh", dom}, nil }}}
+	}
+	dumpedThenKilled := chromium(`printf '%s' "$1"; kill -9 $$`)
+	refusedThenKilled := chromium(`echo 'Page load failed: net::ERR_CERT_AUTHORITY_INVALID' >&2; kill -9 $$`)
+	for _, row := range []struct {
+		name   string
+		client tlsClient
+		site   tlsSite
+		status tlsStatus
+		want   string
+	}{
+		{name: "a signal after the dumped page, at a public site", client: dumpedThenKilled, site: publicEmSignTLSSite, status: tlsConnectionAccepted, want: "chromium accepts the public emSign chain: signal: killed ended it after "},
+		{name: "a signal after the dumped page, at a fixture chain", client: dumpedThenKilled, site: emSignTLSSite, status: tlsConnectionAccepted, want: "chromium accepts the emSign chain: signal: killed ended it after "},
+		{name: "a signal after the dumped page, at the control", client: dumpedThenKilled, site: controlTLSSite, status: tlsConnectionAccepted},
+		{name: "a signal after a refused navigation, at a public site", client: refusedThenKilled, site: publicEmSignTLSSite, status: tlsPublicUnknown},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			observations, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{row.client}, []tlsSite{row.site}, nil)
+			if len(observations) != 1 || observations[0].status != row.status || len(noVerdict) != 0 {
+				t.Fatalf("probeTLSClients() observed %+v, runs with no verdict %q; want one run, %s", observations, noVerdict, row.status)
+			}
+			if row.want == "" && err != nil {
+				t.Fatalf("probeTLSClients() = %v, want success", err)
+			}
+			if row.want != "" && (err == nil || !strings.Contains(err.Error(), row.want)) {
+				t.Fatalf("probeTLSClients() = %v, want a failure naming %q", err, row.want)
+			}
+		})
+	}
+}
+
+// A client that got the public site's own answer, a 200, accepted its chain, and one whose output
+// says so before the run ends fails the probe at that site whatever then ends the run: node,
+// CodeGraph's node, bun and omp write the status of every answer first (tlsFetchProgram), and wget
+// names the page it saved. Each stand-in, built from its client's spec, prints its client's line for
+// a 200 and is then killed; the same client killed before it prints anything is unknown there and
+// fails nothing. wget's line has the shape it printed at the control (measured on 2026-11-20 in the
+// image of 1c7c825367); Chromium's row is TestTLSProbeFailsAChromiumAcceptanceASignalEndedAtAPublicSite.
+func TestTLSProbeFailsAnAnswered200ASignalEndedAtAPublicSite(t *testing.T) {
+	answered := map[string]string{
+		"node":           "legion-tls-probe: answered 200",
+		"codegraph-node": "legion-tls-probe: answered 200",
+		"bun":            "legion-tls-probe: answered 200",
+		"omp":            "legion-tls-probe: answered 200",
+		"wget":           `2026-11-20 22:53:32 URL:https://` + tlsEmSignHost + `/ [60/60] -> "/dev/null" [1]`,
+	}
+	clients := imageTLSClientsOf[tlsCommandClient](t, nil, t.TempDir(), slices.Sorted(maps.Keys(answered))...)
+	for _, name := range slices.Sorted(maps.Keys(answered)) {
+		for _, row := range []struct {
+			label, script string
+			status        tlsStatus
+		}{
+			{label: "answered 200, then killed", script: `printf '%s\n' "$1" >&2; kill -9 $$`, status: tlsConnectionAccepted},
+			{label: "killed before any answer", script: `kill -9 $$`, status: tlsPublicUnknown},
+		} {
+			t.Run(name+" "+row.label, func(t *testing.T) {
+				client := clients[name]
+				client.command = func(tlsSite) (string, []string, []string) {
+					return "sh", []string{"-c", row.script, "sh", answered[name]}, nil
+				}
+				observations, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{client}, []tlsSite{publicEmSignTLSSite}, nil)
+				if len(observations) != 1 || observations[0].status != row.status || len(noVerdict) != 0 {
+					t.Fatalf("probeTLSClients() observed %+v, runs with no verdict %q; want one run, %s", observations, noVerdict, row.status)
+				}
+				if want := name + " accepts the public emSign chain: signal: killed ended it after "; row.status == tlsConnectionAccepted && (err == nil || !strings.Contains(err.Error(), want)) {
+					t.Fatalf("probeTLSClients() = %v, want a failure naming %q", err, want)
+				}
+				if row.status == tlsPublicUnknown && err != nil {
+					t.Fatalf("probeTLSClients() = %v, want no failure", err)
+				}
+			})
+		}
 	}
 }
 

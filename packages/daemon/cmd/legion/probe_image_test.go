@@ -187,9 +187,15 @@ func probeImageWith(clients func(string, []string, string) []tlsClient, controls
 
 // probeImageAt is probeImageWith with public in place of the public sites' positive controls.
 func probeImageAt(clients func(string, []string, string) []tlsClient, controls func(context.Context, []string, string, []tlsSite) error, public func(context.Context, []string, string) []tlsSite, args ...string) (int, string, string) {
+	return probeImageWithSites(clients, controls, askedVendoredTLSSites, public, args...)
+}
+
+// probeImageWithSites is probeImageAt with vendored in place of the served copies' positive
+// controls.
+func probeImageWithSites(clients func(string, []string, string) []tlsClient, controls func(context.Context, []string, string, []tlsSite) error, vendored func(context.Context, []string, string, []tlsSite) ([]tlsSite, error), public func(context.Context, []string, string) []tlsSite, args ...string) (int, string, string) {
 	previousClients, previousControls, previousVendored, previousPublic := newImageTLSClients, newTLSPositiveControls, newVendoredTLSSites, newPublicTLSSites
 	newImageTLSClients, newTLSPositiveControls = clients, controls
-	newVendoredTLSSites, newPublicTLSSites = askedVendoredTLSSites, public
+	newVendoredTLSSites, newPublicTLSSites = vendored, public
 	defer func() {
 		newImageTLSClients, newTLSPositiveControls, newVendoredTLSSites, newPublicTLSSites = previousClients, previousControls, previousVendored, previousPublic
 	}()

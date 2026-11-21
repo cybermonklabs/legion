@@ -1254,7 +1254,6 @@ COPY --from=go /out/gopls /usr/local/bin/gopls
 COPY --from=go --chown=1000:1000 /gomodcache/cache/download /home/legion/go/pkg/mod/cache/download
 USER root
 COPY --from=toolchain /out/chromium /opt/chromium
-COPY packages/daemon/docker/tls-roots /usr/share/legion/tls-roots
 # legion-testpg: root-owned and mode 0555, like every other program on the image's PATH, so a role
 # cannot rewrite the script the roles container's launcher runs.
 COPY --chmod=555 packages/daemon/docker/legion-testpg /usr/local/bin/legion-testpg

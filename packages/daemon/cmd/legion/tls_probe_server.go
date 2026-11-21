@@ -28,13 +28,16 @@ const (
 	tlsControlHost = "control.legion-tls-probe.test"
 )
 
-// tlsServerConnLimit bounds one connection to the probe's server, counted from its accept: the
-// longest a client's first run at a site may last (tlsChromiumProbeTimeout), so a client the probe
-// has stopped holds no connection long past its run. A run with no verdict runs once more within
-// two times its client's limit (tlsRunTerms.limit), up to 180 s for Chromium and 120 s for bq, and
-// such a run may outlast this bound; but the bound counts from each connection's own accept, not
-// from the run's start, so it cuts only a connection that has itself been open that long, which no
-// client's handshake and answer need.
+// tlsServerConnLimit bounds the start of each connection to the probe's server, counted from its
+// accept: its first byte, a proxy CONNECT and the TLS handshake (handle); and it bounds the read of
+// each request's header, counted from the start of that read (ReadHeaderTimeout). It is the longest
+// a client's first run at a site may last (tlsChromiumProbeTimeout). Once the HTTP server takes a
+// connection, Go's net/http clears that deadline after the handshake and sets none between
+// requests, since the server sets
+// no IdleTimeout, so an idle connection stays open until its client closes it or the server
+// closes; a client the probe has stopped closes its connections when its process group goes. No
+// verdict rests on the bound: a second run, within two times its client's limit (up to 180 s for
+// Chromium), may outlast it, and loses only a connection that hung in its handshake or a header.
 const tlsServerConnLimit = tlsChromiumProbeTimeout
 
 // tlsServedSite is one host one of the probe's listeners answers for: its site, its chain, the page
@@ -88,8 +91,9 @@ type tlsServer struct {
 }
 
 // newTLSServer builds the fixture chains for this run (newTLSFixture, newTLSControlFixture), writes
-// their three roots into stateDir, where the positive controls and the control's clients read them,
-// and starts the probe's server on 127.0.0.1. Close stops it.
+// their three roots and the two CA-published roots (writeTLSPublishedRoots) into stateDir, where the
+// positive controls and the control's clients read them, and starts the probe's server on
+// 127.0.0.1. Close stops it.
 func newTLSServer(stateDir string) (*tlsServer, error) {
 	server := &tlsServer{conns: make(chan net.Conn), closed: make(chan struct{})}
 	fixtures := map[string]*tlsServedSite{}
@@ -126,9 +130,12 @@ func newTLSServer(stateDir string) (*tlsServer, error) {
 		}
 		fixtures[fixture.host] = served
 	}
+	if err := writeTLSPublishedRoots(stateDir); err != nil {
+		return nil, fmt.Errorf("the TLS probe's CA-published roots: %w", err)
+	}
 	vendored := map[string]*tlsServedSite{}
 	for _, public := range publicTLSSites {
-		served, err := vendoredTLSSite(public)
+		served, err := vendoredTLSSite(stateDir, public)
 		if err != nil {
 			return nil, err
 		}
@@ -168,10 +175,11 @@ func listenTLS(hosts map[string]*tlsServedSite) (*tlsListener, error) {
 
 // vendoredTLSSite is public's own chain, vendored, as the probe's server serves it: with a key of
 // the leaf's type and size that the server makes, since it has none of the site's. Its root is
-// public's CA-published root, which its positive control holds it to (probeVendoredTLSSites): the
-// positive controls' curl, not Go's x509, because Go 1.27.3 refused these chains against their own
-// roots ("x509: no valid chains built", measured on 2026-11-20), as the image's go client did.
-func vendoredTLSSite(public tlsSite) (*tlsServedSite, error) {
+// public's CA-published root, in stateDir (writeTLSPublishedRoots), which its positive control
+// holds it to (probeVendoredTLSSites): the positive controls' curl, not Go's x509, because Go
+// 1.27.3 refused these chains against their own roots ("x509: no valid chains built", measured on
+// 2026-11-20), as the image's go client did.
+func vendoredTLSSite(stateDir string, public tlsSite) (*tlsServedSite, error) {
 	host := tlsSiteURL(public).Hostname()
 	chain, err := vendoredTLSChain(host)
 	if err != nil {
@@ -185,7 +193,7 @@ func vendoredTLSSite(public tlsSite) (*tlsServedSite, error) {
 	for _, cert := range chain {
 		served.cert.Certificate = append(served.cert.Certificate, cert.Raw)
 	}
-	served.site = tlsSite{name: "vendored " + strings.TrimPrefix(public.name, "public "), url: public.url, root: public.root, kind: tlsVendoredSite, seen: &served.seen}
+	served.site = tlsSite{name: "vendored " + strings.TrimPrefix(public.name, "public "), url: public.url, root: tlsPublishedRootIn(stateDir, public), kind: tlsVendoredSite, seen: &served.seen}
 	return served, nil
 }
 

@@ -13,6 +13,8 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -22,6 +24,33 @@ import (
 //
 //go:embed tls-fixtures/vendored-*.pem
 var tlsVendoredChains embed.FS
+
+// tlsPublishedRoots are the CA-published roots the public test sites' chains reach, each in the
+// file its public site names (tlsSite.root): records from repository.emsign.com/certs/emSignECCRootCAG3.crt
+// (86:A1:EC:BA:08:9C:4A:8D:3B:BE:27:34:C6:12:BA:34:1D:81:3E:04:3C:F9:E8:A8:62:CD:5C:57:A3:6B:BE:6B)
+// and crt.sectigo.com/AAACertificateServices.crt
+// (D7:A7:A0:FB:5D:7E:27:31:D7:71:E9:48:4E:BC:DE:F7:1D:5F:0C:3E:0A:29:48:78:2B:C8:3E:E0:EA:69:9E:F4).
+// They are embedded, and the probe's server writes them into its state directory
+// (writeTLSPublishedRoots), so no image can lack them: a positive control that cannot read its root
+// would mark the served copies and the public sites unasked and hold no client to a real chain.
+//
+//go:embed tls-fixtures/emsign-ecc-root-ca-g3.pem tls-fixtures/aaa-certificate-services.pem
+var tlsPublishedRoots embed.FS
+
+// writeTLSPublishedRoots writes each public site's CA-published root into stateDir, under the file
+// name the site names (tlsSite.root), where the positive controls read it.
+func writeTLSPublishedRoots(stateDir string) error {
+	for _, site := range publicTLSSites {
+		data, err := tlsPublishedRoots.ReadFile("tls-fixtures/" + site.root)
+		if err != nil {
+			return fmt.Errorf("the %s root: %w", site.name, err)
+		}
+		if err := os.WriteFile(filepath.Join(stateDir, site.root), data, 0o644); err != nil {
+			return fmt.Errorf("write the %s root: %w", site.name, err)
+		}
+	}
+	return nil
+}
 
 // vendoredTLSChain is the vendored chain of the public site at host, leaf first.
 func vendoredTLSChain(host string) ([]*x509.Certificate, error) {
@@ -42,6 +71,53 @@ func vendoredTLSChain(host string) ([]*x509.Certificate, error) {
 		return nil, fmt.Errorf("the vendored chain of %s holds no certificate", host)
 	}
 	return chain, nil
+}
+
+// tlsServedLeafWarning is how long before a served leaf's end the probe warns of it: once the
+// leaf has expired, its served copy's positive control fails and every client is held to the
+// public site in its place (probeVendoredTLSSites), where a run with no verdict passes, so the
+// chains must be vendored again before then (tls-fixtures/vendor.go).
+const tlsServedLeafWarning = 30 * 24 * time.Hour
+
+// tlsVendorCommand vendors the public sites' chains again, from the repository's root.
+const tlsVendorCommand = "cd packages/daemon/cmd/legion/tls-fixtures && go run vendor.go"
+
+// tlsServedLeaf is the leaf of a chain the probe's server serves as a public site's own, by the
+// served site's name.
+type tlsServedLeaf struct {
+	site string
+	leaf *x509.Certificate
+}
+
+// tlsServedLeaves are the leaves of sites' vendored chains (vendoredTLSChain), by site, read from
+// the chains the probe embeds; a site whose chain cannot be read has none.
+func tlsServedLeaves(sites []tlsSite) []tlsServedLeaf {
+	var leaves []tlsServedLeaf
+	for _, site := range sites {
+		if chain, err := vendoredTLSChain(tlsSiteURL(site).Hostname()); err == nil {
+			leaves = append(leaves, tlsServedLeaf{site: site.name, leaf: chain[0]})
+		}
+	}
+	return leaves
+}
+
+// tlsServedLeafWarnings are the lines that warn of each of leaves whose end is within
+// tlsServedLeafWarning of now, or past: a `probe-image: WARNING:` line for the probe's log, and the
+// same as a GitHub Actions warning command. The command makes an annotation only where the probe's
+// stdout is a workflow step's own: inside the image build, BuildKit prefixes every line of a RUN
+// step, so the runner reads it as a log line, and the worker image workflow warns of the same
+// leaves in a step of its own ("Warn before a served TLS leaf expires", worker-image.yaml).
+func tlsServedLeafWarnings(leaves []tlsServedLeaf, now time.Time) []string {
+	var lines []string
+	for _, served := range leaves {
+		if served.leaf.NotAfter.Sub(now) > tlsServedLeafWarning {
+			continue
+		}
+		text := fmt.Sprintf("the served %s chain's leaf, %s, is valid until %s, within %d days or past: vendor the chains again (%s) and commit what it writes, or from then every client is held to the public site in its place",
+			served.site, served.leaf.Subject, served.leaf.NotAfter.UTC().Format(time.RFC3339), int(tlsServedLeafWarning.Hours()/24), tlsVendorCommand)
+		lines = append(lines, "probe-image: WARNING: "+text, "::warning title=TLS probe::"+text)
+	}
+	return lines
 }
 
 // tlsFixture is a chain the probe's server serves with a key it holds: the chain, leaf first, with
