@@ -2272,13 +2272,16 @@ pass "up sends Dispatch's role-marked send again 3 s after a starting listener's
 
 # A listener that cannot read its issuer answers Dispatch's token 503 for as long as it cannot:
 # up sends again every 3 s until IDENTITY_CHECK_SECONDS (120 s) have passed, then stops, naming
-# the 503 as an issuer the listener could not read. The bound is set to 2 s here, as (dd) sets the
+# the 503 as an issuer the listener could not read. The bound is set to 5 s here, as (dd) sets the
 # step's grace, and the fake sleep returns at once, so the case waits out that bound in real time
-# alone.
+# alone. The bound counts whole seconds (EPOCHSECONDS), so a 5 s bound runs more than 4 s from
+# the check's start whatever fraction of a second it starts at; the row asks for 1 s of sends,
+# which leaves 3 s for the steps before the first send on a loaded machine (at 3 s, one run in 25
+# on a loaded box started sending too late and spanned 0.96 s).
 grep -qx 'IDENTITY_CHECK_SECONDS=120' "$cluster" || fail "cluster.sh does not bound the identity check's retries at 120 s"
 cat >"$tmp/up-identity-bounded.sh" <<EOF
 source "$cluster"
-IDENTITY_CHECK_SECONDS=2
+IDENTITY_CHECK_SECONDS=5
 main "\$@"
 EOF
 reset_fake
@@ -2298,7 +2301,7 @@ probes=$(wc -l <"$fake/identity-probes")
 ((${probes} - 1 <= $(grep -cx 3 "$fake/sleep.log" || true))) ||
   fail "up did not wait 3 s between its $probes sends to a listener that kept answering 503: $(grep -cx 3 "$fake/sleep.log" || true) waits of 3 s"
 awk 'NR == 1 { first = $1 } { last = $1 } END { exit !(last - first >= 1) }' "$fake/identity-probe-times" ||
-  fail "up stopped sending to a listener that kept answering 503 before its 2 s bound: its sends spanned $(awk 'NR == 1 { f = $1 } { l = $1 } END { printf "%.2f", l - f }' "$fake/identity-probe-times") s"
+  fail "up stopped sending to a listener that kept answering 503 before its 5 s bound: its sends spanned $(awk 'NR == 1 { f = $1 } { l = $1 } END { printf "%.2f", l - f }' "$fake/identity-probe-times") s"
 run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down after the up whose listener kept answering 503 exited $RC"
 pass "up sends Dispatch's role-marked send again every 3 s while the listener answers 503, and once its bound has passed stops, naming the 503 as an issuer it could not read"

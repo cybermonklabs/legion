@@ -370,14 +370,16 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 
 	// The control: an issuer the listener cannot reach, as the cluster's own is from the fenced
 	// namespace (there a connection that never answers, here one refused). The listener starts and
-	// serves, but answers Dispatch's minted token 503, not the 400 that says it took the mark.
+	// serves, but answers Dispatch's token for that issuer 503, not the 400 that says it took the
+	// mark: the copy's fault before the fix, a token whose issuer the listener cannot read.
 	closed, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	unreachable := "http://" + closed.Addr().String()
 	_ = closed.Close()
-	stranded, strandedPort := startCopysListener(t, binary, unreachable, testDispatchSubject)
+	strandedIssuer := unreachable
+	stranded, strandedPort := startCopysListener(t, binary, strandedIssuer, testDispatchSubject)
 	strandedBase := "http://127.0.0.1:" + strconv.Itoa(strandedPort)
 	health := map[string]any{}
 	for deadline := time.Now().Add(90 * time.Second); ; {
@@ -406,7 +408,7 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("Authorization", "Bearer "+run.tokens[testDispatchSubject])
+	request.Header.Set("Authorization", "Bearer "+mintWithKey(t, run.private, strandedIssuer, testDispatchSubject).tokens[testDispatchSubject])
 	request.Header.Set("Content-Type", "application/json")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -415,9 +417,9 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 	body, _ := io.ReadAll(response.Body)
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") != "1" {
-		t.Errorf("Dispatch's minted token at the listener given an unreachable issuer was answered %d %s (Retry-After %q), not 503 with Retry-After 1", response.StatusCode, body, response.Header.Get("Retry-After"))
+		t.Errorf("Dispatch's token for the issuer the listener cannot reach was answered %d %s (Retry-After %q), not 503 with Retry-After 1", response.StatusCode, body, response.Header.Get("Retry-After"))
 	}
-	stranded.WaitForOutput(t, "oidc: discover the issuer; retrying in the background", unreachable)
+	stranded.WaitForOutput(t, "oidc: discover the issuer; retrying in the background", strandedIssuer)
 }
 
 // TestOIDCMintWritesOneTokenPerSubjectUnderTheKeyItPrints: one run prints the key's public half
