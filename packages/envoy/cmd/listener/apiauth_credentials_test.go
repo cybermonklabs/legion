@@ -338,6 +338,9 @@ func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
 		route:    gate.route,
 	}, gate)
 	open := apiAuth(listenerAPIAuth{logger: logger, requests: requests, route: gate.route}, gate)
+	// An open listener that takes broker tokens verifies one and counts it broker, never
+	// none_broker_token: that label is the open /v1 of a listener with no broker settings alone.
+	openWithBrokers := apiAuth(listenerAPIAuth{brokers: listenerBrokerTokens(t, broker), logger: logger, requests: requests, route: gate.route}, gate)
 
 	rows := []struct {
 		credential string
@@ -363,6 +366,9 @@ func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
 		// the gate on the open /v1 can see the callers that already hold a broker token.
 		{"none_broker_token", "/v1/messages/publish", open, func() *http.Request {
 			return brokerTokenRequest(t, caller, http.MethodPost, "/v1/messages/publish", "access-token-counted", `{}`)
+		}},
+		{"broker", "/v1/sessions", openWithBrokers, func() *http.Request {
+			return brokerTokenRequest(t, caller, http.MethodGet, "/v1/sessions", "access-token-counted", "")
 		}},
 	}
 	for _, row := range rows {

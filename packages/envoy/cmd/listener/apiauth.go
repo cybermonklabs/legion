@@ -51,9 +51,10 @@ const (
 )
 
 // newListenerRequests registers envoy_listener_requests_total, the census the removal of the
-// shared token and of the open /v1 is gated on: credential="shared_token", credential="none" and
-// credential="none_broker_token" must read zero on every deployed listener for 72 hours before
-// they go, but for the one listener that change begins to verify broker tokens on.
+// shared token and of the open /v1 is gated on: credential="shared_token" and credential="none"
+// must read zero on every deployed listener for 72 hours before they go, and
+// credential="none_broker_token" on every listener but the clustered session listeners, which the
+// removal begins to verify broker tokens on.
 func newListenerRequests(met *metrics.Registry) *metrics.Counter {
 	return met.NewCounter("envoy_listener_requests_total",
 		"Requests /v1 admitted, by the credential that admitted each (shared_token, none, none_broker_token, oidc, google, broker) and the route it reached")
@@ -359,7 +360,8 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 				return
 			}
 		}
-		if _, presented := ciphertoken.Presented(r); auth.brokers != nil && presented {
+		_, presented := ciphertoken.Presented(r)
+		if auth.brokers != nil && presented {
 			caller, err := auth.brokers.verify(r)
 			if err != nil {
 				refuseBrokerToken(w, auth.logger, r, auth.brokers, err)
@@ -369,7 +371,7 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 			return
 		}
 		if open {
-			if _, presented := ciphertoken.Presented(r); presented {
+			if presented {
 				admit(w, r, credentialNoneBrokerToken)
 				return
 			}
