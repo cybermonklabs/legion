@@ -1,6 +1,6 @@
 // packages/envoy/internal/cipher/proxy/slack_test.go
 //
-// #t-d-12's proxy half (dispatch://INFRA-3862): a private project's grant of the Legion Slack bot
+// The proxy half of a private project's Slack limit: a private project's grant of the Legion Slack bot
 // token spends it only on POST /api/chat.postMessage, carrying channel, thread_ts and text, to a
 // channel its project's owner named (slackPostAllowed). The first test drives every request shape
 // through the rig's fake grants, and the three ways a list comes back empty through the real
@@ -21,6 +21,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -411,6 +412,12 @@ func TestAPrivateProjectsSlackGrantIsLimitedOnceItsProjectTurnsPrivate(t *testin
 	b.post(t, toUnlisted).served(t, "a post to "+unlisted+" while PRIV is public", toUnlisted, slackValue)
 
 	private := b.dispatch.serve(t, map[string]projectaccesstest.Row{privKey: privateRow([]string{channelA}, slackPerson)})
+	// The switch to private records PRIV with its channel in the broker's stored private list
+	// before it commits (the switch's call to the broker), and the hour passes on the database's
+	// clock too, so the settle from that record has run.
+	if _, err := b.store.RecordPrivateProject(t.Context(), privKey, []string{channelA}); err != nil {
+		t.Fatalf("RecordPrivateProject(%s): %v", privKey, err)
+	}
 	b.clock.advance(time.Hour)
 
 	b.post(t, toUnlisted).refused(t, "a post to "+unlisted+" an hour after PRIV turned private", toUnlisted)
@@ -447,6 +454,7 @@ type slackBroker struct {
 	password string
 	dispatch *dispatchAt
 	clock    *proxyClock
+	store    *store.Store
 }
 
 // post sends p as the session's command does.
@@ -455,11 +463,13 @@ func (b *slackBroker) post(t *testing.T, p slackPost) slackAnswer {
 	return sendSlack(t, b.rig, b.client, b.password, p)
 }
 
-// newSlackBroker builds it, with Dispatch answering rows and the session naming projects. It skips
-// t when BROKER_TEST_DATABASE_URL is unset (storetest.Open).
+// newSlackBroker builds it, with Dispatch answering rows and the session naming projects, and the
+// broker's stored private list holding every private row of rows with its channels, stored long
+// before (storeAged). It skips t when BROKER_TEST_DATABASE_URL is unset (storetest.Open).
 func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, projects ...string) *slackBroker {
 	t.Helper()
 	st := storetest.Open(t)
+	storeAged(t, st, rows)
 	rules := slackRules()
 	token := policytest.Secret(slackName, policy.OwnerShared, policy.TierAgent, slackValue)
 	token.Tags[policy.TagProjectChannels] = policy.ProjectChannelsSlack
@@ -485,9 +495,57 @@ func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, project
 		Projects:             dispatch,
 	}
 
-	enrollmentID, key := enrolSession(t, st, projects)
+	password := releaseSlack(t, m, st, "box-slack-"+t.Name(), "post the release notes (REL-12)", projects)
+	clock := &proxyClock{db: &st.DatabaseClockOffset}
+	r := newRig(t, Options{Rules: rules, Grants: m, Now: clock.now})
+	return &slackBroker{rig: r, client: r.client(password), password: password, dispatch: dispatch, clock: clock, store: st}
+}
+
+// storedLongAgo is how far back storeAged stores a row: past every settle a limited grant waits
+// (requests' slackChannelSettle, 16 min 30 s), so a test that wants the settle starts it itself.
+const storedLongAgo = 30 * time.Minute
+
+// storeAged keeps every private row of rows, with its channels (unknown for a row with
+// OmitSlackChannels), in st's stored private list as a read made storedLongAgo did: what a
+// broker that has read Dispatch's list for a while holds.
+func storeAged(t *testing.T, st *store.Store, rows map[string]projectaccesstest.Row) {
+	t.Helper()
+	var listed []store.KnownPrivateProject
+	for key, row := range rows {
+		if row.Visibility != "private" {
+			continue
+		}
+		project := store.KnownPrivateProject{Key: key}
+		if !row.OmitSlackChannels {
+			project.SlackChannels = slices.Concat([]string{}, row.SlackChannels)
+		}
+		listed = append(listed, project)
+	}
+	st.DatabaseClockOffset.Set(st.DatabaseClockOffset.Get() - storedLongAgo)
+	defer st.DatabaseClockOffset.Set(st.DatabaseClockOffset.Get() + storedLongAgo)
+	storeList(t, st, listed...)
+}
+
+// storeList keeps listed in st's stored private list as one read of Dispatch's list, stamped now.
+func storeList(t *testing.T, st *store.Store, listed ...store.KnownPrivateProject) {
+	t.Helper()
+	stamp, err := st.StampPrivateList(t.Context())
+	if err != nil {
+		t.Fatalf("StampPrivateList: %v", err)
+	}
+	if _, err := st.KeepPrivateProjects(t.Context(), stamp, listed); err != nil {
+		t.Fatalf("KeepPrivateProjects(%v): %v", listed, err)
+	}
+}
+
+// releaseSlack enrols a session of slackPerson's on runtime, naming projects, has m grant it the
+// token for reason at once, and releases it as a command would be: held back behind the airlock.
+// It answers the proxy password the release hands the command.
+func releaseSlack(t *testing.T, m *requests.Machine, st *store.Store, runtime, reason string, projects []string) string {
+	t.Helper()
+	enrollmentID, key := enrolSession(t, st, runtime, projects)
 	compact, err := record.Sign(key, slackAudience, []record.AuthorizationDetail{{Type: "agent_secret", Identifier: slackName, Actions: []string{"inject"}}},
-		"post the release notes (INFRA-3862)", "", nil, time.Now())
+		reason, "", nil, time.Now())
 	if err != nil {
 		t.Fatalf("record.Sign: %v", err)
 	}
@@ -499,17 +557,17 @@ func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, project
 	if err != nil || release.Airlock == nil {
 		t.Fatalf("Values = %+v, %v; want %s held back behind the airlock", release, err, slackName)
 	}
-
-	clock := &proxyClock{}
-	r := newRig(t, Options{Rules: rules, Grants: m, Now: clock.now})
-	return &slackBroker{rig: r, client: r.client(release.Airlock.ProxyPassword), password: release.Airlock.ProxyPassword, dispatch: dispatch, clock: clock}
+	return release.Airlock.ProxyPassword
 }
 
-// enrolSession writes a live session of slackPerson's naming projects, under a launcher credential
-// of that person's, straight into the store, as requests' own tests write theirs, and answers the
-// enrollment and the key its requests are signed with.
-func enrolSession(t *testing.T, st *store.Store, projects []string) (string, *ecdsa.PrivateKey) {
+// enrolSession writes a live session of slackPerson's on runtime naming projects, under a launcher
+// credential of that person's, straight into the store, as requests' own tests write theirs, and
+// answers the enrollment and the key its requests are signed with.
+func enrolSession(t *testing.T, st *store.Store, runtime string, projects []string) (string, *ecdsa.PrivateKey) {
 	t.Helper()
+	if projects == nil {
+		projects = []string{}
+	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -525,7 +583,7 @@ func enrolSession(t *testing.T, st *store.Store, projects []string) (string, *ec
 	}
 	id := uuid.NewString()
 	if _, err := st.Pool.Exec(t.Context(), `insert into enrollments (id, kind, runtime_id, operator, thumbprint, subject, launcher_credential_id, lease_expires_at, projects)
-		values ($1,'session',$2,$3,$4,null,$5, now() + interval '1 hour', $6)`, id, "box-slack-"+t.Name(), slackPerson, thumbprint, credentialID, projects); err != nil {
+		values ($1,'session',$2,$3,$4,null,$5, now() + interval '1 hour', $6)`, id, runtime, slackPerson, thumbprint, credentialID, projects); err != nil {
 		t.Fatalf("insert enrollments: %v", err)
 	}
 	return id, key
@@ -544,12 +602,22 @@ func replayOnce(st *store.Store) func(context.Context, string, time.Time) (bool,
 
 // proxyClock is the proxy's Options.Now: the wall clock, moved on by what a row has advanced it.
 // The machine behind it reads the wall clock, so a value it releases expires by that, and the
-// proxy, reading this one, takes it as that much closer to its end.
-type proxyClock struct{ ahead atomic.Int64 }
+// proxy, reading this one, takes it as that much closer to its end. When db is set, advance moves
+// the broker's database's time by as much (store.Store's DatabaseClockOffset), so a settle the
+// stored private list decides on that time runs with the row's clock.
+type proxyClock struct {
+	ahead atomic.Int64
+	db    *store.ClockOffset
+}
 
 func (c *proxyClock) now() time.Time { return time.Now().Add(time.Duration(c.ahead.Load())) }
 
-func (c *proxyClock) advance(d time.Duration) { c.ahead.Add(int64(d)) }
+func (c *proxyClock) advance(d time.Duration) {
+	c.ahead.Add(int64(d))
+	if c.db != nil {
+		c.db.Set(c.db.Get() + d)
+	}
+}
 
 // dispatchAt is the machine's client of Dispatch's project-access routes (Machine.Projects): a
 // real projectaccess.Client asking a projectaccesstest stand-in (projectaccesstest.Swappable). A

@@ -866,6 +866,12 @@ type Requester struct {
 	// so Evaluate stays pure and is safe to call while a lock is held. A secret tagged with a
 	// project it holds no state for is ErrNoProjectState.
 	ProjectStates map[string]ProjectState
+	// PrivateChannelsNamed is whether some private project's owner names a Slack channel, as the
+	// caller read Dispatch's list of private projects before evaluating (the airlock's public
+	// fence, requests.Machine.PrivateList). It is plain data too. While it is true a
+	// project-channels secret goes to no credential outside the airlock, whatever projects the
+	// credential names (ReasonProjectChannelsNeedAirlock).
+	PrivateChannelsNamed bool
 }
 
 // Decision is how the policy answers one requester's ask for one name.
@@ -908,9 +914,12 @@ const ReasonProjectMissing = "project-missing"
 
 // ReasonProjectChannelsNeedAirlock is the Reason of a Deny for a project-channels secret
 // (TagProjectChannels) with no airlock entry, asked for by a credential that names a private
-// project (Requester.ListsPrivate). Outside the airlock the release hands the session the real
-// token, which it could then spend anywhere; behind it the proxy holds each post to the channels
-// the project's owner named. A credential that names no private project is unchanged.
+// project (Requester.ListsPrivate), or by any credential while some private project's owner names
+// a Slack channel (Requester.PrivateChannelsNamed). Outside the airlock the release hands the
+// session the real token, which it could then spend anywhere: a private project's credential
+// outside its owner's channels, and any other credential in a private project's channel. Behind it
+// the proxy holds every call to those channels. With no private project naming a channel, a
+// credential that names no private project is unchanged.
 const ReasonProjectChannelsNeedAirlock = "project-channels-need-airlock"
 
 // ListsPrivate reports whether any project the credential names is private: the one predicate
@@ -1011,9 +1020,10 @@ func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	}
 	// After the project rule: a secret whose use a private project's owner limits goes to such a
 	// credential only behind the airlock, where the proxy holds each post to the channels that
-	// owner named. Outside it the release hands over the real token, which the session could then
-	// spend anywhere.
-	if secret.ProjectChannels != "" && secret.AirlockDigest == "" && r.ListsPrivate() {
+	// owner named, and to every other credential only behind it too while a private project names
+	// a channel, where the proxy fences those channels off. Outside it the release hands over the
+	// real token, which the session could then spend anywhere.
+	if secret.ProjectChannels != "" && secret.AirlockDigest == "" && (r.ListsPrivate() || r.PrivateChannelsNamed) {
 		return Decision{Outcome: Deny, Reason: ReasonProjectChannelsNeedAirlock, Source: secret.Source}, nil
 	}
 	withheld := slices.Contains(r.Withheld, name)

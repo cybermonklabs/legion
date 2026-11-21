@@ -1280,7 +1280,15 @@ candidates:
 			}
 			return Request{}, false, err
 		}
-		if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyGroupOwned(set, granted) || anyProjectTagged(set, granted) || personPodGrant(enr) {
+		// The same names checkRelease reads Dispatch for every release of are re-evaluated here
+		// for every reuse, a project-channels name among them (anyChannelLimited): a grant its
+		// release now refuses (project-channels-need-airlock once a private project names a
+		// channel) is no grant to answer again, and Create asks afresh, which tells the session why.
+		names := make([]string, len(granted))
+		for i, g := range granted {
+			names[i] = g.name
+		}
+		if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyGroupOwned(set, granted) || anyProjectTagged(set, granted) || anyChannelLimited(set, names) || personPodGrant(enr) {
 			requester, err := m.requester(ctx, m.Store.Pool, enr, facts)
 			if err != nil {
 				return Request{}, false, err

@@ -81,6 +81,13 @@ const (
 	// project-channels secret spent other than on a post to a channel its owner named
 	// (slackPostAllowed).
 	codeChannelNotAllowed = "CHANNEL_NOT_ALLOWED"
+	// serveBound: a request on a project-channels name released to a credential that names no
+	// private project which names a channel a private project's owner named, or which the
+	// public fence cannot read as naming none (slackCallExcluded).
+	codePrivateChannel = "PRIVATE_CHANNEL"
+	// serveBound: any request on a project-channels name whose public fence the broker could not
+	// read (requests.AirlockSecret.ExcludedUnread).
+	codePrivateChannelsUnread = "PRIVATE_CHANNELS_UNREAD"
 )
 
 // answerWriter is one answer of the proxy port as it is written: its id, which it sets in the

@@ -1,6 +1,7 @@
 package projectrepos_test
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"reflect"
@@ -9,7 +10,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
-	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/projectrepos"
 )
@@ -177,11 +177,13 @@ func TestProjectRepositoriesClientCallsARefusedTokenTheBrokersOwn(t *testing.T) 
 	}
 }
 
-// TestTheRepositoryAnswerIsTheIssuesListNotTheMappedOne: one Dispatch, read by both of the broker's
-// clients with one account as cmd/cipherd wires them, keeps two lists of a project's repositories
-// apart. The repository client answers the list the project's issues resolve to, and never the
-// list Dispatch maps to the project, which the membership client is answered on the same Dispatch;
-// a project none of whose issues resolves to a repository is [], whatever is mapped to it.
+// TestTheRepositoryAnswerIsTheIssuesListNotTheMappedOne: one Dispatch, read with one account as
+// cmd/cipherd wires the broker's clients, keeps two lists of a project's repositories apart. The
+// repository client answers the list the project's issues resolve to, and never the list Dispatch
+// maps to the project, which Dispatch's membership answer carries on the same Dispatch; a project
+// none of whose issues resolves to a repository is [], whatever is mapped to it. The membership
+// client reads no repository list (projectaccess.Answer carries none), so the mapped list is read
+// off the wire (membershipRepositories).
 func TestTheRepositoryAnswerIsTheIssuesListNotTheMappedOne(t *testing.T) {
 	server := standIn(t)
 	for project, want := range map[string][]string{"PRIV": {"acme/pub", "acme/two"}, "EMPTY": {}} {
@@ -189,11 +191,33 @@ func TestTheRepositoryAnswerIsTheIssuesListNotTheMappedOne(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("Repositories(%s) = %q, %v; want the issues' list %q, not the mapped one", project, got, err, want)
 		}
-		answer, err := projectaccess.New(server.URL, server.Account, nil).Access(t.Context(), project, "")
-		if err != nil || !reflect.DeepEqual(answer.Repositories, []string{"acme/mapped"}) {
-			t.Fatalf("Access(%s) from the same Dispatch with the same account = %q, %v; want its mapped list acme/mapped", project, answer.Repositories, err)
+		if mapped := membershipRepositories(t, server, project); !reflect.DeepEqual(mapped, []string{"acme/mapped"}) {
+			t.Fatalf("Dispatch's membership answer about %s, from the same Dispatch with the same account, maps %q; want acme/mapped", project, mapped)
 		}
 	}
+}
+
+// membershipRepositories is the repositories key of Dispatch's membership answer about project,
+// read with the stand-in's own bearer, as the membership client asks it.
+func membershipRepositories(t *testing.T, server *projectaccesstest.Server, project string) []string {
+	t.Helper()
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/api/v1/access/projects/"+project, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+server.Token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var answer struct {
+		Repositories []string `json:"repositories"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("Dispatch's membership answer about %s: %d, %v", project, response.StatusCode, err)
+	}
+	return answer.Repositories
 }
 
 // TestARefusedAnswerIsQuotedAtMostSixtyFourBytes: a key or a value of Dispatch's answer that an

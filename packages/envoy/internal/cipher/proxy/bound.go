@@ -1,9 +1,10 @@
 // packages/envoy/internal/cipher/proxy/bound.go
 // One request on a bound host: the proxyrules.Request it is read as, the one (name, slot) pair of
 // the grant it is handled for, the real value behind that pair, the decision and the swap
-// (proxyrules.Decide and proxyrules.Rewrite, which decide and swap everything here, with a private
-// project's Slack check beside them for a Limited name, slack.go), what goes upstream, and the
-// line the call logs.
+// (proxyrules.Decide and proxyrules.Rewrite, which decide and swap everything here, with the Slack
+// checks of a project-channels name beside them, slack.go: a private project's for a Limited name
+// and the public fence for one with Excluded channels), what goes upstream, and the line the call
+// logs.
 package proxy
 
 import (
@@ -34,8 +35,11 @@ import (
 // mintAgainBefore is how close to its expiry a minted value may come before the proxy reads the
 // grant again, which mints it again. Five minutes, so that no call starts on a token about to
 // end: a request the proxy carries may run for minutes - a long poll, a large upload - and a
-// token that lapses in the middle of one fails the call rather than being retried.
-const mintAgainBefore = 5 * time.Minute
+// token that lapses in the middle of one fails the call rather than being retried. It is the
+// broker's requests.AirlockMintAgainBefore, which the broker's own bounds on a value's expiry
+// (a project-channels name's settle time, an unread public fence) are sized against: one value,
+// read by both.
+const mintAgainBefore = requests.AirlockMintAgainBefore
 
 // grantValues is one grant's real values on this pod, read once and then held until a name's
 // own reread drops it (DropName), the policy version the read ran under stops being the live
@@ -283,8 +287,9 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// The decision never reads the body. The airlock swaps headers alone, so nothing it
 		// decides depends on the body; reading one would mean holding every upload a command
 		// makes in the broker's memory before it could be forwarded, and the proxy streams
-		// instead. The one body this function reads is a Limited name's, which slackPostAllowed
-		// below reads, bounded, to tell which Slack channel it posts to.
+		// instead. The one body this function reads is a project-channels name's, which
+		// slackPostAllowed or slackCallExcluded below reads, bounded, to tell which Slack
+		// channel it names.
 		Body: "",
 	}
 
@@ -352,6 +357,14 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNoValue, "the broker released no value for "+chosen.name)
 		return
 	}
+	if secret.ExcludedUnread {
+		// A project-channels name whose public fence the broker could not read
+		// (requests.AirlockSecret.ExcludedUnread): which Slack channels belong to a private
+		// project is unknown, so no call on it is known not to name one. The broker reads the
+		// fence again within a minute, and the name serves again once a read answers.
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codePrivateChannelsUnread, privateChannelsUnread)
+		return
+	}
 	if !slotReleased(secret, chosen.slot) {
 		// The grant holds a placeholder for a slot the broker's read of this name no longer
 		// fills: a github-app whose installation on that owner has gone since the release.
@@ -374,7 +387,13 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// A Limited name is spent only on a Slack post, which is a header swap. An entry of
 		// another kind signs or exchanges what it carries, which slackPostAllowed has no
 		// reading of, so it carries nothing rather than go out unchecked.
-		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeChannelNotAllowed, channelNotAllowed+": the entry of this secret is of kind "+kind+", not a header swap")
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeChannelNotAllowed, channelRefusal(secret, "the entry of this secret is of kind "+kind+", not a header swap"))
+		return
+	}
+	if len(secret.Excluded) > 0 && kind != "" {
+		// The same for a name the public fence holds: slackCallExcluded reads a Slack call,
+		// which is a header swap, and has no reading of what another kind signs or exchanges.
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codePrivateChannel, privateChannel+": the entry of this secret is of kind "+kind+", not a header swap")
 		return
 	}
 
@@ -446,7 +465,20 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			// what goes upstream, byte for byte, so the post Slack reads is the one checked.
 			body, why := slackPostAllowed(r, secret.Channels)
 			if why != "" {
-				s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeChannelNotAllowed, channelNotAllowed+": "+why)
+				s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeChannelNotAllowed, channelRefusal(secret, why))
+				return
+			}
+			r.Body, r.ContentLength = io.NopCloser(bytes.NewReader(body)), int64(len(body))
+		} else if len(secret.Excluded) > 0 {
+			// The public fence (requests.AirlockSecret.Excluded): a project-channels name
+			// released to a credential that names no private project, while a private project's
+			// owner names a channel. The swap allowed the request, and slackCallExcluded decides
+			// whether it names none of those channels. What it read goes upstream byte for byte,
+			// so the call Slack reads is the one checked. A name with no Excluded channel reads
+			// no body and is served as before the fence.
+			body, why := slackCallExcluded(r, secret.Excluded)
+			if why != "" {
+				s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codePrivateChannel, privateChannel+": "+why)
 				return
 			}
 			r.Body, r.ContentLength = io.NopCloser(bytes.NewReader(body)), int64(len(body))

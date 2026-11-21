@@ -39,6 +39,11 @@ var migrationFiles embed.FS
 type Store struct {
 	Pool *pgxpool.Pool
 
+	// DatabaseClockOffset is what the stored private list (known_private_projects.go) adds to the
+	// database's time in every statement it runs: zero in production, which never sets it, and set
+	// by a test that moves the database's time with its own clock.
+	DatabaseClockOffset ClockOffset
+
 	// mu guards listen, the one-connection pool Listener opens on first use, so two callers
 	// cannot open two of them, and closed, so a dial after Close opens no pool nobody closes.
 	mu     sync.Mutex

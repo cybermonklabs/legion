@@ -2287,7 +2287,9 @@ func TestLoadReadsTheExchangeWorkflows(t *testing.T) {
 // TestAPrivateProjectOnlyInItsPodsParsesTheSetting pins BROKER_PRIVATE_PROJECTS at load:
 // whitespace-separated project keys land in Config.PrivateProjects sorted, none when unset, and a
 // key that is no project key or a key named twice refuses the configuration, naming the setting
-// and the key. exchange.ParsePrivateProjects's own test holds the rest of the reading.
+// and the key. exchange.ParsePrivateProjects's own test holds the rest of the reading. A key
+// declared needs the project-access settings beside it
+// (TestABrokerThatDeclaresAPrivateProjectNeedsProjectAccess), so the rows that load set them.
 func TestAPrivateProjectOnlyInItsPodsParsesTheSetting(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
@@ -2296,7 +2298,7 @@ func TestAPrivateProjectOnlyInItsPodsParsesTheSetting(t *testing.T) {
 	if keys := cfg.PrivateProjects.Keys(); keys != nil {
 		t.Fatalf("PrivateProjects.Keys() = %q, want nil when BROKER_PRIVATE_PROJECTS is unset", keys)
 	}
-	e := validEnv()
+	e := withProjectAccess(validEnv())
 	e["BROKER_PRIVATE_PROJECTS"] = " PRIV\n\tACME "
 	cfg, err = Load(env(e))
 	if err != nil {
@@ -2949,6 +2951,42 @@ func TestProjectAccessSettingsComeTogether(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_URL") || !strings.Contains(err.Error(), "absolute http(s) URL") {
 			t.Errorf("Load(BROKER_PROJECT_ACCESS_URL=%q) = %v; want a refusal naming the variable", bad, err)
 		}
+	}
+}
+
+// withProjectAccess is e with both project-access settings, a Dispatch the broker asks about
+// projects and the token file it presents there.
+func withProjectAccess(e map[string]string) map[string]string {
+	e["BROKER_PROJECT_ACCESS_URL"] = "http://dispatch.internal.example:8766"
+	e["BROKER_PROJECT_ACCESS_TOKEN_FILE"] = "/var/run/secrets/dispatch-access/token"
+	return e
+}
+
+// TestABrokerThatDeclaresAPrivateProjectNeedsProjectAccess: a broker whose BROKER_PRIVATE_PROJECTS
+// names a key while BROKER_PROJECT_ACCESS_URL is unset refuses to start, naming the key and the
+// settings: without the project-access check a named token would carry its entry's project
+// unchecked and the airlock's public Slack fence would have no list to read. With both
+// project-access settings it loads, and today's broker, which declares no key and sets neither, loads
+// as before, so the check refuses only what it must.
+func TestABrokerThatDeclaresAPrivateProjectNeedsProjectAccess(t *testing.T) {
+	declared := validEnv()
+	declared["BROKER_PRIVATE_PROJECTS"] = "PRIV"
+	cfg, err := Load(env(declared))
+	if err == nil {
+		t.Fatalf("BROKER_PRIVATE_PROJECTS=PRIV with no BROKER_PROJECT_ACCESS_URL loaded, declaring %q; want a refusal naming PRIV", cfg.PrivateProjects.Keys())
+	}
+	for _, word := range []string{"PRIV", "BROKER_PRIVATE_PROJECTS", "BROKER_PROJECT_ACCESS_URL", "BROKER_PROJECT_ACCESS_TOKEN_FILE"} {
+		if !strings.Contains(err.Error(), word) {
+			t.Errorf("BROKER_PRIVATE_PROJECTS=PRIV with no BROKER_PROJECT_ACCESS_URL: err = %v, want it to name %s", err, word)
+		}
+	}
+
+	if cfg, err := Load(env(withProjectAccess(declared))); err != nil || !slices.Equal(cfg.PrivateProjects.Keys(), []string{"PRIV"}) {
+		t.Fatalf("BROKER_PRIVATE_PROJECTS=PRIV with both project-access settings = %q, %v; want it loaded, declaring PRIV", cfg.PrivateProjects.Keys(), err)
+	}
+
+	if cfg, err := Load(env(validEnv())); err != nil || cfg.PrivateProjects.Keys() != nil || cfg.ProjectAccessURL != "" {
+		t.Fatalf("today's broker, no key declared and no project-access setting = keys %q, project access %q, %v; want it loaded as before", cfg.PrivateProjects.Keys(), cfg.ProjectAccessURL, err)
 	}
 }
 

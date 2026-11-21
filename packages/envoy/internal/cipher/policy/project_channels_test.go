@@ -110,8 +110,10 @@ func TestProjectChannelsTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
 // TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject: such a secret with no
 // airlock entry is denied, project-channels-need-airlock, to a credential that names a private
 // project, because a release outside the airlock hands the session the real token and the session
-// could then post anywhere. The same secret behind the airlock, and the same secret asked for by a
-// credential that names only a public project, follow owner and tier as before.
+// could then post anywhere. While a private project's owner names a Slack channel it is denied to
+// every credential outside the airlock, since such a token could read that channel. The same
+// secret behind the airlock, and the same secret asked for by a credential that names only a
+// public project while no private project names a channel, follow owner and tier as before.
 func TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject(t *testing.T) {
 	store := secrets.NewLocal(channelsSecret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, policy.ProjectChannelsSlack))
 	loader := projectLoader(store)
@@ -125,6 +127,10 @@ func TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject(t *tes
 		t.Fatalf("Load with an airlock entry: %v", err)
 	}
 	source := secrets.LocalARN(policytest.ID("SLACK_TOKEN"))
+	fenced := func(r policy.Requester) policy.Requester {
+		r.PrivateChannelsNamed = true
+		return r
+	}
 	for _, c := range []struct {
 		name      string
 		set       *policy.Set
@@ -137,7 +143,13 @@ func TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject(t *tes
 			policy.Decision{Outcome: policy.Automatic, Source: source}},
 		{"outside the airlock, a credential naming no project", bare, credential(carol, ""),
 			policy.Decision{Outcome: policy.Automatic, Source: source}},
+		{"outside the airlock, a credential naming no project, while a private project names a channel", bare, fenced(credential(carol, "")),
+			policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectChannelsNeedAirlock, Source: source}},
+		{"outside the airlock, a credential naming the public project, while a private project names a channel", bare, fenced(credential(carol, "", pubProject)),
+			policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectChannelsNeedAirlock, Source: source}},
 		{"behind the airlock, a credential naming the private project", behind, credential(carol, "", privProject),
+			policy.Decision{Outcome: policy.Automatic, Source: source}},
+		{"behind the airlock, a credential naming no project, while a private project names a channel", behind, fenced(credential(carol, "")),
 			policy.Decision{Outcome: policy.Automatic, Source: source}},
 	} {
 		got, err := c.set.Evaluate("SLACK_TOKEN", c.requester)

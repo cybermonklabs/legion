@@ -1,12 +1,12 @@
 // Package projectaccesstest is a stand-in for Dispatch's access routes, the ones the broker's
-// clients of that Dispatch ask: whether a person may see a project and what kind of member a
-// person is (projectaccess), and which repositories a project's issues resolve to (projectrepos).
-// One stand-in serves all three, from the same rows, so a test points both clients at one Dispatch
-// as a deployment does. It holds every caller to the one bearer it mints, counts the calls it
-// answers, and can be made to fail, stall or answer bytes of a test's choosing, so a test can show
-// what the broker does when Dispatch cannot be reached or gives no whole answer. It is an ordinary
-// package rather than a _test.go file so every broker package's tests, and the real binary's, can
-// serve it.
+// clients of that Dispatch ask: whether a person may see a project, what kind of member a person
+// is, and every private project with its Slack channels (projectaccess), and which repositories a
+// project's issues resolve to (projectrepos). One stand-in serves all four, from the same rows, so
+// a test points both clients at one Dispatch as a deployment does. It holds every caller to the
+// one bearer it mints, counts the calls it answers, and can be made to fail, stall or answer bytes
+// of a test's choosing, so a test can show what the broker does when Dispatch cannot be reached or
+// gives no whole answer. It is an ordinary package rather than a _test.go file so every broker
+// package's tests, and the real binary's, can serve it.
 //
 // It spells the wire on its own, field by field, rather than encoding the clients' own types: a
 // client that read a field under a name Dispatch does not send would then disagree with this
@@ -28,15 +28,16 @@ import (
 
 // The paths of Dispatch's access routes, as projectaccess and projectrepos ask them.
 const (
-	projectPath        = "/api/v1/access/projects/"
-	repositoriesSuffix = "/repositories"
-	personPath         = "/api/v1/access/person"
+	projectPath         = "/api/v1/access/projects/"
+	repositoriesSuffix  = "/repositories"
+	personPath          = "/api/v1/access/person"
+	privateProjectsPath = "/api/v1/access/private-projects"
 )
 
 // Row is one project as Dispatch holds it: whether it is public or private, its owner, the
-// people its access list names, and two lists of repositories Dispatch keeps apart: the ones its
-// membership answer maps to the project, and the ones its repository answer says the project's
-// issues resolve to.
+// people its access list names, the Slack channels its owner named, and two lists of repositories
+// Dispatch keeps apart: the ones its membership answer maps to the project, and the ones its
+// repository answer says the project's issues resolve to.
 type Row struct {
 	// Visibility is "public" or "private".
 	Visibility string
@@ -52,12 +53,16 @@ type Row struct {
 	Resolved []string
 	// SlackChannels are the Slack channel ids the project's owner named. A real Dispatch always
 	// carries the key, empty when the project names none, so this stand-in does too — unless
-	// OmitSlackChannels, which is a Dispatch from before dispatch://INFRA-3862's #t-a-31 and
-	// carries no such key at all.
+	// OmitSlackChannels, which is a Dispatch from before projects' owners could name Slack
+	// channels, and carries no such key at all.
 	SlackChannels []string
 	// OmitSlackChannels makes this project's answer carry no slack_channels key, the shape a
-	// Dispatch from before #t-a-31 answers.
+	// Dispatch from before owners could name channels answers.
 	OmitSlackChannels bool
+	// SlackChannelsChangedAt is when the owner last changed SlackChannels, or the project turned
+	// private, as Dispatch answers it in slack_channels_changed_at; zero answers null, a list
+	// never changed.
+	SlackChannelsChangedAt time.Time
 }
 
 // Server is the stand-in: URL is its base, Token the one bearer it takes, and Account that bearer
@@ -77,6 +82,12 @@ type Server struct {
 	down   bool
 	answer *rawAnswer
 	stall  time.Duration
+	// privateCalls counts the private-projects route's requests alone; privateDown fails that
+	// route alone (SetPrivateProjectsDown), and privateAnswer answers it alone in place of its
+	// rows (SetPrivateProjectsAnswer).
+	privateCalls  int
+	privateDown   bool
+	privateAnswer *rawAnswer
 }
 
 // rawAnswer is a status and body the stand-in answers every call with in place of its rows.
@@ -130,6 +141,46 @@ func (s *Server) SetDown(down bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.down = down
+}
+
+// SetPrivateProjectsDown makes every later request of the private-projects route fail 503 (true)
+// or be answered again (false), while the project and person routes go on answering: a Dispatch
+// that answers one project but not the list of all of them.
+func (s *Server) SetPrivateProjectsDown(down bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.privateDown = down
+}
+
+// SetPrivateProjectsAbsent makes every later request of the private-projects route answer 404
+// NOT_FOUND (true) or be answered again (false), while the project and person routes go on
+// answering: a Dispatch build that does not serve the route, as during a roll.
+func (s *Server) SetPrivateProjectsAbsent(absent bool) {
+	if !absent {
+		s.SetPrivateProjectsAnswer(0, "")
+		return
+	}
+	s.SetPrivateProjectsAnswer(http.StatusNotFound, `{"code":"NOT_FOUND","error":"no such route"}`)
+}
+
+// SetPrivateProjectsAnswer makes every later request of the private-projects route that carries
+// the stand-in's bearer answer status and body, in place of its rows, while the project and person
+// routes go on answering; a status of 0 answers it from the rows again.
+func (s *Server) SetPrivateProjectsAnswer(status int, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.privateAnswer = nil
+	if status != 0 {
+		s.privateAnswer = &rawAnswer{status: status, body: body}
+	}
+}
+
+// PrivateProjectsCalls is how many requests of the private-projects route the stand-in has
+// answered, the ones it failed included.
+func (s *Server) PrivateProjectsCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.privateCalls
 }
 
 // SetRepositories makes the list project's issues resolve to, which the repository route answers,
@@ -209,6 +260,22 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"person": person, "member_kind": s.kind(person)})
+	case r.URL.Path == privateProjectsPath:
+		s.mu.Lock()
+		s.privateCalls++
+		privateDown, privateAnswer := s.privateDown, s.privateAnswer
+		s.mu.Unlock()
+		if privateAnswer != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(privateAnswer.status)
+			_, _ = w.Write([]byte(privateAnswer.body))
+			return
+		}
+		if privateDown {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "UNAVAILABLE", "error": "the stand-in's private-projects route is down"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"projects": s.privateProjects()})
 	case project:
 		row, held := s.row(key)
 		if !held || key == "" || strings.Contains(key, "/") {
@@ -237,16 +304,53 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			"repositories": list,
 		}
 		if !row.OmitSlackChannels {
-			channels := row.SlackChannels
-			if channels == nil {
-				channels = []string{}
-			}
-			answer["slack_channels"] = channels
+			answer["slack_channels"] = channelsOf(row)
 		}
+		answer["slack_channels_changed_at"] = changedAtOf(row)
 		writeJSON(w, http.StatusOK, answer)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"code": "NOT_FOUND", "error": r.URL.Path})
 	}
+}
+
+// privateProjects is the private-projects route's list: every private row, in key order, each
+// with its channels and when they changed, and the channels left out for a row that omits them.
+func (s *Server) privateProjects() []map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := make([]string, 0, len(s.rows))
+	for key, row := range s.rows {
+		if row.Visibility == "private" {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	projects := make([]map[string]any, 0, len(keys))
+	for _, key := range keys {
+		row := s.rows[key]
+		project := map[string]any{"project": key, "slack_channels_changed_at": changedAtOf(row)}
+		if !row.OmitSlackChannels {
+			project["slack_channels"] = channelsOf(row)
+		}
+		projects = append(projects, project)
+	}
+	return projects
+}
+
+// channelsOf is row's slack_channels as Dispatch spells it: never null, [] for none.
+func channelsOf(row Row) []string {
+	if row.SlackChannels == nil {
+		return []string{}
+	}
+	return row.SlackChannels
+}
+
+// changedAtOf is row's slack_channels_changed_at as Dispatch spells it: null for a zero time.
+func changedAtOf(row Row) any {
+	if row.SlackChannelsChangedAt.IsZero() {
+		return nil
+	}
+	return row.SlackChannelsChangedAt.UTC()
 }
 
 // row is the project key's row, and whether the stand-in holds it.

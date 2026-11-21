@@ -22,11 +22,12 @@
 // and a withheld name's. A session that enrols on a box it has not run on before takes what the
 // enrollment it is moving off holds — its grants, its requests and the names its operator withheld
 // from it — because an approval a person gives hours later, and the grant that comes of it, belong
-// to the session rather than to the box that asked (enroll.Create's adoption,
-// dispatch://INFRA-1167). So every read and every transition here is keyed by the enrollment the
-// row itself names now, never by the one the append-only credential_requests record froze: that is
-// what gets a moved session its own grant back, lets it cancel its own request, and still refuses
-// it another session's. moved_session_test.go drives each of those surfaces across a move.
+// to the session rather than to the box that asked (enroll.Create's adoption, which closed an
+// incident in which an approval given after a session moved minted nothing). So every read and
+// every transition here is keyed by the enrollment the row itself names now, never by the one the
+// append-only credential_requests record froze: that is what gets a moved session its own grant
+// back, lets it cancel its own request, and still refuses it another session's.
+// moved_session_test.go drives each of those surfaces across a move.
 package requests
 
 import (
@@ -365,6 +366,16 @@ type Machine struct {
 	// transaction (projectFacts); nil on a broker with no such client, which serves no tagged
 	// secret (policy.Loader.ProjectChecks).
 	Projects projectaccess.Access
+	// PrivateList reads every private project at once, with the Slack channels each one's owner
+	// named (projectaccess.Client, BROKER_PROJECT_ACCESS_URL): the public fence's read, which
+	// AirlockValues makes for every project-channels name released to a credential that names no
+	// private project (privateChannels), through the client's CacheTTL cache; nil on a broker with
+	// no such client, which reads nothing and fences nothing. Each fresh answer is kept in Store's
+	// stored private list (store.KeepPrivateProjects), and a failed read fences by its held rows.
+	PrivateList projectaccess.PrivateLister
+	// Now is the clock AirlockValues reads its values' expiry and a channel list's settle time by;
+	// nil is time.Now. A test sets it to a pod's own clock.
+	Now func() time.Time
 	// Exchange is the broker's token exchange configuration, read for the project an operator's
 	// entry maps a pod's or a machine's account to (exchange.Set.MappedProjects), which is the
 	// project such a credential names. nil names none.
@@ -384,11 +395,15 @@ type Machine struct {
 	// missRereads is MissRereads' per-enrollment buckets, built on first use (missRereadLimiter).
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
-	// channelsMissingLogged throttles ChannelsMissingMessage to one line per project, and
-	// rowsUnansweredLogged rowUnansweredMessage and fallbackUnreadMessage to one per listed row and
-	// fallbackCutMessage to one per reader, per projectaccess.CacheTTL: each machine's own, so one
-	// machine's lines never silence another's.
+	// channelsMissingLogged throttles ChannelsMissingMessage to one line per project,
+	// privateUnreadLogged PrivateChannelsUnreadMessage to one per project or failed read,
+	// privateStoreLogged the stored private list's lines (StoredFenceMessage, the failed read and
+	// the failed keep) to one each, and rowsUnansweredLogged rowUnansweredMessage and
+	// fallbackUnreadMessage to one per listed row and fallbackCutMessage to one per reader, per
+	// projectaccess.CacheTTL: each machine's own, so one machine's lines never silence another's.
 	channelsMissingLogged logThrottle
+	privateUnreadLogged   logThrottle
+	privateStoreLogged    logThrottle
 	rowsUnansweredLogged  logThrottle
 	reasonsUnreadLogged   logThrottle
 	// narrowingChecks is NarrowingChecks' per-enrollment buckets, built on first use
@@ -1687,7 +1702,7 @@ func (m *Machine) endPending(ctx context.Context, scope store.PendingScope, arg 
 // request row moves with the grant: enroll.Create hands what a predecessor held to the next
 // enrollment of that session name under the same principal. Reading the record's own column
 // would answer an approval given after a move with "the requesting enrollment is no longer live"
-// and mint nothing, which is the half of the incident dispatch://INFRA-1167 reports.
+// and mint nothing, as it once did for an approval given after a session moved.
 //
 // The work is one attempt (applyDecisionAttempt), made again when the request moves out from
 // under it. A session moves once per enrolment, so the attempt after a move reads one enrollment
@@ -2216,15 +2231,16 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	// and dormant_since not null: ended by an end of its box while it still held a grant or this
 	// pending request, and kept for the session's next box (enroll.endEnrollment) — is the one
 	// this carry is for, and a grant may land on it: an approval given while the box is gone is
-	// the order dispatch://INFRA-1167 reports, the next enrollment of that session name adopts
-	// the grant with the request (enroll.adopt), the carry sweep revokes it if nobody comes back
-	// (enroll.Service.EndCarried), and a person's revoke of the machine login or the sign-in
-	// reaches it as it reaches any grant (endCredential). The third is a row whose lease has
-	// lapsed and against which no end is written yet, the window between the lapse and the sweep
-	// that ends it, which is up to BROKER_SWEEP_SECONDS long: a grant lands on it when the end
-	// the sweep is about to write would leave the row dormant (enrollmentWouldGoDormant, which
-	// is enroll.endEnrollment's own probe). Denying there while granting a second later, on the
-	// same row holding the same rows, would make the sweep's timing the person's answer.
+	// the order of events in which such an approval once minted nothing, the next enrollment of
+	// that session name adopts the grant with the request (enroll.adopt), the carry sweep revokes
+	// it if nobody comes back (enroll.Service.EndCarried), and a person's revoke of the machine
+	// login or the sign-in reaches it as it reaches any grant (endCredential). The third is a row
+	// whose lease has lapsed and against which no end is written yet, the window between the
+	// lapse and the sweep that ends it, which is up to BROKER_SWEEP_SECONDS long: a grant lands on
+	// it when the end the sweep is about to write would leave the row dormant
+	// (enrollmentWouldGoDormant, which is enroll.endEnrollment's own probe). Denying there while
+	// granting a second later, on the same row holding the same rows, would make the sweep's
+	// timing the person's answer.
 	//
 	// Ended for good is what is left: a row revoked with nothing to carry, and a lapsed row no
 	// end of its box could leave dormant — one that names no session, or names one and records

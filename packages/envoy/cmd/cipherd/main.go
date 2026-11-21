@@ -347,19 +347,24 @@ func main() {
 	registry := metrics.New()
 	// The broker's two clients of the Dispatch at BROKER_PROJECT_ACCESS_URL, both nil when it is
 	// unset. Project access is read by the token exchange, an enrollment naming projects, and every
-	// request, release and airlock connection holding a project-tagged secret; the repository
-	// answer is what GET /v1/project-repositories relays to an edge listener, and a broker that
-	// reads none answers every edge listener 503 REPOSITORIES_UNKNOWN. Both present the broker's
-	// own projected ServiceAccount token for Dispatch's audience through one reader, read at call
-	// time, so a rotation needs no restart and the broker has one Dispatch address and one account
-	// there. config.Load holds the two settings to both or neither. Built before the loader, which
-	// serves a tagged secret only when this broker can ask whether its project is private
-	// (policy.Loader.ProjectChecks).
+	// request, release and airlock connection holding a project-tagged secret; the same client
+	// reads the list of every private project for the airlock's public Slack fence
+	// (requests.Machine.PrivateList). The repository answer is what GET /v1/project-repositories
+	// relays to an edge listener, and a broker that reads none answers every edge listener 503
+	// REPOSITORIES_UNKNOWN. Both present the broker's own projected ServiceAccount token for
+	// Dispatch's audience through one reader, read at call time, so a rotation needs no restart and
+	// the broker has one Dispatch address and one account there. config.Load holds the two
+	// settings to both or neither. Built before the loader, which serves a tagged secret only when
+	// this broker can ask whether its project is private (policy.Loader.ProjectChecks). Each stays
+	// a nil interface when the setting is unset, never a nil pointer inside one, so every reader's
+	// nil check holds.
 	var projectAccess projectaccess.Access
+	var privateList projectaccess.PrivateLister
 	var projectRepositories api.ProjectRepositoriesReader
 	if cfg.ProjectAccessURL != "" {
 		account := ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile)
-		projectAccess = projectaccess.New(cfg.ProjectAccessURL, account, nil)
+		client := projectaccess.New(cfg.ProjectAccessURL, account, nil)
+		projectAccess, privateList = client, client
 		projectRepositories = projectrepos.New(cfg.ProjectAccessURL, account, nil)
 	}
 	// The broker's one reader of Google group members, which every decision site asks who is a
@@ -492,7 +497,10 @@ func main() {
 	// machine and the model judge share it, its token cache and its client.
 	dispatch := judgeDispatch(cfg)
 	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch, groupReader)
-	reqMachine.Projects, reqMachine.Exchange = projectAccess, exchangePolicy
+	// The public Slack fence reads the private projects' channels through the same client, at
+	// every release of a project-channels name, so it needs no declaration and no earlier answer
+	// to fence a project Dispatch holds private (requests.Machine.privateChannels).
+	reqMachine.Projects, reqMachine.PrivateList, reqMachine.Exchange = projectAccess, privateList, exchangePolicy
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.

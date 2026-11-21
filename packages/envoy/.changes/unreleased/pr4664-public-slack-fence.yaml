@@ -1,0 +1,36 @@
+kind: Added
+body: |-
+  The airlock fences a Slack bot token tagged `project-channels=slack` from private projects'
+  channels when a session that names no private Dispatch project spends it. A broker with
+  `BROKER_PROJECT_ACCESS_URL` reads Dispatch's list of private projects and their channels with its
+  own token at every release of such a token, keeping it 30 seconds, so a pod that has just
+  started fences a project Dispatch holds private from its first release, whether or not
+  `BROKER_PRIVATE_PROJECTS` names it. While a private project lists a channel the proxy carries
+  only the Slack methods Legion calls with the token, `chat.postMessage`,
+  `conversations.replies` and `auth.test`. It refuses `PRIVATE_CHANNEL`, without calling Slack,
+  every other method; any call that names a listed channel id under `channel`, `channel_id` or
+  `channels` (in the query, a JSON body or a form, in any case, with white space or commas around
+  it); any call that names a channel by anything but its id, such as `#general`; any call
+  carrying a key with a character other than an ASCII letter, a digit or `_`, such as ` channel`
+  or `channel[]`, which Slack may read as `channel`; and any body it cannot read as naming none:
+  one that is neither JSON nor a form, a compressed one, or one over 1 MiB. The broker keeps the
+  last list it read in its own database (`known_private_projects`, migration 0041). When a read of
+  the list fails, a 404 included, it fences by that stored list: nothing while it holds no private
+  project, its projects' channels otherwise, read again within a minute; a stored project whose
+  channels it never read, a store it cannot read, or a listed private project with no channel
+  list makes every call on the token refused `PRIVATE_CHANNELS_UNREAD`. While a private project
+  lists a channel, the broker gives such a token with no airlock entry to no session at all
+  (`project-channels-need-airlock`), and a session holding a grant of it made before is denied the
+  same way at its next request. Every value of a `project-channels` secret the airlock holds is
+  read again within ten minutes, in every deployment, so a value released before the first
+  private project learns of it. A private project's own credential posts only to channels the
+  stored list holds for its project, and to none of them for 16 minutes 30 seconds after Dispatch
+  last changed the list, the project turned private, or the store first held the channel, and
+  `CHANNEL_NOT_ALLOWED` then ends with the time posting reopens.
+  While no private project lists a channel the proxy reads no body; a broker with no
+  `BROKER_PROJECT_ACCESS_URL` asks Dispatch nothing for the fence. A broker whose
+  `BROKER_PRIVATE_PROJECTS` names a project now refuses to start without
+  `BROKER_PROJECT_ACCESS_URL`, naming the keys.
+time: 2026-11-20T23:06:39Z
+custom:
+    Issue: pr4664

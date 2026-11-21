@@ -754,9 +754,12 @@ type Config struct {
 	// BROKER_PRIVATE_PROJECTS: the Dispatch projects the operator declares private,
 	// whitespace-separated project keys, such as PRIV ACME, each an uppercase letter, then 1 to 9
 	// uppercase letters or digits. A key that is not one, and a key named twice, refuse the
-	// start, naming the key. This build reads and checks the list and acts on none of it: every
-	// token exchange, enrollment and exchange entry is decided as with the setting unset. Unset
-	// or blank, no project is private.
+	// start, naming the key, and so does any key without BROKER_PROJECT_ACCESS_URL: a broker that
+	// holds a private project checks every project against Dispatch. Beyond that refusal this
+	// build acts on none of it: the airlock's public Slack fence reads Dispatch's list of private
+	// projects whenever BROKER_PROJECT_ACCESS_URL is set, declared or not, and every token
+	// exchange, enrollment and exchange entry is decided as with the setting unset. Unset or
+	// blank, no project is declared private.
 	PrivateProjects exchange.PrivateProjects
 	// BROKER_ENVOY_URL: an Envoy listener the broker notifies, best effort, when a session's
 	// pending request expires undecided. Unset, the broker sends nothing. Needs
@@ -2467,6 +2470,13 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if cfg.PrivateProjects, err = exchange.ParsePrivateProjects(getenv("BROKER_PRIVATE_PROJECTS")); err != nil {
 		return Config{}, fmt.Errorf("BROKER_PRIVATE_PROJECTS: %w", err)
+	}
+	// A declared private project needs the project-access check: without it a named token would
+	// carry its entry's project unchecked, and the public Slack fence would have no list of the
+	// private projects' channels to read. The URL and its token file are set together or not at
+	// all (above), so the URL alone says which.
+	if keys := cfg.PrivateProjects.Keys(); len(keys) > 0 && cfg.ProjectAccessURL == "" {
+		return Config{}, fmt.Errorf("BROKER_PRIVATE_PROJECTS names %s, and BROKER_PROJECT_ACCESS_URL is unset: a broker that holds a private project checks every project against Dispatch, so set BROKER_PROJECT_ACCESS_URL and BROKER_PROJECT_ACCESS_TOKEN_FILE", strings.Join(keys, " "))
 	}
 	if cfg.EnvoyURL != "" {
 		if cfg.EnvoyAccountTokenFile = strings.TrimSpace(getenv("BROKER_ENVOY_ACCOUNT_TOKEN_FILE")); cfg.EnvoyAccountTokenFile == "" {

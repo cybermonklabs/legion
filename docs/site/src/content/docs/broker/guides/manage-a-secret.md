@@ -263,8 +263,13 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   `POST /api/chat.postMessage`, carrying `channel`, `thread_ts` and `text`, to a channel id the
   owner of every private project it names allows; the proxy refuses every other call
   `CHANNEL_NOT_ALLOWED`. Where the secret has no airlock entry, such a credential is denied it
-  `project-channels-need-airlock`. A credential that names no private project gets the secret as
-  before. Any other value, and on `create` the word `none`, is refused before anything is written.
+  `project-channels-need-airlock`, and so is every credential while a private project's owner
+  lists a Slack channel. A credential that names no private project gets the secret as before,
+  and behind the airlock, while a private project's owner lists a channel, the proxy carries for it
+  only `chat.postMessage`, `conversations.replies` and `auth.test`, refusing `PRIVATE_CHANNEL` any
+  other method, any call naming a channel a private project's owner listed, and any call naming a
+  channel by anything but its id. Any other value, and on `create` the word `none`, is refused
+  before anything is written.
 - **`--max-grant`** is optional, except with `--admin true`, `--type google-service-account` and
   `--type anthropic-federation`, where each needs it, of an hour or less. It is the longest
   `--ttl` a request for this secret may use.
@@ -717,14 +722,13 @@ Where you must convert, before you store an App key or a Google login:
   only when that read returns an error, and a successful read of stale tags is not one. The
   notification is asynchronous besides, so a healthy peer need not have applied the retag by the
   time exit 0 is printed. Neither a second exit 0 nor a clean log establishes the peers — that is
-  the residual `dispatch://INFRA-375` tracks, and the reason the paragraph above recommends a new
-  name instead.
+  a known residual, that no broker reports whether its peers have read a retag, and the reason the
+  paragraph above recommends a new name instead.
 - If you cannot read the log, wait at least five minutes after exit 0. That is the pod's own
   reload interval, and the wait is **the right action rather than a guarantee**: the reload is
   another listing read, and a store's listing lags a write by up to five minutes on Secrets
   Manager and up to six hours on Secret Manager, so on Secret Manager five minutes is not a bound
-  at all. `dispatch://INFRA-375` tracks that
-  lag and the two ways to close it.
+  at all. That lag is a known residual too.
 
 Waiting costs nothing; storing early can hand the raw key to an agent through a process that still
 serves the secret as stored.

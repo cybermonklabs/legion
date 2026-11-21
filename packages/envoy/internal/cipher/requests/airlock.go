@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -633,6 +634,21 @@ func (m *Machine) airlockProjectRule(ctx context.Context, grantID string, enr en
 	return nil
 }
 
+// AirlockMintAgainBefore is how close to its expiry a value the airlock proxy holds may come
+// before the proxy reads the grant again: the proxy's own margin (proxy's mintAgainBefore is
+// this), declared here so the settle time below and the unread bound read the one value.
+const AirlockMintAgainBefore = 5 * time.Minute
+
+// slackChannelSettle is how long after a private project's channel list last changed its own
+// credentials post to none of its channels. A proxy serving credentials that name no private
+// project may hold an Excluded read from before the change: it reads the grant again within
+// airlockProjectRecheck of its read, less AirlockMintAgainBefore, from a list the project-access
+// client may have kept up to projectaccess.CacheTTL. Until every such proxy has read the new
+// list, a channel the owner just named would be both postable by the private credential and
+// readable by a public one. The minute covers a clock difference between Dispatch and a broker
+// pod.
+const slackChannelSettle = projectaccess.CacheTTL + airlockProjectRecheck + AirlockMintAgainBefore + time.Minute
+
 // AirlockSecret is one airlock name as the proxy holds it: the real value behind each of its
 // slots, when the broker must read or mint it again, the policy type that says what the slots
 // are, and for an azure-login name the application and tenant its document names.
@@ -646,8 +662,22 @@ type AirlockSecret struct {
 	// an empty Channels under Limited is a credential that may post nowhere.
 	Limited bool
 	// Channels, under Limited, are the Slack channel ids every private project the credential
-	// names allows: the intersection of their owners' lists, sorted, never nil.
+	// names allows: the intersection of their owners' lists, sorted, never nil. It is empty while
+	// any of those projects' lists is settling (SettlesAt).
 	Channels []string
+	// SettlesAt, under Limited, is when the latest change of a named private project's channel
+	// list has settled (slack_channels_changed_at plus slackChannelSettle), zero when none is
+	// settling. Until then Channels is empty, and the proxy's refusal names this time.
+	SettlesAt time.Time
+	// Excluded, on a project-channels name that is not Limited, is every Slack channel id any
+	// private project's owner named, sorted: the public fence. The proxy refuses a request on
+	// such a name that names one of them (proxy's slackCallExcluded). Empty while no project is
+	// private, or none names a channel, and then the proxy reads no body, as before the fence.
+	Excluded []string
+	// ExcludedUnread, on a project-channels name that is not Limited, says the broker could not
+	// read the private projects' channels: the list failed, or a private project's entry carried
+	// no slack_channels. The proxy refuses every request on the name until a read answers.
+	ExcludedUnread bool
 	// Azure is the tenant and the application an azure-login name's own document names, which
 	// the proxy holds every exchange of its federated token to, and zero for every other type.
 	// The two travel as fields of their own rather than as slots or as the document whole. Not
@@ -693,19 +723,22 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 	// airlockProjectRecheck: whether the project is private, and whether the session's person may
 	// still see it, are Dispatch's and move no policy version, so nothing else would make a pod
 	// holding these values run the release checks again once access is lost.
+	readAt := m.now()
 	var recheck time.Time
 	if anyProjectTagged(checked.set, checked.granted) {
-		recheck = time.Now().Add(airlockProjectRecheck)
+		recheck = readAt.Add(airlockProjectRecheck)
 	}
 	// The channels the grant's credential may post to, for a project-channels secret released to
-	// a credential that names a private project (channelLimit). Such a secret is bounded to
-	// airlockProjectRecheck itself whenever its credential names any project, Limited or not:
-	// whether a named project is private, and the channels its owner allows, are Dispatch's and
-	// move no policy version, and the Slack bot token carries no dispatch-project tag, so the
-	// bound above would never reach it. Without it, a project the credential names turning
-	// private, or an owner's change to its list, would never reach a running proxy.
-	channels, limited := m.channelLimit(ctx, checked)
-	readAt := time.Now()
+	// a credential that names a private project (channelLimit), and otherwise the channels it may
+	// not name (privateChannels). Every value of a project-channels secret is bounded to
+	// airlockProjectRecheck itself, Limited or not, in every deployment: whether a project is
+	// private, the channels its owner allows, and which channels are private at all are
+	// Dispatch's and move no policy version, and the Slack bot token carries no dispatch-project
+	// tag, so the bound above would never reach it. Without it, a value released before the first
+	// private project, or before an owner's change to a list, would never learn either.
+	limit := m.channelLimit(ctx, checked)
+	var fence privateFence
+	fenceRead := false
 	values := map[string]AirlockSecret{}
 	for _, released := range read {
 		expires := released.expires
@@ -714,10 +747,28 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 		}
 		value := AirlockSecret{Slots: released.split.values, Expires: expires, Type: released.secretType, Azure: released.split.azure}
 		if checked.set.Secrets[released.name].ProjectChannels == policy.ProjectChannelsSlack {
-			if limited {
-				value.Limited, value.Channels = true, channels
+			bound := readAt.Add(airlockProjectRecheck)
+			switch {
+			case limit.limited:
+				value.Limited, value.Channels, value.SettlesAt = true, limit.channels, limit.settlesAt
+				// A list still settling is read again the moment it settles, so the grant posts
+				// to its channels then rather than up to airlockProjectRecheck later.
+				if !limit.settlesAt.IsZero() {
+					bound = earlier(bound, limit.settlesAt.Add(AirlockMintAgainBefore))
+				}
+			default:
+				if !fenceRead {
+					fence, fenceRead = m.privateChannels(ctx), true
+				}
+				value.Excluded, value.ExcludedUnread = fence.excluded, fence.unread
+				// An unread list, and a fence read from the broker's stored private list because
+				// Dispatch's list failed, are read again within a minute rather than ten: the
+				// proxy drops a value AirlockMintAgainBefore before its expiry.
+				if fence.unread || fence.stored {
+					bound = earlier(bound, readAt.Add(AirlockMintAgainBefore+time.Minute))
+				}
 			}
-			if bound := readAt.Add(airlockProjectRecheck); len(checked.facts.named) > 0 && (value.Expires.IsZero() || value.Expires.After(bound)) {
+			if value.Expires.IsZero() || value.Expires.After(bound) {
 				value.Expires = bound
 			}
 		}
