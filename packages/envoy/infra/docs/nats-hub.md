@@ -1385,7 +1385,11 @@ upgrade, with no apply at all, so never add a version to the route password's Se
 secret, and pin its sync to a version number.
 
 Measured on two local servers: lowering `routes` to `env` logged 4 `Removed route` lines carrying
-the password, while the forward step from `env` to `routes` logged none.
+the password. The forward step from `env` to `routes` logs one `Removed route` line for each route
+connection the server opened to a URL it replaces, the URL as `nats.conf` named it before, with no
+user and no password: the new URL differs only in its user and password, and a reload compares
+route URLs whole (`urlsAreEqual`, `reflect.DeepEqual`, `server/util.go:178-180`; `reload.go:530-543`).
+Measured on three local servers: 8, 4 and 0 such lines. No forward stage logs the password.
 
 The password holds letters and digits only, a letter first, and at least 32 characters. It is
 written into the route URLs whole, and nats-server types a variable's value as it types a literal
