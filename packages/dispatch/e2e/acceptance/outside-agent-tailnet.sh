@@ -6,14 +6,14 @@
 # broker's build holds the enrollment refusal and Dispatch's build holds the changes the check
 # rests on; makes the scratch project's issue the public leg's GitHub row reads; starts a scratch
 # agent-secrets-helper whose machine login the test person approves from the public leg's browser;
-# starts our peer session; starts the public leg (outside-agent-public.sh, rows P1-P10) on a runner
-# on the public internet; runs rows T1-T4 against the broker's private origin, the one place its
-# enrollment route is served; reads, with a full member's browser session, the positive controls
-# rows T3, P7 and sweep are held to; reads the public leg's TSV; asks the operator, on this
-# terminal, to remove the test person from the project's access list and reads that the test
-# person's live device login stops (T5); reads the pins and Dispatch's serving build again; and
-# prints the gate. outside-agent-acceptance.md, beside this file, says what each row reads and what
-# the gate holds.
+# starts our peer session; starts the public leg (outside-agent-public.sh, rows P1-P10 and its
+# Codex leg's C0-C7) on a runner on the public internet; runs rows T1-T4 against the broker's
+# private origin, the one place its enrollment route is served; reads, with a full member's browser
+# session, the positive controls rows T3, P7 and sweep are held to; reads the public leg's TSV;
+# asks the operator, on this terminal, to remove the test person from the project's access list and
+# reads that the test person's live device login stops (T5); reads the pins and Dispatch's serving
+# build again; and prints the gate. outside-agent-acceptance.md, beside this file, says what each
+# row reads and what the gate holds.
 #
 # It sources three support files from beside it: outside-agent-lib.sh (what both legs share),
 # outside-agent-peer.sh (the peer of P4 and the session outside the project of P6) and
@@ -105,9 +105,10 @@
 # and both enroll at the one broker.
 #
 # Output: on stdout a TSV, the header `row want got verdict`, the rows pins, issue, T1-T5, the
-# public leg's P1-P10 as its TSV has them, public (the public leg's own verdict, revocations and
-# end), sweep, pins-end and the gate. Progress goes to stderr. A row it could not run reads UNKNOWN
-# naming what it could not read, never PASS. Exit 0 when the gate passed, 1 when a row failed, 2
+# public leg's P1-P10 and its Codex leg's C0-C7 as its TSV has them, public (the public leg's own
+# verdict, revocations and end), sweep, pins-end and the gate, whose `got` names each row that did
+# not pass. Progress goes to stderr. A row it could not run reads UNKNOWN naming what it could not
+# read, never PASS. Exit 0 when the gate passed, 1 when a row failed, 2
 # otherwise. It prints no secret value: T2 and T3 read the canary's length alone, and the full
 # member's cookie reaches curl in a header file alone.
 #
@@ -153,6 +154,8 @@ emit() {
 }
 fails=0
 unknowns=0
+# Each row that did not pass, `<row> <verdict>`, which the gate names.
+not_passed=''
 # row NAME WANT GOT VERDICT: prints the row and keeps its verdict as verdict_<NAME>. A verdict that
 # is none of PASS, FAIL and UNKNOWN counts as UNKNOWN, so no word this leg copies from another
 # file lets the gate pass.
@@ -164,6 +167,7 @@ row() {
     FAIL) fails=$((fails + 1)) ;;
     *) unknowns=$((unknowns + 1)) ;;
   esac
+  [ "$4" = PASS ] || not_passed="${not_passed:+$not_passed, }$1 $(cell "$4")"
 }
 passed() {
   local name="verdict_$1"
@@ -186,7 +190,7 @@ mark_word() {
   printf '%s' "${rest%%[ ;]*}"
 }
 
-public_rows='P1 P2 P3 P4 P5 P6 P7 P8 P9 P10'
+public_rows='P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 C0 C1 C2 C3 C4 C5 C6 C7'
 project=${1:-}
 person=${OUTSIDE_PERSON:-}
 canary=${OUTSIDE_CANARY:-}
@@ -231,12 +235,13 @@ skip_from() {
     row "$name" "the row as outside-agent-acceptance.md states it" "not run: $reason" UNKNOWN
   done
 }
-# gate: the last row, and the exit.
+# gate: the last row, and the exit. Only PASS passes: a row of any other verdict holds the gate,
+# and the gate's `got` names it.
 gate() {
   local verdict=PASS
   [ "$unknowns" -eq 0 ] || verdict=UNKNOWN
   [ "$fails" -eq 0 ] || verdict=FAIL
-  emit "gate${tab}every row PASS${tab}$(cell "$fails FAIL, $unknowns UNKNOWN")${tab}$verdict"
+  emit "gate${tab}every row PASS${tab}$(cell "$fails FAIL, $unknowns UNKNOWN${not_passed:+: $not_passed}")${tab}$verdict"
   if [ -n "${OUTSIDE_RESULT_ISSUE:-}" ] && [ -n "$work" ] && command -v dispatch >/dev/null 2>&1; then
     {
       printf 'The outside acceptance of %s, both legs, %s:\n\n```\n' "$project" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -347,8 +352,9 @@ elif [ -n "$problem" ]; then
 fi
 row pins "$want_pins" "$pins_line" PASS
 
-# --- issue: the scratch project's issue whose repository the edge relays (P5's admitted row). ---
-issue_title="Outside acceptance: the repository the edge relays to the project"
+# --- issue: the scratch project's issue whose repository the edge relays (P5's admitted row), and
+# which the Codex leg comments on (C3). ---
+issue_title=$(outside_issue_title)
 want_issue="an issue of $project named '$issue_title' on ${repository:-<OUTSIDE_REPOSITORY>}"
 problem=$(lacking OUTSIDE_REPOSITORY)
 [ -n "$problem" ] || problem=$(tool_problem dispatch)
@@ -1031,7 +1037,8 @@ else
   fi
 fi
 
-# --- P1-P10 as the public leg's TSV has them, each held to what this leg saw beside it. ---
+# --- P1-P10 as the public leg's TSV has them, each held to what this leg saw beside it, and C0-C7
+# as the TSV has them: the Codex leg's controls ran beside it on the runner. ---
 for name in $public_rows; do
   line=''
   [ -n "$public_problem" ] || line=$(worst_row "$public_tsv" "$name")

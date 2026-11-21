@@ -1049,6 +1049,31 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
+      "the gate counts only PASS: a Codex row the public TSV holds as UNKNOWN holds it, and the gate names that row",
+      async () => {
+        const [control, unknown] = await runStandIns(passingControls, {
+          ...passingControls,
+          verdicts: { C2: "UNKNOWN" },
+        });
+        if (control === undefined || unknown === undefined) throw new Error("two runs, want two");
+        // The control: every C row PASS in the public TSV, so the gate names none of them.
+        expect({ verdicts: verdictsOf(control.stdout), stdout: control.stdout }).toMatchObject({
+          verdicts: { C1: "PASS", C2: "PASS", C3: "PASS", C4: "PASS", C5: "PASS", C6: "PASS" },
+        });
+        expect(rowsOf(control.stdout).get("gate")?.got).not.toContain("C2");
+        // C2 UNKNOWN: copied as it is, counted, named by the gate, and the leg exits non-zero.
+        expect({ verdicts: verdictsOf(unknown.stdout), stdout: unknown.stdout }).toMatchObject({
+          verdicts: { C2: "UNKNOWN", gate: "UNKNOWN" },
+        });
+        expect(unknownsCounted(unknown.stdout)).toBe(unknownsCounted(control.stdout) + 1);
+        expect(rowsOf(unknown.stdout).get("gate")?.got).toContain("C2 UNKNOWN");
+        expect(unknown.code).not.toBe(0);
+      },
+      // The two runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short"] })
+    );
+
+    test(
       "the workflow gets only the inputs its file declares, on stdin, the sweep's project among them, only in a private or internal repository, and a refused dispatch holds the gate at once",
       async () => {
         const [started, refused, inPublic, unread, internal, failedView] = await runStandIns(

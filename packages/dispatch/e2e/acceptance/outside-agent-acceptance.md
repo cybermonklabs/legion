@@ -9,8 +9,11 @@ The gate must pass before the deployment names a real person from outside on any
 | File | What it is |
 | --- | --- |
 | `outside-agent-tailnet.sh` | The one command. It runs on a developer box on the private network, runs rows T1-T4 there, starts the public leg and prints the gate. |
-| `outside-agent-public.sh` | The public leg, rows P1-P10. A workflow on a runner on the public internet runs it, after that workflow's browser signs the test person in. |
-| `outside-agent-lib.sh` | What both legs share, sourced from beside them: input and tool checks, the text and JSON reads, the real-tool links, and `reap`, which stops and waits for every background child a leg started. |
+| `outside-agent-public.sh` | The public leg, rows P1-P10 and the Codex leg's C0-C7. A workflow on a runner on the public internet runs it, after that workflow's browser signs the test person in. |
+| `outside-agent-codex.sh` | The Codex leg, rows C0-C7: the outside person's Codex CLI with the codex-envoy plugin's npm release, under row P2's device login, and that release's provenance. The public leg runs it after P10. |
+| `outside-agent-codex-model.ts` | The Codex leg's keyless stand-in model, which speaks the Responses API and plays one scripted turn per run. It binds a port of the kernel's choosing and answers `/_ready` with the leg's nonce. |
+| `outside-agent-codex-provenance.ts` | The Codex leg's reads of row C0: the registry's record and provenance attestation of the plugin's release, and the byte comparison of two builds' bundles. |
+| `outside-agent-lib.sh` | What the legs share, sourced from beside them: input and tool checks, the text and JSON reads, the real-tool links, the scratch issue's title, and `reap`, which stops and waits for every background child a leg started. |
 | `outside-agent-peer.sh` | The tailnet leg's peer of row P4 and its session outside the project of row P6. |
 | `outside-agent-sweep.sh` | The tailnet leg's half of the read sweep and its two controls. |
 | `outside-agent-pins.sh` | The tailnet leg's reads of the deployed pins and of the build Dispatch serves, for rows pins and pins-end. |
@@ -18,7 +21,8 @@ The gate must pass before the deployment names a real person from outside on any
 | `outside-path-reach.sh` | The TCP reach check that row P9 runs. |
 | `../__tests__/outside-agent-acceptance.test.ts` | The test that each leg prints UNKNOWN, never PASS, for a row whose target is absent, with its control; that `reap` stops each child shape the legs use and no other process; and that the tailnet leg's own judgments hold against stand-ins. |
 | `../__tests__/outside-agent-public.test.ts` | The test that the public leg's own judgments (P6, P7, P10 and T5's agent part) hold against stand-ins. |
-| `../__tests__/outside-agent-fixture.ts` | What the two test files share: where the legs are, the rows each prints, and the helpers that copy a leg and read its TSV. |
+| `../__tests__/outside-agent-codex.test.ts` | The test that the Codex leg's rows hold against stand-ins, each beside the change that makes it fail, and that its stand-in model answers the requests Codex sends as the rows need. |
+| `../__tests__/outside-agent-fixture.ts` | What the test files share: where the legs are, the rows each prints, and the helpers that copy a leg and read its TSV. |
 | `../__tests__/outside-agent-tailnet-stand-ins.ts` | The stand-ins the tailnet leg's tests run it against: the checkout, the deployment repository and workflow behind a stand-in `gh`, the broker's tools, Dispatch, the sweep and the public leg. |
 | `../__tests__/outside-agent-stand-in-dispatch.ts` | The stand-in Dispatch those tests run in a process of its own, so no test worker's busy event loop holds its answers. It binds a port of the kernel's choosing and writes it to its state directory, and answers `/_ready` with a nonce the test passed it, so no other process can take its port first and no other run's stand-in passes for it. The closed ports the tests name come from the reserved range of `outside-path-reach-fixtures.ts`'s `closedPort`. |
 
@@ -31,9 +35,11 @@ that did not answer, or a row it needs that did not pass. A row never reads `PAS
 not run, and a verdict that is none of the three, copied from another file, counts as `UNKNOWN`.
 Each leg exits 0 when every row passed, 1 when a row failed, and 2 otherwise.
 
-The public leg ends with a `verdict` row. The tailnet leg prints its own rows, then rows P1-P10 as
-the public leg's TSV has them, then a `public` row (the public leg's own verdict, revocations and
-end), the sweep, `pins-end` (the pins and Dispatch's serving build read again) and a `gate` row.
+The public leg ends with a `verdict` row. The tailnet leg prints its own rows, then rows P1-P10 and
+C1-C6 as the public leg's TSV has them, then a `public` row (the public leg's own verdict,
+revocations and end), the sweep, `pins-end` (the pins and Dispatch's serving build read again) and
+a `gate` row. The gate passes only when every row reads PASS; its `got` names each row that did not,
+with its verdict, so a C row that reads UNKNOWN holds the gate as a FAIL does.
 
 No row prints a token, a proof or a secret value. Rows T2 and T3 read the canary secret's length
 alone. A row quotes no output of an operator's command (the approve, revoke and browser commands,
@@ -203,9 +209,9 @@ The tailnet leg does these steps, in this order:
    a run not ended by then reads as no end, and the public row UNKNOWN), downloads its artifacts
    `outside-agent-public`, `outside-edge-revocations` and `restricted-sweep`, stops the sweep's
    writer, and runs row T4. The wait for the T5 window to open is held to an hour alike.
-10. It judges T5 from the public leg's T5 rows and the removal's two clocks, prints rows P1-P10,
-    the public leg's own last word and the sweep, reads the pins and Dispatch's serving build again
-    (row `pins-end`), and prints the gate.
+10. It judges T5 from the public leg's T5 rows and the removal's two clocks, prints rows P1-P10
+    and C1-C6, the public leg's own last word and the sweep, reads the pins and Dispatch's serving
+    build again (row `pins-end`), and prints the gate.
 11. It stops every child it started and waits for each, stops the peer's tmux server and waits
     for the peer to exit, and removes its scratch directory.
 
@@ -225,6 +231,9 @@ The workflow runs `outside-agent-public.sh` after its own sign-in, with:
 | `OUTSIDE_T5_COMMAND` | The workflow's browser for the T5 window: a command line, run in the background with `OUTSIDE_T5_DEADLINE` (Unix seconds) and `OUTSIDE_T5_TSV` (a file). It polls the test person's cookie at most every 5 s until it gets 401, then tries the passkey sign-in, and writes rows `T5-cookie` and `T5-passkey` (`row want got verdict`), each `got` holding `at=<Unix seconds>` of the 401 and of the refused sign-in, before the deadline. |
 | `OUTSIDE_T5_SECONDS` | How long the T5 window stays open, at most (default 1200). |
 | `OUTSIDE_REVOKE_COMMAND` | The workflow's revoke step, a command line the leg runs after P10 and before the T5 window, while the person's cookie still reads their own list. It gets `OUTSIDE_EDGE_REVOKE_KEEP`, P2's user code, and revokes every other device login the run approved, the scratch helper's included, writing the `revoke-<credential id>` rows of `outside-edge-revocations`. Exit 0, 1 or 2 is the leg's `revocations` row. P2's login stays live into the window, where the removal stops it; its key lives only in the leg's scratch HOME, which the leg removes. |
+| `OUTSIDE_INSIDE_DISPATCH_URL` | Dispatch's private origin, `https://<host>`, which C2's control points the Codex plugin's `DISPATCH_URL` at. It has no default, and no host is written in this repository: the workflow passes it from its own secrets or inputs, as it passes the edge origins. Without it C2 reads UNKNOWN, and so the gate does not pass. |
+| `OUTSIDE_CODEX_ENVOY_VERSION` | The exact `@sjawhar/codex-envoy` release the Codex leg installs from npm, as the outside person installs it (`5.0.1`, never a range or a dist-tag). No default; without it every C row reads UNKNOWN. |
+| `OUTSIDE_CODEX_ENVOY_COMMIT`, `OUTSIDE_DEVICE_LOGIN_COMMIT` | Row C0: the commit the release's provenance must name, and the device login's merge commit, which that commit must hold. Whole 40-character commit ids; without either, C0 reads UNKNOWN. The workflow's checkout must hold the history between them (a checkout with its whole history; a shallow one reads UNKNOWN). |
 
 No model credential goes on the runner: the leg's two sends in P4 are scripted, and the model turn
 is the peer's, on the developer box. The public Oh My Pi session still runs on a model, because an
@@ -233,9 +242,11 @@ nothing: the leg runs it on `outside-agent-probe.ts model`, a keyless OpenAI-com
 on 127.0.0.1 that answers every turn with one fixed line (`--model outside-e2e/scripted`) and
 reads a request body of at most 4 MiB.
 
-Programs on PATH: bash, curl, tmux, bun and `omp`. The step needs about 40 minutes: P5 waits up to
-15 minutes for a GitHub event, beside P4 and P8, P8 waits for a token to expire (300 s), and the T5
-window lasts up to 20 minutes.
+Programs on PATH: bash, curl, tmux, bun, `omp`, git and tar, and npm (with node), which the Codex
+leg installs `@openai/codex@0.171.0` and verifies the plugin's release with. The step needs about 50
+minutes: P5 waits up to 15 minutes for a GitHub event, beside P4 and P8, P8 waits for a token to
+expire (300 s), the Codex leg takes a few minutes (two npm installs, a build of the release's
+commit, and three `codex exec` runs, each bounded), and the T5 window lasts up to 20 minutes.
 
 After P10 and the revocations the leg opens the T5 window. It tells the peer
 `outside-e2e t5-open <nonce> at <ms>`, starts `OUTSIDE_T5_COMMAND`, trades P2's device login afresh
@@ -273,6 +284,56 @@ shim finds its program through the caller's HOME.
 | P9 | `outside-path-reach.sh` from the Dispatch edge origin passes. |
 | P10 | No live view of the outside session reaches Dispatch. A session's live view is its `agentstream` frames, which Dispatch reads for its own people's sessions. As the Oh My Pi session's own session id at the edge, a publish of `agentstream.<session>.frames` is refused 403 `topic_not_published`, an interest in `agentstream.>` 403 `topic_not_in_project`, and a relay-socket `sub` of `agentstream.<session>.>` `subject_not_granted`. Another answer reads FAIL; a 5xx or no readable answer reads UNKNOWN. It runs after P8, because its interest and its socket, made as that session, replace the session's own. |
 | T5-agent | After the first refused trade, every later trade is refused too, and the socket open at that refusal closes with the edge's own code, 4401 or 4403. A trade answered later reads FAIL; a later trade with no readable answer reads UNKNOWN, since whether it was refused is not read. With no socket open at the refusal (the removal came before one opened), or a close with another code, the socket part reads UNKNOWN. |
+
+## The Codex leg's rows
+
+After P10 the public leg runs `outside-agent-codex.sh` with its own HOME, where P2's device login
+is, so the Codex agent trades the same login and no second one is approved. The Codex leg:
+
+- installs one exact Codex release, `npm install @openai/codex@0.171.0`, into its own scratch
+  directory, and runs that native binary; `OUTSIDE_CODEX_BIN` names another binary for a local run,
+  which must print the same `codex-cli 0.171.0`, or every row reads UNKNOWN;
+- installs the plugin as the outside person does: a local marketplace named `outside-e2e` whose
+  plugin source is `{"source": "npm", "package": "@sjawhar/codex-envoy", "version":
+  "<OUTSIDE_CODEX_ENVOY_VERSION>"}`, then `codex plugin marketplace add <dir>` and `codex plugin add
+  codex-envoy@outside-e2e`, into a `CODEX_HOME` of its own. Codex names the root it installed at,
+  `$CODEX_HOME/plugins/cache/outside-e2e/codex-envoy/<version>` on 0.171.0; the leg reads the
+  release's version there and its integrity at the registry. `OUTSIDE_CODEX_ENVOY_SOURCE=checkout`
+  builds the plugin from the checkout instead (`packages/claude-envoy/scripts/build.ts
+  --codex-out`), for a development run, whose C0 reads UNKNOWN, so it never passes the gate;
+- runs `codex exec --skip-git-repo-check --dangerously-bypass-hook-trust -m gpt-5.5` three times,
+  with `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`, under `env -i`, that
+  HOME, the `CODEX_HOME` and the outside person's settings alone: the main run (C1-C5), a run with
+  `ENVOY_URL` at `http://127.0.0.1:1`, a port no process but root's can listen on, read to refuse
+  a connection before and after the run (C6), and a run with `DISPATCH_URL` at
+  `OUTSIDE_INSIDE_DISPATCH_URL` (C2's control).
+- runs the installed release's own entry from a terminal, `bun <root>/dist/dispatch.js whoami`,
+  with the host `codex` and a terminal session of its own, under that HOME and those settings (C7).
+
+Codex runs against `outside-agent-codex-model.ts`, a keyless stand-in model on 127.0.0.1 that
+speaks the Responses API and plays a scripted turn, so no model credential goes on the runner. It
+binds a port of the kernel's choosing and prints it, and the leg points Codex at it only once it
+answers `/_ready` with the run's nonce: a line that names another run's stand-in is never used.
+Codex 0.171.0 with `gpt-6.2-sol` runs no tool at all; with `-m gpt-5.5` it lists the plugin's tools
+behind `tool_search`, and the stand-in finds them there. `exec` runs the session in its own
+process, outside Codex's shared app server, where the plugin registers no session. In the main run
+the model calls `dispatch whoami`, then `dispatch comment` on the scratch issue (the tailnet leg's,
+found by its title), then `sleep 2` until a request carries the probe's message (at most 60 times),
+then `envoy_send` to the probe's receiver. It logs each answer, and the leg judges the log.
+
+Each row's `got` ends with what ran: `codex --version`, the npm package and version, the model
+name, and the plugin's version, its integrity at the registry and the root Codex installed it at.
+
+| Row | It passes when |
+| --- | --- |
+| C0 | The release's provenance holds. At the registry (`OUTSIDE_NPM_REGISTRY`, default npm's), the release has a SLSA provenance attestation, which `npm publish --provenance` writes, naming `https://github.com/cybermonklabs/legion`'s `.github/workflows/release.yaml` and `OUTSIDE_CODEX_ENVOY_COMMIT`, and attesting the tarball whose integrity the registry names; `npm audit signatures`, in a project of its own that holds the release alone, verifies that attestation; and the commit holds `OUTSIDE_DEVICE_LOGIN_COMMIT` (`git merge-base --is-ancestor`). A release with no provenance (one published by hand), or another workflow, commit or tarball, or a commit without the device login, reads FAIL. Beside the verdict it records how a build of the commit (`bun scripts/build.ts --codex-out`, after `bun install --frozen-lockfile`) compares with the installed bundles, file by file; that never decides the row, since the release sets the version before it builds. |
+| C1 | The session id the plugin's SessionStart hook recorded for the Codex process is on the edge's session list within 30 s (`OUTSIDE_CODEX_LIST_SECONDS`) while Codex runs. Not listed in that time while it runs reads FAIL, and the run is stopped. |
+| C2 | `dispatch whoami` through the plugin's `dispatch` tool names the Codex session, the test person as owner and the scratch project, and no other session for the credential; and the same call with `DISPATCH_URL` at `OUTSIDE_INSIDE_DISPATCH_URL` does not name that person and project. The plugin refusing its own configuration (`dispatch config: ...`, as a release without the device login refuses `AGENT_SECRETS_MACHINE_IDENTITY=device-login`) reads FAIL. Without the input, or where the inside origin answers the same, C2 reads UNKNOWN: its PASS would not tell the edge from the inside origin. The command's whoami prints no scopes; C3 reads them on the comment the tool writes, and P3 on the same login's token. |
+| C3 | `dispatch comment` through the tool on the scratch issue exits 0, and the probe reads that comment on the issue, its author an agent of the test person, in the scratch project, as the Codex session, with no scope. A refusal (exit 1), or exit 0 with no such comment or another author, reads FAIL. |
+| C4 | The probe sends the session `outside-e2e codex-in <nonce>` through the edge, and a model request holds it within 20 s: the plugin's PostToolUse hook puts it there. The control: before that the probe sends `<peer>-foreign`, the session outside the project of row P6, another message, which the edge answers 404 and which no request ever holds. That message reaching the session reads FAIL, and so does the session's own message never reaching it; a control send answered otherwise than 404 reads UNKNOWN. |
+| C5 | The model's `envoy_send` reaches the probe's receiver, a session of the project that opened its relay socket first, within 10 s, sent as the Codex session. An error from the tool, nothing received, or another sender reads FAIL. |
+| C6 | With `ENVOY_URL` at `http://127.0.0.1:1`, which refuses a connection before and after the run, `dispatch whoami` through the tool still names the test person and the project: the `dispatch` tool works while Envoy cannot be reached. It is read only once C2's whoami passed; a port that did not refuse reads UNKNOWN. |
+| C7 | The installed release's own entry, `bun <root>/dist/dispatch.js whoami`, run from a terminal under P2's login with the outside person's settings, the host `codex` and a terminal session of its own, names the test person and the scratch project: the entry the outside person's install text logs in with. A release with no such entry, one whose entry refuses its configuration, or one that names another person or project reads FAIL. |
 
 ## The tailnet leg's rows
 

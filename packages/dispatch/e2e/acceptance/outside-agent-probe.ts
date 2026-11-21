@@ -1,7 +1,8 @@
 /** `bun outside-agent-probe.ts <command> [arguments]`: the calls of the outside agent's acceptance
  *  that need a broker credential, which a shell cannot make: every call carries a DPoP proof that
  *  only the holder of the token's key can sign. `outside-agent-public.sh` runs it for rows P3 and
- *  P5-P8, and `outside-agent-tailnet.sh` runs its `peer` command for the peer session of row P4.
+ *  P5-P8, `outside-agent-codex.sh` for rows C1 and C3-C5, and `outside-agent-tailnet.sh` runs its
+ *  `peer` command for the peer session of row P4.
  *
  *  It trades the machine's identity for a broker token as every session of the machine does
  *  (`brokerTokenFor`, `@legion/envoy-client/broker-credential`), from the broker settings of its
@@ -59,6 +60,19 @@
  *                            a token that names OUTSIDE_FOREIGN_PROJECT alone, prints whether
  *                            that listener lists it, and keeps it registered until it is stopped:
  *                            the session outside the project that row P6 must not find.
+ *    issue <project> <title> GET /api/v1/issues of <project>: `key`, the key of its issue titled
+ *                            <title>, or null (the Codex leg's scratch issue, row C3).
+ *    comment-find <issue> <text>
+ *                            GET /api/v1/issues/<issue>/comments: `found`, whether a comment
+ *                            holds <text>, and its `id` and author: `author_kind`, `owner`,
+ *                            `project`, `session` (the session the write proved) and
+ *                            `scope_count`, the scopes of the credential it was written with
+ *                            (row C3).
+ *    receive <seconds> <text>
+ *                            registers the session, opens its relay socket, prints {ready: true}
+ *                            once the socket holds its own subject, and waits up to <seconds> for
+ *                            a message holding <text>: {read, from, at}, the sender's session and
+ *                            the time it read it in Unix ms, or {read: null} (row C5).
  */
 import { randomUUID } from "node:crypto";
 import { type Envelope, EnvelopeSchema } from "@legion/contracts";
@@ -835,6 +849,91 @@ async function main(): Promise<void> {
         await Promise.withResolvers<never>().promise;
       }
       return;
+    case "issue": {
+      const [project = "", ...words] = args;
+      const title = words.join(" ");
+      if (project === "" || title === "") throw new Unreadable("issue needs a project and a title");
+      const query = new URLSearchParams({ project, limit: "250", offset: "0" });
+      const answer = await call("GET", dispatch(`/api/v1/issues?${query}`));
+      const issues: unknown =
+        typeof answer.body === "object" && answer.body !== null
+          ? Reflect.get(answer.body, "issues")
+          : undefined;
+      let key: string | null = null;
+      for (const issue of Array.isArray(issues) ? issues : []) {
+        if (typeof issue !== "object" || issue === null) continue;
+        const named: unknown = Reflect.get(issue, "key");
+        if (Reflect.get(issue, "title") === title && typeof named === "string") key = named;
+      }
+      print({ ...flat(answer), key });
+      return;
+    }
+    case "comment-find": {
+      const [issue = "", ...words] = args;
+      const wanted = words.join(" ");
+      if (issue === "" || wanted === "")
+        throw new Unreadable("comment-find needs an issue and a text");
+      const answer = await call(
+        "GET",
+        dispatch(`/api/v1/issues/${encodeURIComponent(issue)}/comments`)
+      );
+      const read = (value: unknown, name: string): unknown =>
+        typeof value === "object" && value !== null ? Reflect.get(value, name) : undefined;
+      const comments = Array.isArray(answer.body) ? answer.body : [];
+      const found = comments.find((each) => String(read(each, "body") ?? "").includes(wanted));
+      const author = read(found, "author");
+      const act = read(author, "act");
+      const scopes = read(act, "scopes");
+      print({
+        ...flat(answer),
+        found: found !== undefined,
+        id: read(found, "id") ?? null,
+        author_kind: read(author, "kind") ?? null,
+        owner: read(author, "owner") ?? null,
+        project: read(author, "project") ?? null,
+        session: read(act, "session") ?? null,
+        scope_count: Array.isArray(scopes) ? scopes.length : null,
+      });
+      return;
+    }
+    case "receive": {
+      const [seconds = "", ...words] = args;
+      const waitMs = Number(seconds) * 1000;
+      const wanted = words.join(" ");
+      if (!(waitMs > 0) || wanted === "") throw new Unreadable("receive needs seconds and a text");
+      const registered = await subscribe([]);
+      if (registered.status >= 300) {
+        throw new Unreadable(`the receiver's registration answered ${registered.status}`);
+      }
+      const relay = await openRelay();
+      if (!("socket" in relay))
+        throw new Unreadable(`the listener serves no relay socket (${relay.status})`);
+      const own = await ask(relay, `${deliverPrefix}${session()}`);
+      if (!own.granted)
+        throw new Unreadable(`the relay socket refused the receiver's own subject (${own.code})`);
+      print({ ready: true });
+      // The registration is kept fresh as a session's heartbeat keeps it.
+      const heartbeat = setInterval(() => void subscribe([]).catch(() => {}), 30_000);
+      const until = Date.now() + waitMs;
+      for (;;) {
+        const frame = await nextFrame(relay, Math.max(0, until - Date.now()));
+        if (frame === undefined) break;
+        if (frame.op !== "msg") continue;
+        receipt(relay, frame);
+        const envelope = envelopeOf(frame);
+        const read = (envelope?.payload ?? envelope?.payload_summary ?? "").trim();
+        if (!read.includes(wanted)) continue;
+        const from = envelope?.source_session ?? envelope?.sender?.session_id ?? "";
+        print({ read: wanted, from, at: Date.now() });
+        clearInterval(heartbeat);
+        relay.socket.close(1000, "the probe is done");
+        return;
+      }
+      clearInterval(heartbeat);
+      print({ read: null, from: null, at: Date.now() });
+      relay.socket.close(1000, "the probe is done");
+      return;
+    }
     case "model":
       await scriptedModel();
       return;
