@@ -1,0 +1,31 @@
+The tree checker that the plan writes, run in CI over .dispatch/spec at the head of the pull request.
+A Dispatch server that holds a fixture approved spec. A fake GitHub sends it the push of each fixture change. The test reads the comparison of each push as the reviewer of the change reads it. The run also reads the CI workflows of the repository.
+The level reviewer, run on a fixture change request.
+A Playwright test in packages/dispatch/e2e, against a fake GitHub that serves a fixture .dispatch/spec, as packages/dispatch/e2e/architecture.e2e.ts does for .dispatch/architecture.
+A Playwright test in packages/dispatch/e2e, on a fixture statement with one passing check.
+A test against a Dispatch server from the head of the pull request. Fixture texts come in through each route that opens an approval request, and through an import of the files. The reviewer of a change request then reads a fixture change request.
+A test against a Dispatch server that holds a fixture list of terms. The reviewer of a change request then reads four fixture change requests.
+A test against a Dispatch server from the head of the pull request, which reports one check false twice from two reporters. It also records one CI run at one commit in which three checks fail.
+A test against a Dispatch server and the airlock, where a CI job presents its own identity and writes a result. A fixture CI job also runs its last step there, with an OIDC token from a fake GitHub.
+A test against a Dispatch server and the airlock, where a job on the build cluster presents its own identity and writes a result.
+A test against a Dispatch server and the airlock, where an agent's step presents its own identity and writes a result.
+The graph-check runner that the plan writes, over a fixture graph.
+The CI job that the plan writes, which runs each check that a fix adds against the base of its change.
+The tree checker, over fixture trees of .dispatch/spec.
+The CI job that the plan writes, over the repository at the head of the pull request.
+A Playwright test in packages/dispatch/e2e, on a fixture repository with components X and Y. Check V of statement S names one test, and S is about X.
+After the move: a program that splits every sentence of the 40 files at the base of the move and finds each in the move issue's table; git ls-tree of .dispatch/architecture at the head of main; and a count of the issues attached to a component before and after.
+A Playwright test in packages/dispatch/e2e, on two fixture issues: one on a project with a tree, one on a project with an empty tree.
+A test against a Dispatch server and a Legion daemon from the head of the pull request, with four fixture issues.
+A test against a Dispatch server and a Legion daemon from the head of the pull request, with two fixture repositories and one issue approved before the change.
+The check reviewer and a Dispatch server, run on nine fixture changes to the checks of one approved statement.
+Legion's reviewer, which reads Dispatch's comparison of the files with the approved spec, run on seven fixture changes against one approved change request.
+The reviewer of a change, run on twenty-one fixture changes with Dispatch's comparison of each. The files of fixtures 1 to 4 and 9 to 17 equal the approved spec. A Dispatch server holds the reports of faults, each with its key. Two landings of earlier units stand on main. Each built one statement, S or T, which was false before its landing and is true after it. The files of fixtures 18 and 19 hold what their revert leaves. The author agent writes the list of outcomes of fixtures 1 and 9, and each other fixture gives its own. A Dispatch server takes the reviewer's fault reports.
+A test against a Dispatch server and a scheduler. It has two approved change requests of two owners, one reported false check, and one reported fault that no check saw.
+A live run of a scratch tree on the smoke repository. An issue changes one statement, which has one before_merge check and one after_merge check. The run uses the first workflow.
+dispatch read of each level issue of the first-version tree, and the level reviewer over each level.
+A script runs the query that gives the set of the person's decisions up to the stated date, and lists each decision that no statement states and no reason excuses. The coverage instrument lists each part of the code that no check runs, and a reviewer that did not write The Spec judges that list.
+A trial on 24 merged pull requests. Fresh agents that read only the how-to of this issue write the proposed statements of each pull request. Judges on another model family read each entry against its pull request and the code at its merge.
+The coverage instrument that the plan writes, over the code at the head of main, and the reviewer that judges its list.
+A Playwright test in packages/dispatch/e2e, on a fixture statement whose change request links an answered ask.
+The CI job that the plan writes, run at a push of a change's branch. It reads the check nodes of the files, the code and the report of each job.

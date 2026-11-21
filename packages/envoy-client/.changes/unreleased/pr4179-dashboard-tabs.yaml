@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A dashboard address of each tab of an issue's page, the Verification tab among them, and of a
+  document's page under the singular `/artifact/` segment now gives its `dispatch://` reference, as
+  the dashboard's pages file lists them, and each tab's reference reads as its issue wherever a
+  tool takes a reference, as `dispatch read` does.
+custom:
+    Issue: pr4179

@@ -1,0 +1,5 @@
+kind: Added
+body: "Dispatch refuses an approval request and a person's approval with 409 SPEC_FORM when a text of a covered document breaks the form of The Spec, and the refusal names each text and its rule, with the refusal and its next step apart (refusal, next_step). No approval carries to a version that breaks the form. A document is covered when it is the spec or the Verification document of an issue under a root that the setting DISPATCH_SPEC_ROOTS names, or the terms.md of such a root. A reopen and the repair pass judge a request at the versions that it names when they end, and leave a request that breaks the form resolved. GET /api/v1/artifacts/{id}/spec-form shows the same findings before a request. The form section of cmd/dispatch/README.md states each rule and how it reads a name, a link and an address."
+time: 2026-11-16T09:52:23.463482113Z
+custom:
+    Issue: pr4179

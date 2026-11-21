@@ -1235,7 +1235,7 @@ func parseInlineMarks(parent ast.Node, source []byte, initial []Mark, footnotes 
 			// stored decoded and written from that, so one matching only as written, before
 			// decoding (`[^&AUML;]` beside `[^&auml;]: `), would not match once written.
 			decoded := decodeMarkdownText([]byte(label))
-			if definition := decodeMarkdownText([]byte(definitionLabel)); footnoteLabelKey(decoded) != footnoteLabelKey(definition) {
+			if definition := decodeMarkdownText([]byte(definitionLabel)); FootnoteLabelKey(decoded) != FootnoteLabelKey(definition) {
 				return nil, nil, fmt.Errorf("%w: footnote reference %q matches its definition %q only as written, before their character references are decoded, which the document's markdown cannot keep", ErrSchema, decoded, definition)
 			}
 			children = append(children, &Node{Type: "footnote_reference", Attrs: Attrs{"label": decoded}})

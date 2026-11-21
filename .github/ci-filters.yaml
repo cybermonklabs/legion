@@ -156,6 +156,8 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/dispatch/routes/*'
   - 'packages/envoy/internal/dispatch/sessionanswers/*'
   - 'packages/envoy/internal/dispatch/startup/*'
+  - 'packages/envoy/internal/dispatch/specform/*'
+  - 'packages/envoy/internal/dispatch/specform/ste/*'
   - 'packages/envoy/internal/dispatch/store/*'
   - 'packages/envoy/internal/dispatch/store/migrations/**'
   - 'packages/envoy/internal/dispatch/text/*'
@@ -546,6 +548,7 @@ claude_envoy_build: &claude_envoy_build
   # why: .github/ci-notes/ci.md#claude_envoy_build-releaseyamls-version-arguments-are-held-to-the-build-inputs
   - '.github/workflows/release.yaml'
   - 'packages/contracts/src/**'
+  - 'packages/envoy/internal/dispatch/text/dashboard-pages.json'
   - 'packages/envoy-client/src/**'
   # why: .github/ci-notes/ci.md#claude_envoy_build-its-srcbroker-credentialts-imports-legioncipher-client
   - 'packages/cipher-client/**'
@@ -587,6 +590,7 @@ contracts:
   - 'packages/contracts/**'
   - 'skills/dispatch/SKILL.md'
   - 'skills/dispatch-writing-specs/SKILL.md'
+  - 'packages/envoy/internal/dispatch/text/dashboard-pages.json'
   # why: .github/ci-notes/ci.md#contracts-the-go-copies-its-tests-hold-the-typescript-to
   - 'packages/envoy/internal/dispatch/text/testdata/dispatch-href-references.json'
   - 'packages/envoy/internal/dispatch/text/testdata/dispatch-text-references.json'
@@ -687,6 +691,14 @@ check_image_trigger_paths_test: &check_image_trigger_paths_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/check-image-trigger-paths.test.sh'
   - '.github/scripts/check-image-trigger-paths.sh'
+  - '.github/scripts/workflow_paths.py'
+check_image_build_inputs_test: &check_image_build_inputs_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/check-image-build-inputs.test.sh'
+  - '.github/scripts/check-image-build-inputs.sh'
   - '.github/scripts/workflow_paths.py'
 check_ci_images_test: &check_ci_images_test
   - *ci_router
@@ -1003,6 +1015,7 @@ test:
   - *check_gitleaks_version_test
   - *workflow_paths_test
   - *check_image_trigger_paths_test
+  - *check_image_build_inputs_test
   - *check_ci_images_test
   - *mirror_ci_images_test
   - *ci_tools_test
@@ -1273,6 +1286,7 @@ broker_client:
   - *bun_install
   - 'packages/cipher-client/**'
   - 'packages/contracts/src/**'
+  - 'packages/envoy/internal/dispatch/text/dashboard-pages.json'
   - 'packages/test-fixtures/src/**'
   - 'packages/envoy/internal/ciphertoken/testdata/connection-proof-*.json'
   - 'packages/envoy/internal/cipher/oauth/testdata/refusal-descriptions.json'
@@ -1289,6 +1303,7 @@ pi_shared:
   - 'packages/cipher-client/**'
   - 'packages/envoy-client/test/**'
   - 'packages/contracts/src/**'
+  - 'packages/envoy/internal/dispatch/text/dashboard-pages.json'
   - 'packages/test-fixtures/src/**'
   - 'packages/contracts/fixtures/daemon-api/**'
   - 'packages/pi-legion/src/**'
@@ -1317,6 +1332,7 @@ pi_envoy:
   - 'packages/envoy-client/bin/dispatch.ts'
   - 'packages/envoy-client/scripts/build-dispatch-cli.sh'
   - 'packages/contracts/src/**'
+  - 'packages/envoy/internal/dispatch/text/dashboard-pages.json'
   - 'packages/test-fixtures/src/**'
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
   - 'packages/contracts/fixtures/envelope-without-role.json'
@@ -1395,6 +1411,7 @@ dispatch_ui:
   - 'packages/dispatch/**'
   - 'packages/proof-editor/**'
   - 'packages/test-fixtures/src/**'
+  - 'packages/envoy/internal/dispatch/text/dashboard-pages.json'
   # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
   # tsc programs compile. An edit by hand is refused by that check, which writes these.
   - 'packages/contracts/src/actor-label.ts'
@@ -2076,6 +2093,7 @@ listener_server_change:
   - 'packages/envoy/internal/dispatch/refs/*'
   - 'packages/envoy/internal/dispatch/retry/*'
   - 'packages/envoy/internal/dispatch/sessionanswers/*'
+  - 'packages/envoy/internal/dispatch/specform/**'
   - 'packages/envoy/internal/dispatch/store/*'
   - 'packages/envoy/internal/dispatch/store/migrations/**'
   - 'packages/envoy/internal/dispatch/text/**'
@@ -2286,6 +2304,7 @@ envoy_smoke:
   - '!packages/envoy/internal/cmdtest/**/*_test.go'
   - '!packages/envoy/internal/config/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
+  - '!packages/envoy/internal/cputest/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dedupe/**/*_test.go'
   - '!packages/envoy/internal/dispatch/**/*_test.go'
@@ -2346,6 +2365,7 @@ envoy_e2e_local:
   # why: .github/ci-notes/ci.md#envoy_e2e_local-and-legioncipher-client-with-it-the-tsc-program-of
   - 'packages/cipher-client/**'
   - 'packages/contracts/src/**'
+  - 'packages/envoy/internal/dispatch/text/dashboard-pages.json'
   - *listener_command
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testnats/cmd/natsd/*'
@@ -2636,6 +2656,7 @@ envoy_go_race:
   - '!packages/envoy/internal/cmdtest/**/*_test.go'
   - '!packages/envoy/internal/config/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
+  - '!packages/envoy/internal/cputest/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dedupe/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
@@ -2676,6 +2697,7 @@ envoy_go_race:
   - '!packages/envoy/internal/dispatch/retry/**/*_test.go'
   - '!packages/envoy/internal/dispatch/routes/**/*_test.go'
   - '!packages/envoy/internal/dispatch/sessionanswers/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/specform/**/*_test.go'
   - '!packages/envoy/internal/dispatch/specgraph/**/*_test.go'
   - '!packages/envoy/internal/dispatch/startup/**/*_test.go'
   - '!packages/envoy/internal/dispatch/testlimits/**/*_test.go'
@@ -2818,6 +2840,8 @@ envoy_go_race_api:
   - 'packages/envoy/internal/dispatch/refs/*'
   - 'packages/envoy/internal/dispatch/retry/*'
   - 'packages/envoy/internal/dispatch/sessionanswers/*'
+  - 'packages/envoy/internal/dispatch/specform/*'
+  - 'packages/envoy/internal/dispatch/specform/ste/*'
   - 'packages/envoy/internal/dispatch/store/*'
   - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
   - 'packages/envoy/internal/dispatch/store/migrations/**'
@@ -2874,6 +2898,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/cipherclient/**/*_test.go'
   - '!packages/envoy/internal/ciphertoken/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
+  - '!packages/envoy/internal/cputest/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
   - '!packages/envoy/internal/dispatch/agentstream/**/*_test.go'
@@ -2897,6 +2922,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/dispatch/api/route_xid_window_issues_test.go'
   - '!packages/envoy/internal/dispatch/api/route_xid_window_messages_test.go'
   - '!packages/envoy/internal/dispatch/api/route_xid_window_test.go'
+  - '!packages/envoy/internal/dispatch/api/spec_form_guard_test.go'
   - '!packages/envoy/internal/dispatch/api/xid_window_test.go'
   - '!packages/envoy/internal/dispatch/architecture/**/*_test.go'
   - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
@@ -2927,6 +2953,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/dispatch/refs/**/*_test.go'
   - '!packages/envoy/internal/dispatch/retry/**/*_test.go'
   - '!packages/envoy/internal/dispatch/sessionanswers/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/specform/**/*_test.go'
   - '!packages/envoy/internal/dispatch/store/**/*_test.go'
   - '!packages/envoy/internal/dispatch/testlimits/**/*_test.go'
   - '!packages/envoy/internal/dispatch/text/**/*_test.go'
@@ -2984,6 +3011,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/cmdtest/**/*_test.go'
   - '!packages/envoy/internal/config/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
+  - '!packages/envoy/internal/cputest/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dedupe/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
@@ -3023,6 +3051,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/dispatch/retry/**/*_test.go'
   - '!packages/envoy/internal/dispatch/routes/**/*_test.go'
   - '!packages/envoy/internal/dispatch/sessionanswers/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/specform/**/*_test.go'
   - '!packages/envoy/internal/dispatch/specgraph/**/*_test.go'
   - '!packages/envoy/internal/dispatch/startup/**/*_test.go'
   - '!packages/envoy/internal/dispatch/store/**/*_test.go'

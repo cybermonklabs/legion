@@ -213,6 +213,8 @@ func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) in
 		return 1
 	}
 	defer database.Pool.Close()
+	// The service has no form gate, so no version it writes carries an approval in a person's name
+	// (docs.Service.SetFormGate).
 	service := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
 	defer service.Shutdown(context.Background())
 	reports, err := service.BackfillBlockIDs(ctx)
@@ -235,6 +237,7 @@ func backfillAnchorBlocks(ctx context.Context, databaseURL string, out io.Writer
 		return 1
 	}
 	defer database.Pool.Close()
+	// No form gate either, so this service carries no approval (docs.Service.SetFormGate).
 	service := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
 	defer service.Shutdown(context.Background())
 	reports, err := service.BackfillBlockIDs(ctx)

@@ -29,7 +29,7 @@ import {
 } from "../../theme/classes";
 import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
+import { buildIssuePath, documentItemPath } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -510,13 +510,17 @@ function OpenQuestion({
 
 /** The issue's Decisions tab: its open questions, the agent's decisions waiting for a person's
  *  review (with Keep and Change), the person's own decisions, and the replaced ones, read from
- *  `GET /api/v1/issues/{key}/decisions`. Each decision links the spec blocks it shaped. */
+ *  `GET /api/v1/issues/{key}/decisions`. Each decision links the spec blocks it shaped.
+ *  `decisionsDocument` is the issue's `decisions.md`, the document the page draws on this tab
+ *  (`issueDocuments`). */
 export function DecisionsPanel({
   artifacts,
+  decisionsDocument,
   isClosed,
   issueKey,
 }: {
   artifacts: readonly Artifact[];
+  decisionsDocument: Artifact | undefined;
   isClosed: boolean;
   issueKey: string;
 }): ReactNode {
@@ -549,9 +553,7 @@ export function DecisionsPanel({
     );
   }
   const spec = artifacts.find((artifact) => artifact.primary && artifact.kind === "doc");
-  const documentId = artifacts.find(
-    (artifact) => artifact.slug === DECISIONS_DOCUMENT_SLUG && artifact.kind === "doc"
-  )?.id;
+  const documentId = decisionsDocument?.id;
   const questions = view.data.open_questions ?? [];
   const waiting = rows.filter((row) => row.decision.waiting_review);
   // Yours: the ones a person decided, and the agent's that the reader kept — a Keep takes a

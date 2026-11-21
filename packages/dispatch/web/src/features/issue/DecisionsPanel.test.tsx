@@ -137,7 +137,12 @@ function renderPanel(
   return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <DecisionsPanel artifacts={artifacts} isClosed={false} issueKey="CORE-1" />
+        <DecisionsPanel
+          artifacts={artifacts}
+          decisionsDocument={artifacts[1]}
+          isClosed={false}
+          issueKey="CORE-1"
+        />
       </QueryClientProvider>
     </MemoryRouter>
   );

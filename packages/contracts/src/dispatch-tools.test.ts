@@ -172,6 +172,7 @@ const validCalls = {
     ops: [{ op: "replace", find: "old", with: "new" }],
   },
   dispatch_doc_read: { issue: "DSP-1" },
+  dispatch_spec_form: { issue: "DSP-1" },
   dispatch_request_approval: {
     issue: "DSP-1",
     summary: "A live sync replaces the nightly export.",
@@ -298,6 +299,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_send_to_agent",
       "dispatch_doc_edit",
       "dispatch_doc_read",
+      "dispatch_spec_form",
       "dispatch_request_approval",
       "dispatch_plan_approve",
       "dispatch_review",
@@ -1525,6 +1527,43 @@ describe("dispatchToolSpecs", () => {
     ).toBe(true);
   });
 
+  test("dispatch_spec_form reads one owner's documents, or walks a root named alone", () => {
+    const schema = schemaFor("dispatch_spec_form");
+    const refusals = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+    const rootRule =
+      "root walks every issue under that root: name no issue, project, artifact, version or ref with it.";
+
+    for (const args of [
+      { issue: "DSP-1" },
+      { issue: "DSP-1", artifact: "spec.md", version: 2 },
+      { project: "CORE", artifact: "runbook.md" },
+      { ref: "dispatch://DSP-1/spec@v2" },
+      { root: "DSP-1" },
+    ]) {
+      expect(schema.safeParse(args).success, JSON.stringify(args)).toBe(true);
+    }
+    expect(refusals({ project: "CORE" })).toEqual([
+      "Exactly one of issue and project is required; with project, artifact names the document.",
+    ]);
+    for (const extra of [
+      { issue: "DSP-2" },
+      { project: "CORE" },
+      { artifact: "spec.md" },
+      { version: 2 },
+      { ref: "dispatch://DSP-2/spec" },
+    ]) {
+      expect(refusals({ root: "DSP-1", ...extra }), JSON.stringify(extra)).toEqual([rootRule]);
+    }
+    expect(schema.safeParse({ issue: "DSP-1", version: 0 }).success).toBe(false);
+  });
+
+  test("dispatch_spec_form's description says what it reads, that it writes nothing, and what root lists", () => {
+    expect(specFor("dispatch_spec_form").description).toBe(
+      "Read the form of a document's texts of The Spec, as an approval request would judge them. It lists each statement, check, component purpose and term that breaks the form, with its rule. It writes nothing. It says whether the document is under a root of The Spec, and how many texts it read. With root, it lists each issue under that root and the form of each document that the root covers."
+    );
+  });
+
   test("dispatch_review takes an issue, a version from 1 and a verdict, and nothing else", () => {
     const schema = schemaFor("dispatch_review");
 
@@ -1759,5 +1798,41 @@ describe("dispatchToolSpecs", () => {
 
   test("no tool result subscribes the session to an issue; following an ask is the write's side effect", () => {
     expect(dispatchToolSpecs.every((spec) => !("subscribes" in spec))).toBe(true);
+  });
+});
+
+/** n in words, as the prose writes a count below a hundred: `seven`, `thirty-seven`. */
+function countInWords(n: number): string {
+  const units = [
+    ..."zero one two three four five six seven eight nine ten eleven twelve".split(" "),
+    ..."thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split(" "),
+  ];
+  const tens = "twenty thirty forty fifty sixty seventy eighty ninety".split(" ");
+  if (n < 20) return units[n] ?? "";
+  const ten = tens[Math.floor(n / 10) - 2] ?? "";
+  return n % 10 === 0 ? ten : `${ten}-${units[n % 10]}`;
+}
+
+// The count of the tool specs is written in words in the docs, the route table's description of the
+// going catalogue and its generated copies; each sentence was written by hand, and a spec added on
+// either side of a merge left three of them at the old count. Each sentence must name the specs'
+// count, and stand once in its file.
+describe("each sentence that counts the Dispatch tool specs", () => {
+  const repoRoot = resolve(import.meta.dir, "../../..");
+  test.each([
+    ["packages/envoy-client/README.md", /single source for the ([a-z-]+)\s+Dispatch specs/g],
+    [
+      "packages/envoy/internal/dispatch/api/going_catalogue.go",
+      /Twenty-one of the ([a-z-]+) tools/g,
+    ],
+    ["packages/envoy/internal/dispatch/api/routes_table.go", /of the ([a-z-]+) tool specs/g],
+    ["packages/envoy/cmd/dispatch/README.md", /of the ([a-z-]+) tool specs/g],
+    ["packages/contracts/schemas/dispatch-openapi.json", /of the ([a-z-]+) tool specs/g],
+    ["packages/contracts/src/dispatch-api.generated.ts", /of the ([a-z-]+) tool specs/g],
+  ] as const)("%s names the count of the specs", (file, sentence) => {
+    const counts = [...readFileSync(resolve(repoRoot, file), "utf8").matchAll(sentence)].map(
+      (match) => match[1]
+    );
+    expect(counts).toEqual([countInWords(dispatchToolSpecs.length)]);
   });
 });

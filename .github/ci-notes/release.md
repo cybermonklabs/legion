@@ -70,22 +70,25 @@ scripts/pi-plugin-prepack.sh copies this plugin's eleven skills into dist/skills
 Oh My Pi session loads as the plugin's skills, so a commit there releases whatever its type. Its
 notices generator, the prepack itself and patches/ (the bundle inlines nats.js with
 patches/nats@2.29.3.patch applied) are shipped build inputs too, so they get the same patch
-release.
+release, and so is the dashboard's pages file, which envoy-client and contracts read when the
+bundle is built.
 
 ## The Legion plugin's version arguments
 
 The Legion Oh My Pi plugin, seeded as the Envoy one is. scripts/pi-plugin-prepack.sh copies
 this plugin's six skills into dist/skills, which a Legion pane's prompts load, so a commit
-there releases whatever its type. Its notices generator, the prepack itself and patches/ (the
-bundle inlines nats.js through envoy-client, with its patch applied) are shipped build inputs
-too, so they get the same patch release.
+there releases whatever its type. Its notices generator, the prepack itself, patches/ (the
+bundle inlines nats.js through envoy-client, with its patch applied) and the dashboard's pages
+file (envoy-client and contracts read it) are shipped build inputs too, so they get the same
+patch release.
 
 ## The Claude plugin's version arguments and the list they come from
 
 The Claude Code plugin, @sjawhar/claude-envoy. Its build runs from
 packages/claude-envoy/scripts/build-inputs.txt, the one statement of what can change this
 plugin's bundles and its generated legion/ plugin, so the paths of `CLAUDE_ENVOY_VERSION_ARGS` are that list's, in this
-order: this package, the workspace packages its bundles inline, pi-legion's agents and all of
+order: this package, the workspace packages its bundles inline, the dashboard's pages file they
+read, pi-legion's agents and all of
 skills/ (scripts/pi-plugin-prepack.sh stages pi-legion's share into legion/skills and this
 package's skills/ links into skills/), the notices generator, the prepack and patches/ (the
 bundles inline nats.js with patches/nats@2.29.3.patch applied). Everything after

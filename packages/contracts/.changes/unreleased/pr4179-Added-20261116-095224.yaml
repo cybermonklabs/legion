@@ -1,0 +1,5 @@
+kind: Added
+body: The Dispatch API types carry the 409 SPEC_FORM refusal, spec_form on the answer of an approval request, and the read route GET /api/v1/artifacts/{id}/spec-form. The refusal carries error whole and in two parts, refusal and next_step, so that a client with a next step of its own shows refusal beside it. spec_form and the read route carry unread, each approved document under the root whose approved version Dispatch cannot read (SpecFormUnread).
+time: 2026-11-16T09:52:24.176145532Z
+custom:
+    Issue: pr4179

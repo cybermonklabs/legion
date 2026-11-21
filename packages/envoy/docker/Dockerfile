@@ -66,6 +66,9 @@ RUN bun install --frozen-lockfile --ignore-scripts \
     --filter './packages/proof-editor'
 
 COPY packages/contracts packages/contracts
+# contracts/src/dispatch-href.ts reads this generated route table while the SPA build resolves its
+# reference URLs. The Go stage copies packages/envoy later; the web stage needs this one file now.
+COPY packages/envoy/internal/dispatch/text/dashboard-pages.json packages/envoy/internal/dispatch/text/dashboard-pages.json
 COPY packages/dispatch packages/dispatch
 COPY packages/proof-editor packages/proof-editor
 # The SPA compiles in the document schema manifest the server embeds (web/src/features/doc/schema.ts).

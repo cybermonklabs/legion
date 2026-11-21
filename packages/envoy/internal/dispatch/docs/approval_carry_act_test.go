@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An answer an agent made for its person carries that person's approval forward only when the
@@ -38,17 +39,20 @@ const actAnswerSpec = "Context\n\n" +
 // (approval_carry_approved_test.go), and not the 20 ms a test that only seeds can afford: a
 // settlement firing while one of these tests holds its joined transaction takes the document's
 // rows in the other order and the two deadlock, which `-race` is slow enough to hit. The seeding
-// below schedules one settlement itself and waits up to three seconds for it, so a second costs
-// the seed nothing.
+// below schedules one settlement itself and waits for it up to a minute, or to a second before the
+// test binary's deadline when that comes first (testwait.Eventually): a loaded machine takes more
+// than a few seconds for a settlement that fires at one, and a seed that never settles still
+// fails, naming what it waited for.
 func seededActDocument(t *testing.T) (*store.Store, *Service, string) {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, actAnswerSpec)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Second})
+	service.SetFormGate(formKept)
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, actAnswerSpec)
 	service.ScheduleSettlement(artifactID)
-	waitFor(t, 3*time.Second, "settlement to index both blocks", func() bool {
+	testwait.Eventually(t, "settlement to index both blocks", func() bool {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from asks where block_artifact_id = $1 and block_id = any($2::text[])

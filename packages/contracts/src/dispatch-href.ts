@@ -5,6 +5,27 @@
  * or ask on an issue document as well as on a project document.
  */
 
+import dashboardPages from "../../envoy/internal/dispatch/text/dashboard-pages.json" with {
+  type: "json",
+};
+
+/**
+ * The dashboard's pages file: what the dashboard's route table reads in the address of a page,
+ * generated from it (`packages/dispatch/web/src/features/refs/dashboard-pages-file.ts`) into the
+ * folder of the server's reader, which embeds it. `tabs` is each tab of an issue whose page names
+ * the issue, with the segment of its `dispatch://` reference; `document_segments` the segments
+ * under an issue that open a document by slug; `document_pages` every page each kind of document
+ * is drawn on; `references` one href of each tab and each segment with the reference it names,
+ * rows of `DISPATCH_HREF_REFERENCES`. The agent client reads its tabs and segments too, so one
+ * file holds what each reader of a dashboard address reads.
+ */
+export const DISPATCH_DASHBOARD_PAGES: {
+  readonly tabs: readonly { readonly page: string; readonly reference: string }[];
+  readonly document_segments: readonly string[];
+  readonly document_pages: Readonly<Record<string, readonly string[]>>;
+  readonly references: readonly { readonly href: string; readonly ref: string }[];
+} = dashboardPages;
+
 export interface DispatchHrefItem {
   id: string;
   kind: "ask" | "comment";
@@ -63,12 +84,15 @@ export function itemFromSearch(search: string): DispatchHrefItem | undefined | n
  * fragment, a version's stored text holding no block ids: the version of an issue's spec
  * (`/spec?v=N`) is the spec's artifact at that version. The Decisions tab
  * (`/issues/<key>/decisions`) is a view of the issue's `decisions.md`, so its page names that
- * document, whatever its fragment.
+ * document, whatever its fragment. The rows of the dashboard's pages file come first: the page
+ * of each tab that names its issue (`/issues/<key>/activity` is `dispatch://<key>/activity`, the
+ * Conversation tab's `dispatch://<key>/log`), and a document's page by each segment the dashboard
+ * reads, the singular `/issues/<key>/artifact/<slug>` with the plural.
  */
 export const DISPATCH_HREF_REFERENCES: readonly { href: string; ref: string }[] = [
+  ...DISPATCH_DASHBOARD_PAGES.references,
   { href: "/issues/CORE-1", ref: "dispatch://CORE-1" },
   { href: "/issues/CORE-1/spec", ref: "dispatch://CORE-1/spec" },
-  { href: "/issues/CORE-1/artifacts/notes-md", ref: "dispatch://CORE-1/artifact/notes-md" },
   {
     href: "/issues/CORE-1/decisions",
     ref: "dispatch://CORE-1/artifact/decisions-md",

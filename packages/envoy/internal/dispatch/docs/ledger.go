@@ -400,6 +400,21 @@ func (l *Ledger) PendingVersionMarkdown(artifactID string, number int) (string, 
 	return pending.markdown, true
 }
 
+// QueuedVersionMarkdown is PendingVersionMarkdown for a reader that holds tx and the context its
+// reads run under rather than the ledger: the markdown of version number of artifactID when the
+// ledger that queues tx's writes (queueFor) numbered and queued that version and has not written
+// it yet. False when no ledger queues tx's writes or it queued no such version; the table then
+// answers for the version. A judgment that a version write asks before its write phase - the form
+// gate of a carry (FormGate), which judges the version the carry would approve - reads that
+// version here, since no read of artifact_versions sees it until the write phase has run.
+func QueuedVersionMarkdown(ctx context.Context, tx pgx.Tx, artifactID string, number int) (string, bool) {
+	ledger := queueFor(ctx, tx)
+	if ledger == nil {
+		return "", false
+	}
+	return ledger.PendingVersionMarkdown(artifactID, number)
+}
+
 // PendingVersionNumber is the number of the version of artifactID this transaction last numbered
 // and queued and has not written yet: the document's newest, since the table holds the row only
 // once Commit has run the queue, so a reader before Commit that answers for the document as this

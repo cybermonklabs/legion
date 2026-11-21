@@ -53,6 +53,10 @@ packages/contracts
 packages/pi-shared
 packages/cipher-client
 
+# contracts/src/dispatch-href.ts and envoy-client's links.ts read the dashboard's pages file, which
+# the dashboard's route table writes beside the server's reader that embeds it.
+packages/envoy/internal/dispatch/text/dashboard-pages.json
+
 # The build's outputs themselves, not inputs.
 :(exclude)packages/claude-envoy/dist
 :(exclude)packages/claude-envoy/legion

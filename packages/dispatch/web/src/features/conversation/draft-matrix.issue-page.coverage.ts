@@ -47,10 +47,9 @@ export const coverage: readonly CoverageEntry[] = [
     'IssueDetail | ConversationTab | early return | if (isItemRoute(route) && (landing?.kind === "missing" || landing?.kind === "unavailable")) return …',
     { reason: REASONS[1] }
   ),
-  ...answers(
-    "IssueDetail | ConversationTab | early return | if (primaryArtifact === undefined) return …",
-    { reason: REASONS[1] }
-  ),
+  ...answers("IssueDetail | ConversationTab | early return | if (spec === undefined) return …", {
+    reason: REASONS[1],
+  }),
   ...answers(
     "IssueDetail | ConversationTab | address prop | issueKey={issueKey}",
     cells("docked composer · issue left, then back"),

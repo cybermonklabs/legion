@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { DISPATCH_HREF_REFERENCES } from "@legion/contracts";
+import { DISPATCH_DASHBOARD_PAGES, DISPATCH_HREF_REFERENCES } from "@legion/contracts";
 
 import { dispatchRefFromUrl } from "../dispatch-execute";
 import { parseDispatchRef } from "../dispatch-owner";
+import { parseAgentArtifactRef } from "../dispatch-picture-tools";
 
 // The agent-side half of the shared golden table: `dispatch_search` prints these hrefs, and an
 // agent pastes one back as a ref, so every row has to resolve to the reference it names. The
@@ -28,6 +29,24 @@ test("the issue's activity and conversation pages keep their own references", ()
   expect(dispatchRefFromUrl(`${server}/issues/CORE-1/conversation`, server)).toBe(
     "dispatch://CORE-1/log"
   );
+});
+
+// The agent client's own rows of the dashboard's pages file: each tab that names its issue is its
+// reference, the singular document page is the document as the plural is, and a tab or a segment
+// the file does not name is no reference.
+test.each([
+  ["/issues/CORE-1/verification", "dispatch://CORE-1/verification"],
+  ["/issues/CORE-1/plan", "dispatch://CORE-1/plan"],
+  ["/issues/CORE-1/steps", "dispatch://CORE-1/steps"],
+  ["/issues/CORE-1/artifacts", "dispatch://CORE-1/artifacts"],
+  ["/issues/CORE-1/collaborators", "dispatch://CORE-1/collaborators"],
+  ["/issues/CORE-1/log", "dispatch://CORE-1/log"],
+  ["/issues/CORE-1/artifact/notes-md", "dispatch://CORE-1/artifact/notes-md"],
+  ["/issues/CORE-1/artifact/notes-md?v=2", "dispatch://CORE-1/artifact/notes-md@v2"],
+  ["/issues/CORE-1/settings", undefined],
+  ["/issues/CORE-1/artifactz/notes-md", undefined],
+])("the page %s resolves to %s", (href, ref) => {
+  expect(dispatchRefFromUrl(`${server}${href}`, server)).toBe(ref);
 });
 
 test("an issue document URL carrying both item parameters is refused", () => {
@@ -100,4 +119,49 @@ test.each([
   const block = dispatchRefFromUrl(`${server}${page}${slug}#b-%C3%A9`, server);
   expect(block).toBe(`${document}${slug}#b-%C3%A9`);
   expect(parseDispatchRef(block ?? "")).toMatchObject({ kind: "block", id: slug, block: "é" });
+});
+
+// Every reference the client writes, its parser reads: each page the client turns into a
+// reference - each row of the shared table, each tab of the dashboard's pages file, each document
+// segment, the issue's own pages, and an ask's, a comment's and a message's - gives one that
+// `parseDispatchRef` reads (an agent conversation's upload, `parseAgentArtifactRef`).
+test.each([
+  ...new Set([
+    ...DISPATCH_HREF_REFERENCES.map((row) => row.href),
+    ...DISPATCH_DASHBOARD_PAGES.tabs.map(({ page }) => `/issues/CORE-1/${page}`),
+    ...DISPATCH_DASHBOARD_PAGES.document_segments.map(
+      (segment) => `/issues/CORE-1/${segment}/notes-md`
+    ),
+    "/issues/CORE-1",
+    "/issues/CORE-1/spec",
+    "/issues/CORE-1/decisions",
+    "/issues/CORE-1/log",
+    "/issues/CORE-1/asks/66666666-6666-4666-8666-666666666666",
+    "/issues/CORE-1/comments/11111111-1111-4111-8111-111111111111",
+    "/issues/CORE-1/messages/22222222-2222-4222-8222-222222222222",
+  ]),
+])("the reference the client writes for the page %s is one it reads", (href) => {
+  const ref = dispatchRefFromUrl(`${server}${href}`, server);
+  expect(ref).toBeDefined();
+  const read = ref?.startsWith("dispatch://agent/")
+    ? parseAgentArtifactRef(ref)
+    : parseDispatchRef(ref ?? "");
+  expect(read).not.toBeNull();
+});
+
+// A tab of the issue is a view of the issue, as the server reads it (text/refs.go,
+// issueTabReferences): its reference names the issue, and the Conversation's and Activity's name
+// the issue's events, as `log` always has.
+test.each(
+  DISPATCH_DASHBOARD_PAGES.tabs.map(({ reference }) => reference)
+)("the tab reference dispatch://CORE-1/%s names the issue", (reference) => {
+  const read = parseDispatchRef(`dispatch://CORE-1/${reference}`);
+  expect(read?.owner).toEqual({ kind: "issue", issue: "CORE-1" });
+  expect(read?.kind).toBe(
+    reference === "log" || reference === "activity"
+      ? "log"
+      : reference === "children"
+        ? "children"
+        : "issue"
+  );
 });

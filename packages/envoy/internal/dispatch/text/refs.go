@@ -231,6 +231,11 @@ func parseDispatch(value string) (Ref, bool) {
 		if tail == "spec" {
 			return Ref{Kind: "artifact", IssueKey: key, ID: "spec"}, true
 		}
+		// The reference of a tab that is a view of the issue (issueTabReferences): `KEY/activity`,
+		// `KEY/log` for the Conversation tab, and the rest the dashboard's pages file names.
+		if issueTabReferences[tail] {
+			return Ref{Kind: "issue", IssueKey: key, ID: key}, true
+		}
 		if artifact, ok := strings.CutPrefix(tail, "artifact/"); ok {
 			if slug, ok := parseArtifactSlug(artifact); ok {
 				return Ref{Kind: "artifact", IssueKey: key, ID: slug}, true
@@ -566,7 +571,13 @@ func parseServer(raw string, base *url.URL) (Ref, bool) {
 		// whatever its fragment, as the dashboard and the agent client read it.
 		case len(parts) == 3 && parts[2] == "decisions":
 			return Ref{Kind: "artifact", IssueKey: key, ID: "decisions-md"}, true
-		case len(parts) == 4 && parts[2] == "artifacts":
+		// A tab whose page is a view of the issue and of no one document of it (issueTabPages, the
+		// dashboard's pages file): its page names the issue, whatever its query and fragment.
+		case len(parts) == 3 && issueTabPages[parts[2]]:
+			return Ref{Kind: "issue", IssueKey: key, ID: key}, true
+		// A document of the issue by slug, under each segment the dashboard reads (`artifacts`, and
+		// the singular `artifact` it reads as the same page).
+		case len(parts) == 4 && issueDocumentSegments[parts[2]]:
 			slug, err := url.PathUnescape(parts[3])
 			if err != nil || !artifactSlugPattern.MatchString(slug) {
 				return Ref{}, false

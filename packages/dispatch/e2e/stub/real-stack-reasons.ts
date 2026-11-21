@@ -276,6 +276,8 @@ export const realStackReasons: Record<string, string> = {
   "signins.e2e.ts": "the broker's machine list and a Revoke decided there",
   "smoke.e2e.ts":
     "the reader nobody signed in, where the stubbed layer's page is always signed in because its recording answers /auth/whoami",
+  "spec-form.e2e.ts":
+    "the server's refusal of an approval for the form of The Spec is the assertion, read through the real `dispatch` command and the page",
   "spec-suggestion-decoration.e2e.ts": "reads the decoration's DOM inside the live editor",
   "steps.e2e.ts":
     "the attempt is the server's count of the daemon's writes, and a start written twice keeps the server's first",

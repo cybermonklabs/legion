@@ -198,6 +198,45 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the mounted source" "$(contains "$out" 'does not cover packages/other (docker/Dockerfile:7)')"
 check "a secret mount is not a source" "$(is "$(contains "$out" 'Dockerfile:8')" false)"
+# The check reads a mount by the grammar check-image-build-inputs.sh reads it by (workflow_paths.py):
+# the source is source= or src=, and the type is bind when the mount names none.
+for spelling in "type=bind,src=packages/other,target=/o" "source=packages/other,target=/o"; do
+  root=$(fixture "bind-mount-${spelling//[=,\/]/-}")
+  echo "RUN --mount=$spelling cat /o/readme.md" >> "$root/docker/Dockerfile"
+  run_check "$root"
+  check "a mount --mount=$spelling fails" "$(is "$status" 1)"
+  check "  and names the mounted source" "$(contains "$out" 'does not cover packages/other (docker/Dockerfile:7)')"
+done
+
+echo "case: an instruction word ends at any white space, and a continued line is one instruction, as BuildKit reads them"
+# BuildKit's splitCommand splits an instruction at the first run of [\t\v\f\r ] after its word, so a
+# tab after COPY or RUN makes the same instruction as a space, and the check reads its source.
+root=$(fixture tab-copy)
+printf 'COPY\tpackages/other /other\n' >> "$root/docker/Dockerfile"
+run_check "$root"
+check "a COPY with a tab after its word fails" "$(is "$status" 1)"
+check "  and names its source" "$(contains "$out" 'does not cover packages/other (docker/Dockerfile:7)')"
+root=$(fixture tab-mount)
+printf 'RUN\t--mount=type=bind,source=packages/other,target=/o cat /o/readme.md\n' >> "$root/docker/Dockerfile"
+run_check "$root"
+check "a RUN with a tab before its mount fails" "$(is "$status" 1)"
+check "  and names the mounted source" "$(contains "$out" 'does not cover packages/other (docker/Dockerfile:7)')"
+# BuildKit ends a line at a line feed alone (bufio.ScanLines), so a vertical tab, a form feed or a
+# lone carriage return after COPY is white space inside the instruction, not the end of its line.
+for space in 'vertical tab:\v' 'form feed:\f' 'carriage return:\r'; do
+  name=${space%%:*}
+  root=$(fixture "copy-${name// /-}")
+  # shellcheck disable=SC2059 # the format holds the escape of the character under test
+  printf "COPY${space#*:}packages/other /other\n" >> "$root/docker/Dockerfile"
+  run_check "$root"
+  check "a COPY with a $name after its word fails" "$(is "$status" 1)"
+  check "  and names its source" "$(contains "$out" 'does not cover packages/other (docker/Dockerfile:7)')"
+done
+root=$(fixture continued)
+printf 'COPY \\\n    packages/other /other\n' >> "$root/docker/Dockerfile"
+run_check "$root"
+check "a COPY continued on the next line fails" "$(is "$status" 1)"
+check "  and names its source at the line it starts on" "$(contains "$out" 'does not cover packages/other (docker/Dockerfile:7)')"
 
 echo "case: a source the check cannot resolve fails instead of reading nothing"
 root=$(fixture variable)

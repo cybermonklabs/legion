@@ -9,6 +9,8 @@ import { MemoryRouter } from "react-router-dom";
 import { ApiError, api } from "../api/client";
 import type {
   AnswerAskInput,
+  Artifact,
+  ArtifactApproval,
   Ask,
   AskEdit,
   AskRead,
@@ -16,6 +18,8 @@ import type {
   CreateCommentInput,
   InboxRow,
 } from "../api/types";
+import { ApprovalChip } from "../features/doc/ApprovalChip";
+import { setFormRefusal } from "../features/doc/form-refusals";
 import { AskCard } from "../features/inbox/AskCard";
 import { AskReplyComposer } from "../features/inbox/AskThread";
 import type { OwnedAsk } from "../features/inbox/ask-name";
@@ -24,6 +28,7 @@ import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
 import { keyedAttempt } from "./keyed-attempt";
+import { specFormRefusal, specFormRefusalBody } from "./spec-form-fixture";
 import { userOnFakeClock } from "./user";
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
@@ -1187,6 +1192,459 @@ test("an approval-kind ask names the reason Request changes needs, focuses its f
       expect(submitted).toEqual([
         { selected: ["Request changes"], text: "Needs another pass", expected_edited_at: null },
       ])
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// Dispatch refuses the approval of a document that breaks the form of The Spec, and the refusal
+// names the person's next step: the card says it, offers no Retry, picks Request changes and fills
+// its reason with what Dispatch wrote for the author, so one more press sends the findings. The
+// card has picked Request changes itself, so its last line names the press that is left, Answer,
+// where the header's names Request changes.
+const cardRefusal = specFormRefusalBody.error.replace(
+  "To send these findings to the author, choose Request changes.",
+  "To send these findings to the author, choose Answer."
+);
+for (const variant of ["full", "compact"] as const) {
+  test(`a ${variant} approval card refused for the form picks Request changes with Dispatch's reason`, async () => {
+    const user = userEvent.setup();
+    const submitted: AnswerAskInput[] = [];
+    const input = ask({
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    });
+    const { view } = renderCard(
+      <AskCard
+        answerAsk={async (_id, submission) => {
+          submitted.push(submission);
+          if (submitted.length === 1) throw specFormRefusal();
+          return answered(input, submission.selected, submission.text ?? null);
+        }}
+        ask={input}
+        getAskThread={emptyThread(input)}
+        variant={variant}
+      />
+    );
+
+    try {
+      const card = view.getByTestId("ask-ask-1");
+      await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+      await user.click(within(card).getByRole("button", { name: "Answer" }));
+
+      const alert = await within(card).findByRole("alert");
+      expect(alert.textContent).toBe(cardRefusal);
+      expect(alert.textContent).not.toContain("choose Request changes");
+      expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+      expect(
+        (within(card).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
+      ).toBe(true);
+      expect((within(card).getByLabelText("Reason (required)") as HTMLTextAreaElement).value).toBe(
+        specFormRefusalBody.changes_reason
+      );
+
+      await user.click(within(card).getByRole("button", { name: "Answer" }));
+      await waitFor(() => expect(submitted).toHaveLength(2));
+      expect(submitted[1]).toEqual({
+        expected_edited_at: null,
+        selected: ["Request changes"],
+        text: specFormRefusalBody.changes_reason,
+      });
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+// The card reads Dispatch's refusal and the next step from the members that hold them apart, never
+// from a place in the whole message: when Dispatch's message holds one more line after its next
+// step, the card still shows the refusal and its own next step, and none of Dispatch's last lines.
+for (const row of [
+  {
+    name: "shows Dispatch's refusal with its own next step, whatever line ends Dispatch's message",
+    body: {
+      ...specFormRefusalBody,
+      error: `${specFormRefusalBody.error}\nDispatch keeps each refusal for one day.`,
+    },
+    shown: cardRefusal,
+  },
+]) {
+  test(`an approval card refused for the form ${row.name}`, async () => {
+    const user = userEvent.setup();
+    const input = ask({
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    });
+    const { view } = renderCard(
+      <AskCard
+        answerAsk={async () => {
+          throw new ApiError(409, row.body);
+        }}
+        ask={input}
+        getAskThread={emptyThread(input)}
+      />
+    );
+
+    try {
+      const card = view.getByTestId("ask-ask-1");
+      await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+      await user.click(within(card).getByRole("button", { name: "Answer" }));
+      expect((await within(card).findByRole("alert")).textContent).toBe(row.shown);
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+// The press that Dispatch refused for the form is answered, not lost: Answer disables while the
+// answer is out, which hands the focus to the row, and the refusal gives it back to Answer, the
+// press the refusal's last line names. The control: an answer that lands leaves the focus on the
+// row, as every answered card does.
+for (const variant of ["full", "compact"] as const) {
+  test(`a ${variant} approval card refused for the form gives the focus back to Answer, and an answered one leaves it on the row`, async () => {
+    const user = userEvent.setup();
+    const submitted: AnswerAskInput[] = [];
+    const input = ask({
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    });
+    const { view } = renderCard(
+      <div data-testid="row" tabIndex={-1}>
+        <AskCard
+          answerAsk={async (_id, submission) => {
+            submitted.push(submission);
+            if (submitted.length === 1) throw specFormRefusal();
+            return answered(input, submission.selected, submission.text ?? null);
+          }}
+          ask={input}
+          getAskThread={emptyThread(input)}
+          variant={variant}
+        />
+      </div>
+    );
+
+    try {
+      const card = view.getByTestId("ask-ask-1");
+      await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+      await user.click(within(card).getByRole("button", { name: "Answer" }));
+      await within(card).findByRole("alert");
+      await waitFor(() =>
+        expect(within(card).getByRole("button", { name: "Answer" })).toHaveFocus()
+      );
+
+      await user.click(within(card).getByRole("button", { name: "Answer" }));
+      await waitFor(() => expect(submitted).toHaveLength(2));
+      await view.findByRole("img", { name: "Selected" });
+      expect(view.getByTestId("row")).toHaveFocus();
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+// One page can show one approval request in two cards, as the issue page's Conversation tab and
+// its Needs you card do. Dispatch's refusal of Approve belongs to the request, so both cards show
+// it and pick Request changes with the reason. The focus stays in the card that the person
+// pressed, on Answer: the other card takes no focus. One row presses the first card of the page,
+// and the other row presses the second.
+for (const pressed of ["first", "second"] as const) {
+  test(`a form refusal of Approve shows in both cards of one request, and the focus stays on Answer in the ${pressed} card, which the person pressed`, async () => {
+    const user = userEvent.setup();
+    const input = ask({
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    });
+    const answerAsk = async (): Promise<Ask> => {
+      throw specFormRefusal();
+    };
+    const { view } = renderCard(
+      (["first", "second"] as const).map((place) => (
+        <div data-testid={place} key={place} tabIndex={-1}>
+          <AskCard
+            answerAsk={answerAsk}
+            ask={input}
+            getAskThread={emptyThread(input)}
+            variant="compact"
+          />
+        </div>
+      ))
+    );
+
+    try {
+      const card = within(view.getByTestId(pressed)).getByTestId("ask-ask-1");
+      const otherPlace = pressed === "first" ? "second" : "first";
+      const other = within(view.getByTestId(otherPlace)).getByTestId("ask-ask-1");
+      await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+      await user.click(within(card).getByRole("button", { name: "Answer" }));
+
+      for (const each of [card, other]) {
+        expect((await within(each).findByRole("alert")).textContent).toBe(cardRefusal);
+        expect(
+          (within(each).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
+        ).toBe(true);
+      }
+      await waitFor(() =>
+        expect(within(card).getByRole("button", { name: "Answer" })).toHaveFocus()
+      );
+      expect(other.contains(document.activeElement)).toBe(false);
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+// The same rule with no race in it: a card of the request that the person did not press, and that
+// was on the page before the press, shows the refusal and picks Request changes with the reason,
+// and the focus stays where the person has it. The press is of a surface that is not on the page
+// and comes after every draw, so no card here stands in for it.
+test("a card of the request that the person did not press shows Dispatch's form refusal and leaves the focus where it is", async () => {
+  const input = ask({
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+  const { view } = renderCard(
+    <>
+      <input aria-label="Elsewhere" />
+      <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+    </>
+  );
+
+  try {
+    const elsewhere = view.getByLabelText("Elsewhere");
+    elsewhere.focus();
+    const card = view.getByTestId("ask-ask-1");
+    act(() =>
+      setFormRefusal("ask:ask-1", {
+        error: specFormRefusal(),
+        press: { at: Number.MAX_SAFE_INTEGER, surface: 0, version: undefined },
+      })
+    );
+
+    expect((await within(card).findByRole("alert")).textContent).toBe(cardRefusal);
+    // The options are drawn through the Markdown engine, a module loaded on first use, so the
+    // refusal can show before them in a run that reaches this row first.
+    expect(
+      ((await within(card).findByRole("radio", { name: "Request changes" })) as HTMLInputElement)
+        .checked
+    ).toBe(true);
+    expect(elsewhere).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// One request has one refusal. The document's header (`ApprovalChip`) and a card of the request
+// share it, so a refused Approve in one shows in the other, which picks Request changes with the
+// reason. The focus stays where the person pressed. One row presses the header, and the other
+// presses the card.
+for (const pressed of ["header", "card"] as const) {
+  test(`a form refusal of Approve in the ${pressed} shows in the other place of the same request, and the focus stays in the ${pressed}`, async () => {
+    const user = userEvent.setup();
+    const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+      specFormRefusal()
+    );
+    const input = ask({
+      approval: {
+        artifact_id: "artifact-1",
+        documents: null,
+        name: "spec.md",
+        requested_version: 12,
+        version: 12,
+      },
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    });
+    const document: Artifact = {
+      approval: { latest_version: 12, state: "awaiting" } as ArtifactApproval,
+      created_at: "2026-09-09T00:00:00Z",
+      created_by: { id: "alice", kind: "user" },
+      id: "artifact-1",
+      issue_key: "CORE-1",
+      kind: "doc",
+      name: "spec.md",
+      primary: true,
+      project: "CORE",
+      ref_key: "CORE-1/spec-md",
+      session_id: null,
+      slug: "spec-md",
+      versions: [],
+    };
+    const { view } = renderCard(
+      <>
+        <div data-testid="header">
+          <ApprovalChip artifact={document} variant="header" />
+        </div>
+        <AskCard
+          answerAsk={async () => {
+            throw specFormRefusal();
+          }}
+          ask={input}
+          getAskThread={emptyThread(input)}
+          variant="compact"
+        />
+      </>
+    );
+
+    try {
+      const header = view.getByTestId("header");
+      const card = view.getByTestId("ask-ask-1");
+      const approve = within(header).getByRole("button", { name: "Approve" });
+      if (pressed === "header") {
+        await user.click(approve);
+      } else {
+        await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+        await user.click(within(card).getByRole("button", { name: "Answer" }));
+      }
+
+      expect((await within(header).findByRole("alert")).textContent).toBe(
+        specFormRefusalBody.error
+      );
+      expect((await within(card).findByRole("alert")).textContent).toBe(cardRefusal);
+      expect(
+        (within(card).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
+      ).toBe(true);
+      await waitFor(() =>
+        expect(
+          (within(card).getByLabelText("Reason (required)") as HTMLTextAreaElement).value
+        ).toBe(specFormRefusalBody.changes_reason)
+      );
+      const focused =
+        pressed === "header" ? approve : within(card).getByRole("button", { name: "Answer" });
+      await waitFor(() => expect(focused).toHaveFocus());
+    } finally {
+      createArtifactReview.mockRestore();
+      view.unmount();
+    }
+  });
+}
+
+// Nothing that the person typed is lost (plan decision 14): after a refused Approve the field holds
+// Dispatch's reason, then one empty line, then the person's note as it was. The draft belongs to
+// the request, so each card of the request shows the same text: the note is typed in the first
+// card and the second card is pressed.
+test("a form refusal of Approve puts Dispatch's reason before the note that the person typed, in each card of the request", async () => {
+  const user = userEvent.setup();
+  const input = ask({
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+  const note = "I read each statement, and I approve them.";
+  const { view } = renderCard(
+    (["first", "second"] as const).map((place) => (
+      <div data-testid={place} key={place}>
+        <AskCard
+          answerAsk={async () => {
+            throw specFormRefusal();
+          }}
+          ask={input}
+          getAskThread={emptyThread(input)}
+          variant="full"
+        />
+      </div>
+    ))
+  );
+
+  try {
+    const first = within(view.getByTestId("first")).getByTestId("ask-ask-1");
+    const second = within(view.getByTestId("second")).getByTestId("ask-ask-1");
+    await user.click(await within(first).findByRole("radio", { name: "Approve" }));
+    await user.click(within(first).getByLabelText("Reason"));
+    await user.paste(note);
+    await user.click(within(second).getByRole("radio", { name: "Approve" }));
+    await user.click(within(second).getByRole("button", { name: "Answer" }));
+
+    for (const card of [first, second]) {
+      await within(card).findByRole("alert");
+      await waitFor(() =>
+        expect(
+          (within(card).getByLabelText("Reason (required)") as HTMLTextAreaElement).value
+        ).toBe(`${specFormRefusalBody.changes_reason}\n\n${note}`)
+      );
+    }
+  } finally {
+    view.unmount();
+  }
+});
+
+// A refusal of Approve is the request's that the person pressed on, whichever ask the card shows by
+// the time it lands: each press carries its ask, and a host may draw the card for the next request
+// while the answer is out. The refusal is kept for the first request, and its reason goes into the
+// first ask's draft, so the card drawn for the next request keeps its own field and shows no
+// refusal, and the card drawn for the first request again shows the refusal and the reason.
+test("a form refusal of Approve that lands after the card moves to another request stays with the request it was pressed on", async () => {
+  const user = userEvent.setup();
+  const first = ask({
+    approval: {
+      artifact_id: "artifact-1",
+      documents: null,
+      name: "first.md",
+      requested_version: 12,
+      version: 12,
+    },
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+    question: "Approve the first spec?",
+  });
+  const next: OwnedAsk = {
+    ...first,
+    approval: {
+      artifact_id: "artifact-2",
+      documents: null,
+      name: "second.md",
+      requested_version: 3,
+      version: 3,
+    },
+    id: "ask-2",
+    question: "Approve the second spec?",
+  };
+  const answered: string[] = [];
+  const refusal = Promise.withResolvers<Ask>();
+  const answerAsk = (id: string): Promise<Ask> => {
+    answered.push(id);
+    return refusal.promise;
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const draw = (input: OwnedAsk) => (
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <AskCard answerAsk={answerAsk} ask={input} getAskThread={emptyThread(input)} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(draw(first));
+
+  try {
+    await user.click(
+      await within(view.getByTestId("ask-ask-1")).findByRole("radio", { name: "Approve" })
+    );
+    await user.click(within(view.getByTestId("ask-ask-1")).getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(answered).toEqual(["ask-1"]));
+
+    view.rerender(draw(next));
+    const shown = await view.findByTestId("ask-ask-2");
+    await act(async () => {
+      refusal.reject(specFormRefusal());
+    });
+
+    expect(within(shown).queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      (within(shown).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
+    ).toBe(false);
+    expect((shown.querySelector("textarea[data-ask-answer]") as HTMLTextAreaElement).value).toBe(
+      ""
+    );
+
+    view.rerender(draw(first));
+    const again = await view.findByTestId("ask-ask-1");
+    expect((await within(again).findByRole("alert")).textContent).toBe(cardRefusal);
+    expect(
+      (within(again).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
+    ).toBe(true);
+    expect((within(again).getByLabelText("Reason (required)") as HTMLTextAreaElement).value).toBe(
+      specFormRefusalBody.changes_reason
     );
   } finally {
     view.unmount();

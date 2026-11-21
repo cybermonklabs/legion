@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cputest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
 )
 
@@ -22,7 +23,7 @@ func TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly(t *testing.T) {
 	for _, test := range heavybodies.NestedDirectives() {
 		t.Run(test.Name, func(t *testing.T) {
 			var err error
-			took, timing := cpuTimeOf(again(func() { _, err = ParseForWrite(test.Markdown, nil) }))
+			took, timing := cpuTimeOf(cputest.Again(func() { _, err = ParseForWrite(test.Markdown, nil) }))
 			if timing != nil {
 				t.Fatal(timing)
 			}

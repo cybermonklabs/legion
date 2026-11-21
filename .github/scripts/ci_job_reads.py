@@ -60,11 +60,17 @@ from typing import NamedTuple
 from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, repo_files, run
 from ci_filter_coverage import at as at_in, gate as gate_in
 from go_build_tags import go_skips_dir, tag_sets
+from workflow_paths import glob_regex
 
 ENVOY = "packages/envoy"
 DAEMON = "packages/daemon"
 INFRA = "packages/envoy/infra"
 FIX = "packages/contracts/fixtures"
+CONTRACTS_SRC = "packages/contracts/src/**"
+# The dashboard's pages file, which CONTRACTS_PAGES_IMPORTER imports at its line 8 (reads adds it to
+# every read set with a glob that matches that module).
+CONTRACTS_PAGES_FILE = f"{ENVOY}/internal/dispatch/text/dashboard-pages.json"
+CONTRACTS_PAGES_IMPORTER = "packages/contracts/src/dispatch-href.ts"
 GO_TARGETS = ".github/go-release-targets.json"
 CLIENT_TARGETS = ".github/agent-secrets-client-targets.json"
 INFRA_TARGETS = ".github/envoy-infra-targets.json"
@@ -181,7 +187,17 @@ INFRA_DARWIN_VET = "Vet envoy-infra for darwin, its live-test tags included"
 
 
 def reads(*entries):
-    return [Read(glob, why) for glob, why in entries]
+    """The reads of entries, each a (glob, why). A program that compiles the contracts'
+    dispatch-href.ts reads the dashboard's pages file with it: CONTRACTS_PAGES_IMPORTER:8 imports
+    it, so every read set with a glob that matches that module (CONTRACTS_SRC, packages/contracts/**)
+    names that file too, in this one place, as envoy_client_dep does for the next workspace
+    envoy-client reaches. A gate that compiles the module through a listed block of its filter, and
+    so reads none of packages/contracts/src here (dispatch_ui), names the file itself."""
+    out = [Read(glob, why) for glob, why in entries]
+    globs = {glob for glob, _ in entries}
+    if CONTRACTS_PAGES_FILE not in globs and any(glob_regex(glob).fullmatch(CONTRACTS_PAGES_IMPORTER) for glob in globs):
+        out.append(Read(CONTRACTS_PAGES_FILE, f"{CONTRACTS_PAGES_IMPORTER}:8 imports it, beside the contracts' sources this job compiles"))
+    return out
 
 
 def envoy_go_files_but_infra():
@@ -415,7 +431,6 @@ def at_browser(step, job=BROWSER_SHARD):
     return at(job, step, BROWSER_SITE)
 
 
-CONTRACTS_SRC = "packages/contracts/src/**"
 ENVOY_CLIENT_SRC = "packages/envoy-client/src/**"
 BROKER_CLIENT_SRC = "packages/cipher-client/**"
 # The shared test fixtures every other Bun package's tests import.
@@ -1919,13 +1934,13 @@ def go_top_level_spans(code: str, path) -> list:
     return spans
 
 
-# The nine static checks of internal/dispatch/api, keyed by their path in this repository: the
-# eight source guards and one_expression_guard_test.go, which reads the module's text for the same
+# The ten static checks of internal/dispatch/api, keyed by their path in this repository: the
+# nine source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all seventeen of their tests in the plain step; they are left out of it instead,
+# below would put all eighteen of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
-# tells nobody anything. The exemption is held to the files it is about in three ways, so an
-# eighteenth such test cannot quietly rejoin the plain step: a file named here that does not
+# tells nobody anything. The exemption is held to the files it is about in three ways, so a
+# nineteenth such test cannot quietly rejoin the plain step: a file named here that does not
 # carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
@@ -1957,6 +1972,8 @@ TEXT_CHECK_TESTS = {
         "TestOnlyQueueReviewWritesReviews",
         "TestTheReviewWriterPatternsReadEveryNameOfTheTable",
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
+    f"{ENVOY}/internal/dispatch/api/spec_form_guard_test.go": {
+        "TestOnlyTheFormGateOpensOrAnswersAPersonsApproval"},
 }
 
 # The mention sender's claim model (internal/dispatch/api), keyed by path as TEXT_CHECK_TESTS is:
@@ -2142,12 +2159,12 @@ DAEMON_RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(DAEMON, daemon_race_pack
 DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES)
 
 
-# The text-check job: the three modules' text checks, and the seventeen tests of the Dispatch API's
-# nine static checks - its eight source guards and one_expression_guard_test.go. They read the
+# The text-check job: the three modules' text checks, and the eighteen tests of the Dispatch API's
+# ten static checks - its nine source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those seventeen out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those eighteen out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.
@@ -2385,6 +2402,11 @@ SCRIPT_TEST_GATES = [
             f"{SCRIPTS}/check-image-trigger-paths.test.sh", [
         (f"{SCRIPTS}/check-image-trigger-paths.sh", "the script under test"),
         (f"{SCRIPTS}/workflow_paths.py", "check-image-trigger-paths.test.sh:34 symlinks in the path model the script imports"),
+    ]),
+    harness("check_image_build_inputs_test", "Test the image build input check",
+            f"{SCRIPTS}/check-image-build-inputs.test.sh", [
+        (f"{SCRIPTS}/check-image-build-inputs.sh", "the script under test, symlinked into every fixture"),
+        (f"{SCRIPTS}/workflow_paths.py", "check-image-build-inputs.test.sh:30 symlinks in the path model the script imports"),
     ]),
     harness("check_ci_images_test", "Test the CI image check", f"{SCRIPTS}/check-ci-images.test.sh", [
         (f"{SCRIPTS}/check-ci-images.sh", "the script under test"),
@@ -3025,6 +3047,9 @@ GATES = [
         # is what its two tsc programs list, so check-ts-filters.sh writes them into the filter's
         # listed block and holds the block to them (ci_ts_programs.py, LISTED), and rule 9's second
         # direction passes over that block's patterns.
+        # The pages file one of those modules imports is no file of that tree, so it is a read of
+        # this table's: reads adds it only beside a glob of the contracts' sources.
+        (CONTRACTS_PAGES_FILE, f"{CONTRACTS_PAGES_IMPORTER}:8 imports it, and both tsc programs of this job compile that module (the filter's listed block)"),
         (f"{FIX}/live/**", "packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts:2-4, e2e/__tests__/delivery-live-probe.test.ts:12-16"),
         (f"{FIX}/decision-blocks/**", "packages/dispatch/web/src/features/doc/decision-blocks.test.ts:9-10, features/inbox/AskCard.test.tsx:380-381"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/features/doc/schema.ts:1, features/refs/markdown-engine.test.ts:4 and features/doc/ProofDocument.admission.test.tsx:5 import blocks.json, and packages/proof-editor/tests/manifest-schema.test.ts:14, block-schema-fixture.ts:8 and nested-directive.test.ts:30 read it; packages/proof-editor/tests/ask-concurrent-edit.test.ts:278 reads block-node-types.json of the same directory"),
@@ -3446,12 +3471,12 @@ GATES = [
         *[step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[module], TEXT_CHECK_TEXT, module, [TEXT_CHECK_PKG])
           for module in TEXT_CHECK_MODULES],
     ], exact=[
-        # The seventeen static tests by name: a -run is outside the simple form, so the step is
+        # The eighteen static tests by name: a -run is outside the simple form, so the step is
         # pinned whole. A -run moves no closure - the whole package compiles whichever tests the
         # run selects - so the Run is the plain go test of the package, which is why this gate
         # reads everything the API's tests read.
         pinned_step(TEXT_CHECK_JOB, GUARD_STEP, ENVOY, GUARD_SCRIPT, [
-            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's seventeen source-check tests in {GUARD_PACKAGE}", {}),
+            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's eighteen source-check tests in {GUARD_PACKAGE}", {}),
         ]),
         # The supervise table's two pure pins by name (SUPERVISE_TABLE_TESTS), which the
         # daemon-go plain step skips: pinned whole for the same reason, and its Run is the plain
@@ -3658,10 +3683,12 @@ GATES = [
         ("packages/claude-envoy/package.json", "packages/envoy/docker/Dockerfile:37"),
         ("packages/test-fixtures/package.json", "packages/envoy/docker/Dockerfile:43"),
         ("docs/site/package.json", "packages/envoy/docker/Dockerfile:45; :62 RUN bun install --frozen-lockfile reads every manifest above"),
-        ("packages/contracts/**", "packages/envoy/docker/Dockerfile:31 and :68 COPY packages/contracts packages/contracts, which :78 runs gen:go in"),
-        ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:38 and :69 COPY packages/dispatch packages/dispatch, which :80 runs build:web in"),
-        ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile:39, :42 and :70 COPY packages/proof-editor packages/proof-editor, which the SPA build aliases"),
-        ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:74 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
+        ("packages/contracts/**", "packages/envoy/docker/Dockerfile:31 and :68 COPY packages/contracts packages/contracts, which :81 runs gen:go in"),
+        (f"{ENVOY}/internal/dispatch/text/dashboard-pages.json",
+         "packages/envoy/docker/Dockerfile:71 COPY: contracts/src/dispatch-href.ts imports it while :83 RUN bun run build:web resolves the SPA's reference URLs"),
+        ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:38 and :72 COPY packages/dispatch packages/dispatch, which :83 runs build:web in"),
+        ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile:39, :42 and :73 COPY packages/proof-editor packages/proof-editor, which the SPA build aliases"),
+        ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:77 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
         ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98 and :118"),
         ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :120"),
         # The image's Go stage copies the Envoy module whole (packages/envoy/docker/Dockerfile:106

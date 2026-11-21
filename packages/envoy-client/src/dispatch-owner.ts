@@ -1,9 +1,25 @@
 import {
+  DISPATCH_DASHBOARD_PAGES,
   dispatchDocumentSubject,
   legacyDispatchIssueSubject,
   type OpenAskOwner,
   parseBlockFragment,
 } from "@legion/contracts";
+
+/** The reference of each tab of an issue that is a view of the issue itself, as the dashboard's
+ *  pages file lists them, beside the three a kind of their own reads (`log` and `activity`, the
+ *  issue's events, and `children`): the server reads each as the issue (text/refs.go,
+ *  issueTabReferences), and so does `parseDispatchRef`, so each reference `dispatchRefFromUrl`
+ *  writes for a tab is one it reads. */
+const issueViewReferences = DISPATCH_DASHBOARD_PAGES.tabs
+  .map(({ reference }) => reference)
+  .filter((reference) => !["log", "activity", "children"].includes(reference));
+
+/** An issue's own references: the issue, its spec, its events, its children, a view tab, a
+ *  document at a version, and an ask, a comment and an issue message. */
+const issueReferencePattern = new RegExp(
+  `^dispatch://([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?:/(spec)|/(log|activity)|/(children)|/(?:${issueViewReferences.join("|")})|/artifact/([^/@]+)(?:@v(\\d+))?|/ask/([^/]+)|/comment/([^/]+)|/message/([^/]+))?$`
+);
 
 /**
  * Where an owner's events go and how a session names it: the label agents read in tool
@@ -192,10 +208,8 @@ export function parseDispatchRef(ref: string): ParsedDispatchRef | null {
   }
 
   // `activity` is the Activity tab's spelling of the same event list `log` has always named, so
-  // both read the issue's events; it is no kind of its own.
-  const issueReference = ref.match(
-    /^dispatch:\/\/([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?:\/(spec)|\/(log|activity)|\/(children)|\/artifact\/([^/@]+)(?:@v(\d+))?|\/ask\/([^/]+)|\/comment\/([^/]+)|\/message\/([^/]+))?$/
-  );
+  // both read the issue's events; it is no kind of its own. A view tab names the issue.
+  const issueReference = ref.match(issueReferencePattern);
   if (!issueReference) return null;
   const [, issue, spec, log, children, artifact, version, ask, comment, message] = issueReference;
   if (!issue || (version !== undefined && Number(version) < 1)) return null;

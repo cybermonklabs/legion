@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // decisionBlockFixture reads one of the decision-block fixtures the browser's line-based cut and
@@ -577,6 +578,7 @@ func TestAForgedAnsweredBlockOnTheSocketCarriesNoApproval(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
+	service.SetFormGate(formKept)
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "Context\n")
 	approveStoredVersion(t, database, artifactID, 1, "alice")
@@ -642,24 +644,42 @@ func answerBlockAs(t *testing.T, service *Service, artifactID, blockID, login st
 	})
 }
 
+// formKept is a form gate that finds no break. This package's tests of the carry give it to the
+// services they build, so each carry decides by the carry's rules alone: the form is judged by
+// the api package's gate (api.FormGate), which these tests do not build.
+func formKept(context.Context, pgx.Tx, *model.AskApproval, model.AskApprovalDocument) (bool, error) {
+	return false, nil
+}
+
 // regionSpec is the one-block document the repeated-block-id carry tests decide and then repeat:
 // a single ask under the block id region.
 const regionSpec = "Context\n\n:::ask{#region urgency=\"low\" multiple=\"false\"}\nWhich region goes first?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n"
 
 // seededRegionDocument creates regionSpec as a document, starts a service that settles a live
-// write after settle, seeds the document's live text with the same markdown, and returns the
-// store, the service and the document's id once settlement has indexed the block as an ask of the
-// document - the row the carry reads.
+// write after settle and carries by the carry's rules alone (formKept), seeds the document's live
+// text with the same markdown, and returns the store, the service and the document's id once
+// settlement has indexed the block as an ask of the document - the row the carry reads.
 func seededRegionDocument(t *testing.T, settle time.Duration) (*store.Store, *Service, string) {
+	t.Helper()
+	return seededRegionDocumentGated(t, settle, formKept)
+}
+
+// seededRegionDocumentGated is seededRegionDocument with gate as the service's form gate, and no
+// gate at all when gate is nil.
+func seededRegionDocumentGated(t *testing.T, settle time.Duration, gate FormGate) (*store.Store, *Service, string) {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, regionSpec)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: settle})
+	if gate != nil {
+		service.SetFormGate(gate)
+	}
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, regionSpec)
-	// Settlement indexes the block as an ask of this document, the row the carry reads.
+	// Settlement indexes the block as an ask of this document, the row the carry reads. The wait
+	// lasts up to a minute, as seededActDocument's does (testwait.Eventually).
 	service.ScheduleSettlement(artifactID)
-	waitFor(t, 3*time.Second, "settlement to index the block", func() bool {
+	testwait.Eventually(t, "settlement to index the block", func() bool {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1 and block_id = 'region'`, artifactID).Scan(&rows); err != nil {
 			t.Fatal(err)
@@ -751,6 +771,7 @@ func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
 	artifactID := createDocument(t, database, "Context\n")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Second})
 	t.Cleanup(func() { _ = service.Shutdown(ctx) })
+	service.SetFormGate(formKept)
 	seedServiceText(t, service, artifactID, "Context\n")
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	// The approved version is one this service wrote, so the version named below restores its
@@ -781,7 +802,31 @@ func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
 	// The upload route writes its version itself and carries the restore alone (the api
 	// package's storeArtifact calls CarryRestoredApproval), so that route's own guard call is
 	// what refuses it here.
-	if err := CarryRestoredApproval(joinedCtx, tx, service.events, artifactID, restored.Version.Number, "Context\n", nil, service.serverURL); !errors.Is(err, errApprovalCarriedTwice) {
+	if err := CarryRestoredApproval(joinedCtx, tx, service.events, formKept, artifactID, restored.Version.Number, "Context\n", nil, service.serverURL); !errors.Is(err, errApprovalCarriedTwice) {
 		t.Fatalf("the upload route's restore over the same document in the same transaction = %v, want %v", err, errApprovalCarriedTwice)
+	}
+}
+
+// A document service built with no form gate - as the backfill commands build theirs
+// (cmd/dispatch/subcommands.go), with a store and a broker alone - carries no approval: the
+// person's answer to a decision block, the whole change since her approval, leaves that approval
+// at the version she gave it, and no review is written in her name. The control: the same steps on
+// a service with a gate that finds no break carry her approval, so the steps can carry.
+func TestAServiceBuiltWithNoFormGateCarriesNoApproval(t *testing.T) {
+	run := func(t *testing.T, gate FormGate) (reviews, approvals int) {
+		database, service, artifactID := seededRegionDocumentGated(t, 20*time.Millisecond, gate)
+		approveStoredVersion(t, database, artifactID, 1, "alice")
+		answerBlockAs(t, service, artifactID, "region", "alice", []string{"East"})
+		joined(t, service, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := service.NamedVersion(ctx, artifactID, "Named by the agent", model.Actor{Kind: "session", ID: "session-0123456789abcdef"})
+			return err
+		})
+		return carriedReviews(t, database, artifactID)
+	}
+	if reviews, approvals := run(t, formKept); reviews != 2 || approvals != 1 {
+		t.Fatalf("control, with a gate: reviews = %d, artifact.approved events = %d; want her answer to carry her approval", reviews, approvals)
+	}
+	if reviews, approvals := run(t, nil); reviews != 1 || approvals != 0 {
+		t.Fatalf("with no gate: reviews = %d, artifact.approved events = %d; want alice's approval of version 1 alone and no event", reviews, approvals)
 	}
 }

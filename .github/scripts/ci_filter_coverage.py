@@ -1038,7 +1038,7 @@ def script_reason(text: str) -> str:
 # pinned script, `-run '^(Name|Name)$'`, each name a Go identifier. Where those lists are all a
 # step's line and its pin differ in, the refusal names the tests either side lacks rather than
 # quoting the line, which can run past a thousand characters: the text-check step's -run holds
-# fifteen names. A list holding any other pattern (`TestA.*`) is quoted like any other line,
+# eighteen names. A list holding any other pattern (`TestA.*`) is quoted like any other line,
 # since which tests a pattern selects is go's to say, not a set difference of its text.
 NAME_LIST = re.compile(r"(-run|-skip) '\^\(([A-Za-z_][A-Za-z0-9_]*(?:\|[A-Za-z_][A-Za-z0-9_]*)*)\)\$'")
 # A run of what bash splits words at, which the "spaces or tabs alone" reading compares lines by:

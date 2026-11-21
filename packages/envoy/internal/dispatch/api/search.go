@@ -1530,11 +1530,16 @@ func markSnippet(headline string) string {
 
 // issueDocumentHref is the SPA route for one of an issue's documents: the primary document is
 // the issue's Spec tab, every other artifact its own Artifacts route.
-func issueDocumentHref(issueHref string, artifact *model.SearchArtifact, primary bool) string {
+func issueDocumentHref(issueHref, slug string, primary bool) string {
 	if primary {
 		return issueHref + "/spec"
 	}
-	return issueHref + "/artifacts/" + url.PathEscape(artifact.Slug)
+	return issueHref + "/artifacts/" + url.PathEscape(slug)
+}
+
+// projectDocumentHref is the SPA route of a document of a project.
+func projectDocumentHref(project, slug string) string {
+	return "/projects/" + url.PathEscape(project) + "/documents/" + url.PathEscape(slug)
 }
 
 // searchHref is where a hit's reader should land. A comment or ask that carries a document —
@@ -1556,9 +1561,9 @@ func searchHref(kind string, owner model.SearchOwner, artifact *model.SearchArti
 	// its anchor names. An issue item with no document has none, and keeps its own route.
 	documentHref := ""
 	if owner.Kind == "document" {
-		documentHref = "/projects/" + url.PathEscape(owner.Project) + "/documents/" + url.PathEscape(owner.Slug)
+		documentHref = projectDocumentHref(owner.Project, owner.Slug)
 	} else if artifact != nil {
-		documentHref = issueDocumentHref(issueHref, artifact, primary)
+		documentHref = issueDocumentHref(issueHref, artifact.Slug, primary)
 	}
 
 	switch kind {

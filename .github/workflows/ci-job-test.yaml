@@ -102,6 +102,12 @@ on:
           check-image-trigger-paths.test.sh and what it tests.
         type: string
         required: true
+      check_image_build_inputs_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.check_image_build_inputs_test:
+          check-image-build-inputs.test.sh and what it tests.
+        type: string
+        required: true
       check_ci_images_test:
         description: "ci.yaml's needs.changes.outputs.check_ci_images_test: check-ci-images.test.sh and what it tests."
         type: string
@@ -377,6 +383,10 @@ jobs:
       - name: Test the image trigger path check
         if: inputs.changes-result != 'success' || inputs.check_image_trigger_paths_test == 'true'
         run: .github/scripts/check-image-trigger-paths.test.sh
+
+      - name: Test the image build input check
+        if: inputs.changes-result != 'success' || inputs.check_image_build_inputs_test == 'true'
+        run: .github/scripts/check-image-build-inputs.test.sh
 
       - name: Test the CI image check
         if: inputs.changes-result != 'success' || inputs.check_ci_images_test == 'true'

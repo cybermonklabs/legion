@@ -859,9 +859,12 @@ var routeShapes = map[string]routeShape{
 	"DELETE /api/v1/asks/{id}/followers/{session_id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"PATCH /api/v1/asks/{id}":                         {Status: http.StatusOK, Response: shapedAsk{}, Request: editAskInput{}},
 	"PUT /api/v1/asks/{id}/asked-of":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: askAskedOfInput{}},
-	"POST /api/v1/asks/{id}/answer":                   {Status: http.StatusOK, Response: shapedAsk{}, Request: answerAskInput{}},
-	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: resolveAskInput{}},
-	"POST /api/v1/asks/{id}/decline":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: declineAskInput{}},
+	"POST /api/v1/asks/{id}/answer": {
+		Status: http.StatusOK, Response: shapedAsk{}, Request: answerAskInput{},
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: specFormError{}}},
+	},
+	"POST /api/v1/asks/{id}/resolve": {Status: http.StatusOK, Response: shapedAsk{}, Request: resolveAskInput{}},
+	"POST /api/v1/asks/{id}/decline": {Status: http.StatusOK, Response: shapedAsk{}, Request: declineAskInput{}},
 	"GET /api/v1/issues/{key}/comments": {
 		Status: http.StatusOK, Response: []shapedComment{}, Params: issueCommentsQuery{},
 	},
@@ -910,9 +913,11 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/artifacts/{id}/reviews": {Status: http.StatusOK, Response: []artifactReviewRead{}},
 	"POST /api/v1/artifacts/{id}/reviews": {
 		Status: http.StatusCreated, Response: model.ArtifactReview{}, Request: createArtifactReviewInput{},
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: specFormError{}}},
 	},
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": {
 		Status: http.StatusCreated, Response: model.ArtifactReview{}, Request: createArtifactReviewInput{},
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: specFormError{}}},
 	},
 	"POST /api/v1/artifacts/{id}/plan-reviews": {
 		Status: http.StatusCreated, Response: model.ArtifactReview{}, Request: createPlanReviewInput{},
@@ -921,7 +926,11 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusCreated, Response: approvalRequestResponse{}, Request: approvalRequestInput{}, OptionalRequest: true,
 		// An open request that already stood, or a document already approved throughout,
 		// answers the same shape at 200: nothing was appended (reviews.go).
-		Also: []routeAnswer{{Status: http.StatusOK, Body: approvalRequestResponse{}}},
+		Also:     []routeAnswer{{Status: http.StatusOK, Body: approvalRequestResponse{}}},
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: specFormError{}}},
+	},
+	"GET /api/v1/artifacts/{id}/spec-form": {
+		Status: http.StatusOK, Response: specFormRead{}, Params: specFormQuery{},
 	},
 	"GET /api/v1/artifacts/{id}/blocks":            {Status: http.StatusOK, Response: []model.ArtifactBlock{}},
 	"GET /api/v1/artifacts/{id}/blocks/{block_id}": {Status: http.StatusOK, Response: model.BlockPath{}},

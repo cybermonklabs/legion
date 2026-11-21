@@ -192,13 +192,26 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 <<'PY'
 import json
 import posixpath
 import re
-import shlex
 import sys
 from pathlib import Path
 
 import yaml
-from workflow_paths import (Filter, PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns,
-                            unread_patterns, walk)
+from workflow_paths import (
+    DockerfileUnreadable,
+    Filter,
+    PathsFilter,
+    UniqueKeyLoader,
+    bind_mounts,
+    copy_operands,
+    dockerfile_instructions,
+    dockerignore_filter,
+    events,
+    glob_regex,
+    read_docker_file,
+    unread_filter_patterns,
+    unread_patterns,
+    walk,
+)
 
 WORKFLOWS = Path(".github/workflows")
 # Where ci.yaml's changes job keeps the filters it gates its jobs by: its one dorny/paths-filter
@@ -350,106 +363,8 @@ class AnyOf:
         return any(f.covers(path) for f in self.filters)
 
 
-def dockerignore_filter(path: str | None):
-    """True for a context path the .dockerignore drops: a pattern matches the path or a
-    directory above it, and a later `!` line takes it back."""
-    if path is None:
-        return lambda _: False
-    rules = []
-    for line in Path(path).read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        negated = line.startswith("!")
-        pattern = posixpath.normpath(line.removeprefix("!").lstrip("/"))
-        rules.append((negated, glob_regex(pattern)))
-
-    def ignored(relative: str) -> bool:
-        parts = relative.split("/")
-        prefixes = ["/".join(parts[: n + 1]) for n in range(len(parts))]
-        dropped = False
-        for negated, regex in rules:
-            if any(regex.fullmatch(prefix) for prefix in prefixes):
-                dropped = not negated
-        return dropped
-
-    return ignored
-
-
-def joined_lines(text: str):
-    """(line number, instruction) with Dockerfile continuations joined and comments dropped."""
-    pending, start = "", 0
-    for number, raw in enumerate(text.splitlines(), start=1):
-        stripped = raw.strip()
-        if not pending:
-            start = number
-        if stripped.startswith("#"):
-            continue
-        if stripped.endswith("\\"):
-            pending += stripped[:-1] + " "
-            continue
-        yield start, (pending + stripped).strip()
-        pending = ""
-    if pending:
-        yield start, pending.strip()
-
-
 class Unreadable(ValueError):
     """An instruction whose context sources this check cannot name."""
-
-
-def copy_sources(instruction: str) -> list[str]:
-    """Context sources of one COPY or ADD; none for `--from` (a stage or an image) or a URL."""
-    arguments = instruction.split(maxsplit=1)[1] if " " in instruction else ""
-    if arguments.startswith("["):
-        try:
-            entries = json.loads(arguments)
-        except json.JSONDecodeError as error:
-            raise Unreadable(
-                f"malformed JSON-array form: {error.msg}; write it as valid JSON, or as a "
-                f"plain argument list"
-            ) from error
-        flags = []
-    else:
-        try:
-            words = shlex.split(arguments)
-        except ValueError as error:
-            raise Unreadable(
-                f"unparseable: {error}; balance its quotes so a shell could read it"
-            ) from error
-        flags = [word for word in words if word.startswith("--")]
-        entries = [word for word in words if not word.startswith("--")]
-    if any(flag.startswith("--from=") for flag in flags):
-        return []
-    if not isinstance(entries, list) or len(entries) < 2:
-        raise Unreadable("no source and destination; give it both")
-    sources = []
-    for source in entries[:-1]:
-        if "://" in source or source.startswith("git@"):
-            continue
-        if source.startswith("<<"):
-            raise Unreadable(
-                "a heredoc source, which this check cannot read; write the content into a "
-                "file the context carries, and COPY that"
-            )
-        sources.append(source)
-    return sources
-
-
-def mount_sources(instruction: str) -> list[str]:
-    """Context sources of a RUN's bind mounts: a bind mount without `from=` reads the context,
-    all of it when it names no source."""
-    sources = []
-    for word in shlex.split(instruction.split(maxsplit=1)[1] if " " in instruction else ""):
-        if not word.startswith("--mount="):
-            continue
-        options = dict(
-            item.split("=", 1) if "=" in item else (item, "")
-            for item in word[len("--mount=") :].split(",")
-        )
-        if options.get("type", "bind") == "bind" and "from" not in options:
-            sources.append(options.get("source", options.get("src", ".")))
-    return sources
 
 
 # A run step's build is DETECTED, and every detection is refused unless the step is named in
@@ -1771,20 +1686,22 @@ for workflow, job_name, step, context, dockerfile, _ in builds:
             continue
         computed_matches[entry] = True
         inputs.append((f"{entry[2]} (computed into this build's inputs)", [entry[2]]))
-    for line, instruction in joined_lines(Path(dockerfile).read_text()):
-        command = instruction.split(maxsplit=1)[0].upper() if instruction else ""
+    # Each COPY, ADD and RUN bind mount, read by the one Dockerfile grammar that
+    # check-image-build-inputs.sh reads too (workflow_paths.py).
+    for line, command, arguments in dockerfile_instructions(read_docker_file(dockerfile)):
         try:
             if command in {"COPY", "ADD"}:
-                sources = copy_sources(instruction)
+                operands = copy_operands(arguments)
+                sources = operands[0] if operands else []
             elif command == "RUN":
-                sources = mount_sources(instruction)
+                sources = [source for source, _ in bind_mounts(arguments)]
             else:
                 continue
             for source in sources:
                 inputs.append(
                     (f"{source} ({dockerfile}:{line})", context_files(context, source, ignored))
                 )
-        except Unreadable as error:
+        except (Unreadable, DockerfileUnreadable) as error:
             problems.append(f"::error file={dockerfile},line={line}::{dockerfile}:{line}: {error}")
 
     # A trigger that starts the workflow is not enough: a gate can skip the build on a change

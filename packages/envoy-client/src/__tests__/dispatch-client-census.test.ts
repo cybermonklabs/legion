@@ -107,6 +107,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   getArtifact: (client) => client.getArtifact("artifact-1"),
   docRead: (client) => client.docRead("artifact-1"),
   docReadWithBlocks: (client) => client.docReadWithBlocks("artifact-1"),
+  specForm: (client) => client.specForm("artifact-1", 2),
   fileVersion: (client) => client.fileVersion("artifact-1", 1),
   artifactBlocks: (client) => client.artifactBlocks("artifact-1"),
   issueArtifactBlocks: (client) => client.issueArtifactBlocks("DSP-1", "spec"),

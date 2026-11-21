@@ -1,12 +1,4 @@
-import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import type {
@@ -34,6 +26,7 @@ import {
   card,
   cardHoverBorder,
   focusBorder,
+  growingField,
   inlineWarningText,
   inputClasses,
   linkHoverText,
@@ -88,6 +81,7 @@ import { askTurnHolder } from "./ask-turn";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
+import { handOffFocus, useAnswerFormFocus } from "./useAnswerFormFocus";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 
 const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
@@ -218,37 +212,6 @@ const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
   med: "text-page-question",
 };
 
-/** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
- *  j/k/Escape still start from the same place) instead of letting it fall to the document body. */
-function handOffFocus(form: HTMLElement): void {
-  if (!form.contains(document.activeElement)) return;
-  form.parentElement?.closest<HTMLElement>("[tabindex]")?.focus({ preventScroll: true });
-}
-
-/** The form's callback ref. When the form leaves while a control inside it has focus - the ask
- *  was answered or resolved elsewhere and the card swaps to its record - focus is handed off
- *  without any event; React detaches a ref before removing its node, so the form is still in the
- *  document when this cleanup runs. The form is also kept in `formRef` for the disabled-control
- *  hand-off below: in the compact variant the answer field is unmounted while its disclosure is
- *  closed, so the field's `.form` is not a reliable way to reach it. The callback must be stable
- *  across renders: React re-runs a changed callback ref's cleanup on every commit, and that
- *  cleanup moves focus. */
-function useFormRef(): [
-  { current: HTMLFormElement | null },
-  (form: HTMLFormElement | null) => (() => void) | undefined,
-] {
-  const formRef = useRef<HTMLFormElement | null>(null);
-  const track = useCallback((form: HTMLFormElement | null) => {
-    formRef.current = form;
-    if (form === null) return undefined;
-    return () => {
-      formRef.current = null;
-      handOffFocus(form);
-    };
-  }, []);
-  return [formRef, track];
-}
-
 export function AskCard({
   artifactSlug,
   ask,
@@ -284,6 +247,7 @@ export function AskCard({
     completed,
     displayedAsk,
     edits,
+    formRefusal,
     isApproval,
     isSubmitting,
     mutation,
@@ -303,6 +267,7 @@ export function AskCard({
     submitHint,
     toggleOther,
     submitGuard,
+    takeFormRefusalFocus,
     threadQuery,
     trimmedAnswer,
     unsentAnswer,
@@ -326,6 +291,15 @@ export function AskCard({
   if (changing !== seededFor) {
     setSeededFor(changing);
     if (changing && variant === "compact" && answerText.trim() !== "") setOwnWordsOpen(true);
+  }
+  // A refusal of the form fills the reason of Request changes with what Dispatch wrote for the
+  // author (`useAskAnswerForm`); a compact card shows that reason too rather than folding the
+  // text the next press sends behind its disclosure. The same pattern as the change above, from
+  // no refusal, so a card drawn again with a kept refusal opens it too.
+  const [shownFormRefusal, setShownFormRefusal] = useState<typeof formRefusal>(null);
+  if (formRefusal !== shownFormRefusal) {
+    setShownFormRefusal(formRefusal);
+    if (formRefusal !== null && variant === "compact") setOwnWordsOpen(true);
   }
   // One page can host the same ask twice (a decision block and the margin sheet), so the
   // panel each control names is this instance's.
@@ -356,14 +330,18 @@ export function AskCard({
   });
   const uploading = upload.pending > 0;
   const answerFieldRef = useRef<HTMLTextAreaElement>(null);
-  // Picking Request changes moves the person straight to the field the server insists
-  // on. Keyed on the field actually being mounted, not just on the option: the compact variant
-  // unmounts the field when its disclosure closes, and reopening it must refocus.
+  // Picking Request changes moves the person straight to the field the server insists on. Keyed
+  // on the field actually being mounted, not just on the option: the compact variant mounts the
+  // field when its disclosure opens (reopening it is the disclosure's own move, below). Only the
+  // person's own pick moves the focus, so the intent is recorded as the option is picked: a
+  // refusal of the form also picks Request changes, in each card of the ask, and leaves the focus
+  // where the person pressed (`useAnswerFormFocus`).
   const reasonFieldShown = reasonRequired && (!isCompact || ownWordsOpen);
+  const focusReasonOnShow = useRef(false);
   useEffect(() => {
-    if (reasonFieldShown) {
-      answerFieldRef.current?.focus();
-    }
+    if (!reasonFieldShown) return;
+    if (focusReasonOnShow.current) answerFieldRef.current?.focus();
+    focusReasonOnShow.current = false;
   }, [reasonFieldShown]);
   // Opening the disclosure is a move into the field it reveals, whoever opened it: the reader's
   // own click, and the Inbox's Enter, which presses this same control (`Inbox.tsx`). The field
@@ -380,17 +358,10 @@ export function AskCard({
       answerFieldRef.current?.focus();
     }
   }, [ownWordsOpen]);
-  // A control that disables itself under the reader's focus - Ask back while sending and once
-  // its text is sent - would have the browser drop focus to the document body (in the Inbox, out
-  // of the row, which then lets the row go) with nothing the card could act on afterwards; the
-  // same hand-off as a vanishing form, in the commit that disables it, before the browser looks.
-  const [formRef, trackForm] = useFormRef();
-  useLayoutEffect(() => {
-    const form = formRef.current;
-    const active = document.activeElement;
-    if (form !== null && active instanceof HTMLElement && active.matches(":disabled")) {
-      handOffFocus(form);
-    }
+  const [formRef, trackForm] = useAnswerFormFocus({
+    formRefusal,
+    pending: mutation.isPending,
+    takeFormRefusalFocus,
   });
   const tooltips = useTooltips();
   // Inside `NoTooltips` the card refuses its form from the press of an answer or a clarification
@@ -603,8 +574,11 @@ export function AskCard({
         >
           {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
         </span>
+        {/* It grows with its text up to half the window (`growingField`). So a reason that
+            Dispatch wrote after a form refusal shows whole, and Answer stays on the screen.
+            `min-h-16!` keeps an empty field two lines tall over styles.css's unlayered touch floor. */}
         <textarea
-          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none ${tooltips ? inputClasses(true) : ON_PAGE.field}`}
+          className={`block min-h-16! w-full rounded-lg px-3 py-2 font-normal outline-none ${growingField} ${tooltips ? inputClasses(true) : ON_PAGE.field}`}
           data-ask-answer=""
           disabled={disabledWhileOut}
           id={answerFieldId}
@@ -971,6 +945,7 @@ export function AskCard({
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
                   if (refusing) return;
+                  focusReasonOnShow.current = requiresReason(option.label);
                   selectRealOption(option.label);
                   if (isCompact)
                     setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");

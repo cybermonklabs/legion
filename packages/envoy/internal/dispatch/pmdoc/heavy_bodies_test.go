@@ -2,13 +2,13 @@ package pmdoc
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/cputest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
 )
 
@@ -29,16 +29,16 @@ import (
 //
 // Each shape is asserted four ways: the verdict a write of it gets; the CPU time the parse spends
 // on it, under heavyBodyCPUBudget (below); and, for every stored shape, growth in
-// proportion to its length, measured at an eighth of what it grows to and then at the whole of it
-// (growsLinearly, linear_test.go) - of the parse alone, and of the parse and the encode of the
+// proportion to its length, measured at a growthScale-th of what it grows to and then at the whole
+// of it (growsLinearly, linear_test.go) - of the parse alone, and of the parse and the encode of the
 // document a write makes of the body together.
 //
 // The Playwright spec that wrote eight of these nine shapes through the API held each write to a
 // second and to nothing about its growth: a ratio between two wall times a shared CI runner took,
 // a doubling of the body apart, cannot separate a regression from the runner's own noise, which
 // is what made that bound fail at random (INFRA-985). The growth claim is made here instead, in
-// this process's own CPU time and at an eightfold step, and the verdict each write gets is gated
-// in internal/dispatch/api (TestHeavyDocumentWriteVerdicts).
+// the work of the thread that parses (cputest.Growth) and at a growthScale-fold step, and the
+// verdict each write gets is gated in internal/dispatch/api (TestHeavyDocumentWriteVerdicts).
 //
 // These pass as they are written: every shape here already parses in under a second of CPU time.
 // A second is the browser's own bound too - the longest a card's draw may hold the page's main
@@ -74,7 +74,7 @@ func TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime(t *testing.T) {
 			}
 			var err error
 			took := timedWithDeadline(t, "parsing "+shape.Name, perCallDeadline(t), func() (time.Duration, error) {
-				return cpuTimeOf(again(func() { _, err = ParseForWrite(body, nil) }))
+				return cpuTimeOf(cputest.Again(func() { _, err = ParseForWrite(body, nil) }))
 			})
 			if shape.Refusal == "" {
 				if err != nil {
@@ -92,25 +92,23 @@ func TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime(t *testing.T) {
 	}
 }
 
-// Every shape a write stores parses in time proportional to its length, measured at an eighth of
-// what the shape grows and then at the whole of it: a shape whose cost grew with the square of
-// its length would grow growthStep² times where a linear one may grow linearSlack*growthStep
-// (growthStep, linear_test.go).
+// Every shape a write stores parses in time proportional to its length, measured at a
+// growthScale-th of what the shape grows and then at the whole of it: a shape whose cost grew with
+// the square of its length would grow growthScale² times where a linear one may grow less than
+// growthBound (growsLinearly, linear_test.go).
 func TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength(t *testing.T) {
 	for _, shape := range heavybodies.Shapes() {
 		if shape.Refusal != "" {
 			continue
 		}
 		t.Run(shape.Name, func(t *testing.T) {
-			sizes := []int{shape.Grown / growthStep, shape.Grown}
-			growsLinearly(t, "parsing "+shape.Name, sizes, linearSlack, func(size int) (time.Duration, error) {
+			growsLinearly(t, "parsing "+shape.Name, shape.Grown, func(size int) func() func() {
 				body := shape.Body(size)
-				var err error
-				took, measureErr := cpuTimeOf(again(func() { _, err = ParseForWrite(body, nil) }))
-				if err != nil {
-					return 0, fmt.Errorf("parsing %d characters of %s: %w", size, shape.Name, err)
-				}
-				return took, measureErr
+				return cputest.Again(func() {
+					if _, err := ParseForWrite(body, nil); err != nil {
+						t.Fatalf("parsing %d characters of %s: %v", size, shape.Name, err)
+					}
+				})
 			})
 		})
 	}
@@ -126,44 +124,33 @@ func TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength(t *testing
 // the end-to-end bound this test replaced used to cover (INFRA-985).
 //
 // Each run gets a document of its own, since a write changes the document it writes into, and the
-// body it writes is built before the window opens (cpuTimeOf).
+// body it writes and the document are built before the window opens (cputest.Growth).
 func TestHeavyBodiesAtTheBodyCapParseAndEncodeInTimeProportionalToTheirLength(t *testing.T) {
 	for _, shape := range heavybodies.Shapes() {
 		if shape.Refusal != "" {
 			continue
 		}
 		t.Run(shape.Name, func(t *testing.T) {
-			sizes := []int{shape.Grown / growthStep, shape.Grown}
-			growsLinearly(t, "writing "+shape.Name, sizes, linearSlack, func(size int) (time.Duration, error) {
+			growsLinearly(t, "writing "+shape.Name, shape.Grown, func(size int) func() func() {
 				body := shape.Body(size)
-				var err error
-				var update []byte
-				took, measureErr := cpuTimeOf(func() func() {
+				return func() func() {
 					// "prosemirror" is the fragment the document service writes a document's
 					// blocks into (fragmentName, internal/dispatch/docs/tree.go).
 					doc := crdt.New()
 					fragment := doc.GetXmlFragment("prosemirror")
 					return func() {
-						tree, parseErr := ParseForWrite(body, nil)
-						if parseErr != nil {
-							err = parseErr
-							return
+						tree, err := ParseForWrite(body, nil)
+						if err == nil {
+							err = doc.TransactE(func(txn *crdt.Transaction) error { return Update(txn, fragment, tree) })
 						}
-						if err = doc.TransactE(func(txn *crdt.Transaction) error {
-							return Update(txn, fragment, tree)
-						}); err != nil {
-							return
+						if err != nil {
+							t.Fatalf("writing %d characters of %s: %v", size, shape.Name, err)
 						}
-						update = crdt.EncodeStateAsUpdateV1(doc, nil)
+						if update := crdt.EncodeStateAsUpdateV1(doc, nil); len(update) == 0 {
+							t.Fatalf("writing %d characters of %s encoded no update", size, shape.Name)
+						}
 					}
-				})
-				if err != nil {
-					return 0, fmt.Errorf("writing %d characters of %s: %w", size, shape.Name, err)
 				}
-				if len(update) == 0 {
-					return 0, fmt.Errorf("writing %d characters of %s encoded no update", size, shape.Name)
-				}
-				return took, measureErr
 			})
 		})
 	}

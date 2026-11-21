@@ -72,6 +72,8 @@ import type {
   ResolveAskInput,
   SearchResponse,
   SessionAnswersResponse,
+  SpecFormFinding,
+  SpecFormRead,
   Suggestions,
   UpdateIssueInput,
   Version,
@@ -137,7 +139,11 @@ export class DispatchServiceError extends Error {
     message: string,
     readonly candidates?: DispatchServiceErrorShape["candidates"],
     readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"]
+    readonly mismatches?: DispatchServiceErrorShape["mismatches"],
+    /** The texts a `409 SPEC_FORM` refuses, each with its rule, at most 500 of them. */
+    readonly findings?: SpecFormFinding[],
+    /** On a person's refused approval, the reason a Request changes sends to the author. */
+    readonly changesReason?: string
   ) {
     super(message);
   }
@@ -1791,6 +1797,19 @@ export class DispatchClient {
       : this.#json("GET", ["api", "v1", "artifacts", id, "versions", String(version)]);
   }
 
+  /** `GET /api/v1/artifacts/{id}/spec-form[?version=N]`: the form of The Spec in one version of a
+   *  document (the latest settled one without `version`), which writes nothing: where the
+   *  document stands, the count of each kind of text it holds, and every finding, in scope or
+   *  not. A document with no settled version is `409 NO_VERSION`. */
+  async specForm(id: string, version?: number): Promise<SpecFormRead> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "artifacts", id, "spec-form"],
+      undefined,
+      version === undefined ? undefined : { version }
+    );
+  }
+
   /** `GET /api/v1/artifacts/{id}/text?blocks=true`: the live document's markdown, its token, its
    *  version and its blocks in one answer, every part of it rendered from the one tree, so a write
    *  by another session between two reads cannot leave the blocks indexing markdown they were not
@@ -2656,7 +2675,9 @@ export class DispatchClient {
           error.error,
           error.candidates,
           error.current,
-          error.mismatches
+          error.mismatches,
+          error.findings ?? undefined,
+          error.changes_reason
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

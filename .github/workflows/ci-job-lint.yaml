@@ -185,6 +185,14 @@ jobs:
       - name: Check every Bun gate's filter selects the files its typecheck compiles
         run: .github/scripts/check-ts-filters.sh
 
+      # After the install, which is what lets each build resolve its packages: it builds every
+      # Bun build an image stage runs, with `bun build --metafile` or the build script's own report
+      # of what it read, and holds each file read to the COPY lines above that stage's build. Here
+      # because the image builds run only on a pull request out of draft and after the merge, and
+      # this job runs on every change.
+      - name: Check each image stage copies every file its Bun builds read
+        run: .github/scripts/check-image-build-inputs.sh
+
       # The notices step below builds go-licenses and loads every release binary's modules. It
       # keeps them in a cache family of its own, go-notices: one entry, read on every run, so never
       # evicted, and refreshed only when Go is bumped. Keyed on the go.sum files it would leave a
