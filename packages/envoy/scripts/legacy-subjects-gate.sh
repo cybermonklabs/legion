@@ -82,12 +82,13 @@
 # outside the cluster, a listener that restarted between the readings (its pod's restart count or
 # its start-time gauge moved, or it is a new pod), a listener of the first reading that is gone, a
 # listener on another bus that serves as the machine of a listener read (that machine's durable can
-# be either's) or whose ENVOY_MACHINE_ID is no literal value (its machine cannot be read), a
-# start-time gauge served at one reading only, a record that cannot be written, and
-# at a second reading: a first reading that did not read every surface, a stream that is not the
-# first reading's (its envoy_stream_id changed), a stream that does not hold the whole window (its
-# first message is younger than the window, less an hour), and readings further apart than a
-# listener's durable outlives its listener.
+# be either's) or whose ENVOY_MACHINE_ID is no literal value (set through valueFrom or envFrom,
+# holding a $(VAR) reference, or not set: its machine cannot be read; a literal one is read trimmed,
+# as the listener reads it), a start-time gauge served at one reading only, a record that cannot be
+# written, and at a second reading: a first reading that did not read every surface, a stream that
+# is not the first reading's (its envoy_stream_id changed), a stream that does not hold the whole
+# window (its first message is younger than the window, less an hour), and readings further apart
+# than a listener's durable outlives its listener.
 #
 # The Job: namespace envoy, the ServiceAccount, NATS URL and credential of the listener Deployment
 # envoy/envoy-listener as it is deployed (read at each run, so the Job connects with whatever
@@ -290,6 +291,21 @@ pods_error=""
 if ! { kc get pods --all-namespaces -o json >"$work/pods.json" 2>"$work/pods.err" &&
   jq -c --arg urls "$bus_urls" --argjson aliases "$bus_aliases" "$listener_container"'
     def on_bus: .urls as $u | $urls == "" or $u == $urls or any($aliases[]; . == $u);
+    # The machine a container runs as: its ENVOY_MACHINE_ID written as a literal value, trimmed as
+    # the listener trims it (internal/config Load), or null when the gate cannot read it from the
+    # pod spec: set through valueFrom, holding a $(VAR) reference, which Kubernetes expands from
+    # the variables before it, empty once trimmed, or not set. machine_from says which of the
+    # first two, or envFrom when the container sets none of its own and takes envFrom.
+    def machine_entry: [.env[]? | select(.name == "ENVOY_MACHINE_ID")] | first;
+    def reference: test("\\$\\(");
+    def machine: machine_entry as $e
+      | if $e == null or $e.valueFrom != null or ($e.value | type) != "string" then null
+        else ($e.value | gsub("^\\s+|\\s+$"; "")) | if . == "" or reference then null else . end end;
+    def machine_from: machine_entry as $e | (($e.value | strings) // "") as $v
+      | if $e.valueFrom != null then "valueFrom"
+        elif ($v | reference) then "reference"
+        elif ($v | gsub("^\\s+|\\s+$"; "")) == "" and ((.envFrom // []) | length > 0) then "envFrom"
+        else null end;
     [.items[] | . as $p | ($p.status.containerStatuses // []) as $statuses
       | $p.spec.containers[]
       | listener_container
@@ -298,9 +314,7 @@ if ! { kc get pods --all-namespaces -o json >"$work/pods.json" 2>"$work/pods.err
       | {ns: $p.metadata.namespace, pod: $p.metadata.name, uid: $p.metadata.uid, container: $c.name,
          running: ($s.state.running != null), state: ((($s.state // {}) | keys | first) // "not started"),
          restarts: ($s.restartCount // null),
-         machine: ([$c.env[]? | select(.name == "ENVOY_MACHINE_ID") | .value // empty] | first // null),
-         machine_from: ([$c.env[]? | select(.name == "ENVOY_MACHINE_ID") | if .valueFrom != null then "valueFrom" else empty end] | first
-           // (if ($c.envFrom // []) | length > 0 then "envFrom" else null end)),
+         machine: ($c | machine), machine_from: ($c | machine_from),
          urls: ([$c.env[]? | select(.name == "NATS_URLS") | .value // empty] | first // null)}]
     | {bus: map(select(on_bus)), other: map(select(on_bus | not))}' \
     "$work/pods.json" >"$work/listener-sets.json" 2>"$work/pods.err" &&

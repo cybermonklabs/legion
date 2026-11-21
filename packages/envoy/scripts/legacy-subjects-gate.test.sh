@@ -22,9 +22,10 @@
 # than the listener Deployment's is skipped, and its durable unread, until --bus-alias names that
 # address, and is then held to its restarts as any listener is, while a listener on another bus
 # stays skipped, its NATS_URLS printed with any credential masked, and makes the reading UNKNOWN
-# when it serves as the machine of a listener read, or sets its machine as no literal value. Every
-# case runs from the same clean fixture with one thing changed, so each fails for its own reason.
-# The old-form rule itself is held row by row. The summary counts cases.
+# when it serves as the machine of a listener read (its machine read trimmed, as the listener reads
+# it), or sets its machine as no literal value (a $(VAR) reference among them). Every case runs
+# from the same clean fixture with one thing changed, so each fails for its own reason. The
+# old-form rule itself is held row by row. The summary counts cases.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -1578,6 +1579,54 @@ expect_line "UNKNOWN: listener pod loadtest/envoy-listener-lt2 container envoy-l
 expect_line "UNKNOWN: listener pod loadtest/envoy-listener-lt3 container envoy-listener, on another bus (NATS_URLS $loadtest_url) and not read, sets no ENVOY_MACHINE_ID, so its machine cannot be read"
 expect_last "UNKNOWN"
 ! grep -qF -- "-n loadtest logs" "$FAKE/calls" || fail "a listener on another bus was read"
+done_case
+
+# A listener on another bus whose ENVOY_MACHINE_ID, as the pod spec writes it, is not the machine
+# it runs as: the listener trims the value (internal/config Load), and Kubernetes expands
+# $(VAR_NAME) in it from the variables before it (EnvVar.value). Each form is the case above with
+# the hub's session listener's machine written that way: it runs as envoy-hub all the same, so the
+# load-test listener read as envoy-hub leaves it unread, and the reading must not count as a first.
+new_case "a listener on another bus whose ENVOY_MACHINE_ID as written is not the machine it runs as is UNKNOWN"
+# shellcheck disable=SC2016 # $(HUB_MACHINE) is Kubernetes' reference, not the shell's
+for form in ' envoy-hub' 'envoy-hub ' '$(HUB_MACHINE)'; do
+  rm -f "$FAKE/record.json"
+  moved_cluster
+  jq --arg form "$form" --argjson p "$(pod loadtest envoy-listener-lt1 lt-uid-1 envoy-listener "$envoy_image" null 0 running envoy-hub "$loadtest_url")" '
+    .items += [$p]
+    | (.items[] | select(.metadata.name == "envoy-nats-listener-5c7d") | .spec.containers[0].env)
+      |= ([{name: "HUB_MACHINE", value: "envoy-hub"}] + map(if .name == "ENVOY_MACHINE_ID" then .value = $form else . end))' \
+    "$FAKE/pods.json" >"$FAKE/pods.json.new"
+  mv "$FAKE/pods.json.new" "$FAKE/pods.json"
+  metrics 5 0 "$listener_start" 0 envoy-hub >"$FAKE/metrics/loadtest.envoy-listener-lt1"
+  moved_reading --bus-alias "$loadtest_url"
+  expect_status 3
+  expect_line "UNKNOWN: listener pod envoy/envoy-nats-listener-5c7d container listener"
+  expect_no_line "FIRST READING"
+done
+done_case
+
+# The lines each form prints: a value with white space around it is read as the listener trims it,
+# so it is the collision of the rule above; a value holding a $(VAR) reference cannot be read.
+new_case "a machine written with white space is read trimmed, and one with a \$(VAR) reference is named as such"
+# shellcheck disable=SC2016 # $(HUB_MACHINE) is Kubernetes' reference, not the shell's
+for form in ' envoy-hub' '$(HUB_MACHINE)'; do
+  rm -f "$FAKE/record.json"
+  moved_cluster
+  jq --arg form "$form" --argjson p "$(pod loadtest envoy-listener-lt1 lt-uid-1 envoy-listener "$envoy_image" null 0 running envoy-hub "$loadtest_url")" '
+    .items += [$p]
+    | (.items[] | select(.metadata.name == "envoy-nats-listener-5c7d") | .spec.containers[0].env)
+      |= ([{name: "HUB_MACHINE", value: "envoy-hub"}] + map(if .name == "ENVOY_MACHINE_ID" then .value = $form else . end))' \
+    "$FAKE/pods.json" >"$FAKE/pods.json.new"
+  mv "$FAKE/pods.json.new" "$FAKE/pods.json"
+  metrics 5 0 "$listener_start" 0 envoy-hub >"$FAKE/metrics/loadtest.envoy-listener-lt1"
+  moved_reading --bus-alias "$loadtest_url"
+  expect_status 3
+  if [ "$form" = ' envoy-hub' ]; then
+    expect_line "UNKNOWN: listener pod envoy/envoy-nats-listener-5c7d container listener, on another bus (NATS_URLS $hub_service_url) and not read, serves as machine envoy-hub, as listener pod loadtest/envoy-listener-lt1 container envoy-listener, which this reading read, does"
+  else
+    expect_line "UNKNOWN: listener pod envoy/envoy-nats-listener-5c7d container listener, on another bus (NATS_URLS $hub_service_url) and not read, sets ENVOY_MACHINE_ID with a \$(VAR) reference, which Kubernetes expands, so its machine cannot be read"
+  fi
+done
 done_case
 
 # nsc's output on a failure may echo the seed it read: the Job logs a fixed line instead.

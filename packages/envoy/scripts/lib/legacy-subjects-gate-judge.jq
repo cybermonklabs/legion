@@ -341,12 +341,13 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
       | select(($read | length) > 0)
       | {unknown: ("listener pod \($o.ns)/\($o.pod) container \($o.container), on another bus (NATS_URLS \($o.urls // "unset" | masked_urls)) and not read, serves as machine \($o.machine), as \($read | join(" and ")), which this reading read, does: the durable listener-\($m) on the bus can be either's, so this reading cannot show which one it counted; give --bus-alias only a NATS_URLS that reaches the bus's NATS servers, and give a listener on another bus a machine of its own" | printable)}),
     # A listener container on another bus whose ENVOY_MACHINE_ID is no literal value (set through
-    # valueFrom, possibly through envFrom, or not at all): the gate cannot read its machine, so it
-    # cannot tell whether that machine is one a listener this reading read serves as, which the rule
-    # above holds to; it is UNKNOWN, as anything the gate cannot read is.
+    # valueFrom, holding a $(VAR) reference Kubernetes expands, possibly set through envFrom, or
+    # not set at all): the gate cannot read its machine, so it cannot tell whether that machine is
+    # one a listener this reading read serves as, which the rule above holds to; it is UNKNOWN, as
+    # anything the gate cannot read is. A literal value is read trimmed, as the listener reads it.
     (($in.other_bus // [])[]
       | select(.machine | type != "string")
-      | {unknown: ("listener pod \(.ns)/\(.pod) container \(.container), on another bus (NATS_URLS \(.urls // "unset" | masked_urls)) and not read, \(if .machine_from == "valueFrom" then "sets ENVOY_MACHINE_ID through valueFrom" elif .machine_from == "envFrom" then "sets no ENVOY_MACHINE_ID of its own and takes envFrom, which may set it" else "sets no ENVOY_MACHINE_ID" end), so its machine cannot be read and whether a listener this reading read serves as that machine cannot be told; set ENVOY_MACHINE_ID on it as a literal value" | printable)}),
+      | {unknown: ("listener pod \(.ns)/\(.pod) container \(.container), on another bus (NATS_URLS \(.urls // "unset" | masked_urls)) and not read, \(if .machine_from == "valueFrom" then "sets ENVOY_MACHINE_ID through valueFrom" elif .machine_from == "reference" then "sets ENVOY_MACHINE_ID with a $(VAR) reference, which Kubernetes expands" elif .machine_from == "envFrom" then "sets no ENVOY_MACHINE_ID of its own and takes envFrom, which may set it" else "sets no ENVOY_MACHINE_ID" end), so its machine cannot be read and whether a listener this reading read serves as that machine cannot be told; set ENVOY_MACHINE_ID on it as a literal value" | printable)}),
 
     # The stream's subjects.
     ($subjectpages[] | select(.page.problem) | {unknown: "the stream's subjects under \(.family | printable): \(.page.problem)"}),

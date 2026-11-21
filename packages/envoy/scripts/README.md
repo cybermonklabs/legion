@@ -1003,8 +1003,9 @@ What it reads, all of it read-only:
   bus by another address. A listener container on another bus that serves as the machine of a
   listener the reading read prints `UNKNOWN`, naming both: that machine's durable can be either's,
   so the one read does not show what the other counted. So does one whose `ENVOY_MACHINE_ID` is no
-  literal value (set through `valueFrom` or `envFrom`, or not set), whose machine the gate cannot
-  read; set it as a literal value.
+  literal value (set through `valueFrom` or `envFrom`, holding a `$(VAR)` reference Kubernetes
+  expands, or not set), whose machine the gate cannot read; set it as a literal value. A literal
+  machine is read trimmed of white space, as the listener reads it.
 - **Over NATS**, from a one-off Job in namespace `envoy` that connects as the in-cluster listener
   does (`lib/legacy-subjects-gate-nats.sh`): who the server says the connection is
   (`$SYS.REQ.USER.INFO`, which the in-cluster listener's static grant refuses, so the gate then
