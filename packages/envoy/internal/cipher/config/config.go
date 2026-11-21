@@ -438,7 +438,8 @@ type Config struct {
 	// requesters.
 	ServiceAccountSecrets map[string]string
 	// BROKER_DIRECTORY_URL: the base URL of the Directory API the broker reads each group's
-	// members at (internal/cipher/groups), an absolute http(s) URL, read without the slashes it
+	// members at (internal/cipher/groups), an absolute https URL, or http to a loopback host for a
+	// run on one machine, since the reader account's token goes to it; read without the slashes it
 	// ends in. Unset, it is Google's own, https://admin.googleapis.com; a test sets it to its
 	// stand-in. The broker calls it only when a served secret names a group, as its owner or in
 	// its requesters, and only its members.list, with the token of the reader account
@@ -2245,11 +2246,13 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.ServiceAccountSecrets, err = parseServiceAccountSecrets("BROKER_SERVICE_ACCOUNT_SECRETS", getenv("BROKER_SERVICE_ACCOUNT_SECRETS")); err != nil {
 		return Config{}, err
 	}
-	// Optional, and held to its form when given, as BROKER_PROJECT_ACCESS_URL is: a value no call
-	// could be made to would boot and then leave every group unread.
+	// Optional, and held to its form when given: a value no call could be made to would boot and
+	// then leave every group unread, and a group read sends the reader account's token to it, so it
+	// is held to the sign-in issuer's rule (signInIssuerOK): https, or http to a loopback host for
+	// a run on one machine. The value is not printed.
 	if cfg.DirectoryURL = strings.TrimRight(strings.TrimSpace(getenv("BROKER_DIRECTORY_URL")), "/"); cfg.DirectoryURL != "" {
-		if err := httpURLSetting("BROKER_DIRECTORY_URL", cfg.DirectoryURL); err != nil {
-			return Config{}, err
+		if !signInIssuerOK(cfg.DirectoryURL) {
+			return Config{}, errors.New("BROKER_DIRECTORY_URL must be an absolute https URL, or http to a loopback host")
 		}
 	}
 	// The reader account is held to the rule BROKER_SERVICE_ACCOUNT_SECRETS' accounts are held to

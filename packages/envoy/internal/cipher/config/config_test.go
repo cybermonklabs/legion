@@ -2908,8 +2908,9 @@ func TestProjectAccessSettingsComeTogether(t *testing.T) {
 
 // TestTheDirectoryURLIsGooglesUnlessSet pins BROKER_DIRECTORY_URL: unset, the broker reads no
 // address of its own, so the group reader calls Google's Directory API; set, it is read without
-// the slashes it ends in, as a test's stand-in is named; and a value that is no absolute http(s)
-// URL refuses the start naming the setting, since a group read could make no call to it.
+// the slashes it ends in, as a test's stand-in is named; and a value that is no absolute https URL,
+// or http to a loopback host, refuses the start naming the setting: a group read sends the reader
+// account's token to it, which only a run on one machine may send in plain text.
 func TestTheDirectoryURLIsGooglesUnlessSet(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
@@ -2919,21 +2920,27 @@ func TestTheDirectoryURLIsGooglesUnlessSet(t *testing.T) {
 		t.Fatalf("with BROKER_DIRECTORY_URL unset the broker reads %q; want nothing, so the reader calls Google's own address", cfg.DirectoryURL)
 	}
 
-	e := validEnv()
-	e["BROKER_DIRECTORY_URL"] = " http://directory.internal.example:8080// "
-	if cfg, err = Load(env(e)); err != nil {
-		t.Fatal(err)
-	}
-	if cfg.DirectoryURL != "http://directory.internal.example:8080" {
-		t.Fatalf("BROKER_DIRECTORY_URL is read as %q; want the URL without its spaces and trailing slashes", cfg.DirectoryURL)
+	for value, want := range map[string]string{
+		" https://directory.internal.example:8443// ": "https://directory.internal.example:8443",
+		"http://127.0.0.1:8080/":                      "http://127.0.0.1:8080",
+		"http://localhost:8080":                       "http://localhost:8080",
+	} {
+		e := validEnv()
+		e["BROKER_DIRECTORY_URL"] = value
+		if cfg, err = Load(env(e)); err != nil {
+			t.Fatalf("Load(BROKER_DIRECTORY_URL=%q) = %v; want it taken", value, err)
+		}
+		if cfg.DirectoryURL != want {
+			t.Fatalf("BROKER_DIRECTORY_URL %q is read as %q; want %q, without its spaces and trailing slashes", value, cfg.DirectoryURL, want)
+		}
 	}
 
-	for _, bad := range []string{"directory.internal.example", "//directory.internal.example", "ftp://directory.internal.example", "http://", "http://%zz"} {
+	for _, bad := range []string{"directory.internal.example", "//directory.internal.example", "ftp://directory.internal.example", "http://", "http://%zz", "http://directory.internal.example:8080", "https://"} {
 		e := validEnv()
 		e["BROKER_DIRECTORY_URL"] = bad
 		_, err := Load(env(e))
-		if err == nil || !strings.Contains(err.Error(), "BROKER_DIRECTORY_URL") || !strings.Contains(err.Error(), "absolute http(s) URL") {
-			t.Errorf("Load(BROKER_DIRECTORY_URL=%q) = %v; want a refusal naming the variable", bad, err)
+		if err == nil || !strings.Contains(err.Error(), "BROKER_DIRECTORY_URL") || !strings.Contains(err.Error(), "absolute https URL, or http to a loopback host") {
+			t.Errorf("Load(BROKER_DIRECTORY_URL=%q) = %v; want a refusal naming the variable and the rule", bad, err)
 		}
 	}
 }

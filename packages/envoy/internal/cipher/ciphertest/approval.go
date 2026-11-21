@@ -37,13 +37,11 @@ func SignIn(issuer *oidctest.Issuer, key *oidctest.Key) approval.SignIn {
 }
 
 // NewApprovalPage builds the broker's approval page as cmd/cipherd/main.go does, for a broker at
-// publicURL whose records m reads and decides and whose sessions st keeps, asking m's group reader
-// (requests.Machine.Groups, nil for none) who is a member of a group approver, as main hands both
-// the one reader.
+// publicURL whose records m reads and decides and whose sessions st keeps.
 func NewApprovalPage(t *testing.T, signIn approval.SignIn, publicURL string, st *store.Store, m *requests.Machine) *approval.Page {
 	t.Helper()
 	page, err := approval.New(approval.Config{
-		SignIn: signIn, PublicURL: publicURL, MachineLoginURL: MachineLoginURL, Store: st, Machine: m, Groups: m.Groups,
+		SignIn: signIn, PublicURL: publicURL, MachineLoginURL: MachineLoginURL, Store: st, Machine: m,
 	})
 	if err != nil {
 		t.Fatalf("approval.New: %v", err)

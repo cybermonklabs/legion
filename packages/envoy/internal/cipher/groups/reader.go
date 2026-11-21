@@ -22,6 +22,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 const (
@@ -51,23 +52,24 @@ const readTimeout = time.Minute
 // Reader reads the members of each wanted group and answers who is a member.
 //
 // BaseURL is the Directory API's (BROKER_DIRECTORY_URL), Google's when empty; HTTP its client,
-// http.DefaultClient when nil; Source the directory token (NewTokenSource); Now the clock that
-// dates each read, time.Now when nil; Log where each read's line goes, slog.Default() when nil.
-// Context is what the read Want starts for a group it names first runs on: the broker's serving
-// context, so such a read ends when the broker stops serving; context.Background() when nil. It
-// is set before the first Want and never after. Every method may be called from any goroutine.
+// http.DefaultClient when nil, which follows no redirect; Source the directory token
+// (NewTokenSource); Now the clock that dates each read, time.Now when nil; Log where each read's
+// line goes, slog.Default() when nil. Start gives it the broker's serving context. Every method may
+// be called from any goroutine.
 type Reader struct {
 	BaseURL string
 	HTTP    *http.Client
 	Source  oauth2.TokenSource
 	Now     func() time.Time
 	Log     *slog.Logger
-	Context context.Context
 
 	mu sync.Mutex
+	// ctx is the serving context Start was given, which every read Want starts runs on, and nil
+	// before Start.
+	ctx context.Context
 	// wanted is each group the last Want named, by its bare address.
 	wanted map[string]*group
-	// inflight counts the reads Want started, which a test waits for.
+	// inflight counts the reads Want started, which WaitReads waits for.
 	inflight sync.WaitGroup
 	// every and readTimeout are ReadEvery and readTimeout unless a test sets them.
 	every, readTimeout time.Duration
@@ -81,34 +83,64 @@ type group struct {
 	reading bool
 }
 
-// Want sets the groups to read to names, the groups a policy load names: a name it has not read
-// is read at once, in a goroutine of its own, and a name the last call named is left to the
-// hourly read. A group names leaves out is no longer read, and admits nobody. A name given twice
-// is one group.
+// Start runs the hourly read (Run) on ctx, the broker's serving context, and makes ctx the context
+// of every read Want starts from then on, so each ends when the broker stops serving. It is called
+// once, before the first Want; a read Want starts before it runs on context.Background().
+func (r *Reader) Start(ctx context.Context) {
+	r.mu.Lock()
+	r.ctx = ctx
+	r.mu.Unlock()
+	go r.Run(ctx)
+}
+
+// Want sets the groups to read to names, the groups a policy load names: a group no read has
+// succeeded for yet, one named for the first time or one whose reads so far failed, is read at
+// once, in a goroutine of its own, so a failed first read is tried again at the next load and not
+// an hour later; a group read once is left to the hourly read. A group names leaves out is no
+// longer read, and admits nobody. A name given twice is one group.
 func (r *Reader) Want(names []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	ctx := r.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	next := make(map[string]*group, len(names))
 	for _, name := range names {
 		if _, ok := next[name]; ok {
 			continue
 		}
-		if g, ok := r.wanted[name]; ok {
-			next[name] = g
+		g, ok := r.wanted[name]
+		if !ok {
+			g = &group{}
+		}
+		next[name] = g
+		if !g.readAt.IsZero() || g.reading {
 			continue
 		}
-		next[name] = &group{}
 		r.inflight.Add(1)
-		ctx := r.Context
-		if ctx == nil {
-			ctx = context.Background()
-		}
 		go func() {
 			defer r.inflight.Done()
 			r.read(ctx, name)
 		}()
 	}
 	r.wanted = next
+}
+
+// WaitReads returns once every read Want started has ended, or once ctx ends, whichever is
+// first: the broker waits a bounded time for its first reads before it serves, so a pod that
+// comes up does not answer for a group it has not read yet when the read would have taken a
+// moment.
+func (r *Reader) WaitReads(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		r.inflight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 // ReadAll reads every wanted group once, one after another, but a group whose read is already
@@ -138,16 +170,26 @@ func (r *Reader) Run(ctx context.Context) {
 }
 
 // HasMember answers whether login is a member of group, by the members its last good read kept,
-// when that read is StaleAfter old or newer. Both are compared as record.CanonicalLogin forms.
+// when that read is StaleAfter old or newer (Membership).
 func (r *Reader) HasMember(group, login string) bool {
+	listed, fresh := r.Membership(group, login)
+	return listed && fresh
+}
+
+// Membership answers, from one look at group under the reader's lock, whether its last good read
+// listed login, whatever that read's age, and whether that read is fresh: StaleAfter old or newer.
+// A group no load names, or never read, answers false and false. The two answers come from one
+// look so a read landing between two calls cannot pair one read's members with another's age.
+// Both logins are compared as record.CanonicalLogin forms.
+func (r *Reader) Membership(group, login string) (listed, fresh bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	g, ok := r.wanted[group]
-	if !ok || !r.fresh(g) {
-		return false
+	if !ok {
+		return false, false
 	}
-	_, ok = g.members[record.CanonicalLogin(login)]
-	return ok
+	_, listed = g.members[record.CanonicalLogin(login)]
+	return listed, r.fresh(g)
 }
 
 // GroupsOf answers every wanted group HasMember admits login to, sorted.
@@ -166,9 +208,7 @@ func (r *Reader) GroupsOf(login string) []string {
 }
 
 // Fresh answers whether group's last good read is StaleAfter old or newer, the rule HasMember
-// admits members by: false for a group never read and for one no load names. A decider a fresh
-// group does not admit is one the group does not list, and one a stale group does not admit is
-// one nobody can tell.
+// admits members by: false for a group never read and for one no load names.
 func (r *Reader) Fresh(group string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -227,7 +267,7 @@ func (r *Reader) list(ctx context.Context, name string) (map[string]struct{}, er
 	if err != nil {
 		return nil, err
 	}
-	client := cmp.Or(r.HTTP, http.DefaultClient)
+	client := redirects.Refused(cmp.Or(r.HTTP, http.DefaultClient))
 	endpoint := cmp.Or(r.BaseURL, googleDirectoryURL) + "/admin/directory/v1/groups/" + url.PathEscape(name) + "/members"
 	members := map[string]struct{}{}
 	query := url.Values{"includeDerivedMembership": {"true"}, "maxResults": {pageSize}}

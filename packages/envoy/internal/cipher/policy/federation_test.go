@@ -54,3 +54,27 @@ func TestTheFederationTypeTakesTheServiceAccountTypesPolicyFields(t *testing.T) 
 		t.Fatal("DecodeValue took a federation value naming no rule, target or account")
 	}
 }
+
+// TestAPersonApprovesEveryReleaseOfAFederationSecret: a federation secret with no admin tag is one
+// a person approves every release of, as an admin secret is, since its token can be an
+// organization administrator's; a google-service-account secret with no admin tag is not.
+func TestAPersonApprovesEveryReleaseOfAFederationSecret(t *testing.T) {
+	admin := policytest.Secret("ADMIN_KEY", "ada@example.com", policy.TierHuman, "v")
+	admin.Tags[policy.TagAdmin] = policy.AdminTrue
+	admin.Tags[policy.TagRequesters] = "ada@example.com"
+	admin.Tags[policy.TagMaxGrant] = "1h"
+	set := loadOnly(t, secrets.NewLocal(
+		policytest.TypeSecret("FED_ADMIN", "ada@example.com", policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)),
+		admin,
+		policytest.TypeSecret("GCP_ADMIN", "ada@example.com", policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount)),
+	))
+	for name, want := range map[string]bool{"FED_ADMIN": true, "ADMIN_KEY": true, "GCP_ADMIN": false} {
+		secret, served := set.Secrets[name]
+		if !served {
+			t.Fatalf("%s is refused: %v", name, set.Refused)
+		}
+		if got := secret.PersonApprovesEveryRelease(); got != want {
+			t.Errorf("%s.PersonApprovesEveryRelease() = %v, want %v", name, got, want)
+		}
+	}
+}

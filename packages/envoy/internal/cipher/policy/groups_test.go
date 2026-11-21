@@ -173,8 +173,18 @@ func TestEvaluateAdmitsAGroupMember(t *testing.T) {
 	if got := evaluate("TEAM_KEY", member); got.Outcome != policy.Approval || got.Approver != approversOwner {
 		t.Errorf("a member of a stale group, agent tier: Evaluate = %+v, want an approval request to %s", got, approversOwner)
 	}
-	if got := evaluate("LISTED_KEY", member); got.Outcome != policy.Deny || got.Reason != policy.ReasonRequesterNotListed {
-		t.Errorf("a member of a stale group, listed by group: Evaluate = %+v, want %s", got, policy.ReasonRequesterNotListed)
+	// A list naming a group no fresh read lists the person on cannot say the person is off it:
+	// the deny says so, and a pod with no person, which no group lists, is denied as not listed.
+	for _, r := range []policy.Requester{member, outsider} {
+		if got := evaluate("LISTED_KEY", r); got.Outcome != policy.Deny || got.Reason != policy.ReasonRequesterGroupUnread {
+			t.Errorf("%s, listed by a stale group: Evaluate = %+v, want %s", r.Operator, got, policy.ReasonRequesterGroupUnread)
+		}
+	}
+	if got := evaluate("LISTED_KEY", policy.Requester{Service: "legion-daemon"}); got.Reason != policy.ReasonRequesterNotListed {
+		t.Errorf("a pod of no person, listed by a stale group: Evaluate = %+v, want %s", got, policy.ReasonRequesterNotListed)
+	}
+	if got, err := policy.NewSet(loaded.Secrets).Evaluate("LISTED_KEY", member); err != nil || got.Reason != policy.ReasonRequesterGroupUnread {
+		t.Errorf("a set with no group reader: Evaluate(LISTED_KEY, member) = %+v, %v; want %s", got, err, policy.ReasonRequesterGroupUnread)
 	}
 	if got, err := policy.NewSet(loaded.Secrets).Evaluate("TEAM_KEY", member); err != nil || got.Outcome != policy.Approval {
 		t.Errorf("a set with no group reader: Evaluate(TEAM_KEY, member) = %+v, %v; want an approval request", got, err)
@@ -203,7 +213,7 @@ func TestALoadNamesItsGroupsAndARereadDoesNot(t *testing.T) {
 	if got := fake.Wants(); len(got) != 1 {
 		t.Fatalf("the reread named groups to the reader: %v", got)
 	}
-	if cur.Get().Groups().HasMember(b, groupMember) || cur.Get().Groups().Fresh(b) {
+	if listed, fresh := cur.Get().Groups().Membership(b, groupMember); listed || fresh {
 		t.Fatal("the reader admits a member of a group no load named")
 	}
 	if err := cur.Refresh(context.Background()); err != nil {

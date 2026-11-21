@@ -208,7 +208,7 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 		Reason:            d.Reason, Lifetime: "until the session ends",
 		RequestedAt: d.RequestedAt.UTC().Format(timeLayout), ExpiresAt: d.ExpiresAt.UTC().Format(timeLayout),
 		Approver: approverText(d.Approver), State: d.State,
-		MayDecide: record.MayDecide(d.Kind, d.Approver, d.Service, login, p.cfg.Groups),
+		MayDecide: record.MayDecide(d.Kind, d.Approver, d.Service, login, p.cfg.Machine.Groups),
 	}
 	if d.Session.Request != "" && d.Session.Request != d.Session.Enrollment {
 		v.RequestSession = d.Session.Request
@@ -303,7 +303,7 @@ func (p *Page) outcomes(ctx context.Context, decided, login string, now time.Tim
 				return nil, err
 			}
 		}
-		lines = append(lines, outcome(d, login, now, p.cfg.Groups))
+		lines = append(lines, outcome(d, login, now, p.cfg.Machine.Groups))
 	}
 	return lines, nil
 }

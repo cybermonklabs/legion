@@ -30,7 +30,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -41,7 +40,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/api"
@@ -348,9 +346,9 @@ func main() {
 	// The broker's one reader of Google group members, which every decision site asks who is a
 	// member of a group: the policy's sets (the loader stamps it on each), the request machine,
 	// its chain check and the approval page. A full policy load names its groups to it; it reads
-	// each once an hour (Run, started with the first load below) with the reader account's
-	// token (BROKER_DIRECTORY_ACCOUNT), minted with this pod's own credential.
-	groupReader := newGroupReader(cfg, "", &ownGoogleCredential{})
+	// each once an hour (Start, below, at the first load) with the reader account's token
+	// (BROKER_DIRECTORY_ACCOUNT), minted with this pod's own credential.
+	groupReader := newGroupReader(cfg, "", &secrets.OwnGoogleCredential{})
 	loader := policyLoader(cfg, secretStore, rules, registry, groupReader)
 	// One key source per issuer, read by everything that needs that issuer's keys: the verifiers
 	// discoverVerifiers builds and, for the cluster's issuer and Google's, the RFC 8693 exchange
@@ -398,12 +396,18 @@ func main() {
 			// The group reads run on serving, as the reload does: a read a load starts, and the
 			// hourly read, end when the broker stops serving rather than at the signal, so a
 			// draining pod still admits the members it read.
-			groupReader.Context = serving
-			go groupReader.Run(serving)
+			groupReader.Start(serving)
 			current, err := policy.NewCurrent(serving, loader, policyRefresh)
 			if err != nil {
 				return nil, err
 			}
+			// The first load named its groups, and their reads started: the pod waits a bounded
+			// time for them, so it does not serve its first requests with no group read yet. A
+			// read still under way after the wait goes on, and its group admits nobody until it
+			// ends; a failed one is read again at the next load (groups.Reader.Want).
+			firstReads, cancel := context.WithTimeout(serving, firstGroupReadsWait)
+			groupReader.WaitReads(firstReads)
+			cancel()
 			policy.NewUnservableSecrets(registry, current)
 			return current, nil
 		},
@@ -605,7 +609,10 @@ func main() {
 	// request machine denies at once what the page would have put to a person.
 	var page *approval.Page
 	if !cfg.SignInOff {
-		page, err = approval.New(approvalConfig(cfg, st, reqMachine, groupReader))
+		page, err = approval.New(approval.Config{
+			SignIn: cfg.SignIn, PublicURL: cfg.PublicURL, MachineLoginURL: cfg.MachineLoginURL,
+			Store: st, Machine: reqMachine,
+		})
 		fatal(err)
 	}
 
@@ -1229,8 +1236,14 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			// keeps those credentials.
 			&secrets.GoogleServiceAccount{Accounts: cfg.ServiceAccountSecrets, Retry: retry},
 			// The anthropic-federation minter takes the same binding: the broker may mint the
-			// identity token of every bound account, so the binding chooses the account.
-			&secrets.AnthropicFederation{Accounts: cfg.ServiceAccountSecrets}),
+			// identity token of every bound account, so the binding chooses the account. Each
+			// exchange presents an identity token read for it alone (no cache), which it sends
+			// once, and counts that one attempt on the same Retry.
+			&secrets.AnthropicFederation{
+				Accounts:      cfg.ServiceAccountSecrets,
+				IdentityToken: (&ciphertoken.GoogleAccounts{Audience: secrets.AnthropicAudience}).Read,
+				Retry:         retry,
+			}),
 		// A GitHub App token a release minted and hands to nobody - a release that failed after
 		// the mint, or a name behind the airlock - goes back to GitHub through the same minter's
 		// endpoint and retry.
@@ -1279,43 +1292,10 @@ func policyLoader(cfg config.Config, secretStore secrets.Store, rules proxyrules
 		StoreReads: policy.NewStoreReads(registry), Groups: groupReader}
 }
 
-// approvalConfig is the approval page's configuration: the broker's own sign-in client, its
-// public URL, Dispatch's machine-login page, the store, the request machine, and groupReader,
-// which says whether the signed-in person is a member of a group approver and so sees the
-// buttons.
-func approvalConfig(cfg config.Config, st *store.Store, reqMachine *requests.Machine, groupReader record.Groups) approval.Config {
-	return approval.Config{
-		SignIn: cfg.SignIn, PublicURL: cfg.PublicURL, MachineLoginURL: cfg.MachineLoginURL,
-		Store: st, Machine: reqMachine, Groups: groupReader,
-	}
-}
-
-// ownGoogleCredential is this pod's own Google credential, the application default credentials at
-// the cloud-platform scope (in production the pod's Workload Identity), with which the group
-// reader mints the reader account's token. They are found on the first Token call and kept once
-// found, as secrets.GoogleServiceAccount finds its own, so a broker that names no reader account,
-// or runs where no Google credential exists, looks for none at boot, and a failure to find them
-// is tried again at the next read rather than kept. Their own error names the file or metadata
-// server they tried, so only its class is answered.
-type ownGoogleCredential struct {
-	mu     sync.Mutex
-	source oauth2.TokenSource
-}
-
-func (c *ownGoogleCredential) Token() (*oauth2.Token, error) {
-	c.mu.Lock()
-	source := c.source
-	if source == nil {
-		found, err := google.DefaultTokenSource(context.Background(), "https://www.googleapis.com/auth/cloud-platform")
-		if err != nil {
-			c.mu.Unlock()
-			return nil, errors.New("the broker found no Google credentials of its own")
-		}
-		c.source, source = found, found
-	}
-	c.mu.Unlock()
-	return source.Token()
-}
+// firstGroupReadsWait bounds how long the first policy load waits for the group reads it started
+// before the pod serves: a read is a token mint and a page or two of members, well inside it, and
+// a Directory that does not answer holds the boot no longer than this.
+const firstGroupReadsWait = 15 * time.Second
 
 // vmPersonsByAccount is the person each BROKER_VM_EXCHANGE_ACCOUNTS entry names, keyed by its
 // account, an entry that names none left out: whose Inbox lists a request one of that fleet's

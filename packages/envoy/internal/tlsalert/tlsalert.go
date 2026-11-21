@@ -28,7 +28,7 @@ import (
 // can hold a refused dial ahead of the alert.
 //
 // Its callers word an alert as the peer answering: agent-secrets' peerAnswered (a broker that
-// answered but the exchange failed), internal/cipher/secrets' transportFailure (an upstream a mint
+// answered but the exchange failed), internal/cipher/secrets' TransportFailure (an upstream a mint
 // called that answered), and internal/redact's tlsFailure (the class "TLS failed").
 func In(err error) bool {
 	switch err := err.(type) {

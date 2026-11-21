@@ -271,7 +271,8 @@ func checkTagsFor(tags map[string]string) error {
 // "", the answer for a secret the rules allow, and a usage error for every other reason, so it
 // is this CLI's whole mirror of TagRules: an arm for
 // policy.ReasonScopesType, policy.ReasonAdminTier, policy.ReasonAdminRequesters,
-// policy.ReasonMaxGrantRequired and policy.ReasonRequestersNotOwner, and one fallback refusal
+// policy.ReasonTypeHumanTier, policy.ReasonMaxGrantRequired and policy.ReasonRequestersNotOwner,
+// and one fallback refusal
 // after the switch, which quotes the reason TagRules gave. That reason is this binary's own
 // TagRules answer, so a reason, or a requesters fault, with no arm here is a gap in this build
 // of agent-secrets, which the fallback refuses the write for rather than leave it to be written
@@ -296,8 +297,10 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 		return usageErr{fmt.Errorf("an admin secret releases an administrator's credential, which a person approves each release of, so it is human tier, not %q: write --tier %s, or the broker refuses it as %s", set.Tier, policy.TierHuman, policy.ReasonAdminTier)}
 	case policy.ReasonAdminRequesters:
 		return usageErr{fmt.Errorf("an admin secret names who may ask for an administrator's credential, never leaving it to owner and tier alone: write --requesters, or the broker refuses it as %s", policy.ReasonAdminRequesters)}
+	case policy.ReasonTypeHumanTier:
+		return usageErr{fmt.Errorf("%s secret can release an organization administrator's credential, which a person approves each release of, so it is human tier, not %q: write --tier %s, or the broker refuses it as %s", withArticle(set.Type), set.Tier, policy.TierHuman, policy.ReasonTypeHumanTier)}
 	case policy.ReasonMaxGrantRequired:
-		demands := fmt.Sprintf("a %s secret", policy.TypeGoogleServiceAccount)
+		demands := withArticle(set.Type) + " secret"
 		if set.Admin {
 			demands = "an admin secret"
 		}

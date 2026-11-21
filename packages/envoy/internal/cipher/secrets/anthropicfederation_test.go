@@ -1,18 +1,23 @@
 package secrets_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // The federation fixtures: one bound Google account and the Anthropic identifiers of one rule,
@@ -41,13 +46,16 @@ func federationValue(account, workspace string) string {
 }
 
 // anthropicStand is a stand-in of Anthropic's POST /v1/oauth/token: it answers each exchange with
-// answer and keeps every request body it got.
+// status (200 when zero) and answer, runs during each exchange when set, and keeps every request
+// body it got.
 type anthropicStand struct {
 	server *httptest.Server
 	mu     sync.Mutex
 	bodies []map[string]any
 	types  []string
 	answer map[string]any
+	status int
+	during func()
 }
 
 func newAnthropicStand(t *testing.T) *anthropicStand {
@@ -60,17 +68,30 @@ func newAnthropicStand(t *testing.T) *anthropicStand {
 		s.mu.Lock()
 		s.bodies = append(s.bodies, body)
 		s.types = append(s.types, r.Header.Get("Content-Type"))
-		answer := s.answer
+		answer, status, during := s.answer, s.status, s.during
 		s.mu.Unlock()
+		if during != nil {
+			during()
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/oauth/token" {
 			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if status != 0 {
+			w.WriteHeader(status)
+		}
 		_ = json.NewEncoder(w).Encode(answer)
 	}))
 	t.Cleanup(s.server.Close)
 	return s
+}
+
+// set changes what the stand answers.
+func (s *anthropicStand) set(change func(*anthropicStand)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	change(s)
 }
 
 func (s *anthropicStand) requests() []map[string]any {
@@ -80,26 +101,44 @@ func (s *anthropicStand) requests() []map[string]any {
 }
 
 // federationRig is a minter bound to federationAccount for FED_ADMIN, against stand-ins of the
-// metadata server (the pod's own access token), IAM's generateIdToken and Anthropic's exchange,
-// on a clock the test reads.
+// metadata server (the pod's own access token), IAM's generateIdToken (read through the reader
+// cmd/cipherd builds, ciphertoken.GoogleAccounts, with no cache) and Anthropic's exchange, on a
+// clock the test moves, counting its attempts on registry.
 type federationRig struct {
 	minter    *secrets.AnthropicFederation
 	iam       *ciphertokentest.IAMStand
 	anthropic *anthropicStand
-	now       time.Time
+	registry  *metrics.Registry
+
+	mu  sync.Mutex
+	now time.Time
 }
 
 func newFederationRig(t *testing.T) *federationRig {
 	t.Helper()
 	ciphertokentest.NewMetadataStand(t)
-	r := &federationRig{iam: ciphertokentest.NewIAMStand(t), anthropic: newAnthropicStand(t), now: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)}
+	r := &federationRig{iam: ciphertokentest.NewIAMStand(t), anthropic: newAnthropicStand(t), registry: metrics.New(), now: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)}
+	identity := &ciphertoken.GoogleAccounts{Audience: secrets.AnthropicAudience, IAMCredentialsURL: r.iam.Server.URL}
 	r.minter = &secrets.AnthropicFederation{
-		Accounts:          map[string]string{"FED_ADMIN": federationAccount},
-		TokenURL:          r.anthropic.server.URL + "/v1/oauth/token",
-		IAMCredentialsURL: r.iam.Server.URL,
-		Now:               func() time.Time { return r.now },
+		Accounts:      map[string]string{"FED_ADMIN": federationAccount},
+		IdentityToken: identity.Read,
+		TokenURL:      r.anthropic.server.URL + "/v1/oauth/token",
+		Retry:         secrets.NewRetry(r.registry),
+		Now:           r.clock,
 	}
 	return r
+}
+
+func (r *federationRig) clock() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.now
+}
+
+func (r *federationRig) advance(d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.now = r.now.Add(d)
 }
 
 func (r *federationRig) mint(t *testing.T, value string) (secrets.Minted, error) {
@@ -198,24 +237,125 @@ func TestTheFederationGrantRefusesAnotherTokenShape(t *testing.T) {
 }
 
 // TestTheFederationGrantExpiresAtTheTokensEnd: the minted value expires when the token Anthropic
-// answered does, the clock's now plus expires_in, which is what the airlock's proxy mints again
-// five minutes before (proxy.TestAFederationTokenIsMintedAgainFiveMinutesBeforeItsEnd); an answer
-// with no lifetime is refused, since nothing would tell the proxy when to mint again.
+// answered does, read from the moment the exchange was asked, not answered, so a slow answer
+// never lengthens it; that end is what the airlock's proxy mints again five minutes before. A
+// lifetime over the grant's hour (a rule's token_lifetime_seconds goes up to 86400) would outlive
+// the grant, so it is refused as the rule's fault, naming the setting; a short one is taken; an
+// answer with no lifetime is refused, since nothing would tell the proxy when to mint again.
 func TestTheFederationGrantExpiresAtTheTokensEnd(t *testing.T) {
 	r := newFederationRig(t)
-	r.anthropic.answer["expires_in"] = 1800
+	asked := r.clock()
+	r.anthropic.set(func(s *anthropicStand) {
+		s.answer["expires_in"] = 1800
+		s.during = func() { r.advance(7 * time.Second) }
+	})
 	minted, err := r.mint(t, federationValue(federationAccount, ""))
 	if err != nil || minted.Value != federationToken {
 		t.Fatalf("Mint = %+v, %v; want the federated token", minted, err)
 	}
-	if want := r.now.Add(30 * time.Minute); !minted.Expires.Equal(want) {
-		t.Fatalf("Mint's expiry = %v, want %v: now plus expires_in", minted.Expires, want)
+	if want := asked.Add(30 * time.Minute); !minted.Expires.Equal(want) {
+		t.Fatalf("Mint's expiry = %v, want %v: the moment the exchange was asked plus expires_in", minted.Expires, want)
+	}
+	r.anthropic.set(func(s *anthropicStand) { s.during = nil })
+	for _, lifetime := range []int{60, 300, 3600} {
+		r.anthropic.set(func(s *anthropicStand) { s.answer["expires_in"] = lifetime })
+		if _, err := r.mint(t, federationValue(federationAccount, "")); err != nil {
+			t.Fatalf("Mint of an answer with expires_in %d = %v, want the token", lifetime, err)
+		}
+	}
+	for _, lifetime := range []int{3601, 86400} {
+		r.anthropic.set(func(s *anthropicStand) { s.answer["expires_in"] = lifetime })
+		minted, err := r.mint(t, federationValue(federationAccount, ""))
+		if !errors.Is(err, secrets.ErrMintRefused) || minted.Value != "" || !strings.Contains(err.Error(), "token_lifetime_seconds") {
+			t.Fatalf("Mint of an answer with expires_in %d = %+v, %v; want ErrMintRefused naming token_lifetime_seconds and no value", lifetime, minted, err)
+		}
+		if strings.Contains(err.Error(), federationToken) {
+			t.Fatalf("the refusal quotes the token: %v", err)
+		}
 	}
 	for _, lifetime := range []any{0, -5, nil} {
-		r.anthropic.answer["expires_in"] = lifetime
+		r.anthropic.set(func(s *anthropicStand) { s.answer["expires_in"] = lifetime })
 		if _, err := r.mint(t, federationValue(federationAccount, "")); !errors.Is(err, secrets.ErrMintUpstream) {
 			t.Fatalf("Mint of an answer with expires_in %v = %v, want ErrMintUpstream", lifetime, err)
 		}
+	}
+}
+
+// TestTheFederationExchangeIsSentOnce: an exchange Anthropic fails with a 503, which every other
+// minter tries again, is sent once, refused ErrMintUpstream and counted as one attempt under the
+// type; and each mint presents an identity token it read for that mint, never one an earlier mint
+// presented, so IAM is asked once per mint.
+func TestTheFederationExchangeIsSentOnce(t *testing.T) {
+	r := newFederationRig(t)
+	r.anthropic.set(func(s *anthropicStand) {
+		s.status = http.StatusServiceUnavailable
+		s.answer = map[string]any{"type": "error", "error": map[string]any{"type": "overloaded_error"}}
+	})
+	if minted, err := r.mint(t, federationValue(federationAccount, "")); !errors.Is(err, secrets.ErrMintUpstream) || minted.Value != "" {
+		t.Fatalf("Mint of a 503 = %+v, %v; want ErrMintUpstream and no value", minted, err)
+	}
+	if exchanged := r.anthropic.requests(); len(exchanged) != 1 {
+		t.Fatalf("Anthropic got %d exchanges of a 503, want one", len(exchanged))
+	}
+	if samples := attemptSamples(r.registry); !strings.Contains(samples, `broker_mint_attempts_total{type="anthropic-federation",outcome="upstream",attempt="1"} 1`+"\n") ||
+		strings.Contains(samples, `attempt="2"`) {
+		t.Fatalf("the attempts counter holds\n%s\nwant one upstream attempt under anthropic-federation and no second", samples)
+	}
+	r.anthropic.set(func(s *anthropicStand) {
+		s.status = 0
+		s.answer = map[string]any{"access_token": federationToken, "token_type": "Bearer", "expires_in": 3600}
+	})
+	if _, err := r.mint(t, federationValue(federationAccount, "")); err != nil {
+		t.Fatalf("Mint after the 503 = %v, want the token", err)
+	}
+	if asked := r.iam.Requests(); len(asked) != 2 {
+		t.Fatalf("two mints asked IAM %d times, want twice: one identity token per exchange", len(asked))
+	}
+}
+
+// TestTwoConcurrentFederationMintsPresentTwoIdentityTokens: two mints of one secret made at once,
+// through the identity-token reader cmd/cipherd builds, each mint an identity token of their own
+// while IAM holds the first, and present different ones, so no two exchanges carry one token. A
+// reader that joined concurrent reads into one mint would hand both exchanges one token.
+func TestTwoConcurrentFederationMintsPresentTwoIdentityTokens(t *testing.T) {
+	ciphertokentest.NewMetadataStand(t)
+	var minted atomic.Int64
+	arrived, gate := make(chan struct{}, 2), make(chan struct{})
+	iam := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := minted.Add(1)
+		arrived <- struct{}{}
+		<-gate
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": fmt.Sprintf("identity-%d", n)})
+	}))
+	t.Cleanup(iam.Close)
+	anthropic := newAnthropicStand(t)
+	minter := &secrets.AnthropicFederation{
+		Accounts:      map[string]string{"FED_ADMIN": federationAccount},
+		IdentityToken: (&ciphertoken.GoogleAccounts{Audience: secrets.AnthropicAudience, IAMCredentialsURL: iam.URL}).Read,
+		TokenURL:      anthropic.server.URL + "/v1/oauth/token",
+	}
+	var done sync.WaitGroup
+	for range 2 {
+		done.Go(func() {
+			if _, err := minter.Mint(context.Background(), secrets.MintRequest{Name: "FED_ADMIN", Type: "anthropic-federation", HumanTier: true, Value: federationValue(federationAccount, "")}); err != nil {
+				t.Errorf("Mint: %v", err)
+			}
+		})
+	}
+	for range 2 {
+		select {
+		case <-arrived:
+		case <-time.After(5 * time.Second):
+			close(gate)
+			done.Wait()
+			t.Fatalf("two concurrent mints reached IAM %d times within 5s while it held them, want twice", minted.Load())
+		}
+	}
+	close(gate)
+	done.Wait()
+	exchanged := anthropic.requests()
+	if len(exchanged) != 2 || exchanged[0]["assertion"] == exchanged[1]["assertion"] {
+		t.Fatalf("the two exchanges presented %v; want two different identity tokens", exchanged)
 	}
 }
 

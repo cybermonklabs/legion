@@ -60,20 +60,29 @@ and the group's lowercase email (`group:approvers@example.com`); an entry that s
 holds no lowercase email is refused, as a malformed owner or requester is. Each member of an owner
 group decides the secret's requests on the approval page, which Dispatch's Inbox lists for each
 member, and lists and revokes the grants the group approved, as the one owner of a person's secret
-does. An agent-tier secret a group owns goes to a member's own sessions at once and waits for a
-member's approval from any other session. A group in `requesters` admits its members' sessions.
+does. No rule stops a member approving a request their own session made, as a sole owner may
+approve their own: a group owner is not a second person. An agent-tier secret a group owns goes to
+a member's own sessions at once and waits for a member's approval from any other session. A group
+in `requesters` admits its members' sessions. A list or revoke that names a group as its approver,
+rather than a member, is refused `400 APPROVER_IS_GROUP`.
 
 The broker reads the members of each group a served secret names with the Directory API's
 `members.list`, nested members included (`internal/cipher/groups`): a group the five-minute policy
-load names for the first time at once, and every group once an hour after that. A reread of one
-secret names no group to read, so a `retag` that names a new group admits nobody until the next
-five-minute load reads it. A read that fails keeps the last good members. A group whose last good
-read is more than 2 hours old, or that was never read, admits nobody: no member decides, no
-session gets its agent-tier secret at once, its `requesters` entry admits nobody, and every grant
-that rests on it releases nothing from its next release, an automatic grant included. Each read
-writes one log line, `group members read`, with `group`, `members` (how many members the broker
-holds for the group after the read) and `result`: `ok` at INFO, or the cause at WARN, with
-Google's reason where Google gave one.
+load names that it has not read yet, at once, a group whose first read failed included, and every
+group once an hour after that. At start, the pod waits up to 15 seconds for its first reads before
+it serves. A reread of one secret names no group to read, so a `retag` that names a new group
+admits nobody until the next five-minute load reads it. A read that fails keeps the last good
+members. A group whose last good read is more than 2 hours old, or that was never read, admits
+nobody: no member decides, no session gets its agent-tier secret at once, and every grant that
+rests on it releases nothing from its next release, an automatic grant included. A `requesters`
+entry naming such a group cannot say who is on the list, so a request it decides is denied
+`requester-group-unread`, a live grant it decides is paused, not revoked, and releases again once a
+read lists the person, and an approval of a pending request waits rather than being recorded. A
+member the group's last good read listed may still revoke the group's grants while it is stale,
+since a revoke only takes power away. Each read writes one log line, `group members read`, with
+`group`, `members` (how many members the broker holds for the group after the read) and `result`:
+`ok` at INFO, or the cause at WARN, with Google's reason where Google gave one, and a failed call
+named by its class alone. The Directory and IAM calls follow no redirect.
 
 The broker reads the members as a reader account, which `BROKER_DIRECTORY_ACCOUNT` names: a
 user-managed Google service account that holds Workspace's Groups Reader role and no other, and on
@@ -84,7 +93,9 @@ the pod's own token. Unset, the broker reads no group, each read logs
 `result="no directory account"`, and every group admits nobody. The broker refuses to start on an
 account that `BROKER_SERVICE_ACCOUNT_SECRETS` binds to a secret, since a grant of that secret
 would release the token the group read uses. `BROKER_DIRECTORY_URL` is the Directory API's base
-URL, Google's `https://admin.googleapis.com` when unset; a test names its stand-in there.
+URL, Google's `https://admin.googleapis.com` when unset; a test names its stand-in there. It is an
+https URL, or http to a loopback host for a run on one machine, since the reader account's token
+goes to it.
 
 A grant a member approved records the group as its approver and the member as the person who
 decided it, and it releases only while the group admits that member. When the group does not, the
@@ -107,20 +118,26 @@ as (`<id>@<project>.iam.gserviceaccount.com`), and `workspace_id` (`wrkspc_…`)
 holds only where the federation rule is enabled for more than one workspace.
 `BROKER_SERVICE_ACCOUNT_SECRETS` binds each such secret to one account, as it binds a
 `google-service-account` secret: a secret it binds to no account, or whose `service_account` names
-another one, releases nothing, and the broker logs `class=binding`. A release mints the bound
-account's Google identity token for the audience `https://api.anthropic.com` at IAM's
+another one, releases nothing, and the broker logs `class=binding`. A release mints a new Google
+identity token of the bound account for the audience `https://api.anthropic.com` at IAM's
 `generateIdToken`, with the account's email in it, and trades it at
 `POST https://api.anthropic.com/v1/oauth/token` (the jwt-bearer grant, with the value's ids, and
 `workspace_id` only where the value holds one). It refuses a token that does not start
-`sk-ant-oat01-`. The exchange is sent once and never again, since the identity token it carries may
-be good for one exchange only; a failed mint is logged `class=refused` when Anthropic refused it
-(its `401 authentication_error` when no rule admits the token), `class=stored-value` for a value
-the decoder refuses, and `class=upstream` for any other failure. The release's expiry is the
-token's own end, and the airlock's proxy mints again
-five minutes before it, as it does for every minted value. The secret is human tier alone (the
-broker refuses one at agent tier as `type-human-tier`), takes a `max-grant` of an hour or less,
-names its owner in `requesters` as a `google-service-account` secret does (one person, or one
-group, beside registered services), may carry `admin: true`, and carries no `scopes`.
+`sk-ant-oat01-`. Each release reads an identity token for its own exchange, which it sends once and
+never again: the identity token may be good for one exchange only, so the next release reads a new
+one and asks again. A failed mint is logged `class=refused` when Anthropic refused it (its
+`401 authentication_error` when no rule admits the token), `class=stored-value` for a value the
+decoder refuses, and `class=upstream` for any other failure. The federation rule's
+`token_lifetime_seconds` must be 3600 or less: a grant of the secret lasts an hour at most, so the
+broker refuses a token that lives longer, `class=refused`, naming that setting. The minted value
+expires at the token's own end, which the airlock's proxy reads to mint again five minutes before
+it, as it does for every minted value; the release's `expires_at` is the grant's end. A rule that
+sets five minutes or less works, but every proxied call then mints again. The secret is human tier
+alone (the broker refuses one at agent tier as `type-human-tier`), and a person approves every
+release of it: the model judge decides none, whatever seconds the airlock rules give the name, as
+for a secret tagged `admin`. It takes a `max-grant` of an hour or less, names its owner in
+`requesters` as a `google-service-account` secret does (one person, or one group, beside
+registered services), may carry `admin: true`, and carries no `scopes`.
 
 ## Test
 

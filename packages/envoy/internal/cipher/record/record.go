@@ -584,34 +584,21 @@ func (b Body) ApproverLogin(kind, service, login string, groups Groups) (string,
 }
 
 // MayDecide reports whether login may decide a record of kind whose approver is approver and whose
-// signed request names service: for a machine login that names a service, any login at all, since
-// its credential acts as that service and as no person; for an agent_secret record whose approver
-// is AnyoneApprover, any login; for an agent_secret record whose approver is a group
-// (group:<address>, GroupOf), a login groups admits to that group now, and nobody when groups is
-// nil or the group is stale; and otherwise the person the approver names. No login is
-// AnyoneApprover itself, no login spelled as a group is the group, and no empty login decides
-// anything. A person's machine login's approver is the person whose machine it becomes, so
-// AnyoneApprover there admits no one, whatever binary opened the record, and a group there admits
-// no one either. Nor is a judge actor (JudgeLogin) ever a login that decides: the judge's own
-// approval is recorded under JudgeActor and never as a person, so an owner tag or a login_hint
-// spelled "judge:..." makes no record the judge's to approve as a person.
+// signed request names service (CheckDecider answers nil): for a machine login that names a
+// service, any login at all, since its credential acts as that service and as no person; for an
+// agent_secret record whose approver is AnyoneApprover, any login; for an agent_secret record whose
+// approver is a group (group:<address>, GroupOf), a login groups admits to that group now
+// (GroupAdmits), and nobody when groups is nil or the group is stale; and otherwise the person the
+// approver names. No login is AnyoneApprover itself, no login spelled as a group is the group, and
+// no empty login decides anything. A person's machine login's approver is the person whose
+// machine it becomes, so AnyoneApprover there admits no one, whatever binary opened the record,
+// and a group there admits no one either. Nor is a judge actor (JudgeLogin) ever a login that
+// decides: the judge's own approval is recorded under JudgeActor and never as a person, so an
+// owner tag or a login_hint spelled "judge:..." makes no record the judge's to approve as a
+// person. No rule keeps a person from deciding their own request: a member of a group approver
+// may approve a request their own session made, as a sole owner may.
 func MayDecide(kind, approver, service, login string, groups Groups) bool {
-	login, approver = CanonicalLogin(login), CanonicalLogin(approver)
-	_, judge := JudgeLogin(login)
-	switch {
-	case login == "" || login == AnyoneApprover:
-		return false
-	case judge:
-		return false
-	case kind == KindLauncherCredential && service != "":
-		return true
-	case kind == KindAgentSecret && approver == AnyoneApprover:
-		return true
-	}
-	if group, ok := GroupOf(approver); ok {
-		return kind == KindAgentSecret && groups != nil && groups.HasMember(group, login)
-	}
-	return login == approver
+	return CheckDecider(kind, approver, service, login, groups) == nil
 }
 
 // ErrNotJudgeable is wrapped around every reason the model judge may not decide a record: the

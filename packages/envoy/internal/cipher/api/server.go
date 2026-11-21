@@ -619,10 +619,18 @@ func pathRecordID(w http.ResponseWriter, r *http.Request, name, code string) (st
 
 // requireApprover refuses an approver login that canonicalizes to nothing with 400
 // APPROVER_REQUIRED: every UI route names the human it acts for, whether a decision's or a
-// revoke's approver field or a list's ?approver= query.
+// revoke's approver field or a list's ?approver= query. A login spelled as a group
+// (record.GroupOf) is no human either, and is refused 400 APPROVER_IS_GROUP: a group's records and
+// grants are listed and revoked by naming a member, whom the group reader admits, never by naming
+// the group.
 func requireApprover(w http.ResponseWriter, login string) bool {
-	if record.CanonicalLogin(login) == "" {
+	canonical := record.CanonicalLogin(login)
+	if canonical == "" {
 		writeError(w, http.StatusBadRequest, "APPROVER_REQUIRED", "approver is required")
+		return false
+	}
+	if _, group := record.GroupOf(canonical); group {
+		writeError(w, http.StatusBadRequest, "APPROVER_IS_GROUP", "approver names a person, not a group")
 		return false
 	}
 	return true

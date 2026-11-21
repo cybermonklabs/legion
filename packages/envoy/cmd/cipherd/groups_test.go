@@ -58,18 +58,17 @@ func groupStands(t *testing.T) (iam, directory *httptest.Server) {
 }
 
 // TestEveryDecisionSiteAdmitsAMember builds the broker's decision sites as main wires them — the
-// group reader (newGroupReader), the policy's loader (policyLoader), the request machine and its
-// chain check (newRequestMachine), and the approval page's configuration (approvalConfig) — with
+// group reader (newGroupReader), the policy's loader (policyLoader) and the request machine with
+// its chain check (newRequestMachine), which the approval page reads its group reader from — with
 // the reader at stand-ins that list one member, and asks each site about that member and an
 // outsider: the policy gives the member the group's agent-tier secret at once and asks the group
 // for the outsider's; record.MayDecide on the policy's groups admits the member alone; the
-// machine lists the group for the member alone; its chain check, and the page, admit the member
-// alone.
+// machine lists the group for the member alone; its chain check admits the member alone.
 func TestEveryDecisionSiteAdmitsAMember(t *testing.T) {
 	iam, directory := groupStands(t)
 	cfg := config.Config{SecretsPrefix: policytest.Prefix, DirectoryURL: directory.URL, DirectoryAccount: wiredReader}
 	reader := newGroupReader(cfg, iam.URL, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: podBearer}))
-	reader.Context = t.Context()
+	reader.Start(t.Context())
 
 	local := secrets.NewLocal(policytest.Secret("TEAM_TOKEN", record.GroupPrefix+wiredGroup, policy.TierAgent, "team-v1"))
 	current, err := policy.NewCurrent(t.Context(), policyLoader(cfg, policytest.Store(local), proxyrules.Rules{}, metrics.New(), reader), time.Hour)
@@ -89,7 +88,6 @@ func TestEveryDecisionSiteAdmitsAMember(t *testing.T) {
 	}
 	approver := record.GroupPrefix + wiredGroup
 	machine := newRequestMachine(cfg, nil, current, nil, nil, proxyrules.Rules{}, "", nil, nil, reader)
-	page := approvalConfig(cfg, nil, machine, reader)
 	for _, c := range []struct {
 		login string
 		want  bool
@@ -98,7 +96,6 @@ func TestEveryDecisionSiteAdmitsAMember(t *testing.T) {
 			"the policy's groups (record.MayDecide)": record.MayDecide(record.KindAgentSecret, approver, "", c.login, set.Groups()),
 			"the request machine (GroupsOf)":         machine.Groups != nil && slices.Equal(machine.Groups.GroupsOf(c.login), []string{wiredGroup}),
 			"the machine's chain check":              record.MayDecide(record.KindAgentSecret, approver, "", c.login, machine.Chain.Groups),
-			"the approval page":                      record.MayDecide(record.KindAgentSecret, approver, "", c.login, page.Groups),
 		}
 		for site, got := range sites {
 			if got != c.want {

@@ -5,13 +5,11 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
 // anthropicTokenURL is Anthropic's token exchange, which takes a jwt-bearer grant of a federation
@@ -19,9 +17,10 @@ import (
 // request").
 const anthropicTokenURL = "https://api.anthropic.com/v1/oauth/token"
 
-// anthropicAudience is the audience of the Google identity token the exchange presents: the
-// audience an Anthropic federation rule's match block names for a Google issuer.
-const anthropicAudience = "https://api.anthropic.com"
+// AnthropicAudience is the audience of the Google identity token the exchange presents: the
+// audience an Anthropic federation rule's match block names for a Google issuer, and the one the
+// reader AnthropicFederation.IdentityToken calls is built for.
+const AnthropicAudience = "https://api.anthropic.com"
 
 // anthropicJWTBearer is the exchange's one grant type (RFC 7523).
 const anthropicJWTBearer = "urn:ietf:params:oauth:grant-type:jwt-bearer"
@@ -34,33 +33,36 @@ const anthropicTokenPrefix = "sk-ant-oat01-"
 // AnthropicFederation mints an Anthropic organization's token by Workload Identity Federation: it
 // reads the Google identity token of the one service account the deployment binds to an
 // anthropic-federation secret (Accounts, the deployment's BROKER_SERVICE_ACCOUNT_SECRETS, as for
-// google-service-account), minted at IAM's generateIdToken for the audience
-// https://api.anthropic.com with the broker's own credential (ciphertoken.GoogleAccount), and
-// trades it at Anthropic's POST /v1/oauth/token for the token the secret's federation rule
-// grants. The secret's stored value names the account as well, and a mint happens only when the
-// two are the same account, for the reason GoogleServiceAccount gives: the broker may mint the
-// identity token of every account it is bound to, so the stored value alone choosing the account
-// would let whoever may create a secret mint for someone else's.
+// google-service-account), for the audience AnthropicAudience, and trades it at Anthropic's
+// POST /v1/oauth/token for the token the secret's federation rule grants. The secret's stored value
+// names the account as well, and a mint happens only when the two are the same account, for the
+// reason GoogleServiceAccount gives: the broker may mint the identity token of every account it is
+// bound to, so the stored value alone choosing the account would let whoever may create a secret
+// mint for someone else's.
 //
-// TokenURL is Anthropic's exchange, anthropicTokenURL when empty; IAMCredentialsURL is IAM's,
-// Google's when empty; HTTP is the client both are called on; Now is the clock the minted token's
-// expiry is read against, time.Now when nil. A test names its stand-ins in all four.
+// IdentityToken reads that identity token for an account: cmd/cipherd's is
+// ciphertoken.GoogleAccounts' Read, with no cache, which mints it at IAM's generateIdToken with
+// includeEmail and the broker's own credential. It is a field rather than a call this package
+// makes because agent-secrets links this package for ParseValue, and the token reader's package
+// would bring modules into that binary that its list does not name. A nil IdentityToken mints
+// nothing.
 //
-// The minted token expires when Anthropic says it does, now plus expires_in, and the airlock's
-// proxy mints again five minutes before that (Minted). The policy serves the type at human tier
-// alone, to the requesters its tag names, for grants of an hour at most (policy.TagRules).
+// TokenURL is Anthropic's exchange, anthropicTokenURL when empty; HTTP is the client it is called
+// on; Retry counts each exchange's one attempt in broker_mint_attempts_total, and a nil Retry
+// counts none; Now is the clock the minted token's expiry is read against, time.Now when nil. A
+// test names its stand-ins in all of them.
+//
+// The minted token expires when Anthropic says it does, read from the moment the exchange was
+// asked, and the airlock's proxy mints again five minutes before that (Minted). The policy serves
+// the type at human tier alone, to the requesters its tag names, for grants of an hour at most
+// (policy.TagRules), and no model judge decides it (requests' judgeKey).
 type AnthropicFederation struct {
-	Accounts          map[string]string
-	TokenURL          string
-	HTTP              *http.Client
-	IAMCredentialsURL string
-	Now               func() time.Time
-
-	// mu guards readers: two releases can mint at once.
-	mu sync.Mutex
-	// readers is one identity-token reader for each bound account, so its short cache and its
-	// own access-token source serve every mint of that account rather than one apiece.
-	readers map[string]*ciphertoken.GoogleAccount
+	Accounts      map[string]string
+	IdentityToken func(account string) (string, error)
+	TokenURL      string
+	HTTP          *http.Client
+	Retry         *Retry
+	Now           func() time.Time
 }
 
 // anthropicExchange is one exchange's JSON body. WorkspaceID is left out when empty: Anthropic
@@ -80,29 +82,28 @@ type anthropicToken struct {
 	ExpiresIn   int64  `json:"expires_in"`
 }
 
-// reader is the identity-token reader of account, made on its first mint.
-func (m *AnthropicFederation) reader(account string) *ciphertoken.GoogleAccount {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if r, ok := m.readers[account]; ok {
-		return r
-	}
-	if m.readers == nil {
-		m.readers = map[string]*ciphertoken.GoogleAccount{}
-	}
-	r := ciphertoken.NewGoogleAccount(anthropicAudience)
-	r.ServiceAccount, r.IAMCredentialsURL, r.HTTP = account, m.IAMCredentialsURL, m.HTTP
-	m.readers[account] = r
-	return r
-}
+// errNoIdentityReader is a minter built with no IdentityToken.
+var errNoIdentityReader = errors.New("the broker reads no Google identity token for this type")
+
+// federationLifetimeMax bounds a federated token's lifetime, expires_in. A grant of an
+// anthropic-federation secret lasts an hour at most (policy.TagRules), and the minted value lives
+// for as long as its token does, so a token that outlived the hour would outlive its grant: a
+// federation rule may set token_lifetime_seconds anywhere from 60 to 86400, and its owner sets it
+// to 3600 or less. A rule that sets five minutes or less is taken, but every proxied call then
+// mints again, since the airlock proxy mints again five minutes before a value ends.
+const federationLifetimeMax = time.Hour
 
 // Mint returns the Anthropic token the federation rule of the secret req names grants, for the
 // identity of the account the deployment binds to it. A stored value ParseValue refuses, and a
 // secret whose binding is missing or names another account than the stored value, are refused
-// before any call is made. An answer whose access_token is no sk-ant-oat01- token, or that names
-// no lifetime, is refused. No error holds the identity token, the minted token or the stored
-// value, and every error wraps one of ErrMintStoredValue, ErrMintNotBound, ErrMintRefused or
-// ErrMintUpstream.
+// before any call is made. The exchange is sent once (Retry.startOnce): the identity token it
+// carries is read for this exchange alone, and a retry would present it again, so a failed
+// exchange is the release's error and the next release reads a new one. An answer whose
+// access_token is no sk-ant-oat01- token, or that names no lifetime, is refused, and so is one
+// whose lifetime is over federationLifetimeMax, the rule's fault. The minted value expires at the
+// moment the exchange was asked plus that lifetime. No error holds the
+// identity token, the minted token or the stored value, and every error wraps one of
+// ErrMintStoredValue, ErrMintNotBound, ErrMintRefused or ErrMintUpstream.
 func (m *AnthropicFederation) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 	const what = "exchange an Anthropic federation token"
 	parsed, err := ParseValue(typeAnthropicFederation, req.Value)
@@ -110,16 +111,16 @@ func (m *AnthropicFederation) Mint(ctx context.Context, req MintRequest) (Minted
 		return Minted{}, err
 	}
 	secret := parsed.AnthropicFederation
-	bound, ok := m.Accounts[req.Name]
-	if !ok {
-		return Minted{}, fmt.Errorf("%w: secret %s: the deployment binds no Google service account to it", ErrMintNotBound, req.Name)
+	bound, err := boundAccount(m.Accounts, req.Name, secret.ServiceAccount)
+	if err != nil {
+		return Minted{}, err
 	}
-	if bound != secret.ServiceAccount {
-		return Minted{}, fmt.Errorf("%w: secret %s: the deployment binds it to %s, which its stored value does not name", ErrMintNotBound, req.Name, bound)
+	if m.IdentityToken == nil {
+		return Minted{}, fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, errNoIdentityReader)
 	}
 	// The reader's error names the account, the audience and what failed, Google's refusal cut
 	// short among them, and never a token, so it is the operator's to read.
-	assertion, err := m.reader(bound).Read()
+	assertion, err := m.IdentityToken(bound)
 	if err != nil {
 		return Minted{}, fmt.Errorf("%w: %s: %s", ErrMintUpstream, what, err)
 	}
@@ -132,9 +133,13 @@ func (m *AnthropicFederation) Mint(ctx context.Context, req MintRequest) (Minted
 		return Minted{}, fmt.Errorf("%w: create the Anthropic token exchange request: %w", ErrMintUpstream, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	// One attempt, and an exchange that may have reached Anthropic is not sent again: the
-	// identity token is the assertion, which Anthropic may hold to one use.
-	payload, err := mintCall((*Retry)(nil).start(req.Type), m.HTTP, request, what, "Anthropic", http.StatusOK, mintResponseLimit, false, nil)
+	now := time.Now
+	if m.Now != nil {
+		now = m.Now
+	}
+	// The token's life is read from before the exchange, so a slow answer never lengthens it.
+	asked := now()
+	payload, err := mintCall(m.Retry.startOnce(req.Type), m.HTTP, request, what, "Anthropic", http.StatusOK, mintResponseLimit, false, nil)
 	if err != nil {
 		return Minted{}, err
 	}
@@ -148,9 +153,10 @@ func (m *AnthropicFederation) Mint(ctx context.Context, req MintRequest) (Minted
 	if token.ExpiresIn <= 0 {
 		return Minted{}, fmt.Errorf("%w: Anthropic answered a token with no lifetime", ErrMintUpstream)
 	}
-	now := time.Now
-	if m.Now != nil {
-		now = m.Now
+	lifetime := time.Duration(token.ExpiresIn) * time.Second
+	if lifetime > federationLifetimeMax {
+		return Minted{}, fmt.Errorf("%w: secret %s: Anthropic answered a token that lives %d seconds, longer than the grant's hour: set the federation rule's token_lifetime_seconds to %d or less",
+			ErrMintRefused, req.Name, token.ExpiresIn, int(federationLifetimeMax.Seconds()))
 	}
-	return Minted{Value: token.AccessToken, Expires: now().Add(time.Duration(token.ExpiresIn) * time.Second)}, nil
+	return Minted{Value: token.AccessToken, Expires: asked.Add(lifetime)}, nil
 }

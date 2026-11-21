@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -140,11 +141,17 @@ func TestSecretTypeAndMaxGrantOnGCP(t *testing.T) {
 		if policy.TypeNeedsGitHubOwners(secretType) {
 			args = append(args, "--github-owners", "Ada  acme-org")
 		}
-		if secretType == policy.TypeGoogleServiceAccount {
+		wantTier := policy.TierAgent
+		switch secretType {
+		case policy.TypeGoogleServiceAccount:
 			// The type is served to the one person who owns the secret, and such a secret bounds
 			// its grants to an hour (policy.TagRules), so the retag names both, the max grant as
 			// the secret already holds it.
 			args = append(args, "--requesters", "ada@example.com", "--max-grant", "30m")
+		case policy.TypeAnthropicFederation:
+			// The same, and the type is human tier alone (policy.ReasonTypeHumanTier).
+			args = append(args, "--requesters", "ada@example.com", "--max-grant", "30m", "--tier", policy.TierHuman)
+			wantTier = policy.TierHuman
 		}
 		if _, stderr, code = runSecret(args...); code != 0 {
 			t.Fatalf("retag %s: exit %d, stderr %q", secretType, code, stderr)
@@ -152,7 +159,7 @@ func TestSecretTypeAndMaxGrantOnGCP(t *testing.T) {
 		fake.mu.Lock()
 		annotations = fake.secrets[id].secret.GetAnnotations()
 		fake.mu.Unlock()
-		if annotations[policy.TagType] != secretType || annotations[policy.TagMaxGrant] != "30m" || annotations[policy.TagOwner] != "ada@example.com" || annotations[policy.TagTier] != policy.TierAgent {
+		if annotations[policy.TagType] != secretType || annotations[policy.TagMaxGrant] != "30m" || annotations[policy.TagOwner] != "ada@example.com" || annotations[policy.TagTier] != wantTier {
 			t.Fatalf("retag %s annotations = %v, want new type and retained annotations", secretType, annotations)
 		}
 	}
@@ -865,6 +872,24 @@ func TestTagRefusalRefusesAReasonNoArmNames(t *testing.T) {
 	}
 	if tagRefusal("", onDevAccount, nil) != nil {
 		t.Fatalf("tagRefusal of no reason = %v, want nil", tagRefusal("", onDevAccount, nil))
+	}
+}
+
+// TestTagRefusalNamesTheFederationTypesRules: a federation secret written at agent tier is refused
+// naming --tier human and the reason, not by the fallback; and one with no max-grant is refused
+// naming its own type, not google-service-account's.
+func TestTagRefusalNamesTheFederationTypesRules(t *testing.T) {
+	agent := policy.TagSet{Type: policy.TypeAnthropicFederation, Owner: "ada@example.com", Tier: policy.TierAgent, Requesters: "ada@example.com", MaxGrant: time.Hour}
+	err := tagRefusal(policy.TagRules(agent), agent, map[string]string{})
+	var usage usageErr
+	if !errors.As(err, &usage) || !strings.Contains(err.Error(), "--tier "+policy.TierHuman) || !strings.Contains(err.Error(), policy.ReasonTypeHumanTier) || strings.Contains(err.Error(), "no message naming the flag") {
+		t.Fatalf("tagRefusal(agent-tier federation secret) = %v; want a usage error naming --tier %s and %s", err, policy.TierHuman, policy.ReasonTypeHumanTier)
+	}
+	unbounded := agent
+	unbounded.Tier, unbounded.MaxGrant = policy.TierHuman, 0
+	err = tagRefusal(policy.TagRules(unbounded), unbounded, map[string]string{})
+	if err == nil || !strings.Contains(err.Error(), "an "+policy.TypeAnthropicFederation+" secret") || strings.Contains(err.Error(), policy.TypeGoogleServiceAccount) {
+		t.Fatalf("tagRefusal(federation secret with no max-grant) = %v; want it to name the %s secret alone", err, policy.TypeAnthropicFederation)
 	}
 }
 

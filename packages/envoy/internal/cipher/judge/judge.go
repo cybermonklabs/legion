@@ -116,8 +116,9 @@ type Requests interface {
 	// JudgePolicy answers, for the enrollment that made a pending request, what the live
 	// policy says about one of its names at this moment: the decision policy.Set.Evaluate
 	// makes for that enrollment's requester, whether the name is withheld from the
-	// session, and whether the secret is an administrator's (policy.Secret.Admin, the
-	// admin: "true" tag). The judge asks the machine one question instead of reading the
+	// session, and whether a person approves every release of the secret
+	// (policy.Secret.PersonApprovesEveryRelease: true for a secret tagged admin: "true" and for an
+	// anthropic-federation secret). The judge asks the machine one question instead of reading the
 	// policy itself, because what a requester is — the person it acts for, the service its
 	// account still proves, and the names its operator took back from it — is read from the
 	// database and is the machine's to answer (requests.Machine.requester).
@@ -398,12 +399,13 @@ func decidesNothingFor(name string) string {
 }
 
 // decidedByAPerson is the sentence the admin check writes, and the one a person reads in the
-// request.judged row of a request the judge handed over for being an administrator's. It says
-// both halves of why: what the key is, and that the promise its tag makes is unconditional —
-// every release of such a credential is approved by a person, and no rules file that gives the
-// judge seconds of the name can undo that (policy.TagAdmin, the broker's concepts document).
+// request.judged row of a request the judge handed over for naming a secret a person approves
+// every release of (policy.Secret.PersonApprovesEveryRelease). It says both halves of why: what
+// the key is, and that the promise is unconditional — every release of such a credential is
+// approved by a person, and no rules file that gives the judge seconds of the name can undo that
+// (policy.TagAdmin, the broker's concepts document).
 func decidedByAPerson(name string) string {
-	return fmt.Sprintf("%s is an administrator's secret, and a person approves every release of one", name)
+	return fmt.Sprintf("%s is an administrator's secret or an Anthropic federation secret, and a person approves every release of one", name)
 }
 
 // issue reads the Dispatch issue the signed reason names, when it names one, into data, so the

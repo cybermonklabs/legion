@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,20 +36,32 @@ const (
 	groupAsker = "ada@example.com"
 )
 
-// groupSecrets are the group's two secrets: TEAM_KEY, human tier, which a member approves, and
-// TEAM_TOKEN, agent tier with no requesters tag, which a member's session gets at once.
+// groupOwner is the person who owns OWNER_KEY, whose requesters name the group.
+const groupOwner = "owner@example.com"
+
+// groupSecrets are the group's secrets: TEAM_KEY, human tier, which a member approves;
+// TEAM_TOKEN, agent tier with no requesters tag, which a member's session gets at once; and two
+// secrets whose requesters name the group, LISTED_TOKEN, shared at agent tier, which a member's
+// session gets at once, and OWNER_KEY, groupOwner's at human tier, which groupOwner approves.
 func groupSecrets() []secrets.LocalSecret {
+	listed := policytest.Secret("LISTED_TOKEN", policy.OwnerShared, policy.TierAgent, "listed-v1")
+	listed.Tags[policy.TagRequesters] = approversForm
+	owned := policytest.Secret("OWNER_KEY", groupOwner, policy.TierHuman, "owner-v1")
+	owned.Tags[policy.TagRequesters] = approversForm
 	return []secrets.LocalSecret{
 		policytest.Secret("TEAM_KEY", approversForm, policy.TierHuman, "team-v1"),
 		policytest.Secret("TEAM_TOKEN", approversForm, policy.TierAgent, "token-v1"),
+		listed,
+		owned,
 	}
 }
 
 // groupFixture is a Machine over groupSecrets whose policy, decisions, lists and chain check all
 // read one stand-in group reader listing groupMember and secondMember in approversGroup, with a
-// session of groupMember's and one of groupAsker's.
+// session of groupMember's and one of groupAsker's, and the store its policy is read from.
 type groupFixture struct {
 	m                   *Machine
+	local               *secrets.Local
 	directory           *groupstest.Directory
 	member, asker       string
 	memberKey, askerKey *ecdsa.PrivateKey
@@ -78,7 +91,7 @@ func newGroupFixture(t *testing.T) *groupFixture {
 	}
 	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
 	m.Chain.Groups = directory
-	f := &groupFixture{m: m, directory: directory}
+	f := &groupFixture{m: m, local: local, directory: directory}
 	f.member, f.memberKey = newEnrollment(t, st, "session", "box-member-"+t.Name(), new(groupMember), nil)
 	f.asker, f.askerKey = newEnrollment(t, st, "session", "box-asker-"+t.Name(), new(groupAsker), nil)
 	return f
@@ -109,8 +122,9 @@ func (f *groupFixture) approvedTeamKey(t *testing.T) (recordID, grantID string) 
 }
 
 // TestStillAllowedAdmitsAGroupMemberAndRefusesANonMember: a grant a member approved stays live
-// under the group's live members; one decided by a non-member is refused as a decider the fresh
-// group does not list, and one decided by a member of a stale group as a lapsed grant.
+// under the group's live members; one decided by a non-member, and one decided by a member of a
+// stale group, are refused as not live, with the plain refusal: the typed lapse of a
+// group-approved record is the chain check's to answer and log, never this one's.
 func TestStillAllowedAdmitsAGroupMemberAndRefusesANonMember(t *testing.T) {
 	local := secrets.NewLocal(groupSecrets()...)
 	directory := groupstest.New()
@@ -139,25 +153,23 @@ func TestStillAllowedAdmitsAGroupMemberAndRefusesANonMember(t *testing.T) {
 		}
 		err := stillAllowed(set, proxyrules.Rules{}, "TEAM_KEY", source, policy.Approval, c.decider, nil, asker)
 		var lapsed record.ApproverNotAdmittedError
-		if !errors.Is(err, ErrGrantNotLive) || !errors.As(err, &lapsed) ||
-			lapsed != (record.ApproverNotAdmittedError{Group: approversGroup, Login: c.decider, Fresh: !c.stale}) {
-			t.Fatalf("%s: stillAllowed = %v (typed %+v); want ErrGrantNotLive carrying the group's refusal, fresh %v", c.name, err, lapsed, !c.stale)
+		if !errors.Is(err, ErrGrantNotLive) || errors.As(err, &lapsed) {
+			t.Fatalf("%s: stillAllowed = %v; want ErrGrantNotLive and no lapse of the record's group", c.name, err)
 		}
 	}
 }
 
 // TestMaySettleAdmitsAGroupMember: a person settles a name the policy routes to a group while the
-// group lists them, and not when it does not, nor once it is stale.
+// set's group reader lists them, and not when it does not, nor once the group is stale.
 func TestMaySettleAdmitsAGroupMember(t *testing.T) {
 	directory := groupstest.New()
 	directory.Set(approversGroup, groupMember)
 	member, outsider := byPerson(groupMember), byPerson(groupOutsider)
-	member.groups, outsider.groups = directory, directory
-	if !member.maySettle(approversForm, approversForm) || outsider.maySettle(approversForm, approversForm) {
-		t.Fatalf("maySettle: member %v, outsider %v; want true, false", member.maySettle(approversForm, approversForm), outsider.maySettle(approversForm, approversForm))
+	if !member.maySettle(approversForm, approversForm, directory) || outsider.maySettle(approversForm, approversForm, directory) {
+		t.Fatalf("maySettle: member %v, outsider %v; want true, false", member.maySettle(approversForm, approversForm, directory), outsider.maySettle(approversForm, approversForm, directory))
 	}
 	directory.MarkStale(approversGroup)
-	if member.maySettle(approversForm, approversForm) {
+	if member.maySettle(approversForm, approversForm, directory) {
 		t.Fatal("a member of a stale group settles its name")
 	}
 }
@@ -384,4 +396,142 @@ func TestALapsedGroupApprovalWritesOneLogLine(t *testing.T) {
 	mark, chainMark = lapsedSoFar(), chainsSoFar()
 	f.ask(t, f.asker, f.askerKey, "TEAM_KEY")
 	requireLines(t, capture, mark, chainMark, 1, lapsedLine{grantID, recordID, groupMember, "reuse"})
+}
+
+// grantRevoked reports whether grantID's row records a revoke.
+func (f *groupFixture) grantRevoked(t *testing.T, grantID string) bool {
+	t.Helper()
+	var revoked bool
+	if err := f.m.Store.Pool.QueryRow(context.Background(), `select revoked_at is not null from grants where id=$1`, grantID).Scan(&revoked); err != nil {
+		t.Fatalf("read grant %s: %v", grantID, err)
+	}
+	return revoked
+}
+
+// TestAStaleRequestersGroupPausesItsGrants: a grant of a secret whose requesters name the group
+// is refused while the group is stale, GRANT_NOT_LIVE, and not revoked, by its release and by an
+// ask that would reuse it; a new ask is denied as the group unread; and the grant releases again
+// once a read lists the person.
+func TestAStaleRequestersGroupPausesItsGrants(t *testing.T) {
+	f := newGroupFixture(t)
+	ctx := context.Background()
+	req := f.ask(t, f.member, f.memberKey, "LISTED_TOKEN")
+	if req.State != "granted" || req.GrantID == nil {
+		t.Fatalf("the member's LISTED_TOKEN = %+v; want granted at once", req)
+	}
+	grantID := *req.GrantID
+	if _, err := f.m.Values(ctx, grantID, f.member, nil, ReleaseCall{}); err != nil {
+		t.Fatalf("Values while the group is fresh = %v, want the value", err)
+	}
+	f.directory.MarkStale(approversGroup)
+	if _, err := f.m.Values(ctx, grantID, f.member, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+		t.Fatalf("Values while the requesters group is stale = %v, want ErrGrantNotLive", err)
+	}
+	again := f.ask(t, f.member, f.memberKey, "LISTED_TOKEN")
+	if again.State != "denied" || again.Detail == nil || !strings.Contains(*again.Detail, policy.ReasonRequesterGroupUnread) {
+		t.Fatalf("the member's ask while the group is stale = %+v; want denied %s", again, policy.ReasonRequesterGroupUnread)
+	}
+	if f.grantRevoked(t, grantID) {
+		t.Fatal("a stale requesters group revoked the grant; want it paused")
+	}
+	f.directory.Set(approversGroup, groupMember, secondMember)
+	if _, err := f.m.Values(ctx, grantID, f.member, nil, ReleaseCall{}); err != nil {
+		t.Fatalf("Values once the group is read again = %v, want the value", err)
+	}
+}
+
+// TestAnApprovalWaitsWhileItsRequestersGroupIsUnread: the owner's approval of a request for a
+// secret whose requesters name the group is refused while the group is stale, and the request
+// stays pending, not denied; once the group is read the same approval grants it.
+func TestAnApprovalWaitsWhileItsRequestersGroupIsUnread(t *testing.T) {
+	f := newGroupFixture(t)
+	ctx := context.Background()
+	req := f.ask(t, f.member, f.memberKey, "OWNER_KEY")
+	if req.State != "pending" || req.RecordID == nil {
+		t.Fatalf("the member's OWNER_KEY = %+v; want pending on its owner", req)
+	}
+	f.directory.MarkStale(approversGroup)
+	if _, err := f.m.ApplyDecision(ctx, *req.RecordID, true, groupOwner); !errors.Is(err, record.ErrNotApprover) || !strings.Contains(err.Error(), "stays pending") {
+		t.Fatalf("the owner's approval while the group is stale = %v; want ErrNotApprover saying it stays pending", err)
+	}
+	if got, err := f.m.Get(ctx, req.ID); err != nil || got.State != "pending" {
+		t.Fatalf("the request after the refused approval = %+v, %v; want it pending", got, err)
+	}
+	f.directory.Set(approversGroup, groupMember, secondMember)
+	if dec, err := f.m.ApplyDecision(ctx, *req.RecordID, true, groupOwner); err != nil || dec.GrantID == "" {
+		t.Fatalf("the owner's approval once the group is read = %+v, %v; want a grant", dec, err)
+	}
+}
+
+// TestAMemberRevokesTheGroupsGrantWhileItIsStale: while the group is stale, a person its last read
+// listed may still revoke a grant the group approved, since a revoke only takes power away; a
+// person outside it, and a login spelled as the group itself, may not.
+func TestAMemberRevokesTheGroupsGrantWhileItIsStale(t *testing.T) {
+	f := newGroupFixture(t)
+	ctx := context.Background()
+	_, grantID := f.approvedTeamKey(t)
+	f.directory.MarkStale(approversGroup)
+	for _, login := range []string{groupOutsider, approversForm} {
+		if err := f.m.RevokeByApprover(ctx, grantID, login, record.HumanActor(login)); !errors.Is(err, ErrNotApprover) {
+			t.Fatalf("RevokeByApprover(%s) while the group is stale = %v, want ErrNotApprover", login, err)
+		}
+	}
+	if f.grantRevoked(t, grantID) {
+		t.Fatal("a refused revoke ended the grant")
+	}
+	if err := f.m.RevokeByApprover(ctx, grantID, secondMember, record.HumanActor(secondMember)); err != nil {
+		t.Fatalf("RevokeByApprover(a member the last read listed) while the group is stale = %v, want nil", err)
+	}
+	if !f.grantRevoked(t, grantID) {
+		t.Fatal("the member's revoke did not end the grant")
+	}
+}
+
+// retag stores secret, the store's form of the policy's secret name, and rereads name, as an
+// owner's retag and the reread after it do.
+func (f *groupFixture) retag(t *testing.T, name string, secret secrets.LocalSecret) {
+	t.Helper()
+	f.local.Put(secret)
+	if _, err := f.m.Policy.RefreshOne(context.Background(), name); err != nil {
+		t.Fatalf("RefreshOne(%s): %v", name, err)
+	}
+}
+
+// TestTheLapseLineFollowsTheRecordsGroup: a grant a member approved is refused with one lapsed
+// line at its release and at the reuse an ask makes, after its secret was handed to a person and
+// while its group is stale: the chain check reads the record's group, whoever owns the secret now.
+// A grant a person approved writes no lapsed line once its secret is handed to a group the person
+// is not in: no group approved it.
+func TestTheLapseLineFollowsTheRecordsGroup(t *testing.T) {
+	capture := captureRecords(t)
+	f := newGroupFixture(t)
+	ctx := context.Background()
+	recordID, grantID := f.approvedTeamKey(t)
+	f.retag(t, "TEAM_KEY", policytest.Secret("TEAM_KEY", groupOwner, policy.TierHuman, "team-v1"))
+	f.directory.MarkStale(approversGroup)
+	mark, chainMark := len(loggedLines(t, capture, GrantApproverLapsedMessage)), len(loggedLines(t, capture, GrantChainInvalidMessage))
+	if _, err := f.m.Values(ctx, grantID, f.asker, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+		t.Fatalf("Values after the retag, group stale = %v, want ErrGrantNotLive", err)
+	}
+	requireLines(t, capture, mark, chainMark, 0, lapsedLine{grantID, recordID, groupMember, "values"})
+	mark = len(loggedLines(t, capture, GrantApproverLapsedMessage))
+	f.ask(t, f.asker, f.askerKey, "TEAM_KEY")
+	requireLines(t, capture, mark, chainMark, 0, lapsedLine{grantID, recordID, groupMember, "reuse"})
+
+	f.directory.Set(approversGroup, groupMember, secondMember)
+	owned := f.ask(t, f.member, f.memberKey, "OWNER_KEY")
+	dec, err := f.m.ApplyDecision(ctx, *owned.RecordID, true, groupOwner)
+	if err != nil || dec.GrantID == "" {
+		t.Fatalf("the owner's approval of OWNER_KEY = %+v, %v; want a grant", dec, err)
+	}
+	handed := policytest.Secret("OWNER_KEY", approversForm, policy.TierHuman, "owner-v1")
+	handed.Tags[policy.TagRequesters] = approversForm
+	f.retag(t, "OWNER_KEY", handed)
+	mark = len(loggedLines(t, capture, GrantApproverLapsedMessage))
+	if _, err := f.m.Values(ctx, dec.GrantID, f.member, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+		t.Fatalf("Values of the person's grant after its secret went to the group = %v, want ErrGrantNotLive", err)
+	}
+	if lines := loggedLines(t, capture, GrantApproverLapsedMessage)[mark:]; len(lines) != 0 {
+		t.Fatalf("a person's approval wrote %q lines: %v", GrantApproverLapsedMessage, lines)
+	}
 }

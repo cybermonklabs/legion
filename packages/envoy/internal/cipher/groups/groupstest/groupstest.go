@@ -75,22 +75,13 @@ func (d *Directory) fresh(group string) bool {
 	return known && !d.stale[group]
 }
 
-// HasMember answers whether login is a member of a fresh group.
-func (d *Directory) HasMember(group, login string) bool {
+// Membership answers whether group's members, as a test last set them, list login, whatever the
+// group's freshness, and whether the group is fresh: set and not marked stale since.
+func (d *Directory) Membership(group, login string) (listed, fresh bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.fresh(group) {
-		return false
-	}
-	_, ok := d.groups[group][canonical(login)]
-	return ok
-}
-
-// Fresh answers whether group was set and not marked stale since.
-func (d *Directory) Fresh(group string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.fresh(group)
+	_, listed = d.groups[group][canonical(login)]
+	return listed, d.fresh(group)
 }
 
 // GroupsOf answers every fresh group that lists login, sorted.

@@ -157,10 +157,9 @@ func (c *ChainVerifier) Verify(ctx context.Context, recordID string) (Body, erro
 		if err := MayJudge(body, obj, c.JudgeSeconds, decided); err != nil {
 			return Body{}, fmt.Errorf("%w: approved by the model judge %q, which the rules do not admit: %s", ErrChainBroken, modelID, err)
 		}
-	} else if !MayDecide(c.Kind, body.Approver, obj.Service(), decisions[0].Login, c.Groups) {
-		login := CanonicalLogin(decisions[0].Login)
-		if group, ok := GroupOf(CanonicalLogin(body.Approver)); ok && c.Kind == KindAgentSecret && login != "" {
-			lapsed := ApproverNotAdmittedError{Group: group, Login: login, Fresh: c.Groups != nil && c.Groups.Fresh(group)}
+	} else if err := CheckDecider(c.Kind, body.Approver, obj.Service(), decisions[0].Login, c.Groups); err != nil {
+		var lapsed ApproverNotAdmittedError
+		if errors.As(err, &lapsed) {
 			if !lapsed.Fresh {
 				return Body{}, lapsed
 			}

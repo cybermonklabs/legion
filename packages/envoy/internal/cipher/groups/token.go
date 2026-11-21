@@ -14,15 +14,10 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/redirects"
 )
-
-// googleIAMCredentialsURL is IAM Service Account Credentials, which mints the reader account's
-// access token.
-const googleIAMCredentialsURL = "https://iamcredentials.googleapis.com"
-
-// tokenLifetime is the minted token's life, Google's maximum for a default-configured project:
-// the hourly read mints again when the token it holds is about to end.
-const tokenLifetime = "3600s"
 
 // tokenCallTimeout bounds the mint: oauth2.TokenSource's Token takes no context, so a client with
 // no timeout of its own would let one hung call hold every read.
@@ -41,10 +36,10 @@ var ErrNoDirectoryAccount = errors.New("no directory account")
 // credential it mints with. Account is the reader account (BROKER_DIRECTORY_ACCOUNT), a
 // user-managed Google service account that holds Workspace's Groups Reader role; config.Load holds
 // it to that form. IAMCredentialsURL is Google's when empty; a test names its stand-in. HTTP is a
-// client with a 30-second timeout when nil. Default, which is required, is the broker pod's own
-// credential, the application default credentials at the cloud-platform scope, which must hold
-// Token Creator on Account: the Admin SDK refuses that credential's own token, and IAM takes it to
-// mint the one the Directory reads.
+// client with a 30-second timeout when nil, and follows no redirect either way. Default, which is
+// required, is the broker pod's own credential (secrets.OwnGoogleCredential in cmd/cipherd), which
+// must hold Token Creator on Account: the Admin SDK refuses that credential's own token, and IAM
+// takes it to mint the one the Directory reads.
 type TokenOptions struct {
 	Account           string
 	IAMCredentialsURL string
@@ -77,12 +72,9 @@ func (d directoryToken) Token() (*oauth2.Token, error) {
 	}
 	// Only the email is escaped, and the verb is appended after, as the service-account minter
 	// builds its URL: an escaped colon reads to Google as a resource of its own.
-	endpoint := cmp.Or(d.o.IAMCredentialsURL, googleIAMCredentialsURL) +
+	endpoint := cmp.Or(d.o.IAMCredentialsURL, secrets.GoogleIAMCredentialsURL) +
 		"/v1/projects/-/serviceAccounts/" + url.PathEscape(d.o.Account) + ":generateAccessToken"
-	body, _ := json.Marshal(struct {
-		Scope    []string `json:"scope"`
-		Lifetime string   `json:"lifetime"`
-	}{[]string{Scope}, tokenLifetime})
+	body, _ := json.Marshal(secrets.GenerateAccessTokenRequest{Scope: []string{Scope}, Lifetime: secrets.GoogleAccessTokenLifetime})
 	request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("the token mint: %w", err)
@@ -93,10 +85,7 @@ func (d directoryToken) Token() (*oauth2.Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	var minted struct {
-		AccessToken string `json:"accessToken"`
-		ExpireTime  string `json:"expireTime"`
-	}
+	var minted secrets.GenerateAccessTokenAnswer
 	if json.Unmarshal(payload, &minted) != nil || minted.AccessToken == "" {
 		return nil, fmt.Errorf("the token mint for %s answered no access token", d.o.Account)
 	}
@@ -132,16 +121,19 @@ func (e *googleRefusal) Error() string {
 var googleWord = regexp.MustCompile(`^[A-Za-z0-9_.]{1,64}$`)
 
 // call sends request and answers its body when the status is 200, and a *googleRefusal naming
-// who answered otherwise. An answer past answerLimit is refused rather than read in part.
+// who answered otherwise. It follows no redirect (redirects.Refused): the request carries a token,
+// which no 3xx may take anywhere. A call that fails is named by its class alone
+// (secrets.TransportFailure), since Go's client can quote a malformed status line. An answer past
+// answerLimit is refused rather than read in part.
 func call(client *http.Client, request *http.Request, who string) ([]byte, error) {
-	response, err := client.Do(request)
+	response, err := redirects.Refused(client).Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", who, err)
+		return nil, fmt.Errorf("%s %s", who, secrets.TransportFailure(request.Context(), err))
 	}
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, answerLimit+1))
 	if err != nil {
-		return nil, fmt.Errorf("%s: read the answer: %w", who, err)
+		return nil, fmt.Errorf("%s %s", who, secrets.TransportFailure(request.Context(), err))
 	}
 	if len(payload) > answerLimit {
 		return nil, fmt.Errorf("%s answered more than %d bytes", who, answerLimit)

@@ -63,6 +63,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -151,15 +152,16 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	local := secrets.NewLocal(o.secrets...)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	// The group reader as main.go's newGroupReader builds it, its reads on the serving context.
+	// The group reader as main.go's newGroupReader builds it, started on the serving context.
 	// The pod's own credential is a fixed one, which only the IAM stand-in reads.
 	reader := &groups.Reader{
-		BaseURL: o.directoryURL, Now: o.now, Context: ctx,
+		BaseURL: o.directoryURL, Now: o.now,
 		Source: groups.NewTokenSource(groups.TokenOptions{
 			Account: o.directoryAccount, IAMCredentialsURL: o.iamURL,
 			Default: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: podOwnBearer}),
 		}),
 	}
+	reader.Start(ctx)
 	loader := policytest.Loader(local)
 	loader.Groups = reader
 	current, err := policy.NewCurrent(ctx, loader, reloadInterval)
@@ -174,7 +176,9 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 		Groups: reader,
 		Minters: map[string]requests.Minter{
 			policy.TypeAnthropicFederation: (&secrets.AnthropicFederation{
-				Accounts: o.serviceAccounts, TokenURL: o.anthropicURL, IAMCredentialsURL: o.iamURL, Now: o.now,
+				Accounts:      o.serviceAccounts,
+				IdentityToken: (&ciphertoken.GoogleAccounts{Audience: secrets.AnthropicAudience, IAMCredentialsURL: o.iamURL}).Read,
+				TokenURL:      o.anthropicURL, Now: o.now,
 			}).Mint,
 		},
 	}

@@ -1643,11 +1643,12 @@ func (m *Machine) DenyJudged(ctx context.Context, recordID, modelID string, judg
 }
 
 // judgeKey reports whether the model judge decides a request for name: the airlock rules give
-// the judge seconds of it, and it carries no administrator's tag, of which a person approves every
-// release whatever the rules say.
+// the judge seconds of it, and it is no secret a person approves every release of — one tagged
+// admin, or an anthropic-federation secret (policy.Secret.PersonApprovesEveryRelease) — whatever
+// the rules say.
 func (m *Machine) judgeKey(set *policy.Set, name string) (uint32, bool) {
 	seconds, judged := m.Airlock.JudgeSeconds(name)
-	if !judged || set.Secrets[name].Admin {
+	if !judged || set.Secrets[name].PersonApprovesEveryRelease() {
 		return 0, false
 	}
 	return seconds, true
@@ -1799,9 +1800,6 @@ type decider struct {
 	// refusal is why the judge refused a request it holds (DenyJudged), written as the
 	// denial's detail for its agent to read; empty for every other decision.
 	refusal string
-	// groups is who is a member of a group approver now (Machine.Groups), which a person's
-	// decision is held to when the approver is a group; nil admits nobody to one.
-	groups record.Groups
 }
 
 // byPerson is the decider of a decision a person made on the broker's own approval page: the
@@ -1882,7 +1880,8 @@ func (d decider) grantApprover(recordApprover string) string {
 }
 
 // maySettle reports whether this decider may settle a name the current policy routes to
-// policyApprover, on a record whose own approver is recordApprover (currentPolicyAdmits).
+// policyApprover, on a record whose own approver is recordApprover (currentPolicyAdmits), with
+// groups the set's group reader.
 //
 // A person is held to the rule they are held to everywhere: the policy's own approver for the
 // name must admit them (record.MayDecide). The judge is no login and MayDecide admits none of
@@ -1894,11 +1893,11 @@ func (d decider) grantApprover(recordApprover string) string {
 // secret that went shared or stopped being shared — the judge settles nothing and the request
 // waits for the person who decides it today. The judge is never admitted where the record's own
 // approver would not be.
-func (d decider) maySettle(policyApprover, recordApprover string) bool {
+func (d decider) maySettle(policyApprover, recordApprover string, groups record.Groups) bool {
 	if d.isJudge() {
 		return record.CanonicalLogin(policyApprover) == record.CanonicalLogin(recordApprover)
 	}
-	return record.MayDecide(record.KindAgentSecret, policyApprover, "", d.login, d.groups)
+	return record.MayDecide(record.KindAgentSecret, policyApprover, "", d.login, groups)
 }
 
 // enrollmentHoldsForItsSession is "enrollment e still holds something for its session": a live
@@ -2059,8 +2058,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 			}
 		}
 	} else {
-		who.groups = m.Groups
-		who.login, err = parsed.ApproverLogin(record.KindAgentSecret, "", who.login, who.groups)
+		who.login, err = parsed.ApproverLogin(record.KindAgentSecret, "", who.login, m.Groups)
 		if err != nil {
 			return Decision{}, false, err
 		}
@@ -2287,7 +2285,9 @@ const PolicyDeniedActor = "broker:policy"
 // approve now, as with a withheld name: the session asks again within it.
 //
 // The model judge is held to two rules of its own, ahead of all of this: it settles no withheld
-// name and no administrator's secret, however the policy reads that name now. The run made both
+// name and no secret a person approves every release of (an administrator's, or an Anthropic
+// federation secret: policy.Secret.PersonApprovesEveryRelease), however the policy reads that name
+// now. The run made both
 // checks itself before it asked a model anything (judge's withheld and admin checks), and then
 // spent up to 20 seconds on the model call, so what either of them read could have changed in
 // those seconds, and this transaction is the boundary where it is read again — every other check
@@ -2315,8 +2315,8 @@ func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester
 			if slices.Contains(requester.Withheld, g.name) {
 				return fmt.Errorf("%w: %s is withheld from this session, and the judge settles no withheld name", record.ErrNotApprover, g.name)
 			}
-			if set.Secrets[g.name].Admin {
-				return fmt.Errorf("%w: %s is an administrator's secret, and a person approves every release of one", record.ErrNotApprover, g.name)
+			if set.Secrets[g.name].PersonApprovesEveryRelease() {
+				return fmt.Errorf("%w: a person approves every release of %s, an administrator's or an Anthropic federation secret", record.ErrNotApprover, g.name)
 			}
 		}
 	}
@@ -2327,6 +2327,12 @@ func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester
 		}
 		if err != nil {
 			return err
+		}
+		if d.Outcome == policy.Deny && d.Reason == policy.ReasonRequesterGroupUnread {
+			// The list may still name this session's person, which no read in the last two hours
+			// can say: the decision is refused and the request stays pending, rather than recorded
+			// as the request's own denial, which a fresh read could prove wrong.
+			return fmt.Errorf("%w: %s's requesters name a group whose members were not read in the last two hours, so no one may approve it now; it stays pending until the group is read", record.ErrNotApprover, g.name)
 		}
 		if d.Outcome == policy.Deny && d.Reason == policy.ReasonRequesterNotListed {
 			return &policyDenial{name: g.name}
@@ -2346,7 +2352,7 @@ func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester
 		if d.Outcome == policy.Deny && slices.Contains(requester.Withheld, g.name) {
 			return fmt.Errorf("%w: %s is withheld from this session and the current policy denies it, so no one may approve it now", record.ErrNotApprover, g.name)
 		}
-		if d.Outcome == policy.Approval && !who.maySettle(d.Approver, recordApprover) {
+		if d.Outcome == policy.Approval && !who.maySettle(d.Approver, recordApprover, set.Groups()) {
 			return fmt.Errorf("%w: the current policy has %s approve %s", record.ErrNotApprover, d.Approver, g.name)
 		}
 	}
@@ -2581,13 +2587,17 @@ func withhold(ctx context.Context, tx pgx.Tx, enrollmentID, requestID, actor str
 // and GrantsForApprover lists it to everyone for that same reason. The revoke is the approver's
 // and not the operator's, since whoever ends it stands in for the record's approver and withholds
 // nothing from a session that is not theirs. A grant whose approver is a group (grantApprover) is
-// each member's to end, by the members groups holds now, as the one owner ends their own; a
-// login outside the group, or any login once the group is stale, ends nothing. The sentinel is no
-// signed-in person itself, and neither is an empty login: neither revokes anything.
+// each member's to end, as the one owner ends their own, by the members the group's last good
+// read listed however old that read is: a revoke only takes power away, so a member keeps the
+// power to end the group's grant while the group is stale, as the grant may still release where
+// no person's approval is what it rests on (a judged grant). A login outside the group ends
+// nothing. The sentinel is no signed-in person itself, and neither is an empty login or one
+// spelled as a group: none of them revokes anything.
 func mayRevoke(login string, approver, operator *string, groups record.Groups) (allowed, asOperator bool) {
 	login = record.CanonicalLogin(login)
+	_, loginIsGroup := record.GroupOf(login)
 	switch {
-	case login == "" || login == record.AnyoneApprover:
+	case login == "" || login == record.AnyoneApprover || loginIsGroup:
 		return false, false
 	case operator != nil && record.CanonicalLogin(*operator) == login:
 		return true, true
@@ -2595,12 +2605,22 @@ func mayRevoke(login string, approver, operator *string, groups record.Groups) (
 		return true, false
 	case approver != nil && record.CanonicalLogin(*approver) == login:
 		return true, false
-	case approver != nil && record.MayDecide(record.KindAgentSecret, *approver, "", login, groups):
-		// Reached only for a group approver: a person's is the case above, and the sentinel
-		// the one before it.
+	case approver != nil && groupListed(groups, *approver, login):
 		return true, false
 	}
 	return false, false
+}
+
+// groupListed reports whether the last good read of the group approver names (group:<address>)
+// listed login, however old that read is (mayRevoke's rule). An approver that is no group and a
+// nil groups list nobody.
+func groupListed(groups record.Groups, approver, login string) bool {
+	group, ok := record.GroupOf(record.CanonicalLogin(approver))
+	if !ok || groups == nil {
+		return false
+	}
+	listed, _ := groups.Membership(group, login)
+	return listed
 }
 
 // enrollment reads a live enrollment (not revoked, lease not lapsed); pgx.ErrNoRows otherwise.

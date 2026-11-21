@@ -18,7 +18,7 @@ func TestTheApprovalPageShowsAMemberTheButtons(t *testing.T) {
 	const group = "approvers@example.com"
 	directory := groupstest.New()
 	directory.Set(group, "member@example.com")
-	p := &Page{cfg: Config{Groups: directory}}
+	p := &Page{cfg: Config{Machine: &requests.Machine{Groups: directory}}}
 	now := time.Now()
 	detail := requests.RecordDetail{
 		RecordID: strings.Repeat("a", 64), Kind: record.KindAgentSecret, State: "pending",

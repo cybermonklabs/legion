@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -331,14 +332,14 @@ func TestRunReadsEveryWantedGroupEachTick(t *testing.T) {
 }
 
 // TestAReadWantStartsEndsWithTheReadersContext: the read Want starts for a group it names first
-// runs on the reader's Context, the broker's serving context, so a read the Directory never
+// runs on the context Start was given, the broker's serving context, so a read the Directory never
 // answers ends when the broker stops serving rather than holding on to its timeout, and keeps no
-// members; with no Context it would run out its own timeout.
+// members; the read's line names that end by its class, never the client's own text.
 func TestAReadWantStartsEndsWithTheReadersContext(t *testing.T) {
 	r := newRig(t, map[string][]listed{approvers: {user(member)}})
 	r.directory.set(func(d *directory) { d.hang = approvers })
 	ctx, cancel := context.WithCancel(t.Context())
-	r.reader.Context = ctx
+	r.reader.Start(ctx)
 	r.reader.Want([]string{approvers})
 	testwait.Eventually(t, "the Directory asked for the group", func() bool { return r.directory.calls(approvers) == 1 })
 	cancel()
@@ -355,8 +356,112 @@ func TestAReadWantStartsEndsWithTheReadersContext(t *testing.T) {
 	if r.reader.Fresh(approvers) || r.reader.HasMember(approvers, member) {
 		t.Fatal("a read its context ended kept members")
 	}
-	if lines := r.readsOf(approvers); len(lines) != 1 || !strings.Contains(lines[0].result, "context canceled") {
-		t.Fatalf("the read's lines are %+v; want one naming the context's end", lines)
+	if lines := r.readsOf(approvers); len(lines) != 1 || lines[0].result != "the Directory was cancelled before it answered" {
+		t.Fatalf("the read's lines are %+v; want one naming the context's end by its class", lines)
+	}
+}
+
+// TestAFailedFirstReadIsReadAgainAtTheNextWant: a group whose first read failed is read again at
+// the next load that names it, not an hour later, and admits its members once that read succeeds;
+// a group read once is not read again by a load.
+func TestAFailedFirstReadIsReadAgainAtTheNextWant(t *testing.T) {
+	r := newRig(t, map[string][]listed{approvers: {user(member)}})
+	r.directory.set(func(d *directory) {
+		d.refuse = func(string, string) *refusal {
+			return &refusal{http.StatusServiceUnavailable, `{"error":{"code":503,"status":"UNAVAILABLE"}}`}
+		}
+	})
+	r.want(approvers)
+	if r.reader.Fresh(approvers) {
+		t.Fatal("a group whose only read failed is fresh")
+	}
+	r.directory.set(func(d *directory) { d.refuse = nil })
+	r.want(approvers)
+	if got := r.directory.calls(approvers); got != 2 {
+		t.Fatalf("the load after a failed first read read the group %d times in all, want twice", got)
+	}
+	if !r.reader.HasMember(approvers, member) {
+		t.Fatal("the read after a failed first read admits nobody")
+	}
+	r.want(approvers)
+	if got := r.directory.calls(approvers); got != 2 {
+		t.Fatalf("a load naming a group read once read it again: %d reads in all, want two", got)
+	}
+}
+
+// TestMembershipAnswersTheLastReadAndItsFreshness: Membership answers, from one look at the
+// group, whether its last good read listed the login and whether that read is fresh: listed and
+// fresh after a read, listed and stale two hours later, and neither for a group no load names or
+// a login the read did not list.
+func TestMembershipAnswersTheLastReadAndItsFreshness(t *testing.T) {
+	r := newRig(t, map[string][]listed{approvers: {user(member)}})
+	r.want(approvers)
+	for _, c := range []struct {
+		group, login  string
+		listed, fresh bool
+	}{
+		{approvers, " Member@Example.com ", true, true},
+		{approvers, outsider, false, true},
+		{reviewers, member, false, false},
+	} {
+		if listed, fresh := r.reader.Membership(c.group, c.login); listed != c.listed || fresh != c.fresh {
+			t.Errorf("Membership(%s, %q) = %v, %v; want %v, %v", c.group, c.login, listed, fresh, c.listed, c.fresh)
+		}
+	}
+	r.clock.Advance(groups.StaleAfter + time.Minute)
+	if listed, fresh := r.reader.Membership(approvers, member); !listed || fresh {
+		t.Fatalf("Membership two hours after the read = %v, %v; want listed and stale", listed, fresh)
+	}
+}
+
+// TestTheDirectoryCallFollowsNoRedirect: a Directory answer that redirects is a failed read, and
+// the reader account's token never reaches the address it names.
+func TestTheDirectoryCallFollowsNoRedirect(t *testing.T) {
+	var elsewhere atomic.Int64
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { elsewhere.Add(1) }))
+	t.Cleanup(other.Close)
+	r := newRig(t, map[string][]listed{approvers: {user(member)}})
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		http.Redirect(w, req, other.URL+req.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirecting.Close)
+	r.reader.BaseURL, r.reader.HTTP = redirecting.URL, redirecting.Client()
+	r.want(approvers)
+	if r.reader.Fresh(approvers) || elsewhere.Load() != 0 {
+		t.Fatalf("a redirecting Directory: fresh %v, the redirect's target asked %d times; want a failed read and none", r.reader.Fresh(approvers), elsewhere.Load())
+	}
+}
+
+// TestAFailedCallIsLoggedByItsClass: a Directory that cannot be reached fails the read with a line
+// naming the class of the failure, never the client's own text.
+func TestAFailedCallIsLoggedByItsClass(t *testing.T) {
+	r := newRig(t, map[string][]listed{approvers: {user(member)}})
+	r.directory.server.Close()
+	r.want(approvers)
+	lines := r.readsOf(approvers)
+	if len(lines) != 1 || lines[0].result != "the Directory could not be reached" {
+		t.Fatalf("the read's lines are %+v; want one naming the class, the Directory could not be reached", lines)
+	}
+}
+
+// TestWaitReadsReturnsOnceTheFirstReadsEnd: WaitReads returns once every read Want started has
+// ended, or once its context ends while one is still under way.
+func TestWaitReadsReturnsOnceTheFirstReadsEnd(t *testing.T) {
+	r := newRig(t, map[string][]listed{approvers: {user(member)}, reviewers: {user(member)}})
+	r.reader.Want([]string{approvers})
+	r.reader.WaitReads(t.Context())
+	if !r.reader.Fresh(approvers) {
+		t.Fatal("WaitReads returned before the read Want started ended")
+	}
+	r.directory.set(func(d *directory) { d.hang = reviewers })
+	// The hung read gives up soon, so the rig's cleanup does not wait out the read's minute.
+	groups.SetReadTimeout(r.reader, 2*time.Second)
+	r.reader.Want([]string{approvers, reviewers})
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	r.reader.WaitReads(ctx)
+	if ctx.Err() == nil {
+		t.Fatal("WaitReads returned while a read was still under way and its context was not done")
 	}
 }
 
