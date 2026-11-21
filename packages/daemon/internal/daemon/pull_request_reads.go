@@ -159,11 +159,12 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // next read of the pull request applies it again; an outbox row fails its attempt and is retried.
 func (w *workflowRuntime) applyMergeability(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error {
 	base, mergeable, state := pull.Base.Ref, pull.mergeability(), pull.mergeState()
-	fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base, HeadSHA: pull.Head.SHA,
+	fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base.Name, HeadSHA: pull.Head.SHA,
 		Mergeable: mergeable, MergeState: state, ReadAt: readAt}
 	if mergeable == record.MergeabilityConflicting {
-		if base == "" {
-			base = pr.Base
+		if base.Name == "" {
+			// The record's base, which the daemon's record holds, has none of GitHub's words.
+			base = githubText{Name: pr.Base}
 		}
 		rules := w.readBaseRules(ctx, github, pr, base)
 		fact.Rules = &rules

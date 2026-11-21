@@ -35,7 +35,9 @@ body: |-
   claim token's shape, and says it was not retried, so no line about a retry's path names such a
   token. A read of GitHub's pages names nothing of the next page GitHub's Link header names: a
   next page on another origin is refused naming the origin the token is sent to, and a later
-  page's failure names the page by its number under the read's path.
+  page's failure names the page by its number under the read's path. The read of a conflicting
+  head's base rules names the base branch GitHub answers, on its line and in why the rules could
+  not be read, as the rule reads it, and reads the rules of that branch as it came.
 time: 2026-11-18T10:48:14Z
 custom:
     Issue: pr4368

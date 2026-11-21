@@ -5,11 +5,15 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
+	"sync/atomic"
 	"testing"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -32,7 +36,7 @@ func TestTheBaseRulesLineNamesGitHubsContextsAsTheRuleReadsThem(t *testing.T) {
 	w := &workflowRuntime{log: slog.New(slog.NewJSONHandler(&logs, nil))}
 	github := githubrest.Client{Token: echoedToken, API: githubrest.RepositoryAPI(server.URL, ghrepo.MustParse("acme/widgets"))}
 
-	rules := w.readBaseRules(context.Background(), github, record.PullRequest{Repo: "acme/widgets", Number: 86}, "main")
+	rules := w.readBaseRules(context.Background(), github, record.PullRequest{Repo: "acme/widgets", Number: 86}, githubText{Name: "main", Said: oauth2calltest.Said("main")})
 
 	// Control: the rules keep each context as it came, the echoed ones among them, so the line's
 	// contexts are the ones R0 decides on.
@@ -46,4 +50,61 @@ func TestTheBaseRulesLineNamesGitHubsContextsAsTheRuleReadsThem(t *testing.T) {
 	line := fmt.Sprint(lines[0]["required"])
 	requireHolds(t, line, "build", "refused;", "lint")
 	requireNoEcho(t, "daemon.answer-words/base-rules", line)
+}
+
+// TestTheBaseRulesReadNamesGitHubsBaseAsTheRuleReadsIt: GitHub, or whatever answers in its place,
+// names the pull request's base branch as words that echo the installation token the read carried
+// and quote the probe (echoedWords), and the read of that base's rules fails: GitHub answers it 404
+// (answered), or the connection closes with no answer (unanswered). The line the rules read logs,
+// and the Unread R0 acts on, name the base as the rule reads it: none of the token or the probe's
+// credentials, and the rest of the base and the read's route. The read asks for the base as it
+// came. The line and Unread printed the base as it came, in the line's base, in GitHub's answer's
+// path and in net/http's error. Captures daemon.answer-words/base-<case>.
+func TestTheBaseRulesReadNamesGitHubsBaseAsTheRuleReadsIt(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		refuse func(w http.ResponseWriter)
+		// names is what Unread must say beside the route.
+		names string
+	}{
+		{"answered", func(w http.ResponseWriter) { w.WriteHeader(http.StatusNotFound) }, "with 404"},
+		{"unanswered", func(w http.ResponseWriter) {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				_ = conn.Close()
+			}
+		}, "got no answer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var asked atomic.Value
+			server := githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/repos/acme/widgets/pulls/86" {
+					fmt.Fprintf(w, `{"number":86,"state":"open","base":{"ref":%q},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":false}`, echoedWords)
+					return
+				}
+				asked.CompareAndSwap(nil, r.URL.Path)
+				tc.refuse(w)
+			}})
+			var logs bytes.Buffer
+			w := &workflowRuntime{log: slog.New(slog.NewJSONHandler(&logs, nil))}
+			github := githubrest.Client{Token: echoedToken, API: githubrest.RepositoryAPI(server.URL, ghrepo.MustParse("acme/widgets"))}
+			var pull githubPullRequest
+			if err := github.Get(context.Background(), "/pulls/86", &pull); err != nil {
+				t.Fatalf("read the pull request: %v", err)
+			}
+
+			rules := w.readBaseRules(context.Background(), github, record.PullRequest{Repo: "acme/widgets", Number: 86}, pull.Base.Ref)
+
+			// Control: the read asked for the base as it came, and failed, so R0 acts at once.
+			if want := "/repos/acme/widgets/rules/branches/" + echoedWords; asked.Load() != want || rules.Unread == "" {
+				t.Fatalf("the read asked for %v and came to %+v, want %q asked and the rules unread", asked.Load(), rules, want)
+			}
+			lines := loggedLines(t, logs.String(), rulesReadLine)
+			if len(lines) != 1 || lines[0]["unread"] != rules.Unread {
+				t.Fatalf("the read logged %v, want one line of the rules it read, with its Unread", lines)
+			}
+			line := fmt.Sprint(lines[0]["base"], " | ", lines[0]["unread"])
+			requireHolds(t, line, "refused;", "GET /rules/branches/token", tc.names)
+			requireNoEcho(t, "daemon.answer-words/base-"+tc.name, line)
+		})
+	}
 }

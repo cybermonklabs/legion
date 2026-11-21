@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
@@ -92,7 +93,7 @@ func appliedRead(t *testing.T, pool *store.Pool, api, base string, mergeable boo
 	facts := &outboxFactHandler{}
 	w.handlers = []intake.Handler{facts}
 	pull := githubPullRequest{Number: 86, State: "open", Mergeable: &mergeable, MergeableState: "dirty"}
-	pull.Base.Ref, pull.Head.Ref, pull.Head.SHA = base, "legion/CAPTURE-1", "code"
+	pull.Base.Ref, pull.Head.Ref, pull.Head.SHA = githubText{Name: base, Said: oauth2calltest.Said(base)}, "legion/CAPTURE-1", "code"
 	github := githubrest.Client{Token: "outbox-token", API: githubrest.RepositoryAPI(api, ghrepo.MustParse("acme/widgets"))}
 	pr := record.PullRequest{State: record.PullRequestOpen, Issue: "CAPTURE-1", Repo: "acme/widgets", Number: 86, Base: base, HeadSHA: "code"}
 	if err := w.applyMergeability(context.Background(), github, pr, pull, time.Now().UTC(), eventID); err != nil {

@@ -54,8 +54,8 @@ func TestEachGitHubClientOfATreeRecordedBeforeItsTransferAddressesTheRepositoryG
 				if err != nil {
 					t.Fatalf("read the recorded pull request: %v", err)
 				}
-				if pull.Number != 42 || pull.Base.Ref != "main" {
-					t.Errorf("the pull request read = #%d on %q, want #42 on main", pull.Number, pull.Base.Ref)
+				if pull.Number != 42 || pull.Base.Ref.Name != "main" {
+					t.Errorf("the pull request read = #%d on %q, want #42 on main", pull.Number, pull.Base.Ref.Name)
 				}
 			},
 		},
