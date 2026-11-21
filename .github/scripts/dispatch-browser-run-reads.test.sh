@@ -11,11 +11,14 @@
 # 0. A stand-in `sleep` records each wait the ladder asks for through the `sleep` on PATH, and
 # the cases read those records, not how long the drive took: two cases set the knob to 1 and read
 # the waits 1 s and 2 s, or 1 s. The control runs the drive of a gh answering at once under
-# strace and holds it to none of the calls TIMED_WAITS lists (a futex or a setsockopt counted
-# only where it sets a timeout). A `sleep` by any path, a `read -t`, a timed futex, semtimedop,
-# mq_timedreceive, a timerfd, alarm and pause, flock and SO_RCVTIMEO each make one. A
-# `timeout N cmd` wait, which makes only the calls the drive's own `timeout` bounds make, and a
-# busy loop in user space make none, and are not seen.
+# strace and holds it to none of the calls TIMED_WAITS lists, the census of the kernel's calls
+# that wait out a clock, arm one, or wait for a signal or a lock (a futex, an fcntl or a
+# setsockopt counted only where it waits or sets a timeout). A `sleep` by any path, a `read -t`,
+# a timed futex or futex_wait, semtimedop, mq_timedreceive, io_uring, a timerfd, alarm and pause,
+# flock, a lock wait by fcntl and SO_RCVTIMEO each make one. The waits the comment above
+# TIMED_WAITS names as not seen - a `timeout N cmd` wait, which makes only the calls the drive's
+# own `timeout` bounds make, a blocking call a timer_create timer or a process outside the
+# drive's tree ends, and a busy loop in user space - make none.
 #
 # NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `timeout` that
 # four cases opt into call by call and that otherwise execs the real one, a stand-in `sleep` that
@@ -127,49 +130,81 @@ real_timeout=$(type -P timeout) ||
 real_strace=$(type -P strace) ||
   { echo "dispatch-browser-run-reads.test.sh needs strace on PATH for its negative control" >&2
     exit 1; }
-# The system calls the control's trace lists, in two groups.
+# The system calls the control's trace lists. They are the census of the kernel's x86_64, arm64
+# and i386 syscall tables (torvalds/linux master c44104f3642d, read on 2026-11-21) for calls that
+# wait out a clock, arm one, or wait for a signal or a lock, in three groups, with every other
+# such call named below as unlisted and why.
 #
-# Calls that carry a timeout of their own: a sleep binary and bash's sleep builtin make
+# Calls that take a timeout of their own: nanosleep, clock_nanosleep, select (and i386's old
+# select), _newselect (i386), pselect6, poll, ppoll, epoll_wait, epoll_pwait, epoll_pwait2,
+# rt_sigtimedwait, futex, futex_wait (kernel 6.7), futex_waitv, semtimedop, mq_timedreceive,
+# mq_timedsend, recvmmsg, io_getevents, io_pgetevents and io_uring_enter, with the i386 ABI's
+# *_time64 names for the ones that have them. A sleep binary and bash's sleep builtin make
 # clock_nanosleep or nanosleep, `read -t` makes pselect6, a thread or a helper waiting on a futex
-# with a timeout makes futex, and select, poll, ppoll, epoll_wait, epoll_pwait(2),
-# rt_sigtimedwait, semtimedop, mq_timedreceive, mq_timedsend, recvmmsg, io_getevents and
-# io_pgetevents are the other calls that wait out a timeout they are given. arm64 has no
-# select, poll or epoll_wait. A 32-bit process makes the i386 ABI's names instead: the *_time64
-# ones, and _newselect for select; nanosleep, poll, epoll_wait, epoll_pwait(2), futex_waitv and
-# io_getevents keep their names there.
+# with a timeout makes futex. arm64 has no select, poll, epoll_wait, alarm or pause: on GitHub's
+# ubuntu-24.04-arm runner (kernel 7.0.0-1017-azure, strace 6.8, 2026-11-21) glibc's alarm made
+# setitimer and its pause made ppoll, and io_uring was allowed (io_uring_disabled 0): a 1 s
+# io_uring_enter waited and ended ETIME there.
 #
-# Calls that arm a clock or block on another process, which the drive at this file's head makes
-# none of: timerfd_settime (a read of the timerfd then waits), setitimer and alarm (arm64 has no
-# alarm; glibc's alarm makes setitimer there), pause, flock, and setsockopt with SO_RCVTIMEO or
-# SO_SNDTIMEO (a recv or a send then waits).
+# Calls that arm a clock a later call waits out: timerfd_settime (a read of the timerfd waits),
+# setitimer and alarm, setsockopt with SO_RCVTIMEO or SO_SNDTIMEO (a recv or a send waits),
+# sched_setattr (under SCHED_DEADLINE, sched_yield sleeps to the next period), and io_uring_setup
+# and io_uring_register, so that every use of io_uring, whose timeouts are its own
+# (IORING_OP_TIMEOUT, a cancel with a timeout), is counted.
+#
+# Calls that wait for a signal or a lock and that the drive at this file's head makes none of:
+# pause, flock, and fcntl or fcntl64 with F_SETLKW or F_OFD_SETLKW.
+#
+# Not listed, with why:
+# - timer_create, timer_settime, rt_sigsuspend, sigsuspend (i386), wait4, waitid and waitpid
+#   (i386): the drive's own `timeout` bounds arm their clock with timer_settime and wait in
+#   rt_sigsuspend and wait4 (2, 2 and 40 of them traced at this head on 2026-11-21), so a
+#   `timeout N cmd` wrapping a blocking command, or any blocking call a timer_create timer's
+#   signal ends, makes only calls the drive makes too, and is not seen.
+# - read, readv, pread64, preadv, preadv2, write and its kin, recvfrom, recvmsg, accept, accept4,
+#   connect, sendto, sendmsg, sendmmsg, sendfile, splice, tee, vmsplice, msgrcv, msgsnd, semop,
+#   getrandom and ptrace: they wait on a pipe, a socket, a device, a queue or another process,
+#   with no clock of their own, and the drive makes reads and writes all the time. A wait made
+#   with them ends when a call listed above, a timer_create signal or another process ends it.
+#   Another process in the drive's tree is traced under -f; one outside it, such as a network
+#   peer, is not seen.
+# - restart_syscall: it resumes an interrupted wait, whose first call is already traced.
+# - sched_yield and rseq_slice_yield: they give up the CPU and wait out no clock (sched_yield's
+#   SCHED_DEADLINE case is sched_setattr's, above).
+# - clock_gettime, clock_getres, gettimeofday, time, times, getitimer, timer_gettime,
+#   timerfd_gettime, sched_rr_get_interval, clock_settime, clock_adjtime, adjtimex,
+#   settimeofday, stime, utime, utimes, utimensat and futimesat, and their 64 and _time64 forms:
+#   they read or set a clock or a file's times and wait for nothing.
+# - i386's ipc and socketcall multiplexers need no names of their own: strace names their
+#   subcalls (semtimedop, setsockopt), and the list matches those, as a 32-bit helper traced on
+#   2026-11-21 showed.
+# - A busy loop in user space, which spins on the clock with no system call. io_uring with
+#   SQPOLL polled from user space is one, after an io_uring_setup the list counts.
 #
 # A regex, so strace matches only the calls the host's architectures have. What the trace
-# establishes is that the drive made none of these calls (futex and setsockopt counted as below),
-# and no more. A wait it does not see: a `timeout N cmd` wrapping a blocking command, which arms
-# its clock with timer_settime and waits in rt_sigsuspend and wait4, the very calls the drive's
-# own `timeout` bounds make (2, 2 and 40 of them traced at this head on 2026-11-21), so no list
-# can tell the two apart; a timer_create timer whose signal ends any other blocking call; and a
-# busy loop in user space, which spins on the clock without a system call. No check here reads
-# elapsed time to make up for those.
-TIMED_WAITS='/^(nanosleep|clock_nanosleep(_time64)?|select|_newselect|pselect6(_time64)?|poll|ppoll(_time64)?|epoll_wait|epoll_pwait|epoll_pwait2|rt_sigtimedwait(_time64)?|futex(_time64|_waitv)?|semtimedop(_time64)?|mq_timedreceive(_time64)?|mq_timedsend(_time64)?|recvmmsg(_time64)?|io_getevents|io_pgetevents(_time64)?|timerfd_settime(64)?|setitimer|alarm|pause|flock|setsockopt)$'
+# establishes is that the drive made none of these calls, counted as timed_waits counts them, and
+# no more. No check here reads elapsed time to make up for the waits named above as not seen.
+TIMED_WAITS='/^(nanosleep|clock_nanosleep(_time64)?|select|_newselect|pselect6(_time64)?|poll|ppoll(_time64)?|epoll_wait|epoll_pwait|epoll_pwait2|rt_sigtimedwait(_time64)?|futex(_time64|_waitv|_wait)?|semtimedop(_time64)?|mq_timedreceive(_time64)?|mq_timedsend(_time64)?|recvmmsg(_time64)?|io_getevents|io_pgetevents(_time64)?|io_uring_setup|io_uring_enter|io_uring_register|timerfd_settime(64)?|setitimer|alarm|sched_setattr|setsockopt|pause|flock|fcntl(64)?)$'
 
 # timed_waits <trace>: the calls of a strace log the control counts, one per line. A call begins
 # a line `<pid> <name>(`, where strace pads a short pid with spaces (`4     futex(`, as in a fresh
 # PID namespace or on a runner whose pids are short), so the separator is any run of blanks; one
 # another process's call interrupted goes on in a `<... name resumed>` line, which is no new call
-# and is passed over. A futex, futex_time64 or futex_waitv call counts only where its timeout
-# argument is a struct, `{tv_sec=`: a lock's FUTEX_WAIT has NULL there and FUTEX_WAKE has no
-# timeout at all. A setsockopt counts only where it sets SO_RCVTIMEO or SO_SNDTIMEO. Every call of
-# the other names counts. The drive at this file's head makes none that counts: traced on
-# 2026-11-21, it made 0 of every listed call but futex, and 27 futex(FUTEX_WAKE_PRIVATE) calls,
-# none of them timed, in each of 3 runs. A `/usr/bin/sleep 1` after gh answered made
-# clock_nanosleep, a `read -t 1` on a FIFO pselect6, and a 1 s FUTEX_WAIT_PRIVATE futex with
-# `{tv_sec=1, tv_nsec=0}`.
+# and is passed over. A futex, futex_time64, futex_wait or futex_waitv call counts only where its
+# timeout argument is a struct, `{tv_sec=`: a lock's FUTEX_WAIT has NULL there and FUTEX_WAKE has
+# no timeout at all. A setsockopt counts only where it sets SO_RCVTIMEO or SO_SNDTIMEO, and an
+# fcntl only where it is F_SETLKW or F_OFD_SETLKW. Every call of the other names counts. The
+# drive at this file's head makes none that counts: traced on 2026-11-21, in each of 3 runs it
+# made 0 of every listed call but futex and fcntl, 27 futex(FUTEX_WAKE_PRIVATE) calls, none of
+# them timed, and 51 fcntl calls (F_GETFD, F_SETFD, F_DUPFD, F_DUPFD_CLOEXEC and F_GETFL), none
+# of them a lock wait. A `/usr/bin/sleep 1` after gh answered made clock_nanosleep, a `read -t 1`
+# on a FIFO pselect6, and a 1 s FUTEX_WAIT_PRIVATE futex with `{tv_sec=1, tv_nsec=0}`.
 timed_waits() {
   { grep -E '^[0-9]+[[:space:]]+[a-z_0-9]+\(' "$1" || true; } |
-    { grep -Ev '^[0-9]+[[:space:]]+(futex(_time64|_waitv)?|setsockopt)\(' || true; }
-  grep -E '^[0-9]+[[:space:]]+futex(_time64|_waitv)?\(.*\{tv_sec=' "$1" || true
+    { grep -Ev '^[0-9]+[[:space:]]+(futex(_time64|_waitv|_wait)?|setsockopt|fcntl(64)?)\(' || true; }
+  grep -E '^[0-9]+[[:space:]]+futex(_time64|_waitv|_wait)?\(.*\{tv_sec=' "$1" || true
   grep -E '^[0-9]+[[:space:]]+setsockopt\(.*SO_(RCV|SND)TIMEO' "$1" || true
+  grep -E '^[0-9]+[[:space:]]+fcntl(64)?\(.*F_(OFD_)?SETLKW' "$1" || true
 }
 
 # The stand-in `timeout`, beside the stand-in `gh` and opted into per call. It records the
@@ -617,11 +652,12 @@ echo "case: the negative control, a gh that answers at once"
 # The two cases above read the waits the ladder asked of `sleep`, and this one holds that a gh
 # answering at once makes the drive make none of the calls TIMED_WAITS lists, as timed_waits
 # counts them. A wait the stand-in does not record - a sleep binary by its absolute path,
-# `read -t`, a timed futex, semtimedop, mq_timedreceive, a timerfd, alarm and pause, flock,
-# SO_RCVTIMEO, any of them after the answer, of any length - makes one, so the drive runs under
-# strace and timed_waits must find none. A `timeout N cmd` wait and a busy loop in user space
-# make none and pass; the comment above TIMED_WAITS says why. The knob is 100000 and the real
-# `timeout 120` still bounds the drive, so a wait the size of the knob also ends it with 124.
+# `read -t`, a timed futex or futex_wait, semtimedop, mq_timedreceive, io_uring_enter with a
+# timeout, a timerfd, alarm and pause, flock, an F_OFD_SETLKW lock wait, SO_RCVTIMEO, any of them
+# after the answer, of any length - makes one, so the drive runs under strace and timed_waits
+# must find none. The waits the comment above TIMED_WAITS names as not seen pass. The knob is
+# 100000 and the real `timeout 120` still bounds the drive, so a wait the size of the knob also
+# ends it with 124.
 fixture 0
 set +e
 out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
@@ -638,12 +674,13 @@ check "and makes none of the calls the trace lists" "$(is "$(grep -c . <<<"$wait
 
 echo "case: timed_waits reads a trace line whatever the padding of its pid and the ABI's names"
 # The parser of the control's trace, on lines in the shape strace 6.8 writes. The pid-4 and pid-5
-# clock_nanosleep, futex_waitv, *_time64 / _newselect, semtimedop, mq_timedreceive,
-# timerfd_settime, alarm, pause, flock and SO_RCVTIMEO lines were written in a fresh PID
-# namespace, where strace pads a one-digit pid with blanks (`4     futex(`), the *_time64 ones by
-# a 32-bit helper, and the seven-digit ones outside it, on 2026-11-21; the others are those lines
-# with the pid re-padded, or a lock's NULL-timeout wait, a wake, a setsockopt of another option
-# and a resumed call built in the same shape. Each `yes` line counts, each `no` line does not.
+# lines were written in a fresh PID namespace on this file's x86_64 box, where strace pads a
+# one-digit pid with blanks (`4     futex(`), the *_time64, _newselect and i386 multiplexer ones
+# by a 32-bit helper; the pid-2224, 2229, 2234 and 2239 ones on GitHub's ubuntu-24.04-arm
+# runner; the seven-digit ones on the x86_64 box outside a namespace; all on 2026-11-21. The
+# others are those lines with the pid re-padded or under the name i386 gives the call (fcntl64),
+# or a lock's NULL-timeout wait, a wake, a setsockopt of another option and a resumed call built
+# in the same shape. Each `yes` line counts, each `no` line does not.
 while IFS='|' read -r want line; do
   printf '%s\n' "$line" > "$work/trace-line"
   got=no
@@ -671,12 +708,26 @@ yes|4     alarm(1)                          = 0
 yes|4     pause()                           = ? ERESTARTNOHAND (To be restarted if no handler)
 yes|4     flock(4, LOCK_EX)                 = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
 yes|4     setsockopt(3, SOL_SOCKET, SO_RCVTIMEO_OLD, "\1\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16) = 0
+yes|4     setsockopt(3, SOL_SOCKET, SO_RCVTIMEO_OLD, "\1\0\0\0\0\0\0\0", 8) = 0
+yes|4     semtimedop(47, [{sem_num=0, sem_op=-1, sem_flg=0}], 1, {tv_sec=0, tv_nsec=10000000}) = -1 EAGAIN (Resource temporarily unavailable)
+yes|4     io_uring_enter(3, 0, 1, IORING_ENTER_GETEVENTS|IORING_ENTER_EXT_ARG, 0x7ffd7597e5e0, 24) = -1 ETIME (Timer expired)
+yes|2224  io_uring_enter(3, 0, 1, IORING_ENTER_GETEVENTS|IORING_ENTER_EXT_ARG, 0xffffeaa74640, 24) = -1 ETIME (Timer expired)
+yes|4     futex_wait(0x7ffd40f58180, 0, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32|FUTEX2_PRIVATE, {tv_sec=1414019, tv_nsec=781690059}, CLOCK_MONOTONIC) = -1 ETIMEDOUT (Connection timed out)
+yes|2229  futex_wait(0xffffcd665e70, 0, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32|FUTEX2_PRIVATE, {tv_sec=774, tv_nsec=700571771}, CLOCK_MONOTONIC) = -1 ETIMEDOUT (Connection timed out)
+yes|4     fcntl(4, F_OFD_SETLKW, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
+yes|2239  fcntl(4, F_OFD_SETLKW, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
+yes|4     fcntl64(4, F_SETLKW, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
+yes|4     sched_setattr(0, {size=56, sched_policy=SCHED_DEADLINE, sched_flags=0, sched_nice=0, sched_priority=0, sched_runtime=10000000, sched_deadline=1000000000, sched_period=1000000000, sched_util_min=0, sched_util_max=0}, 0) = -1 EPERM (Operation not permitted)
 no|4     futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 2, NULL) = 0
 no|2256817 futex(0x76abf580572c, FUTEX_WAKE_PRIVATE, 2147483647) = 0
 no|4     futex(0x76abf580572c, FUTEX_WAKE_PRIVATE, 2147483647) = 0
 no|4     futex_time64(0x804b010, FUTEX_WAIT_PRIVATE, 2, NULL) = 0
 no|4     futex_time64(0x804b010, FUTEX_WAKE_PRIVATE, 2147483647) = 0
 no|4     setsockopt(3, SOL_SOCKET, SO_REUSEADDR, [1], 4) = 0
+no|4     futex_wait(0x7ffe02ed1ba0, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32|FUTEX2_PRIVATE, NULL, CLOCK_MONOTONIC) = -1 EAGAIN (Resource temporarily unavailable)
+no|2234  futex_wait(0xffffc227b690, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32|FUTEX2_PRIVATE, NULL, CLOCK_MONOTONIC) = -1 EAGAIN (Resource temporarily unavailable)
+no|4     fcntl(3, F_OFD_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = 0
+no|4     fcntl(0, F_SETFD, FD_CLOEXEC)     = 0
 no|4     <... futex resumed>) = -1 ETIMEDOUT (Connection timed out)
 no|3662081 <... clock_nanosleep resumed>0x7fff1f4bea20) = 0
 TRACE
