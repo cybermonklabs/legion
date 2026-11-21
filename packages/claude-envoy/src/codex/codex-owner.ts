@@ -12,12 +12,17 @@ import { processStarted } from "./codex-session-record"
  *
  * So each server publishes an entry, `codex-servers/<codex pid>/<seq>.json`, taking the next free
  * sequence number by linking a fully written temporary file into place (`link` fails when the
- * name exists), so two live entries never hold one number and the order is the order they
- * published in, whatever the clock says. The owner is the live entry with the lowest number. No
- * server removes another's entry, so a name a server judged dead and a name a later server took
- * are never confused; the `SessionStart` hook removes a dead codex process's entries. Every server
- * reads the same entries and reaches the same answer. The others stand by, serving their thread's
- * `dispatch` calls, until every server that published before them is gone.
+ * name exists), so two live entries never hold one number, whatever the clock says. The owner is
+ * the live entry with the lowest number. A server reads the directory before it links, and a
+ * server that stops removes its entry, so a server held between the two can take a number freed
+ * meanwhile, below an entry published after its read; its temporary file is there all that time,
+ * and while a server that still runs has one there, no owner is decided above a free number, so
+ * the order a decision reads is final and no server owns while another does. No server removes
+ * another's entry, so a name a server judged dead and a name a later server took are never
+ * confused, and an entry below the owner's, which is dead, stays; the `SessionStart` hook removes
+ * a dead codex process's entries. Every server reads the same entries and reaches the same
+ * answer. The others stand by, serving their thread's `dispatch` calls, until every server ahead
+ * of them is gone.
  */
 export interface CodexServerEntry {
   /** The publication number: lower owns. */
@@ -36,26 +41,35 @@ export function codexServersDirectory(stateDirectory: string, codexPid: number):
 
 const ENTRY_NAME = /^(\d+)\.json$/
 
+/** A server's temporary file (`registerServer`): `.<pid>.<n>.tmp`. */
+const TEMPORARY_NAME = /^\.\d+\.\d+\.tmp$/
+
 function entryName(entry: { readonly seq: number }): string {
   return `${entry.seq}.json`
 }
 
 /**
- * Publishes an entry for server `pid`, at the lowest number above every entry there, and answers
- * it. The entry is written whole to a temporary file and linked into place, and `link` fails when
- * the name exists, so a server that loses a number to another takes the next one, and a reader
- * never sees a half-written entry.
+ * Publishes an entry for server `pid`, at the lowest free number above every entry there, and
+ * answers it. The entry is written whole to a temporary file and linked into place, and `link`
+ * fails when the name exists, so a server that loses a number to another takes the next one, and a
+ * reader never sees a half-written entry. The temporary file is there from before the directory is
+ * read until the entry is placed, so no owner is decided meanwhile above a number the server could
+ * take (`currentOwner`). A listing that fails is no empty one: its failure stands, rather than a
+ * number read off nothing. `beforePlace` runs between the read and the placing; nothing waits
+ * there in production, and a test holds a server there to stand for one the scheduler stalls.
  */
 export async function registerServer(
   directory: string,
   pid: number,
   started: string | null,
+  beforePlace: () => Promise<void> = async () => undefined,
 ): Promise<CodexServerEntry> {
   await mkdir(directory, { mode: 0o700, recursive: true })
   const temporary = join(directory, `.${pid}.${process.hrtime.bigint()}.tmp`)
   await writeFile(temporary, JSON.stringify({ pid, started }), { mode: 0o600 })
   try {
-    let seq = Math.max(0, ...(await entryNames(directory)).map(({ seq: taken }) => taken)) + 1
+    let seq = Math.max(0, ...numbered(await readdir(directory)).map(({ seq: taken }) => taken)) + 1
+    await beforePlace()
     for (;;) {
       try {
         await place(temporary, join(directory, entryName({ seq })), pid, started)
@@ -138,80 +152,124 @@ function gone(pid: number, probe: ProcessProbe): boolean {
  * when both starts can be read and differ (the pid was used again); a start that cannot be read
  * now, as when `ps` fails, says nothing either way, so a live owner is never judged gone for it.
  */
-export function serverAlive(entry: CodexServerEntry, probe: ProcessProbe = SYSTEM_PROBE): boolean {
+export function serverAlive(
+  entry: Pick<CodexServerEntry, "pid" | "started">,
+  probe: ProcessProbe = SYSTEM_PROBE,
+): boolean {
   if (gone(entry.pid, probe)) return false
   const now = probe.started(entry.pid)
   return entry.started === null || now === undefined || now === entry.started
 }
 
-async function entryNames(directory: string): Promise<{ seq: number; name: string }[]> {
-  let names: string[]
-  try {
-    names = await readdir(directory)
-  } catch {
-    return []
-  }
+/** The numbered entries among a listing's `names`. */
+function numbered(names: readonly string[]): { seq: number; name: string }[] {
   return names.flatMap((name) => {
     const match = ENTRY_NAME.exec(name)
     return match === null ? [] : [{ name, seq: Number(match[1]) }]
   })
 }
 
+/** The server a file names, or undefined while the file is still empty or half-written. */
+function serverOf(text: string): Pick<CodexServerEntry, "pid" | "started"> | undefined {
+  let parsed: { pid?: unknown; started?: unknown } | undefined
+  try {
+    parsed = JSON.parse(text) as { pid?: unknown; started?: unknown }
+  } catch {
+    return undefined
+  }
+  if (typeof parsed?.pid !== "number") return undefined
+  return { pid: parsed.pid, started: typeof parsed.started === "string" ? parsed.started : null }
+}
+
 /** How long a numbered entry may stay unreadable before it counts as dead: one small write takes
  *  far less, so an entry still empty after this was left by a server killed in that write. */
 const UNREADABLE_ENTRY_MS = 5_000
 
-/** The entries `directory` holds, or undefined when one of them could not be read yet: a numbered
- *  file that is still empty or half-written (placed by an exclusive create where the file system
- *  has no hard links), which no look may decide past. Such a file older than
- *  `UNREADABLE_ENTRY_MS` counts as dead, so a server killed in that write blocks no owner for
- *  long. */
+/**
+ * One look at `directory`, from one listing of it, or undefined when an entry could not be read
+ * yet: a numbered file that is still empty or half-written (placed by an exclusive create where
+ * the file system has no hard links), which no look may decide past. Such a file older than
+ * `UNREADABLE_ENTRY_MS` counts as dead, so a server killed in that write blocks no owner for long.
+ *
+ * `publishing` says a server that still runs is publishing: its whole temporary file is in the
+ * listing, or was and is gone now, its entry placed after the listing. That server has read the
+ * directory and not yet placed its entry, and the number it read may have been freed since. A
+ * temporary file still empty or half-written says nothing: its server reads the directory only
+ * once the file is whole, so it reads every entry placed by then and takes a number above them
+ * all. `lowestFree` is the lowest number no file held in this look.
+ */
 async function readEntries(
   directory: string,
+  probe: ProcessProbe,
   now: () => number = Date.now,
-): Promise<CodexServerEntry[] | undefined> {
+): Promise<{ entries: CodexServerEntry[]; publishing: boolean; lowestFree: number } | undefined> {
+  let names: string[]
+  try {
+    names = await readdir(directory)
+  } catch {
+    return { entries: [], publishing: false, lowestFree: 1 }
+  }
+  let publishing = false
+  for (const name of names.filter((each) => TEMPORARY_NAME.test(each))) {
+    let text: string
+    try {
+      text = await readFile(join(directory, name), "utf8")
+    } catch {
+      publishing = true // Its entry was placed after the listing, which does not hold it.
+      break
+    }
+    const server = serverOf(text)
+    if (server !== undefined && serverAlive(server, probe)) {
+      publishing = true
+      break
+    }
+  }
   const entries: CodexServerEntry[] = []
-  for (const { name, seq } of await entryNames(directory)) {
+  const held = new Set<number>()
+  for (const { name, seq } of numbered(names)) {
     let text: string
     try {
       text = await readFile(join(directory, name), "utf8")
     } catch {
       continue // Removed meanwhile.
     }
-    let parsed: { pid?: unknown; started?: unknown } | undefined
-    try {
-      parsed = JSON.parse(text) as { pid?: unknown; started?: unknown }
-    } catch {
-      parsed = undefined
-    }
-    if (typeof parsed?.pid !== "number") {
+    const server = serverOf(text)
+    if (server === undefined) {
       const written = await stat(join(directory, name)).then(
         (info) => info.mtimeMs,
         () => undefined,
       )
-      if (written === undefined || now() - written > UNREADABLE_ENTRY_MS) continue
-      return undefined
+      if (written === undefined) continue // Removed meanwhile.
+      if (now() - written <= UNREADABLE_ENTRY_MS) return undefined
+      held.add(seq)
+      continue
     }
-    entries.push({
-      pid: parsed.pid,
-      seq,
-      started: typeof parsed.started === "string" ? parsed.started : null,
-    })
+    held.add(seq)
+    entries.push({ ...server, seq })
   }
-  return entries
+  let lowestFree = 1
+  while (held.has(lowestFree)) lowestFree++
+  return { entries, publishing, lowestFree }
 }
 
-/** The live server that owns the session: the live entry with the lowest number; undefined when
- *  there is none, or when an entry could not be read yet and no answer can be given. */
+/**
+ * The live server that owns the session: the live entry with the lowest number; undefined when
+ * there is none, or when an entry could not be read yet, and no answer can be given. Undefined too
+ * while a server that still runs is publishing and a number below the owner's is free
+ * (`readEntries`): that server may take it. Every entry below the owner's is dead and stays, so
+ * with none free it can only take a number above the owner's.
+ */
 export async function currentOwner(
   directory: string,
   probe: ProcessProbe = SYSTEM_PROBE,
 ): Promise<CodexServerEntry | undefined> {
-  const entries = await readEntries(directory)
-  if (entries === undefined) return undefined
-  const live = entries.filter((entry) => serverAlive(entry, probe))
+  const seen = await readEntries(directory, probe)
+  if (seen === undefined) return undefined
+  const live = seen.entries.filter((entry) => serverAlive(entry, probe))
   live.sort((a, b) => a.seq - b.seq)
-  return live[0]
+  const owner = live[0]
+  if (owner !== undefined && seen.publishing && seen.lowestFree < owner.seq) return undefined
+  return owner
 }
 
 /**
@@ -235,10 +293,10 @@ export function waitForOwnership(
     let timer: ReturnType<typeof setTimeout> | undefined
     const look = async (): Promise<void> => {
       if (signal.aborted) return done(undefined)
-      const entries = await readEntries(directory)
+      const seen = await readEntries(directory, probe)
       if (
-        entries !== undefined &&
-        (self === undefined || !entries.some((entry) => entry.seq === self?.seq))
+        seen !== undefined &&
+        (self === undefined || !seen.entries.some((entry) => entry.seq === self?.seq))
       ) {
         if (self !== undefined) await unregisterServer(directory, self)
         self = await registerServer(directory, pid, started)
@@ -266,7 +324,7 @@ export async function stillOwner(
   self: CodexServerEntry,
   probe: ProcessProbe = SYSTEM_PROBE,
 ): Promise<boolean> {
-  const entries = await readEntries(directory)
+  const entries = await readEntries(directory, probe)
   if (entries === undefined) return true
   const owner = await currentOwner(directory, probe)
   return owner === undefined || owner.pid === self.pid
