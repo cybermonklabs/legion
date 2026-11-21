@@ -2,8 +2,11 @@ package delivery
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
 )
 
 // TestCitedIssuesReadsAURLAsAURL holds the whole citation decision, not the expression that
@@ -203,42 +206,80 @@ func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
 // same 200 citations and differ only in what separates them: spaces, which end a word at once,
 // and commas, which do not. A reader that walks back to the nearest space needs the 65,536 bytes
 // of prose for every path of the comma body; a reader that reads a bounded run needs the same
-// bytes for both, since neither a space nor a comma is a host byte. The row counts what each
-// path's decision is handed (citationWork), holds each to citationReach bytes before its path,
-// and holds the two bodies to the same counts: a count has no noise to allow for, so the bound is
-// the claim itself rather than a ratio.
+// bytes for both, since neither a space nor a comma is a host byte. The reading reaches the body
+// only through citebody's counted reads; the row holds each body's counts (holdToTheReader) and
+// the two bodies to the same counts: a count has no noise to allow for, so the bound is the claim
+// itself rather than a ratio.
 func TestCitedIssuesCostsNoMoreForACitationFarFromASpace(t *testing.T) {
 	const repo = "acme/widgets"
-	one := "github.com/acme/widgets/issues/7"
-	prose := strings.Repeat("a", 65536)
-	bySpace := prose + " " + strings.TrimSuffix(strings.Repeat(one+" ", 200), " ")
-	byComma := prose + "," + strings.TrimSuffix(strings.Repeat(one+",", 200), ",")
-	var space, comma citationWork
-	readCitedIssues(repo, bySpace, &space)
-	readCitedIssues(repo, byComma, &comma)
-	holdToTheReach(t, "the citations separated by spaces", bySpace, space)
-	holdToTheReach(t, "the citations separated by commas", byComma, comma)
+	bySpace, byComma := citationsFarFromASpace()
+	var space, comma citebody.Reads
+	readCitedIssues(repo, citebody.New(bySpace, &space))
+	readCitedIssues(repo, citebody.New(byComma, &comma))
+	t.Logf("separated by spaces %+v, by commas %+v", space, comma)
+	for _, problem := range append(holdToTheReader("the citations separated by spaces", bySpace, space), holdToTheReader("the citations separated by commas", byComma, comma)...) {
+		t.Error(problem)
+	}
 	if comma != space {
-		t.Errorf("citing %d bytes separated by commas handed the decisions %+v, and separated by spaces %+v, want the same: a path's decision is handed the body back to the nearest space rather than a bounded run", len(byComma), comma, space)
+		t.Errorf("citing %d bytes separated by commas read %+v, and separated by spaces %+v, want the same: a path is read back to the nearest space rather than a bounded run", len(byComma), comma, space)
 	}
 }
 
-// holdToTheReach fails t unless work, what citedIssues handed its decisions over body, holds one
-// decision for every issue path the finder answers in body, some bytes before a path (each body
-// here has bytes before a path, so a count of 0 saw nothing of what the decisions are handed),
-// and at most citationReach bytes before any one path.
-func holdToTheReach(t *testing.T, what, body string, work citationWork) {
-	t.Helper()
-	t.Logf("%s: %+v", what, work)
-	if paths := len(githubIssuePath.FindAllStringIndex(body, -1)); work.decisions != paths {
-		t.Errorf("%s: the count saw %d decisions for the %d issue paths the finder answers, so it did not count every path", what, work.decisions, paths)
+// citationsFarFromASpace is the cost row's two bodies: 65,536 bytes of prose and 200 citations,
+// separated by spaces and by commas.
+func citationsFarFromASpace() (bySpace, byComma string) {
+	one := "github.com/acme/widgets/issues/7"
+	prose := strings.Repeat("a", 65536)
+	return prose + " " + strings.TrimSuffix(strings.Repeat(one+" ", 200), " "),
+		prose + "," + strings.TrimSuffix(strings.Repeat(one+",", 200), ",")
+}
+
+// TestTheReaderCountsAScanBackFromEachPath is the cost rows' control. A reading that scans back
+// from each issue path to the nearest whitespace, as a change to readCitedIssues could, can reach
+// the bytes before the path only by asking the Body for them, so holdToTheReader names it: here
+// over the comma body, where the scan needs the body back to its start at every path.
+func TestTheReaderCountsAScanBackFromEachPath(t *testing.T) {
+	_, byComma := citationsFarFromASpace()
+	var reads citebody.Reads
+	body := citebody.New(byComma, &reads)
+	for _, match := range body.Find(githubIssuePath) {
+		strings.LastIndexAny(body.Span(0, match[0]), " \t\r\n")
 	}
-	if work.before == 0 {
-		t.Errorf("%s: the decisions were handed 0 bytes before their paths, where every body here has bytes before a path: the count saw nothing of what they are handed", what)
+	readCitedIssues("acme/widgets", body)
+	problems := holdToTheReader("the comma body read back from each path", byComma, reads)
+	t.Logf("%+v: %q", reads, problems)
+	if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "one span handed") }) {
+		t.Errorf("a scan back from each of 200 paths over %d bytes read %+v, and the cost rows' check named no span longer than citationReach and the longest path: it cannot see the scan", len(byComma), reads)
 	}
-	if work.longestBefore > citationReach {
-		t.Errorf("%s: one path's decision was handed %d bytes before the path, want at most %d (citationReach): a path's decision is handed the body back to the nearest space rather than a bounded run", what, work.longestBefore, citationReach)
+}
+
+// holdToTheReader is what the cost rows hold of reads, what citedIssues read of body through
+// citebody: at most one pass over the body for each of the two finders, and at least one; at
+// least one span for each issue path, whose decision needs one, and at most four, its decision's
+// and its owner, repository and number, and one for each bare reference; and no span longer than
+// citationReach and the longest issue path, the window one decision needs. Together they bound
+// the bytes read by a constant times the body. It answers each one reads breaks.
+func holdToTheReader(what, body string, reads citebody.Reads) []string {
+	paths := githubIssuePath.FindAllStringIndex(body, -1)
+	bares := len(githubBareReference.FindAllStringIndex(body, -1))
+	longestPath := 0
+	for _, path := range paths {
+		longestPath = max(longestPath, path[1]-path[0])
 	}
+	var problems []string
+	if reads.Passes < 1 || reads.Passes > 2 {
+		problems = append(problems, what+": "+strconv.Itoa(reads.Passes)+" passes over the body, want 1 or 2, one for each finder")
+	}
+	if reads.Spans < len(paths) || reads.Handed == 0 {
+		problems = append(problems, what+": "+strconv.Itoa(reads.Spans)+" spans for "+strconv.Itoa(len(paths))+" issue paths, "+strconv.Itoa(reads.Handed)+" bytes: a path was decided without a counted span, so the count saw nothing of it")
+	}
+	if most := 4*len(paths) + bares; reads.Spans > most {
+		problems = append(problems, what+": "+strconv.Itoa(reads.Spans)+" spans, want at most "+strconv.Itoa(most)+", four for each issue path and one for each bare reference: a path is read more than its decision needs")
+	}
+	if most := citationReach + longestPath; reads.Longest > most {
+		problems = append(problems, what+": one span handed "+strconv.Itoa(reads.Longest)+" bytes, want at most "+strconv.Itoa(most)+" (citationReach and the longest issue path): a path is read back to the nearest space rather than a bounded run")
+	}
+	return problems
 }
 
 // TestCitedIssuesReadsAHostNameOfAHostNamesLength holds the two ends of what a host may be. A

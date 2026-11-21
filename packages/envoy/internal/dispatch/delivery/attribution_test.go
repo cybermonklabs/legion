@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -240,19 +241,22 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 	}
 }
 
-// TestCitedIssuesCostsNoMoreThanTheBodyIsLong holds that the reading is linear in the body: the
-// finder walks it once, and each path's decision is handed at most citationReach bytes of the
-// body before the path, so it can read no more there. The row counts what each decision is handed
-// (citationWork) instead of timing the call, so how busy the machine is decides nothing. The body
-// is 1 MiB with no whitespace in it and an issue path every thirteen bytes, which is the shape a
-// reading that walks back to the nearest space pays the square of: such a reading needs the body
-// back to its start at every path.
+// TestCitedIssuesCostsNoMoreThanTheBodyIsLong holds that the reading is linear in the body. It
+// reaches the body only through citebody's counted reads, and the row holds those counts
+// (holdToTheReader): one pass over the body for each finder, at most four spans for each issue
+// path and one for each bare reference, and no span longer than citationReach and the longest
+// path, so how busy the machine is decides nothing. The body is 1 MiB with no whitespace in it and
+// an issue path every thirteen bytes, which is the shape a reading that walks back to the nearest
+// space pays the square of: such a reading needs the body back to its start at every path.
 func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 	const cited = "https://github.com/acme/widgets/issues/7"
 	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
-	var work citationWork
-	got := readCitedIssues("acme/widgets", body, &work)
-	holdToTheReach(t, "a body of "+strconv.Itoa(len(body))+" bytes", body, work)
+	var reads citebody.Reads
+	got := readCitedIssues("acme/widgets", citebody.New(body, &reads))
+	t.Logf("a body of %d bytes: %+v", len(body), reads)
+	for _, problem := range holdToTheReader("a body of "+strconv.Itoa(len(body))+" bytes", body, reads) {
+		t.Error(problem)
+	}
 	if !slices.Equal(got, []string{cited}) {
 		t.Fatalf("a body of %d bytes cites %v, want %s and nothing else", len(body), got, cited)
 	}

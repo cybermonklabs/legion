@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
 )
 
 // TestEveryCitationIsDecidedWithinItsReachAsOverTheWholeBody is the differential of
@@ -19,8 +21,9 @@ import (
 //   - citesGitHubIssue answers the same over the reach as over the whole body;
 //
 // and, for every body, that citedIssues answers what the whole-body reading answers
-// (citedIssuesOverTheWholeBody), with each decision handed exactly the reach, or the whole body
-// before its path where the path stands nearer the start than that.
+// (citedIssuesOverTheWholeBody), and reads exactly: one pass for each finder, the reach before
+// each path (or the body before it, where the path stands nearer the start) and the path, the
+// owner, repository and number of each path it credits, and the number of each bare reference.
 func TestEveryCitationIsDecidedWithinItsReachAsOverTheWholeBody(t *testing.T) {
 	const repo = "acme/widgets"
 	var bodies, paths, cut, shorterDiffers, credited, refused, failures int
@@ -33,18 +36,22 @@ func TestEveryCitationIsDecidedWithinItsReachAsOverTheWholeBody(t *testing.T) {
 	}
 	for i, body := range reachCorpus() {
 		bodies++
-		var work citationWork
-		got := readCitedIssues(repo, body, &work)
+		var reads citebody.Reads
+		got := readCitedIssues(repo, citebody.New(body, &reads))
 		if want := citedIssuesOverTheWholeBody(repo, body); !slices.Equal(got, want) {
 			fail("body %d (%d bytes) cites %v within the reach and %v over the whole body: %.300q", i, len(body), got, want, body)
 		}
-		matches := githubIssuePath.FindAllStringIndex(body, -1)
-		handed := 0
-		for _, match := range matches {
+		want := citebody.Reads{Passes: 2}
+		span := func(n int) {
+			want.Spans++
+			want.Handed += n
+			want.Longest = max(want.Longest, n)
+		}
+		for _, match := range githubIssuePath.FindAllStringSubmatchIndex(body, -1) {
 			paths++
 			pathAt, end := match[0], match[1]
 			from := max(0, pathAt-citationReach)
-			handed += pathAt - from
+			span(end - from)
 			whole := authorityBefore(body[:end], pathAt)
 			if within := offsetAuthority(authorityBefore(body[from:end], pathAt-from), from); within != whole {
 				fail("body %d, the path at %d: authorityBefore finds %d within the reach and %d over the whole body: %.300q", i, pathAt, within, whole, body[from:end])
@@ -55,18 +62,24 @@ func TestEveryCitationIsDecidedWithinItsReachAsOverTheWholeBody(t *testing.T) {
 					shorterDiffers++
 				}
 			}
-			cites := citesGitHubIssue(body[:end], pathAt, nil)
-			if within := citesGitHubIssue(body[from:end], pathAt-from, nil); within != cites {
+			cites := citesGitHubIssue(body[:end], pathAt)
+			if within := citesGitHubIssue(body[from:end], pathAt-from); within != cites {
 				fail("body %d, the path at %d: citesGitHubIssue answers %t within the reach and %t over the whole body: %.300q", i, pathAt, within, cites, body[from:end])
 			}
 			if cites {
 				credited++
+				span(match[3] - match[2])
+				span(match[5] - match[4])
+				span(match[7] - match[6])
 			} else {
 				refused++
 			}
 		}
-		if work.decisions != len(matches) || work.before != handed {
-			fail("body %d: readCitedIssues made %d decisions, handed %d bytes before their paths; want %d decisions and %d bytes, the reach before each path or the body before it where that is shorter", i, work.decisions, work.before, len(matches), handed)
+		for _, match := range githubBareReference.FindAllStringSubmatchIndex(body, -1) {
+			span(match[3] - match[2])
+		}
+		if reads != want {
+			fail("body %d: readCitedIssues read %+v, want %+v: the reach before each path or the body before it where that is shorter, the path, and each credited citation's parts", i, reads, want)
 		}
 	}
 	t.Logf("%d bodies, %d paths: %d decided over a reach that cut the body, %d of those found another authority over a reach one byte shorter; %d credited, %d refused", bodies, paths, cut, shorterDiffers, credited, refused)
@@ -94,7 +107,7 @@ func citedIssuesOverTheWholeBody(repo, body string) []string {
 	}
 	citations := []citation{}
 	for _, match := range githubIssuePath.FindAllStringSubmatchIndex(body, -1) {
-		if !citesGitHubIssue(body[:match[1]], match[0], nil) {
+		if !citesGitHubIssue(body[:match[1]], match[0]) {
 			continue
 		}
 		citations = append(citations, citation{match[0], "https://github.com/" + body[match[2]:match[3]] + "/" + body[match[4]:match[5]] + "/issues/" + body[match[6]:match[7]]})

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -153,10 +154,8 @@ const (
 // writes; a rule for the bytes before the host credited some of those shapes and dropped others,
 // which is why there is none. So a citation inside another URL's path, query or fragment is
 // credited here as it is there, and what this change does to attribution is to refuse a host
-// that is not github.com and to credit a host spelled in any case or carrying a port. work counts
-// the call and the bytes before the path it was handed (citationWork).
-func citesGitHubIssue(text string, pathAt int, work *citationWork) bool {
-	work.decides(pathAt)
+// that is not github.com and to credit a host spelled in any case or carrying a port.
+func citesGitHubIssue(text string, pathAt int) bool {
 	host := authorityBefore(text, pathAt)
 	if host < 0 {
 		return false
@@ -194,26 +193,6 @@ func isHostByte(b byte) bool {
 	return isDigitByte(b) || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b == '.' || b == '-'
 }
 
-// citationWork counts the calls of citesGitHubIssue and the bytes before its path each was
-// handed: in all, and the most for one path. The two cost tests count it instead of timing the
-// call (attribution_test.go, citation_boundary_test.go): each path's decision is handed at most
-// citationReach bytes before it, where a reader that walked back to the nearest space would need
-// the body back to that space. Production counts nothing: citedIssues passes a nil
-// *citationWork, whose method returns at once.
-type citationWork struct {
-	decisions             int
-	before, longestBefore int
-}
-
-// decides counts one call of citesGitHubIssue handed pathAt bytes before its path.
-func (w *citationWork) decides(pathAt int) {
-	if w != nil {
-		w.decisions++
-		w.before += pathAt
-		w.longestBefore = max(w.longestBefore, pathAt)
-	}
-}
-
 func attributionInputsFrom(facts attributionFacts) AttributionInputs {
 	return AttributionInputs{
 		TitleKeys:   uniqueKeys(facts.Title + "\n" + facts.Body),
@@ -239,28 +218,28 @@ func appendUnique(list []string, values ...string) []string {
 // citedIssues is every GitHub issue body cites, as https://github.com/<owner>/<repo>/issues/<n>,
 // in the order the citations appear; a bare #N names an issue of repo.
 func citedIssues(repo, body string) []string {
-	return readCitedIssues(repo, body, nil)
+	return readCitedIssues(repo, citebody.New(body, nil))
 }
 
-// readCitedIssues is citedIssues, counting into work what each path's decision is handed
-// (citationWork). Only the cost tests pass a work; citedIssues passes nil. Each decision gets the
-// body from citationReach bytes before the path to the path's end, the most it reads, so its
-// cost is bounded per path whatever the body holds before it.
-func readCitedIssues(repo, body string, work *citationWork) []string {
+// readCitedIssues is citedIssues over a body it reaches only through citebody's counted reads, so
+// the cost tests can count every byte it reads (citebody.Reads); citedIssues counts nothing. Each
+// path's decision gets the body from citationReach bytes before the path to the path's end, the
+// most it reads, so its cost is bounded per path whatever the body holds before it.
+func readCitedIssues(repo string, body citebody.Body) []string {
 	type citation struct {
 		at  int
 		url string
 	}
 	citations := []citation{}
-	for _, match := range githubIssuePath.FindAllStringSubmatchIndex(body, -1) {
+	for _, match := range body.Find(githubIssuePath) {
 		from := max(0, match[0]-citationReach)
-		if !citesGitHubIssue(body[from:match[1]], match[0]-from, work) {
+		if !citesGitHubIssue(body.Span(from, match[1]), match[0]-from) {
 			continue
 		}
-		citations = append(citations, citation{match[0], "https://github.com/" + body[match[2]:match[3]] + "/" + body[match[4]:match[5]] + "/issues/" + body[match[6]:match[7]]})
+		citations = append(citations, citation{match[0], "https://github.com/" + body.Span(match[2], match[3]) + "/" + body.Span(match[4], match[5]) + "/issues/" + body.Span(match[6], match[7])})
 	}
-	for _, match := range githubBareReference.FindAllStringSubmatchIndex(body, -1) {
-		citations = append(citations, citation{match[2], "https://github.com/" + repo + "/issues/" + body[match[2]:match[3]]})
+	for _, match := range body.Find(githubBareReference) {
+		citations = append(citations, citation{match[2], "https://github.com/" + repo + "/issues/" + body.Span(match[2], match[3])})
 	}
 	slices.SortStableFunc(citations, func(a, b citation) int { return cmp.Compare(a.at, b.at) })
 	urls := []string{}

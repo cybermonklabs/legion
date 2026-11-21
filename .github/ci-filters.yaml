@@ -2782,6 +2782,7 @@ envoy_go_race_api:
   # why: .github/ci-notes/ci.md#envoy_go_race_api-the-apis-ci-reconcile-passes-route-reads-cireconciles
   - 'packages/envoy/internal/dispatch/cireconcile/*'
   - 'packages/envoy/internal/dispatch/delivery/*'
+  - 'packages/envoy/internal/dispatch/delivery/citebody/*'
   - 'packages/envoy/internal/dispatch/delivery/measures/*'
   - 'packages/envoy/internal/dispatch/delivery/measures/testdata/**'
   - 'packages/envoy/internal/dispatch/delivery/testdata/**'
