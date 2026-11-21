@@ -76,7 +76,7 @@ func TestARootOnARepositoryLegionDoesNotServeIsNotAdmittedAndSaysWhy(t *testing.
 	for _, tc := range []struct {
 		name, resolved, want string
 	}{
-		{"none", "", "Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again."},
+		{"none", "", "Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project " + testProject + ", in Dispatch, and move it to todo again."},
 		{"left out", "acme/gadgets", "Legion did not admit this issue: the review App is not installed on acme/gadgets. GitHub answers for acme/gadgets neither as installed nor as present: install the App on it, or correct the repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), and move the issue to todo again."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -164,20 +164,35 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   written in lowercase whatever case you give it. Either must be an email the broker accepts, or
   the command refuses before writing. The broker matches it against the email a person signs in to
   the broker's approval page with (and to Dispatch, for a machine login), so `me`
-  names you where that session name or Google account is the same email. **`--owner shared`**
+  names you where that session name or Google account is the same email.
+  **`--owner group:<email>`** makes a Google group the owner, by the group's lowercase email: each
+  member decides the secret's requests and may end the grants a member approved, as one owner does
+  ([A group's secret](/legion/broker/concepts/#a-groups-secret)). A group's address with a capital
+  letter is refused before anything is written. **`--owner shared`**
   makes the secret everyone's. GCP stores owner and tier as the secret's **annotations**, never
   labels, so they never collide with a label someone else applies.
 - **`--tier agent`** lets the owner's own sessions use it without asking, and **`--tier human`**
   sends every use to a person for approval. Both flags are required.
 - **`--type`** is optional. Use `github-app` for a GitHub App key, `google-login` for an
-  authorized-user Google login, and `google-service-account` for one Google service account the
+  authorized-user Google login, `azure-login` for the Entra ids of the one secret the deployment
+  names in `BROKER_AZURE_LOGIN_SECRET`, whose stored value is
+  `{"tenant_id": "<tenant>", "client_id": "<client>"}` and which is `--tier human` alone,
+  `google-service-account` for one Google service account the
   broker mints an access token as, whose stored value names that account:
-  `{"service_account": "<id>@<project>.iam.gserviceaccount.com"}`. That last one is an
-  administrator's to write and to set a new value for, not a self-service step, even for the
-  person who owns it: which account the broker mints for is the deployment's choice, bound to the
-  secret's name in `BROKER_SERVICE_ACCOUNT_SECRETS`, and a secret the deployment has bound to
-  nothing releases no token at all, however good its value. Ask whoever runs your deployment to
-  create it and bind it.
+  `{"service_account": "<id>@<project>.iam.gserviceaccount.com"}`, and `anthropic-federation` for
+  an Anthropic access token the broker gets by federation as one Google service account, whose
+  stored value names the Anthropic organization's ids and that account:
+  `{"organization_id": "<uuid>", "federation_rule_id": "fdrl_…", "service_account_id": "svac_…", "service_account": "<id>@<project>.iam.gserviceaccount.com"}`,
+  with `"workspace_id": "wrkspc_…"` where the federation rule is enabled for more than one
+  workspace ([Concepts](/legion/broker/concepts/#requests-and-grants)). An `anthropic-federation`
+  secret is `--tier human` alone, a person approves every release of it (the model judge decides
+  none, whatever the airlock rules say), and its federation rule's `token_lifetime_seconds` must be
+  3600 or less, or the broker refuses its tokens. A `google-service-account` and an
+  `anthropic-federation` secret are an administrator's to write and to set a new value for, not a
+  self-service step, even for the person who owns one: which account the broker
+  mints for is the deployment's choice, bound to the secret's name in
+  `BROKER_SERVICE_ACCOUNT_SECRETS`, and a secret the deployment has bound to nothing releases no
+  token at all, however good its value. Ask whoever runs your deployment to create it and bind it.
   Use `none`, or omit the flag, for a stored secret. A type needs a broker that reads the `type`
   tag: against an earlier one, whose settings name no `secret_type_tag`, `create --type`, `set`
   on a type secret and a retag that leaves a type exit 1 before they write anything, naming the
@@ -190,17 +205,22 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   lists the GitHub accounts the broker mints installation tokens for, separated by spaces, so the
   shell quotes it: `--github-owners "acme-org ada"`. A comma is refused before anything is written.
 - **`--requesters`** is optional. It lists who may ask for this secret at all — people by their
-  lowercase sign-in email, services by the name the deployment registers them under — separated
-  by spaces, so the shell quotes it: `--requesters "ada@example.com legion-daemon"`. Nobody else
+  lowercase sign-in email, Google groups as `group:` and the group's lowercase email, which admits
+  each member's sessions, and services by the name the deployment registers them under —
+  separated by spaces, so the shell quotes it:
+  `--requesters "ada@example.com group:approvers@example.com legion-daemon"`. Nobody else
   may ask, whatever the owner and tier allow. The list bounds no grant by itself: an ordinary
   secret keeps whatever `--max-grant` you give it, or none, so your own mail and Drive logins
-  stay at their tier and are capped by nothing. A `google-service-account` secret is served to
-  the one person who owns it, so the administrator who writes it gives it that person's own
-  address: `--owner <their email> --requesters <their email>`. With `--tier human` it may name
+  stay at their tier and are capped by nothing. A `google-service-account` or
+  `anthropic-federation` secret is served to the one person who owns it, or to the members of the
+  one group that does, so the administrator who writes it names that owner in the list once, and
+  no other person or group: `--owner <their email> --requesters <their email>`, or
+  `--owner group:<address> --requesters group:<address>`. With `--tier human` it may name
   registered services beside that owner, so a service's pod can ask and the owner approves each
   request; with `--tier agent` it may not, and neither may a secret the deployment binds to a
   `dev-<name>` account, whose token is that one person's own. A comma, an email with a
-  capital letter and a list that names nobody are refused
+  capital letter, a `group:` entry whose address is no lowercase email, and a list that names
+  nobody are refused
   before anything is written. Whether an entry naming a service is one your deployment registers
   is the broker's to say
   ([what the broker answers after a write](#what-the-broker-answers-after-a-write)).
@@ -219,8 +239,34 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   of one even where a deployment runs a model judge: the judge refuses an administrator's
   secret, so no airlock rules entry can move one of its requests off the person who approves it
   ([The model judge](/legion/broker/concepts/#the-model-judge)). Any value but `true` is refused.
-- **`--max-grant`** is optional, except with `--admin true` and with
-  `--type google-service-account`, where each needs it, of an hour or less. It is the longest
+- **`--project`** is optional. It names the one Dispatch project the secret belongs to, by its
+  key as Dispatch writes it: `--project PRIV`. A secret of a **private** project goes only to a
+  session or pod whose credential names that project; every other one is denied
+  `project-not-named`, whatever its owner and tier allow. A secret of a public project is decided
+  by owner and tier as if it carried no project. A session names its projects when it starts,
+  with `AGENT_SECRETS_PROJECTS` ([name a session's
+  projects](/legion/broker/concepts/#a-private-projects-secrets)). Anyone who may write the
+  store's prefix may set the tag, and that person can already read every value there; which of a
+  project's secrets belong to it is the project owner's call. A key in lower case, two keys, and
+  the word `none` are refused before anything is written. Only a broker that can ask Dispatch
+  whether a project is private serves a secret carrying the tag: any other refuses it
+  `project-unchecked`, which the create prints with its reason and exits 1 for. Beside `--project`
+  or `--project-channels`, the CLI also writes `rollback-guard:project-tags` into the secret's
+  `requesters` tag, after its list, so that a broker from before the project tags refuses the
+  secret rather than serve it to every session; `--requesters none` keeps it, it goes with the
+  last of the two tags, and `show` prints `rollback_guard: yes` and the list without it
+  ([Rolling back past the project tags](/legion/broker/operate/#rolling-back-past-the-project-tags)).
+- **`--project-channels slack`** is optional, and `slack` is its one value. It marks a Slack bot
+  token, such as `LEGION_SLACK_BOT_TOKEN`, whose use a private project's owner limits. A session or
+  pod whose credential names a private Dispatch project spends such a secret only through the
+  airlock ([The airlock](/legion/broker/concepts/#the-airlock)), and only to post with
+  `POST /api/chat.postMessage`, carrying `channel`, `thread_ts` and `text`, to a channel id the
+  owner of every private project it names allows; the proxy refuses every other call
+  `CHANNEL_NOT_ALLOWED`. Where the secret has no airlock entry, such a credential is denied it
+  `project-channels-need-airlock`. A credential that names no private project gets the secret as
+  before. Any other value, and on `create` the word `none`, is refused before anything is written.
+- **`--max-grant`** is optional, except with `--admin true`, `--type google-service-account` and
+  `--type anthropic-federation`, where each needs it, of an hour or less. It is the longest
   `--ttl` a request for this secret may use.
   It must be a duration of at least one second.
 - **`--default-grant session`** is optional. A request with no `--ttl` for secrets that all carry it
@@ -370,12 +416,13 @@ and names the credential after it, `(as …)`, so where gcloud cannot be pointed
 metadata server, the well-known credentials file) you know whose sign-in to use.
 
 On AWS, Secrets Manager takes the value with the tags, so the secret is made in one call once the
-value is read. A `CreateSecret` the AWS SDK tried once and that was refused with an answer Secrets
-Manager gives before it acts - a name taken, access denied, a request, a parameter or a limit
-refused - says nothing was stored. Any other failure says that the store may hold the secret, with
-its value, or not, and names `agent-secrets secret show NAME` to tell which: a deadline, an outage,
-and any create the SDK tried more than once, since an attempt it retried may have made the secret,
-which the store then answers the retry with as a name already taken. Each exits 1. The broker serves
+value is read. A `CreateSecret` whose every attempt was refused with an answer Secrets Manager
+gives before it acts - a name taken, access denied, a request, a parameter or a limit refused, the
+last of which the AWS SDK retries as a throttle - says nothing was stored. Any other failure says
+that the store may hold the secret, with its value, or not, and names `agent-secrets secret show
+NAME` to tell which: a deadline, an outage, and any create one of whose attempts ended another
+way before the SDK retried it, since that attempt may have made the secret, which the store then
+answers the retry with as a name already taken. Each exits 1. The broker serves
 the secret from the next request. Secrets Manager refuses a name that is already taken, including
 one scheduled for deletion: [restore](#delete-and-restore) that one instead.
 
@@ -498,10 +545,10 @@ lists the calls each form makes.
 ```console
 $ agent-secrets secret list
 agent-secrets secret list: using the AWS profile ada (AWS_PROFILE): arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc123/ada@example.com
-NAME               OWNER            TIER   TYPE          MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -          -              yes    -        -
-DEMO_GITHUB_APP    ada@example.com  agent  github-app    -          -              yes    -        -
-DEMO_LOGIN         ada@example.com  human  google-login  1h         -              yes    -        -
+NAME               OWNER            TIER   TYPE          PROJECT  PROJECT_CHANNELS  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -        -                 -          -              yes    -        -
+DEMO_GITHUB_APP    ada@example.com  agent  github-app    -        -                 -          -              yes    -        -
+DEMO_LOGIN         ada@example.com  human  google-login  -        -                 1h         -              yes    -        -
 Every row is a secret in AWS Secrets Manager account 111122223333 in us-east-1.
 ```
 
@@ -525,6 +572,9 @@ github_owners: -
 requesters: -
 scopes: -
 admin: -
+project: -
+project_channels: -
+rollback_guard: -
 max_grant: -
 default_grant: -
 created: 2026-10-06T20:31:08Z
@@ -561,7 +611,7 @@ retagged DEMO_DEPLOY_TOKEN in AWS Secrets Manager account 111122223333 in us-eas
 broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 in us-east-1
 ```
 
-Name `--owner`, `--tier`, `--type`, `--github-owners`, `--requesters`, `--scopes`, `--admin`, `--max-grant`, `--default-grant` or a combination. A retag that
+Name `--owner`, `--tier`, `--type`, `--github-owners`, `--requesters`, `--scopes`, `--admin`, `--project`, `--project-channels`, `--max-grant`, `--default-grant` or a combination. A retag that
 sets tags reads the owner and tier tags the secret holds and sends both in one request. On AWS,
 this lets an IAM condition inspect both tags. Every other tag or annotation stays as it is. For a
 secret missing an owner or tier tag, name that tag too.
@@ -569,14 +619,16 @@ secret missing an owner or tier tag, name that tag too.
 `--type none` removes the type tag, the old `kind` tag and the `mint-service-account` tag written with it,
 `--github-owners none` removes the GitHub owners, `--requesters none` removes the list of who may
 ask, `--scopes none` removes the scopes, so the token carries `cloud-platform` alone again,
-`--admin none` removes the administrator's mark, `--max-grant none` removes the max grant, and
-`--default-grant none` removes the opt-out. A
+`--admin none` removes the administrator's mark, `--project none` removes the project, so the
+secret belongs to no project again, `--project-channels none` removes the channel limit,
+`--max-grant none` removes the max grant, and `--default-grant none` removes the opt-out. A
 removal is a retag of its own: it changes no other tag, so the cloud refusing it leaves the secret
 as it was. A retag that names `none` beside another change is refused before it writes anything.
 So is a retag that would leave a `github-app` secret without `--github-owners`, as the broker would
 then refuse to serve it, one that names `--github-owners` on a secret of another type, one that
-names `--scopes` on a secret of another type, and one that would leave an `admin` or
-`google-service-account` secret without a `--max-grant` of an hour or less.
+names `--scopes` on a secret of another type, and one that would leave an `admin`,
+`google-service-account` or `anthropic-federation` secret without a `--max-grant` of an hour or
+less.
 Run the removal and the other change as two retags:
 
 ```console
@@ -699,6 +751,15 @@ New tags decide what sessions get from the next request, and reach some grants a
 [Revoke a session or a grant](/legion/broker/guides/revoke-a-session/#end-every-sessions-access-to-a-secret)
 uses a retag to end every session's automatic access to a secret.
 
+A retag that names a group no served secret named before, as `--owner group:<address>` or as a
+`group:` entry in `--requesters`, admits nobody at first. The reread after the write serves the
+new tags, but the broker reads a group's members only once its five-minute read of the namespace
+names the group, and a reread of one secret names none. Until that read and the group's first read
+have finished, within about five minutes, no member decides the secret's requests or gets its
+agent-tier secret at once, and a `requesters` entry naming the group refuses every session
+`requester-group-unread`. A group another served secret already names admits its members from the
+reread on ([A group's secret](/legion/broker/concepts/#a-groups-secret)).
+
 ## Delete and restore
 
 ```console
@@ -727,10 +788,10 @@ that moment is both), and the **earliest** it can be purged:
 ```console
 $ agent-secrets secret list
 agent-secrets secret list: using the AWS profile ada (AWS_PROFILE): arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc123/ada@example.com
-NAME               OWNER            TIER   TYPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
-DEMO_EMPTY_KEY     ada@example.com  human  -     -          -              yes    -                     -
-DEMO_SHARED_KEY    shared           human  -     -          -              yes    -                     -
+NAME               OWNER            TIER   TYPE  PROJECT  PROJECT_CHANNELS  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -        -                 -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
+DEMO_EMPTY_KEY     ada@example.com  human  -     -        -                 -          -              yes    -                     -
+DEMO_SHARED_KEY    shared           human  -     -        -                 -          -              yes    -                     -
 ```
 
 `EARLIEST_PURGE` is the deletion plus 7 days, Secrets Manager's shortest recovery window: Secrets

@@ -131,6 +131,9 @@ func TestEndedRequestOutranksTheTokensOwnFault(t *testing.T) {
 func TestAKeySetOutageIsNotAForgery(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, signing := keysFor(t, issuer, "signing-key")
+	// The read once the key set answers again is due at once: this is the verdict after a
+	// recovery, not the spacing between failed reads (TestAKeySetThatFailsAtOnceIsReadOncePerSpacing).
+	keys.FailureSpacing = 0
 	verifier := NewWithKeys(issuer.URL(), testAudience, keys)
 	sound := issuer.Mint(t, signing, issuer.Claims(testSubject, testAudience))
 

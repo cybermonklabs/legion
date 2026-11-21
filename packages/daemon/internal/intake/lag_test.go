@@ -10,12 +10,16 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// storedMessage is a delivery JetStream stored at stored, with pending more behind it.
+// storedMessage is a delivery JetStream stored at stored, with pending more behind it, seen by a lag
+// watch: it answers its metadata and its subject, and every other call fails the row by the call's
+// name (unexpectedMessage), since watching a consumer's lag reads a delivery and ends none.
 type storedMessage struct {
-	jetstream.Msg
+	unexpectedMessage
 	stored  time.Time
 	pending uint64
 }
+
+var _ jetstream.Msg = storedMessage{}
 
 func (m storedMessage) Metadata() (*jetstream.MsgMetadata, error) {
 	return &jetstream.MsgMetadata{Timestamp: m.stored, NumPending: m.pending, NumDelivered: 1, Sequence: jetstream.SequencePair{Stream: 1013506}}, nil
@@ -32,12 +36,15 @@ func TestLagWatchSaysOnceAMinuteThatAConsumerIsBehind(t *testing.T) {
 	var logs bytes.Buffer
 	watch := &lagWatch{consumer: "legion-capture-github", logger: slog.New(slog.NewTextHandler(&logs, nil)), now: func() time.Time { return now }}
 	lines := func() int { return strings.Count(logs.String(), "a durable consumer is behind its stream") }
+	stored := func(at time.Time, pending uint64) storedMessage {
+		return storedMessage{unexpectedMessage: unexpectedMessage{t: t}, stored: at, pending: pending}
+	}
 
-	watch.observe(storedMessage{stored: now.Add(-time.Minute), pending: 3})
+	watch.observe(stored(now.Add(-time.Minute), 3))
 	if got := lines(); got != 0 {
 		t.Fatalf("a consumer a minute behind logged %d lines, want none:\n%s", got, logs.String())
 	}
-	watch.observe(storedMessage{stored: now.Add(-2 * time.Hour), pending: 4102})
+	watch.observe(stored(now.Add(-2*time.Hour), 4102))
 	if got := lines(); got != 1 {
 		t.Fatalf("a consumer two hours behind logged %d lines, want one:\n%s", got, logs.String())
 	}
@@ -47,12 +54,12 @@ func TestLagWatchSaysOnceAMinuteThatAConsumerIsBehind(t *testing.T) {
 		}
 	}
 	now = now.Add(30 * time.Second)
-	watch.observe(storedMessage{stored: now.Add(-2 * time.Hour), pending: 4101})
+	watch.observe(stored(now.Add(-2*time.Hour), 4101))
 	if got := lines(); got != 1 {
 		t.Fatalf("a second message within the minute logged %d lines in all, want still one", got)
 	}
 	now = now.Add(30 * time.Second)
-	watch.observe(storedMessage{stored: now.Add(-2 * time.Hour), pending: 4000})
+	watch.observe(stored(now.Add(-2*time.Hour), 4000))
 	if got := lines(); got != 2 {
 		t.Fatalf("a message a minute after the first line logged %d lines in all, want two", got)
 	}

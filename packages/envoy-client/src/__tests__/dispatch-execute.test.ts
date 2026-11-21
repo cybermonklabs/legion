@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
@@ -46,7 +46,6 @@ import {
   DispatchClient,
   DispatchWriteLandedError,
   type DispatchWriteRetry,
-  forgetKeyedLayerMemory,
 } from "../dispatch-http";
 import { followedAsk } from "../dispatch-subscribe";
 import { renderSessionAnswersList } from "../session-answers";
@@ -54,11 +53,6 @@ import { ToolInputError } from "../tool-input-errors";
 import { fakeSearchResponse } from "./fake-search-response";
 
 const makeDirectory = temporaryDirectories("dispatch-execute");
-
-// What one test's Dispatch showed of its keyed layer is that test's: the process memory of it
-// (`KEYED_LAYER_SEEN`) would otherwise tell the next test's fake, which answers without the key as
-// a Dispatch without the layer does, that its 2xx is no answer of Dispatch's.
-beforeEach(forgetKeyedLayerMemory);
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -439,15 +433,18 @@ describe("executeDispatchTool", () => {
       "POST http://dispatch.test/api/v1/issues/DSP-1/messages answered 502 Bad Gateway with a body that is not Dispatch's error JSON"
     );
     expect(write).not.toContain("<");
-    // A 502 can come after Dispatch committed the write: with no ask left, the write ends
-    // unsettled (the transition table, write-outcome.ts) and says so.
+    // A 502 can come after Dispatch committed the write: the keyed retry reaches its attempt
+    // bound, then the write ends unsettled (the transition table, write-outcome.ts).
     expect(write).toEndWith(
-      "(its only attempt), and an attempt of the write may have reached Dispatch, so it may or may not have taken effect: check whether it did before retrying it."
+      "(the last of 5 attempts), and an attempt of the write may have reached Dispatch, so it may or " +
+        "may not have taken effect. Dispatch finishes an attempt it received whatever this command " +
+        "does, so read the write back before you send it again: a new command sends it under a new key."
     );
     expect(write).not.toContain("a retry may succeed");
-    // Nothing here says this Dispatch runs the keyed layer: the gateway answers its /healthz too,
-    // so the write is asked once and reported, and the read goes once.
-    expect(requests).toEqual(["POST /api/v1/issues/DSP-1/messages", "GET /healthz"]);
+    // Every Dispatch that carries `b1c42d1d7d` runs the keyed layer on every write route, so the
+    // write is asked again under its key until its five attempts are spent, with no /healthz read,
+    // and the read goes once.
+    expect(requests).toEqual(Array.from({ length: 5 }, () => "POST /api/v1/issues/DSP-1/messages"));
     requests.length = 0;
 
     const read = await run("dispatch_read", { issue: "DSP-1" });
@@ -474,7 +471,10 @@ describe("executeDispatchTool", () => {
       [
         502,
         "Bad Gateway",
-        " (its only attempt), and an attempt of the write may have reached Dispatch, so it may or may not have taken effect: check whether it did before retrying it.",
+        " (the last of 5 attempts), and an attempt of the write may have reached Dispatch, so it " +
+          "may or may not have taken effect. Dispatch finishes an attempt it received whatever " +
+          "this command does, so read the write back before you send it again: a new command sends " +
+          "it under a new key.",
       ],
     ] as const) {
       const fetchImpl = async () =>
@@ -5083,10 +5083,11 @@ describe("executeDispatchTool", () => {
         writeRetry,
       })
     ).rejects.toThrow(
-      "INTERNAL: internal server error (its only attempt), and an attempt of the write may have " +
-        "reached Dispatch, so it may or may not have taken effect: check whether it did before " +
-        `retrying it. One of ${pullRequest} may already be linked from another issue (a URL links ` +
-        "exactly one issue)"
+      "INTERNAL: internal server error (the last of 5 attempts), and an attempt of the write may " +
+        "have reached Dispatch, so it may or may not have taken effect. Dispatch finishes an attempt " +
+        "it received whatever this command does, so read the write back before you send it again: a " +
+        `new command sends it under a new key. One of ${pullRequest} may already be linked from another ` +
+        "issue (a URL links exactly one issue)"
     );
   });
 
@@ -5129,9 +5130,10 @@ describe("executeDispatchTool", () => {
     expect(failure).toBe(
       "PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 500 Internal Server " +
         'Error with a body that is not Dispatch\'s error JSON ("500 Internal Server Error"), which ' +
-        "looks like a proxy or gateway page rather than Dispatch's own answer (its only attempt), " +
-        "and an attempt of the write may have reached Dispatch, so it may or may not have taken " +
-        "effect: check whether it did before retrying it."
+        "looks like a proxy or gateway page rather than Dispatch's own answer (the last of 5 attempts), " +
+        "and an attempt of the write may have reached Dispatch, so it may or may not have taken effect. " +
+        "Dispatch finishes an attempt it received whatever this command does, so read the write back " +
+        "before you send it again: a new command sends it under a new key."
     );
   });
 
@@ -5209,8 +5211,7 @@ describe("executeDispatchTool", () => {
   /**
    * Records every request; the messages route and the PATCH answer with the given responses, and
    * the issue read before the update answers `closedAt` (null: the issue is open). This
-   * Dispatch runs the keyed layer: its own answers (JSON) echo the request's key and its /healthz
-   * says `idempotency_keys`, so a write that fails without an answer of Dispatch's own is resent.
+   * Dispatch runs the keyed layer: its own answers (JSON) echo the request's key.
    */
   function closingServer(
     answers: { message: () => Response; patch: () => Response },
@@ -5220,7 +5221,6 @@ describe("executeDispatchTool", () => {
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const pathname = new URL(String(url)).pathname;
       const method = init?.method ?? "GET";
-      if (pathname === "/healthz") return response({ status: "ok", idempotency_keys: true });
       requests.push({
         method,
         pathname,
@@ -5376,7 +5376,8 @@ describe("executeDispatchTool", () => {
       (request: string) =>
         `${request} had no definitive answer when its deadline ended it (its only attempt), and ` +
         "an attempt of the write may have reached Dispatch, so it may or may not have taken " +
-        "effect: check whether it did before retrying it.",
+        "effect. Dispatch finishes an attempt it received whatever this command does, so read " +
+        "the write back before you send it again: a new command sends it under a new key.",
       1,
     ],
     [
@@ -5662,7 +5663,7 @@ describe("executeDispatchTool", () => {
       "and the close may or may not have taken effect. Read the issue's status before retrying: " +
       "done means it closed; otherwise retry with a reason that points at message message-7, " +
       "since retrying this call posts its reason again";
-    // This Dispatch runs the keyed layer, so each message also says that it finishes the close.
+    // This Dispatch runs the keyed layer.
     const keyedTail =
       ". Dispatch finishes an attempt it received whatever this command does, so read the write " +
       "back before you send it again: a new command sends it under a new key.";
@@ -12216,7 +12217,6 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
         return response([]);
       }
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       if (pathname === "/api/v1/markdown/round-trip") {
         trips += 1;
         return trips === 1
@@ -12227,15 +12227,12 @@ describe("executeDispatchTool", () => {
             );
       }
       posts.push(pathname);
-      // The upload's answer is Dispatch's own, whose keyed layer the 503's /healthz named, so it
-      // carries the request's key back.
-      const key = (init?.headers as Record<string, string> | undefined)?.["Idempotency-Key"] ?? "";
       return new Response(
         JSON.stringify({
           artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
           version: { number: 1 },
         }),
-        { headers: { "Content-Type": "application/json", "Idempotency-Key": key } }
+        { headers: { "Content-Type": "application/json" } }
       );
     };
 
@@ -12273,7 +12270,6 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/markdown/round-trip") {
         return new Response(page, { status, headers: { "content-type": "text/html" } });
       }
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
@@ -12321,7 +12317,6 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/markdown/round-trip") {
         return response({ error: "request body exceeds 6292480 bytes", code: "CAP_EXCEEDED" }, 413);
       }
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name, slug: "notes-md" },
@@ -12372,9 +12367,6 @@ describe("executeDispatchTool", () => {
         return response([]);
       }
       if (pathname === "/api/v1/markdown/round-trip") return response({ error, code }, status);
-      // A failed write asks /healthz whether the server keeps idempotency keys. Only the upload
-      // route is counted here.
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
