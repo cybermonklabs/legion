@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 # The tailnet leg of the outside agent's acceptance, and the one command that runs both legs: a
 # developer box on the private network runs it, with its project's key as the one argument. It
 # reads the deployed pins and refuses to start unless the secrets broker's build holds the
@@ -12,6 +13,10 @@
 # person from the project's access list and reads that the test person's live device login stops
 # (T5); and prints the gate. outside-agent-acceptance.md, beside this file, says what each row
 # reads and what the gate holds.
+#
+# It sources three support files from beside it: outside-agent-lib.sh (what both legs share),
+# outside-agent-peer.sh (the peer of P4 and the session outside the project of P6) and
+# outside-agent-sweep.sh (the read sweep's full-member half and its controls).
 #
 # Inputs (environment), each named by the row that cannot run without it:
 #   $1                           the scratch project's key.
@@ -52,38 +57,43 @@
 #   OUTSIDE_WORKFLOW_REPO        owner/name of the repository whose workflow runs the public leg;
 #                                OUTSIDE_WORKFLOW names the workflow (outside-edge-e2e.yaml), and
 #                                OUTSIDE_WORKFLOW_INPUTS holds its other inputs, one name=value a
-#                                line. Or OUTSIDE_PUBLIC_COMMAND: a command line, split on blanks,
-#                                that runs the public leg here instead, for a local stack; it gets
-#                                OUTSIDE_TAILNET_USER_CODE,
-#                                OUTSIDE_PEER_SESSION and OUTSIDE_PUBLIC_RESULTS in its environment
+#                                line. The inputs reach `gh workflow run` as JSON on its stdin, never
+#                                its command line; a workflow input is kept with the run, so none
+#                                may be a secret. Or OUTSIDE_PUBLIC_COMMAND: a command line, split on
+#                                blanks, that runs the public leg here instead, for a local stack;
+#                                it gets OUTSIDE_TAILNET_USER_CODE, OUTSIDE_PEER_SESSION,
+#                                OUTSIDE_SWEEP_FILLS and OUTSIDE_PUBLIC_RESULTS in its environment
 #                                and writes outside-agent-public.tsv and
 #                                outside-edge-revocations.tsv there.
 # Optional: OUTSIDE_PEER, P4's peer: `omp` (the default), an Oh My Pi session of this box whose
-# model answers, run with the box's own model profile and only the envoy extension (dist/envoy.js)
-# of the plugin OUTSIDE_PEER_PLUGIN_DIR names (default this checkout's packages/pi-envoy, built); or `probe`, a
-# scripted peer for a local stack, only with OUTSIDE_ALLOW_HTTP=1, named OUTSIDE_PEER_SESSION
-# (default outside-e2e-peer-<random>). OUTSIDE_OWNER_REMOVE_COMMAND, a command line that removes
-# the test person from the project's access list as its owner, run with the person and the
-# project as its last two words, in place of T5's prompt (a harness that acts as the owner's
-# browser). OUTSIDE_IMAGE_REVISION_COMMAND,
-# a command line that prints the commit an image was built from, run with the image as its last
-# word (default: `crane config`, read for org.opencontainers.image.revision); OUTSIDE_TAILNET_TSV,
-# a file that gets a copy of the TSV; OUTSIDE_RESULT_ISSUE, an issue the result is posted to as one
-# comment with `dispatch comment`; OUTSIDE_LEGION_CHECKOUT, the git checkout the pins row reads
-# commits in (default this file's own); OUTSIDE_ALLOW_HTTP=1, which lets http://127.0.0.1 origins
-# through for a local stack.
+# model answers, run with only the envoy extension (dist/envoy.js) of the plugin
+# OUTSIDE_PEER_PLUGIN_DIR names (default this checkout's packages/pi-envoy, built), no built-in
+# tool, and a scratch HOME holding only the model's configuration and credential: the files
+# OUTSIDE_PEER_AGENT_FILES names (default `config.yml models.yml agent.db`) out of
+# OUTSIDE_PEER_AGENT_DIR (default ~/.omp/agent), and the variables OUTSIDE_PEER_ENV names; or
+# `probe`, a scripted peer for a local stack, only with OUTSIDE_ALLOW_HTTP=1, named
+# OUTSIDE_PEER_SESSION (default outside-e2e-peer-<random>). OUTSIDE_OWNER_REMOVE_COMMAND, a command
+# line that removes the test person from the project's access list as its owner, run with the
+# person and the project as its last two words, in place of T5's prompt (a harness that acts as the
+# owner's browser). OUTSIDE_IMAGE_REVISION_COMMAND, a command line that prints the commit an image
+# was built from, run with the image as its last word (default: `crane config`, read for
+# org.opencontainers.image.revision); OUTSIDE_TAILNET_TSV, a file that gets a copy of the TSV;
+# OUTSIDE_RESULT_ISSUE, an issue the result is posted to as one comment with `dispatch comment`;
+# OUTSIDE_LEGION_CHECKOUT, the git checkout the pins row reads commits in (default this file's
+# own); OUTSIDE_ALLOW_HTTP=1, which lets http://127.0.0.1 origins through for a local stack.
 #
 # T3, the positive control, and the issue run as this box's own: its `agent-secrets` helper and
-# its `dispatch` command, as the caller's environment has them. The scratch helper of T1, T2 and
-# T4, and the one of P7's control, each run with HOME, XDG_RUNTIME_DIR, XDG_STATE_HOME and every
-# AGENT_SECRETS_* path of its own, in one `mktemp -d` directory, so neither shares a key, socket or
-# record with the box's.
+# its `dispatch` command, as the caller's environment has them, T3 against the broker
+# OUTSIDE_TAILNET_BROKER_URL names. The scratch helper of T1, T2 and T4, and the one of P7's
+# control, each run with HOME, XDG_RUNTIME_DIR, XDG_STATE_HOME and every AGENT_SECRETS_* path of
+# its own, in one `mktemp -d` directory, so neither shares a key, socket or record with the box's.
 #
 # Output: on stdout a TSV, the header `row want got verdict`, the rows pins, issue, T1-T5, the
-# public leg's P1-P9 as its TSV has them, sweep, and the gate. Progress goes to stderr. A row it
-# could not run reads UNKNOWN naming what it could not read, never PASS. Exit 0 when the gate
-# passed, 1 when a row failed, 2 otherwise. It prints no secret value: T2 and T3 read the canary's
-# length alone, and the full member's cookie reaches curl in a header file alone.
+# public leg's P1-P9 as its TSV has them, public (the public leg's own verdict, revocations and
+# end), sweep, and the gate. Progress goes to stderr. A row it could not run reads UNKNOWN naming
+# what it could not read, never PASS. Exit 0 when the gate passed, 1 when a row failed, 2
+# otherwise. It prints no secret value: T2 and T3 read the canary's length alone, and the full
+# member's cookie reaches curl in a header file alone.
 #
 # Usage: OUTSIDE_PINS=pins.txt OUTSIDE_ENROLL_REFUSAL_COMMIT=<sha> ... bash outside-agent-tailnet.sh EXAMPLE
 
@@ -97,9 +107,22 @@ export LC_ALL
 
 case $0 in */*) here=${0%/*} ;; *) here=. ;; esac
 here=$(cd "$here" && pwd)
+for support in outside-agent-lib.sh outside-agent-peer.sh outside-agent-sweep.sh; do
+  if [ ! -r "$here/$support" ]; then
+    echo "UNKNOWN: $support is not beside this file in $here"
+    exit 2
+  fi
+done
+# shellcheck source=outside-agent-lib.sh
+. "$here/outside-agent-lib.sh"
+# shellcheck source=outside-agent-peer.sh
+. "$here/outside-agent-peer.sh"
+# shellcheck source=outside-agent-sweep.sh
+. "$here/outside-agent-sweep.sh"
 tab=$(printf '\t')
 newline='
 '
+allow_http=${OUTSIDE_ALLOW_HTTP:-}
 
 tsv=${OUTSIDE_TAILNET_TSV:-}
 if [ -n "$tsv" ]; then
@@ -110,28 +133,18 @@ emit() {
   [ -z "$tsv" ] || printf '%s\n' "$1" >>"$tsv"
   [ -z "${work:-}" ] || printf '%s\n' "$1" >>"$work/result.tsv"
 }
-# text_of FILE: FILE's first 300 characters, on one line.
-text_of() {
-  local text
-  text=$(tr '\n' ' ' <"$1" 2>/dev/null)
-  printf '%s' "${text:0:300}"
-}
-cell() {
-  local text=$1
-  text=${text//$tab/ }
-  text=${text//$newline/ }
-  text=${text//$'\r'/ }
-  printf '%s' "$text"
-}
 fails=0
 unknowns=0
+# row NAME WANT GOT VERDICT: prints the row and keeps its verdict as verdict_<NAME>. A verdict that
+# is none of PASS, FAIL and UNKNOWN counts as UNKNOWN, so no word this leg copies from another
+# file lets the gate pass.
 row() {
   emit "$1$tab$(cell "$2")$tab$(cell "$3")$tab$4"
   printf -v "verdict_$1" '%s' "$4"
   case $4 in
-    FAIL) fails=$((fails + 1)) ;;
-    UNKNOWN) unknowns=$((unknowns + 1)) ;;
     PASS) ;;
+    FAIL) fails=$((fails + 1)) ;;
+    *) unknowns=$((unknowns + 1)) ;;
   esac
 }
 passed() {
@@ -139,53 +152,20 @@ passed() {
   [ "${!name:-}" = PASS ]
 }
 say() { printf 'outside-agent-tailnet: %s\n' "$1" >&2; }
-now() { date -u '+%s'; }
-json_field() {
-  local rest=${2#*\""$1"\":}
-  [ "$rest" != "$2" ] || return 1
-  case $rest in
-    \"*)
-      rest=${rest#\"}
-      printf '%s' "${rest%%\"*}"
-      ;;
-    *) printf '%s' "${rest%%[,\}]*}" ;;
-  esac
+# mark NAME TEXT: the number after `NAME=` in TEXT, or nothing.
+mark() {
+  local rest=${2#*"$1="}
+  [ "$rest" != "$2" ] || return 0
+  rest=${rest%%[!0-9]*}
+  printf '%s' "$rest"
 }
-tool_problem() {
-  local name out=''
-  for name in "$@"; do
-    command -v "$name" >/dev/null 2>&1 || out="${out:+$out, }$name"
-  done
-  [ -z "$out" ] || printf '%s not on PATH' "$out"
-}
-allow_http=${OUTSIDE_ALLOW_HTTP:-}
-origin_problem() {
-  local value
-  eval "value=\${$1:-}"
-  case $value in
-    '') printf '%s is unset' "$1" ;;
-    https://*/* | http://*/*) printf '%s must be an origin alone, with no path: %s' "$1" "$value" ;;
-    https://?*) ;;
-    http://127.0.0.1:* | http://localhost:*)
-      [ "$allow_http" = 1 ] || printf '%s may be http only with OUTSIDE_ALLOW_HTTP=1: %s' "$1" "$value"
-      ;;
-    *) printf '%s must be an https origin: %s' "$1" "$value" ;;
-  esac
-}
-lacking() {
-  local name value problem out=''
-  for name in "$@"; do
-    case $name in
-      *_URL) problem=$(origin_problem "$name") ;;
-      *)
-        eval "value=\${$name:-}"
-        problem=''
-        [ -n "$value" ] || problem="$name is unset"
-        ;;
-    esac
-    [ -z "$problem" ] || out="${out:+$out; }$problem"
-  done
-  printf '%s' "$out"
+# mark_word NAME TEXT: the word after ` NAME=` (or `NAME=` at TEXT's start) in TEXT, up to a blank
+# or a semicolon, or nothing.
+mark_word() {
+  local rest=" $2"
+  rest=${rest#*" $1="}
+  [ "$rest" != " $2" ] || return 0
+  printf '%s' "${rest%%[ ;]*}"
 }
 
 public_rows='P1 P2 P3 P4 P5 P6 P7 P8 P9'
@@ -198,52 +178,28 @@ nonce=$(od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
 [ -n "$nonce" ] || nonce=$$
 peer=${OUTSIDE_PEER_SESSION:-outside-e2e-peer-$nonce}
 
-# --- Scratch directory and cleanup: the helper, the peer, the public command, by their pids. ---
+# --- Scratch directory and cleanup: every background child, stopped and waited for, then the
+# peer's tmux server, then the directory. ---
 work=''
 background=''
+peer_tmux=''
 # shellcheck disable=SC2329 # run by the EXIT trap below
 cleanup() {
-  local pid pane
-  for pid in $background; do kill "$pid" 2>/dev/null; done
-  # The peer's tmux server and the Oh My Pi in it stop before the directory goes: a server left
-  # running keeps the peer registered at the edge after the leg ends (the edge-on run found ten
-  # such peers alive), and the peer writes its session files under $work as it exits.
-  if [ -n "${peer_tmux:-}" ] && [ -S "$peer_tmux" ]; then
-    pane=$(PATH="${tools:+$tools:}$PATH" tmux -S "$peer_tmux" display-message -p '#{pane_pid}' 2>/dev/null)
-    PATH="${tools:+$tools:}$PATH" tmux -S "$peer_tmux" kill-server 2>/dev/null
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      { [ -n "$pane" ] && kill -0 "$pane" 2>/dev/null; } || break
-      sleep 1
-    done
-  fi
+  reap
+  peer_stop
   [ -z "$work" ] || rm -rf "$work"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 work=$(mktemp -d "${TMPDIR:-/tmp}/outside-agent-tailnet.XXXXXX") || work=''
-
-# real_tools DIR NAME...: a link in DIR to the real program behind each NAME. A version manager's
-# shim (mise's, or a wrapper that calls mise) finds its program through the caller's HOME, and the
-# children this leg starts under a HOME of their own have none, so they run the real programs.
-real_tools() {
-  local dir=$1 name found
-  shift
-  mkdir -p "$dir" || return
-  for name in "$@"; do
-    found=''
-    if command -v mise >/dev/null 2>&1; then found=$(mise which "$name" 2>/dev/null </dev/null); fi
-    [ -n "$found" ] || found=$(command -v "$name" 2>/dev/null)
-    case $found in /*) ln -sf "$found" "$dir/$name" ;; esac
-  done
-}
 tools="$work/tools"
 [ -z "$work" ] || real_tools "$tools" bun omp tmux agent-secrets agent-secrets-helper
 
 emit "row${tab}want${tab}got${tab}verdict"
 
-# skip_rest REASON FROM: every row from FROM on (the names in `rest_rows`) UNKNOWN for REASON.
-rest_rows="pins issue T1 T2 T3 T4 T5 $public_rows sweep"
+# skip_from REASON FROM: every row from FROM on (the names in `rest_rows`) UNKNOWN for REASON.
+rest_rows="pins issue T1 T2 T3 T4 T5 $public_rows public sweep"
 skip_from() {
   local reason=$1 from=$2 name on=''
   for name in $rest_rows; do
@@ -257,8 +213,7 @@ gate() {
   local verdict=PASS
   [ "$unknowns" -eq 0 ] || verdict=UNKNOWN
   [ "$fails" -eq 0 ] || verdict=FAIL
-  [ -z "${pins_moved:-}" ] || { [ "$verdict" = FAIL ] || verdict=UNKNOWN; }
-  emit "gate${tab}every row PASS, against pins that did not move between the legs${tab}$(cell "$fails FAIL, $unknowns UNKNOWN${pins_moved:+; $pins_moved}")${tab}$verdict"
+  emit "gate${tab}every row PASS${tab}$(cell "$fails FAIL, $unknowns UNKNOWN")${tab}$verdict"
   if [ -n "${OUTSIDE_RESULT_ISSUE:-}" ] && [ -n "$work" ] && command -v dispatch >/dev/null 2>&1; then
     {
       printf 'The outside acceptance of %s, both legs, %s:\n\n```\n' "$project" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -274,7 +229,9 @@ gate() {
   exit 2
 }
 
-# --- pins: the deployed images, and the commit each was built from. ---
+# --- pins: the deployed images, and the commit each was built from. The pins are read once, at
+# the start: no deployment serves the commit it runs, so a re-read at the end could read only the
+# same files again. ---
 # read_pins: sets pins_text, the `name image revision` lines, or pins_problem.
 read_pins() {
   local line name file key value image revision found
@@ -334,18 +291,15 @@ if [ -z "$problem" ] && [ ! -r "$OUTSIDE_PINS" ]; then
 fi
 if [ -n "$problem" ]; then
   row pins "$want_pins" "$problem" UNKNOWN
-  rest_rows="issue T1 T2 T3 T4 T5 $public_rows sweep"
   skip_from "the pins were not read: $problem" issue
   gate
 fi
 read_pins
 if [ -n "$pins_problem" ]; then
   row pins "$want_pins" "$pins_problem" UNKNOWN
-  rest_rows="issue T1 T2 T3 T4 T5 $public_rows sweep"
   skip_from "the pins were not read" issue
   gate
 fi
-pins_at_start=$pins_text
 broker_revision=''
 dispatch_revision=''
 while IFS=' ' read -r name image revision; do
@@ -400,12 +354,10 @@ fi
 pins_line=$(printf '%s' "$pins_text" | tr '\n' ';')
 if [ -n "$lacks" ]; then
   row pins "$want_pins" "$lacks${problem:+; $problem}; $pins_line" FAIL
-  rest_rows="issue T1 T2 T3 T4 T5 $public_rows sweep"
   skip_from "a pin lacks a change the check needs, so the legs do not start" issue
   gate
 elif [ -n "$problem" ]; then
   row pins "$want_pins" "$problem; $pins_line" UNKNOWN
-  rest_rows="issue T1 T2 T3 T4 T5 $public_rows sweep"
   skip_from "whether the pins hold the changes the check needs is unread" issue
   gate
 fi
@@ -475,12 +427,13 @@ helper_env() {
   )
 }
 # start_login DIR: starts the helper helper_vars describes, its process id in helper_pid, and then
-# its machine login, in the background, writing DIR/helper.log, DIR/login.log and, when the login
-# ends, its exit in DIR/login.exit. Sets login_code to the login's code, or login_problem.
+# its machine login, in the background, its process id in login_pid, writing DIR/helper.log and
+# DIR/login.log. Sets login_code to the login's code, or login_problem.
 start_login() {
   local deadline line
   login_code=''
   login_problem=''
+  login_pid=''
   env -i "${helper_vars[@]}" agent-secrets-helper serve >"$1/helper.log" 2>&1 </dev/null &
   helper_pid=$!
   background="$background $helper_pid"
@@ -492,17 +445,17 @@ start_login() {
   fi
   # The log exists before the login starts, so the read below never meets a missing file.
   : >"$1/login.log"
-  (
-    env -i "${helper_vars[@]}" agent-secrets machine login >"$1/login.log" 2>&1 </dev/null
-    echo "$?" >"$1/login.exit"
-  ) &
-  background="$background $!"
+  env -i "${helper_vars[@]}" agent-secrets machine login >"$1/login.log" 2>&1 </dev/null &
+  login_pid=$!
+  background="$background $login_pid"
   deadline=$(($(now) + 60))
-  while [ -z "$login_code" ] && [ "$(now)" -lt "$deadline" ] && [ ! -f "$1/login.exit" ]; do
+  while [ -z "$login_code" ] && [ "$(now)" -lt "$deadline" ]; do
     while IFS= read -r line; do
       case $line in 'machine login code: '*) login_code=${line#machine login code: } ;; esac
     done <"$1/login.log"
-    [ -n "$login_code" ] || sleep 1
+    [ -z "$login_code" ] || break
+    kill -0 "$login_pid" 2>/dev/null || break
+    sleep 1
   done
   [ -n "$login_code" ] ||
     login_problem="agent-secrets machine login printed no code within 60 s: $(text_of "$1/login.log")"
@@ -511,6 +464,7 @@ scratch="$work/scratch"
 helper_env "$scratch" "$person"
 scratch_env=("${helper_vars[@]}")
 code=''
+scratch_login_pid=''
 problem=$(lacking OUTSIDE_TAILNET_BROKER_URL OUTSIDE_PERSON OUTSIDE_CANARY)
 [ -n "$problem" ] || problem=$(tool_problem agent-secrets agent-secrets-helper)
 helper_problem=$problem
@@ -518,176 +472,24 @@ if [ -z "$helper_problem" ]; then
   say "starting the scratch helper in $scratch"
   start_login "$scratch"
   code=$login_code
+  scratch_login_pid=$login_pid
   helper_problem=$login_problem
 fi
 
-# --- The peer session, and the session outside the project P6 must not list. ---
+# --- The peer session, and the session outside the project P6 must not list
+# (outside-agent-peer.sh). The probe runs with this box's broker identity alone: its AGENT_SECRETS_*
+# settings, XDG directories, metadata host, HOME and TMPDIR, and no Dispatch or Envoy setting. ---
 probe_env=()
 while IFS= read -r name; do
-  case $name in AGENT_SECRETS_* | DISPATCH_* | ENVOY_* | NATS_* | XDG_* | GCE_METADATA_HOST | HOME | PATH | TMPDIR) ;; *) continue ;; esac
+  case $name in AGENT_SECRETS_* | XDG_* | GCE_METADATA_HOST | HOME | TMPDIR) ;; *) continue ;; esac
   probe_env+=("$name=${!name}")
 done <<EOF
 $(compgen -e)
 EOF
 probe_env+=("PATH=$tools:$PATH")
-# The peer of P4 is an Oh My Pi session of this box, OUTSIDE_PEER=omp (the default): the box's own
-# model profile, with only the envoy extension of the plugin OUTSIDE_PEER_PLUGIN_DIR names (default
-# this checkout's packages/pi-envoy, built), loaded by its path (-e dist/envoy.js), since
-# --no-extensions also stops a --plugin-dir plugin from loading; no other extension, skill, rule or
-# context file, its sessions kept in the scratch directory. It registers at the edge listener with
-# this box's identity and a token
-# naming the project, and its model answers the public leg's messages. OUTSIDE_PEER=probe is
-# outside-agent-probe.ts's scripted peer instead, for a local stack with no model, and only with
-# OUTSIDE_ALLOW_HTTP=1. Either way `peer_seen` gets one line per ping and reply the peer was shown:
-# `<word> <nonce> <sender's stamp> <this box's clock when it was seen>`, in Unix ms.
-peer_kind=${OUTSIDE_PEER:-omp}
-peer_seen="$work/peer-seen.txt"
-: >"$peer_seen"
-peer_tmux="$work/peer-tmux.sock"
-peer_problem=$(lacking OUTSIDE_LISTENER_URL)
-[ -n "$peer_problem" ] || peer_problem=$(tool_problem bun)
-case $peer_kind in
-  omp)
-    plugin_dir=${OUTSIDE_PEER_PLUGIN_DIR:-$here/../../../pi-envoy}
-    [ -n "$peer_problem" ] || peer_problem=$(tool_problem omp tmux)
-    [ -n "$peer_problem" ] || [ -f "$plugin_dir/dist/envoy.js" ] ||
-      peer_problem="OUTSIDE_PEER_PLUGIN_DIR names $plugin_dir, which holds no built envoy extension (dist/envoy.js)"
-    ;;
-  # The scripted peer is P4's control: it answers with no model in the loop, so a model peer's
-  # failure where it passes is the model's. Its own PASS proves no model turn, so the gate reads it
-  # UNKNOWN (below).
-  probe) ;;
-  *) peer_problem="OUTSIDE_PEER must be omp or probe, not $peer_kind" ;;
-esac
-# peer_text: what the peer has been shown so far: its pane, or the scripted peer's log.
-peer_text() {
-  if [ "$peer_kind" = omp ]; then
-    tmux -S "$peer_tmux" capture-pane -p -J -S -5000 -t outside-e2e-peer 2>/dev/null
-  else
-    cat "$work/peer.log" 2>/dev/null
-  fi
-}
-# watch_peer: runs until it is stopped, adding to `peer_seen` each ping and reply the peer is
-# shown for the first time, with the time it was first seen.
-# shellcheck disable=SC2329 # started in the background below
-watch_peer() {
-  local text rest word n stamped
-  while :; do
-    text=$(peer_text)
-    for word in ping reply; do
-      rest=$text
-      while case $rest in *"outside-e2e $word "*) true ;; *) false ;; esac; do
-        rest=${rest#*"outside-e2e $word "}
-        n=${rest%% *}
-        stamped=${rest#"$n at "}
-        [ "$stamped" != "$rest" ] || continue
-        stamped=${stamped%%[!0-9]*}
-        # A stamp is Unix ms (13 digits); the model peer may write ns (date +%s%N), whose first 13
-        # digits are the same ms.
-        [ "${#stamped}" -le 13 ] || stamped=${stamped:0:13}
-        [ -n "$stamped" ] || continue
-        case $(cat "$peer_seen") in *"$word $n "*) ;; *)
-          printf '%s %s %s %s000\n' "$word" "$n" "$stamped" "$(now)" >>"$peer_seen"
-          ;;
-        esac
-      done
-    done
-    sleep 1
-  done
-}
-peer_prompt="You are the peer session of an automated check. Follow these instructions exactly and take no other action. Wait for Envoy messages. When a message 'outside-e2e ping <N> at <T>' arrives from a session, reply to that session: run the bash command date +%s%3N, then call envoy_send to send that session exactly 'outside-e2e pong <N> at <the number date printed>'; then run date +%s%3N again and call envoy_send to send it exactly 'outside-e2e hello <N> at <the number date printed>'. When a message 'outside-e2e reply <N> at <T>' arrives from a session, run date +%s%3N and call envoy_send to send that session exactly 'outside-e2e done <N> at <the number date printed>'. Then wait again."
-if [ -z "$peer_problem" ] && [ "$peer_kind" = omp ]; then
-  peer_dir="$work/outside-e2e-peer-$nonce"
-  mkdir -p "$peer_dir" "$work/peer-sessions"
-  peer_dir=$(cd "$peer_dir" && pwd -P)
-  say "starting the peer, omp in tmux (tmux -S $peer_tmux attach -t outside-e2e-peer)"
-  env -u ENVOY_NATS_URL -u ENVOY_TOKEN -u ENVOY_TOKEN_FILE -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE \
-    PATH="$tools:$PATH" OMP_SKIP_SETUP=1 \
-    ENVOY_URL="$OUTSIDE_LISTENER_URL" ENVOY_INBOUND=listener AGENT_SECRETS_PROJECTS="$project" \
-    tmux -S "$peer_tmux" new-session -d -s outside-e2e-peer -x 220 -y 50 -c "$peer_dir" \
-    omp --no-extensions -e "$plugin_dir/dist/envoy.js" --no-skills --no-rules --no-context-files \
-    --session-dir "$work/peer-sessions" </dev/null
-  ready=''
-  deadline=$(($(now) + 60))
-  while [ -z "$ready" ] && [ "$(now)" -lt "$deadline" ]; do
-    case $(peer_text) in *"outside-e2e-peer-$nonce"*) ready=yes ;; *) sleep 1 ;; esac
-  done
-  peer=''
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    [ -n "$ready" ] || break
-    peer=$(json_field at_dir "$(env -i "${probe_env[@]}" AGENT_SECRETS_PROJECTS="$project" \
-      OUTSIDE_PROBE_SESSION="outside-e2e-peer-finder-$nonce" OUTSIDE_LISTENER_URL="$OUTSIDE_LISTENER_URL" \
-      OUTSIDE_DISPATCH_URL="http://127.0.0.1:1" bun "$here/outside-agent-probe.ts" sessions "$peer_dir" \
-      2>>"$work/probe.log" </dev/null)")
-    [ -z "$peer" ] || [ "$peer" = null ] || break
-    peer=''
-    sleep 3
-  done
-  if [ -z "$ready" ]; then
-    peer_problem="the peer's Oh My Pi TUI did not name its directory within 60 s"
-  elif [ -z "$peer" ]; then
-    peer_problem="the peer's Oh My Pi session is not on $OUTSIDE_LISTENER_URL's session list"
-  else
-    tmux -S "$peer_tmux" send-keys -t outside-e2e-peer -l "$peer_prompt"
-    sleep 1
-    tmux -S "$peer_tmux" send-keys -t outside-e2e-peer Enter
-  fi
-elif [ -z "$peer_problem" ]; then
-  say "starting the scripted peer $peer at $OUTSIDE_LISTENER_URL"
-  env -i "${probe_env[@]}" AGENT_SECRETS_PROJECTS="$project" OUTSIDE_PROBE_SESSION="$peer" \
-    OUTSIDE_LISTENER_URL="$OUTSIDE_LISTENER_URL" OUTSIDE_DISPATCH_URL="http://127.0.0.1:1" \
-    bun "$here/outside-agent-probe.ts" peer >"$work/peer.log" 2>&1 </dev/null &
-  background="$background $!"
-  deadline=$(($(now) + 60))
-  while [ "$(now)" -lt "$deadline" ]; do
-    case $(cat "$work/peer.log") in *'"ready":true'* | *'"unknown"'*) break ;; esac
-    sleep 1
-  done
-  case $(cat "$work/peer.log") in
-    *'"ready":true'*) ;;
-    *) peer_problem="the peer $peer did not start: $(text_of "$work/peer.log")" ;;
-  esac
-fi
-if [ -z "$peer_problem" ]; then
-  watch_peer &
-  background="$background $!"
-fi
-# The session outside the project, `<peer>-foreign`, which P6 must not find on the edge's list. Its
-# token names OUTSIDE_FOREIGN_PROJECT alone, a project of this box's person other than the edge's:
-# a token naming none carries every project of the person, the edge's among them. That holds only
-# where this box's clients trade as its person (a sign-in or a device login); a machine trading for
-# itself names the projects its entry decides. So the probe also presents that token to the edge,
-# whose admission (E1) is a check apart from the session list P6 reads: an edge that admits it
-# holds that session in the project, and then P6's absence cannot be asked (foreign_in_project).
-foreign_in_project=''
-foreign_problem=$(lacking OUTSIDE_INTERNAL_LISTENER_URL OUTSIDE_FOREIGN_PROJECT OUTSIDE_LISTENER_URL)
-[ -n "$foreign_problem" ] || [ "${OUTSIDE_FOREIGN_PROJECT:-}" != "$project" ] ||
-  foreign_problem="OUTSIDE_FOREIGN_PROJECT names $project, the edge's own project"
-[ -n "$foreign_problem" ] || foreign_problem=$(tool_problem bun)
-[ -n "$foreign_problem" ] || [ -n "$peer" ] || foreign_problem="no peer session id, which it is named after"
-if [ -z "$foreign_problem" ]; then
-  # The log exists before the probe starts, so the read below never meets a missing file.
-  : >"$work/foreign.log"
-  env -i "${probe_env[@]}" OUTSIDE_PROBE_SESSION="$peer" \
-    OUTSIDE_LISTENER_URL="http://127.0.0.1:1" OUTSIDE_DISPATCH_URL="http://127.0.0.1:1" \
-    OUTSIDE_FOREIGN_LISTENER_URL="$OUTSIDE_INTERNAL_LISTENER_URL" \
-    OUTSIDE_FOREIGN_EDGE_URL="$OUTSIDE_LISTENER_URL" OUTSIDE_FOREIGN_PROJECT="$OUTSIDE_FOREIGN_PROJECT" \
-    bun "$here/outside-agent-probe.ts" foreign >"$work/foreign.log" 2>&1 </dev/null &
-  background="$background $!"
-  deadline=$(($(now) + 60))
-  while [ "$(now)" -lt "$deadline" ]; do
-    case $(cat "$work/foreign.log") in *'"foreign":"'* | *'"unknown"'*) break ;; esac
-    sleep 1
-  done
-  case $(cat "$work/foreign.log") in
-    *'"foreign":"'*'"registered":2'*'"listed":true'*'"edge_admits":false'*) ;;
-    *'"foreign":"'*'"registered":2'*'"listed":true'*'"edge_admits":true'*)
-      foreign_in_project="the edge admits the token of $peer-foreign ($(text_of "$work/foreign.log")), so that session is in $project, and its absence from the list cannot be asked: its token names ${OUTSIDE_FOREIGN_PROJECT:-} only where this box trades as its person, not as a machine whose entry decides its projects"
-      foreign_problem=$foreign_in_project
-      ;;
-    *) foreign_problem="the session $peer-foreign was not registered and listed at $OUTSIDE_INTERNAL_LISTENER_URL, with the edge's answer to its token read: $(text_of "$work/foreign.log")" ;;
-  esac
-fi
+peer_setup
+peer_start
+foreign_start
 
 # --- The full member's browser session (OUTSIDE_FULL_COOKIE_FILE) at Dispatch's private origin.
 # Dispatch's GitHub proxy reads as the browser's person and never as a token, and no broker token
@@ -730,109 +532,17 @@ if [ -z "$browser_problem" ]; then
   esac
 fi
 
-# --- The read sweep's full-member half (restricted-sweep.sh beside this file): a full member has
-# no cookie at the outside origin, and no full member's credential goes on the runner. So this box
-# runs the sweep's fills mode, which makes the full member's half of every row, and passes the file
-# to the workflow as `sweep_fills`; and it runs the sweep's writer, which comments on the write
-# issue every 15 s and reads the full member's own feed, as the live socket's control. The token
-# and the cookie reach the sweep through the environment of a subshell alone. Fills mode writes
-# the full member's half of the GitHub proxy rows (a `can_fail` line for each read that can fail)
-# only with the full member's browser session, since the proxy reads no token, so the sweep needs
-# OUTSIDE_FULL_COOKIE_FILE. ---
-sweep_script="$here/restricted-sweep.sh"
-sweep_fills=''
-sweep_problem=$(lacking OUTSIDE_TAILNET_DISPATCH_URL OUTSIDE_SWEEP_PROJECT OUTSIDE_SWEEP_FULL_TOKEN_FILE OUTSIDE_SWEEP_CONVERSATION_FILE OUTSIDE_SWEEP_WRITE_ISSUE OUTSIDE_FULL_COOKIE_FILE)
-[ -n "$sweep_problem" ] || [ -f "$sweep_script" ] || sweep_problem="restricted-sweep.sh is not beside this file in $here"
-[ -n "$sweep_problem" ] || [ -r "${OUTSIDE_SWEEP_FULL_TOKEN_FILE:-}" ] ||
-  sweep_problem="OUTSIDE_SWEEP_FULL_TOKEN_FILE names $OUTSIDE_SWEEP_FULL_TOKEN_FILE, which cannot be read"
-[ -n "$sweep_problem" ] || [ -z "$browser_problem" ] ||
-  sweep_problem="the sweep's fills mode writes its GitHub proxy rows only with the full member's browser session, which was not read: $browser_problem"
-# sweep_run MODE OUT: the sweep in MODE with the box's full member, its output in OUT.
-sweep_run() {
-  (
-    SWEEP_FULL_TOKEN=$(tr -d '\r\n' <"$OUTSIDE_SWEEP_FULL_TOKEN_FILE")
-    export SWEEP_FULL_TOKEN
-    SWEEP_FULL_COOKIE=$(tr -d '\r\n' <"$OUTSIDE_FULL_COOKIE_FILE")
-    export SWEEP_FULL_COOKIE
-    SWEEP_MODE=$1 SWEEP_ORIGIN=$OUTSIDE_TAILNET_DISPATCH_URL SWEEP_PROJECT=$OUTSIDE_SWEEP_PROJECT \
-      SWEEP_MEMBER=$person SWEEP_CONVERSATION_FILE=$OUTSIDE_SWEEP_CONVERSATION_FILE \
-      SWEEP_FILLS_FILE="$work/sweep-fills" \
-      SWEEP_WRITE_ISSUE=$OUTSIDE_SWEEP_WRITE_ISSUE SWEEP_WRITE_SECONDS=3600 SWEEP_WRITE_EVERY=15 \
-      exec bash "$sweep_script" >"$2" 2>&1 </dev/null
-  )
-}
-if [ -z "$sweep_problem" ]; then
-  say "the sweep's fills mode"
-  if ! sweep_run fills "$work/sweep-fills.log" || [ ! -s "$work/sweep-fills" ]; then
-    sweep_problem="the sweep's fills mode made no file: $(text_of "$work/sweep-fills.log")"
-  elif [ "$(wc -c <"$work/sweep-fills")" -gt 40960 ]; then
-    sweep_problem="the sweep's fills file is $(wc -c <"$work/sweep-fills") bytes, past the 40 KiB one workflow input holds"
-  else
-    sweep_fills=$(base64 <"$work/sweep-fills" | tr -d '\n')
-    # The writer comments every 15 s until the public leg ends, when it is stopped: it runs on a
-    # scratch issue (OUTSIDE_SWEEP_WRITE_ISSUE), about four comments a minute of the run.
-    sweep_run writer "$work/sweep-writer.log" &
-    writer_pid=$!
-    background="$background $writer_pid"
-  fi
-fi
-
-# The sweep's proxy rows' positive control. The runner reads the GitHub proxy as the test person
-# for the repository the fills name as one only the sweep's project's issues resolve to, and must
-# be answered as for a repository the App is not installed on. That answer means something only
-# where the proxy answers the same repository to a person who may see it. So the fills must hold
-# the full member's answer that can fail for each proxy read the runner makes (a `can_fail` line
-# each), and this box's browser reads, through the proxy, the workflow runs of the commit the
-# sweep's own proxy rows name, and must get 200 with a list of workflow runs. Without either, the
-# sweep row reads UNKNOWN.
-proxy_sha=0123456789abcdef0123456789abcdef01234567
-proxy_reads='GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}
-GET /api/github/rest/repos/{owner}/{repo}/issues/{number}
-GET /api/github/rest/repos/{owner}/{repo}/commits/{sha}/check-runs
-GET /api/github/rest/repos/{owner}/{repo}/actions/runs?head_sha={sha}
-GET /api/v1/github/app-installation/{owner}/{repo}'
-proxy_control=''
-proxy_control_problem=$browser_problem
-[ -n "$proxy_control_problem" ] || [ -z "$sweep_problem" ] ||
-  proxy_control_problem="the sweep's fills, which name the repository, were not made: $sweep_problem"
-if [ -z "$proxy_control_problem" ]; then
-  proxy_repo=''
-  can_fail=$newline
-  while IFS="$tab" read -r name value; do
-    case $name in
-      proxy_repo) proxy_repo=$value ;;
-      can_fail) can_fail="$can_fail$value$newline" ;;
-    esac
-  done <"$work/sweep-fills"
-  blind=''
-  while IFS= read -r each; do
-    case $can_fail in *"$newline$each$newline"*) ;; *) blind="${blind:+$blind, }$each" ;; esac
-  done <<EOF
-$proxy_reads
-EOF
-  [ -z "$blind" ] ||
-    proxy_control_problem="the sweep's fills hold no full member's answer that can fail for $blind"
-fi
-if [ -z "$proxy_control_problem" ]; then
-  case $proxy_repo in
-    '') proxy_control_problem="the sweep's fills name no repository that only $OUTSIDE_SWEEP_PROJECT's issues resolve to" ;;
-    *[!A-Za-z0-9_./-]* | */*/* | /* | */) proxy_control_problem="the sweep's fills name no owner/name repository: $proxy_repo" ;;
-    */*)
-      status=$(browser GET "/api/github/rest/repos/$proxy_repo/actions/runs?head_sha=$proxy_sha" "$work/proxy-control.json")
-      answer=$(tr -d ' \n' <"$work/proxy-control.json" 2>/dev/null)
-      case $status:$answer in
-        200:*'"workflow_runs":'*) proxy_control="the full member's browser read $proxy_repo's workflow runs through the proxy: 200" ;;
-        *) proxy_control_problem="the full member's browser read of $proxy_repo through the proxy answered $status: ${answer:0:200} $(text_of "$work/browser.err")" ;;
-      esac
-      ;;
-    *) proxy_control_problem="the sweep's fills name no owner/name repository: $proxy_repo" ;;
-  esac
-fi
+# --- The read sweep's full-member half, its writer and its proxy control (outside-agent-sweep.sh).
+sweep_setup
+sweep_prepare
+sweep_proxy_control
 
 # --- The public leg: the workflow on a runner on the public internet, or a local command. ---
 results="$work/public"
 mkdir -p "$results"
 public_problem=''
+public_end=''
+public_pid=''
 run_id=''
 if [ -n "$helper_problem" ]; then
   public_problem="not started: the scratch helper has no code: $helper_problem"
@@ -842,29 +552,32 @@ elif [ -n "${OUTSIDE_PUBLIC_COMMAND:-}" ]; then
   # shellcheck disable=SC2086 # a command line, split on blanks on purpose
   set -- $OUTSIDE_PUBLIC_COMMAND
   set +f
-  (
-    OUTSIDE_TAILNET_USER_CODE=$code OUTSIDE_PEER_SESSION=$peer \
-      OUTSIDE_SWEEP_FILLS=$sweep_fills OUTSIDE_PUBLIC_RESULTS=$results \
-      "$@" >"$work/public.log" 2>&1 </dev/null
-    echo "$?" >"$work/public.exit"
-  ) &
-  background="$background $!"
+  OUTSIDE_TAILNET_USER_CODE=$code OUTSIDE_PEER_SESSION=$peer \
+    OUTSIDE_SWEEP_FILLS=$sweep_fills OUTSIDE_PUBLIC_RESULTS=$results \
+    "$@" >"$work/public.log" 2>&1 </dev/null &
+  public_pid=$!
+  background="$background $public_pid"
 else
   problem=$(lacking OUTSIDE_WORKFLOW_REPO)
   [ -n "$problem" ] || problem=$(tool_problem gh)
   if [ -n "$problem" ]; then
     public_problem="not started: $problem"
   else
-    fields=(-f checks=all -f "project=$project" -f "peer_session=$peer" -f "tailnet_user_code=$code")
-    [ -z "$sweep_fills" ] || fields+=(-f "sweep_fills=$sweep_fills")
+    inputs="{\"checks\":\"all\",\"project\":$(json_string "$project"),\"peer_session\":$(json_string "$peer"),\"tailnet_user_code\":$(json_string "$code")"
+    [ -z "$sweep_fills" ] || inputs="$inputs,\"sweep_fills\":$(json_string "$sweep_fills")"
     while IFS= read -r pair; do
-      [ -z "$pair" ] || fields+=(-f "$pair")
+      case $pair in
+        '') ;;
+        *=*) inputs="$inputs,$(json_string "${pair%%=*}"):$(json_string "${pair#*=}")" ;;
+        *) say "OUTSIDE_WORKFLOW_INPUTS holds a line with no name=value; it is left out" ;;
+      esac
     done <<EOF
 ${OUTSIDE_WORKFLOW_INPUTS:-}
 EOF
+    inputs="$inputs}"
     workflow=${OUTSIDE_WORKFLOW:-outside-edge-e2e.yaml}
-    say "gh workflow run $workflow -R $OUTSIDE_WORKFLOW_REPO"
-    started=$(gh workflow run "$workflow" -R "$OUTSIDE_WORKFLOW_REPO" "${fields[@]}" 2>&1 </dev/null)
+    say "gh workflow run $workflow -R $OUTSIDE_WORKFLOW_REPO --json, its inputs on stdin"
+    started=$(printf '%s' "$inputs" | gh workflow run "$workflow" -R "$OUTSIDE_WORKFLOW_REPO" --json 2>&1)
     case $started in */actions/runs/[0-9]*)
       run_id=${started##*/actions/runs/}
       run_id=${run_id%%[!0-9]*}
@@ -882,15 +595,26 @@ if [ -n "$helper_problem" ]; then
 else
   say "T1: waiting for the code $code to be approved (the code waits 15 minutes)"
   deadline=$(($(now) + 960))
-  while [ ! -f "$scratch/login.exit" ] && [ "$(now)" -lt "$deadline" ]; do sleep 2; done
-  exited=$(cat "$scratch/login.exit" 2>/dev/null)
+  while kill -0 "$scratch_login_pid" 2>/dev/null && [ "$(now)" -lt "$deadline" ]; do sleep 2; done
+  exited=''
+  if ! kill -0 "$scratch_login_pid" 2>/dev/null; then
+    wait "$scratch_login_pid"
+    exited=$?
+  fi
   [ ! -f "$scratch/machine.json" ] || credential=$(json_field credential_id "$(tr -d ' \n' <"$scratch/machine.json")")
   listed=$(env -i "${scratch_env[@]}" agent-secrets machine list --json 2>&1 </dev/null)
   person_lower=$(printf '%s' "$person" | tr '[:upper:]' '[:lower:]')
   if [ -z "$exited" ]; then
     row T1 "$want_t1" "code $code was not approved within 16 minutes" UNKNOWN
   elif [ "$exited" -ne 0 ]; then
-    row T1 "$want_t1" "machine login exited $exited: $(text_of "$scratch/login.log")" FAIL
+    # A code nobody approved ends the login `expired` after 15 minutes: the public leg never
+    # approved it, which is a missing step, not a crossing. A denial, or any other end, is.
+    case $(tr '\n' ' ' <"$scratch/login.log") in
+      *'machine login: expired'*)
+        row T1 "$want_t1" "code $code was never approved: the login expired${public_problem:+; $public_problem}" UNKNOWN
+        ;;
+      *) row T1 "$want_t1" "machine login exited $exited: $(text_of "$scratch/login.log")" FAIL ;;
+    esac
   elif [ -z "$credential" ]; then
     row T1 "$want_t1" "machine login exited 0 and the machine file holds no credential_id" FAIL
   else
@@ -982,15 +706,16 @@ else
   esac
 fi
 
-# --- T3: the positive control, the box's own helper granted the canary at once. ---
-want_t3="a fresh session enrolled through this box's own helper is granted ${canary:-<OUTSIDE_CANARY>} at once, a value 64 long"
-problem=$(lacking OUTSIDE_CANARY)
+# --- T3: the positive control, the box's own helper granted the canary at once, by the broker
+# OUTSIDE_TAILNET_BROKER_URL names: the one T2's refusal came from. ---
+want_t3="a fresh session enrolled through this box's own helper is granted ${canary:-<OUTSIDE_CANARY>} at once by ${OUTSIDE_TAILNET_BROKER_URL:-<OUTSIDE_TAILNET_BROKER_URL>}, a value 64 long"
+problem=$(lacking OUTSIDE_CANARY OUTSIDE_TAILNET_BROKER_URL)
 [ -n "$problem" ] || problem=$(tool_problem agent-secrets)
 if [ -n "$problem" ]; then
   row T3 "$want_t3" "$problem" UNKNOWN
 else
-  agent-secrets register --session-id "outside-e2e-t3-$nonce" --wait 30 \
-    --exec -- sh "$work/length.sh" "$canary" >"$work/t3.out" 2>"$work/t3.err" </dev/null
+  AGENT_SECRETS_URL=$OUTSIDE_TAILNET_BROKER_URL agent-secrets register --session-id "outside-e2e-t3-$nonce" \
+    --wait 30 --exec -- sh "$work/length.sh" "$canary" >"$work/t3.out" 2>"$work/t3.err" </dev/null
   read_length "$work/t3.out"
   case $request_exit:$length in
     0:64) row T3 "$want_t3" "granted at once, a value 64 long" PASS ;;
@@ -1002,11 +727,12 @@ else
 fi
 
 # --- P7's positive control. No broker token approves, the full member's own included, so the 403
-# that P7 reads for the agent's token says something about that token only where a browser session
-# is answered on the same routes. The full member's browser mints a personal agent token (201),
-# revoked again at once, and approves a machine login (200), a scratch helper's whose operator is
-# that member, revoked again at once. Without both answers P7 reads UNKNOWN. The mint's answer, the
-# one place the token's plaintext is shown, is removed as soon as its id is read. ---
+# OAUTH_SCOPE_REQUIRED that P7 reads for the agent's token says something about that token only
+# where a browser session is answered on the same routes. The full member's browser mints a
+# personal agent token (201), revoked again at once, and approves a machine login (200), a scratch
+# helper's whose operator is that member, revoked again at once. Without both answers P7 reads
+# UNKNOWN. The mint's answer, the one place the token's plaintext is shown, is removed as soon as
+# its id is read. ---
 p7_control=''
 p7_control_problem=$browser_problem
 [ -n "$p7_control_problem" ] || p7_control_problem=$(lacking OUTSIDE_TAILNET_BROKER_URL)
@@ -1042,7 +768,8 @@ if [ -z "$p7_control_problem" ]; then
       fi
     fi
   fi
-  kill "$helper_pid" 2>/dev/null
+  [ -z "$login_pid" ] || stop_child "$login_pid"
+  stop_child "$helper_pid"
   case $revoked in 2??) ;; *) say "P7's control: the control's machine login was not revoked ($revoked)" ;; esac
   case $dropped in 2??) ;; *) say "P7's control: the control's agent token was not revoked ($dropped)" ;; esac
   case $minted:$approved in
@@ -1055,10 +782,11 @@ fi
 # --- T5's removal, during the public run's T5 window: the public leg tells the peer the window is
 # open (`outside-e2e t5-open <nonce> at <ms>`), this leg has the owner remove the test person from
 # the project's access list, on this terminal or with OUTSIDE_OWNER_REMOVE_COMMAND (a harness that
-# acts as the owner's browser), and keeps the time; T5 is judged after the run, below. The list is
-# read with the full member's browser session at OUTSIDE_TAILNET_DISPATCH_URL (the route takes the
-# person scope, which a box's broker token need not hold), before (the control: the person is on
-# it) and after (the removal was made). ---
+# acts as the owner's browser), and keeps the clock before it asks (removal_from) and after the
+# owner answers (removal_to): the removal was made between the two. T5 is judged after the run,
+# below. The list is read with the full member's browser session at OUTSIDE_TAILNET_DISPATCH_URL
+# (the route takes the person scope, which a box's broker token need not hold), before (the
+# control: the person is on it) and after (the removal was made). ---
 # listed_now: whether the person is on the project's access list: true, false, or what was read.
 listed_now() {
   local status answer people
@@ -1088,9 +816,10 @@ public_running() {
     esac
     return 0
   fi
-  [ ! -f "$work/public.exit" ]
+  [ -n "$public_pid" ] && kill -0 "$public_pid" 2>/dev/null
 }
-removed_at=''
+removal_from=''
+removal_to=''
 t5_problem=$(lacking OUTSIDE_TAILNET_DISPATCH_URL)
 [ -n "$t5_problem" ] || [ -z "$public_problem" ] || t5_problem="the public leg did not start: $public_problem"
 [ -n "$t5_problem" ] || [ -z "$peer_problem" ] || t5_problem="no peer, which the window is opened to: $peer_problem"
@@ -1108,6 +837,7 @@ if [ -z "$t5_problem" ]; then
   elif [ "$before" != true ]; then
     t5_problem="before the removal $person is not read on the access list ($before), so a refusal would prove nothing"
   else
+    removal_from=$(now)
     if [ -n "${OUTSIDE_OWNER_REMOVE_COMMAND:-}" ]; then
       set -f
       # shellcheck disable=SC2086 # a command line, split on blanks on purpose
@@ -1120,8 +850,8 @@ if [ -z "$t5_problem" ]; then
         "$person" "$project" >/dev/tty
       read -r _ </dev/tty
     fi
-    removed_at=$(now)
-    say "T5: the removal read at $(date -u '+%H:%M:%SZ')"
+    removal_to=$(now)
+    say "T5: the removal made between $((removal_to - removal_from)) s and 0 s ago, read at $(date -u '+%H:%M:%SZ')"
   fi
 fi
 
@@ -1132,21 +862,39 @@ if [ -z "$public_problem" ] && [ -n "$run_id" ]; then
   gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n outside-agent-public -D "$results" >/dev/null 2>&1 </dev/null
   gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n outside-edge-revocations -D "$results" >/dev/null 2>&1 </dev/null
   gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n restricted-sweep -D "$results" >/dev/null 2>&1 </dev/null
-  conclusion=$(gh run view "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --json url,conclusion --jq '.url + " " + .conclusion' 2>&1 </dev/null)
-  say "run $run_id: $conclusion"
+  public_end=$(gh run view "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --json conclusion --jq .conclusion 2>/dev/null </dev/null)
+  say "run $run_id: ${public_end:-no conclusion read}"
 elif [ -z "$public_problem" ]; then
   say "waiting for the public leg's command"
   deadline=$(($(now) + 3600))
-  while [ ! -f "$work/public.exit" ] && [ "$(now)" -lt "$deadline" ]; do sleep 5; done
-  [ -f "$work/public.exit" ] || public_problem="the public leg's command had not ended within an hour"
+  while kill -0 "$public_pid" 2>/dev/null && [ "$(now)" -lt "$deadline" ]; do sleep 5; done
+  if kill -0 "$public_pid" 2>/dev/null; then
+    public_problem="the public leg's command had not ended within an hour"
+  else
+    wait "$public_pid"
+    public_end=$?
+  fi
 fi
 # The public leg has ended, so the sweep's writer has nothing more to show it.
-[ -z "${writer_pid:-}" ] || kill "$writer_pid" 2>/dev/null
+sweep_writer_stop
 public_tsv="$results/outside-agent-public.tsv"
 [ -n "$public_problem" ] || [ -f "$public_tsv" ] || public_problem="the public leg left no outside-agent-public.tsv"
 
+# public_part NAME: the public TSV's NAME row as `verdict<TAB>got`, or nothing.
+public_part() {
+  local each rest
+  [ -f "$public_tsv" ] || return 0
+  while IFS= read -r each; do
+    case $each in "$1$tab"*)
+      rest=${each#*"$tab"*"$tab"}
+      printf '%s\t%s' "${rest##*"$tab"}" "${rest%"$tab"*}"
+      ;;
+    esac
+  done <"$public_tsv"
+}
+
 # --- T4: the scratch login is revoked on the test person's page, and the helper reads it ended. ---
-want_t4="the public leg's last step revokes the scratch login (its revoke row PASS); machine list through the scratch helper is then refused LAUNCHER_INVALID"
+want_t4="the public leg's revoke step revokes the scratch login before the T5 window (its revoke row PASS); machine list through the scratch helper is then refused LAUNCHER_INVALID"
 if ! passed T1; then
   row T4 "$want_t4" "not run: T1 did not pass, so there is no scratch login" UNKNOWN
 elif [ ! -f "$results/outside-edge-revocations.tsv" ]; then
@@ -1161,7 +909,10 @@ else
   if [ -z "$revoked" ]; then
     row T4 "$want_t4" "the revocations hold no row for credential $credential" FAIL
   elif [ "$revoked" != PASS ]; then
-    row T4 "$want_t4" "revoke-$credential reads $revoked" "$revoked"
+    case $revoked in
+      FAIL | UNKNOWN) row T4 "$want_t4" "revoke-$credential reads $revoked" "$revoked" ;;
+      *) row T4 "$want_t4" "revoke-$credential reads $(cell "$revoked"), which is no verdict" UNKNOWN ;;
+    esac
   elif [ "$ended_exit" -eq 0 ]; then
     row T4 "$want_t4" "revoked, and machine list through the scratch helper still answers" FAIL
   else
@@ -1172,30 +923,15 @@ else
   fi
 fi
 
-# --- T5, judged from the public leg's three T5 rows against this leg's removal time. Each part
-# must have stopped no earlier than the removal and within 325 s of it (a token lives at most 300 s,
-# and the edge checks an open socket every 20 s plus a 5 s cache), the cookie within 30 s. A part
-# that stopped before the removal stopped for some other reason, which says nothing of it. ---
-want_t5="once the owner removes ${person:-<OUTSIDE_PERSON>} from ${project:-<project>}'s access list: the person's cookie gets 401 within 30 s, their passkey sign-in is refused, a fresh trade of their live device login is refused, and the relay socket open then closes, each within 325 s"
-# public_part NAME: the public TSV's NAME row as `verdict<TAB>got`, or nothing.
-public_part() {
-  local each rest
-  [ -f "$public_tsv" ] || return 0
-  while IFS= read -r each; do
-    case $each in "$1$tab"*)
-      rest=${each#*"$tab"*"$tab"}
-      printf '%s\t%s' "${rest##*"$tab"}" "${rest%"$tab"*}"
-      ;;
-    esac
-  done <"$public_tsv"
-}
-# mark NAME TEXT: the number after `NAME=` in TEXT, or nothing.
-mark() {
-  local rest=${2#*"$1="}
-  [ "$rest" != "$2" ] || return 0
-  rest=${rest%%[!0-9]*}
-  printf '%s' "$rest"
-}
+# --- T5, judged from the public leg's three T5 rows against the removal's two clocks. The removal
+# was made at some time between removal_from and removal_to. A part must have stopped no earlier
+# than removal_from, and within its bound of it to pass: 325 s (a token lives at most 300 s, and
+# the edge checks an open socket every 20 s plus a 5 s cache), the cookie 30 s. A part that stopped
+# more than its bound after removal_to fails. One that stopped before removal_from stopped for some
+# other reason, and one between those bounds may or may not be within its bound of the removal:
+# each reads UNKNOWN. The socket part counts only for a socket opened before removal_from, since a
+# socket opened later may never have held a token from before the removal. ---
+want_t5="once the owner removes ${person:-<OUTSIDE_PERSON>} from ${project:-<project>}'s access list: the person's cookie gets 401 within 30 s, their passkey sign-in is refused, a fresh trade of their live device login is refused and no later trade answered, and the relay socket open then, opened before the removal, closes 4401 or 4403, each within 325 s"
 if [ -n "$t5_problem" ]; then
   row T5 "$want_t5" "$t5_problem" UNKNOWN
 else
@@ -1212,18 +948,23 @@ else
     verdict=${read_row%%"$tab"*}
     got=${read_row#*"$tab"}
     at=$(mark "$key" "$got")
+    opened_at=$(mark socket_opened_at "$got")
     if [ -z "$read_row" ]; then
       unread="${unread:+$unread; }the public TSV has no $name row"
     elif [ "$verdict" = FAIL ]; then
       wrong="${wrong:+$wrong; }$name: $got"
     elif [ "$verdict" != PASS ] || [ -z "$at" ]; then
       unread="${unread:+$unread; }$name ($key) not read: ${got:0:200}"
-    elif [ "$at" -lt "$removed_at" ]; then
-      unread="${unread:+$unread; }$name ($key) stopped $((removed_at - at)) s before the removal, for another reason"
-    elif [ $((at - removed_at)) -gt "$bound" ]; then
-      wrong="${wrong:+$wrong; }$name ($key) $((at - removed_at)) s after the removal, past $bound s"
+    elif [ "$key" = socket_closed_at ] && { [ -z "$opened_at" ] || [ "$opened_at" -ge "$removal_from" ]; }; then
+      unread="${unread:+$unread; }$name: the socket open at the refusal opened at ${opened_at:-no time read}, not before the removal began at $removal_from, so its close says nothing of the removal"
+    elif [ "$at" -lt "$removal_from" ]; then
+      unread="${unread:+$unread; }$name ($key) stopped $((removal_from - at)) s before the removal began, for another reason"
+    elif [ $((at - removal_from)) -le "$bound" ]; then
+      lags="${lags:+$lags, }$name $key at most $((at - removal_from)) s"
+    elif [ $((at - removal_to)) -gt "$bound" ]; then
+      wrong="${wrong:+$wrong; }$name ($key) $((at - removal_to)) s after the removal, past $bound s"
     else
-      lags="${lags:+$lags, }$name $key $((at - removed_at)) s"
+      unread="${unread:+$unread; }$name ($key) $((at - removal_to)) to $((at - removal_from)) s after the removal, which was made somewhere in those $((removal_to - removal_from)) s, so whether it is within $bound s is unread"
     fi
   done
   if [ "$after" != false ]; then
@@ -1260,17 +1001,24 @@ EOF
   # A result this leg's own setup cannot stand behind reads UNKNOWN. P4 depends on the peer
   # answering, so any verdict of it without the peer is unproven. A PASS of P5, P6 or P7 rests on a
   # control this leg made: P5's admission on the issue naming the repository, P6's absences on
-  # the peer and on a session outside the project that a private listener lists, P7's refusals on
-  # the full member's browser being answered 201 and 200 on the same routes. A FAIL of any of them
-  # is evidence by itself (a refusal missing, a foreign session listed) and stands, but for one: a
-  # P6 FAIL that the list holds <peer>-foreign is no evidence where the edge admits that session's
-  # token (foreign_in_project), since that session is then in the project and rightly listed.
+  # the peer and on a session outside the project that a private listener lists and the edge
+  # refuses, P7's refusals on the full member's browser being answered 201 and 200 on the same
+  # routes. A FAIL of any of them is evidence by itself (a refusal missing, a foreign session
+  # listed) and stands, but for P6's parts about <peer>-foreign: its listing and the send to it
+  # (marks foreign_listed and foreign_send) are no evidence where the edge admits that session's
+  # token (foreign_in_project), since that session is then in the project. A P6 FAIL whose relay
+  # sub (mark sub) was granted or refused with another code stands whatever the foreign session
+  # did.
   held_by=''
   case $name:$verdict in
     P4:*) held_by=$peer_problem ;;
     P5:PASS) passed issue || held_by="the issue row did not pass, so no repository is known to resolve to $project" ;;
     P6:PASS) held_by=$peer_problem${foreign_problem:+${peer_problem:+; }$foreign_problem} ;;
-    P6:FAIL) case $got in *"$peer-foreign"*) held_by=$foreign_in_project ;; esac ;;
+    P6:FAIL)
+      case $(mark_word sub "$got") in
+        refused | unread) [ -z "$foreign_in_project" ] || held_by=$foreign_in_project ;;
+      esac
+      ;;
     P7:PASS) held_by=${p7_control_problem:+no positive control: $p7_control_problem} ;;
   esac
   if [ -n "$held_by" ] && [ "$verdict" != UNKNOWN ]; then
@@ -1303,7 +1051,7 @@ EOF
     if [ -n "$late" ]; then
       row P4 "$want" "the $peer_kind peer was shown the public side's $late after it was sent; $got" FAIL
     elif [ -n "$unseen" ]; then
-      row P4 "$want" "PASS as the public leg read it, unproven here: the $peer_kind peer's view never showed its $unseen of nonce $exchange; $got" UNKNOWN
+      row P4 "$want" "PASS as the public leg read it, unproven here: the $peer_kind peer's transcript never held its $unseen of nonce $exchange; $got" UNKNOWN
     elif [ "$peer_kind" = probe ]; then
       row P4 "$want" "$got; the scripted control peer was shown the $lags after they were sent: the path passes with no model in the loop, and the gate needs the model peer (OUTSIDE_PEER=omp)" UNKNOWN
     else
@@ -1316,63 +1064,36 @@ EOF
   fi
 done
 
-# --- sweep: the read sweep on the runner, held to this box's two controls: at least one of the
-# full member's comments delivered strictly inside the window the sweep read the member's feed
-# over, which is what makes its "nothing reached the member" mean something, and the full member's
-# browser answered by the GitHub proxy for the repository the runner's proxy rows read, which is
-# what makes their "answered as a repository the App is not installed on" mean something. A FAIL of
-# the sweep stands without either. ---
-want_sweep="restricted-sweep.sh on the runner PASS, with a full member's comment delivered inside its live window, and the full member's browser answered 200 by the GitHub proxy for the repository its proxy rows read"
-sweep_log="$results/restricted-sweep.log"
-if [ -n "$sweep_problem" ]; then
-  row sweep "$want_sweep" "$sweep_problem" UNKNOWN
-elif [ ! -f "$sweep_log" ]; then
-  row sweep "$want_sweep" "the run left no restricted-sweep.log${public_problem:+: $public_problem}" UNKNOWN
+# --- public: the public leg's own last word. Each public row is held above to what this leg saw
+# beside it; the public leg's verdict row, its revocations row and its end hold the gate too, so a
+# public leg that failed, or left no verdict, never lets the gate pass. A run concludes `failure`
+# for an exit 1 and an exit 2 alike, so its verdict row says which. ---
+want_public="the public leg's verdict row PASS, its revocations row PASS, and its end: exit 0, or the run's conclusion success"
+if [ -n "$public_problem" ]; then
+  row public "$want_public" "$public_problem" UNKNOWN
 else
-  sweep_exit=$(tr -d ' \n' <"$results/restricted-sweep.exit" 2>/dev/null)
-  window=''
-  while IFS= read -r line; do
-    case $line in 'live window '*) window=${line#live window } ;; esac
-  done <"$sweep_log"
-  w0=${window%% *}
-  w1=${window#* }
-  inside=''
-  while IFS= read -r line; do
-    case $line in 'write '*' delivered')
-      at=${line#write }
-      at=${at%% *}
-      [[ -n "$w0" && "$at" > "$w0" && "$at" < "$w1" ]] && inside=$at
+  verdict_read=$(public_part verdict)
+  revoke_read=$(public_part revocations)
+  public_verdict=${verdict_read%%"$tab"*}
+  revoke_verdict=${revoke_read%%"$tab"*}
+  case $public_end in
+    0 | success) end_verdict=PASS ;;
+    1) end_verdict=FAIL ;;
+    failure)
+      end_verdict=UNKNOWN
+      [ "$public_verdict" != FAIL ] || end_verdict=FAIL
       ;;
-    esac
-  done <"$work/sweep-writer.log"
-  # The verdict is the sweep's last line; the log's first is the workflow's own note.
-  verdict_line=''
-  while IFS= read -r line; do
-    [ -z "$line" ] || verdict_line=$line
-  done <"$sweep_log"
-  verdict_line=${verdict_line:0:300}
-  case $sweep_exit in
-    1) row sweep "$want_sweep" "the sweep failed: $verdict_line" FAIL ;;
-    0)
-      if [ -n "$proxy_control_problem" ]; then
-        row sweep "$want_sweep" "the sweep passed, and its GitHub proxy rows have no positive control: $proxy_control_problem" UNKNOWN
-      elif [ -z "$window" ]; then
-        row sweep "$want_sweep" "the sweep passed and printed no live window, so the writer's control cannot be held to it" UNKNOWN
-      elif [ -z "$inside" ]; then
-        row sweep "$want_sweep" "the sweep passed, and no comment of the writer was delivered inside its live window $window, so its live check proved nothing" UNKNOWN
-      else
-        row sweep "$want_sweep" "the sweep passed; the writer's comment at $inside was delivered inside its live window $window; $proxy_control" PASS
-      fi
-      ;;
-    *) row sweep "$want_sweep" "the sweep exited ${sweep_exit:-with no code read}: $verdict_line" UNKNOWN ;;
+    *) end_verdict=UNKNOWN ;;
+  esac
+  read_public="verdict row ${public_verdict:-absent}${verdict_read:+ (${verdict_read#*"$tab"})}, revocations row ${revoke_verdict:-absent}, end ${public_end:-not read}"
+  case " $public_verdict $revoke_verdict $end_verdict " in
+    *' FAIL '*) row public "$want_public" "$read_public" FAIL ;;
+    ' PASS PASS PASS ') row public "$want_public" "$read_public" PASS ;;
+    *) row public "$want_public" "$read_public" UNKNOWN ;;
   esac
 fi
 
-# --- The gate, against pins read again: a pin that moved between the legs holds it. ---
-read_pins
-if [ -n "$pins_problem" ]; then
-  pins_moved="the pins could not be read again at the end: $pins_problem"
-elif [ "$pins_text" != "$pins_at_start" ]; then
-  pins_moved="a pin moved during the run: now $(printf '%s' "$pins_text" | tr '\n' ';')"
-fi
+# --- sweep (outside-agent-sweep.sh). ---
+sweep_row
+
 gate

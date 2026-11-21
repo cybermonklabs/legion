@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 # The public leg of the outside agent's acceptance, rows P1 to P9: what an outside person's agent
 # does and is refused from the public internet, off the private network, through the three edge
 # origins alone. A workflow on a runner on the public internet runs it after its own browser has
 # signed the test person in. outside-agent-acceptance.md, beside this file, says what each row
 # reads, how the tailnet leg starts this one, and the gate both legs make.
 #
-# It is written for bash 3.2 (as macOS ships it) and later. It drives what the outside person
-# installs and runs: Oh My Pi (`omp`) in tmux, as packages/pi-envoy/scripts/smoke-delivery.sh
-# runs it, the `dispatch` command the plugin ships, and curl. Calls that carry the agent's broker
-# credential, which only the holder of its key can sign, go through outside-agent-probe.ts beside
-# this file, run with bun.
+# It is written for bash 3.2 (as macOS ships it) and later, and sources outside-agent-lib.sh from
+# beside it, what both legs share. It drives what the outside person installs and runs: Oh My Pi
+# (`omp`) in tmux, as packages/pi-envoy/scripts/smoke-delivery.sh runs it, the `dispatch` command
+# the plugin ships, and curl. Calls that carry the agent's broker credential, which only the
+# holder of its key can sign, go through outside-agent-probe.ts beside this file, run with bun.
 #
 # Every process it starts runs with `env -i` and section (c)'s settings alone, under a HOME of
 # its own in a `mktemp -d` directory, so nothing of the machine it runs on reaches them:
@@ -18,7 +19,8 @@
 #   AGENT_SECRETS_MACHINE_IDENTITY=device-login AGENT_SECRETS_PROJECTS=<OUTSIDE_PROJECT>
 # beside PATH, HOME, TERM, TMPDIR and OMP_SKIP_SETUP=1, Oh My Pi's own switch that skips its
 # first-run setup wizard, which a fresh HOME would otherwise open. No model credential,
-# ENVOY_NATS_URL, ENVOY_TOKEN or DISPATCH_TOKEN reaches any of them.
+# ENVOY_NATS_URL, ENVOY_TOKEN or DISPATCH_TOKEN reaches any of them: the Oh My Pi session runs on
+# the probe's keyless scripted model at 127.0.0.1 (P4).
 #
 # Inputs, each named by the row that cannot run without it:
 #   OUTSIDE_DISPATCH_URL, OUTSIDE_BROKER_URL, OUTSIDE_LISTENER_URL
@@ -27,8 +29,7 @@
 #                             tests.
 #   OUTSIDE_PROJECT           the scratch project's key.
 #   OUTSIDE_PERSON            the test person's address.
-#   OUTSIDE_PEER_SESSION      our peer session (the tailnet leg runs it: outside-agent-probe.ts
-#                             peer).
+#   OUTSIDE_PEER_SESSION      our peer session, which the tailnet leg runs.
 #   OUTSIDE_APPROVE_COMMAND   a command line, split on blanks, that approves one device login's
 #                             code as the test person: run with the code as its last word, it
 #                             prints `APPROVED <code>` and exits 0, or exits 1 (refused) or 2
@@ -38,16 +39,21 @@
 #   OUTSIDE_REPOSITORY        owner/name of the repository the scratch project's issue resolves
 #                             to, whose events P5 must be admitted to.
 #   OUTSIDE_PATH_TARGETS      the target list outside-path-reach.sh reads (P9).
+#   OUTSIDE_REVOKE_COMMAND    the workflow's revoke step (row revocations), and OUTSIDE_T5_COMMAND
+#                             its browser in the T5 window (rows T5-cookie and T5-passkey).
 # Optional: OUTSIDE_OTHER_PROJECT (default EXAMPLE) and OUTSIDE_OTHER_REPOSITORY (default
 # example-owner/example-repo), the project and repository P5 must be refused;
 # OUTSIDE_AGENT_PUBLIC_TSV, a file that gets a copy of the TSV; OUTSIDE_GITHUB_EVENT_SECONDS
-# (default 900), how long P5 waits for an event.
+# (default 900), how long P5 waits for an event; OUTSIDE_T5_SECONDS (default 1200), the longest
+# the T5 window stays open.
 #
-# Output: on stdout a TSV, the header `row want got verdict`, one line per row P1 to P9, and a
-# last `verdict` line. Progress goes to stderr. A row reads PASS, FAIL or UNKNOWN: UNKNOWN when it
-# could not run, its `got` naming what it could not read, never PASS. Exit 0 when every row
-# passed, 1 when any failed, 2 otherwise. A row that needs another row's result reads UNKNOWN when
-# that row did not pass.
+# Output: on stdout a TSV, the header `row want got verdict`, one line per row P1 to P9, the rows
+# revocations, T5-agent, T5-cookie and T5-passkey, and a last `verdict` line. Progress goes to
+# stderr. A row reads PASS, FAIL or UNKNOWN: UNKNOWN when it could not run, its `got` naming what
+# it could not read, never PASS. A row quotes no output of an operator's command, which may print
+# a cookie, a code or an invite token: only its exit status and a fixed phrase. Exit 0 when every
+# row passed, 1 when any failed, 2 otherwise. A row that needs another row's result reads UNKNOWN
+# when that row did not pass.
 #
 # Usage: OUTSIDE_DISPATCH_URL=https://dispatch.edge.example ... bash outside-agent-public.sh
 
@@ -61,9 +67,16 @@ export LC_ALL
 
 case $0 in */*) here=${0%/*} ;; *) here=. ;; esac
 here=$(cd "$here" && pwd)
+if [ ! -r "$here/outside-agent-lib.sh" ]; then
+  echo "UNKNOWN: outside-agent-lib.sh is not beside this file in $here"
+  exit 2
+fi
+# shellcheck source=outside-agent-lib.sh
+. "$here/outside-agent-lib.sh"
 tab=$(printf '\t')
 newline='
 '
+allow_http=${OUTSIDE_ALLOW_HTTP:-}
 
 tsv=${OUTSIDE_AGENT_PUBLIC_TSV:-}
 if [ -n "$tsv" ]; then
@@ -76,25 +89,17 @@ emit() {
   [ -z "$tsv" ] || printf '%s\n' "$1" >>"$tsv"
 }
 
-# cell TEXT: TEXT on one line with no tab, so it stays one TSV field.
-cell() {
-  local text=$1
-  text=${text//$tab/ }
-  text=${text//$newline/ }
-  text=${text//$'\r'/ }
-  printf '%s' "$text"
-}
-
 fails=0
 unknowns=0
 # row NAME WANT GOT VERDICT: prints the row and keeps its verdict as verdict_<NAME>, a dash in
-# NAME read as an underscore.
+# NAME read as an underscore. A verdict that is none of PASS, FAIL and UNKNOWN counts as UNKNOWN.
 row() {
   emit "$1$tab$(cell "$2")$tab$(cell "$3")$tab$4"
   printf -v "verdict_${1//-/_}" '%s' "$4"
   case $4 in
+    PASS) ;;
     FAIL) fails=$((fails + 1)) ;;
-    UNKNOWN) unknowns=$((unknowns + 1)) ;;
+    *) unknowns=$((unknowns + 1)) ;;
   esac
 }
 passed() {
@@ -102,58 +107,10 @@ passed() {
   [ "${!name:-}" = PASS ]
 }
 say() { printf 'outside-agent-public: %s\n' "$1" >&2; }
-# text_of FILE: FILE's first 300 characters, on one line.
-text_of() {
-  local text
-  text=$(tr '\n' ' ' <"$1" 2>/dev/null)
-  printf '%s' "${text:0:300}"
-}
 # stamp: this runner's clock in Unix ms, to the second, which bash 3.2's date can give.
 stamp() { printf '%s000' "$(date -u '+%s')"; }
 
 emit "row${tab}want${tab}got${tab}verdict"
-
-# --- Inputs. `missing` collects what each row lacks, by name. ---
-allow_http=${OUTSIDE_ALLOW_HTTP:-}
-# origin_problem NAME: why NAME's value is no origin this leg may use, or nothing.
-origin_problem() {
-  local value
-  eval "value=\${$1:-}"
-  case $value in
-    '') printf '%s is unset' "$1" ;;
-    https://*/* | http://*/*) printf '%s must be an origin alone, with no path: %s' "$1" "$value" ;;
-    https://?*) ;;
-    http://127.0.0.1:* | http://localhost:*)
-      [ "$allow_http" = 1 ] || printf '%s may be http only with OUTSIDE_ALLOW_HTTP=1: %s' "$1" "$value"
-      ;;
-    *) printf '%s must be an https origin: %s' "$1" "$value" ;;
-  esac
-}
-unset_problem() {
-  local value
-  eval "value=\${$1:-}"
-  [ -n "$value" ] || printf '%s is unset' "$1"
-}
-# lacking NAME...: the problems of the named inputs, joined with "; ".
-lacking() {
-  local name problem out=''
-  for name in "$@"; do
-    case $name in
-      *_URL) problem=$(origin_problem "$name") ;;
-      *) problem=$(unset_problem "$name") ;;
-    esac
-    [ -z "$problem" ] || out="${out:+$out; }$problem"
-  done
-  printf '%s' "$out"
-}
-# tool_problem NAME...: which of the named programs are not on PATH.
-tool_problem() {
-  local name out=''
-  for name in "$@"; do
-    command -v "$name" >/dev/null 2>&1 || out="${out:+$out, }$name"
-  done
-  [ -z "$out" ] || printf '%s not on PATH' "$out"
-}
 
 dispatch=${OUTSIDE_DISPATCH_URL:-}
 broker=${OUTSIDE_BROKER_URL:-}
@@ -168,24 +125,16 @@ other_repository=${OUTSIDE_OTHER_REPOSITORY:-example-owner/example-repo}
 [ "$other_repository" != "$repository" ] || other_repository="${repository}-other"
 event_seconds=${OUTSIDE_GITHUB_EVENT_SECONDS:-900}
 
-# --- The scratch directory, its HOME and its cleanup. ---
+# --- The scratch directory, its HOME and its cleanup: every background child, stopped and waited
+# for, then the Oh My Pi session's tmux server, then the directory, which the session writes under
+# its HOME as it exits. ---
 work=''
 tmux_socket=''
 background=''
 # shellcheck disable=SC2329 # run by the EXIT trap below
 cleanup() {
-  local pid pane
-  for pid in $background; do kill "$pid" 2>/dev/null; done
-  # The Oh My Pi session exits before the directory goes, since it writes under its HOME there as
-  # it exits, and a directory removed first is made again behind the leg.
-  if [ -n "$tmux_socket" ] && [ -S "$tmux_socket" ]; then
-    pane=$(tmux -S "$tmux_socket" display-message -p '#{pane_pid}' 2>/dev/null)
-    tmux -S "$tmux_socket" kill-server 2>/dev/null
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      { [ -n "$pane" ] && kill -0 "$pane" 2>/dev/null; } || break
-      sleep 1
-    done
-  fi
+  reap
+  [ -z "$tmux_socket" ] || stop_tmux "$tmux_socket"
   [ -z "$work" ] || rm -rf "$work"
 }
 trap cleanup EXIT
@@ -202,21 +151,6 @@ if [ -n "$work" ]; then
   mkdir -p "$home" "$work/outside-e2e-$nonce"
   session_dir=$(cd "$work/outside-e2e-$nonce" && pwd -P)
 fi
-
-# real_tools DIR NAME...: a link in DIR to the real program behind each NAME. A version manager's
-# shim (mise's, or a wrapper that calls mise) finds its program through the caller's HOME, and the
-# children this leg starts under a HOME of their own have none, so they run the real programs.
-real_tools() {
-  local dir=$1 name found
-  shift
-  mkdir -p "$dir" || return
-  for name in "$@"; do
-    found=''
-    if command -v mise >/dev/null 2>&1; then found=$(mise which "$name" 2>/dev/null </dev/null); fi
-    [ -n "$found" ] || found=$(command -v "$name" 2>/dev/null)
-    case $found in /*) ln -sf "$found" "$dir/$name" ;; esac
-  done
-}
 [ -z "$work" ] || real_tools "$work/tools" bun omp tmux
 
 session_env=(
@@ -243,25 +177,16 @@ probe() {
     OUTSIDE_PROBE_SESSION="${probe_as:-$probe_session}" \
     bun "$here/outside-agent-probe.ts" "$@" 2>>"$work/probe.log" </dev/null
 }
-
-# json_field NAME LINE: the value of "NAME": in LINE, one compact JSON object the probe printed:
-# a string's text, or a number, true, false or null as written; nothing when LINE has no NAME.
-json_field() {
-  local rest=${2#*\""$1"\":}
-  [ "$rest" != "$2" ] || return 1
-  case $rest in
-    \"*)
-      rest=${rest#\"}
-      printf '%s' "${rest%%\"*}"
-      ;;
-    *) printf '%s' "${rest%%[,\}]*}" ;;
-  esac
+# probe_exec COMMAND [ARGS...]: probe for a background child. Its last word is exec, so `$!` of
+# `probe_exec ... &` names outside-agent-probe.ts itself, which reap stops.
+probe_exec() {
+  exec env -i "${session_env[@]}" OUTSIDE_LISTENER_URL="$listener" OUTSIDE_DISPATCH_URL="$dispatch" \
+    OUTSIDE_PROBE_SESSION="${probe_as:-$probe_session}" \
+    bun "$here/outside-agent-probe.ts" "$@" 2>>"$work/probe.log" </dev/null
 }
 
 # unknown_of LINE: the probe's `unknown` text, or nothing when it read an answer.
 unknown_of() { json_field unknown "$1"; }
-
-now() { date -u '+%s'; }
 
 # --- P1: the plugin, installed from npm as the outside person installs it. ---
 plugin_dir="$home/.omp/plugins/node_modules/@sjawhar/pi-envoy"
@@ -284,8 +209,7 @@ else
     got=$(json_field version "$(tr -d ' \n' <"$plugin_dir/package.json")")
   fi
   if [ "$installed" -ne 0 ] || [ -z "$got" ]; then
-    last=$(tr '\n' ' ' <"$work/p1.log")
-    row P1 "$want1" "omp plugin install $target exited $installed, no package.json read: ${last:0:300}" UNKNOWN
+    row P1 "$want1" "omp plugin install $target exited $installed, and no package.json was read" UNKNOWN
   elif [ -n "$version" ] && [ "$got" != "$version" ]; then
     row P1 "$want1" "installed $got" FAIL
   else
@@ -303,19 +227,20 @@ elif ! passed P1; then
   row P2 "$want2" "not run: P1 did not pass, so the plugin's dispatch command is not installed" UNKNOWN
 else
   say "P2: dispatch login --device --person $person"
-  (
-    env -i "${session_env[@]}" "$plugin_dir/bin/dispatch" login --device --person "$person" \
-      >"$work/p2.log" 2>&1 </dev/null
-    echo "$?" >"$work/p2.exit"
-  ) &
-  background="$background $!"
+  : >"$work/p2.log"
+  env -i "${session_env[@]}" "$plugin_dir/bin/dispatch" login --device --person "$person" \
+    >"$work/p2.log" 2>&1 </dev/null &
+  p2_pid=$!
+  background="$background $p2_pid"
   code=''
   deadline=$(($(now) + 60))
-  while [ -z "$code" ] && [ "$(now)" -lt "$deadline" ] && [ ! -f "$work/p2.exit" ]; do
+  while [ -z "$code" ] && [ "$(now)" -lt "$deadline" ]; do
     while IFS= read -r line; do
       case $line in *'and enter the code '*) code=${line##*and enter the code } ;; esac
     done <"$work/p2.log"
-    [ -n "$code" ] || sleep 1
+    [ -z "$code" ] || break
+    kill -0 "$p2_pid" 2>/dev/null || break
+    sleep 1
   done
   if [ -z "$code" ]; then
     last=$(tr '\n' ' ' <"$work/p2.log")
@@ -330,20 +255,24 @@ else
     p2_code=$code
     answer=$(tr '\n' ' ' <"$work/p2.approve")
     deadline=$(($(now) + 300))
-    while [ ! -f "$work/p2.exit" ] && [ "$(now)" -lt "$deadline" ]; do sleep 1; done
-    exited=$(cat "$work/p2.exit" 2>/dev/null)
+    while kill -0 "$p2_pid" 2>/dev/null && [ "$(now)" -lt "$deadline" ]; do sleep 1; done
+    exited=''
+    if ! kill -0 "$p2_pid" 2>/dev/null; then
+      wait "$p2_pid"
+      exited=$?
+    fi
     mode=''
     # The mode as ls prints it: stat's flags differ between GNU and BSD, and macOS ships BSD's.
     # shellcheck disable=SC2012 # one file this run named, so no name can confuse the read
     [ ! -f "$login_file" ] || mode=$(ls -ln "$login_file" | { read -r perms _ && printf '%s' "$perms"; })
     case $approved in
       0) ;;
-      1) row P2 "$want2" "the approve command refused code $code: ${answer:0:300}" FAIL ;;
-      *) row P2 "$want2" "the approve command could not tell (exit $approved): ${answer:0:300}" UNKNOWN ;;
+      1) row P2 "$want2" "the approve command refused code $code (exit 1)" FAIL ;;
+      *) row P2 "$want2" "the approve command could not tell (exit $approved)" UNKNOWN ;;
     esac
     if [ "$approved" -eq 0 ]; then
       case $answer in *"APPROVED $code"*) ;; *)
-        row P2 "$want2" "the approve command exited 0 without printing APPROVED $code: ${answer:0:300}" UNKNOWN
+        row P2 "$want2" "the approve command exited 0 without printing APPROVED $code" UNKNOWN
         ;;
       esac
     fi
@@ -392,7 +321,9 @@ else
   fi
 fi
 
-# --- P5's event wait starts now, in the background, so its 15 minutes overlap P4 and P8. ---
+# --- P5's event wait starts now, in the background, so its 15 minutes overlap P4 and P8. The probe
+# trades a fresh token and opens its socket again whenever the edge closes one, as a session's
+# client does, so the wait holds for the whole time and not for one token's life. ---
 owner=${repository%%/*}
 name=${repository#*/}
 sanitize() {
@@ -410,29 +341,29 @@ problem5=$(lacking OUTSIDE_LISTENER_URL OUTSIDE_PROJECT OUTSIDE_REPOSITORY)
 case $repository in */*) ;; '') ;; *) problem5="${problem5:+$problem5; }OUTSIDE_REPOSITORY is not owner/name: $repository" ;; esac
 if [ -z "$problem5" ]; then
   say "P5: waiting up to $event_seconds s for an event of $admitted_topic"
-  (probe_as="outside-e2e-events-$nonce" probe github-event "$admitted_topic" "$event_seconds" >"$work/p5.event") &
+  probe_as="outside-e2e-events-$nonce" probe_exec github-event "$admitted_topic" "$event_seconds" >"$work/p5.event" &
   event_pid=$!
   background="$background $event_pid"
 fi
 
 # --- P4: an Oh My Pi session at the edge, its relay socket, and a message each way. ---
-# The session receives through its own relay socket, and its pane shows what the peer sends it.
-# Its two sends are scripted: outside-agent-probe.ts sends them as the session's own session id,
-# through the same device login and the same edge, since this runner holds no model credential.
-# The session still needs a model, since an Envoy card is handed to it as a turn and a session
-# with no model refuses the card ("Extension sendMessage failed: No model configured"), showing
-# nothing; so it runs on the probe's keyless scripted model (`outside-agent-probe.ts model`) at
-# 127.0.0.1, which answers every turn with one fixed line. The peer, a session of ours on a
-# developer box that the tailnet leg runs, answers with its model: a ping with a pong and then a
-# hello, and the reply to the hello with a done. Each message carries its sender's clock,
-# `at <Unix ms>`, and a lag here is this runner's clock when the pane shows a message, less that
-# stamp; the tailnet leg reads the peer's side the same way.
-want4="the session at ${listener:-<OUTSIDE_LISTENER_URL>} pings ${peer:-<OUTSIDE_PEER_SESSION>}, and shows its pong and its hello within 10 s of the peer's sends; it replies to the hello, and shows the peer's done within 10 s"
+# The session receives through its own relay socket, and its transcript holds what the peer sends
+# it. Its two sends are scripted: outside-agent-probe.ts sends them as the session's own session
+# id, through the same device login and the same edge, since this runner holds no model
+# credential. The session still needs a model, since an Envoy card is handed to it as a turn and a
+# session with no model refuses the card ("Extension sendMessage failed: No model configured"),
+# holding nothing; so it runs on the probe's keyless scripted model (`outside-agent-probe.ts
+# model`) at 127.0.0.1, which answers every turn with one fixed line. The peer, a session of ours on
+# a developer box that the tailnet leg runs, answers with its model: a ping with a pong and then a
+# hello, and the reply to the hello with a done. A lag here is this runner's clock when the
+# session holds a message, less the time its sender sent it, the card's envelope `at`; the tailnet
+# leg reads the peer's side by the stamps this leg's messages carry, `at <Unix ms>`.
+want4="the session at ${listener:-<OUTSIDE_LISTENER_URL>} pings ${peer:-<OUTSIDE_PEER_SESSION>}, and holds its pong and its hello within 10 s of the peer's sends; it replies to the hello, and holds the peer's done within 10 s"
 problem=$(lacking OUTSIDE_LISTENER_URL OUTSIDE_PEER_SESSION OUTSIDE_PROJECT)
 [ -n "$problem" ] || problem=$(tool_problem tmux omp)
 [ -n "$problem" ] || problem=$(probe_problem)
 session_id=''
-p4_started=''
+session_seen_at=''
 model_port=''
 if [ -z "$problem" ]; then
   env -i "${session_env[@]}" bun "$here/outside-agent-probe.ts" model >"$work/model.log" 2>&1 </dev/null &
@@ -459,7 +390,6 @@ else
   say "P4: starting omp in tmux (tmux -S $tmux_socket attach -t outside-e2e)"
   env -i "${session_env[@]}" tmux -S "$tmux_socket" new-session -d -s outside-e2e -x 220 -y 50 \
     -c "$session_dir" omp --model outside-e2e/scripted --session-dir "$work/omp-sessions" </dev/null
-  p4_started=$(now)
   # p4_send TEXT: the session sends TEXT to the peer. False when it was not sent, with
   # `send_problem` saying why and `send_verdict` FAIL for an edge that refused the send, UNKNOWN
   # for a send that got no answer.
@@ -481,40 +411,36 @@ else
   # is $work/omp-sessions), since the TUI folds an Envoy card to its header and the pane never
   # shows the card's text. A card is in the transcript once the host takes it into the session.
   shown_text() { cat "$work"/omp-sessions/*.jsonl "$work"/omp-sessions/*/*.jsonl 2>/dev/null; }
-  # seen WORD: once the session holds `outside-e2e WORD <nonce> at <ms>`, the time in Unix ms the
-  # peer sent it: the card's own envelope `at` (whole seconds), which the sender's Envoy client
-  # sets as it sends. The `at <ms>` the peer's model wrote in its text is its clock when it composed
-  # the message, before its send: in the edge-on run of 2026-11-21 the model peer's pong carried a
-  # stamp 10.6 s older than the edge's accept of that send (02:57:53.9Z and 02:58:04.5Z), and the
-  # edge's accept to this session's holding it took 3.5 s. Where the transcript holds no envelope
-  # `at`, the text's stamp stands, which can only make a lag longer.
+  # seen WORD: once the session holds `outside-e2e WORD <nonce>`, the time in Unix ms its sender
+  # sent it: the card's envelope `at` (whole seconds), which the sender's Envoy client sets as it
+  # sends; `unread` for a card held with no envelope `at`; false while the session holds none.
   seen() {
-    local text line stamped sent
+    local text line sent
     text=$(shown_text)
-    case $text in *"outside-e2e $1 $nonce at "*) ;; *) return 1 ;; esac
+    case $text in *"outside-e2e $1 $nonce"*) ;; *) return 1 ;; esac
     while IFS= read -r line; do
-      case $line in *"outside-e2e $1 $nonce at "*) break ;; esac
+      case $line in *"outside-e2e $1 $nonce"*) break ;; esac
     done <<EOF
 $text
 EOF
-    stamped=${line#*"outside-e2e $1 $nonce at "}
-    stamped=${stamped%%[!0-9]*}
-    # A stamp is Unix ms (13 digits); a peer that wrote more digits (date +%s%N) wrote ns, whose
-    # first 13 digits are the same ms.
-    [ "${#stamped}" -le 13 ] || stamped=${stamped:0:13}
     if [[ $line =~ at:\ \\?\"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) ]] &&
-      sent=$(date -u -d "${BASH_REMATCH[1]}" +%s 2>/dev/null) && [ -n "$sent" ]; then
-      stamped=$((sent * 1000))
+      sent=$(iso_seconds "${BASH_REMATCH[1]}") && [ -n "$sent" ]; then
+      printf '%s' "$((sent * 1000))"
+    else
+      printf unread
     fi
-    printf '%s' "$stamped"
   }
-  # wait_seen WORD SECONDS: the lag in whole seconds from the peer's send to the session holding it.
+  # wait_seen WORD SECONDS: the lag in whole seconds from the peer's send to the session holding
+  # it, or `unread`; false when the session held none within SECONDS.
   wait_seen() {
     local deadline stamped
     deadline=$(($(now) + $2))
     while [ "$(now)" -lt "$deadline" ]; do
-      if stamped=$(seen "$1") && [ -n "$stamped" ]; then
-        printf '%s' $(($(now) - stamped / 1000))
+      if stamped=$(seen "$1"); then
+        case $stamped in
+          unread) printf unread ;;
+          *) printf '%s' $(($(now) - stamped / 1000)) ;;
+        esac
         return 0
       fi
       sleep 1
@@ -527,27 +453,7 @@ EOF
   while [ -z "$ready" ] && [ "$(now)" -lt "$deadline" ]; do
     case $(pane) in *"outside-e2e-$nonce"*) ready=yes ;; *) sleep 1 ;; esac
   done
-  # OMP_SKIP_SETUP keeps the setup wizard shut; any first-run screen a fresh HOME still opens (its
-  # splash) is skipped as a person who skips it would: a setup screen with Escape, the splash with
-  # Enter. One screen can follow another a moment later, so the leg goes on only after three
-  # checks in a row, 2 s apart, show neither (at most 40 s).
-  checks=0
-  clear=0
-  while [ "$checks" -lt 20 ] && [ "$clear" -lt 3 ]; do
-    checks=$((checks + 1))
-    case $(tmux -S "$tmux_socket" capture-pane -p -t outside-e2e 2>/dev/null) in
-      *'exit setup'*)
-        tmux -S "$tmux_socket" send-keys -t outside-e2e Escape
-        clear=0
-        ;;
-      *'to skip'*)
-        tmux -S "$tmux_socket" send-keys -t outside-e2e Enter
-        clear=0
-        ;;
-      *) clear=$((clear + 1)) ;;
-    esac
-    sleep 2
-  done
+  omp_clear_screens "$tmux_socket" outside-e2e
   # Whether the edge serves a relay socket at all, asked as the probe's own session so that the
   # Oh My Pi session's registration is left as it is. The session opens its socket before it
   # registers (pi-envoy's envoy.ts, `ENVOY_INBOUND=listener`), so with no socket it never registers,
@@ -560,6 +466,9 @@ EOF
     session_id=''
     sleep 3
   done
+  # When the session is first read on the list: its socket opened before it registered, so every
+  # token that socket rode was traded before this (P8).
+  [ -z "$session_id" ] || session_seen_at=$(now)
   pong_lag=''
   hello_lag=''
   done_lag=''
@@ -597,13 +506,15 @@ EOF
   elif [ -z "$ping_sent" ]; then
     row P4 "$want4" "session $session_id registered; $send_problem; $marks" "$send_verdict"
   elif [ -z "$pong_lag" ]; then
-    row P4 "$want4" "session $session_id: no pong from $peer shown within 240 s of the ping; $marks" FAIL
+    row P4 "$want4" "session $session_id: no pong from $peer held within 240 s of the ping; $marks" FAIL
   elif [ -z "$hello_lag" ]; then
-    row P4 "$want4" "session $session_id: pong shown ${pong_lag} s after the peer sent it; no hello within 240 s; $marks" FAIL
+    row P4 "$want4" "session $session_id: pong held ${pong_lag} s after the peer sent it; no hello within 240 s; $marks" FAIL
   elif [ -z "$reply_sent" ]; then
-    row P4 "$want4" "session $session_id: pong and hello shown; $send_problem; $marks" "$send_verdict"
+    row P4 "$want4" "session $session_id: pong and hello held; $send_problem; $marks" "$send_verdict"
   elif [ -z "$done_lag" ]; then
-    row P4 "$want4" "session $session_id: pong and hello shown; no done from $peer within 240 s of the reply; $marks" FAIL
+    row P4 "$want4" "session $session_id: pong and hello held; no done from $peer within 240 s of the reply; $marks" FAIL
+  elif [ "$pong_lag" = unread ] || [ "$hello_lag" = unread ] || [ "$done_lag" = unread ]; then
+    row P4 "$want4" "session $session_id: pong, hello and done held, and the transcript gave no send time for one of them (pong $pong_lag, hello $hello_lag, done $done_lag); $marks" UNKNOWN
   elif [ "$pong_lag" -gt 10 ] || [ "$hello_lag" -gt 10 ] || [ "$done_lag" -gt 10 ]; then
     row P4 "$want4" "session $session_id: pong ${pong_lag} s, hello ${hello_lag} s and done ${done_lag} s after the peer sent them; $marks" FAIL
   else
@@ -647,6 +558,7 @@ else
   event=$(cat "$work/p5.event" 2>/dev/null)
   status=$(json_field status "$event")
   delivered=$(json_field event "$event")
+  sockets=$(json_field sockets "$event")
   if [ -n "$(unknown_of "$event")" ] || [ -z "$status" ]; then
     unread="${unread:+$unread; }the admitted interest: ${event:0:200}"
   elif [ "${status#5}" != "$status" ]; then
@@ -654,20 +566,24 @@ else
   elif [ "${status#2}" = "$status" ]; then
     wrong="${wrong:+$wrong; }$admitted_topic answered $status"
   elif [ "$delivered" = null ] || [ -z "$delivered" ]; then
-    unread="${unread:+$unread; }$admitted_topic admitted, and no event of it arrived within $event_seconds s"
+    unread="${unread:+$unread; }$admitted_topic admitted, and no event of it arrived within $event_seconds s (${sockets:-?} sockets, each opened again on a fresh token when the edge closed the one before)"
   fi
   if [ -n "$wrong" ]; then
     row P5 "$want5" "$wrong${unread:+; $unread}" FAIL
   elif [ -n "$unread" ]; then
     row P5 "$want5" "$unread" UNKNOWN
   else
-    row P5 "$want5" "every refusal by its code; $admitted_topic admitted and its event $delivered delivered" PASS
+    row P5 "$want5" "every refusal by its code; $admitted_topic admitted and its event $delivered delivered (socket ${sockets:-?})" PASS
   fi
 fi
 
-# --- P6: the session list holds no session outside the project; the peer's subject is refused. ---
+# --- P6: the session list holds no session outside the project, a send to one is answered as to a
+# session no listener knows, and the peer's subject is refused. The got ends with marks the
+# tailnet leg reads, each part's reading: peer_listed (the control) and foreign_listed yes, no or
+# unread; foreign_send refused (404), accepted, unread or the status it answered; sub refused,
+# granted, unread or the code it was refused with. ---
 foreign="$peer-foreign"
-want6="GET /v1/sessions lists ${peer:-<OUTSIDE_PEER_SESSION>} (the control) and not ${peer:-<OUTSIDE_PEER_SESSION>}-foreign, a session outside ${project:-<OUTSIDE_PROJECT>}; a relay sub to notifications.envoy.deliver.${peer:-<OUTSIDE_PEER_SESSION>} is subject_not_granted"
+want6="GET /v1/sessions lists ${peer:-<OUTSIDE_PEER_SESSION>} (the control) and not ${peer:-<OUTSIDE_PEER_SESSION>}-foreign, a session outside ${project:-<OUTSIDE_PROJECT>}; a send to that session answered 404, as to a session no listener knows; a relay sub to notifications.envoy.deliver.${peer:-<OUTSIDE_PEER_SESSION>} is subject_not_granted"
 problem=$(lacking OUTSIDE_LISTENER_URL OUTSIDE_PEER_SESSION)
 [ -n "$problem" ] || problem=$(probe_problem)
 if [ -n "$problem" ]; then
@@ -675,35 +591,68 @@ if [ -n "$problem" ]; then
 else
   listed=$(probe sessions)
   socket=$(probe relay-sub "notifications.envoy.deliver.$peer")
+  sent=$(probe send "$foreign" "outside-e2e foreign-send $nonce")
   wrong=''
   unread=''
+  peer_listed=unread
+  foreign_listed=unread
   if [ -n "$(unknown_of "$listed")" ] || [ "$(json_field status "$listed")" != 200 ]; then
     unread="GET /v1/sessions: ${listed:0:200}"
   else
-    case $listed in *"\"$foreign\""*) wrong="the list holds $foreign" ;; esac
-    case $listed in *"\"$peer\""*) ;; *) unread="the list does not hold $peer, so its absences prove nothing" ;; esac
+    foreign_listed=no
+    peer_listed=no
+    case $listed in *"\"$foreign\""*) foreign_listed=yes wrong="the list holds $foreign" ;; esac
+    case $listed in *"\"$peer\""*) peer_listed=yes ;; *) unread="the list does not hold $peer, so its absences prove nothing" ;; esac
+  fi
+  sent_status=$(json_field status "$sent")
+  if [ -n "$(unknown_of "$sent")" ] || [ -z "$sent_status" ]; then
+    foreign_send=unread
+    unread="${unread:+$unread; }the send to $foreign: ${sent:0:200}"
+  elif [ "$sent_status" = 404 ]; then
+    foreign_send=refused
+  elif [ "${sent_status#5}" != "$sent_status" ]; then
+    foreign_send=unread
+    unread="${unread:+$unread; }the send to $foreign answered $sent_status"
+  elif [ "${sent_status#2}" != "$sent_status" ]; then
+    foreign_send=accepted
+    wrong="${wrong:+$wrong; }a send to $foreign was accepted ($sent_status)"
+  else
+    foreign_send=$sent_status
+    wrong="${wrong:+$wrong; }a send to $foreign answered $sent_status, not the 404 of a session no listener knows: ${sent:0:200}"
   fi
   granted=$(json_field granted "$socket")
   if [ -n "$(unknown_of "$socket")" ]; then
+    sub=unread
     unread="${unread:+$unread; }the relay socket: ${socket:0:200}"
   elif [ -z "$granted" ]; then
+    sub=unread
     unread="${unread:+$unread; }the listener serves no relay socket (status $(json_field status "$socket"))"
   elif [ "$granted" = true ]; then
+    sub=granted
     wrong="${wrong:+$wrong; }a relay sub to $peer's subject was granted"
   else
-    case $socket in *subject_not_granted*) ;; *) wrong="${wrong:+$wrong; }the sub was refused with $(json_field code "$socket")" ;; esac
+    case $socket in
+      *subject_not_granted*) sub=refused ;;
+      *)
+        sub=$(json_field code "$socket")
+        wrong="${wrong:+$wrong; }the sub was refused with $sub"
+        ;;
+    esac
   fi
+  marks="peer_listed=$peer_listed foreign_listed=$foreign_listed foreign_send=$foreign_send sub=${sub:-unread}"
   if [ -n "$wrong" ]; then
-    row P6 "$want6" "$wrong${unread:+; $unread}" FAIL
+    row P6 "$want6" "$wrong${unread:+; $unread}; $marks" FAIL
   elif [ -n "$unread" ]; then
-    row P6 "$want6" "$unread" UNKNOWN
+    row P6 "$want6" "$unread; $marks" UNKNOWN
   else
-    row P6 "$want6" "$peer listed, $foreign not; the sub refused subject_not_granted" PASS
+    row P6 "$want6" "$peer listed, $foreign not; the send to it answered 404; the sub refused subject_not_granted; $marks" PASS
   fi
 fi
 
-# --- P7: the agent's token mints no agent token and approves nothing. ---
-want7="POST /api/v1/me/agent-tokens and POST /api/v1/credential-requests/<id>/approve with the agent's token: 403 each"
+# --- P7: the agent's token mints no agent token and approves nothing: each answered 403
+# OAUTH_SCOPE_REQUIRED, the refusal of a credential that lacks the route's scope. A 403 with
+# another code says nothing of that rule, so it reads FAIL too. ---
+want7="POST /api/v1/me/agent-tokens and POST /api/v1/credential-requests/<id>/approve with the agent's token: 403 OAUTH_SCOPE_REQUIRED each"
 problem=$(lacking OUTSIDE_DISPATCH_URL)
 [ -n "$problem" ] || problem=$(probe_problem)
 if [ -n "$problem" ]; then
@@ -718,7 +667,12 @@ else
       unread="${unread:+$unread; }$call: ${answer:0:200}"
     else
       case $status in
-        403) ;;
+        403)
+          case $(json_field code "$answer") in
+            OAUTH_SCOPE_REQUIRED) ;;
+            *) wrong="${wrong:+$wrong; }$call answered 403 $(json_field code "$answer"), not OAUTH_SCOPE_REQUIRED: ${answer:0:200}" ;;
+          esac
+          ;;
         401 | 5*) unread="${unread:+$unread; }$call answered $status, so the token was not read" ;;
         *) wrong="${wrong:+$wrong; }$call answered $status: ${answer:0:200}" ;;
       esac
@@ -729,12 +683,12 @@ else
   elif [ -n "$unread" ]; then
     row P7 "$want7" "$unread" UNKNOWN
   else
-    row P7 "$want7" "both 403" PASS
+    row P7 "$want7" "both 403 OAUTH_SCOPE_REQUIRED" PASS
   fi
 fi
 
 # --- P8: a socket closes 4401 at its token's expiry, and the session reopens and receives. ---
-want8="a relay socket closes 4401 within 25 s after its token's exp, at most 300 s after the trade; the Oh My Pi session reopens and shows a message sent after that"
+want8="a relay socket closes 4401 within 25 s after its token's exp, at most 300 s after the trade; the Oh My Pi session reopens and holds a message sent after that"
 problem=$(lacking OUTSIDE_LISTENER_URL)
 [ -n "$problem" ] || problem=$(probe_problem)
 if [ -n "$problem" ]; then
@@ -755,14 +709,20 @@ else
     if [ $((expires - traded)) -gt 301000 ]; then
       wrong="the token lasts $(((expires - traded) / 1000)) s from the trade, past 300 s"
     elif [ "$code" = null ]; then
-      wrong="${wrong:+$wrong; }the socket was still open 60 s after its token's exp"
-    elif [ "$code" != 4401 ] || [ $((closed_at - expires)) -lt 0 ] || [ $((closed_at - expires)) -gt 25000 ]; then
-      wrong="${wrong:+$wrong; }closed $code $(((closed_at - expires) / 1000)) s after the token's exp"
+      wrong="the socket was still open 60 s after its token's exp"
+    elif [ $((closed_at - expires)) -lt 0 ]; then
+      # A close before the expiry (a dropped connection, a listener that restarted) shows nothing
+      # of whether the edge closes a socket at the expiry, which is what this part reads.
+      unread="the socket closed $code $(((expires - closed_at) / 1000)) s before its token's exp, so its close at the exp was not read"
+    elif [ "$code" != 4401 ] || [ $((closed_at - expires)) -gt 25000 ]; then
+      wrong="closed $code $(((closed_at - expires) / 1000)) s after the token's exp"
     fi
   fi
-  # Every token the Oh My Pi session traded at or after its socket opened has expired 325 s after,
-  # and the socket with it; what it shows after that came through a socket it opened again.
-  while [ "$(now)" -lt $((p4_started + 330)) ]; do sleep 5; done
+  # Every token the Oh My Pi session traded before it was first read on the session list had
+  # expired 300 s after that read at the latest, and the socket it opened with that token closed
+  # 25 s after: the session opens its socket before it registers. What it holds after that came
+  # through a socket it opened again.
+  while [ "$(now)" -lt $((session_seen_at + 330)) ]; do sleep 5; done
   sent=$(probe send "$session_id" "outside-e2e after-reopen $nonce")
   sent_at=$(now)
   shown=''
@@ -775,14 +735,14 @@ else
   elif [ "${sent_status#2}" = "$sent_status" ]; then
     wrong="${wrong:+$wrong; }the send after the reopen answered $sent_status"
   elif [ -z "$shown" ]; then
-    wrong="${wrong:+$wrong; }a message sent $(($(now) - p4_started)) s after the session opened was not shown within 10 s"
+    wrong="${wrong:+$wrong; }a message sent $(($(now) - session_seen_at)) s after the session was first listed was not held within 10 s"
   fi
   if [ -n "$wrong" ]; then
     row P8 "$want8" "$wrong${unread:+; $unread}" FAIL
   elif [ -n "$unread" ]; then
     row P8 "$want8" "$unread" UNKNOWN
   else
-    row P8 "$want8" "closed 4401 $(((closed_at - expires) / 1000)) s after exp, $(((expires - traded) / 1000)) s after the trade; a message after the reopen shown in $shown s" PASS
+    row P8 "$want8" "closed 4401 $(((closed_at - expires) / 1000)) s after exp, $(((expires - traded) / 1000)) s after the trade; a message after the reopen held in $shown s" PASS
   fi
 fi
 
@@ -823,9 +783,9 @@ else
   OUTSIDE_EDGE_REVOKE_KEEP=${p2_code:-} "$@" >"$work/revoke.log" 2>&1 </dev/null
   revoked=$?
   case $revoked in
-    0) row revocations "$want_revoke" "the revoke command exited 0, keeping ${p2_code:-no code}: $(text_of "$work/revoke.log")" PASS ;;
-    1) row revocations "$want_revoke" "the revoke command failed: $(text_of "$work/revoke.log")" FAIL ;;
-    *) row revocations "$want_revoke" "the revoke command exited $revoked: $(text_of "$work/revoke.log")" UNKNOWN ;;
+    0) row revocations "$want_revoke" "the revoke command exited 0, keeping ${p2_code:-no code}" PASS ;;
+    1) row revocations "$want_revoke" "the revoke command failed (exit 1)" FAIL ;;
+    *) row revocations "$want_revoke" "the revoke command could not tell (exit $revoked)" UNKNOWN ;;
   esac
 fi
 
@@ -833,14 +793,18 @@ fi
 # person's live agent and browser stop. This leg opens the window by telling the peer, whose
 # tailnet leg then has the owner make the removal and keeps its time; the tailnet leg judges T5
 # from that time and the rows below, each of which carries the times it read (Unix seconds). For
-# up to OUTSIDE_T5_SECONDS (default 1200) the leg polls a fresh trade of P2's device login every
-# 10 s, and keeps a relay socket open with the newest token, opening another when one closes, as
-# the agent would; the window ends once a trade is refused and the socket open then has closed.
-# OUTSIDE_T5_COMMAND, the workflow's browser, runs beside it with OUTSIDE_T5_DEADLINE (Unix s) and
-# OUTSIDE_T5_TSV: it polls the person's cookie until it gets 401 and then tries the passkey sign-in,
-# writing rows T5-cookie and T5-passkey there, which are copied into this leg's TSV. ---
+# up to OUTSIDE_T5_SECONDS (default 1200) the leg trades P2's device login afresh every 10 s, and
+# keeps a relay socket open with the newest token, opening another when one closes, as the agent
+# would. Once a trade is refused, it watches the socket open then until it closes or 325 s pass,
+# and goes on trading every 10 s meanwhile: a trade answered after the refusal reads FAIL, since
+# the removal stops every trade and not one. The socket's close passes only with the edge's own
+# codes, 4401 (its token expired) or 4403 (refused before its expiry): any other close says
+# nothing of the removal. OUTSIDE_T5_COMMAND, the workflow's browser, runs beside it with
+# OUTSIDE_T5_DEADLINE (Unix s) and OUTSIDE_T5_TSV: it polls the person's cookie until it gets 401
+# and then tries the passkey sign-in, writing rows T5-cookie and T5-passkey there, which are
+# copied into this leg's TSV. ---
 t5_seconds=${OUTSIDE_T5_SECONDS:-1200}
-want_t5a="once the owner removes ${person:-<OUTSIDE_PERSON>}: a fresh trade of the device login is refused, and the relay socket open at that moment closes"
+want_t5a="once the owner removes ${person:-<OUTSIDE_PERSON>}: a fresh trade of the device login is refused and no later trade answered, and the relay socket open at that moment closes 4401 or 4403"
 want_t5c="the person's cookie answered 401 after the removal"
 want_t5p="the person's passkey sign-in refused after the removal"
 problem=$(lacking OUTSIDE_LISTENER_URL OUTSIDE_PEER_SESSION)
@@ -853,7 +817,7 @@ else
   opened=$(now)
   deadline=$((opened + t5_seconds))
   told=$(probe send "$peer" "outside-e2e t5-open $nonce at $(stamp)")
-  say "T5: window open until $(date -u -d "@$deadline" '+%H:%M:%SZ' 2>/dev/null || echo "$deadline"): $told"
+  say "T5: window open for up to $t5_seconds s: $told"
   t5_driver=''
   if [ -n "${OUTSIDE_T5_COMMAND:-}" ]; then
     : >"$work/t5.tsv"
@@ -867,6 +831,8 @@ else
   fi
   refused_at=''
   refusal=''
+  refusals=0
+  answered_after=''
   socket_pid=''
   socket_log=''
   sockets=0
@@ -876,13 +842,14 @@ else
     if [ "$(json_field traded "$answer")" = false ]; then
       refused_at=$(now)
       refusal=$answer
+      refusals=1
       break
     fi
     # A socket that ended is opened again with a fresh token, as the agent's own would be.
     if [ -z "$socket_unread" ] && { [ -z "$socket_pid" ] || ! kill -0 "$socket_pid" 2>/dev/null; }; then
       sockets=$((sockets + 1))
       socket_log="$work/t5-socket-$sockets.log"
-      probe_as="outside-e2e-t5-$nonce" probe hold "$t5_seconds" >"$socket_log" &
+      probe_as="outside-e2e-t5-$nonce" probe_exec hold "$t5_seconds" >"$socket_log" &
       socket_pid=$!
       background="$background $socket_pid"
       sleep 3
@@ -890,31 +857,60 @@ else
     fi
     sleep 10
   done
-  # The socket open at the refusal: its close, within 325 s of it.
+  # The socket open at the refusal, watched until it closes or 325 s pass, the trades going on.
+  socket_open=''
+  socket_opened_at=''
   closed_at=''
   close_code=''
-  if [ -n "$refused_at" ] && [ -z "$socket_unread" ] && [ -n "$socket_pid" ]; then
-    while kill -0 "$socket_pid" 2>/dev/null && [ "$(now)" -le $((refused_at + 325)) ]; do sleep 2; done
-    held=$(cat "$socket_log")
-    closed_at=$(json_field closed_at "$held")
-    close_code=$(json_field code "$held")
-    case $closed_at in '' | null) closed_at='' ;; *) closed_at=$((closed_at / 1000)) ;; esac
+  if [ -n "$refused_at" ]; then
+    if [ -z "$socket_unread" ] && [ -n "$socket_pid" ] && kill -0 "$socket_pid" 2>/dev/null; then
+      socket_open=yes
+    fi
+    while [ "$(now)" -le $((refused_at + 325)) ]; do
+      sleep 10
+      answer=$(probe trade)
+      case $(json_field traded "$answer") in
+        false) refusals=$((refusals + 1)) ;;
+        true) [ -n "$answered_after" ] || answered_after=$(now) ;;
+      esac
+      if [ -z "$socket_open" ] || ! kill -0 "$socket_pid" 2>/dev/null; then break; fi
+    done
+    if [ -n "$socket_open" ]; then
+      held=$(cat "$socket_log")
+      socket_opened_at=$(json_field opened_at "$held")
+      case $socket_opened_at in '' | null) socket_opened_at='' ;; *) socket_opened_at=$((socket_opened_at / 1000)) ;; esac
+      closed_at=$(json_field closed_at "$held")
+      close_code=$(json_field code "$held")
+      case $closed_at in '' | null) closed_at='' ;; *) closed_at=$((closed_at / 1000)) ;; esac
+    fi
   fi
-  marks="opened_at=$opened refused_at=${refused_at:-none} socket_closed_at=${closed_at:-none} code=${close_code:-none} sockets=$sockets"
+  marks="opened_at=$opened refused_at=${refused_at:-none} socket_opened_at=${socket_opened_at:-none} socket_closed_at=${closed_at:-none} code=${close_code:-none} sockets=$sockets refusals=$refusals"
   if [ -z "$refused_at" ]; then
     row T5-agent "$want_t5a" "no trade refused in the ${t5_seconds} s window, so no removal was seen; $marks" UNKNOWN
+  elif [ -n "$answered_after" ]; then
+    row T5-agent "$want_t5a" "a trade was answered at $answered_after, $((answered_after - refused_at)) s after the first refusal; $marks" FAIL
   elif [ -n "$socket_unread" ]; then
-    row T5-agent "$want_t5a" "the trade was refused; the socket part was not read: $socket_unread; $marks" UNKNOWN
+    row T5-agent "$want_t5a" "the trades were refused; the socket part was not read: $socket_unread; $marks" UNKNOWN
+  elif [ -z "$socket_open" ]; then
+    row T5-agent "$want_t5a" "the trades were refused; no relay socket was open at the first refusal (the removal came before one opened, or as one had closed), so the socket part was not read; $marks" UNKNOWN
   elif [ -z "$closed_at" ]; then
-    row T5-agent "$want_t5a" "the trade was refused, and the socket open then was still open 325 s later; $marks" FAIL
+    row T5-agent "$want_t5a" "the trades were refused, and the socket open at the first refusal was still open 325 s later; $marks" FAIL
   else
-    row T5-agent "$want_t5a" "the trade was refused (status $(json_field status "$refusal")) and the socket open then closed $close_code; $marks" PASS
+    case $close_code in
+      4401 | 4403) row T5-agent "$want_t5a" "the trades were refused (status $(json_field status "$refusal")) and the socket open then closed $close_code; $marks" PASS ;;
+      *) row T5-agent "$want_t5a" "the trades were refused; the socket open then closed $close_code, not the edge's own 4401 or 4403, so its close says nothing of the removal; $marks" UNKNOWN ;;
+    esac
   fi
   if [ -z "$t5_driver" ]; then
     row T5-cookie "$want_t5c" "OUTSIDE_T5_COMMAND is unset, so the browser was not read" UNKNOWN
     row T5-passkey "$want_t5p" "OUTSIDE_T5_COMMAND is unset, so the browser was not read" UNKNOWN
   else
     while kill -0 "$t5_driver" 2>/dev/null && [ "$(now)" -le $((deadline + 30)) ]; do sleep 2; done
+    driver_end='still running'
+    if ! kill -0 "$t5_driver" 2>/dev/null; then
+      wait "$t5_driver"
+      driver_end="exit $?"
+    fi
     for name in T5-cookie T5-passkey; do
       line=''
       while IFS= read -r each; do
@@ -923,14 +919,14 @@ else
       if [ -z "$line" ]; then
         want=$want_t5c
         [ "$name" = T5-cookie ] || want=$want_t5p
-        row "$name" "$want" "OUTSIDE_T5_COMMAND wrote no $name row: $(text_of "$work/t5-driver.log")" UNKNOWN
+        row "$name" "$want" "OUTSIDE_T5_COMMAND wrote no $name row ($driver_end)" UNKNOWN
         continue
       fi
       IFS="$tab" read -r _ want got verdict <<EOF
 $line
 EOF
       case $verdict in PASS | FAIL | UNKNOWN) row "$name" "$want" "$got" "$verdict" ;; *)
-        row "$name" "$want" "the browser's row reads $verdict: $got" UNKNOWN ;;
+        row "$name" "$want" "the browser's row reads $(cell "$verdict"), which is no verdict: $got" UNKNOWN ;;
       esac
     done
   fi

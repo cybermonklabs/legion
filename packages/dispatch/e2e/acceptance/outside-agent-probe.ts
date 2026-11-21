@@ -29,7 +29,9 @@
  *                            listener serves no socket there.
  *    github-event <topic> <seconds>
  *                            follows <topic> and waits on the relay socket for one of its events,
- *                            with `event`, its subject, or null after <seconds>.
+ *                            with `event`, its subject, or null after <seconds>, and `sockets`,
+ *                            how many it opened: when the edge closes one (at its token's
+ *                            expiry), it trades a fresh token and opens another.
  *    expiry <grace> <longest>
  *                            trades a token, opens a relay socket with it and waits for the
  *                            listener to close it: {traded_at, expires_at, closed_at, code} in
@@ -78,6 +80,11 @@ const deliverPrefix = "notifications.envoy.deliver.";
 const neverCarried = "agentstream.outside-e2e.frames";
 /** How long one HTTP call or one socket's open may take before it reads as no answer. */
 const callMs = 15_000;
+/** The most sockets `github-event` opens in one wait: one per token of at most 300 s over 15
+ *  minutes is four, so thirty is a socket that keeps closing, which reads as no answer. */
+const maxSockets = 30;
+/** The largest request body the scripted model reads; a larger one is answered 413 unread. */
+const modelBodyLimit = 4 * 2 ** 20;
 
 class Unreadable extends Error {}
 
@@ -487,6 +494,31 @@ async function peer(): Promise<void> {
  *  line and no tool call. An Envoy card is handed to the Oh My Pi session as a turn, which a session
  *  with no model refuses and so never shows, and no model key goes on the runner. It prints {port}
  *  once it listens and serves until it is stopped. */
+/** The JSON of `request`'s body, read up to `modelBodyLimit` bytes; undefined for a body past it.
+ *  A body that is no JSON reads as an empty object. */
+async function boundedJson(request: Request): Promise<unknown> {
+  if (Number(request.headers.get("content-length") ?? "0") > modelBodyLimit) return undefined;
+  const reader = request.body?.getReader();
+  if (reader === undefined) return {};
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > modelBodyLimit) {
+      await reader.cancel();
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    return {};
+  }
+}
+
 async function scriptedModel(): Promise<never> {
   const reply = "outside-e2e: the scripted model answers no message of its own.";
   const server = Bun.serve({
@@ -500,7 +532,13 @@ async function scriptedModel(): Promise<never> {
       if (request.method !== "POST" || url.pathname !== "/v1/chat/completions") {
         return Response.json({ error: { message: `no route ${url.pathname}` } }, { status: 404 });
       }
-      const body: unknown = await request.json().catch(() => ({}));
+      const body = await boundedJson(request);
+      if (body === undefined) {
+        return Response.json(
+          { error: { message: "the request body is too large" } },
+          { status: 413 }
+        );
+      }
       const id = `chatcmpl-${randomUUID()}`;
       const created = Math.floor(Date.now() / 1000);
       const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
@@ -620,31 +658,52 @@ async function main(): Promise<void> {
         throw new Unreadable("github-event needs a topic and seconds");
       const followed = await subscribe([topic]);
       if (followed.status >= 300) {
-        print({ ...flat(followed), event: null });
+        print({ ...flat(followed), event: null, sockets: 0 });
         return;
       }
-      const relay = await openRelay();
-      if (!("socket" in relay))
-        throw new Unreadable(`the listener serves no relay socket (${relay.status})`);
-      const own = await ask(relay, `${deliverPrefix}${session()}`);
-      if (!own.granted)
-        throw new Unreadable(`the relay socket refused the session's own subject (${own.code})`);
       const prefix = topic.replace(/\.>$/, ".");
       const until = Date.now() + waitMs;
-      for (;;) {
-        const frame = await nextFrame(relay, Math.max(0, until - Date.now()));
-        if (frame === undefined) break;
-        if (frame.op !== "msg") continue;
-        receipt(relay, frame);
-        const subject = envelopeOf(frame)?.topic ?? frame.subject ?? "";
-        if (subject.startsWith(prefix)) {
-          print({ ...flat(followed), event: subject });
-          relay.socket.close(1000, "the probe is done");
-          return;
+      // One socket rides one token, which lasts at most 300 s, and the edge closes it at the
+      // token's expiry; so whenever a socket closes before the wait ends, the probe trades a fresh
+      // token, registers again and opens another, as a session's client does. The session's
+      // consumer hands the next socket what the last one held unacknowledged.
+      let sockets = 0;
+      while (Date.now() < until) {
+        if (sockets > 0) {
+          if (sockets >= maxSockets) {
+            throw new Unreadable(`the relay socket closed ${sockets} times before the wait ended`);
+          }
+          await Bun.sleep(1000);
+          await token(true);
+          const again = await subscribe([topic]);
+          if (again.status >= 300) {
+            print({ ...flat(again), event: null, sockets });
+            return;
+          }
         }
+        const relay = await openRelay();
+        if (!("socket" in relay))
+          throw new Unreadable(`the listener serves no relay socket (${relay.status})`);
+        sockets += 1;
+        const own = await ask(relay, `${deliverPrefix}${session()}`);
+        if (!own.granted)
+          throw new Unreadable(`the relay socket refused the session's own subject (${own.code})`);
+        // nextFrame waits until the wait's end unless the socket closes first.
+        for (;;) {
+          const frame = await nextFrame(relay, Math.max(0, until - Date.now()));
+          if (frame === undefined) break;
+          if (frame.op !== "msg") continue;
+          receipt(relay, frame);
+          const subject = envelopeOf(frame)?.topic ?? frame.subject ?? "";
+          if (subject.startsWith(prefix)) {
+            print({ ...flat(followed), event: subject, sockets });
+            relay.socket.close(1000, "the probe is done");
+            return;
+          }
+        }
+        relay.socket.close(1000, "the probe is done");
       }
-      print({ ...flat(followed), event: null });
-      relay.socket.close(1000, "the probe is done");
+      print({ ...flat(followed), event: null, sockets });
       return;
     }
     case "expiry": {

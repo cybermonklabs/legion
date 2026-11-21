@@ -1,10 +1,10 @@
 /** What the two legs of the outside agent's acceptance print when a row's target is absent:
  *  `e2e/acceptance/outside-agent-public.sh` (rows P1-P9, the leg a runner on the public internet
  *  runs) and `e2e/acceptance/outside-agent-tailnet.sh` (the pins, the scratch project's issue,
- *  rows T1-T5, the public leg's rows, the sweep and the gate, the leg a developer box runs). Each
- *  leg prints a TSV on stdout, a header `row want got verdict` and one line per row, and a row it
- *  could not run reads UNKNOWN with a `got` that names what it could not read. Every row UNKNOWN
- *  exits 2.
+ *  rows T1-T5, the public leg's rows, the public leg's own last word, the sweep and the gate, the
+ *  leg a developer box runs). Each leg prints a TSV on stdout, a header `row want got verdict` and
+ *  one line per row, and a row it could not run reads UNKNOWN with a `got` that names what it
+ *  could not read. Every row UNKNOWN exits 2.
  *
  *  Each leg runs twice here. Once with no input at all, so every row names the input it lacks. Once
  *  with every input set and nothing behind any of them: each origin is a loopback port that
@@ -16,9 +16,10 @@
  *  and every `exit 2` reads `exit 0`: a leg that defaults to PASS. The check must fail on that
  *  copy, and the row says what it found, so a check that cannot fail fails here.
  *
- *  The last block runs the tailnet leg against stand-ins of what it drives, and reads the rows it
- *  judges by its own controls (T2, P7, the sweep and the pins) PASS where those controls answer
- *  and not PASS where they do not.
+ *  The blocks after those run the legs against stand-ins of what they drive, and read the rows
+ *  each leg judges by its own controls PASS where those controls answer and not PASS where they do
+ *  not; and the background shapes the legs start their children in, stopped by the shared
+ *  `reap`, beside the shapes that `reap` cannot stop.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -40,10 +41,12 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 const acceptance = fileURLToPath(new URL("../acceptance/", import.meta.url));
 const publicLeg = join(acceptance, "outside-agent-public.sh");
 const tailnetLeg = join(acceptance, "outside-agent-tailnet.sh");
+/** The support files the legs source from beside them: a leg copied elsewhere takes them along. */
+const supportFiles = ["outside-agent-lib.sh", "outside-agent-peer.sh", "outside-agent-sweep.sh"];
 
 /** The rows each leg prints, in order, after its header: the public leg's P1-P9, its revocations,
  *  its three T5 rows and its verdict; the tailnet leg's own rows, the public leg's P1-P9 as it read
- *  them, and the gate. */
+ *  them, the public leg's own last word, the sweep and the gate. */
 const publicRows = ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9"];
 const publicLegRows = [
   ...publicRows,
@@ -53,7 +56,19 @@ const publicLegRows = [
   "T5-passkey",
   "verdict",
 ];
-const tailnetRows = ["pins", "issue", "T1", "T2", "T3", "T4", "T5", ...publicRows, "sweep", "gate"];
+const tailnetRows = [
+  "pins",
+  "issue",
+  "T1",
+  "T2",
+  "T3",
+  "T4",
+  "T5",
+  ...publicRows,
+  "public",
+  "sweep",
+  "gate",
+];
 
 /** The shell tools the legs read text with. PATH holds these alone in the absent-target runs, so
  *  no tool the legs drive (`omp`, `tmux`, `bun`, `gh`, `git`, `crane`, `agent-secrets`,
@@ -105,16 +120,23 @@ function textToolPath(): string {
   return bin;
 }
 
+/** A copy of `leg` in a directory of its own, with the support files it sources beside it, each
+ *  through `change`; nothing else it runs beside it (the probe, the sweep, the reach check) is
+ *  there. */
+function copyLeg(leg: string, change: (text: string) => string = (text) => text): string {
+  const dir = scratch("leg");
+  for (const file of [leg, ...supportFiles.map((name) => join(acceptance, name))]) {
+    const copy = join(dir, file.split("/").pop() ?? "leg.sh");
+    writeFileSync(copy, change(readFileSync(file, "utf8")));
+    chmodSync(copy, 0o755);
+  }
+  return join(dir, leg.split("/").pop() ?? "leg.sh");
+}
+
 /** A copy of `leg` that defaults to PASS: every `UNKNOWN` reads `PASS` and every `exit 2` reads
- *  `exit 0`. It sits beside nothing, so the files the leg runs beside it are absent too. */
+ *  `exit 0`, in the leg and in what it sources. */
 function passingCopy(leg: string): string {
-  const copy = join(scratch("mutant"), leg.split("/").pop() ?? "leg.sh");
-  writeFileSync(
-    copy,
-    readFileSync(leg, "utf8").replaceAll("UNKNOWN", "PASS").replaceAll("exit 2", "exit 0")
-  );
-  chmodSync(copy, 0o755);
-  return copy;
+  return copyLeg(leg, (text) => text.replaceAll("UNKNOWN", "PASS").replaceAll("exit 2", "exit 0"));
 }
 
 interface LegRun {
@@ -230,7 +252,7 @@ function tailnetInputs(): Record<string, string> {
     OUTSIDE_CANARY: "EXAMPLE_CANARY",
     OUTSIDE_REPOSITORY: "example-owner/example-repo",
     OUTSIDE_WORKFLOW_REPO: "example-owner/example-deploy",
-    OUTSIDE_WORKFLOW_INPUTS: "invite_url=https://dispatch.example/invite/example",
+    OUTSIDE_WORKFLOW_INPUTS: "edge_host=dispatch.edge.example",
     OUTSIDE_TAILNET_TSV: join(inputs, "tailnet.tsv"),
   };
 }
@@ -318,6 +340,267 @@ describe.skipIf(withoutTools)("the outside agent's acceptance legs", () => {
   );
 });
 
+/** An executable file at `path` holding `text`. */
+function script(path: string, text: string): string {
+  writeFileSync(path, text);
+  chmodSync(path, 0o755);
+  return path;
+}
+
+/* The shapes a leg starts its background children in, and the shared `reap` that stops them at the
+ * leg's end. Each shape's leaf is a `sleep` of a number no other process runs, so a leaf left
+ * running after `reap` is found by that number. The shapes the legs use are a simple command, a
+ * function whose last word is `exec`, and such a function behind a prefix assignment: `$!` names
+ * the leaf itself, and `reap` stops it. The two shapes the legs no longer use are the control: a
+ * subshell that does more after its command, and a function that runs its command without `exec`,
+ * whose leaf `reap` cannot reach. A row per shape. */
+describe.skipIf(skipWithout("bash", "sleep", "pgrep"))(
+  "the shapes a leg starts its children in",
+  () => {
+    test(
+      "reap stops every shape the legs use, and not the two they no longer use",
+      async () => {
+        const base = `9${Math.floor(Math.random() * 1e6)
+          .toString()
+          .padStart(6, "0")}`;
+        const sleep = hostTool("sleep") as string;
+        const shapes = script(
+          join(scratch("shapes"), "shapes.sh"),
+          `#!/usr/bin/env bash
+set -u
+. '${join(acceptance, "outside-agent-lib.sh")}'
+background=''
+env -i '${sleep}' ${base}1 &
+background="$background $!"
+leaf() { exec '${sleep}' "$1"; }
+leaf ${base}2 &
+background="$background $!"
+probe_as=x leaf ${base}3 &
+background="$background $!"
+( '${sleep}' ${base}4; echo done >/dev/null ) &
+background="$background $!"
+noexec() { '${sleep}' "$1"; }
+noexec ${base}5 &
+background="$background $!"
+sleep 1
+reap
+sleep 1
+for n in 1 2 3 4 5; do
+  pids=$(pgrep -f "^${sleep} ${base}$n\\$")
+  if [ -n "$pids" ]; then
+    echo "$n survived"
+    # shellcheck disable=SC2086 # each pid a word
+    kill $pids
+  else
+    echo "$n stopped"
+  fi
+done
+`
+        );
+        const { code, stdout } = await runBounded({
+          argv: ["bash", shapes],
+          bound: "short",
+          cwd: scratch("cwd"),
+          env: { PATH: process.env.PATH ?? "" },
+          from: import.meta.url,
+        });
+        expect({ code, stdout }).toEqual({
+          code: 0,
+          stdout: ["1 stopped", "2 stopped", "3 stopped", "4 survived", "5 survived", ""].join(
+            "\n"
+          ),
+        });
+      },
+      // The shape script, a bounded child under the short bound.
+      rowLimit("short")
+    );
+  }
+);
+
+/* The public leg against stand-ins of what it drives: an `omp` whose plugin install leaves the
+ * plugin's `dispatch` command, a `dispatch login --device` that prints a code and keeps a login,
+ * an approve command, and an `outside-agent-probe.ts` beside the leg that answers each command as
+ * a scenario file says. No `tmux` is on PATH, so P4 and P8 read UNKNOWN in every run here, and no
+ * reach check or revoke or browser command is given. */
+
+interface PublicScenario {
+  /** The answers of the trades the T5 window makes, in turn; the last one repeats. */
+  readonly trades: readonly boolean[];
+  /** When the relay socket the T5 window holds closes after it opens, and with which code; it
+   *  stays open where none is given. */
+  readonly holdCloseMs?: number;
+  readonly holdCode?: number;
+  /** The probe's answers by command, where they differ from an edge that refuses as it should. */
+  readonly foreignSend?: Record<string, unknown>;
+  readonly approve?: Record<string, unknown>;
+}
+
+/** The stand-in probe: answers each command the public leg runs, from scenario.json beside it. */
+const standInProbe = `
+const dir = import.meta.dir;
+const scenario = JSON.parse(await Bun.file(dir + "/scenario.json").text());
+const [command, ...args] = Bun.argv.slice(2);
+const print = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+const refusal = (code) => ({ status: 403, code, detail: "refused" });
+switch (command) {
+  case "whoami":
+    print({ status: 200, code: null, detail: null, kind: "agent", owner: "outside-e2e@example.com", project: "EXAMPLE", scopes: [] });
+    break;
+  case "interest":
+    print(refusal(args[0].startsWith("notifications.github.") ? "repository_not_in_project" : "topic_not_in_project"));
+    break;
+  case "publish":
+    print(refusal("topic_not_published"));
+    break;
+  case "github-event":
+    print({ status: 200, code: null, detail: null, event: "notifications.github.example-owner.example-repo.push", sockets: 1 });
+    break;
+  case "sessions":
+    print({ status: 200, code: null, detail: null, sessions: ["example-peer"], at_dir: null });
+    break;
+  case "relay-sub":
+    print({ granted: false, code: "subject_not_granted" });
+    break;
+  case "send":
+    print(args[0].endsWith("-foreign") ? (scenario.foreignSend ?? { status: 404, code: null, detail: "no such session" }) : { status: 200, code: null, detail: null });
+    break;
+  case "agent-token":
+    print(refusal("OAUTH_SCOPE_REQUIRED"));
+    break;
+  case "approve":
+    print(scenario.approve ?? refusal("OAUTH_SCOPE_REQUIRED"));
+    break;
+  case "trade": {
+    const counter = dir + "/trades.count";
+    const done = (await Bun.file(counter).exists()) ? Number(await Bun.file(counter).text()) : 0;
+    await Bun.write(counter, String(done + 1));
+    const traded = scenario.trades[Math.min(done, scenario.trades.length - 1)];
+    print(traded ? { traded: true, expires_at: Date.now() + 300000 } : { traded: false, status: 403, detail: "refused" });
+    break;
+  }
+  case "hold":
+    print({ opened_at: Date.now() });
+    if (scenario.holdCloseMs === undefined) await Bun.sleep(Number(args[0]) * 1000);
+    else {
+      await Bun.sleep(scenario.holdCloseMs);
+      print({ closed_at: Date.now(), code: scenario.holdCode ?? 4401 });
+    }
+    break;
+  default:
+    print({ unknown: "the stand-in probe has no " + command });
+    process.exit(2);
+}
+`;
+
+/** One run of a copy of the public leg against the stand-ins, as `scenario` says. */
+async function publicStandInRun(scenario: PublicScenario): Promise<LegRun> {
+  const leg = copyLeg(publicLeg);
+  const legDir = leg.slice(0, leg.lastIndexOf("/"));
+  writeFileSync(join(legDir, "outside-agent-probe.ts"), standInProbe);
+  writeFileSync(join(legDir, "scenario.json"), JSON.stringify(scenario));
+  const bin = textToolPath();
+  const bun = hostTool("bun");
+  if (bun !== null) symlinkSync(bun, join(bin, "bun"));
+  const dispatchCommand = `#!/usr/bin/env bash
+echo 'Open https://dispatch.example/device and enter the code ABCD-EFGH'
+mkdir -p "$HOME/.config/legion"
+(umask 077 && echo '{}' >"$HOME/.config/legion/device-login.json")
+`;
+  script(
+    join(bin, "omp"),
+    `#!/usr/bin/env bash
+[ "$1 $2" = "plugin install" ] || exit 2
+plugin="$HOME/.omp/plugins/node_modules/@sjawhar/pi-envoy"
+mkdir -p "$plugin/bin"
+echo '{"version":"0.0.0"}' >"$plugin/package.json"
+cat >"$plugin/bin/dispatch" <<'SH'
+${dispatchCommand}SH
+chmod 755 "$plugin/bin/dispatch"
+`
+  );
+  const inputs = scratch("inputs");
+  const approve = script(join(inputs, "approve"), '#!/bin/sh\necho "APPROVED $1"\n');
+  const origin = `http://127.0.0.1:${closedPort()}`;
+  return runLeg(leg, [], {
+    PATH: bin,
+    HOME: scratch("home"),
+    ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
+    OUTSIDE_ALLOW_HTTP: "1",
+    OUTSIDE_DISPATCH_URL: origin,
+    OUTSIDE_BROKER_URL: origin,
+    OUTSIDE_LISTENER_URL: origin,
+    OUTSIDE_PROJECT: "EXAMPLE",
+    OUTSIDE_PERSON: "outside-e2e@example.com",
+    OUTSIDE_PEER_SESSION: "example-peer",
+    OUTSIDE_APPROVE_COMMAND: approve,
+    OUTSIDE_PI_ENVOY_VERSION: "0.0.0",
+    OUTSIDE_REPOSITORY: "example-owner/example-repo",
+  });
+}
+
+describe.skipIf(skipWithout("bash", "bun"))(
+  "the public leg's own judgments, against stand-ins",
+  () => {
+    test(
+      "P6 and P7 pass only on the edge's own refusals, and T5's agent part only when every later trade is refused and the socket open at the refusal closes 4401 or 4403",
+      async () => {
+        const [pass, crossing, early, dropped] = await Promise.all([
+          publicStandInRun({ trades: [true, false, false], holdCloseMs: 15_000, holdCode: 4401 }),
+          publicStandInRun({
+            trades: [true, false, true],
+            holdCloseMs: 15_000,
+            holdCode: 4401,
+            foreignSend: { status: 200, code: null, detail: null },
+            approve: { status: 403, code: "FORBIDDEN", detail: "refused" },
+          }),
+          publicStandInRun({ trades: [false] }),
+          publicStandInRun({ trades: [true, false, false], holdCloseMs: 15_000, holdCode: 1006 }),
+        ]);
+        expect({ verdicts: verdictsOf(pass.stdout), stdout: pass.stdout }).toMatchObject({
+          verdicts: {
+            P1: "PASS",
+            P2: "PASS",
+            P3: "PASS",
+            P5: "PASS",
+            P6: "PASS",
+            P7: "PASS",
+            "T5-agent": "PASS",
+          },
+        });
+        expect(rowsOf(pass.stdout).get("P6")?.got).toContain(
+          "foreign_listed=no foreign_send=refused sub=refused"
+        );
+        expect(rowsOf(pass.stdout).get("T5-agent")?.got).toContain("closed 4401");
+
+        // The control of those PASSes: the edge accepts a send to the session outside the project,
+        // refuses the approve for another reason than its scope, and answers a trade after the
+        // first refusal.
+        expect({ verdicts: verdictsOf(crossing.stdout), stdout: crossing.stdout }).toMatchObject({
+          verdicts: { P6: "FAIL", P7: "FAIL", "T5-agent": "FAIL" },
+        });
+        const crossed = rowsOf(crossing.stdout);
+        expect(crossed.get("P6")?.got).toContain("foreign_send=accepted sub=refused");
+        expect(crossed.get("P7")?.got).toContain(
+          "approve answered 403 FORBIDDEN, not OAUTH_SCOPE_REQUIRED"
+        );
+        expect(crossed.get("T5-agent")?.got).toContain("a trade was answered");
+        expect(crossing.code).toBe(1);
+
+        // A removal before any socket opened leaves the socket part unread, not failed; and a close
+        // with no edge code says nothing of the removal.
+        expect(rowsOf(early.stdout).get("T5-agent")).toMatchObject({ verdict: "UNKNOWN" });
+        expect(rowsOf(early.stdout).get("T5-agent")?.got).toContain("no relay socket was open");
+        expect(rowsOf(dropped.stdout).get("T5-agent")).toMatchObject({ verdict: "UNKNOWN" });
+        expect(rowsOf(dropped.stdout).get("T5-agent")?.got).toContain(
+          "closed 1006, not the edge's own"
+        );
+      },
+      // The four runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+    );
+  }
+);
+
 /* The tailnet leg against stand-ins of what it drives, so the rows it judges by its own controls
  * can be read PASS, FAIL and UNKNOWN: a git checkout whose commits the pins name; an
  * `agent-secrets` and an `agent-secrets-helper` that act as a broker holding the enrollment refusal
@@ -342,6 +625,15 @@ interface StandIns {
   /** Whether OUTSIDE_FULL_COOKIE_FILE is given, and the proxy read the fills leave out, if any. */
   readonly cookie?: "given" | "absent";
   readonly fillsLeaveOut?: string;
+  /** Whether the public leg approves the scratch login; a login nobody approves ends `expired`. */
+  readonly approve?: boolean;
+  /** The verdict the public leg's revoke row of the scratch login reads (default PASS). */
+  readonly revokeVerdict?: string;
+  /** The public leg's own last word: its verdict row (none for "absent") and its exit. */
+  readonly publicVerdict?: "PASS" | "FAIL" | "absent";
+  readonly publicExit?: number;
+  /** P6's row as the public leg writes it, where it differs from a PASS. */
+  readonly p6?: string;
 }
 
 interface StandInRun extends LegRun {
@@ -388,18 +680,11 @@ function checkout(): Checkout {
   return { dir, held, built, apart };
 }
 
-/** An executable file at `path` holding `text`. */
-function script(path: string, text: string): string {
-  writeFileSync(path, text);
-  chmodSync(path, 0o755);
-  return path;
-}
-
 /** A PATH of the text tools, the few more the stand-in run reads with, and the stand-ins of
  *  `agent-secrets` and `agent-secrets-helper`, which keep their state in `state`. */
 function standInPath(state: string): string {
   const bin = textToolPath();
-  for (const tool of ["git", "base64", "sh", "printenv"]) {
+  for (const tool of ["git", "base64", "sh", "printenv", "cp"]) {
     const found = hostTool(tool);
     if (found !== null) symlinkSync(found, join(bin, tool));
   }
@@ -411,7 +696,8 @@ function standInPath(state: string): string {
   // A session of the box's own (no operator file) is enrolled and granted the canary; a scratch
   // helper's (an operator file) is refused, the first register for the member kind and the
   // canary's session and request with what canary-refusal holds. A machine login completes once
-  // the stand-in Dispatch or the public leg marks its code approved.
+  // the stand-in Dispatch or the public leg marks its code approved, and where the state holds
+  // login-expires it ends as the real one ends a code nobody approved.
   script(
     join(bin, "agent-secrets"),
     `#!/usr/bin/env bash
@@ -423,6 +709,11 @@ case $1 in
   machine)
     if [ "$2" = login ]; then
       echo "machine login code: $code"
+      if [ -f "$state/login-expires" ] && [ "$code" = TEST-0001 ]; then
+        sleep 1
+        echo 'agent-secrets machine login: expired' >&2
+        exit 1
+      fi
       while [ ! -f "$state/approved-$code" ] && [ -e "$AGENT_SECRETS_HELPER_SOCK" ]; do sleep 0.1; done
       [ -f "$state/approved-$code" ] || exit 1
       printf '{"credential_id":"cred-%s"}\\n' "$(printf '%s' "$code" | tr 'A-Z' 'a-z')" >"$AGENT_SECRETS_MACHINE_FILE"
@@ -534,6 +825,7 @@ interface PreparedStandIn {
 function prepareStandIn(standIns: StandIns): PreparedStandIn {
   const state = scratch("state");
   writeFileSync(join(state, "canary-refusal"), `${standIns.canaryRefusal}\n`);
+  if (standIns.approve === false) writeFileSync(join(state, "login-expires"), "");
   // The fills the sweep's fills mode writes: the repository, and a `can_fail` line for each proxy
   // read, but only with the full member's cookie, as restricted-sweep.sh does.
   const canFail = [
@@ -552,11 +844,30 @@ function prepareStandIn(standIns: StandIns): PreparedStandIn {
       "",
     ].join("\n")
   );
+  // The public leg's TSV: P1-P9 PASS but where a row is given, its revocations and its verdict.
+  const tab = "\t";
+  const publicTsv = [
+    ["row", "want", "got", "verdict"],
+    ...publicRows.map((name) =>
+      name === "P6" && standIns.p6 !== undefined
+        ? [name, `the row ${name}`, standIns.p6, standIns.p6.split(" ")[0] as string]
+        : [name, `the row ${name}`, `what ${name} read`, "PASS"]
+    ),
+    ["revocations", "every login revoked", "the revoke command exited 0", "PASS"],
+    ...(standIns.publicVerdict === "absent"
+      ? []
+      : [["verdict", "every row PASS", "as read", standIns.publicVerdict ?? "PASS"]]),
+  ]
+    .map((fields) => fields.join(tab))
+    .join("\n");
+  writeFileSync(join(state, "public.tsv"), `${publicTsv}\n`);
   const repo = checkout();
   const inputs = scratch("inputs");
-  const legDir = scratch("leg");
-  const leg = join(legDir, "outside-agent-tailnet.sh");
-  writeFileSync(leg, readFileSync(tailnetLeg, "utf8"));
+  const leg = copyLeg(tailnetLeg);
+  const legDir = leg.slice(0, leg.lastIndexOf("/"));
+  // The writer is stopped by the leg when the public leg ends: on a TERM it leaves a mark and
+  // ends. A writer the leg failed to stop is killed later by the bounded child's own stop, with
+  // a SIGKILL, which leaves no mark.
   script(
     join(legDir, "restricted-sweep.sh"),
     `#!/usr/bin/env bash
@@ -568,24 +879,27 @@ case $SWEEP_MODE in
     ;;
   writer)
     echo 'write 2026-01-01T00:00:05Z delivered'
-    exec sleep 600
+    sleep 600 &
+    child=$!
+    trap 'kill "$child"; : >"${state}/writer-stopped"; exit 0' TERM
+    wait "$child"
     ;;
 esac
 `
   );
+  const approve =
+    standIns.approve === false ? "" : `: >'${state}/approved-'"$OUTSIDE_TAILNET_USER_CODE"`;
   const publicLegCommand = script(
     join(inputs, "public.sh"),
     `#!/usr/bin/env bash
-: >'${state}/approved-'"$OUTSIDE_TAILNET_USER_CODE"
+${approve}
 out=$OUTSIDE_PUBLIC_RESULTS
-{
-  printf 'row\\twant\\tgot\\tverdict\\n'
-  for n in 1 2 3 4 5 6 7 8 9; do printf 'P%s\\tthe row P%s\\twhat P%s read\\tPASS\\n' "$n" "$n" "$n"; done
-} >"$out/outside-agent-public.tsv"
-printf 'revoke-cred-%s\\trevoked\\tstatus 200\\tPASS\\n' "$(printf '%s' "$OUTSIDE_TAILNET_USER_CODE" | tr 'A-Z' 'a-z')" >"$out/outside-edge-revocations.tsv"
+cp '${state}/public.tsv' "$out/outside-agent-public.tsv"
+printf 'revoke-cred-%s\\trevoked\\tstatus 200\\t%s\\n' "$(printf '%s' "$OUTSIDE_TAILNET_USER_CODE" | tr 'A-Z' 'a-z')" '${standIns.revokeVerdict ?? "PASS"}' >"$out/outside-edge-revocations.tsv"
 : >'${state}/revoked'
 printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\nPASS: every read refused\\n' >"$out/restricted-sweep.log"
 echo 0 >"$out/restricted-sweep.exit"
+exit ${standIns.publicExit ?? 0}
 `
   );
   const revision = script(join(inputs, "revision.sh"), `#!/bin/sh\necho ${repo.built}\n`);
@@ -640,6 +954,11 @@ async function runStandIn(prepared: PreparedStandIn): Promise<StandInRun> {
   }
 }
 
+/** Runs each prepared leg at once; every run answers, in the order given. */
+async function runStandIns(...standIns: StandIns[]): Promise<StandInRun[]> {
+  return Promise.all(standIns.map(prepareStandIn).map(runStandIn));
+}
+
 /** Each row of a leg's TSV by name: its `got` and its verdict. */
 function rowsOf(stdout: string): Map<string, { readonly got: string; readonly verdict: string }> {
   const rows = new Map<string, { got: string; verdict: string }>();
@@ -655,25 +974,29 @@ function verdictsOf(stdout: string): Record<string, string> {
   return Object.fromEntries([...rowsOf(stdout)].map(([name, row]) => [name, row.verdict]));
 }
 
+/** The number of UNKNOWN rows the gate counted, from its `got`. */
+function unknownsCounted(stdout: string): number {
+  const counted = /(\d+) UNKNOWN/.exec(rowsOf(stdout).get("gate")?.got ?? "");
+  return counted === null ? -1 : Number(counted[1]);
+}
+
+const passingControls: StandIns = {
+  controls: "answered",
+  canaryRefusal: memberRefusal,
+  dispatchCommits: "held",
+};
+
 describe.skipIf(skipWithout("bash", "curl", "git", "base64"))(
   "the tailnet leg's own controls, against stand-ins",
   () => {
     test(
       "P7 and the sweep pass only with the full member's browser answered, and T2 only with the member kind's refusal",
       async () => {
-        const prepared = [
-          prepareStandIn({
-            controls: "answered",
-            canaryRefusal: memberRefusal,
-            dispatchCommits: "held",
-          }),
-          prepareStandIn({
-            controls: "refused",
-            canaryRefusal: "403 REQUESTER_NOT_LISTED: requester not listed",
-            dispatchCommits: "held",
-          }),
-        ];
-        const [answered, refused] = await Promise.all(prepared.map(runStandIn));
+        const [answered, refused] = await runStandIns(passingControls, {
+          controls: "refused",
+          canaryRefusal: "403 REQUESTER_NOT_LISTED: requester not listed",
+          dispatchCommits: "held",
+        });
         if (answered === undefined || refused === undefined) throw new Error("two runs, want two");
         // The verdicts beside the whole TSV, so a mismatch prints every row the leg wrote.
         expect({ verdicts: verdictsOf(answered.stdout), stdout: answered.stdout }).toMatchObject({
@@ -684,6 +1007,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64"))(
             T3: "PASS",
             T4: "PASS",
             P7: "PASS",
+            public: "PASS",
             sweep: "PASS",
           },
         });
@@ -694,11 +1018,15 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64"))(
         expect(pass.get("sweep")?.got).toContain(
           `the full member's browser read ${proxyRepository}'s workflow runs through the proxy: 200`
         );
-        // Each thing the control made is revoked again, and the sweep's fills read the cookie.
+        // Each thing the control made is revoked again, the sweep's fills read the cookie, and the
+        // leg stopped the sweep's writer itself.
         expect(answered.seen).toContain("DELETE /api/v1/me/agent-tokens/token-1");
         expect(answered.seen).toContain("POST /api/v1/machine-logins/cred-full-0001/revoke");
         expect(existsSync(join(answered.state, "fills-read-the-cookie"))).toBe(true);
-        // P4, P5, P6 and T5 have no peer, so the gate is held.
+        expect(existsSync(join(answered.state, "writer-stopped"))).toBe(true);
+        // P4, P5, P6 and T5 have no peer, so the gate is held: P6's PASS without the session
+        // outside the project to stand behind it reads UNKNOWN.
+        expect(pass.get("P6")).toMatchObject({ verdict: "UNKNOWN" });
         expect(answered.code).toBe(2);
 
         // The control of those PASSes: the same run with the controls refused, and the canary's
@@ -719,13 +1047,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64"))(
     test(
       "the pins row fails, and no leg starts, when Dispatch's build lacks a commit the check needs",
       async () => {
-        const run = await runStandIn(
-          prepareStandIn({
-            controls: "answered",
-            canaryRefusal: memberRefusal,
-            dispatchCommits: "lacking",
-          })
-        );
+        const [run] = await runStandIns({ ...passingControls, dispatchCommits: "lacking" });
+        if (run === undefined) throw new Error("one run, want one");
         const rows = rowsOf(run.stdout);
         expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
           verdicts: { pins: "FAIL" },
@@ -744,21 +1067,13 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64"))(
     test(
       "the sweep reads UNKNOWN without the full member's cookie, and with fills that lack a proxy read's line",
       async () => {
-        const prepared = [
-          prepareStandIn({
-            controls: "answered",
-            canaryRefusal: memberRefusal,
-            dispatchCommits: "held",
-            cookie: "absent",
-          }),
-          prepareStandIn({
-            controls: "answered",
-            canaryRefusal: memberRefusal,
-            dispatchCommits: "held",
+        const [noCookie, gap] = await runStandIns(
+          { ...passingControls, cookie: "absent" },
+          {
+            ...passingControls,
             fillsLeaveOut: "GET /api/v1/github/app-installation/{owner}/{repo}",
-          }),
-        ];
-        const [noCookie, gap] = await Promise.all(prepared.map(runStandIn));
+          }
+        );
         if (noCookie === undefined || gap === undefined) throw new Error("two runs, want two");
         // Without the cookie the sweep does not run, and P7 has no positive control either.
         expect({ verdicts: verdictsOf(noCookie.stdout), stdout: noCookie.stdout }).toMatchObject({
@@ -775,6 +1090,64 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64"))(
         expect(rowsOf(gap.stdout).get("sweep")?.got).toContain(
           "the sweep's fills hold no full member's answer that can fail for GET /api/v1/github/app-installation/{owner}/{repo}"
         );
+      },
+      // The two runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short"] })
+    );
+
+    test(
+      "T1 reads a login nobody approved UNKNOWN, and T4 counts a revoke row with no verdict as UNKNOWN",
+      async () => {
+        const [control, expired, noVerdict] = await runStandIns(
+          passingControls,
+          { ...passingControls, approve: false },
+          { ...passingControls, revokeVerdict: "SKIPPED" }
+        );
+        if (control === undefined || expired === undefined || noVerdict === undefined) {
+          throw new Error("three runs, want three");
+        }
+        expect(rowsOf(control.stdout).get("T4")).toMatchObject({ verdict: "PASS" });
+        expect({ verdicts: verdictsOf(expired.stdout), stdout: expired.stdout }).toMatchObject({
+          verdicts: { T1: "UNKNOWN" },
+        });
+        expect(rowsOf(expired.stdout).get("T1")?.got).toContain(
+          "was never approved: the login expired"
+        );
+        expect({ verdicts: verdictsOf(noVerdict.stdout), stdout: noVerdict.stdout }).toMatchObject({
+          verdicts: { T4: "UNKNOWN" },
+        });
+        expect(rowsOf(noVerdict.stdout).get("T4")?.got).toContain(
+          "reads SKIPPED, which is no verdict"
+        );
+        // The same run but for that row: the gate counts it, so it can never exit 0 on it.
+        expect(unknownsCounted(noVerdict.stdout)).toBe(unknownsCounted(control.stdout) + 1);
+      },
+      // The three runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short"] })
+    );
+
+    test(
+      "the public row holds the gate to the public leg's own verdict and end, and P6's sub crossing stands",
+      async () => {
+        const [failed, silent] = await runStandIns(
+          {
+            ...passingControls,
+            publicVerdict: "FAIL",
+            publicExit: 1,
+            p6: "FAIL a relay sub to example-peer's subject was granted; peer_listed=yes foreign_listed=no foreign_send=refused sub=granted",
+          },
+          { ...passingControls, publicVerdict: "absent" }
+        );
+        if (failed === undefined || silent === undefined) throw new Error("two runs, want two");
+        expect({ verdicts: verdictsOf(failed.stdout), stdout: failed.stdout }).toMatchObject({
+          verdicts: { public: "FAIL", P6: "FAIL" },
+        });
+        expect(rowsOf(failed.stdout).get("public")?.got).toContain("verdict row FAIL");
+        expect(failed.code).toBe(1);
+        expect({ verdicts: verdictsOf(silent.stdout), stdout: silent.stdout }).toMatchObject({
+          verdicts: { public: "UNKNOWN" },
+        });
+        expect(rowsOf(silent.stdout).get("public")?.got).toContain("verdict row absent");
       },
       // The two runs at once, each a bounded child under the short bound.
       rowLimit({ atOnce: ["short", "short"] })
