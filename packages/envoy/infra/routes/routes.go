@@ -298,7 +298,7 @@ const stampSkew = 2 * time.Second
 // return and spaces it ends with.
 func parseLog(body []byte) []logLine {
 	var lines []logLine
-	for _, raw := range strings.Split(string(body), "\n") {
+	for raw := range strings.SplitSeq(string(body), "\n") {
 		raw = strings.TrimRight(raw, "\r ")
 		if raw == "" {
 			continue
