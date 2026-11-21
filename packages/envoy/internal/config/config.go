@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/listenfd"
@@ -40,6 +41,14 @@ type Service struct {
 	// AllowedHosts are the ENVOY_ALLOWED_HOSTS names, each as HostName writes it, that an
 	// unauthenticated listener serves /v1 to beside loopback.
 	AllowedHosts []string
+	// ConsumerNames is ENVOY_CONSUMER_NAMES (consumernames.ModeFromEnv): how the listener names
+	// the session consumers it creates, read once here and never again; fixed when unset. A value
+	// it does not know refuses the start.
+	ConsumerNames consumernames.Mode
+	// HostListener is ENVOY_LISTENER_ROLE=host (bus.ParseListenerRole): the listener of a host,
+	// connecting as the NATS user its sessions share, which runs fixed names for good and reads no
+	// cutover marker. The fresh naming mode is refused beside it.
+	HostListener bool
 }
 
 func (s Service) ListenAddress() string {
@@ -110,6 +119,18 @@ func Load(defaultPort int) (Service, error) {
 	if err != nil {
 		return Service{}, err
 	}
+	consumerNames, err := consumernames.ModeFromEnv()
+	if err != nil {
+		return Service{}, err
+	}
+	hostListener, err := bus.ParseListenerRole(os.Getenv(bus.ListenerRoleEnvVar))
+	if err != nil {
+		return Service{}, err
+	}
+	if hostListener && consumerNames == consumernames.ModeFresh {
+		return Service{}, fmt.Errorf("%s=%s with %s=%s: a host's listener runs fixed names for good, since the NATS user its sessions share holds no selection bucket and no fresh name",
+			bus.ListenerRoleEnvVar, bus.ListenerRoleHost, consumernames.ModeEnvVar, consumernames.ModeFresh)
+	}
 	return Service{
 		AllowedHosts:   allowedHosts,
 		MachineID:      machine,
@@ -120,6 +141,8 @@ func Load(defaultPort int) (Service, error) {
 		ListenHost:     listenHost,
 		Port:           port,
 		ListenSocket:   listenSocket,
+		ConsumerNames:  consumerNames,
+		HostListener:   hostListener,
 	}, nil
 }
 

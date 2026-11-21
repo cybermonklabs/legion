@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  `ListenerPermissions` and `ListenerHostPermissions` gain the selection bucket's reads and key writes, and no create or update of its stream (`natsgrant.KVWriteExisting("envoy_session_consumers")`). Upgrading a hub with a `listener` or a `listenerMachineId` user replaces its VM once. `natsgrant.Measure()` gains the leader read of a session's record, `$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers`. `host:Listener` renders `ENVOY_LISTENER_ROLE=host`, so an adopted host container's environment changes once.

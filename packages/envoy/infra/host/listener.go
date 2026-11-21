@@ -107,7 +107,7 @@ func resolveListener(name string, args *ListenerArgs) (listenerPlan, error) {
 	}
 	plan := listenerPlan{
 		containerName: defaultContainerName,
-		plain:         core.ListenerConfig{MachineID: args.MachineID, Port: core.DefaultListenerPort},
+		plain:         core.ListenerConfig{MachineID: args.MachineID, Port: core.DefaultListenerPort, HostListener: true},
 		packages:      []string{"docker"},
 	}
 	if args.ContainerName != nil {

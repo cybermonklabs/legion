@@ -15,6 +15,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -124,13 +125,16 @@ func sessionConsumerCalls() []string {
 
 // Listener is the grant envoy-listener needs as machine machineID: the listener grant
 // (listenerGrant), then the session consumers' calls (sessionConsumerCalls), which only this set
-// and ListenerHost hold. A hub that renders this set for its own listener gives that listener
+// and ListenerHost hold, and the reads and writes of the session consumers' selection bucket
+// (KVWriteExisting of consumernames.SessionBucket), which the fresh consumer naming mode keeps and
+// the operator alone creates. A hub that renders this set for its own listener gives that listener
 // consumer delivery; a listener connecting as a host or Dispatch user does not have it, and has no
 // session of its own registered at all: every registration it cannot give a consumer is refused by
 // name and writes nothing.
 func Listener(machineID string) Permissions {
 	grant := listenerGrant(machineID)
 	grant.Publish = append(grant.Publish, sessionConsumerCalls()...)
+	grant.Publish = append(grant.Publish, KVWriteExisting(consumernames.SessionBucket)...)
 	return grant
 }
 
@@ -172,6 +176,18 @@ func KVWrite(bucket string) []string {
 		jsAPI + "CONSUMER.DELETE." + stream + ".>",
 		jsFlow + stream + ".>",
 	}
+}
+
+// KVWriteExisting is KVWrite without the bucket stream's create and update: the reads and writes
+// of a bucket another holder made, which its holder can neither make nor reconfigure. The listener
+// holds it for the session consumers' selection bucket (Listener), which the operator's
+// create-bucket alone creates, so a bucket lost under a running listener is never made again
+// empty by it: every session-consumer call refuses until the operator's recovery.
+func KVWriteExisting(bucket string) []string {
+	stream := kvStream + bucket
+	return slices.DeleteFunc(KVWrite(bucket), func(entry string) bool {
+		return entry == jsAPI+"STREAM.CREATE."+stream || entry == jsAPI+"STREAM.UPDATE."+stream
+	})
 }
 
 // KVRead are the calls a reader of one bucket makes and nothing that writes it: the bucket's
@@ -350,8 +366,10 @@ func Host(machineID string) Permissions {
 
 // Measure is the grant of Envoy's measurement job, which the deployment repository deploys as a
 // static user of both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It
-// reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and owns one
-// test stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefix,
+// reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and a
+// session's selection record in KV_envoy_session_consumers, from the stream's leader only, as
+// consumernames.KVStore reads it (no direct get, no write); and owns one test stream,
+// ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefix,
 // _INBOX_envoy_measure., never _INBOX.>, where the listener's and Dispatch's push consumer
 // deliveries and request replies arrive, so it reads no message of another client.
 func Measure() Permissions {
@@ -365,6 +383,7 @@ func Measure() Permissions {
 			jsAPI + "CONSUMER.LIST.*",
 			jsAPI + "CONSUMER.INFO.*.*",
 			jsAPI + "DIRECT.GET." + kvStream + "envoy_listener." + kvSubjects + "envoy_listener.lease.>",
+			jsAPI + "STREAM.MSG.GET." + kvStream + consumernames.SessionBucket,
 			jsAPI + "STREAM.CREATE.ENVOY_MEASURE",
 			jsAPI + "STREAM.UPDATE.ENVOY_MEASURE",
 			jsAPI + "STREAM.DELETE.ENVOY_MEASURE",

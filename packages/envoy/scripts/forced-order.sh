@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# packages/envoy/scripts/forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... <package>...
+# packages/envoy/scripts/forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... [-timeout <duration>] <package>...
 #
 # Runs the forced-order tests of each package on the hooked nats-server: every test named
 # TestForcedOrder…, built with -tags odatrace and -race, against a nats-server whose own code
@@ -33,12 +33,17 @@
 #                    holding there fails without it. A name no hook call of that version's hooks
 #                    passes is refused before the build, so a mistyped point cannot "fail" a test
 #                    on a compile error instead. Repeatable.
+#   -timeout <d>     go test's -timeout, in place of its 10 minutes (go's duration syntax: 25m).
+#                    An empty value is refused, so a step written `-timeout "$T"` with T unset does
+#                    not take the default.
 #
 # It fails, naming the package, when a package it is given declares no TestForcedOrder test, or
 # runs none (every one it declares skipped), so a step that names a package whose tests were
 # renamed, moved or skipped goes red rather than green with nothing held; such a package's `ok`
-# line is printed as a FAIL line. GO_TEST_TIMEOUT replaces go test's 10-minute -timeout, which the
-# CI jobs that run this script count in their time budgets. The copies of go.mod and go.sum, or of
+# line is printed as a FAIL line. -timeout, else GO_TEST_TIMEOUT, replaces go test's 10-minute
+# -timeout, which the CI jobs that run this script count in their time budgets; a CI step gives the
+# flag, since a GO* name in a step's env leaves its job's go commands unreduced (ci_filter_coverage.py's
+# ENV_ALLOWED). The copies of go.mod and go.sum, or of
 # go.work and go.work.sum, may gain the checksums the build needs; the repository's own files are
 # never written. scripts/forced-order.test.sh holds it to these refusals.
 set -euo pipefail
@@ -54,7 +59,7 @@ die() {
 }
 
 usage() {
-  echo "usage: forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... <package>..." >&2
+  echo "usage: forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... [-timeout <duration>] <package>..." >&2
   exit 2
 }
 
@@ -78,6 +83,12 @@ while [ $# -gt 0 ]; do
     -drop)
       [ $# -ge 2 ] || usage
       drops+=("$2")
+      shift 2
+      ;;
+    -timeout)
+      [ $# -ge 2 ] || usage
+      [ -n "$2" ] || die "-timeout '' names no duration: give one in go's syntax, such as 25m, or leave -timeout out for go test's 10 minutes"
+      GO_TEST_TIMEOUT="$2"
       shift 2
       ;;
     -h | --help) usage ;;

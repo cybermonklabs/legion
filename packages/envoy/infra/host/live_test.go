@@ -202,6 +202,7 @@ func TestLiveAdoptionPreviewsClean(t *testing.T) {
 					fmt.Sprintf("PORT=%d", port),
 					"ENVOY_MACHINE_ID=live-test",
 					"NATS_URLS=" + natsURL,
+					"ENVOY_LISTENER_ROLE=host",
 				},
 				"healthcheck": map[string]any{
 					"tests":       []string{"CMD", "curl", "-f", healthURL},

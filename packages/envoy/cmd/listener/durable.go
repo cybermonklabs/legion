@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -104,18 +105,18 @@ func listenerDurableRefusal(consumer string, config nats.ConsumerConfig) error {
 		errListenerDurableRefused, consumer, strings.Join(settings, " and "), without)
 }
 
-// listenerDurable reads the machine's durable. It returns a nil info when there is none,
-// listenerDurableRefusal's error when the listener's policy cannot use the one there is, and the
-// lookup's error when NATS cannot say.
+// listenerDurable reads the machine's durable (durableInfo: the current of its record in the fresh
+// naming mode). It returns a nil info when there is none, listenerDurableRefusal's error when the
+// listener's policy cannot use the one there is, and the lookup's error when NATS cannot say.
 func listenerDurable(client *bus.Client, consumer string) (*nats.ConsumerInfo, error) {
-	info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
+	info, err := durableInfo(context.Background(), client, consumer)
 	if errors.Is(err, nats.ErrConsumerNotFound) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if err := listenerDurableRefusal(consumer, info.Config); err != nil {
+	if err := listenerDurableRefusal(info.Name, info.Config); err != nil {
 		return nil, err
 	}
 	return info, nil
@@ -130,12 +131,35 @@ func listenerDurable(client *bus.Client, consumer string) (*nats.ConsumerInfo, e
 // drain paths trigger exactly that — silently resetting the durable cursor.
 // The config drift-correction also stamps consumerInactiveThreshold onto
 // consumers created before the threshold existed.
+//
+// In the fresh consumer naming mode the durable is created and corrected through its selection
+// record (ensureFreshDurable), and the physical name it names is bound.
 func startListenerSubscription(client *bus.Client, consumer string, handler nats.MsgHandler) (*nats.Subscription, error) {
 	subjects := bus.StreamSubjects()
+	if client.ConsumerNames() == consumernames.ModeFresh {
+		physical, err := ensureFreshDurable(context.Background(), client, consumer, subjects)
+		if err != nil {
+			return nil, err
+		}
+		consumer = physical
+	} else if err := ensureFixedDurable(client, consumer, subjects); err != nil {
+		return nil, err
+	}
+	return client.Subscribe(
+		"",
+		handler,
+		nats.Bind(bus.Stream, consumer),
+		nats.ManualAck(),
+	)
+}
+
+// ensureFixedDurable is startListenerSubscription's create in the fixed naming mode: the durable
+// named consumer, created or its policy corrected in place.
+func ensureFixedDurable(client *bus.Client, consumer string, subjects []string) error {
 	info, err := listenerDurable(client, consumer)
 	switch {
 	case err != nil:
-		return nil, err
+		return err
 	case info == nil:
 		// The deliver subject is a random inbox, not a derivable name: on a
 		// shared NATS account a predictable subject would let any client
@@ -147,7 +171,7 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 		}
 		applyListenerConsumerPolicy(&config, subjects)
 		if _, err := client.JS().AddConsumer(bus.Stream, &config); err != nil {
-			return nil, err
+			return err
 		}
 	default:
 		// Only a field the policy writes can differ: the copy shares every other one, the
@@ -157,16 +181,11 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 		applyListenerConsumerPolicy(&corrected, subjects)
 		if !reflect.DeepEqual(corrected, info.Config) {
 			if _, err := client.JS().UpdateConsumer(bus.Stream, &corrected); err != nil {
-				return nil, err
+				return err
 			}
 		}
 	}
-	return client.Subscribe(
-		"",
-		handler,
-		nats.Bind(bus.Stream, consumer),
-		nats.ManualAck(),
-	)
+	return nil
 }
 
 // errListenerDurableBindExhausted marks a bind still refused at its deadline: something other than
@@ -297,7 +316,7 @@ func durableProbe(ctx context.Context, client *bus.Client, consumer string) erro
 		if read > 0 && waitUnlessDone(ctx, durableProbeConfirm) != nil {
 			return nil
 		}
-		info, err := client.JS().ConsumerInfo(bus.Stream, consumer, nats.Context(ctx))
+		info, err := durableInfo(ctx, client, consumer)
 		if err != nil {
 			if errors.Is(err, nats.ErrConsumerNotFound) {
 				return err
@@ -342,7 +361,7 @@ func awaitDurableBound(ctx context.Context, client *bus.Client, consumer string,
 			return fmt.Errorf("durable %s %w after %s", consumer, errDurableUnbound, waited.Round(time.Millisecond))
 		}
 		readCtx, cancel := context.WithTimeout(ctx, deadline-waited)
-		info, err := client.JS().ConsumerInfo(bus.Stream, consumer, nats.Context(readCtx))
+		info, err := durableInfo(readCtx, client, consumer)
 		cancel()
 		if errors.Is(err, bus.ErrPublishDenied) {
 			return fmt.Errorf("read durable %s: %w", consumer, err)

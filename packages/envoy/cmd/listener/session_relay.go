@@ -863,7 +863,8 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 		if err == nil && kept {
 			run.restartedAt.Store(run.listedAt)
 			var pull *bus.SessionPull
-			if pull, err = m.delivery.consumers.Pull(callCtx, sessionID); err == nil {
+			if pull, err = m.delivery.consumers.Pull(callCtx, sessionID, start.Name); err == nil {
+				m.recordLastFloor(callCtx, sessionID, start)
 				return start, pull, relayRetry
 			}
 		}
@@ -901,11 +902,28 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	if err == nil {
 		run.restartedAt.Store(at)
 		var pull *bus.SessionPull
-		if pull, err = m.delivery.consumers.Pull(callCtx, sessionID); err == nil {
+		if pull, err = m.delivery.consumers.Pull(callCtx, sessionID, start.Name); err == nil {
+			m.recordLastFloor(callCtx, sessionID, start)
 			return start, pull, relayRetry
 		}
 	}
 	return m.restartFailed(ctx, sessionID, err)
+}
+
+// recordLastFloor writes, in the fresh mode, the floor of the consumer a restart kept as the
+// session's last floor in its selection record (bus.SessionConsumers.RecordLastFloor), at each
+// run of the relay: a current the server later removes is then created again after that floor
+// rather than at the start it was created at. A consumer the restart created has delivered nothing,
+// and its record's start is its floor already. A write that fails is logged and changes nothing
+// else: the record's start still stands.
+func (m *sessionRelays) recordLastFloor(ctx context.Context, sessionID string, start bus.SessionConsumerStart) {
+	if start.Created || start.StartSeq == 0 {
+		return
+	}
+	if err := m.delivery.consumers.RecordLastFloor(ctx, sessionID, start.Name, start.StartSeq-1, start.StreamID); err != nil {
+		m.logger.Warn("session relay could not record the consumer's last floor; its record's start stands",
+			slog.String("session_id", sessionID), slog.String("consumer", start.Name), slog.String("error", err.Error()))
+	}
 }
 
 // storedFilter is the filter of sessionID's consumer for its stored interest topics, with the KV

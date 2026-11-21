@@ -11,6 +11,9 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 )
@@ -126,7 +129,7 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 	}
 	started := time.Now()
 	listCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
-	listed, err := s.delivery.consumers.ListSessionConsumers(listCtx)
+	listed, sets, err := s.list(listCtx)
 	cancel()
 	if err != nil {
 		if ctx.Err() == nil && !s.delivery.grantRefusal("list the session consumers", "", err) {
@@ -135,6 +138,7 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 		}
 		return
 	}
+	s.endReplay(ctx, sets)
 	if len(listed) == 0 {
 		return
 	}
@@ -162,13 +166,85 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 	// deleted those the delete then removed. gone above deleted is the backlog this pass left:
 	// the sessions its cap held back, those whose record the bucket still holds or would not
 	// answer for, and those whose delete failed, which writes a line of its own
-	// (sessionDelivery.deleteConsumer). Each is reached again next pass.
-	s.logger.Info("session consumer sweep pass",
+	// (sessionDelivery.deleteConsumer). Each is reached again next pass. In the fresh mode the
+	// line also counts the retired names the pass deleted (cleanRetired).
+	attrs := []slog.Attr{
 		slog.Int("listed", len(listed)),
 		slog.Int("gone", gone),
 		slog.Int("deleted", deleted),
 		slog.Int("left", len(listed)-deleted),
-		slog.Int64("took_ms", time.Since(started).Milliseconds()))
+		slog.Int64("took_ms", time.Since(started).Milliseconds()),
+	}
+	if sets != nil {
+		attrs = append(attrs, slog.Int("retired_deleted", s.cleanRetired(ctx, sets, sessionConsumerSweepCap-tried)))
+	}
+	s.logger.Info("session consumer sweep pass", attrs...)
+}
+
+// list reads the session consumers: in the fixed mode as the stream's consumer list names them
+// (bus.SessionConsumers.ListSessionConsumers), with no sets; in the fresh mode every consumer of
+// each session, current and retired (bus.SessionConsumers.SessionConsumerSets), and for each
+// session the one the server created last, which the delete takes as its listed info only when it
+// is the session's current.
+func (s *sessionConsumerSweep) list(ctx context.Context) (map[string]*jetstream.ConsumerInfo, map[string][]*jetstream.ConsumerInfo, error) {
+	consumers := s.delivery.consumers
+	if !consumers.Fresh() {
+		listed, err := consumers.ListSessionConsumers(ctx)
+		return listed, nil, err
+	}
+	sets, err := consumers.SessionConsumerSets(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return bus.NewestOfEach(sets), sets, nil
+}
+
+// cleanRetired deletes, in the fresh mode, the retired names of each session the stream holds more
+// than one consumer of (bus.SessionConsumers.CleanRetired, which deletes only the names the
+// session's record retired, never its current and never by name), trying at most limit sessions,
+// and answers how many names it deleted. A session whose record cannot be read keeps its
+// consumers for the next pass.
+func (s *sessionConsumerSweep) cleanRetired(ctx context.Context, sets map[string][]*jetstream.ConsumerInfo, limit int) int {
+	deleted := 0
+	for sessionID, set := range sets {
+		if limit <= 0 || ctx.Err() != nil {
+			break
+		}
+		if len(set) < 2 {
+			continue
+		}
+		limit--
+		callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+		n, err := s.delivery.consumers.CleanRetired(callCtx, sessionID)
+		cancel()
+		if err != nil {
+			s.logger.Warn("session consumer sweep could not delete a session's retired consumers",
+				slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		}
+		deleted += n
+	}
+	return deleted
+}
+
+// endReplay ends the selection bucket's replay mode, in the fresh mode, once none of the orphans
+// its sentinel lists is among the consumers this pass listed (bus.SessionConsumers.EndReplay). A
+// listed orphan is one no record selects, so no relay pulls it and the server removes it at its
+// inactive threshold; replay mode lasts until then.
+func (s *sessionConsumerSweep) endReplay(ctx context.Context, sets map[string][]*jetstream.ConsumerInfo) {
+	if sets == nil {
+		return
+	}
+	held := map[string]bool{}
+	for _, set := range sets {
+		for _, info := range set {
+			held[info.Name] = true
+		}
+	}
+	callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+	defer cancel()
+	if err := s.delivery.consumers.EndReplay(callCtx, func(name string) bool { return held[name] }); err != nil {
+		s.logger.Warn("session consumer sweep could not read or end the selection bucket's replay mode", slog.String("error", err.Error()))
+	}
 }
 
 // trusted reports whether this listener's copy of the session bucket may be swept on. A pass that

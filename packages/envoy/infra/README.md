@@ -2378,6 +2378,7 @@ Its environment comes from the inputs:
 | `ENVOY_ALLOW_REMOTE_NATS` | `1` when any URL in `natsUrls` names a host other than `localhost` or a loopback address. The URL is read, never resolved. |
 | `ENVOY_SENDER_MESSAGES_PER_MINUTE` | `senderMessagesPerMinute`, when set |
 | `ENVOY_SENDER_MESSAGE_BURST` | `senderMessageBurst`, when set |
+| `ENVOY_LISTENER_ROLE` | `host`, always: the listener connects as the NATS user its host's sessions share (`HostPermissions`), runs fixed consumer names for good, and reads no cutover marker of the selection bucket, which that user may not read |
 | `NATS_NKEY_SEED` | `seed`, when set. The whole environment is then a secret in the stack's state. |
 
 The listener serves on the host's loopback, `127.0.0.1:<port>`. This version sets no listen host,
@@ -3917,8 +3918,9 @@ a listener of an earlier release subscribes in and a listener refused the shared
 to.
 
 After those entries, and in `ListenerPermissions` and `ListenerHostPermissions` alone, come the
-calls of the session consumers, one durable pull consumer per session named `s-<session id>`
-(`bus.SessionConsumers`), on any consumer of the stream: `$JS.API.CONSUMER.CREATE` (with and
+calls of the session consumers, one durable pull consumer per session named `s-<session id>` in the
+default fixed naming mode and `session~<nuid>` in the fresh one (`bus.SessionConsumers`), on any
+consumer of the stream: `$JS.API.CONSUMER.CREATE` (with and
 without a filter subject in its subject), `INFO`, `DELETE` and `MSG.NEXT` on
 `ENVOY_NOTIFICATIONS.*`, the acknowledgements `$JS.ACK.ENVOY_NOTIFICATIONS.*.>`, and the stream's
 consumer list `$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS`, which a listener that starts relaying
@@ -3932,6 +3934,22 @@ own durable alone; the server refuses its consumer calls, so it refuses every re
 asks for consumer delivery `503 no_grant` (one probe and one refusal per ten-minute
 episode), writing nothing, and a session registering through it is not registered at all and
 receives nothing until that user's grant carries the session consumers.
+
+Last in those two sets come the reads and writes of the session consumers' selection bucket,
+`envoy_session_consumers`, which a listener in the fresh consumer naming mode
+(`ENVOY_CONSUMER_NAMES=fresh`) keeps each session's current consumer name in, and which a listener
+in the default fixed mode reads once at its start to refuse a bucket the cutover converted: the
+stream info, direct and stream message gets of `KV_envoy_session_consumers`, writes to
+`$KV.envoy_session_consumers.>`, its watchers' consumer create and delete, and their flow-control
+replies (`natsgrant.KVWriteExisting`). They hold no create or update of the bucket's stream, so no
+listener makes the bucket, or makes it again empty after a loss: the operator's create-bucket does,
+and every session-consumer call of the fresh mode refuses until it has. `HostPermissions` holds
+none of them, and a host's listener (`ENVOY_LISTENER_ROLE=host`, which `host:Listener` renders)
+reads no marker at all: it runs fixed names for good. `HostPermissions` is retiring, no
+production connection holds it, and the cutover's window requires that no host listener runs at
+or after it, so a host listener never meets a converted bucket and its durable is never
+converted. A read it may not make would only have the server log a permissions violation at each
+start and connect. The listener refuses `ENVOY_CONSUMER_NAMES=fresh` beside that role.
 
 `SessionPermissions()` is what any agent session needs, with `*` for the session id. It publishes
 to `_INBOX.>`, for the replies to a session consumer's

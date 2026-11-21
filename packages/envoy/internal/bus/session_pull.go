@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/nats-io/nats.go"
 )
@@ -117,15 +118,17 @@ type SessionPull struct {
 	droppedHeld     int
 }
 
-// Pull starts pulling sessionID's consumer on the connection, without reading it first: the first
-// Next returns ErrSessionConsumerNotFound when the stream holds no such consumer. Pulled messages
-// wait in the pull for Next. Release ends it and hands every one of them back to the server at
-// once; Stop ends it and leaves them, so the server delivers each message it delivered and was
-// not acked for again only once its ack wait has passed, or at a restart (RestartAtFloor).
-func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*SessionPull, error) {
-	name, err := sessionConsumerNameOf(sessionID)
-	if err != nil {
-		return nil, err
+// Pull starts pulling consumer name, sessionID's, on the connection, without reading it first: the
+// first Next returns ErrSessionConsumerNotFound when the stream holds no such consumer. name is the
+// one a consumer call answered (SessionConsumerStart.Name): s-<session id> in the fixed mode, the
+// session's current session~<nuid> in the fresh mode, which carries no session id, so the caller
+// names the session for the pull's lines. Pulled messages wait in the pull for Next. Release ends
+// it and hands every one of them back to the server at once; Stop ends it and leaves them, so the
+// server delivers each message it delivered and was not acked for again only once its ack wait
+// has passed, or at a restart (RestartAtFloor).
+func (s *SessionConsumers) Pull(ctx context.Context, sessionID, name string) (*SessionPull, error) {
+	if name == "" || strings.ContainsAny(name, `.*>/\`) || strings.ContainsFunc(name, unicode.IsSpace) {
+		return nil, fmt.Errorf("%w: consumer %q", ErrNoSessionConsumerName, name)
 	}
 	if err := s.client.ensureConnWithContext(ctx); err != nil {
 		return nil, err

@@ -97,7 +97,7 @@ func crashRelayOfTheReleaseBefore(t *testing.T) {
 		const a = "ses_cr15_a"
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		pull, err := rig.consumers.Pull(ctx, a)
+		pull, err := rig.consumers.Pull(ctx, a, fixedConsumerName(t, a))
 		if err != nil {
 			t.Fatalf("pull %s's session consumer as the release before's relay does: %v", a, err)
 		}

@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/natsversion"
 )
@@ -183,6 +184,11 @@ type SessionConsumers struct {
 	// nil when none waits. streamReading is set while a goroutine sends the reads.
 	streamNext    *streamRead
 	streamReading bool
+
+	// fresh is the fresh mode (session_fresh.go), set when the client was connected with
+	// WithConsumerNames(consumernames.ModeFresh); nil in the fixed mode, which every method below
+	// runs as it did before that setting.
+	fresh *freshSessions
 }
 
 // ConnectSessionConsumers opens SessionConsumers on a Client of its own, named
@@ -234,7 +240,7 @@ func ConnectSessionConsumers(urls []string, inactiveThreshold time.Duration, log
 // constructor ConnectSessionConsumers calls once the server passed, and the seam a test reaches a
 // refused server through.
 func sessionConsumersOn(client *Client, inactiveThreshold time.Duration, logger *slog.Logger) *SessionConsumers {
-	return &SessionConsumers{
+	s := &SessionConsumers{
 		client:            client,
 		ackWait:           SessionConsumerAckWait,
 		inactiveThreshold: cmp.Or(max(inactiveThreshold, 0), SessionConsumerInactiveThreshold),
@@ -242,6 +248,10 @@ func sessionConsumersOn(client *Client, inactiveThreshold time.Duration, logger 
 		pullHeartbeat:     sessionPullHeartbeat,
 		logger:            cmp.Or(logger, slog.Default()),
 	}
+	if client.consumerNames == consumernames.ModeFresh {
+		s.fresh = newFreshSessions(s)
+	}
+	return s
 }
 
 // Close closes the connection; a pull in progress ends.
@@ -283,6 +293,9 @@ func (s *SessionConsumers) SubscribeReplies(subject string, handler nats.MsgHand
 
 // SessionConsumerStart is what Ensure or RestartAtFloor did to a session's consumer.
 type SessionConsumerStart struct {
+	// Name is the consumer's name, which a pull of it names (Pull): s-<session id> in the fixed
+	// mode, the session's current session~<nuid> in the fresh mode (session_fresh.go).
+	Name string
 	// Created is set when the call created the consumer.
 	Created bool
 	// Updated is Ensure's report that it found the consumer and sent an update that changed it:
@@ -342,6 +355,9 @@ type SessionConsumerStart struct {
 // to the stream's first sequence, so no consumer is created past the stream's end, and a start
 // the record lowered or the clamp moved is logged once the create is confirmed (create).
 func (s *SessionConsumers) Ensure(ctx context.Context, sessionID string, subjects []string, startSeq uint64) (SessionConsumerStart, error) {
+	if s.fresh != nil {
+		return s.freshEnsure(ctx, sessionID, subjects, startSeq)
+	}
 	name, filters, err := sessionConsumerTarget(sessionID, subjects)
 	if err != nil {
 		return SessionConsumerStart{}, err
@@ -371,13 +387,16 @@ func (s *SessionConsumers) Ensure(ctx context.Context, sessionID string, subject
 		// created at, which the caller records for the durable path (SessionConsumerStart).
 		s.setPendingStart(name, 0)
 		changed, err := s.update(ctx, name, info.Config, filters)
-		return SessionConsumerStart{StartSeq: info.Config.OptStartSeq, AckFloor: ackFloor(info), Updated: changed}, err
+		return SessionConsumerStart{Name: name, StartSeq: info.Config.OptStartSeq, AckFloor: ackFloor(info), Updated: changed}, err
 	}
 }
 
 // UpdateFilter makes the existing consumer of sessionID filter on what subjects reduce to, keeping
 // its position (Ensure); it returns ErrSessionConsumerNotFound when the session has none.
 func (s *SessionConsumers) UpdateFilter(ctx context.Context, sessionID string, subjects []string) error {
+	if s.fresh != nil {
+		return s.freshUpdateFilter(ctx, sessionID, subjects)
+	}
 	name, filters, err := sessionConsumerTarget(sessionID, subjects)
 	if err != nil {
 		return err
@@ -460,6 +479,9 @@ func (s *SessionConsumers) UpdateFilter(ctx context.Context, sessionID string, s
 // holds on the session's own agent subject, its restart reads the consumer as missing, and its
 // calls are not ordered with this one's.
 func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string, subjects []string) (SessionConsumerStart, error) {
+	if s.fresh != nil {
+		return s.freshRestartAtFloor(ctx, sessionID, subjects)
+	}
 	name, filters, err := sessionConsumerTarget(sessionID, subjects)
 	if err != nil {
 		return SessionConsumerStart{}, err
@@ -539,7 +561,7 @@ func (s *SessionConsumers) keepAtFloor(ctx context.Context, name string, info *j
 		return SessionConsumerStart{}, false, err
 	}
 	s.setPendingStart(name, 0)
-	return SessionConsumerStart{StartSeq: startSeq, Gap: startSeq < state.firstSeq, StreamID: state.id, AckFloor: startSeq - 1}, true, nil
+	return SessionConsumerStart{Name: name, StartSeq: startSeq, Gap: startSeq < state.firstSeq, StreamID: state.id, AckFloor: startSeq - 1}, true, nil
 }
 
 // pastStreamEnd reports whether stream sequence seq is past the sequence after the stream's last,
@@ -621,6 +643,9 @@ func (state sessionStreamState) firstStart() uint64 {
 // find missing at that pending start, whatever the caller asked for, and nothing would delete
 // that consumer again, the session's entry being gone already.
 func (s *SessionConsumers) Delete(ctx context.Context, sessionID string, listed *jetstream.ConsumerInfo) (uint64, error) {
+	if s.fresh != nil {
+		return s.freshDelete(ctx, sessionID, listed)
+	}
 	name, ok := SessionConsumerName(sessionID)
 	if !ok {
 		return 0, nil
@@ -788,6 +813,9 @@ func ackFloor(info *jetstream.ConsumerInfo) uint64 {
 
 // Info returns sessionID's consumer as the server reports it, or ErrSessionConsumerNotFound.
 func (s *SessionConsumers) Info(ctx context.Context, sessionID string) (*jetstream.ConsumerInfo, error) {
+	if s.fresh != nil {
+		return s.freshInfo(ctx, sessionID)
+	}
 	name, err := sessionConsumerNameOf(sessionID)
 	if err != nil {
 		return nil, err
@@ -800,7 +828,25 @@ func (s *SessionConsumers) Info(ctx context.Context, sessionID string) (*jetstre
 // so a listener that starts relaying every session at once reads them in a few requests rather
 // than one info each (KeepListed). A list the NATS user may not make is ErrConsumerNotGranted.
 func (s *SessionConsumers) ListSessionConsumers(ctx context.Context) (map[string]*jetstream.ConsumerInfo, error) {
+	if s.fresh != nil {
+		return s.freshList(ctx)
+	}
 	listed := map[string]*jetstream.ConsumerInfo{}
+	err := s.eachListedConsumer(ctx, func(info *jetstream.ConsumerInfo) {
+		if sessionID, ok := strings.CutPrefix(info.Name, sessionConsumerPrefix); ok {
+			listed[sessionID] = info
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return listed, nil
+}
+
+// eachListedConsumer hands each consumer of the stream to each, in the order the paged consumer
+// list ($JS.API.CONSUMER.LIST) answers them, until a page is empty or the list's total is reached.
+// A list the NATS user may not make is ErrConsumerNotGranted (consumerRequest).
+func (s *SessionConsumers) eachListedConsumer(ctx context.Context, each func(*jetstream.ConsumerInfo)) error {
 	for offset := 0; ; {
 		var page struct {
 			Total     int                       `json:"total"`
@@ -810,19 +856,17 @@ func (s *SessionConsumers) ListSessionConsumers(ctx context.Context) (map[string
 		if err := s.consumerRequest(ctx, "$JS.API.CONSUMER.LIST."+Stream, struct {
 			Offset int `json:"offset"`
 		}{offset}, &page); err != nil {
-			return nil, err
+			return err
 		}
 		if page.Error != nil {
-			return nil, fmt.Errorf("bus: list the consumers of %s: %w", Stream, page.Error)
+			return fmt.Errorf("bus: list the consumers of %s: %w", Stream, page.Error)
 		}
 		for _, info := range page.Consumers {
-			if sessionID, ok := strings.CutPrefix(info.Name, sessionConsumerPrefix); ok {
-				listed[sessionID] = info
-			}
+			each(info)
 		}
 		offset += len(page.Consumers)
 		if len(page.Consumers) == 0 || offset >= page.Total {
-			return listed, nil
+			return nil
 		}
 	}
 }
@@ -846,6 +890,9 @@ func (s *SessionConsumers) ListSessionConsumers(ctx context.Context) (map[string
 // own: ackFloor reads no lower than that floor, so the consumer's next sequence is past the
 // sequence after the stream's last, and KeepListed answers not kept for it on that next sequence.
 func (s *SessionConsumers) KeepListed(ctx context.Context, sessionID string, subjects []string, info *jetstream.ConsumerInfo) (SessionConsumerStart, bool, error) {
+	if s.fresh != nil {
+		return s.freshKeepListed(ctx, sessionID, subjects, info)
+	}
 	name, filters, err := sessionConsumerTarget(sessionID, subjects)
 	if err != nil {
 		return SessionConsumerStart{}, false, err
@@ -867,7 +914,7 @@ func (s *SessionConsumers) KeepListed(ctx context.Context, sessionID string, sub
 	if startSeq > state.lastSeq+1 {
 		return SessionConsumerStart{}, false, nil
 	}
-	return SessionConsumerStart{StartSeq: startSeq, Gap: startSeq < state.firstSeq, StreamID: state.id}, true, nil
+	return SessionConsumerStart{Name: name, StartSeq: startSeq, Gap: startSeq < state.firstSeq, StreamID: state.id}, true, nil
 }
 
 // StreamID returns the stream's identity, its StreamIDMetadataKey metadata, which a relay frame
@@ -1087,7 +1134,7 @@ func (s *SessionConsumers) create(ctx context.Context, sessionID, name string, f
 			slog.String("stream_id", bound.id),
 			slog.Uint64("consumer_start", startSeq))
 	}
-	return SessionConsumerStart{Created: true, StartSeq: startSeq, Gap: startSeq < bound.firstSeq, StreamID: bound.id, AckFloor: startSeq - 1}, nil
+	return SessionConsumerStart{Name: name, Created: true, StartSeq: startSeq, Gap: startSeq < bound.firstSeq, StreamID: bound.id, AckFloor: startSeq - 1}, nil
 }
 
 // firstOwnMessage is the first sequence the stream holds on sessionID's own agent subject, in

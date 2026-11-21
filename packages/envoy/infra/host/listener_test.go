@@ -91,6 +91,7 @@ var exampleEnvs = []string{
 	"ENVOY_MACHINE_ID=example-host-a",
 	"NATS_URLS=nats://hub.internal.example:4222",
 	"ENVOY_ALLOW_REMOTE_NATS=1",
+	"ENVOY_LISTENER_ROLE=host",
 }
 
 // envsOf returns a container registration's envs and whether they are secret.

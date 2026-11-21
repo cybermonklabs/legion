@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/config"
@@ -631,7 +632,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 				return
 			}
 		}
-		consumerInfo, err := d.client.JS().ConsumerInfo(bus.Stream, d.consumer, nats.Context(ctx))
+		consumerInfo, err := durableInfo(ctx, d.client, d.consumer)
 		if err != nil {
 			// A read ctx ended did not answer, the info read's own form of healthzPing's unanswered.
 			writeDependencyHealth(w, "durable consumer", err, ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound))
@@ -665,6 +666,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		}
 		response["num_pending"] = consumerInfo.NumPending
 		response["num_ack_pending"] = consumerInfo.NumAckPending
+		response["consumer_names"] = string(d.client.ConsumerNames())
 		// Last, so that no fault above is reported as this one: every check before it that can
 		// answer 503 has passed. The answer keeps the fields above it, so a reader of the counters
 		// loses none while the view fills or while its repair is late. A view that cannot answer
@@ -680,10 +682,25 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		} else if err := repair.Err(); err != nil {
 			response["status"] = "degraded"
 			response["error"] = dependencyUnavailable("role claim repair", err)
+		} else if err := sessionSelectionHealth(ctx, d); err != nil {
+			response["status"] = "degraded"
+			response["error"] = dependencyUnavailable("session consumer selection bucket "+consumernames.SessionBucket, err)
 		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(response)
 	}
+}
+
+// sessionSelectionHealth is, in the fresh consumer naming mode, why the session consumers' calls
+// are refused (bus.SessionConsumers.SelectionHealth): the selection bucket, its sentinel or a key
+// missing, or the cutover not run, each named. Every registration is then refused, while the
+// listener's other routes serve, so /healthz answers degraded rather than unhealthy. nil in the
+// fixed mode, whose /healthz answers as it did before the setting.
+func sessionSelectionHealth(ctx context.Context, d *listenerDeps) error {
+	if d.consumers == nil || d.consumers.consumers == nil {
+		return nil
+	}
+	return d.consumers.consumers.SelectionHealth(ctx)
 }
 
 // roleClaimRepairHealth is the "role_claim_repair" field of a /healthz answer: the role claim
@@ -910,6 +927,7 @@ func listenerStreamOptions(cfg config.Service) []bus.ConnectOption {
 		bus.WithStreamMaxBytes(cfg.StreamMaxBytes),
 		bus.WithKeptBuckets(bus.ListenerBuckets()...),
 		bus.WithSilentCutDetection(),
+		bus.WithConsumerNames(cfg.ConsumerNames),
 	}
 }
 
@@ -1011,6 +1029,14 @@ func main() {
 	// meets them.
 	warnIgnoredEnv(logger, "ENVOY_HOST_BRIDGE", "the listener no longer pushes a message to a session's serve port, so it opens no connection this would address")
 	warnIgnoredEnv(logger, "ENVOY_SUBSCRIBE_ALL_TOPICS", "the listener no longer holds a live topics subscription, so there is no such subscription to turn on")
+	// Before any NATS connect, so a listener the writer hold refuses still names its mode. The line
+	// also carries ENVOY_STREAMS_OPERATOR_MADE as it was set, null when unset, which the cutover's
+	// mode check reads beside the naming mode.
+	streamsOperatorMade := slog.Any("streams_operator_made", nil)
+	if value, set := os.LookupEnv("ENVOY_STREAMS_OPERATOR_MADE"); set {
+		streamsOperatorMade = slog.String("streams_operator_made", value)
+	}
+	logger.Info("session consumer naming mode", slog.String("consumer_names", string(cfg.ConsumerNames)), streamsOperatorMade)
 	apiToken := os.Getenv("ENVOY_API_TOKEN")
 	oidcIssuer, oidcAudience, err := resolveListenerOIDCConfig(os.Getenv)
 	if err != nil {
@@ -1574,6 +1600,32 @@ func main() {
 		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
 		client.Conn.Close()
 		os.Exit(1)
+	}
+	if !delivery.consumers.Fresh() {
+		stop := func(err error) {
+			logger.Error("session consumer naming stops the listener: "+err.Error(), slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		if err := guardFixedNaming(context.Background(), cfg.HostListener, delivery.consumers, logger, fixedNamingRetry, stop); err != nil {
+			logger.Error("session consumer naming refuses the start: "+err.Error(), slog.String("error", err.Error()))
+			delivery.close()
+			client.Conn.Close()
+			os.Exit(1)
+		}
+	}
+	if delivery.consumers.Fresh() {
+		names := met.NewCounter("envoy_session_consumer_names_total", "Session consumer selection steps in the fresh naming mode, by op (select, create, replace, delete, recover, missing_current, last_floor, cleanup) and outcome (ok, adopted, retired, refused, conflict, limit, error)")
+		delivery.consumers.ObserveNames(func(op consumernames.Operation, outcome consumernames.Outcome) {
+			names.Inc([2]string{"op", string(op)}, [2]string{"outcome", string(outcome)})
+		})
+		checkCtx, cancel := context.WithTimeout(context.Background(), sessionConsumerCallTimeout)
+		if err := delivery.consumers.CheckSelection(checkCtx); err != nil {
+			// Not the start's end: every session-consumer call refuses until the bucket, its
+			// sentinel and the cutover are there, and /healthz names what is missing meanwhile.
+			logger.Error("session consumer selection refuses every registration: "+err.Error(),
+				slog.String("bucket", consumernames.SessionBucket), slog.String("error", err.Error()))
+		}
+		cancel()
 	}
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
 	// machine's durable binding (below).

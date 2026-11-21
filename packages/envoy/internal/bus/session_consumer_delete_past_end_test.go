@@ -157,7 +157,7 @@ func createdAtTheStreamsFirstSequence(t *testing.T, again createAgain, owner *Cl
 	if err != nil {
 		t.Fatalf("Ensure after the delete, asked for the start %d: %v", asked, err)
 	}
-	if want := (SessionConsumerStart{Created: true, StartSeq: first, StreamID: id, AckFloor: first - 1}); start != want {
+	if want := (SessionConsumerStart{Name: fixedName(t, session), Created: true, StartSeq: first, StreamID: id, AckFloor: first - 1}); start != want {
 		t.Errorf("Ensure after the delete, asked for the start %d = %+v; want %+v, the consumer created at the stream's first sequence, the floor %d the delete recorded plus one", asked, start, want, recordFloor)
 	}
 	requireConsumerStart(t, consumers, session, first, "the stream's first sequence, the floor the delete recorded plus one")

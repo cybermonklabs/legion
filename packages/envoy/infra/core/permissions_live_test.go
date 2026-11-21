@@ -29,8 +29,9 @@ import (
 
 // The live tests of the host grant: one nkey user holding HostPermissions, on the 2.10 image and on
 // the hub's, each run with the hub's own server arguments. This branch's listener connects as that
-// user with the environment host:Listener gives it, and a session connects as the same user, as
-// every session on a host does.
+// user with the environment host:Listener gives it (ENVOY_LISTENER_ROLE=host among it, so it reads
+// no cutover marker its user may not read), and a session connects as the same user, as every
+// session on a host does.
 
 const (
 	liveMachineID = "example-host-a"
@@ -64,7 +65,7 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 				held := cmdtest.HoldPort(t)
 				port := held.Port
 				process := startListenerConfig(t, listener, uri, seed, held, core.ListenerConfig{
-					MachineID: liveMachineID,
+					MachineID: liveMachineID, HostListener: true,
 				})
 				t.Logf("healthy /healthz body: %s", requireHealthy(t, process, port, liveHealthWindow, listenerHealthy))
 
@@ -126,8 +127,9 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 				require.Len(t, grant.Publish.Allow, held-1, "the grant does not hold %s", removed)
 
 				seed, server, uri := startGrantServer(t, image.Ref, grant)
-				process, port := startListener(t, listener, uri, seed)
-				requireNeverHealthy(t, port)
+				served := cmdtest.HoldPort(t)
+				process := startListenerConfig(t, listener, uri, seed, served, core.ListenerConfig{MachineID: liveMachineID, HostListener: true})
+				requireNeverHealthy(t, served.Port)
 				// The removed subject is what the server refused, and all it refused: the listener
 				// stopped short of healthy for the grant's reason.
 				logged := violationsOnceLogged(t, server, removed)
@@ -426,8 +428,8 @@ func startGrantServer(t *testing.T, image string, grant core.Permissions) (strin
 }
 
 // startListener runs the listener binary as machine liveMachineID against uri, with the environment
-// host:Listener gives its container and the user's seed, on a held loopback port, and returns it
-// with its port.
+// a listener of no role renders (a hub's, whose user no session shares) and the user's seed, on a
+// held loopback port, and returns it with its port.
 func startListener(t *testing.T, binary, uri, seed string) (*cmdtest.Process, int) {
 	t.Helper()
 	held := cmdtest.HoldPort(t)
@@ -682,7 +684,7 @@ func TestListenerPermissionsManageSessionConsumersOnRealServers(t *testing.T) {
 				TraceID:        "trace-evt-session-consumer",
 			}
 			require.NoError(t, owner.Publish(item))
-			pull, err := consumers.Pull(ctx, liveSession)
+			pull, err := consumers.Pull(ctx, liveSession, start.Name)
 			require.NoError(t, err)
 			msg, err := pull.Next(ctx)
 			require.NoError(t, err)
@@ -704,7 +706,7 @@ func TestListenerPermissionsManageSessionConsumersOnRealServers(t *testing.T) {
 			unacked.SourceEventID = unacked.EventID
 			unacked.DedupeKey = "permissions-live-test." + unacked.EventID
 			require.NoError(t, owner.Publish(unacked))
-			pull, err = consumers.Pull(ctx, liveSession)
+			pull, err = consumers.Pull(ctx, liveSession, restarted.Name)
 			require.NoError(t, err)
 			held, err := pull.Next(ctx)
 			require.NoError(t, err)

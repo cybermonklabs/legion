@@ -197,8 +197,13 @@ other listeners' and Dispatch's included, which is why a user any session shares
 a `machineId` or a `dispatchMachineId` user therefore keeps its own durable alone and refuses
 every registration that asks for consumer delivery `503 no_grant`, so a session registering
 through it is not registered at all and receives nothing until its listener's grant carries the
-session consumers. Every set above subscribes to the role lanes in the queue group every listener
-shares, `envoy-roles`, beside the machine's own, since each user runs a listener.
+session consumers. The same two sets end with the reads and writes of the session consumers'
+selection bucket `envoy_session_consumers` and none of its stream's create or update
+(`natsgrant.KVWriteExisting`), so a listener keeps each session's current consumer name there in
+the fresh consumer naming mode and never makes the bucket itself
+([Permission sets](../README.md#permission-sets)). Every set above subscribes to the role lanes in
+the queue group every listener shares, `envoy-roles`, beside the machine's own, since each user
+runs a listener.
 
 `nkey` is the public key `envoy-infra seed generate` prints, and the seed stays in the secret
 store it wrote (see [NATS seeds](../README.md#nats-seeds)): a host's listener reads it from there
@@ -751,6 +756,11 @@ The release that adds `envoy_known_sessions` to `bus.ListenerBuckets()` adds tha
 `DispatchPermissions`, which changes the rendered users of every hub with a `listener`, a
 `machineId`, a `listenerMachineId` or a `dispatchMachineId` user: upgrading such a hub to it
 replaces its VM once, with the outage below, and a hub with none of them keeps its VM.
+The release that adds the fresh consumer names (`ENVOY_CONSUMER_NAMES`) adds the selection bucket
+`envoy_session_consumers`'s calls, with no create or update of its stream, to `ListenerPermissions`
+and `ListenerHostPermissions`, which changes the rendered users of every hub with a `listener` or a
+`listenerMachineId` user: upgrading such a hub to it replaces its VM once, with the outage below,
+and a hub with neither keeps its VM.
 The release that adds `listener.senderMessagesPerMinute` and `listener.senderMessageBurst` renders
 neither variable for a hub that sets neither input, so such a hub keeps its VM. Setting, changing
 or removing either input changes the listener's `docker run` command in the cloud-config, so it

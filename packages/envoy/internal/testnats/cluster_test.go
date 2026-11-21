@@ -3,6 +3,7 @@ package testnats
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,4 +120,49 @@ func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
 	}
 	cluster.Servers[0].Start(t)
 	cluster.AwaitReady(t)
+}
+
+// deadlineTB is a fatalRecorder whose test deadline is at, so a wait bounded by the test's deadline
+// (waitBound) reads that one.
+type deadlineTB struct {
+	*fatalRecorder
+	at time.Time
+}
+
+func (d deadlineTB) Deadline() (time.Time, bool) { return d.at, true }
+
+// AwaitReady waits on the cluster's state, bounded by the test's own deadline less readyMargin, not
+// by a fixed time: a ready cluster passes at once under a deadline only seconds away, and a cluster
+// that cannot become ready (one member started again alone, which can win no election) fails the
+// wait by that deadline, naming the deadline and the state it waited for. That failure is the
+// control that the state is checked and the bound is the test's.
+func TestAwaitReadyWaitsOnTheClustersStateUntilTheTestsDeadline(t *testing.T) {
+	cluster := StartCluster(t, 3)
+	await := func(at time.Time) (string, time.Duration) {
+		recorder := deadlineTB{&fatalRecorder{TB: t}, at}
+		start := time.Now()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			cluster.AwaitReady(recorder)
+		}()
+		<-done
+		return recorder.message, time.Since(start)
+	}
+	if message, took := await(time.Now().Add(readyMargin + 3*time.Second)); message != "" {
+		t.Fatalf("a ready cluster failed the wait after %s: %s", took, message)
+	}
+	// One member started again on its own, with the other two stopped, can win no election: two of
+	// three are its quorum, so no running member ever leads the meta group.
+	for _, server := range cluster.Servers {
+		server.Stop(t)
+	}
+	cluster.Servers[0].Start(t)
+	message, took := await(time.Now().Add(readyMargin + 3*time.Second))
+	if !strings.Contains(message, "not ready by the test's deadline") || !strings.Contains(message, "meta group") {
+		t.Fatalf("control: a cluster with no meta leader answered %q after %s; want the wait to fail by the test's deadline, naming the meta group's state", message, took)
+	}
+	if took > 3*time.Second+5*time.Second {
+		t.Fatalf("control: the wait failed only after %s, past the test's deadline less readyMargin (3 s)", took)
+	}
 }

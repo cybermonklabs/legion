@@ -309,12 +309,16 @@ func (r *relaySessions) writeFrames(dir string, ids []string, lg *log.Logger) {
 
 // pullSpy counts the pull requests on the stream's consumers: on a connection of its own it
 // subscribes the subject a pull request is published on, $JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>,
-// and gets a copy of each. Session consumers are those named s-<session id>
-// (bus.SessionConsumerName).
+// and gets a copy of each. Session consumers are those named s-<session id> in the fixed naming
+// mode (bus.SessionConsumerName) and session~<nuid> in the fresh one (bus.SessionConsumerNamePrefix).
 type pullSpy struct {
 	nc              *nats.Conn
 	total, sessions atomic.Int64
 }
+
+// pullRequestPrefix begins the subject of every pull request on the stream's consumers; the
+// consumer's name follows it.
+const pullRequestPrefix = "$JS.API.CONSUMER.MSG.NEXT." + bus.Stream + "."
 
 func startPullSpy(url string) (*pullSpy, error) {
 	nc, err := nats.Connect(url, nats.Name("loadgen-pull-spy"), nats.MaxReconnects(-1))
@@ -322,13 +326,7 @@ func startPullSpy(url string) (*pullSpy, error) {
 		return nil, fmt.Errorf("nats connect: %w", err)
 	}
 	p := &pullSpy{nc: nc}
-	prefix := "$JS.API.CONSUMER.MSG.NEXT." + bus.Stream + "."
-	if _, err := nc.Subscribe(prefix+">", func(m *nats.Msg) {
-		p.total.Add(1)
-		if strings.HasPrefix(m.Subject[len(prefix):], "s-") {
-			p.sessions.Add(1)
-		}
-	}); err != nil {
+	if _, err := nc.Subscribe(pullRequestPrefix+">", func(m *nats.Msg) { p.count(m.Subject) }); err != nil {
 		nc.Close()
 		return nil, err
 	}
@@ -339,14 +337,23 @@ func startPullSpy(url string) (*pullSpy, error) {
 	return p, nil
 }
 
+// count counts the pull request published on subject, and as a session's when its consumer is one.
+func (p *pullSpy) count(subject string) {
+	p.total.Add(1)
+	consumer := strings.TrimPrefix(subject, pullRequestPrefix)
+	if strings.HasPrefix(consumer, "s-") || strings.HasPrefix(consumer, bus.SessionConsumerNamePrefix+"~") {
+		p.sessions.Add(1)
+	}
+}
+
 func (p *pullSpy) close() { p.nc.Close() }
 
 // streamConsumers is ENVOY_NOTIFICATIONS's own consumer_count, read from the stream's info at the
 // step's start and at its end. It counts the consumers of that stream alone: the sessions'
-// s-<session id> consumers, the listener's durable and Dispatch's. The sampler's server-wide /jsz
-// count (resources.js_consumers_max, js_consumers_last) counts every consumer the server holds,
-// the KV buckets' watchers among them, so the two numbers answer different questions and the
-// run's report keeps them apart.
+// consumers (s-<session id>, or session~<nuid> in the fresh naming mode), the listener's durable
+// and Dispatch's. The sampler's server-wide /jsz count (resources.js_consumers_max,
+// js_consumers_last) counts every consumer the server holds, the KV buckets' watchers among them,
+// so the two numbers answer different questions and the run's report keeps them apart.
 type streamConsumers struct {
 	// Start is the count before the sessions register, End the count after the load and the
 	// grace. A read that failed leaves its count null, and StartError or EndError says why: the

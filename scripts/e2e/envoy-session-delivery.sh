@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # envoy-session-delivery.sh — live proof that every Envoy event reaches a real Oh My Pi session and
 # a real Claude Code session exactly once, also when it was published while the session, its NATS
-# connection, either listener or Dispatch was down (INFRA-594), and when it was stored for a
-# session before that session first registered (INFRA-771).
+# connection, either listener or Dispatch was down, and when it was stored for a session before
+# that session first registered.
 #
 # The stack runs in the pod, every part of it built from a checkout: natsd
 # (packages/envoy/internal/testnats/cmd/natsd, JetStream on a store directory of the run's own),
@@ -64,7 +64,7 @@
 # Window h publishes none of those. Its one event is a core NATS publish of an Envoy envelope on
 # notifications.agent.<the new Claude Code session id>, counted in that session alone.
 #
-# Window g is the deletion INFRA-2365 added, proved live. Oh My Pi's rpc host ends its session
+# Window g is a clean stop's consumer delete, proved live. Oh My Pi's rpc host ends its session
 # when its stdin reaches end of file, and that is the whole of a clean stop: closing the write end
 # of the fifo this script holds runs the host's session_shutdown handlers to their end, awaits and
 # all, and omp exits 0 (measured here on omp v18.16.0 with an extension that recorded the event;
@@ -78,7 +78,11 @@
 # issue comments stored while it was away reach it exactly once. The run ends the same way, both
 # sessions stopped on their stdin's end of file, and the stream must then hold no `s-` consumer of
 # either session the run registered; a consumer of any other session is another run's and is left
-# alone.
+# alone. That is the fixed naming mode's reading, where a session's consumer is s-<session>.
+# ENVOY_CONSUMER_NAMES=fresh (below) reads the session's selection record instead: the session
+# holds a consumer when its record names a current and the stream carries that name, and it holds
+# none after a clean stop when its record names no current and no consumer on the stream carries
+# its id as envoy.logical, whatever that consumer's name.
 #
 # A direct send is judged by its own answer. The listener stores a send to every session Envoy
 # knows, whether it holds a live registration for it or knows it only from its 30-day
@@ -170,7 +174,7 @@
 #
 # --issue-topic-form old|new names the form of the issue topic each session is told to follow: old
 # (the default) is notifications.dispatch.issue.<KEY>.>, new is the form that names the key's
-# project first, notifications.dispatch.issue.<PROJECT>.<KEY>.> (dispatch://INFRA-3862). Dispatch
+# project first, notifications.dispatch.issue.<PROJECT>.<KEY>.>. Dispatch
 # publishes in the old form until its producers move, so the new form's run is the proof that a
 # session following the new form receives what is published in the old one.
 #
@@ -193,9 +197,19 @@
 #   SESSION_DELIVERY_SETTLE_S     per-window wait for every marker (default 60)
 #   SESSION_DELIVERY_HOLD_S       wait after that for a repeat (default 15)
 #   SESSION_DELIVERY_EVIDENCE_DIR default a fresh directory under TMPDIR; kept and printed
+#   ENVOY_CONSUMER_NAMES          fixed (the default, also when unset) or fresh, refused otherwise:
+#                                 how both listeners name the session consumers, handed to each.
+#                                 fresh gives each creation a new name, which the session's
+#                                 selection record in the bucket envoy_session_consumers names as
+#                                 its current; listener shared starts once to create
+#                                 ENVOY_NOTIFICATIONS, the run makes that bucket and its sentinel
+#                                 from it as the operator's create-bucket does, and the listeners
+#                                 start before any session registers; every session's consumer is
+#                                 read through the record
 #
 # No DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, LEGION_*, CLAUDE_*, PGHOSTADDR, PGSERVICE or
-# PGSERVICEFILE variable of the caller reaches anything the run starts. Every service and session
+# PGSERVICEFILE variable of the caller reaches anything the run starts but ENVOY_CONSUMER_NAMES,
+# which the run reads and hands to its listeners. Every service and session
 # gets PATH, what the script sets, and, for the sessions alone, ANTHROPIC_API_KEY (read from
 # SESSION_DELIVERY_MODEL_KEY_FILE), ANTHROPIC_BASE_URL when the caller sets it, and
 # BUN_INSTALL_CACHE_DIR for bunx when the caller sets it.
@@ -208,6 +222,9 @@
 # shellcheck disable=SC2317,SC2329 # cleanup runs from the EXIT trap, the probes from await and
 # wait_until; SC2329 is the half of SC2317 that shellcheck 0.11 split out
 set -euo pipefail
+# The one ENVOY_* variable of the caller the run reads, before the loop below clears it with the
+# rest; the listeners get it from consumer_names alone.
+consumer_names=${ENVOY_CONSUMER_NAMES:-fixed}
 # PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: require_loopback_dsn in
 # scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
 for variable in $(compgen -e); do
@@ -293,6 +310,8 @@ done
   refuse "--log-model-requests logs what the served sessions ask the model; give it with --serve"
 [[ -z "$log_model_requests" || -n "${ANTHROPIC_BASE_URL:-}" ]] ||
   refuse "--log-model-requests needs ANTHROPIC_BASE_URL: the proxy it starts forwards every request there"
+[[ "$consumer_names" == fixed || "$consumer_names" == fresh ]] ||
+  refuse "ENVOY_CONSUMER_NAMES is '$consumer_names': set fixed or fresh (unset means fixed)"
 
 [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
   refuse "LEGION_TEST_PG_DSN is required: a loopback Postgres with pgvector (postgres://<user>@127.0.0.1:<port>/<db>?sslmode=disable). The run starts no database; docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md starts one without root."
@@ -528,6 +547,10 @@ if [[ -n "$build_from" ]]; then
   tree_label="$rev (git archive into $tree)"
 fi
 readonly tree
+if [[ "$consumer_names" == fresh ]] &&
+  ! grep -rqs --include='*.go' --exclude='*_test.go' ENVOY_CONSUMER_NAMES "$tree/packages/envoy"; then
+  refuse "ENVOY_CONSUMER_NAMES=fresh needs a listener that knows that setting, and the one in ${tree_label} does not"
+fi
 # The plugins come from the same tree, unless --plugins-from names another: the mixed rollout,
 # this checkout's listeners with the plugins of an earlier release.
 plugins_tree=$tree
@@ -679,19 +702,51 @@ listener_url() { printf 'http://127.0.0.1:%s' "${listener_port[$1]}"; }
 dispatch_url="http://127.0.0.1:${dispatch_port}"
 
 listener_ready() { curl -fsS --max-time 2 "$(listener_url "$1")/healthz" | jq -e '.status == "healthy"'; }
-start_listener() {
+notifications_stream_made() {
+  curl -fsS --max-time 2 "${nats_monitor}/jsz?streams=true" |
+    jq -e 'any(.account_details[]?.stream_detail[]?; .name == "ENVOY_NOTIFICATIONS")'
+}
+# make_session_bucket: the fresh naming mode's selection bucket and its sentinel, made as the
+# operator's create-bucket makes them (lib/nats-stream.ts session-bucket), from where
+# ENVOY_NOTIFICATIONS starts, read before the bucket is made.
+make_session_bucket() {
+  local sentinel
+  sentinel=$(cd -- "$repo_root" && isolated_exec "" HOME="$work/bun-home" TMPDIR="$work" -- \
+    bun scripts/e2e/lib/nats-stream.ts session-bucket "$nats_url" ENVOY_NOTIFICATIONS 30 2>>"$work/logs/session-bucket.log") ||
+    fail "could not make the session consumer selection bucket: $(tail -n 5 "$work/logs/session-bucket.log" | tr '\n' ' ')"
+  note "session consumer selection bucket envoy_session_consumers made as the operator's create-bucket makes it, sentinel ${sentinel}"
+}
+# launch_listener NAME: starts listener NAME's process, and start_listener NAME waits for it to be
+# healthy too.
+launch_listener() {
   local name=$1
   local -a serve=("$work/bin/envoy-listener")
   if ((listener_held == 1)); then
     serve=(python3 "$held_port" exec --from "$work/ports/keep-listener-$name.sock" --fd-env ENVOY_LISTEN_FD -- "${serve[@]}")
   fi
   (isolated_exec "" HOME="$work/listener-$name-home" PORT="${listener_port[$name]}" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="$name" NATS_URLS="$nats_url" -- "${serve[@]}") \
+    ENVOY_MACHINE_ID="$name" NATS_URLS="$nats_url" ENVOY_CONSUMER_NAMES="$consumer_names" -- "${serve[@]}") \
     >>"$work/logs/listener-$name.log" 2>&1 &
   pid[listener-$name]=$!
+}
+start_listener() {
+  local name=$1
+  launch_listener "$name"
   await "listener-$name" "$work/logs/listener-$name.log" 90 listener_ready "$name"
   note "listener $name (pid ${pid[listener-$name]}) healthy at $(listener_url "$name")"
 }
+# The fresh naming mode: the stream exists before the bucket, as it does wherever an operator runs
+# create-bucket, so listener shared starts once to create ENVOY_NOTIFICATIONS, the bucket is made
+# from that stream, and the listener is stopped and started again with the rest: the order a
+# deployment meets, fresh-mode listeners started once the operator has made the bucket. No session
+# registers before both listeners are healthy.
+if [[ "$consumer_names" == fresh ]]; then
+  launch_listener shared
+  await listener-shared "$work/logs/listener-shared.log" 90 notifications_stream_made
+  make_session_bucket
+  stop_label listener-shared
+  note "listener shared started once to create ENVOY_NOTIFICATIONS before the bucket, and stopped"
+fi
 start_listener shared
 start_listener dispatch
 
@@ -1035,13 +1090,64 @@ session_view() {
 # stream_consumers WHEN VAR: assigns VAR the names of every consumer the ENVOY_NOTIFICATIONS
 # stream carries, sorted and separated by one space, as natsd's monitor reports them, and fails
 # the run under WHEN when that monitor cannot be read. Every reading of the stream's consumers is
-# taken here: window g's, the probes its clean stop waits on, and the one the run ends with.
+# taken here or, for the fresh naming mode's envoy.logical, in logical_consumers: window g's, the
+# probes its clean stop waits on, and the one the run ends with.
 stream_consumers() {
   local _consumers
   _consumers=$(curl -fsS --max-time 5 "${nats_monitor}/jsz?consumers=true" |
     jq -r '[.account_details[]?.stream_detail[]? | select(.name == "ENVOY_NOTIFICATIONS") | .consumer_detail[]?.name] | sort | join(" ")') ||
     fail "could not read the stream's consumers from natsd's monitor ($1)"
   printf -v "$2" '%s' "$_consumers"
+}
+# logical_consumers SESSION WHEN VAR: assigns VAR the names of every consumer on ENVOY_NOTIFICATIONS
+# whose metadata envoy.logical is SESSION, sorted and separated by one space, as natsd's monitor
+# reports them, and fails the run under WHEN when that monitor cannot be read. The monitor reports a
+# consumer's metadata only with config=true; without it every consumer reads as carrying none.
+logical_consumers() {
+  local _consumers
+  _consumers=$(curl -fsS --max-time 5 "${nats_monitor}/jsz?consumers=true&config=true" |
+    jq -r --arg s "$1" '[.account_details[]?.stream_detail[]? | select(.name == "ENVOY_NOTIFICATIONS") | .consumer_detail[]?
+      | select(.config.metadata["envoy.logical"] == $s) | .name] | sort | join(" ")') ||
+    fail "could not read the stream's consumers from natsd's monitor ($2)"
+  printf -v "$3" '%s' "$_consumers"
+}
+# current_consumer SESSION WHEN VAR: the fresh naming mode's current command. Assigns VAR the
+# consumer SESSION's selection record names now, the current of its key in the bucket
+# envoy_session_consumers (lib/nats-stream.ts current), empty when the record names none, and
+# fails the run under WHEN when the record cannot be read.
+current_consumer() {
+  local _current
+  _current=$(cd -- "$repo_root" && isolated_exec "" HOME="$work/bun-home" TMPDIR="$work" -- \
+    bun scripts/e2e/lib/nats-stream.ts current "$nats_url" "$1" 2>>"$work/logs/current.log") ||
+    fail "could not read the selection record of $1 ($2): $(tail -n 5 "$work/logs/current.log" | tr '\n' ' ')"
+  printf -v "$3" '%s' "$_current"
+}
+# In the fresh naming mode, what a session's consumer is, each read under WHEN:
+#   fresh_consumer_held SESSION WHEN  the session holds a consumer: its record names a current, and
+#                                     the stream's consumers hold that name
+#   fresh_consumer_gone SESSION WHEN  the session holds none, as after its clean stop: its record
+#                                     names no current, and no consumer on the stream carries
+#                                     SESSION as envoy.logical, whatever its name
+#   fresh_consumer_view SESSION WHEN  what those two read, for a note or a failure
+fresh_consumer_held() {
+  local current names
+  current_consumer "$1" "$2" current
+  [[ -n "$current" ]] || return 1
+  stream_consumers "$2" names
+  [[ " $names " == *" $current "* ]]
+}
+fresh_consumer_gone() {
+  local current carriers
+  current_consumer "$1" "$2" current
+  [[ -z "$current" ]] || return 1
+  logical_consumers "$1" "$2" carriers
+  [[ -z "$carriers" ]]
+}
+fresh_consumer_view() {
+  local current carriers
+  current_consumer "$1" "$2" current
+  logical_consumers "$1" "$2" carriers
+  printf "%s's selection record names current '%s'; the consumers carrying it as envoy.logical [%s]" "$1" "$current" "$carriers"
 }
 
 # session_delivery_shown WHEN: both sessions take their messages from a session consumer of their
@@ -1366,19 +1472,35 @@ stop_session_clean() {
 #   no_session_consumer    the stream carries a consumer for neither session this run is running;
 #                          one of a session an earlier window SIGKILLed is left out, since nothing
 #                          deregistered it and the sweep takes it an hour on
+# Each reads s-<session> in the fixed naming mode, and the session's selection record in the fresh
+# one (fresh_consumer_held, fresh_consumer_gone).
 stop_landed() {
   local names
   if registered shared "$1"; then return 1; fi
+  if [[ "$consumer_names" == fresh ]]; then
+    fresh_consumer_gone "$1" "the clean stop of $1"
+    return
+  fi
   stream_consumers "the clean stop of $1" names
   [[ " $names " != *" s-$1 "* ]]
 }
 consumer_held() {
   local names
+  if [[ "$consumer_names" == fresh ]]; then
+    fresh_consumer_held "$1" "the consumer of $1"
+    return
+  fi
   stream_consumers "the consumer of $1" names
   [[ " $names " == *" s-$1 "* ]]
 }
 no_session_consumer() {
   local names label
+  if [[ "$consumer_names" == fresh ]]; then
+    for label in pi cc; do
+      fresh_consumer_gone "${sid[$label]}" "both sessions stopped" || return 1
+    done
+    return 0
+  fi
   stream_consumers "both sessions stopped" names
   for label in pi cc; do
     [[ " $names " != *" s-${sid[$label]} "* ]] || return 1
@@ -1467,7 +1589,7 @@ run_window() {
     publish_rest f "$via"
     ;;
   g)
-    # The clean stop dispatch://INFRA-2365 is about: Oh My Pi ends on its stdin's end of file,
+    # The clean stop that deletes a session's consumer: Oh My Pi ends on its stdin's end of file,
     # pi-envoy deregisters the session, and the listener removes the registration and deletes the
     # session's consumer with it. The Claude Code session stays up throughout, so every event of
     # this window has one session that is there to take it live and one that is not. The resumed
@@ -1476,8 +1598,14 @@ run_window() {
     local names="" was="${sid[pi]}"
     stream_consumers "window g, before the clean stop" names
     note "window g: the stream's consumers before the clean stop [${names}]"
-    [[ " $names " == *" s-${was} "* ]] ||
-      fail "the stream carries no consumer s-${was} for the Oh My Pi session before its clean stop: [${names}]"
+    if [[ "$consumer_names" == fresh ]]; then
+      note "window g: before the clean stop, $(fresh_consumer_view "$was" "window g, before the clean stop")"
+      fresh_consumer_held "$was" "window g, before the clean stop" ||
+        fail "the Oh My Pi session holds no consumer on the stream before its clean stop: $(fresh_consumer_view "$was" "window g, before the clean stop"); the stream's consumers [${names}]"
+    else
+      [[ " $names " == *" s-${was} "* ]] ||
+        fail "the stream carries no consumer s-${was} for the Oh My Pi session before its clean stop: [${names}]"
+    fi
     stop_session_clean pi
     wait_until 60 stop_landed "$was" || true
     stream_consumers "window g, after the clean stop" names
@@ -1486,8 +1614,14 @@ run_window() {
       fail "the clean stop left the Oh My Pi session registered: $(session_view pi)"
     fi
     note "window g: omp exited on its stdin's end of file with no signal, and the listener acted on its plugin's DELETE — ${was} is registered no longer; the stream's consumers [${names}]"
-    [[ " $names " != *" s-${was} "* ]] ||
-      fail "the clean stop left the consumer s-${was} on the stream: [${names}]"
+    if [[ "$consumer_names" == fresh ]]; then
+      note "window g: after the clean stop, $(fresh_consumer_view "$was" "window g, after the clean stop")"
+      fresh_consumer_gone "$was" "window g, after the clean stop" ||
+        fail "the clean stop left the Oh My Pi session a consumer: $(fresh_consumer_view "$was" "window g, after the clean stop"); the stream's consumers [${names}]"
+    else
+      [[ " $names " != *" s-${was} "* ]] ||
+        fail "the clean stop left the consumer s-${was} on the stream: [${names}]"
+    fi
     publish_dispatch g
     publish_rest g "$via"
     sleep 3
@@ -1497,8 +1631,14 @@ run_window() {
     wait_until 120 consumer_held "$was" || true
     stream_consumers "window g, after the resume" names
     note "window g: ${was} resumed from its session file; the stream's consumers [${names}]"
-    [[ " $names " == *" s-${was} "* ]] ||
-      fail "the resumed Oh My Pi session has no consumer s-${was} on the stream: [${names}]"
+    if [[ "$consumer_names" == fresh ]]; then
+      note "window g: after the resume, $(fresh_consumer_view "$was" "window g, after the resume")"
+      fresh_consumer_held "$was" "window g, after the resume" ||
+        fail "the resumed Oh My Pi session holds no consumer on the stream: $(fresh_consumer_view "$was" "window g, after the resume"); the stream's consumers [${names}]"
+    else
+      [[ " $names " == *" s-${was} "* ]] ||
+        fail "the resumed Oh My Pi session has no consumer s-${was} on the stream: [${names}]"
+    fi
     ;;
   h)
     # The brand-new session: one whose first registration follows a message already stored for it.
@@ -1710,14 +1850,15 @@ fi
 # ---- the sessions stop ------------------------------------------------------------------------
 # The table is printed and judged, so nothing more is published and nothing more is counted. Both
 # sessions are stopped as a clean shutdown stops them, each plugin deregisters, and the listener
-# deletes the consumer it answered each registration with (dispatch://INFRA-2365): the stream must
+# deletes the consumer it answered each registration with: the stream must
 # then carry a consumer for neither of them, so a hub's consumer cap is spent on no session that
 # ended. The judgement names those two session ids rather than every `s-` consumer on the stream:
 # a window that SIGKILLs a session (a, b, g) leaves one that deregistered nothing, and such a
 # consumer goes with the sweep's first pass after the session's record leaves the bucket, an hour
 # past this run. The negative control above returns before this: a tree from before session
 # consumers were deleted leaves them behind by construction, and that is what --expect-lost went
-# to measure.
+# to measure. In the fresh naming mode the judgement reads each session's selection record and the
+# consumers carrying its id as envoy.logical instead (fresh_consumer_gone).
 begin "the sessions stop"
 stop_session_clean pi
 stop_session_clean cc
@@ -1727,8 +1868,14 @@ consumers_at_end=""
 stream_consumers "both sessions have stopped" consumers_at_end
 note "the stream's consumers once both sessions had stopped cleanly: [${consumers_at_end}]"
 for label in pi cc; do
-  [[ " $consumers_at_end " != *" s-${sid[$label]} "* ]] ||
-    fail "the consumer of $label (s-${sid[$label]}) is on the stream after it stopped cleanly: [${consumers_at_end}]"
+  if [[ "$consumer_names" == fresh ]]; then
+    note "$label after its clean stop: $(fresh_consumer_view "${sid[$label]}" "both sessions have stopped")"
+    fresh_consumer_gone "${sid[$label]}" "both sessions have stopped" ||
+      fail "$label (${sid[$label]}) holds a consumer after it stopped cleanly: $(fresh_consumer_view "${sid[$label]}" "both sessions have stopped"); the stream's consumers [${consumers_at_end}]"
+  else
+    [[ " $consumers_at_end " != *" s-${sid[$label]} "* ]] ||
+      fail "the consumer of $label (s-${sid[$label]}) is on the stream after it stopped cleanly: [${consumers_at_end}]"
+  fi
 done
 if ((bad == 0 && order_ok == 1)); then
   printf 'ENVOY SESSION DELIVERY: PASS (every event once, the issue in order)\n'

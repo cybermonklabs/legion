@@ -284,6 +284,39 @@ func TestListenerConfigEnvRendersTheSenderMessageLimit(t *testing.T) {
 	}
 }
 
+// Env renders ENVOY_LISTENER_ROLE=host for a host's listener, last, after the broker check, so
+// every other listener renders what it always rendered. The name is written out here rather than
+// taken from bus, so a rename is seen in what the listener reads.
+func TestListenerConfigEnvRendersTheHostRoleLast(t *testing.T) {
+	base := []string{"PORT=9020", "ENVOY_MACHINE_ID=m", "NATS_URLS=nats://127.0.0.1:4222"}
+	for _, c := range []struct {
+		name string
+		in   core.ListenerConfig
+		want []string
+	}{
+		{"a listener of no role renders no role", core.ListenerConfig{MachineID: "m", Port: 9020}, base},
+		{"a host's listener renders the role", core.ListenerConfig{MachineID: "m", Port: 9020, HostListener: true}, slices.Concat(base, []string{"ENVOY_LISTENER_ROLE=host"})},
+		{
+			"after the broker check",
+			core.ListenerConfig{
+				MachineID: "m", Port: 9020, HostListener: true,
+				AgentSecretsURL: "https://broker.internal.example", AgentSecretsAudience: "broker-audience",
+				PublicURL: "https://listener.internal.example",
+			},
+			slices.Concat(base, []string{
+				"ENVOY_AGENT_SECRETS_URL=https://broker.internal.example", "ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE=broker-audience",
+				"ENVOY_PUBLIC_URL=https://listener.internal.example", "ENVOY_LISTENER_ROLE=host",
+			}),
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := c.in.Env([]string{"nats://127.0.0.1:4222"})
+			require.NoError(t, err)
+			require.Equal(t, c.want, got)
+		})
+	}
+}
+
 // CheckSenderLimit is a component's rule for its two sender inputs: unset is no limit, a rate is a
 // whole number from 1 to 60000, and a burst is at least 1 and comes with a rate. Each refusal names
 // the input by the component's own path, prefix and all, and each limit it answers is one Check
