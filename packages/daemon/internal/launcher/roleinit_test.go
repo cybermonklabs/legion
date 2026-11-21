@@ -42,12 +42,9 @@ func init() {
 
 // stagePlan is what the stage builds and runs. Mount is the directory it covers with a memory
 // filesystem of its own, so the layout it builds — and the role's own mounts over it — stay out
-// of the machine's filesystem and out of the test process's view. Shadowed is an empty directory
-// the test made under the machine's /tmp, which the stage mounts over in its own namespace before
-// its own /tmp hides that mount (standInForHidden).
+// of the machine's filesystem and out of the test process's view.
 type stagePlan struct {
 	Mount    string
-	Shadowed string
 	Role     string
 	Sibling  string
 	Owner    string
@@ -108,15 +105,7 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A directory under the machine's /tmp that the stage alone mounts over: the stage's own /tmp
-	// then hides that mount as it hides any mount the machine's /tmp carries, so the row needs on
-	// every machine what a machine whose /tmp carries one needs (standInForHidden).
-	shadowed, err := os.MkdirTemp("/tmp", "legion-stage-shadowed-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Remove(shadowed) })
-	plan := stagePlan{Mount: stageMountPoint(t), Shadowed: shadowed, Role: "a", Sibling: "b", Owner: "acme", Detached: "987654"}
+	plan := stagePlan{Mount: stageMountPoint(t), Role: "a", Sibling: "b", Owner: "acme", Detached: "987654"}
 	encoded, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)
@@ -277,6 +266,10 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 // this binary: the helper, and role-init, which starts the agent through the role's own /proc.
 const stageSelf = "/proc/self/exe"
 
+// stageShadowed is the stage's own mount under the /tmp it covers, which its own /tmp then hides
+// (runStage, standInForHidden).
+const stageShadowed = "/tmp/shadowed"
+
 // stageMountPoint is a directory the stage can cover with a memory filesystem of its own. It is
 // the one piece of the machine the test needs: the layout must sit outside /tmp and outside the
 // home a role's overlay covers, and must be a path the role's own mounts never hide.
@@ -335,13 +328,16 @@ func runStage(plan stagePlan) error {
 		return err
 	}
 	// A mount the machine's /tmp carries, as a machine's /tmp may (a container runtime's leftover,
-	// say), made on the test's directory in this namespace alone, so the machine never sees it.
-	// Its path is read before the stage's /tmp hides it.
-	shadowed, err := filepath.EvalSymlinks(plan.Shadowed)
-	if err != nil {
+	// say): made on a memory filesystem of the stage's own over the machine's /tmp, so the machine
+	// never sees it, and hidden by the stage's own /tmp below as any mount of the machine's is. So
+	// the row needs on every machine what a machine whose /tmp carries a mount needs.
+	if err := mountTmpfs("/tmp", "size=1m"); err != nil {
 		return err
 	}
-	if err := mountTmpfs(shadowed, "size=1m"); err != nil {
+	if err := os.Mkdir(stageShadowed, 0o755); err != nil {
+		return err
+	}
+	if err := mountTmpfs(stageShadowed, "size=1m"); err != nil {
 		return err
 	}
 	// The stage's own /tmp and /dev/shm, so what the role plants if its privacy broke lands here
@@ -360,10 +356,10 @@ func runStage(plan stagePlan) error {
 			stoodIn[path] = true
 		}
 	}
-	if stoodIn[shadowed] {
+	if stoodIn[stageShadowed] {
 		fmt.Println("stage shadowed=stood-in")
 	} else {
-		fmt.Printf("stage shadowed=not listed under /tmp once hidden: %s\n", shadowed)
+		fmt.Printf("stage shadowed=not listed under /tmp once hidden: %s\n", stageShadowed)
 	}
 	rolesDir := filepath.Join(plan.Mount, "roles")
 	fixedRoot := filepath.Join(plan.Mount, "fixed")
@@ -603,8 +599,8 @@ func copyExecutable(source, target string) error {
 // can be, and no pod's container lists a mount under its /tmp that it cannot reach: no mount may be
 // at or above /tmp there (CheckPod), so nothing hides one. role-init carries every mount listed
 // under /tmp from its path, and one it cannot find there stops the role (carryOver). A machine's
-// /tmp may carry mounts — a container runtime's leftover, or the test's own (stagePlan.Shadowed) —
-// so the stage's container carries an empty volume at each such path, as an operator's volume
+// /tmp may carry mounts — a container runtime's leftover, or the stage's own (stageShadowed) — so
+// the stage's container carries an empty volume at each such path, as an operator's volume
 // under /tmp is carried, and nothing of the machine's reaches the role.
 func standInForHidden(dir string) ([]string, error) {
 	_, hidden, err := mountsUnder(dir)
