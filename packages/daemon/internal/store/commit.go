@@ -52,7 +52,10 @@ const (
 // reply.
 const CommitSettleBound = commitReplyBound + outcomeReadBound
 
-// commitHooksKey is the context key a TransactWith scope lives under.
+// commitHooksKey is the context key a TransactWith scope lives under. It is named only where a
+// scope is stored or read: TransactWith stores the one scope that holds hooks, scopeOf reads it,
+// and readOutcome stores none (TestOnlyTransactOpensACommitScope). Its type is this package's
+// own, so a scope stored anywhere else names it there.
 type commitHooksKey struct{}
 
 // commitScope is one open transaction of TransactWith: the hooks its body registers, the
@@ -65,17 +68,8 @@ type commitScope struct {
 	writing atomic.Bool
 }
 
-// withCommitHooks scopes OnCommit to the transaction tx of pool: the hooks registered on the
-// returned context are appended to the scope's list. TransactWith is the one place that names it,
-// as a call or as a value, so a hook waits only on a commit whose outcome TransactWith reads
-// (TestOnlyTransactOpensACommitScope).
-func withCommitHooks(ctx context.Context, pool TxPool, tx pgx.Tx) (context.Context, *commitScope) {
-	scope := &commitScope{tx: tx, pool: pool}
-	return context.WithValue(ctx, commitHooksKey{}, scope), scope
-}
-
 // scopeOf is ctx's commit scope, or nil for a context no TransactWith scopes or one an outcome
-// read cleared (outcomeReadContext).
+// read cleared (readOutcome).
 func scopeOf(ctx context.Context) *commitScope {
 	scope, _ := ctx.Value(commitHooksKey{}).(*commitScope)
 	return scope
@@ -166,7 +160,7 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 //     that ended inside write already fails the id read, and this refuses one that ended after it.
 //   - The commit runs on a context that the caller's cancel ends only commitReplyBound after that
 //     cancel. A caller whose context never ends waits for the reply as long as the server takes.
-//     The outcome read's own transaction has no such grace (outcomeReadContext).
+//     The outcome read's own transaction has no such grace (readOutcome).
 //   - A commit that succeeded runs the hooks, in order, on this goroutine.
 //   - A commit the server answered as not committed (an ERROR, or a ROLLBACK) returns its error,
 //     and so does one that never reached the server (commitErrorKind). No hook runs.
@@ -196,7 +190,8 @@ func TransactWith(ctx context.Context, pool TxPool, options pgx.TxOptions, write
 	// Once a commit has been tried, the transaction is closed and this does nothing.
 	defer func() { _ = tx.Rollback(committing) }()
 
-	scoped, scope := withCommitHooks(ctx, pool, tx)
+	scope := &commitScope{tx: tx, pool: pool}
+	scoped := context.WithValue(ctx, commitHooksKey{}, scope)
 	if err := runWrite(scoped, scope, write); err != nil {
 		return err
 	}
@@ -289,18 +284,13 @@ func (e *outcomeUnknownError) Is(target error) bool { return target == ErrCommit
 func (e *outcomeUnknownError) Unwrap() []error { return []error{e.lost, e.status} }
 
 // noCommitGrace marks the context of an outcome read: commitContext gives its COMMIT and its
-// rollback no grace, so the read's deadline is its hard end.
+// rollback no grace, so the read's deadline is its hard end. readOutcome is the one place that
+// sets it (TestOnlyTheOutcomeReadWaivesTheCommitGrace).
 type noCommitGrace struct{}
-
-// outcomeReadContext is ctx marked noCommitGrace and holding no commit scope, so a read never
-// joins a transaction and never outlives ctx's deadline.
-func outcomeReadContext(ctx context.Context) context.Context {
-	return context.WithValue(context.WithValue(ctx, noCommitGrace{}, true), commitHooksKey{}, (*commitScope)(nil))
-}
 
 // commitContext is ctx without its cancel, ended commitReplyBound after ctx ends, for the commit
 // and the rollback alone: a ctx that never ends never ends it. stop ends it at once and releases
-// what it holds. An outcome read's ctx (outcomeReadContext) is its own commit context, with a stop
+// what it holds. An outcome read's ctx (readOutcome) is its own commit context, with a stop
 // that does nothing: its deadline cuts its COMMIT and its rollback as it cuts its query.
 func commitContext(ctx context.Context) (committing context.Context, stop func()) {
 	if ctx.Value(noCommitGrace{}) != nil {
@@ -377,13 +367,14 @@ const (
 )
 
 // readOutcome asks `select pg_xact_status($1::xid8)` on a fresh connection, in a read-only
-// TransactWith on outcomeReadContext(ctx), again every outcomePollStep while it answers
-// `in progress`, until ctx ends. ctx's deadline is the hard end of every try: its BEGIN, its query,
-// its COMMIT and its rollback. A COMMIT the deadline cuts is a read-only transaction's lost reply,
-// so the status the query read stands. A failed read, a status the server does not keep (NULL),
-// and a transaction still in progress when ctx ends are unknown, with the error that says which.
+// TransactWith, again every outcomePollStep while it answers `in progress`, until ctx ends. Its
+// context is ctx marked noCommitGrace and holding no commit scope, so a read never joins a
+// transaction, and ctx's deadline is the hard end of every try: its BEGIN, its query, its COMMIT
+// and its rollback. A COMMIT the deadline cuts is a read-only transaction's lost reply, so the
+// status the query read stands. A failed read, a status the server does not keep (NULL), and a
+// transaction still in progress when ctx ends are unknown, with the error that says which.
 func readOutcome(ctx context.Context, pool TxPool, xid string) (outcome, error) {
-	reading := outcomeReadContext(ctx)
+	reading := context.WithValue(context.WithValue(ctx, noCommitGrace{}, true), commitHooksKey{}, (*commitScope)(nil))
 	for {
 		var status *string
 		if err := TransactWith(reading, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {

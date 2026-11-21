@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -77,94 +78,69 @@ func namesIn(t *testing.T, dir, name string) []namedIn {
 	return found
 }
 
-// usesOutside is every use of name in dir (namesIn), listed after label (namedIn.where): one
-// inside a function declaration named owner counts in inside, so a second use there, or a method
-// of that name, raises inside past the one the guards admit; any other is listed, whether it calls
-// name or takes it as a value, since a value taken anywhere can be called anywhere.
-func usesOutside(t *testing.T, dir, name, owner, label string) (outside []string, inside int) {
+// usesOutside is every use of name in dir (namesIn) outside the functions allowed names, listed
+// as "<file>:<line> in <func>" (namedIn.where), whether it calls, reads or builds name, and how
+// many uses each function of allowed holds.
+func usesOutside(t *testing.T, dir, name string, allowed map[string]int) (outside []string, inside map[string]int) {
 	t.Helper()
+	inside = map[string]int{}
 	for _, use := range namesIn(t, dir, name) {
-		if use.function == owner {
-			inside++
+		if _, ok := allowed[use.function]; ok {
+			inside[use.function]++
 			continue
 		}
-		outside = append(outside, use.where(label))
+		outside = append(outside, use.where(""))
 	}
 	return outside, inside
 }
 
-// scopeOpenersOutsideTransact is every use of withCommitHooks in dir outside TransactWith, as
-// "<file>:<line> in <func>", and the count of those inside it (usesOutside).
-func scopeOpenersOutsideTransact(t *testing.T, dir string) (outside []string, inside int) {
+// wantOnlyIn fails unless name is named in dir exactly as allowed says, and nowhere else. A guard
+// that found no use at all fails too, since allowed names at least one.
+func wantOnlyIn(t *testing.T, dir, name string, allowed map[string]int) {
 	t.Helper()
-	return usesOutside(t, dir, "withCommitHooks", "TransactWith", "")
+	outside, inside := usesOutside(t, dir, name, allowed)
+	if len(outside) != 0 || !maps.Equal(inside, allowed) {
+		t.Fatalf("%s is named %v in its owners and outside them at %v, want %v and nowhere else", name, inside, outside, allowed)
+	}
 }
+
+// commitHooksKeyOwners are the functions that name the key a commit scope lives under:
+// TransactWith stores the one scope that holds hooks, scopeOf reads it, and readOutcome stores
+// none, so an outcome read never joins a transaction.
+var commitHooksKeyOwners = map[string]int{"TransactWith": 1, "scopeOf": 1, "readOutcome": 1}
+
+// noCommitGraceOwners are the functions that name the outcome read's mark: readOutcome sets it,
+// and commitContext reads it.
+var noCommitGraceOwners = map[string]int{"readOutcome": 1, "commitContext": 1}
 
 // TransactWith is the one place a commit scope opens, so a hook can only wait on a commit whose
-// outcome TransactWith reads.
+// outcome TransactWith reads. Every scope lives under commitHooksKey, and the key's type is the
+// package's own, so a scope stored anywhere else names the key there and is listed.
 func TestOnlyTransactOpensACommitScope(t *testing.T) {
-	outside, inside := scopeOpenersOutsideTransact(t, ".")
-	if inside == 0 && len(outside) == 0 {
-		t.Fatal("the guard found no scope opener at all")
-	}
-	if len(outside) != 0 || inside != 1 {
-		t.Fatalf("withCommitHooks is named %d times in TransactWith and outside it at %v, want once in TransactWith and nowhere else", inside, outside)
-	}
+	wantOnlyIn(t, ".", "commitHooksKey", commitHooksKeyOwners)
 }
 
-// outcomeReadsOutsideReadOutcome is every use of outcomeReadContext in dir outside readOutcome,
-// as "<file>:<line> outcomeReadContext in <func>", and the count of those inside it
-// (usesOutside).
-func outcomeReadsOutsideReadOutcome(t *testing.T, dir string) (outside []string, inside int) {
-	t.Helper()
-	return usesOutside(t, dir, "outcomeReadContext", "readOutcome", " outcomeReadContext")
-}
-
-// The guards' controls, each an owner parsed and never built: one that calls each helper outside
-// its owner, one that takes each into a local variable and calls it through that, and one that
-// takes each into a package variable and calls it through that. Each use is listed.
+// The guards' control, an owner parsed and never built: one function that stores a scope under
+// the key, one that takes the key's type into a package-level alias, and one that sets the
+// outcome read's mark. Each use is listed.
 func TestTheScopeGuardsListEveryPlantedUse(t *testing.T) {
+	dir := filepath.Join("testdata", "plantedscope")
 	for _, tc := range []struct {
-		dir            string
-		scope, outcome []string
+		name    string
+		allowed map[string]int
+		want    []string
 	}{
-		{dir: "direct", scope: []string{"owner.go:9 in plantedOwner"},
-			outcome: []string{"owner.go:10 outcomeReadContext in plantedOwner"}},
-		{dir: "localalias", scope: []string{"owner.go:8 in plantedOwner"},
-			outcome: []string{"owner.go:10 outcomeReadContext in plantedOwner"}},
-		{dir: "packagealias", scope: []string{"owner.go:8 at package level"},
-			outcome: []string{"owner.go:9 outcomeReadContext at package level"}},
+		{"commitHooksKey", commitHooksKeyOwners, []string{"owner.go:9 in plantedOwner", "owner.go:14 at package level"}},
+		{"noCommitGrace", noCommitGraceOwners, []string{"owner.go:19 in plantedGrace"}},
 	} {
-		t.Run(tc.dir, func(t *testing.T) {
-			dir := filepath.Join("testdata", "plantedscope", tc.dir)
-			if outside, _ := scopeOpenersOutsideTransact(t, dir); !slices.Equal(outside, tc.scope) {
-				t.Errorf("the scope guard listed %v in the planted owner, want %v", outside, tc.scope)
-			}
-			if outside, _ := outcomeReadsOutsideReadOutcome(t, dir); !slices.Equal(outside, tc.outcome) {
-				t.Errorf("the outcome guard listed %v in the planted owner, want %v", outside, tc.outcome)
-			}
-		})
-	}
-}
-
-// Only the outcome read gives its COMMIT and its rollback no grace: readOutcome is the one place
-// that names outcomeReadContext, and noCommitGrace, the mark it sets, is named only where it is
-// set and where commitContext reads it.
-func TestOnlyTheOutcomeReadWaivesTheCommitGrace(t *testing.T) {
-	outside, inside := outcomeReadsOutsideReadOutcome(t, ".")
-	if inside == 0 && len(outside) == 0 {
-		t.Fatal("the guard found no outcome read")
-	}
-	if len(outside) != 0 || inside != 1 {
-		t.Fatalf("outcomeReadContext is named %d times in readOutcome and outside it at %v, want once in readOutcome and nowhere else", inside, outside)
-	}
-	var marks []string
-	for _, use := range namesIn(t, ".", "noCommitGrace") {
-		if use.function != "outcomeReadContext" && use.function != "commitContext" {
-			marks = append(marks, use.where(""))
+		if outside, _ := usesOutside(t, dir, tc.name, tc.allowed); !slices.Equal(outside, tc.want) {
+			t.Errorf("the guard of %s listed %v in the planted owner, want %v", tc.name, outside, tc.want)
 		}
 	}
-	if len(marks) != 0 {
-		t.Fatalf("noCommitGrace is named at %v, want only in outcomeReadContext and commitContext", marks)
-	}
+}
+
+// Only the outcome read gives its COMMIT and its rollback no grace: noCommitGrace, its mark, is
+// named only where readOutcome sets it and where commitContext reads it.
+func TestOnlyTheOutcomeReadWaivesTheCommitGrace(t *testing.T) {
+	wantOnlyIn(t, ".", "noCommitGrace", noCommitGraceOwners)
 }
