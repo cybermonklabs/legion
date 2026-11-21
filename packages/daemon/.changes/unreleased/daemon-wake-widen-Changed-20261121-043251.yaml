@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The listener-wake consumer `legion-go-<P>-wake` hears both wake subjects: the one every daemon shares, `notifications.legion.wake`, and the project''s own, `notifications.legion.<token>.wake`, where the token is the project as its claim tokens spell it. A boot widens an existing consumer in place, keeping its name, its ack floor and its position. The new `legion-go-<P>-ready` hears the shared subject from its own creation on, for the listener''s liveness report; it is created there again if it is found missing, whatever position was stored for it. The daemon decodes a wake report on its project''s subject as it decodes one on the shared subject. This is the first step of moving the listener''s role and agent reports to each project''s subject: no listener publishes there yet.'
+time: 2026-11-21T04:32:51.835528440Z
+custom:
+    Issue: daemon-wake-widen

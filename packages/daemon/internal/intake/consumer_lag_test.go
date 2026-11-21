@@ -43,10 +43,10 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 	}
 
 	lags := consumers.Lag(ctx)
-	if names := lagNames(lags); !slices.Equal(names, []string{dispatch, github, wakeConsumerName(spec.Project)}) {
-		t.Fatalf("Lag names %q, want the Dispatch, GitHub and listener-wake consumers", names)
+	if names := lagNames(lags); !slices.Equal(names, []string{dispatch, github, wakeConsumerName(spec.Project), readyConsumerName(spec.Project)}) {
+		t.Fatalf("Lag names %q, want the Dispatch, GitHub, listener-wake and listener-ready consumers", names)
 	}
-	for _, lag := range []ConsumerLag{lagNamed(t, lags, dispatch), lagNamed(t, lags, wakeConsumerName(spec.Project))} {
+	for _, lag := range []ConsumerLag{lagNamed(t, lags, dispatch), lagNamed(t, lags, wakeConsumerName(spec.Project)), lagNamed(t, lags, readyConsumerName(spec.Project))} {
 		if lag.Waiting != 0 || !lag.OldestAt.IsZero() || lag.Stalled || lag.Unavailable != "" {
 			t.Errorf("%s = %+v, want nothing waiting and nothing unavailable", lag.Name, lag)
 		}
@@ -128,8 +128,8 @@ func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
 		standIn.info, standIn.getMsg = refused, nil
 		defer func() { standIn.info = nil }()
 		lags := consumers.Lag(ctx)
-		if len(lags) != 3 {
-			t.Fatalf("Lag = %+v, want all three consumers", lags)
+		if len(lags) != 4 {
+			t.Fatalf("Lag = %+v, want all four consumers", lags)
 		}
 		for _, lag := range lags {
 			if lag.Waiting != 0 || lag.Stalled || !lag.OldestAt.IsZero() || lag.Unavailable != "read the consumer's info: "+refused.Error() {
@@ -170,9 +170,9 @@ func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
 
 // A NATS server refuses a publish its user lacks with an asynchronous -ERR alone and never answers
 // the request, so a stored-message get (STREAM.MSG.GET, which a deployment's daemon user lacks
-// until its envoy-infra release grants it) waits out its bound. Every consumer is read at the
-// same time, each within a bound of its own: the Dispatch, GitHub and wake consumers each have
-// messages waiting, so each one's get waits consumerOldestBound out inside its own
+// same time, each within a bound of its own: the Dispatch, GitHub, wake and ready consumers each
+// have messages waiting (the wake and ready consumers both hear the shared wake subject at this
+// step of the wake migration), so each one's get waits consumerOldestBound out inside its own
 // consumerLagBound while the others' infos answer all the same. Each consumer whose oldest
 // message could not be read keeps its waiting count and stalled flag and names that read, and Lag
 // as a whole stays within one consumerLagBound.
@@ -212,6 +212,7 @@ func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *t
 		{Name: dispatchConsumerName(spec.Project), Waiting: 1, Stalled: true, Unavailable: refused},
 		{Name: githubConsumerName(spec.Project), Waiting: 3, Stalled: true, Unavailable: refused},
 		{Name: wakeConsumerName(spec.Project), Waiting: 1, Stalled: true, Unavailable: refused},
+		{Name: readyConsumerName(spec.Project), Waiting: 1, Stalled: true, Unavailable: refused},
 	}
 	if !slices.Equal(lags, want) {
 		t.Fatalf("Lag with the stored-message get refused =\n%+v\nwant\n%+v", lags, want)

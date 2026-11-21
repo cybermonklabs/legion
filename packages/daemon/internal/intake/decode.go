@@ -128,7 +128,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	var legacy bool
 	var refused *checksRefusal
 	switch {
-	case subject == legionWakeSubject:
+	case subject == legionWakeSubject || isProjectWakeSubject(subject, project):
 		if envelope.Source != "envoy" {
 			return decodedMessage{}, fmt.Errorf("the listener wake subject has envelope source %q", envelope.Source)
 		}
@@ -194,11 +194,22 @@ func (e envoyEnvelope) factID() string {
 	return e.EventID
 }
 
-// legionWakeSubject is the one subject the Envoy listener reports a wake of a released pod on,
-// and the whole of the wake durable's filter (OpenConsumers). It is a new leaf under
-// notifications.legion.>, which the stream already carries, so it needs no stream change and no
-// new grant. Every daemon consumes it: the listener does not know which daemon owns a session.
+// legionWakeSubject is the one wake subject every daemon shares: the Envoy listener reports its
+// own liveness (`listener_ready`) there, and a listener of a release before the projects' wake
+// subjects reports every wake there too. It is a leaf under notifications.legion.>, which the
+// stream already carries.
 const legionWakeSubject = "notifications.legion.wake"
+
+// isProjectWakeSubject says whether subject is project's own wake subject (wakeSubject), where a
+// listener reports the role and agent wakes of the project's released pods once it has moved
+// them there; the daemon decodes a report there as it decodes one on the shared subject.
+func isProjectWakeSubject(subject, project string) bool {
+	if !strings.HasPrefix(subject, "notifications.legion.") {
+		return false
+	}
+	own, err := wakeSubject(project)
+	return err == nil && subject == own
+}
 
 // decodeListenerWake decodes one wake report of the Envoy listener (ListenerWake). Its wire shape
 // is `{"kind":..., "role":..., "session":..., "at":<epoch milliseconds>}`, the listener's own
