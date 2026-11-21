@@ -331,6 +331,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, refuseParentOutsideCallerProject(callerProject, parentKey, parentProject))
 			return
 		}
+		// A parent of another project passes on no assignee, as it passes on no repository,
+		// components or legion label: the chain's parent step (defaultAssignee) reads only a
+		// parent of the new issue's own project, so such an issue falls to its own project's
+		// default.
+		if parentProject != input.Project {
+			parentAssignee = nil
+		}
 		if err := refuseParentTooDeep(r.Context(), tx, "", parentKey); err != nil {
 			s.writeHandlerError(w, err)
 			return

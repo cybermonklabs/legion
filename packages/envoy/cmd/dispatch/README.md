@@ -4579,8 +4579,8 @@ Each item below names a path with its method and identity, then its purpose.
   `repo` (`owner/name`) is the issue's own repository, any repository at all, one its project maps, one another project maps, or one no project maps:
   `400 INVALID_ISSUE` when it is not `owner/name`.
   `parent` may be an issue of any project: `400 PARENT_INPUT` when no such issue exists, `409 PARENT_INPUT` when the new issue would sit more than 32 links below its root, counting the links in every project, and `403 PROJECT_SCOPE` when a credential that may write one project names a parent outside it.
-  A parent of another project passes on no repository, components or `legion` label:
-  `resolved_repo`, an inherited component attachment, the architecture tree's owner and `legion_managed_status` read only the ancestors in the issue's own project, so such an issue takes its own project's default repository.
+  A parent of another project passes on no repository, components, `legion` label or assignee:
+  `resolved_repo`, an inherited component attachment, the architecture tree's owner and `legion_managed_status` read only the ancestors in the issue's own project, so such an issue takes its own project's default repository, and a create that names no assignee and acts for no person lands on its own project's default assignee rather than the parent's.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
   a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.

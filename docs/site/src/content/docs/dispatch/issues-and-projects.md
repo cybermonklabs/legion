@@ -158,10 +158,11 @@ another person, and whose Inbox lists those asks. An issue nobody holds leaves i
 project's default assignee, so every ask reaches somebody.
 Change it from the issue header. The choices are **Unassigned** and every login allowed to sign in.
 An agent that creates an issue without naming one gets the person its token acts for, else the
-parent's assignee, else the project's default assignee: the person you name in the projects table
-in **Settings → Projects**, who takes every issue the chain leaves without an owner. Every project
-names one, so every new issue has an assignee. A person moves a project's default on that page,
-and an agent names the first one in the call that creates the project.
+parent's assignee when the parent is in the same project, else the project's default assignee: the
+person you name in the projects table in **Settings → Projects**, who takes every issue the chain
+leaves without an owner. Every project names one, so every new issue has an assignee. A person
+moves a project's default on that page, and an agent names the first one in the call that creates
+the project.
 
 ### Labels
 
