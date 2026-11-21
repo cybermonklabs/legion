@@ -780,6 +780,10 @@ const (
 	pageCacheControl = "no-cache"
 	// assetCacheControl lets a browser keep a hashed asset for a year without asking.
 	assetCacheControl = "public, max-age=31536000, immutable"
+	// outsideContentSecurityPolicy is the outside origin's dashboard answers' policy: no page
+	// frames them. It limits nothing else, so the page's inline script runs as it does at the
+	// canonical origin, which sends no policy.
+	outsideContentSecurityPolicy = "frame-ancestors 'none'"
 )
 
 func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
@@ -795,6 +799,13 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.WebDistDir == "" {
 		writeError(w, http.StatusNotFound, "dashboard build not found")
 		return
+	}
+	if r.atOutside(req) {
+		// The outside origin is on the public internet, and its pages hold what lets a person in:
+		// an owner's link (/enroll#<token>) and the passkey sign-in. No page of another site may
+		// frame them, so no click on one is made where the person cannot see it.
+		w.Header().Set("Content-Security-Policy", outsideContentSecurityPolicy)
+		w.Header().Set("X-Frame-Options", "DENY")
 	}
 	if normalized == "/" {
 		normalized = "/index.html"

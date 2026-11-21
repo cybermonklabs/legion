@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -143,6 +145,33 @@ func TestOutsideSignInWhoamiAnswersBothOrigins(t *testing.T) {
 	}
 	if status, body := whoamiAt(t, ""); status != http.StatusOK || body != `{"event_head":"0","kind":"user","login":"alice@example.com"}` {
 		t.Errorf("whoami with no outside origin = %d %s, want today's three keys and no origins", status, body)
+	}
+}
+
+// The outside origin's pages - the enrollment page an owner's link opens, the passkey sign-in at
+// its root - say no page may frame them, in both headers a browser reads that from. The canonical
+// origin's same pages carry neither, as before: the control that the reading tells the two origins
+// apart.
+func TestTheOutsideOriginsPagesRefuseEveryFrame(t *testing.T) {
+	rig := newOriginRig(t, outsideRuleListingEveryone(), outsideOrigin)
+	webDist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html>"), 0o600); err != nil {
+		t.Fatalf("write dashboard index: %v", err)
+	}
+	rig.ctx.WebDistDir = webDist
+	for _, path := range []string{"/enroll", "/", "/projects/PRIV"} {
+		for origin, want := range map[string]struct{ policy, frameOptions string }{
+			outsideOrigin:   {policy: "frame-ancestors 'none'", frameOptions: "DENY"},
+			canonicalOrigin: {},
+		} {
+			response := httptest.NewRecorder()
+			rig.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, origin+path, nil))
+			policy, frameOptions := response.Header().Get("Content-Security-Policy"), response.Header().Get("X-Frame-Options")
+			if response.Code != http.StatusOK || policy != want.policy || frameOptions != want.frameOptions {
+				t.Errorf("GET %s%s = %d, Content-Security-Policy %q, X-Frame-Options %q; want 200, %q, %q",
+					origin, path, response.Code, policy, frameOptions, want.policy, want.frameOptions)
+			}
+		}
 	}
 }
 
