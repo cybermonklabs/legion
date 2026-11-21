@@ -1285,6 +1285,15 @@ func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *
 	// no event of it.
 	moved := issue(key, "acme/widgets", "todo", true, "", 1)
 	client.show(moved)
+	// GitHub answers only once every recovery pass that listed Dispatch before the move has ended.
+	// The refresher recovers zeta/tools again on installReadRetry's backoff while it is unread, so
+	// a pass can be between its listing and its preparation here. Such a pass prepares the issue on
+	// zeta/tools, the resolution its listing read, and records it there if GitHub already answers
+	// its read. That is the moment GitHub answered, not the resolution the recovery takes, so the
+	// test must not race it. The refresher runs its passes one at a time (refreshRepositories), so
+	// a listing asked after the move means each pass that listed before it has ended.
+	listed := client.listingCount()
+	testwait.Eventually(t, "a recovery's listing asked after the move", func() bool { return client.listingCount() > listed })
 	serveAndRecover(t, w, installs)
 	if got := recordedIssue(t, w, key); got == nil || got.Repo != "acme/widgets" {
 		t.Fatalf("%s = %+v once zeta/tools is recovered, want it admitted on acme/widgets, where it resolves now", key, got)
