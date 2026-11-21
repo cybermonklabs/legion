@@ -9,7 +9,7 @@
 -- one more at each update (consumernames.PGStore). The one row whose logical name holds a '.',
 -- envoy.sentinel (consumernames.PGSentinelKey), is the sentinel: the cutover marker the operator's
 -- convert writes, which a fresh daemon reads before it calls the server at all. No row is written
--- here: with no sentinel a fresh daemon refuses every consumer call, and a fixed one reads nothing.
+-- here: with no sentinel a fresh daemon refuses every consumer call, and a fixed one opens the fixed names.
 -- The table holds every project of the database, as the checkpoints of consumer_positions do; each
 -- project's names are its own, and the sentinel is the database's.
 --

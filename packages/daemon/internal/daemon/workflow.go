@@ -930,8 +930,6 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		ReviewPermission: w.reviewerCanWrite, ReviewBody: w.reviewBody,
 		RepositoryMapping: w.mappingChange, PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
 		Names: cfg.ConsumerNames,
-		// Each generation of a fresh consumer name gets a connection of its own, opened as this
-		// one is, under the name intake gives it (intake.GenerationConnection).
 		Connect: func(_ context.Context, name string) (*nats.Conn, error) {
 			return natsauth.Connect(cfg.NatsURLs, nc.seed, name, natsauth.LogEvents(w.log), natsauth.ReconnectForever())
 		},

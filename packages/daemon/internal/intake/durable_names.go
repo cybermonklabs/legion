@@ -37,14 +37,6 @@ import (
 // deletes nothing: its NATS grant has no consumer delete, so a name it retires after a create
 // nobody answered stays on the server until the operator's `envoy-infra consumer-names cleanup`
 // deletes it (durableServer.Delete).
-//
-// Each failed name step is one ERROR line, nameNotSettledLine, naming the logical name, the
-// physical name the step was on ("" when none was read), the step and the error. There is no
-// metric for it.
-//
-// On fixed names the daemon reads one thing of all this: the sentinel's cutover marker, at each
-// boot, and it refuses to start once the marker is "done" (refuseConvertedStore), since the fixed
-// names it would create are the ones the cutover converted away.
 
 // nameNotSettledLine is the message of the ERROR line a failed name step writes (durableNames.failed).
 const nameNotSettledLine = "intake: a durable consumer's physical name could not be settled"
@@ -117,14 +109,9 @@ type durableNames struct {
 	connect func(ctx context.Context, name string) (*nats.Conn, error)
 
 	mu sync.Mutex
-	// generations are the open connections, by the physical name each is named for.
-	generations map[string]*generation
-}
-
-// generation is the connection of one physical name, and JetStream on it.
-type generation struct {
-	conn *nats.Conn
-	js   jetstream.JetStream
+	// generations is JetStream on each open connection, by the physical name the connection is
+	// named for; Conn is that connection.
+	generations map[string]jetstream.JetStream
 }
 
 // GenerationConnection is the name of the NATS connection the daemon makes every call on physical,
@@ -136,7 +123,7 @@ func GenerationConnection(physical string) string {
 }
 
 func newDurableNames(stream jetstream.Stream, pool Pool, spec ConsumerSpec) *durableNames {
-	d := &durableNames{stream: stream, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]*generation{}}
+	d := &durableNames{stream: stream, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]jetstream.JetStream{}}
 	d.names = consumernames.New(consumernames.Config{
 		Store:         consumernames.NewPGStore(pool),
 		Server:        durableServer{d},
@@ -162,7 +149,7 @@ func (d *durableNames) on(ctx context.Context, physical string) (jetstream.JetSt
 	open, ok := d.generations[physical]
 	d.mu.Unlock()
 	if ok {
-		return open.js, nil
+		return open, nil
 	}
 	if consumernames.LogicalOf(physical) == physical {
 		return nil, fmt.Errorf("consumer %s is no fresh name, which no generation's connection is granted", physical)
@@ -181,9 +168,9 @@ func (d *durableNames) on(ctx context.Context, physical string) (jetstream.JetSt
 	defer d.mu.Unlock()
 	if open, ok := d.generations[physical]; ok {
 		conn.Close()
-		return open.js, nil
+		return open, nil
 	}
-	d.generations[physical] = &generation{conn: conn, js: js}
+	d.generations[physical] = js
 	return js, nil
 }
 
@@ -193,7 +180,7 @@ func (d *durableNames) keep(logical, current string) {
 	defer d.mu.Unlock()
 	for physical, open := range d.generations {
 		if physical != current && consumernames.LogicalOf(physical) == logical {
-			open.conn.Close()
+			open.Conn().Close()
 			delete(d.generations, physical)
 		}
 	}
@@ -204,7 +191,7 @@ func (d *durableNames) close() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for physical, open := range d.generations {
-		open.conn.Close()
+		open.Conn().Close()
 		delete(d.generations, physical)
 	}
 }
