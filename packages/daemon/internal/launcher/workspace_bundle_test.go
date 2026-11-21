@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -551,7 +552,7 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 		cancel()
 		select {
 		case <-exited:
-		case <-time.After(20 * time.Second):
+		case <-time.After(testwait.Bounded(f.t, 3*time.Minute, cleanupMargin)):
 			f.t.Error("the shim did not leave after its context ended")
 		}
 	})
@@ -561,7 +562,10 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 		f.t.Fatal(err)
 	}
 	defer conn.Close()
-	if err := conn.SetDeadline(time.Now().Add(2 * time.Minute)); err != nil {
+	// The read of the shim's frames, and the save's own budget, are the hang guard alone: a save
+	// that runs a while with real git and jj on a loaded machine is merely slow.
+	guard := hangGuard(f.t)
+	if err := conn.SetDeadline(time.Now().Add(guard)); err != nil {
 		f.t.Fatal(err)
 	}
 	reader := shimwire.NewReader(bufio.NewReader(conn))
@@ -574,7 +578,7 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 	if err := writer.WriteFrame(shimwire.HelloAck{}); err != nil {
 		f.t.Fatal(err)
 	}
-	request := shimwire.BundleWorkspace{ID: "bundle-1", Issue: bundleIssue, MaxBytes: 40 << 20, TimeoutMs: 120_000}
+	request := shimwire.BundleWorkspace{ID: "bundle-1", Issue: bundleIssue, MaxBytes: 40 << 20, TimeoutMs: int(guard.Milliseconds())}
 	if err := writer.WriteFrame(request); err != nil {
 		f.t.Fatal(err)
 	}

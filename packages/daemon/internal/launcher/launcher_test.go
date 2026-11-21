@@ -157,17 +157,20 @@ func (g *rig) accept() shimwire.LauncherState {
 }
 
 // acceptRole takes one launcher connection up to its hello: the daemon end of the role that
-// hello names, which has not been acknowledged yet.
+// hello names, which has not been acknowledged yet. The accept waits under the hang guard alone
+// (hangGuard): a launcher that dials late on a loaded machine is merely slow, and one that never
+// dials fails here, the guard named beside the accept's error.
 func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 	t.Helper()
+	guard := hangGuard(t)
 	if tcp, ok := listener.(*net.TCPListener); ok {
-		if err := tcp.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+		if err := tcp.SetDeadline(time.Now().Add(guard)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	conn, err := listener.Accept()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("the launcher's connection: %v (an accept waits up to %s, the hang guard)", err, guard)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	c := &roleConn{t: t, conn: conn, reader: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
@@ -200,14 +203,34 @@ func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.Launc
 	return state
 }
 
-// next reads the launcher's next frame. Its deadline is a hang guard alone, the test binary's own
-// less a margin: a generation that runs a while sends no frame until it ends (a role start that
-// restores a released workspace with git and jj first, say), so a deadline of a fixed few seconds
-// failed such a case on a loaded machine with nothing wrong. A launcher that never sends the frame
-// fails here, the guard named beside the read's error.
+// hangMargin is how long before the test binary's deadline a hang guard (hangGuard) gives up. It
+// is the time a failing case's cleanups have to run in before Go's alarm panics the binary, the
+// fleet's wait for its launcher among them, which gives up cleanupMargin before the deadline:
+// without -v that panic prints no running test's log, so a failure whose cleanups ran past the
+// deadline would lose its own message.
+const hangMargin = 30 * time.Second
+
+// cleanupMargin is how long before the test binary's deadline a case's cleanup gives up its wait
+// for what it started to leave: less than hangMargin, so a case whose hang guard gave up still
+// runs the rest of its cleanups, and prints its failure, before the alarm.
+const cleanupMargin = 10 * time.Second
+
+// hangGuard bounds a wait that only a hang ends: the test binary's own deadline less hangMargin,
+// three minutes at most. A wait for something the launcher does (its dial, its next frame, a
+// role's file) keeps no fixed span: on a loaded machine a step that is merely slow is not a
+// failure, and a launcher that never does the thing still fails, at the guard.
+func hangGuard(t *testing.T) time.Duration {
+	return testwait.Bounded(t, 3*time.Minute, hangMargin)
+}
+
+// next reads the launcher's next frame under the hang guard alone (hangGuard): a generation that
+// runs a while sends no frame until it ends (a role start that restores a released workspace with
+// git and jj first, say), so a deadline of a fixed few seconds failed such a case on a loaded
+// machine with nothing wrong. A launcher that never sends the frame fails here, the guard named
+// beside the read's error.
 func (g *roleConn) next() shimwire.Frame {
 	g.t.Helper()
-	guard := testwait.Bounded(g.t, 3*time.Minute, 10*time.Second)
+	guard := hangGuard(g.t)
 	if err := g.conn.SetReadDeadline(time.Now().Add(guard)); err != nil {
 		g.t.Fatal(err)
 	}
@@ -708,11 +731,14 @@ func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	go func() {
 		f.result <- Run(ctx, cfg)
 	}()
+	// The launcher's stop gives each role its grace, so a case that fails with its roles still
+	// running waits out what the stop needs: the bound is the test binary's deadline less
+	// cleanupMargin, three minutes at most, and a launcher that never leaves fails the case.
 	t.Cleanup(func() {
 		cancel()
 		select {
 		case <-f.result:
-		case <-time.After(30 * time.Second):
+		case <-time.After(testwait.Bounded(t, 3*time.Minute, cleanupMargin)):
 			t.Errorf("the launcher did not leave after its context ended; its log: %s", f.stderr.String())
 		}
 	})
@@ -768,11 +794,12 @@ func (g *roleConn) awaitExit(generation uint64) shimwire.LauncherExit {
 }
 
 // waitForRoleFile is path's content once the role writes it, naming the launcher's log — every
-// role's output, role-init's refusals among it — when it never does.
+// role's output, role-init's refusals among it — when it never does. It waits under the hang
+// guard alone (hangGuard).
 func (f *fleet) waitForRoleFile(path string) string {
 	f.t.Helper()
 	var said string
-	if !testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(hangGuard(f.t), testwait.Poll, func() bool {
 		body, err := os.ReadFile(path)
 		if err != nil || len(body) == 0 {
 			return false
@@ -890,25 +917,41 @@ func TestARolesExitIsReportedWithTheShimsOwnStatus(t *testing.T) {
 // "At once" is read from the roles, not from a clock: each role's handler says it has its SIGTERM
 // and then waits for the case to let it finish, and the case lets them only once both have said
 // so. A launcher that stopped the roles one after another would leave the second without its
-// SIGTERM while the first waits, so the first would be killed at the end of its grace and never
-// finish. The launcher must then leave within one stop grace of the moment the case lets the
-// handlers finish, so a launcher that waits a grace on anything past its roles fails here.
+// SIGTERM while the first waits. The case's wait for both handlers runs past one grace, so the
+// first role is killed at the end of its grace, the second has its SIGTERM only then, and the case
+// lets the second finish: the first never wrote that it finished, and the row fails on that once
+// the launcher has ended both roles. The launcher must leave within one stop grace of the moment
+// the case lets the handlers finish, so a launcher that waits a grace on anything past its roles
+// fails here. A case that fails before it lets the handlers finish lets them in its cleanup,
+// before the fleet's cleanup stops the container, so no role's process outlives the case.
 //
-// The grace is the test binary's own deadline less a margin, three minutes at most, so that bound
-// is a hang guard too, and the verdict is the order of events above. The case once gave the
-// fleet a grace of 6 s: the roles' teardown after their handlers end is all that is left, but on a
-// loaded dev box under the race detector it took longer than 6 s with nothing wrong
-// (2026-11-21), and before that a stop held to 2.5 s for two handlers of 1.5 s each broke
-// the same way (3.4 s in all on a loaded dev box).
+// Each bound is the hang guard (hangGuard) or half of it: the wait for both handlers is the
+// guard, the grace is half of it, and the wait for the launcher to leave is one grace from the
+// release, or the guard's end if that is sooner. The case once gave the fleet a grace of 6 s: the
+// roles' teardown after their handlers end is all that is left, but on a loaded dev box under the
+// race detector it took longer than 6 s with nothing wrong (2026-11-21), and before that a stop
+// held to 2.5 s for two handlers of 1.5 s each broke the same way (3.4 s in all on a loaded dev
+// box).
+//
+// The gap this leaves: a launcher that waits less than one grace (90 s at most) past its roles
+// and then leaves passes, as one that waits 30 s does. No order of events shows such a wait, only
+// a bound does, and any bound short enough to see a few seconds is one a loaded machine reaches.
 func TestTheContainersStopEndsEveryRoleWithinOneStopGrace(t *testing.T) {
 	requireRoleNamespaces(t)
-	grace := testwait.Bounded(t, 3*time.Minute, 10*time.Second)
+	grace := hangGuard(t) / 2
 	f := newFleet(t, grace, "tester", "reviewer")
 	const handler = `trap 'printf termed > /tmp/termed; while [ ! -e /tmp/go ]; do /bin/sleep 0.01; done; printf done > /tmp/finished; exit 0' TERM
 printf ready > /tmp/ready
 while :; do /bin/sleep 600 & wait; done
 `
 	roles := []string{"tester", "reviewer"}
+	// Registered after the fleet, so it runs before the fleet's cleanup stops the container: a role
+	// whose handler finds the file there finishes on its SIGTERM at once.
+	t.Cleanup(func() {
+		for _, role := range roles {
+			_ = os.WriteFile(f.roleTmp(role, "go"), nil, 0o644)
+		}
+	})
 	for i, role := range roles {
 		got := f.role(role).start(shimwire.LauncherStart{
 			ID: "start-" + role, Generation: uint64(i + 1), Argv: []string{"/bin/sh", "-c", handler},
@@ -920,7 +963,7 @@ while :; do /bin/sleep 600 & wait; done
 	}
 
 	f.cancel()
-	testwait.Eventually(t, "both roles to be in their SIGTERM handlers at the same time", func() bool {
+	testwait.WithinPolling(t, hangGuard(t), testwait.Poll, "both roles to be in their SIGTERM handlers at the same time", func() bool {
 		for _, role := range roles {
 			if _, err := os.Stat(f.roleTmp(role, "termed")); err != nil {
 				return false
@@ -928,19 +971,19 @@ while :; do /bin/sleep 600 & wait; done
 		}
 		return true
 	})
-	released := time.Now()
 	for _, role := range roles {
 		if err := os.WriteFile(f.roleTmp(role, "go"), nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
+	leave := testwait.Bounded(t, grace, hangMargin)
 	var err error
 	select {
 	case err = <-f.result:
 		f.result <- err
-	case <-time.After(grace - time.Since(released)):
-		t.Fatalf("the launcher had not left %s after the case let both roles finish their handlers, one stop grace: it waits on something past its roles; its log: %s",
-			grace, f.stderr.String())
+	case <-time.After(leave):
+		t.Fatalf("the launcher had not left %s after the case let both roles finish their handlers (one stop grace is %s): it waits on something past its roles; its log: %s",
+			leave, grace, f.stderr.String())
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("the launcher returned %v, want its context's end", err)
