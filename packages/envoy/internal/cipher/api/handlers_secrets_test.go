@@ -197,12 +197,18 @@ func TestARereadNamesTheTypeItServes(t *testing.T) {
 		t.Fatalf("reread of a stored secret = %s, want served with no type", body)
 	}
 	for _, secretType := range policy.Types {
-		ts.Secrets.Put(policytest.TypeSecret("PLAIN_KEY", testApprover, policy.TierAgent, secretType, policytest.TypeValue(secretType)))
+		// An anthropic-federation secret is served at human tier alone (policy.ReasonTypeHumanTier);
+		// every other type at agent tier, as before.
+		tier := policy.TierAgent
+		if secretType == policy.TypeAnthropicFederation {
+			tier = policy.TierHuman
+		}
+		ts.Secrets.Put(policytest.TypeSecret("PLAIN_KEY", testApprover, tier, secretType, policytest.TypeValue(secretType)))
 		_, body = ts.sessionReread(t, "PLAIN_KEY")
 		if r := decode[wireReread](t, body); !r.Served || r.Type != secretType {
 			t.Fatalf("reread once the type is %s = %s, want served as %s", secretType, body, secretType)
 		}
-		for _, private := range []string{testApprover, policy.TierAgent, "github-owners", "owner"} {
+		for _, private := range []string{testApprover, tier, "github-owners", "owner"} {
 			if strings.Contains(string(body), private) {
 				t.Fatalf("reread answer %s carries %q; it names only the type", body, private)
 			}

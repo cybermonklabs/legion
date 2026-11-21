@@ -250,9 +250,9 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 }
 
 // approverHint is approver as a login_hint: the person's own login, and nothing for a shared
-// secret, whose approver is anyone signed in.
+// secret, whose approver is anyone signed in, or a group's, whose approver is no one login.
 func approverHint(approver string) string {
-	if approver == record.AnyoneApprover {
+	if _, group := record.GroupOf(approver); approver == record.AnyoneApprover || group {
 		return ""
 	}
 	return approver
@@ -267,7 +267,7 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 		Reason:            d.Reason, Lifetime: "until the session ends",
 		RequestedAt: d.RequestedAt.UTC().Format(timeLayout), ExpiresAt: d.ExpiresAt.UTC().Format(timeLayout),
 		Approver: approverText(d.Approver), State: d.State,
-		MayDecide: record.MayDecide(d.Kind, d.Approver, d.Service, login),
+		MayDecide: record.MayDecide(d.Kind, d.Approver, d.Service, login, p.cfg.Machine.Groups),
 	}
 	if d.Session.Request != "" && d.Session.Request != d.Session.Enrollment {
 		v.RequestSession = d.Session.Request
@@ -334,6 +334,9 @@ func approverText(approver string) string {
 	if approver == record.AnyoneApprover {
 		return "anyone signed in to this broker"
 	}
+	if group, ok := record.GroupOf(approver); ok {
+		return "a member of the group " + group
+	}
 	return approver
 }
 
@@ -384,25 +387,26 @@ func (p *Page) outcomes(ctx context.Context, decided, refused, login string, now
 				return nil, err
 			}
 		}
-		lines = append(lines, outcome(d, login, now, codes[id]))
+		lines = append(lines, outcome(d, login, now, codes[id], p.cfg.Machine.Groups))
 	}
 	return lines, nil
 }
 
-// outcome says what became of a record a decision named, from its state now. refusal is the code
-// of why this page's decision of it was refused (refusalSentences), empty when it was not.
+// outcome says what became of a record a decision named, from its state now, to login, whom
+// groups says is or is not a member of a group approver. refusal is the code of why this page's
+// decision of it was refused (refusalSentences), empty when it was not.
 //
 // "already decided: " opens the line whenever somebody other than the reader decided the record,
 // the model judge and the current policy included: the reader clicked Approve and got the
 // broker's refusal, and what they must read first is that the record was already decided and by
 // whom. A record nobody decided — one that expired, or that its requesting session withdrew —
 // has no decider to compare, and its own line says what became of it.
-func outcome(d requests.RecordDetail, login string, now time.Time, refusal string) string {
+func outcome(d requests.RecordDetail, login string, now time.Time, refusal string, groups record.Groups) string {
 	what := strings.Join(d.Identifiers, ", ") + ": "
 	switch {
 	case d.Kind != record.KindAgentSecret:
 		return what + "a machine login, which is decided by typing its code on Dispatch's machine-login page."
-	case d.Decided == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login):
+	case d.Decided == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login, groups):
 		return what + "not yours to decide; only " + approverText(d.Approver) + " may."
 	case d.Decided == nil && !d.ExpiresAt.After(now):
 		return what + "expired before anyone decided it."
@@ -577,16 +581,18 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 // id no record has (requests.Machine.ReadRecordFor), and one Dispatch could not answer for prints its
 // own line (unansweredOutcome).
 var refusalSentences = map[string]string{
-	refusedPolicy: "still pending; it was not decided: the current policy no longer lets you approve it.",
-	refusedChain:  "still pending; it was not decided: its approval chain no longer verifies.",
-	refusedError:  "still pending; it was not decided: the secrets broker could not decide it. Try again shortly.",
+	refusedPolicy:      "still pending; it was not decided: the current policy no longer lets you approve it.",
+	refusedChain:       "still pending; it was not decided: its approval chain no longer verifies.",
+	refusedError:       "still pending; it was not decided: the secrets broker could not decide it. Try again shortly.",
+	refusedGroupUnread: "still pending; it was not decided: who may ask for it names a Google group the broker has not read in the last two hours. Approve it again once the group is read.",
 }
 
 // The codes refusalSentences maps, which decide answers.
 const (
-	refusedPolicy = "policy"
-	refusedChain  = "chain"
-	refusedError  = "error"
+	refusedPolicy      = "policy"
+	refusedChain       = "chain"
+	refusedError       = "error"
+	refusedGroupUnread = "group-unread"
 )
 
 // decide decides one record as login and answers what became of it, for the log, the code of why
@@ -604,7 +610,9 @@ const (
 // them nothing of it. A refusal record.ErrNotApprover carries for a record whose approver line
 // names someone else is said by the page it lands on in its own words ("not yours to decide"),
 // and carries no code; one for a record login may still see and decide is the current policy's —
-// its owner, a max-grant or a withheld name moved since the page was printed.
+// its owner, a max-grant or a withheld name moved since the page was printed — or, where a name's
+// requesters name a group the broker has not read in the last two hours, that group's
+// (requests.ErrRequestersGroupUnread), which the same approval passes once the group is read.
 func (p *Page) decide(ctx context.Context, id string, approve bool, login string) (outcome, refusal string, made bool) {
 	kind, err := p.cfg.Machine.RecordKind(ctx, id)
 	switch {
@@ -630,8 +638,10 @@ func (p *Page) decide(ctx context.Context, id string, approve bool, login string
 		return "already decided", "", false
 	case errors.Is(err, requests.ErrGrantChainInvalid):
 		return "refused: " + err.Error(), refusedChain, false
+	case errors.Is(err, requests.ErrRequestersGroupUnread):
+		return "refused: " + err.Error(), refusedGroupUnread, false
 	case errors.Is(err, record.ErrNotApprover):
-		if d, read := p.cfg.Machine.ReadRecord(ctx, id); read == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login) {
+		if d, read := p.cfg.Machine.ReadRecord(ctx, id); read == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login, p.cfg.Machine.Groups) {
 			return "refused: " + err.Error(), "", false
 		}
 		return "refused: " + err.Error(), refusedPolicy, false

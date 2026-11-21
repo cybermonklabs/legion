@@ -366,12 +366,18 @@ marked with tags or annotations:
   `projects/<number>/secrets/agent-secrets-deel-api-key`, is `DEEL_API_KEY`. It is lowercase
   letters, digits and single hyphens, starting with a letter.
 - **`owner`** is `shared`, a person's email in lowercase, the email they sign in to Dispatch with,
-  or a service the broker is configured with (`BROKER_SERVICES` or `BROKER_VM_SERVICES`).
+  a Google group as `group:` and the group's lowercase email, whose members each decide as the one
+  owner does ([A group's secret](#a-groups-secret)), or a service the broker is configured with
+  (`BROKER_SERVICES` or `BROKER_VM_SERVICES`).
 - **`tier`** is `agent` or `human`.
 - **`type`** is absent for a stored secret. It is `github-app` for a GitHub App key,
-  `google-login` for a Google authorized-user login, or `google-service-account` for one Google
-  service account the broker mints a token as, the account the deployment binds the secret to
-  (`BROKER_SERVICE_ACCOUNT_SECRETS`). A secret with a type must have a current value.
+  `google-login` for a Google authorized-user login, `azure-login` for the Entra tenant and client
+  ids of the one secret the deployment names in `BROKER_AZURE_LOGIN_SECRET`, released with the
+  broker's own projected Azure token at human tier alone, `google-service-account` for one Google
+  service account the broker mints a token as, or `anthropic-federation` for an Anthropic token
+  the broker gets by federation as one Google service account. For each of the last two, the
+  account is the one the deployment binds the secret to (`BROKER_SERVICE_ACCOUNT_SECRETS`). A
+  secret with a type must have a current value.
   For one release, when `type` is absent, the broker reads the old `kind` tag instead and logs
   one warning per secret per broker process. An explicitly empty `type` takes precedence too.
   Writers use `type` on both stores. Deploy this reader before changing production tags; then
@@ -389,21 +395,24 @@ marked with tags or annotations:
   installation on an account the list does not
   name gets no token. A `github-app` secret without the tag, or with one that names no account, is
   refused `github-owners-missing`.
-- **`requesters`** is optional. It names the only people and services that may ask for the secret
-  at all: people by the lowercase email they sign in with, services by the name the deployment
-  registers them under, separated by spaces (`ada@example.com legion-daemon`). A session whose
-  person the list does not name, and a pod whose service it does not name, is denied
-  `requester-not-listed`. A comma, a list that names nobody, an email with a capital letter, or a
-  service the deployment does not register is refused `requesters-malformed`. The list narrows
-  who may ask and bounds no grant by itself: a secret that is neither `admin` nor
-  `google-service-account` keeps whatever `max-grant` it has, or none, so a person's own mail and
-  Drive logins stay at their tier and are capped by nothing. A `google-service-account` secret's
-  list names its own person owner, once, and the secret is refused `requesters-not-owner`
-  otherwise, so a secret owned by `shared` or by a service carries no such type. A human-tier one
-  may name registered services beside that owner, so a service's pod can ask and the owner
-  approves each request; an agent-tier one may not, and neither may a secret the deployment binds
-  to a `dev-<name>` account, at either tier, since that token is one person's own. Set the list
-  with `agent-secrets secret create|retag --requesters "<email> <service>"`.
+- **`requesters`** is optional. It names the only people, groups and services that may ask for the
+  secret at all: people by the lowercase email they sign in with, Google groups as `group:` and the
+  group's lowercase email, whose members' sessions it admits, and services by the name the
+  deployment registers them under, separated by spaces
+  (`ada@example.com group:approvers@example.com legion-daemon`). A session whose person the list
+  does not name, and a pod whose service it does not name, is denied `requester-not-listed`. A
+  comma, a list that names nobody, an email with a capital letter, a `group:` entry whose rest is
+  no lowercase email, or a service the deployment does not register is refused
+  `requesters-malformed`. The list narrows who may ask and bounds no grant by itself: a secret
+  that is neither `admin`, `google-service-account` nor `anthropic-federation` keeps whatever
+  `max-grant` it has, or none, so a person's own mail and Drive logins stay at their tier and are
+  capped by nothing. A `google-service-account` or `anthropic-federation` secret's list names its
+  owner once, as the owner tag writes it, and no other person or group, and the secret is refused
+  `requesters-not-owner` otherwise, so a secret owned by `shared` or by a service carries neither
+  type. A human-tier one may name registered services beside that owner, so a service's pod can
+  ask and the owner approves each request; an agent-tier one may not, and neither may a secret the
+  deployment binds to a `dev-<name>` account, at either tier, since that token is one person's own.
+  Set the list with `agent-secrets secret create|retag --requesters "<email> <service>"`.
 - **`scopes`** is optional, read on a `google-service-account` secret and refused on any other
   type (`scopes-type`). It lists the OAuth scopes the minted token carries, each the part of a
   Google scope after `https://www.googleapis.com/auth/`, separated by spaces
@@ -424,8 +433,9 @@ marked with tags or annotations:
   that gives the judge seconds of that name cannot undo the tag
   ([The model judge](#the-model-judge)). Set it with
   `agent-secrets secret create|retag --admin true`.
-- **`max-grant`** is optional, except on an `admin` secret and on a `google-service-account` one:
-  each of those needs it, of an hour or less, and is refused `max-grant-required` without it. It
+- **`max-grant`** is optional, except on an `admin` secret and on a `google-service-account` or
+  `anthropic-federation` one: each of those needs it, of an hour or less, and is refused
+  `max-grant-required` without it. It
   is a Go duration of at least one second. A request for that secret must ask for a lifetime no
   longer than the tag; a request with no `--ttl` asks for the default, 15 minutes when any
   secret it names is human tier and 12 hours otherwise.
@@ -485,7 +495,9 @@ store's IAM decides what that credential may change
 
 A `requesters` list is read before owner and tier. Where a secret carries one, a session whose
 person it does not name, and a pod whose service it does not name, is denied
-`requester-not-listed`, whatever the table below would have given it. An entry holding an `@` is a
+`requester-not-listed`, whatever the table below would have given it. An entry starting `group:`
+is a group, and admits a session whose person the group lists, as the broker last read it
+([A group's secret](#a-groups-secret)). Of the rest, an entry holding an `@` is a
 person and is matched against the session's person alone; one holding none is a service and is
 matched against the service the broker verified alone. A pod acts for no person unless
 `BROKER_POD_OPERATORS` maps its account to one, and then it has no service
@@ -507,6 +519,8 @@ Who gets it then follows from those two tags alone:
 | --- | --- | --- |
 | A person's, `tier=agent` | Granted at once. | Sent to the owner for approval. |
 | A person's, `tier=human` | Sent to the owner for approval. | Sent to the owner for approval. |
+| A group's, `tier=agent` | Granted at once to a member's own session. | Sent to the group for approval: any member decides. |
+| A group's, `tier=human` | Sent to the group for approval: any member decides. | Sent to the group for approval: any member decides. |
 | `owner=shared`, `tier=agent` | Granted at once. | Granted at once. |
 | `owner=shared`, `tier=human` | Approved by anyone who signs in to the broker. | Approved by anyone who signs in to the broker. |
 | A service's, `tier=agent` | Granted at once. | Denied; no one can approve it. |
@@ -515,7 +529,8 @@ A session is its owner's own when its operator is the owner and one of two thing
 approved the machine login it enrolled under, or it is a pod whose account `BROKER_POD_OPERATORS`
 maps to the owner ([a person's pod](#a-persons-pod)). Any other pod is not the owner's own, whether
 it acts for no person or for the person its account is mapped to, so its request for the owner's
-agent-tier secret goes to the owner for approval.
+agent-tier secret goes to the owner for approval. For a group's secret, a member's own session, in
+that same sense, is the owner's own, while the broker's read of the group lists that member.
 
 Every row that sends a secret for approval needs the request to carry a reason: a request with
 none is denied instead of being put to a person
@@ -605,18 +620,20 @@ failures start and again when a read succeeds, and the policy from the last good
 force. The broker leaves out a secret it cannot serve, logs it by name once, when it starts to
 refuse it, and counts it in a metric for as long as it refuses it
 ([Operating the broker](/legion/broker/operate/#health-and-logs)): a missing or malformed `owner`
-or `tier` tag (an email with a capital letter is malformed), an unknown `type`, a `github-app`
+or `tier` tag (an email with a capital letter is malformed, and so is a `group:` owner whose rest
+is no lowercase email), an unknown `type`, a `github-app`
 secret whose `github-owners` names no account or holds a comma, a `requesters` list the broker
 cannot read (`requesters-malformed`), an `admin` tag set to anything but `true`
 (`admin-malformed`), an `admin` secret that is not human tier (`admin-tier`) or that names no
-`requesters` (`admin-requesters`), an `admin` or `google-service-account` secret with no
-`max-grant` or one longer than an hour (`max-grant-required`), a `google-service-account` secret
-whose `requesters` are not its one person owner, or that lists a service where it may not
-(`requesters-not-owner`), a `scopes` list the broker cannot read (`scopes-malformed`), a `scopes`
-tag on any other type (`scopes-type`), a `dispatch-project` tag that is no project key
-(`project-malformed`), any `dispatch-project` tag on a broker that cannot ask Dispatch about
-projects (`project-unchecked`), a `project-channels` tag set to anything but `slack`
-(`project-channels-malformed`), a tag key that differs from `dispatch-project` or
+`requesters` (`admin-requesters`), an `anthropic-federation` secret that is not human tier
+(`type-human-tier`), an `admin`, `google-service-account` or `anthropic-federation` secret with no
+`max-grant` or one longer than an hour (`max-grant-required`), a `google-service-account` or
+`anthropic-federation` secret whose `requesters` do not name its owner once, person or group, or
+that lists a service where it may not (`requesters-not-owner`), a `scopes` list the broker cannot
+read (`scopes-malformed`), a `scopes` tag on any other type (`scopes-type`), a `dispatch-project`
+tag that is no project key (`project-malformed`), any `dispatch-project` tag on a broker that
+cannot ask Dispatch about projects (`project-unchecked`), a `project-channels` tag set to anything
+but `slack` (`project-channels-malformed`), a tag key that differs from `dispatch-project` or
 `project-channels` only in case or in its separators (`project-tag-misspelled`), a malformed
 `max-grant`, a name that is not in the form above, a secret encrypted with any key but the
 agent-secrets key, the AWS-managed key included, a secret with no current value (created without
@@ -634,7 +651,9 @@ so does any change to a list or to a project tag. A secret with no list and no p
 the same bytes into the digest that it always did, and the project tags' rollback guard
 (`rollback-guard:project-tags`), which the broker takes out of the `requesters` list before it
 reads it, moves nothing. Whether a project is private is Dispatch's, not the version's, so a grant
-of a tagged secret is checked again on every release.
+of a tagged secret is checked again on every release. The version holds no group's members either,
+which change with no change to any tag, so the broker checks every grant of a group's secret again
+at each release and each reuse, whatever the version ([A group's secret](#a-groups-secret)).
 
 ### A private project's secrets
 
@@ -788,6 +807,58 @@ the pod may now get through its exchange entry, is hidden from them as from anyo
 project, and is on the pages of that project's people.
 [Operate](/legion/broker/operate/#what-to-run) says what else a removal or a move does.
 
+### A group's secret
+
+A secret's owner may be a Google group, written `group:` and the group's lowercase email, and so
+may an entry of its `requesters`. Each member of an owner group stands where the one owner of a
+person's secret stands: a member's own session gets the group's agent-tier secret at once; every
+other request for it, and every request for its human-tier secret, waits for the group's
+approval, which any member gives on the broker's page, and any member dismisses once it expires;
+and a member the group's last good read listed, however old that read is, lists and revokes the
+grants a member or the model judge approved ([Approvals](#approvals)).
+A member may approve a request their own session made, as a sole owner may approve their own: a
+group owner is not a second person, and no rule asks for one. A `requesters` entry naming a
+group admits a session whose person is a member. A list, revoke or dismissal that names the
+group itself as its approver, rather than a member, is refused
+`400 APPROVER_IS_GROUP`.
+
+The broker reads who is a member from Google Workspace, with the Directory API's `members.list`,
+the members of nested groups included (`packages/envoy/internal/cipher/groups`). It reads a group
+as soon as the five-minute read of the namespace names one it has not read yet, a group whose first
+read failed included, and every group a served secret names once an hour after that; a broker that
+starts waits up to 15 seconds for its first reads before it serves. A reread of one secret, such as
+the one `agent-secrets secret` asks for after a write, names no group, so a `retag` that names a
+group no served secret named before admits nobody until the next five-minute read has named it and
+its first read of the group has finished. A read that fails keeps the members of the last one that
+succeeded. A group whose last good read is more than 2 hours old, or that was never read, admits
+nobody: no member's session gets its agent-tier secret at once, no member may decide its requests,
+no Inbox lists them, and its `requesters` entry admits no session. The broker reads as a reader
+account the deployment names (`BROKER_DIRECTORY_ACCOUNT`); with none, it reads no group, and every
+group admits nobody ([Operate](/legion/broker/operate/#what-to-run)).
+
+Who is a member is no part of the policy's version, so the broker checks every grant of a group's
+secret again at each release and at each reuse, whatever the version, as it checks every grant of
+a secret with a `requesters` list (`anyGroupOwned` in
+`packages/envoy/internal/cipher/requests/machine_state.go`). A grant the session got at once stops
+releasing (`GRANT_NOT_LIVE`) once the group no longer admits the session's person, a stale group
+included, and is not revoked. A grant of a secret whose `requesters` names the group ends for good
+once a read of the group, two hours old or newer, no longer lists the session's person, as it does
+once the list drops a person. While the group is stale or was never read, the list cannot say who
+is on it: a new request it decides is denied `requester-group-unread`, a live grant is paused
+(`GRANT_NOT_LIVE`), not revoked, and releases again once a read lists the person, and an approval
+of a pending request is refused and leaves it pending. A grant a member approved rests on that
+member, and releases only while the group admits the member who decided it, whoever owns the
+secret now. Where the group is stale or was never read, its release is refused as a lapsed grant
+(`GRANT_NOT_LIVE`); where the group was read in the last 2 hours and does not list that member, its
+approval chain is broken (`GRANT_CHAIN_INVALID`; [The audit record](#the-audit-record)). Each of the
+two writes the log line `group approval lapsed`, naming the grant, the decider and the group
+([Health and logs](/legion/broker/operate/#health-and-logs)). A member the group's last good read
+listed may still revoke the group's grants while it is stale, since a revoke only takes power away.
+
+A group gives the power to decide to whoever may change its members in Google Workspace: a person
+added to an owner group may approve its requests from the broker's next read of the group, within
+the hour, with no change to the secret's tags.
+
 ## Requests and grants
 
 A session asks for one or more secrets by name in a **request**, signed with its key and carrying a
@@ -817,8 +888,10 @@ The broker evaluates every name
   once is granted there as everywhere.
 - Names that need approval must all need the same approver, else the request is refused
   `MIXED_APPROVERS`; request them separately.
-- A **type secret** has `type=github-app`, `type=google-login` or `type=google-service-account`,
-  and a current stored value. A GitHub App value holds an App identifier and private key.
+- A **type secret** has `type=github-app`, `type=google-login`, `type=azure-login`,
+  `type=google-service-account` or `type=anthropic-federation`, and a current stored value. A
+  GitHub App value holds an App
+  identifier and private key.
   Its release returns a JSON object with
   one installation token for each installation of the App that is not suspended and is on an
   account its `github-owners` tag lists. A release can narrow that token, with the `github_app`
@@ -881,10 +954,26 @@ The broker evaluates every name
   `https://www.googleapis.com/auth/cloud-platform` alone where it names none, and lasts an hour
   whatever lifetime the grant that released it has, since Google bounds the token itself: a
   shorter grant stops the next release rather than cutting the token short. That token acts as
-  the account itself, which is why the secret is served to the one person who owns it, whom its
-  `requesters` tag names, beside the registered services a human-tier one may list, and for
-  grants of an hour at most. The broker reads the stored value for each release,
-  as it reads any secret, and mints from
+  the account itself, which is why the secret is served to the one person who owns it, or to the
+  members of the one group that does, whom its `requesters` tag names, beside the registered
+  services a human-tier one may list, and for grants of an hour at most. An Anthropic federation
+  value names an Anthropic organization's ids and one Google service account,
+  `{"organization_id": "<uuid>", "federation_rule_id": "fdrl_…", "service_account_id": "svac_…", "service_account": "<id>@<project>.iam.gserviceaccount.com"}`,
+  with `"workspace_id": "wrkspc_…"` where the federation rule is enabled for more than one
+  workspace, and its release returns a bare Anthropic access token (`sk-ant-oat01-…`): the broker
+  mints a new Google identity token of the bound account for the audience
+  `https://api.anthropic.com`, with the account's email in it, through the same API, and trades it
+  once at Anthropic's `POST /v1/oauth/token`
+  ([Anthropic's reference](https://platform.claude.com/docs/en/manage-claude/wif-reference)). The
+  same setting binds the secret to its account, with the same refusals, and the same `requesters`
+  rule holds, but the type is human tier alone (`type-human-tier`), so no session gets a grant of
+  it without asking, and a person approves every release of it: the model judge decides none,
+  whatever seconds the airlock rules give the name ([The model judge](#the-model-judge)). The
+  federation rule's `token_lifetime_seconds` must be 3600 or less, since a grant of the secret
+  lasts an hour at most; the broker refuses a longer token, naming that setting. The minted value
+  expires at the token's own end, which the airlock's proxy reads to mint again five minutes before
+  it, as it does for every minted value; the release's `expires_at` is the grant's end. The broker
+  reads the stored value for each release, as it reads any secret, and mints from
   it. It never returns the stored App key or refresh token. It also reads each type secret's value
   once for each new version or type, and checks it as the minter reads it, so a value the
   minter could not mint from leaves the secret out (`value-malformed`) before anyone asks for it.
@@ -1355,7 +1444,12 @@ denied.
 
 The broker checks the signed-in person against the record's approver: anyone else gets a page
 saying who may decide it, with a link to sign in as someone else, and no buttons. A request for a
-shared
+group's secret names the group as its approver, `group:<address>`, and the page names that
+approver `a member of the group <address>`: each member the broker's last read of the group lists
+may decide it, and it waits in each such member's Inbox, so a group not read for 2 hours lists it
+to nobody and lets nobody decide it ([A group's secret](#a-groups-secret)). The record names the
+member who decided it, and the grant names the group, so a member the group's last good read
+listed lists and revokes the grant. A request for a shared
 human-tier secret, or for a shared agent-tier secret its session's operator withheld from it,
 names the approver `anyone`: anyone who signs in to the broker may decide it, and the
 broker records the email of whoever did. It waits in the Inbox of the person responsible for the
@@ -1442,12 +1536,13 @@ a request is a setting of its keys, in the airlock rules file:
 
 - **Nobody**: an agent-tier key is granted at once to the sessions its tags allow, as before.
 - **The judge**: a key whose rules entry has a `judge` value, the longest lifetime in seconds the
-  judge may grant, and no `admin` tag. The entry may also carry `guidance`: the key owner's
-  instruction saying when the judge should grant it. An entry with no `hosts` binds the value
-  nowhere and only says who decides; its value is released to the command as a key with no entry
-  is.
-- **A person**: every other key, and every administrator's key whatever the rules file says. The
-  person decides on the broker page, as before.
+  judge may grant, no `admin` tag, and no `anthropic-federation` type. The entry may also carry
+  `guidance`: the key owner's instruction saying when the judge should grant it. An entry with no
+  `hosts` binds the value nowhere and only says who decides; its value is released to the command
+  as a key with no entry is.
+- **A person**: every other key, and every administrator's key and Anthropic federation key
+  whatever the rules file says, since either can release an organization administrator's
+  credential. The person decides on the broker page, as before.
 
 The judge decides a request when every key in it that needs a decision is a judge key. A request
 with any key a person decides is that person's whole. The broker reads the answer when it writes
@@ -1477,7 +1572,7 @@ at the first that fails, asking the model nothing:
    15 minutes and at most each of those keys' seconds;
 3. the tag policy, read again now, still answers approval for each key the judge decides, and
    still gives the session at once any key it got at once beside them;
-4. no key is an administrator's (the `admin` tag);
+4. no key is an administrator's (the `admin` tag) or an Anthropic federation key;
 5. no key is withheld from that session;
 6. the request is no private project's: a `dispatch-project` tag on any of its keys naming a
    private project or a project key Dispatch holds no project for, a credential that names a
@@ -1581,9 +1676,10 @@ The judge's other settings are all-or-none, and the
 
 Everything a person decides rests on a **credential-request record**
 (`packages/envoy/internal/cipher/record/record.go`): a fixed, line-by-line text holding the
-session's signed request verbatim, the approver, the enrollment's type, runtime id and operator,
-the lifetime (`-` for a grant that lasts until its session ends), the policy version, the expiry,
-and, for a machine login, its confirmation code. The
+session's signed request verbatim, the approver (a person's login, `anyone`, or `group:` and a
+group's address), the enrollment's type, runtime id and operator, the lifetime (`-` for a grant
+that lasts until its session ends), the policy version, the expiry, and, for a machine login, its
+confirmation code. The
 record's id is the SHA-256 of that text, so a record cannot change without changing its id.
 Decisions are events on the record (`approved`, `denied`, `expired`, `cancelled`, `revoked`), each
 naming who made it: a person by their login, and the model judge by its actor alone
@@ -1591,9 +1687,14 @@ naming who made it: a person by their login, and the model judge by its actor al
 
 Every time the broker releases a value or authenticates a launcher credential, it re-verifies the
 whole chain: the record still reproduces its id, the session's signature inside it still verifies,
-and exactly one approval stands behind it. That approval is the record's approver's, or the
-judge's on a record the rules in force still let the judge decide. A grant or credential with no
-approved record behind it releases nothing.
+and exactly one approval stands behind it. That approval is the record's approver's, or, where
+that approver is a group, the login of a member the group lists now, or the judge's on a record the
+rules in force still let the judge decide. A grant or credential with no approved record behind it
+releases nothing. A grant a member of a group approved releases nothing while the group has not
+been read for 2 hours, as a lapsed grant rather than a broken chain ([A group's
+secret](#a-groups-secret)). A grant the model judge approved for a group's secret rests on no
+member, so it keeps releasing while the group is stale, and the judge keeps deciding new requests
+for that secret, while the airlock rules in force give the judge that secret.
 
 Beside the records, the broker keeps an append-only `audit` table with one row per event:
 `enrollment.created`, `enrollment.revoked`, `enrollment.expired`, `request.created`,
@@ -1647,8 +1748,10 @@ Three things the log does not say, which a reviewer has to be told:
 - A grant that reaches its own `expires_at` writes no row at all. What says when it ended is its
   `request.granted` row and that row's `lifetime_seconds`.
 - A minted token — `github-app`, `google-login` and `google-service-account` alike — lives its own
-  hour from the moment it was minted. Revoking the grant stops the next release; it does not
-  revoke a token the broker has already released.
+  hour from the moment it was minted, an `azure-login` token until the broker's projected token it
+  carries ends, and an `anthropic-federation` token as long as Anthropic's answer gave it.
+  Revoking the grant stops the next release; it does not revoke a token the broker
+  has already released.
 
 The review reads the `audit` table as it stands. It adds no audit type and writes no audit row of
 its own: every row it reads is one the broker wrote when it decided.
