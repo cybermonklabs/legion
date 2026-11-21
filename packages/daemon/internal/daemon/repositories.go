@@ -2492,9 +2492,11 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 // labelSetter is the kind of the Dispatch actor that added the label to key, by
 // intake.LabelSetter's rule. It reads the issue's whole Dispatch event log from sequence 0, in one
 // paged read, outside the fact lock. A read that fails is an error that wraps the client's error,
-// and a log that does not decode is an error that wraps *intake.UnreadableEventLog. Each error
-// names the key. Neither error comes with a setter, since a caller must not apply a setter nobody
-// read: a setter of "" would keep today's triage wake for a label a person set.
+// which can be a *dispatch.EventLogError, for a page of the log the client cannot read, or a
+// Dispatch refusal (*dispatch.Error). A log that does not decode is an error that wraps a
+// *dispatch.EventLogError too. Each error names the key. No error comes with a setter, since a
+// caller must not apply a setter nobody read: a setter of "" would keep today's triage wake for a
+// label a person set.
 func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, error) {
 	events, err := w.dispatch.EventsAfter(ctx, key, 0)
 	if err != nil {

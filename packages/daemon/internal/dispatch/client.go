@@ -319,7 +319,8 @@ func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content stri
 // EventsAfter reads the issue's Dispatch event log after sequence after, oldest first, through GET
 // /api/v1/issues/{key}/events?after=…, every page of it: each event as Dispatch serves it, which is
 // the shape its durable stream carries, so the boot catch-up applies each through the live
-// decoder, with its own sequence.
+// decoder, with its own sequence. A page that holds an event that does not decode, or whose seq is
+// not above the sequence read before it, fails the read with an *EventLogError naming that event.
 func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error) {
 	events := []json.RawMessage{}
 	for {
@@ -335,10 +336,11 @@ func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) (
 				Seq int64 `json:"seq"`
 			}
 			if err := json.Unmarshal(raw, &event); err != nil {
-				return nil, fmt.Errorf("page issue events for %s: %w", key, err)
+				return nil, &EventLogError{Event: len(events) + 1, Err: fmt.Errorf("page issue events for %s: %w", key, err)}
 			}
 			if event.Seq <= after {
-				return nil, fmt.Errorf("page issue events for %s: non-ascending sequence %d after %d", key, event.Seq, after)
+				return nil, &EventLogError{Event: len(events) + 1, Seq: event.Seq,
+					Err: fmt.Errorf("page issue events for %s: non-ascending sequence %d after %d", key, event.Seq, after)}
 			}
 			after = event.Seq
 			events = append(events, raw)
@@ -348,6 +350,22 @@ func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) (
 		}
 	}
 }
+
+// EventLogError is the error for an event of an issue's Dispatch event log that the daemon cannot
+// read. EventsAfter gives it for an event of a page that it cannot read: an event that does not
+// decode, or whose seq is not above the sequence read before it. The intake's walk of the log
+// (walkIssueEvents in internal/intake) gives it for an event that it cannot decode. Event is the
+// event's place in the log read, counted from 1. Seq is the event's sequence where the event
+// decoded, and 0 where it did not. Err names the cause and, from EventsAfter, the issue; Error
+// returns its text.
+type EventLogError struct {
+	Event int
+	Seq   int64
+	Err   error
+}
+
+func (e *EventLogError) Error() string { return e.Err.Error() }
+func (e *EventLogError) Unwrap() error { return e.Err }
 
 const eventPageLimit = 200
 

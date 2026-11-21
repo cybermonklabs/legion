@@ -18,8 +18,9 @@ body: |-
   approval of a parked root's spec queues the root only when the issue's Dispatch event log shows
   no change of its status after the approval, which the daemon reads when it prepares that
   approval. When the daemon reconciles a Dispatch listing, at boot or for a repository recovery, a
-  labelled triage root it does not record whose Dispatch event log does not decode is left out of
-  admission's decision with one ERROR line naming it, and the reconcile goes on; a failed read of
-  the log still fails it. The daemon API contract is 207. Before a rollback to an earlier release,
-  run the two statements of the migration `20261120144241_intake_failures.up.sql` with the daemon
+  labelled triage root it does not record whose Dispatch event log does not decode or holds a page
+  the daemon cannot read, or whose log read Dispatch refuses for good, is left out of admission's
+  decision with one ERROR line naming it, and the reconcile goes on; any other failed read of the
+  log still fails it. The daemon API contract is 207. Before a rollback to an earlier release, run
+  the two statements of the migration `20261120144241_intake_failures.up.sql` with the daemon
   stopped (docs/kubernetes.md, "Rolling back the release that gives up on intake messages").
