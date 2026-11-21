@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 const duplicateHeadlineOptions = "StartSel=" + markStart + ", StopSel=" + markEnd + ", HighlightAll=true"
@@ -257,6 +258,40 @@ select i.key, i.title, i.status, cardinality(n.title_lex)::int as shared, 1::flo
  order by i.updated_at desc
  limit ` + strconv.Itoa(duplicateCandidateLimit) + `
 `
+
+// storedMarkdown is text as the store would hold it: the parse and the render every write of a
+// whole document runs over it (docs' SeedText and ReplaceText, pmdoc.ParseWritten over no live
+// document, taken as an upload is taken, then pmdoc.Render), without writing anything. Nothing
+// else of those writes is run here, since nothing else of them changes the markdown.
+//
+// The near-copy gate reads it (duplicateEqualLexemesQuery): it compares a new spec with
+// document_search.search, the vector of the markdown the seed stored, and a rendering differs from
+// the text it was parsed from wherever the renderer normalises one: an ordered list is renumbered,
+// and Postgres keeps a list's numbers as lexemes, so `1.` `1.` is stored as `1.` `2.` and an exact
+// copy of that spec would hold different lexemes from the row it copies.
+//
+// An empty answer is what a create seeds for a spec of spaces, tabs, carriage returns and line
+// feeds alone; the seed keeps the other characters strings.TrimSpace empties, which this answers
+// empty all the same. Markdown the parse or the render refuses is handed back as it came. The
+// write that follows refuses it with the error of its own seed, which says what is wrong with it;
+// the gate answers on the text it was given rather than failing a write the seed would have let
+// through.
+func storedMarkdown(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	tree, _, err := pmdoc.ParseWritten(text, nil)
+	if err != nil {
+		return text
+	}
+	tree = pmdoc.StripAnchorMarks(tree)
+	pmdoc.StripServerOwnedAttrs(tree)
+	stored, err := pmdoc.Render(tree)
+	if err != nil {
+		return text
+	}
+	return stored
+}
 
 // scoredDuplicate is one candidate with the near-copy score that found it. The score is the
 // gate's own reading and is not part of what a client is told, so it rides here rather than on

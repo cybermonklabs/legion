@@ -207,10 +207,12 @@ func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, versi
 }
 
 // planBlockIndex plans version's block index of artifactID, its block pointers included
-// (refs.PlanBlocks), and returns the targets it moves, the cited blocks it changes included
-// (refs.BlockIndexing.Cited), and the step that writes it. It plans against what the index holds:
-// as the transaction's own queued indexing of the document leaves it, when there is one, else as
-// read in tx; and it records what this one leaves for a later indexing of the same document.
+// (refs.PlanBlocks), decides which of its blocks keep their changed version across another
+// renderer version's spelling (refs.BlockIndexing.KeepRespelled), and returns the targets it
+// moves, the cited blocks it changes included (refs.BlockIndexing.Cited), and the step that writes
+// it. It plans against what the index holds: as the transaction's own queued indexing of the
+// document leaves it, when there is one, else as read in tx; and it records what this one leaves
+// for a later indexing of the same document.
 func planBlockIndex(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -235,6 +237,9 @@ func planBlockIndex(
 	}
 	indexing, err := refs.PlanBlocks(index, artifactID, version, versionAt, markdown, blocks, located, pointers)
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := indexing.KeepRespelled(ctx, tx); err != nil {
 		return nil, nil, err
 	}
 	cited, err := indexing.Cited(ctx, tx)

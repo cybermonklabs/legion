@@ -262,7 +262,9 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		}
 		logUnindexedAskBlocks(*owner.IssueKey, closedStates.marked)
 	}
-	if markdown == nil || canonical == latest.markdown {
+	// Supplied markdown whose rendering the latest version holds - byte for byte, or as another
+	// renderer version's spelling of the same tree (latestVersionRow.holds) - writes no version.
+	if markdown == nil || latest.holds(canonical) {
 		return report, VersionResult{Version: latest.Version}, nil
 	}
 	// RebuildTx holds the document's advisory lock until this transaction ends, so the pending

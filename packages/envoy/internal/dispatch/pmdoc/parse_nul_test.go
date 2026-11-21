@@ -1,6 +1,7 @@
 package pmdoc
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -68,6 +69,29 @@ func TestParseWithSourceStartsCountsTheCallersBytes(t *testing.T) {
 		if !strings.HasPrefix(markdown[start:], want[index]) {
 			t.Errorf("markdown from start %d (%d) is %q, want it to open with %q", index, start, markdown[start:], want[index])
 		}
+	}
+}
+
+// RenderingOutline answers offsets into the markdown its caller wrote too, as
+// ParseWithSourceStarts does: a heading's and a typed block's offsets after a U+0000 are not two
+// bytes late for each one before them, so a caller cutting the markdown at them cuts whole lines.
+func TestRenderingOutlineCountsTheCallersBytes(t *testing.T) {
+	const callout = ":::callout{#c kind=\"note\" title=\"\"}\n\x00 in the callout.\n\n## B\n:::"
+	markdown := "\x00\x00 first.\n\n# A \x00\n\n" + callout + "\n\n## C\n"
+	outline, err := RenderingOutline(markdown)
+	if err != nil {
+		t.Fatalf("RenderingOutline(%q): %v", markdown, err)
+	}
+	want := []OutlineHeading{
+		{Start: strings.Index(markdown, "# A")},
+		{Start: strings.Index(markdown, "## B"), Typed: true},
+		{Start: strings.Index(markdown, "## C")},
+	}
+	start := strings.Index(markdown, callout)
+	if !slices.Equal(outline.Headings, want) ||
+		!slices.Equal(outline.TypedBlocks, []OutlineTypedBlock{{Start: start, End: start + len(callout)}}) {
+		t.Fatalf("RenderingOutline(%q) = %+v, want headings %+v and the callout from %d to %d",
+			markdown, outline, want, start, start+len(callout))
 	}
 }
 

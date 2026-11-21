@@ -57,6 +57,7 @@ import type {
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
+  MarkdownRoundTripInput,
   MarkdownRoundTripResponse,
   Message,
   MessageRead,
@@ -95,6 +96,9 @@ import {
   retryNoRoute,
   type Sleep,
   sleep,
+  TEXT_REFUSAL_HEADER,
+  TEXT_REFUSAL_NEW_DOCUMENT,
+  TEXT_REFUSAL_UPLOAD,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
@@ -122,6 +126,18 @@ export interface ArtifactFileVersion {
   readonly bytes: Uint8Array;
 }
 
+/** The scope of a refusal Dispatch marks as its refusal of a text for the text alone
+ *  (`TEXT_REFUSAL_HEADER`): one every upload of a markdown document makes, or one only a new
+ *  document's seed makes. */
+export type TextRefusalScope = typeof TEXT_REFUSAL_UPLOAD | typeof TEXT_REFUSAL_NEW_DOCUMENT;
+
+/** The scope `response` marks it with as Dispatch's refusal of a text for the text alone, or
+ *  undefined for an answer that carries no such mark, or a value this client does not know. */
+function markedTextRefusal(response: Response): TextRefusalScope | undefined {
+  const scope = response.headers.get(TEXT_REFUSAL_HEADER);
+  return scope === TEXT_REFUSAL_UPLOAD || scope === TEXT_REFUSAL_NEW_DOCUMENT ? scope : undefined;
+}
+
 export class DispatchServiceError extends Error {
   override readonly name = "DispatchServiceError";
   /**
@@ -136,7 +152,13 @@ export class DispatchServiceError extends Error {
     message: string,
     readonly candidates?: DispatchServiceErrorShape["candidates"],
     readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"]
+    readonly mismatches?: DispatchServiceErrorShape["mismatches"],
+    /**
+     * The scope Dispatch marked the answer with as its refusal of a text for the text alone
+     * (`TEXT_REFUSAL_HEADER`), whatever its status: the markdown round trip's refusals, which are
+     * an upload's refusals of the same text. Undefined for any other answer.
+     */
+    readonly textRefusal?: TextRefusalScope
   ) {
     super(message);
   }
@@ -811,6 +833,9 @@ async function writeAnswer(response: Response, echoed: boolean): Promise<WriteAn
  *   (`brokerTokenActor`), a dead token to present afresh where `canTellDeadToken` (the credential
  *   can be told and has not been told yet in this call), else a refusal nothing judged for the
  *   key; and an old build's `404 NOT_FOUND` "no route for …".
+ * - A refusal Dispatch marks as its refusal of a text for the text alone (`TEXT_REFUSAL_HEADER`)
+ *   is its verdict on that text whatever its status, a 5xx among them: asking again gets the same
+ *   answer, so it is never asked again.
  */
 function answerEvent(
   answer: WriteAnswer,
@@ -834,7 +859,9 @@ function answerEvent(
   ) {
     return "no-route";
   }
-  if (retriesUnderKey(status, answer.code)) {
+  const textRefusal =
+    answer.error !== undefined && markedTextRefusal(answer.response) !== undefined;
+  if (!textRefusal && retriesUnderKey(status, answer.code)) {
     if (status === 409) return "in-flight";
     return status >= 500 ? "server-error" : "try-later";
   }
@@ -1156,14 +1183,29 @@ export class DispatchClient {
   }
 
   /** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for this text. The
-   *  route writes nothing: it parses the text and renders it again, as a document write does, so
-   *  a caller compares the answer with the text it holds and refuses a text the store would
-   *  change. */
+   *  route writes nothing: it checks the text as an upload of a new document checks it, parses it
+   *  and renders it again, as that upload's write does, so a caller compares the answer with the
+   *  text it holds and refuses a text the store would change. A text the upload refuses for the
+   *  text alone is refused here in the upload's own words. */
   async markdownRoundTrip(markdown: string): Promise<string> {
+    return this.#roundTrip({ markdown });
+  }
+
+  /** `markdownRoundTrip` of a file's bytes, sent as base64 in the body's `file`: Dispatch checks
+   *  them as bytes, as it checks an upload's file part, so a file holding a byte that is not UTF-8
+   *  is refused as its upload is. */
+  async fileRoundTrip(bytes: Uint8Array): Promise<string> {
+    return this.#roundTrip({
+      file: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"),
+    });
+  }
+
+  /** The round trip of `body`, which writes nothing (`writes: false`). */
+  async #roundTrip(body: MarkdownRoundTripInput): Promise<string> {
     const { payload } = await this.#jsonAnswer<MarkdownRoundTripResponse>(
       "POST",
       ["api", "v1", "markdown", "round-trip"],
-      { markdown },
+      body,
       { writes: false }
     );
     return payload.markdown;
@@ -2813,7 +2855,8 @@ export class DispatchClient {
           error.error,
           error.candidates,
           error.current,
-          error.mismatches
+          error.mismatches,
+          markedTextRefusal(response)
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

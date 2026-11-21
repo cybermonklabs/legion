@@ -1,0 +1,20 @@
+kind: Changed
+custom:
+  Issue: pr4369
+body: |-
+  `POST /api/v1/markdown/round-trip` refuses every text that an upload of a new markdown document
+  refuses for the text alone, with that upload's own status, code and words: a NUL character
+  (`400 NUL_CHARACTER`), a file's byte that is not UTF-8 (`400 INVALID_UTF8`), a text past the
+  1 MiB one document holds, making more than 65,536 elements, or whose rendering is past either
+  (`413 CAP_EXCEEDED`), markdown the parser refuses or whose rendering no reader reads back
+  (`400 INVALID_MARKDOWN`), an ask block that breaks its content rule (`400 INVALID_ASK_BLOCK`),
+  and any other failure of the upload's seed on the text. Each such refusal, whatever its status,
+  carries the response header `Dispatch-Text-Refusal`, valued with its scope: `upload` for a check
+  every upload of a markdown document makes before its write (the NUL, the UTF-8, the bytes), and
+  `new-document` for one a new document's seed makes, which a replacement, judged against the
+  document it replaces, need not. No other answer of the route carries it. The route makes the
+  upload's own checks of the text, in the upload's order, and the steps of a new document's seed
+  that read the text alone, so `dispatch artifact` and its dry run refuse such a text as the
+  upload does. Its body takes, in place of `markdown`, a file's bytes as base64 in `file`, which
+  it checks as an upload checks its file part. Every other text it answers with the markdown the
+  store would hold, and text of whitespace alone with the empty markdown.

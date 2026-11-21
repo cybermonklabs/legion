@@ -115,12 +115,58 @@ func ParseRendering(markdown string) (*Node, error) {
 // blocks begin (itemblocks.Split).
 func ParseWithSourceStarts(markdown string) (*Node, []int, error) {
 	var starts []int
-	doc, err := parseMarkdown(markdown, fromStart, true, NewWriteBudget(), &starts)
+	doc, err := parseMarkdown(markdown, fromStart, true, NewWriteBudget(), func(doc *Node, root ast.Node, _ []byte, rest int) {
+		starts = startsInMarkdown(sourceStarts(doc, root, rest), markdown)
+	})
 	if err != nil {
 		return nil, nil, err
 	}
 	EnsureBlockIDs(doc)
 	return doc, starts, nil
+}
+
+// Outline is where a rendering's ATX headings and typed blocks stand at the document's level:
+// each one the document holds, or a typed block holds at that level, with no list item, quote,
+// footnote definition, table or other container between them and the document
+// (RenderingOutline). Each offset counts markdown's own bytes, the U+0000 the parse reads as
+// U+FFFD included (startsInMarkdown), as ParseWithSourceStarts' do.
+type Outline struct {
+	// Headings is each ATX heading, in document order.
+	Headings []OutlineHeading
+	// TypedBlocks is each typed block, in document order, a block ahead of the blocks it holds.
+	TypedBlocks []OutlineTypedBlock
+}
+
+// OutlineHeading is one heading of an Outline: Start is where its line starts in the markdown,
+// and Typed reports whether a typed block holds it.
+type OutlineHeading struct {
+	Start int
+	Typed bool
+}
+
+// OutlineTypedBlock is one typed block of an Outline: Start is where its opening line starts in
+// the markdown, and End where its closing line ends, before its line feed. A typed block no line
+// of its own closes ends where the typed block holding it ends, since that block's closing line
+// closes both; the parser refuses one at the document's level.
+type OutlineTypedBlock struct {
+	Start, End int
+}
+
+// RenderingOutline reads markdown the renderer wrote, a stored rendering, with the parse
+// ParseRendering makes of it, its tables' padding spending the read-back's budget, and answers
+// its Outline: its headings and typed blocks as the parser places them. A list item's fenced code
+// or typed block, whose closing line carries the item's indentation, so holds no heading of the
+// document's and closes none of its typed blocks. A caller reads a heading's level and title from
+// its line. Markdown the parser refuses answers that refusal and no outline.
+func RenderingOutline(markdown string) (Outline, error) {
+	var outline Outline
+	_, err := parseMarkdown(markdown, fromStart, true, readBackBudget(), func(_ *Node, root ast.Node, source []byte, rest int) {
+		outline = outlineOf(root, source, rest, markdown)
+	})
+	if err != nil {
+		return Outline{}, err
+	}
+	return outline, nil
 }
 
 func parseStamped(markdown string, budget *WriteBudget) (*Node, error) {
@@ -256,8 +302,11 @@ func parseUnstamped(markdown string, at origin, readFrontmatter bool, budget *Wr
 	return parseMarkdown(markdown, at, readFrontmatter, budget, nil)
 }
 
-// parseMarkdown is parseUnstamped that, given starts, also sets it to where each of the tree's
-// top-level children starts in markdown (sourceStarts).
+// parseMarkdown is parseUnstamped that, given read, also hands it what the parse read once the
+// tree is converted and valid: the tree, the goldmark tree root it was converted from, the source
+// root's offsets count, and rest, how many bytes of front matter the parse read ahead of that
+// source, 0 where it read none (a closed front-matter block is never empty). ParseWithSourceStarts
+// reads its starts there (sourceStarts) and RenderingOutline its outline (outlineOf).
 //
 // Every U+0000 in markdown is read as U+FFFD (nulAsReplacement) before any parser sees a byte of
 // it, as CommonMark requires of a reader (§2.3 Insecure characters) and the browser editor's parser
@@ -268,9 +317,12 @@ func parseUnstamped(markdown string, at origin, readFrontmatter bool, budget *Wr
 // after it is an offset into source and never into markdown: a refusal's line number counts
 // source's line feeds, which the replacement neither adds nor removes, at.server measures a
 // prefix the server itself wrote ahead of the caller's text (parseTableRows), which holds no
-// U+0000 and so keeps its length, and starts are offsets into source until startsInMarkdown maps
-// each of them back to the byte of markdown it stands at.
-func parseMarkdown(markdown string, at origin, readFrontmatter bool, budget *WriteBudget, starts *[]int) (doc *Node, err error) {
+// U+0000 and so keeps its length, and the offsets read hands on are offsets into source until
+// startsInMarkdown maps each of them back to the byte of markdown it stands at.
+func parseMarkdown(
+	markdown string, at origin, readFrontmatter bool, budget *WriteBudget,
+	read func(doc *Node, root ast.Node, source []byte, rest int),
+) (doc *Node, err error) {
 	defer recoverPanic(&doc, &err, "reading markdown")
 	source := []byte(nulAsReplacement(markdown))
 	var front *Node
@@ -307,21 +359,22 @@ func parseMarkdown(markdown string, at origin, readFrontmatter bool, budget *Wri
 	if err := doc.Validate(); err != nil {
 		return nil, err
 	}
-	if starts != nil {
-		*starts = startsInMarkdown(sourceStarts(doc, root, front != nil, rest), markdown)
+	if read != nil {
+		read(doc, root, source, rest)
 	}
 	return doc, nil
 }
 
 // sourceStarts is where each of doc's top-level children starts in the markdown parsed: front
 // matter at 0, and every other child where the block of root it was converted from starts
-// (sourceStart), past the front matter's offset bytes. Each of root's blocks converts to one child
+// (sourceStart), past the front matter's offset bytes. offset is not 0 exactly when the parse read
+// front matter, which then opens doc (parseMarkdown). Each of root's blocks converts to one child
 // (parseBlocks); a child past root's last block, the empty paragraph of a document with no blocks,
 // answers -1.
-func sourceStarts(doc *Node, root ast.Node, front bool, offset int) []int {
+func sourceStarts(doc *Node, root ast.Node, offset int) []int {
 	starts := make([]int, len(doc.Children))
 	index := 0
-	if front {
+	if offset > 0 {
 		index = 1
 	}
 	for block := root.FirstChild(); index < len(starts); index++ {
@@ -335,6 +388,69 @@ func sourceStarts(doc *Node, root ast.Node, front bool, offset int) []int {
 		block = block.NextSibling()
 	}
 	return starts
+}
+
+// outlineOf is the Outline of root, the goldmark tree of source, which rest bytes of front matter
+// stood ahead of in markdown's parse: each ATX heading and typed block root holds through typed
+// blocks alone, at offsets mapped back to markdown's bytes (startsInMarkdown).
+func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline {
+	var outline Outline
+	// walk reads parent's blocks, which typed says a typed block holds, and which end by end.
+	var walk func(parent ast.Node, typed bool, end int)
+	walk = func(parent ast.Node, typed bool, end int) {
+		for child := parent.FirstChild(); child != nil; child = child.NextSibling() {
+			start := sourceStart(child)
+			if start < 0 {
+				continue
+			}
+			switch block := child.(type) {
+			case *ast.Heading:
+				if opensATXHeading(source[start:]) {
+					outline.Headings = append(outline.Headings, OutlineHeading{Start: rest + lineStart(source, start), Typed: typed})
+				}
+			case *typedDirective:
+				closed := end
+				if block.Closed {
+					line, _, _ := bytes.Cut(source[block.closer:], []byte("\n"))
+					closed = block.closer + len(line)
+				}
+				outline.TypedBlocks = append(outline.TypedBlocks, OutlineTypedBlock{Start: rest + lineStart(source, start), End: rest + closed})
+				walk(block, true, closed)
+			}
+		}
+	}
+	walk(root, false, len(source))
+	if strings.IndexByte(markdown, 0) < 0 {
+		return outline
+	}
+	offsets := make([]int, 0, len(outline.Headings)+2*len(outline.TypedBlocks))
+	for _, heading := range outline.Headings {
+		offsets = append(offsets, heading.Start)
+	}
+	for _, block := range outline.TypedBlocks {
+		offsets = append(offsets, block.Start, block.End)
+	}
+	offsets = startsInMarkdown(offsets, markdown)
+	for index := range outline.Headings {
+		outline.Headings[index].Start = offsets[index]
+	}
+	for index := range outline.TypedBlocks {
+		at := len(outline.Headings) + 2*index
+		outline.TypedBlocks[index] = OutlineTypedBlock{Start: offsets[at], End: offsets[at+1]}
+	}
+	return outline
+}
+
+// opensATXHeading reports whether text, a heading's text from where it starts, opens as an ATX
+// heading's line does, as goldmark's ATX heading parser reads it: one to six `#`, then a space
+// character or nothing. A setext heading's first line never does, since that parser reads such a
+// line before a paragraph can open on it.
+func opensATXHeading(text []byte) bool {
+	marker := 0
+	for marker < len(text) && text[marker] == '#' {
+		marker++
+	}
+	return marker >= 1 && marker <= 6 && (marker == len(text) || util.IsSpace(text[marker]))
 }
 
 // startsInMarkdown is starts, offsets into the source parsed, as offsets into markdown itself,

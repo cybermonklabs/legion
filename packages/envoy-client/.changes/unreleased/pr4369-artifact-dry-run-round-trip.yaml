@@ -1,0 +1,32 @@
+kind: Changed
+custom:
+  Issue: pr4369
+body: |-
+  `dispatch artifact --dry-run` with inline content asks Dispatch how it would store the text
+  (`POST /api/v1/markdown/round-trip`), as the call does, and refuses a text that Dispatch would
+  store under another spelling with the call's own refusal and exit code. It stores nothing. The
+  call and its dry run refuse a document's text past the document limit (1 MiB of UTF-8), inline
+  or in a `--path` file whose path ends in .md or .markdown, with Dispatch's own `CAP_EXCEEDED`
+  message before they ask the round trip or upload, the call before it reads whether the owner
+  holds the name, so the two answer alike under a held name too; a file past the limit is refused
+  by its size before it is read. They refuse a text whose round trip answer Dispatch marks as its
+  refusal of the text (`Dispatch-Text-Refusal`), at any status, with Dispatch's own refusal
+  (`<CODE>: <message>`), which is the upload's refusal of that text: a NUL character, a text or a
+  rendering too large, markdown the parser refuses, an ask block that breaks its content rule. A
+  refusal marked `new-document`, which only a new document's seed makes, is not the call's under
+  `--force`, since a replacement is judged against the document it replaces: the call uploads the
+  text and Dispatch answers, and the dry run passes with a warning naming the refusal. A refusal
+  marked `upload` holds for every upload. An answer it does not mark is no answer about the text.
+  Blank inline text, other than the empty string, is asked too, for a refusal alone and never for
+  its spelling. The dry run of such a Markdown file sends the round trip the file's bytes, so a
+  byte that is not UTF-8 is refused as the upload refuses it, and takes its refusal alone, never
+  a spelling, since the call stores a Markdown file as the store spells it; a file stored as its
+  bytes is asked nothing. Each of these refusals exits 1. The dry run refuses a text past the
+  document limit without asking Dispatch, so with no Dispatch configured too. For any other text,
+  when Dispatch gives no answer within 5 s, or has no such route, or is not configured, the dry
+  run passes and says so on stderr, so its standard output is the arguments' JSON alone. The dry
+  run sends no second attempt after a failed one, and names the failure Dispatch answers, such as
+  a 500; where Dispatch says the token is no longer live, it presents a fresh token once.
+  `DISPATCH_DRY_RUN_LOCAL=1` keeps an upload's dry run local: it then checks the arguments alone,
+  as it did before. It leaves a `dispatch result` record's dry run as it was, asking Dispatch for
+  the pull-request body line, as it did before too.

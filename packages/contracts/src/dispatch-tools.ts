@@ -2,6 +2,7 @@ import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DEFAULT_ISSUE_READ_EVENTS,
   ISSUE_TITLE_MAX,
+  MARKDOWN_DOCUMENT_MAX_BYTES,
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
@@ -26,6 +27,10 @@ export interface DispatchToolSpec {
   readonly strict?: boolean;
   /** A schema-valid call shown after this tool rejects malformed arguments. */
   readonly example: Readonly<Record<string, unknown>>;
+  /** What the command's `--dry-run` flag does, as its help says, for a command whose dry run asks
+   *  Dispatch something past the argument check every dry run runs. A command without one says
+   *  that its dry run checks the arguments, prints them and sends nothing. */
+  readonly dryRunHelp?: string;
 }
 
 /** Builds a host-owned schema and applies any tool-level cross-field validation. */
@@ -1759,6 +1764,8 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_result",
+    dryRunHelp:
+      "Checks the arguments as the call would and prints them as JSON. A record's dry run then asks Dispatch for the pull-request body line the record would print, and prints it; Dispatch records nothing. A retraction's dry run sends nothing.",
     example: {
       issue: "DSP-1",
       check: "k1",
@@ -1940,15 +1947,16 @@ export const dispatchToolSpecs = [
   {
     name: "dispatch_artifact",
     example: { issue: "DSP-1", name: "design.md", content: "# Design\n" },
+    dryRunHelp: `Checks the arguments as the call would. Then, for inline content, it asks Dispatch how it would store the text (POST /api/v1/markdown/round-trip), and refuses, with the call's own refusal and exit code, a text that Dispatch would store under another spelling or that the call refuses for the text alone: one past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB of UTF-8, which it refuses without asking, or one Dispatch refuses as its upload would, such as one holding a NUL character, making more elements than a document may hold, holding an ask block that breaks its content rule, or holding markdown the parser refuses. For a path ending in .md or .markdown, a file Dispatch stores as a Markdown document, it refuses a file past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB without asking, then sends Dispatch the file's bytes and refuses what Dispatch refuses of them as their upload would, a byte that is not UTF-8 among them, but never their spelling. With force (--force) it does not give a new document's refusals (the parse, an ask block's content rule, the elements): a replacement is judged against the document it replaces, so it names such a refusal on stderr and passes, and the call uploads and Dispatch answers. Otherwise it prints the arguments as JSON. It stores nothing. When Dispatch cannot answer, it says so on stderr and passes.`,
     description:
       "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +
       "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. " +
       `${ARTIFACT_SOURCE_RULE} ` +
       `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force and a token, so a title typed twice never empties the document that holds it; that refusal names no token, since no token makes such a call one Dispatch takes. ` +
-      "A markdown document is at most 1 MiB and any other file at most 25 MiB. " +
+      `A markdown document is at most ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB and any other file at most 25 MiB. ` +
       "An upload that replaces a document the owner already holds under that name says which version it replaces: precondition.document takes the document token dispatch doc-read prints as `Document token: sha256:…`, and an upload that names none is refused with 400 PRECONDITION_REQUIRED. A token behind the live document is refused with 409 PRECONDITION_FAILED. The refusal tells you to read the document again with dispatch doc-read, which prints the token the document carries now, and to upload again naming that token. A first upload under a name replaces no version, and a file that is not a document holds no token, so neither names one. " +
       `${ARTIFACT_CONTENT_NAME_RULE} ${ARTIFACT_STORED_TEXT_RULE} ` +
-      "Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than 1 MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. " +
+      `Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. ` +
       "In a table row, write every | in a cell as \\|, in code too: a | after two backslashes ends the cell, and a row with more cells than its table is refused. " +
       "Markdown holding an ask block whose body breaks its content rule (one or more question paragraphs, then at most one bullet list of options, last) is refused with 400 INVALID_ASK_BLOCK; a new version of a document is held to it only for the asks it writes or changes. " +
       `${CI_CHECK_RULE} ` +

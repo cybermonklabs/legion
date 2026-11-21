@@ -17,6 +17,7 @@ import {
   parseCommand,
 } from "./dispatch-command";
 import { defined } from "./dispatch-commands/context";
+import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import {
@@ -25,7 +26,7 @@ import {
   dryRunAsksDispatch,
   executeDispatchTool,
 } from "./dispatch-execute";
-import { DispatchWriteLandedError } from "./dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
   appendResult,
@@ -38,6 +39,7 @@ import {
   writePicture,
 } from "./dispatch-session-state";
 import { followedAsk, followNoticeText } from "./dispatch-subscribe";
+import type { SectionOff } from "./envoy-config";
 import { messageFor } from "./errors";
 import { nearestAncestorNamed } from "./process-ancestry";
 import {
@@ -58,6 +60,9 @@ export interface DispatchCliIo {
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
+  /** How long a dry run waits on Dispatch for its step's answer (`DRY_RUN_DEADLINE_MS` unless
+   *  set); a test sets a shorter one. */
+  readonly dryRunDeadlineMs?: number;
   /** Which of `names` this process's nearest ancestor runs as; `/proc` by default, a seam for a
    *  test of a shell that carries two hosts' variables. */
   readonly nearestAncestorNamed?: (names: readonly string[]) => string | undefined;
@@ -140,6 +145,17 @@ export function cliRefusals(text: string): CliRefusal[] {
 /** How long a result waits on the listener for the session's subscriptions, after the write
  *  itself has landed: one attempt, no retry, since the read is best effort. */
 const SUBSCRIPTIONS_TIMEOUT_MS = 1_500;
+
+/** How long a dry run waits on Dispatch for its step's answer (`DispatchCommand.dryRun`): well
+ *  inside the 20 s an AskGate older than DISPATCH_DRY_RUN_LOCAL gives a dry run, so a slow Dispatch
+ *  passes that gate's dry run with a warning rather than failing it. AskGate now sets the
+ *  variable, under which no step runs. */
+const DRY_RUN_DEADLINE_MS = 5_000;
+
+/** Why the session's Dispatch is off, in the words the call is refused with after `dispatch: `. */
+function dispatchOffText(off: SectionOff): string {
+  return off.error === null ? off.notice : `dispatch config: ${off.error}`;
+}
 
 /**
  * The output, at most `limit` characters (unbounded for a host that shows all of it). Within the
@@ -350,24 +366,71 @@ export async function runDispatchCli(
     (env.DISPATCH_HOST === undefined ? null : handedConfigFile(env)) ??
     sessionConfigFile(host, env);
   if (parsed.dryRun && !dryRunAsksDispatch(parsed.tool, parsed.args)) {
-    // The call's own argument check, so the call refuses no arguments its dry run passed; what
-    // the call needs besides (Dispatch's configuration, this session's state, Dispatch's answers)
-    // a dry run does not read. It runs with Dispatch off too, reading a dashboard-URL ref only
-    // against a server it knows, and its standard output is the JSON alone. A call whose dry run
-    // Dispatch answers goes on below, as the call itself does.
-    const settings =
-      file.path === null
-        ? null
-        : sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId }).dispatch;
-    const { problems } = await checkDispatchCall({
+    // The call's own argument check, so the call refuses no arguments its dry run passed. It runs
+    // with Dispatch off too, reading a dashboard-URL ref only against a server it knows. A call
+    // whose dry run Dispatch answers (`dryRunAsksDispatch`: a `dispatch result` record) goes on
+    // below, as the call itself does.
+    const resolved = sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId });
+    const settings = resolved.dispatch;
+    const checked = await checkDispatchCall({
       tool: parsed.tool,
       args: parsed.args,
       cwd: io.cwd,
       env,
-      serverUrls: settings?.enabled === true ? dispatchServerUrls(settings) : [],
+      serverUrls: settings.enabled ? dispatchServerUrls(settings) : [],
     });
-    if (problems.length > 0) {
-      return refuse(new ToolInputError(parsed.tool, problems).message, USAGE, parsed.tool);
+    if (checked.problems.length > 0) {
+      return refuse(new ToolInputError(parsed.tool, checked.problems).message, USAGE, parsed.tool);
+    }
+    // A command whose call asks Dispatch a question before it writes asks it here too, from the
+    // session's Dispatch as the call resolves it, and is refused as the call is, with its output
+    // and exit code (`DispatchCommand.dryRun`): `dispatch artifact` asks how Dispatch would store
+    // its inline text, and whether Dispatch refuses a Markdown file's bytes, and refuses a text
+    // the call refuses for its spelling or for the text alone. With
+    // DISPATCH_DRY_RUN_LOCAL=1 it asks nothing, for a caller that reads the arguments alone
+    // (AskGate's own read). Nothing else the call reads (this session's state, Dispatch's other
+    // answers) is read here. Every line besides a refusal goes to stderr, so the standard output
+    // of a dry run that passes is the JSON alone.
+    const step = dispatchCommands[parsed.tool as DispatchToolName]?.dryRun;
+    if (step !== undefined && env.DISPATCH_DRY_RUN_LOCAL !== "1") {
+      const deadlineMs = io.dryRunDeadlineMs ?? DRY_RUN_DEADLINE_MS;
+      const deadline = AbortSignal.timeout(deadlineMs);
+      const verdict = await step({
+        tool: parsed.tool,
+        args: checked.args,
+        cwd: io.cwd,
+        deadline,
+        deadlineMs,
+        client: () => {
+          for (const warning of resolved.warnings) io.stderr(`dispatch: ${warning}\n`);
+          if (!settings.enabled) {
+            throw new Error(file.path === null ? file.error : dispatchOffText(settings));
+          }
+          // The client stops at the dry run's deadline, and its own deadline is the same budget,
+          // so a failure after the budget is the deadline's and a credential is given that budget
+          // less the request's reserve. The waits before asking a route again, and before sending
+          // the round trip again after a failed attempt, would outlast the deadline: the step
+          // sends no second attempt after a failed one (it still presents a fresh token once where
+          // Dispatch says the token is no longer live), says what Dispatch answered, and has an
+          // answer of its own to a Dispatch that holds no such route.
+          return new DispatchClient(settings.url, settings.credential, io.fetchImpl ?? fetch, {
+            signal: deadline,
+            deadlineMs,
+            retryNoRoute: false,
+            writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [] },
+          });
+        },
+      });
+      // The call prints what it throws as `messageFor` prints it, and exits 2 on a
+      // `ToolInputError` and 1 on any other error, and so does its dry run.
+      if (verdict.kind === "refused") {
+        return refuse(
+          messageFor(verdict.refusal),
+          verdict.refusal instanceof ToolInputError ? USAGE : REFUSED,
+          parsed.tool
+        );
+      }
+      if (verdict.warning !== undefined) io.stderr(`${verdict.warning}\n`);
     }
     print(JSON.stringify(parsed.args, null, 2));
     return OK;
@@ -384,13 +447,7 @@ export async function runDispatchCli(
   // A checkout's OpenCode-era file, which is not read, is said on every call while it is there.
   for (const warning of warnings) print(`dispatch: ${warning}`);
   if (!resolution.enabled) {
-    return refuse(
-      resolution.error === null
-        ? `dispatch: ${resolution.notice}`
-        : `dispatch: dispatch config: ${resolution.error}`,
-      USAGE,
-      parsed.tool
-    );
+    return refuse(`dispatch: ${dispatchOffText(resolution)}`, USAGE, parsed.tool);
   }
   const config: ActiveDispatchConfig = resolution;
 

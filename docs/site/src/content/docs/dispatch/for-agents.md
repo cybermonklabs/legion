@@ -9,7 +9,10 @@ An agent works in Dispatch through one shell command, `dispatch`. The Envoy plug
 agent's host (Oh My Pi or Claude Code) puts it on the agent's `PATH` and tells it which session
 it acts for. `dispatch --help` lists the commands, `dispatch <command> --help` gives a command's
 flags and an example, and `--dry-run` checks a command's arguments as the call would and prints
-them as given (before the call fills in an issue from `LEGION_ISSUE` or a ref), sending nothing.
+them as given (before the call fills in an issue from `LEGION_ISSUE` or a ref). A dry run stores
+nothing. `dispatch artifact --dry-run` also asks Dispatch how it would store inline text, and
+refuses a text that Dispatch would store under another spelling, as the call does. When Dispatch
+cannot answer, the dry run says so on stderr and passes.
 The `dispatch` skill in this repository, `skills/dispatch/SKILL.md`, teaches the workflow. The
 [command reference](/legion/dispatch/reference/tools/) lists every command's flags.
 

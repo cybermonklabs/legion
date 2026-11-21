@@ -641,6 +641,42 @@ func mergeUpdates(updates [][]byte) ([]byte, error) {
 	}
 }
 
+// SeedRendering is the markdown a new document's seed of markdown stores, or the refusal that seed
+// makes of the text before it writes anything (SeedText): the steps of the seed that read nothing
+// but the text - its parse, its asks' content rule, its render and the weigh of that rendering
+// against the limits one document holds (weighRendering). It reads and writes nothing. The
+// markdown round trip answers from it, so every refusal the seed makes of a text alone is the
+// round trip's too, in the same words. A replacement is not seeded: ReplaceText judges its text
+// against the document it replaces, by looser rules, so these refusals hold for a new document.
+func SeedRendering(markdown string) (string, error) {
+	seeded, _, err := seedRendering(markdown)
+	return seeded.markdown, err
+}
+
+// seedRendering is the part of SeedText that reads the text alone: its parse over no live
+// document, as an upload is taken, with the read-back that parse made (parseWrittenReplacing), its
+// asks held to their content rule, its render with each block's offsets, and that rendering
+// weighed against the limits one document holds, against no rendering before it. SeedText and
+// SeedRendering share it, so the two refuse a text alike and store the same rendering of it, and
+// the text is parsed once and rendered once.
+func seedRendering(markdown string) (renderedTree, pmdoc.WrittenReadBack, error) {
+	tree, read, err := parseWrittenReplacing(nil, markdown)
+	if err != nil {
+		return renderedTree{}, pmdoc.WrittenReadBack{}, err
+	}
+	if err := validateWrittenAskBlocks(tree); err != nil {
+		return renderedTree{}, pmdoc.WrittenReadBack{}, &ErrInvalidAskBlock{Reason: err}
+	}
+	canonical, offsets, err := renderTreeWithOffsets(tree)
+	if err != nil {
+		return renderedTree{}, pmdoc.WrittenReadBack{}, err
+	}
+	if err := weighRendering("", canonical); err != nil {
+		return renderedTree{}, pmdoc.WrittenReadBack{}, err
+	}
+	return renderedTree{tree: tree, markdown: canonical, offsets: offsets}, read, nil
+}
+
 // SeedText writes a new room's first Yjs update inside the caller's artifact
 // creation transaction. A new room is loaded from this update on first use.
 func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error) {
@@ -648,29 +684,19 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	if !joined {
 		return "", errUnjoined
 	}
-	tree, read, err := parseWrittenReplacing(nil, markdown)
+	seeded, read, err := seedRendering(markdown)
 	if err != nil {
-		return "", err
-	}
-	if err := validateWrittenAskBlocks(tree); err != nil {
-		return "", &ErrInvalidAskBlock{Reason: err}
-	}
-	canonical, offsets, err := renderTreeWithOffsets(tree)
-	if err != nil {
-		return "", err
-	}
-	if err := weighRendering("", canonical); err != nil {
 		return "", err
 	}
 	// A new document holds no pointer and no check block before this write, so every one it
 	// seeds is checked.
-	if err := refuseBlockPointers(ctx, tx, artifactID, tree, nil, offsets); err != nil {
+	if err := refuseBlockPointers(ctx, tx, artifactID, seeded.tree, nil, seeded.offsets); err != nil {
 		return "", err
 	}
-	if err := refuseCICheckBlocks(ctx, tx, artifactID, tree, nil); err != nil {
+	if err := refuseCICheckBlocks(ctx, tx, artifactID, seeded.tree, nil); err != nil {
 		return "", err
 	}
-	update, err := encodeDocumentTree(tree)
+	update, err := encodeDocumentTree(seeded.tree)
 	if err != nil {
 		return "", fmt.Errorf("seed live document tree: %w", err)
 	}
@@ -682,12 +708,12 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	// settlement that indexes the seeded ask blocks needs to know who wrote them. The ledger
 	// records it once the transaction commits (Ledger.creditRooms), so a seed that never commits
 	// leaves the document no state.
-	ledgerFrom(ctx).seeded(artifactID, renderedTree{tree: tree, markdown: canonical, offsets: offsets}, actor)
+	ledgerFrom(ctx).seeded(artifactID, seeded, actor)
 	// The parse read its markdown back already, to refuse a document that reads back otherwise;
 	// the rest of the request reads the rendering through that parse rather than making a second
 	// one of it (Ledger.ReadBackOf).
 	ledgerFrom(ctx).wroteReadBack(artifactID, read)
-	return canonical, nil
+	return seeded.markdown, nil
 }
 
 // ReplaceText replaces the entire live document tree so connected clients
@@ -1475,20 +1501,27 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	if err != nil {
 		return VersionResult{}, err
 	}
-	if latest.markdown == rendered.markdown {
+	if latest.holds(rendered.markdown) {
 		return VersionResult{Version: latest.Version}, nil
 	}
-	// Another build may have rendered the latest version: during a release two builds serve one
-	// database, and their renderers can write one document differently. As settlement does, a
-	// snapshot writes no version when no update since the latest one changed the content
-	// (contentChangedSinceVersion). An edit the room holds that its persistence has not stored yet
-	// is in no update row, so the latest version's markdown must also read as this rendering.
-	changed, err := contentChangedSinceVersion(ctx, tx, artifactID, latest.docUpdateVersion)
-	if err != nil {
-		return VersionResult{}, err
-	}
-	if !changed && readsAs(latest.markdown, rendered.markdown) {
-		return VersionResult{Version: latest.Version}, nil
+	// A latest version another renderer version wrote holds that renderer's spelling of the
+	// document: during a release two builds serve one database, and a renderer change
+	// (pmdoc.RendererVersion) leaves every version stored before it in the spelling it had. Such a
+	// version, and one no renderer version stamps, holds this rendering where its markdown reads as
+	// it (holds, readsAs), whatever changed since, so an edit typed and undone after it writes no
+	// version of a render change alone. A latest version this renderer version wrote holds it where
+	// no update since changed the content (contentChangedSinceVersion), as settlement's test has
+	// it, and its markdown reads as this rendering too, since an edit the room holds that its
+	// persistence has not stored yet is in no update row. Either way the line feeds the two end in
+	// do not count (pmdoc.SameRendering).
+	if !pmdoc.OtherRenderer(latest.rendererVersion) {
+		changed, err := contentChangedSinceVersion(ctx, tx, artifactID, latest.docUpdateVersion)
+		if err != nil {
+			return VersionResult{}, err
+		}
+		if !changed && readsAs(latest.markdown, rendered.markdown) {
+			return VersionResult{Version: latest.Version}, nil
+		}
 	}
 	mergeAuthor(capture.authors, actor)
 	// The owner's lock holds the issue's state under this write, and a closed issue refuses it -
@@ -1516,14 +1549,34 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 }
 
 // readsAs reports whether stored, a version's markdown that any build may have rendered, reads as
-// the document whose rendering is markdown: this build parses it and renders it as markdown.
+// the document whose rendering is markdown: this build reads stored and renders it again
+// (renderAgain, which counts the render), and the two are one rendering (pmdoc.SameRendering).
+// It is the one rule a whole document is compared by; a fragment cut from one is compared by
+// pmdoc.FragmentReadsAs.
 func readsAs(stored, markdown string) bool {
-	tree, err := pmdoc.ParseRendering(stored)
-	if err != nil {
-		return false
+	again, rendered := renderAgain(stored)
+	return rendered && pmdoc.SameRendering(again, markdown)
+}
+
+// renderAgain is what this build renders stored, a version's markdown that any build may have
+// rendered, as (pmdoc.RenderingOf), and false where stored reads as no document or its tree does
+// not render. The render it makes is recorded as every render of a whole document is
+// (countDocumentRender).
+func renderAgain(stored string) (string, bool) {
+	again, read, err := pmdoc.RenderingOf(stored)
+	if read {
+		countDocumentRender(again)
 	}
-	again, err := documentMarkdown(tree)
-	return err == nil && again == markdown
+	return again, err == nil
+}
+
+// holdsRendering reports whether stored, a version's markdown stamped stamp (renderer_version),
+// holds rendering, the document as this build renders it: byte for byte, or, for a version another
+// renderer version wrote or none stamped (pmdoc.OtherRenderer), as markdown this build reads as
+// that rendering (readsAs). The read is made only for such a version and only once the bytes
+// differ, so a version this renderer version wrote pays nothing for it.
+func holdsRendering(stored string, stamp *int, rendering string) bool {
+	return stored == rendering || pmdoc.OtherRenderer(stamp) && readsAs(stored, rendering)
 }
 
 // prevalidateLiveOperations performs database-backed table-anchor checks
@@ -2307,30 +2360,44 @@ func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unst
 	return treeOf(doc)
 }
 
-// latestVersion is artifactID's latest version as tx sees it: the last one this transaction has
-// queued and not yet written, when it has one (writeVersionTx), else the stored one.
-func latestVersion(ctx context.Context, tx pgx.Tx, artifactID string) (struct {
+// latestVersionRow is a document's latest version as a write reads it to decide whether to write
+// the next: the version, its stored markdown, the update its write recorded (doc_update_version),
+// and the renderer version that wrote that markdown (renderer_version), nil where no write
+// stamped one.
+type latestVersionRow struct {
 	model.Version
 	markdown         string
 	docUpdateVersion int64
-}, error) {
-	var version struct {
-		model.Version
-		markdown         string
-		docUpdateVersion int64
-	}
+	rendererVersion  *int
+}
+
+// holds reports whether the version holds rendering, the document as this build renders it, by
+// holdsRendering's rule: byte for byte, or, for a version another renderer version wrote or none
+// stamped, as markdown this build reads as that rendering (readsAs). A version a renderer change
+// alone left in another spelling of the same tree is unchanged by that rule, so no version is
+// written for the change, and a document whose latest version this renderer version wrote pays
+// nothing for the read.
+func (v latestVersionRow) holds(rendering string) bool {
+	return holdsRendering(v.markdown, v.rendererVersion, rendering)
+}
+
+// latestVersion is artifactID's latest version as tx sees it: the last one this transaction has
+// queued and not yet written, when it has one (writeVersionTx), else the stored one. A queued
+// version carries the renderer version its row stores, nil where its write stored no render stamp
+// (queueVersionInsert), so it reads as that row will once written.
+func latestVersion(ctx context.Context, tx pgx.Tx, artifactID string) (latestVersionRow, error) {
 	if ledger := queueFor(ctx, tx); ledger != nil {
 		if pending, queued := ledger.latest[artifactID]; queued {
-			version.Version, version.markdown, version.docUpdateVersion = pending.version, pending.markdown, pending.docUpdateVersion
-			return version, nil
+			return pending, nil
 		}
 	}
+	var version latestVersionRow
 	var authors []byte
 	if err := tx.QueryRow(ctx, `
-		select v.number, v.named, v.summary, v.authors, v.created_at, `+model.VersionSize+`, v.markdown, v.doc_update_version
+		select v.number, v.named, v.summary, v.authors, v.created_at, `+model.VersionSize+`, v.markdown, v.doc_update_version, v.renderer_version
 		from artifact_versions v where v.artifact_id = $1
 		order by v.number desc limit 1
-	`, artifactID).Scan(&version.Number, &version.Named, &version.Summary, &authors, &version.CreatedAt, &version.Size, &version.markdown, &version.docUpdateVersion); err != nil {
+	`, artifactID).Scan(&version.Number, &version.Named, &version.Summary, &authors, &version.CreatedAt, &version.Size, &version.markdown, &version.docUpdateVersion, &version.rendererVersion); err != nil {
 		return version, fmt.Errorf("read latest document version: %w", err)
 	}
 	if err := json.Unmarshal(authors, &version.Authors); err != nil {
@@ -2447,10 +2514,12 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		// The open approval request follows the document version without leaving its thread or
 		// opening another Inbox row. The request then waits on its agent until it is handed back,
 		// unless this is a settlement's version (versionWrite.settlement), the request waited on
-		// the person and this version stores byte for byte the text it named, which keeps it with
-		// the person (MoveApprovalAsk). A move over versions written while the issue was closed
-		// names the editor a closed issue's settlement kept, where this version names
-		// SettlementActor only because it adds none of that editor's text (versionWrite.keptEditor).
+		// the person and this version holds the text it named (restoresVersionText: byte for byte,
+		// or, for a version another renderer version stored, as this build renders it), which
+		// keeps it with the person (MoveApprovalAsk). A move over versions written while the
+		// issue was closed names the editor a closed issue's settlement kept, where this version
+		// names SettlementActor only because it adds none of that editor's text
+		// (versionWrite.keptEditor).
 		if err := moveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, actor, spec.keptEditor, spec.settlement, s.serverURL); err != nil {
 			return versionWriteResult{}, err
 		}
@@ -2511,7 +2580,7 @@ func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown str
 		return model.Version{}, err
 	}
 	if ledger := queueFor(ctx, tx); ledger != nil {
-		ledger.queuedVersion(artifactID, pendingVersion{version: version, markdown: markdown, docUpdateVersion: cursor})
+		ledger.queuedVersion(artifactID, latestVersionRow{Version: version, markdown: markdown, docUpdateVersion: cursor, rendererVersion: stamp.Renderer})
 	}
 	return version, nil
 }

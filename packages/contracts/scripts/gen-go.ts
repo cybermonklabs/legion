@@ -33,6 +33,8 @@ import {
   LIVE_SOCKET_MAX_AGE_MS,
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
   LIVE_SOCKET_MIN_AGE_MS,
+  MARKDOWN_DOCUMENT_MAX_BYTES,
+  MARKDOWN_DOCUMENT_TOO_LARGE,
   MAX_BROADCAST_RECIPIENTS,
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
@@ -45,6 +47,9 @@ import {
   SEARCH_OPERATOR_OR,
   SEARCH_OPERATOR_PHRASE,
   STORE_UNCONFIRMED_CAUSE,
+  TEXT_REFUSAL_HEADER,
+  TEXT_REFUSAL_NEW_DOCUMENT,
+  TEXT_REFUSAL_UPLOAD,
 } from "../src/dispatch-api";
 import {
   DISPATCH_BLOCK_UNITS,
@@ -526,6 +531,24 @@ const DispatchEventBodyMax = ${DISPATCH_EVENT_BODY_MAX}
 // packages/contracts so the server's 413 and the \`dispatch handoff-write\` command's pre-send
 // refusal cannot drift apart.
 const DispatchHandoffBodyMax = ${DISPATCH_HANDOFF_BODY_MAX}
+
+// MarkdownDocumentMaxBytes is the most bytes of markdown one document may hold, and
+// MarkdownDocumentTooLarge what the 413 CAP_EXCEEDED of an upload past it says. Generated from
+// MARKDOWN_DOCUMENT_MAX_BYTES and MARKDOWN_DOCUMENT_TOO_LARGE in packages/contracts so the
+// server's refusal and the one \`dispatch artifact\` makes before it sends cannot drift apart.
+const MarkdownDocumentMaxBytes = ${MARKDOWN_DOCUMENT_MAX_BYTES}
+const MarkdownDocumentTooLarge = ${JSON.stringify(MARKDOWN_DOCUMENT_TOO_LARGE)}
+
+// TextRefusalHeader is the response header POST /api/v1/markdown/round-trip puts on its refusal of
+// a text for the text alone, whatever the refusal's status, valued with the scope of the check
+// that refused it (markdownRoundTrip): TextRefusalUpload for a check every upload of a markdown
+// document makes before its write, TextRefusalNewDocument for one a new document's seed makes.
+// Generated from TEXT_REFUSAL_HEADER, TEXT_REFUSAL_UPLOAD and TEXT_REFUSAL_NEW_DOCUMENT in
+// packages/contracts so the route and \`dispatch artifact\`, which reads an answer carrying it as
+// the call's own refusal where its scope holds for the call, name them once.
+const TextRefusalHeader = ${JSON.stringify(TEXT_REFUSAL_HEADER)}
+const TextRefusalUpload = ${JSON.stringify(TEXT_REFUSAL_UPLOAD)}
+const TextRefusalNewDocument = ${JSON.stringify(TEXT_REFUSAL_NEW_DOCUMENT)}
 
 // PlanRatingLeast and PlanRatingMost are the scale of a retro's rating of the plan its issue ran,
 // from the plan cost the work to the plan fit the work, and PlanReasonMax the most characters,

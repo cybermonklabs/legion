@@ -95,6 +95,45 @@ export interface DispatchToolResult {
   readonly refused?: boolean;
 }
 
+/**
+ * What a command's dry-run step (`DispatchCommand.dryRun`, table.ts) is handed once the call's own
+ * argument check has passed: what the step needs to ask Dispatch what the call asks before it
+ * writes, under the dry run's deadline.
+ */
+export interface DryRunContext {
+  /** The command's tool name, which its refusals name. */
+  readonly tool: string;
+  /** The arguments as the call's check parsed them. */
+  readonly args: ToolArguments;
+  /** The directory the call resolves a relative file path against, as the call does. */
+  readonly cwd: string;
+  /**
+   * The client the call builds, from the session's Dispatch as the call resolves it. It stops at
+   * `deadline`, and its own deadline is the same budget (`deadlineMs`), so a failure after the
+   * budget is the deadline's and a credential is given that budget less the request's reserve. It
+   * asks no request again that Dispatch answered with no route. It prints each warning of the
+   * session's configuration on stderr, and throws, naming why, when the session has no Dispatch.
+   * A step calls it only for arguments it asks Dispatch about, so a dry run of any other arguments
+   * builds no client here and prints no configuration warning. The one other dry run that sends a
+   * request is a `dispatch result` record's, which runs as the record does (`dryRunAsksDispatch`).
+   */
+  readonly client: () => DispatchClient;
+  /** Aborts once `deadlineMs` have passed, so a failure after it is the deadline's. */
+  readonly deadline: AbortSignal;
+  readonly deadlineMs: number;
+}
+
+/**
+ * What a dry-run step found, which the dry run answers with the call's own output and exit code:
+ * - `refused`: the error the call throws for these arguments, which the dry run prints as
+ *   `messageFor` prints it, and exits 2 on where it is a `ToolInputError` and 1 on any other, as
+ *   the call does;
+ * - `passed`: a pass, with a warning for stderr when the step could not get its answer.
+ */
+export type DryRunVerdict =
+  | { readonly kind: "refused"; readonly refusal: Error }
+  | { readonly kind: "passed"; readonly warning?: string };
+
 export interface ResolvedArtifact {
   readonly owner: Owner;
   readonly issue?: IssueDetails;

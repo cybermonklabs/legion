@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -728,6 +729,92 @@ func TestParseWithSourceStartsPlacesEveryTopLevelBlock(t *testing.T) {
 	}
 	if len(starts) != 1 || starts[0] != -1 {
 		t.Errorf("starts of a body of whitespace = %v, want [-1]", starts)
+	}
+}
+
+// RenderingOutline places each heading and typed block where the parser does: an ATX heading the
+// document holds, or a typed block holds at the document's level, from the start of its line, and
+// a typed block from its opening line to the end of its closing line, past front matter. A heading
+// in a quote, a list item, fenced code or a footnote definition is none, nor is a setext heading,
+// and a typed block in a list item is none. A list item that opens with fenced code ends its code
+// at its own indented closing line, so the callout after it, and a heading in the callout and after
+// it, are the document's. A typed block no line of its own closes ends where the typed block
+// holding it ends.
+func TestRenderingOutlinePlacesHeadingsAndTypedBlocksAsTheParserDoes(t *testing.T) {
+	type heading struct {
+		line  string
+		typed bool
+	}
+	for _, test := range []struct {
+		name, markdown string
+		headings       []heading
+		typedBlocks    []string
+	}{
+		{
+			name: "headings and typed blocks at the document's level",
+			markdown: "---\ntitle: x\n---\n\n# Top\n\n::::callout{#outer kind=\"note\" title=\"\"}\n## Inside\n\n" +
+				":::callout{#nested kind=\"note\" title=\"\"}\n### Nested\n:::\n::::\n\n## After\n",
+			headings: []heading{{"# Top", false}, {"## Inside", true}, {"### Nested", true}, {"## After", false}},
+			typedBlocks: []string{
+				"::::callout{#outer kind=\"note\" title=\"\"}\n## Inside\n\n:::callout{#nested kind=\"note\" title=\"\"}\n### Nested\n:::\n::::",
+				":::callout{#nested kind=\"note\" title=\"\"}\n### Nested\n:::",
+			},
+		},
+		{
+			name: "headings and typed blocks in other containers",
+			markdown: "> ## Quoted\n\n- ## Listed\n\n```\n## In code\n```\n\nSetext\n------\n\nSee [^1].\n\n[^1]: ## Defined\n\n" +
+				"- :::callout{#item kind=\"note\" title=\"\"}\n  ## In the item's block\n  :::\n",
+		},
+		{
+			name: "list items that open with fenced code",
+			markdown: "- ```\n  code\n  ```\n\n:::callout{#aside kind=\"note\" title=\"\"}\n- ```\n  code\n  ```\n\n## D\n:::\n\n" +
+				"1. ```\n   code\n   ```\n\n## E\n",
+			headings:    []heading{{"## D", true}, {"## E", false}},
+			typedBlocks: []string{":::callout{#aside kind=\"note\" title=\"\"}\n- ```\n  code\n  ```\n\n## D\n:::"},
+		},
+		{
+			name:     "a typed block no line of its own closes",
+			markdown: "::::callout{#outer kind=\"note\" title=\"\"}\n:::callout{#inner kind=\"note\" title=\"\"}\n## Inner\n::::\n\n## After\n",
+			headings: []heading{{"## Inner", true}, {"## After", false}},
+			typedBlocks: []string{
+				"::::callout{#outer kind=\"note\" title=\"\"}\n:::callout{#inner kind=\"note\" title=\"\"}\n## Inner\n::::",
+				":::callout{#inner kind=\"note\" title=\"\"}\n## Inner\n::::",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			outline, err := RenderingOutline(test.markdown)
+			if err != nil {
+				t.Fatalf("RenderingOutline(%q): %v", test.markdown, err)
+			}
+			headings := []heading{}
+			for _, at := range outline.Headings {
+				line, _, _ := strings.Cut(test.markdown[at.Start:], "\n")
+				if at.Start > 0 && test.markdown[at.Start-1] != '\n' {
+					line = "mid-line " + line
+				}
+				headings = append(headings, heading{line, at.Typed})
+			}
+			typedBlocks := []string{}
+			for _, block := range outline.TypedBlocks {
+				typedBlocks = append(typedBlocks, test.markdown[block.Start:block.End])
+			}
+			if !slices.Equal(headings, test.headings) || !slices.Equal(typedBlocks, test.typedBlocks) {
+				t.Fatalf("RenderingOutline(%q) places headings %+v and typed blocks %q, want %+v and %q",
+					test.markdown, headings, typedBlocks, test.headings, test.typedBlocks)
+			}
+		})
+	}
+}
+
+// Markdown the parser refuses has no outline: RenderingOutline answers the refusal, as
+// ParseRendering does, here a typed block unclosed at the document's level.
+func TestRenderingOutlineAnswersTheParsersRefusal(t *testing.T) {
+	const markdown = ":::callout{#b7 kind=\"note\" title=\"T\"}\n## Inside\n"
+	outline, err := RenderingOutline(markdown)
+	if _, parseErr := ParseRendering(markdown); !errors.Is(err, ErrSchema) || err.Error() != fmt.Sprint(parseErr) ||
+		outline.Headings != nil || outline.TypedBlocks != nil {
+		t.Fatalf("RenderingOutline(%q) = %#v, %v, want no outline and ParseRendering's refusal %v", markdown, outline, err, parseErr)
 	}
 }
 

@@ -31,6 +31,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listProjectArtifacts: (client) => client.listProjectArtifacts("DSP"),
   listIssueArtifacts: (client) => client.listIssueArtifacts("DSP-1"),
   markdownRoundTrip: (client) => client.markdownRoundTrip("# Notes\n"),
+  fileRoundTrip: (client) => client.fileRoundTrip(new TextEncoder().encode("# Notes\n")),
   projectArtifact: (client) => client.projectArtifact("DSP", inline),
   getProjectArtifact: (client) => client.getProjectArtifact("DSP", "notes"),
   agentArtifact: (client) => client.agentArtifact("session-1", file),

@@ -5,8 +5,8 @@ import { messageFor } from "../errors";
  * A Dispatch refusal carrying its own code in the message the host shows: the code
  * (ISSUE_CLAIMED, CLAIM_CONTENDED, EXTERNAL_LINK_TAKEN, ...) is the part an agent acts on, and
  * the prose alone hides it. Only the message changes: every other field of the refusal
- * (`candidates`, `current`, `mismatches`) rides along, since a caller reads them off the error
- * it catches. An error that is not a refusal is returned as it is, so a caller's
+ * (`candidates`, `current`, `mismatches`, `textRefusal`) rides along, since a caller reads them off
+ * the error it catches. An error that is not a refusal is returned as it is, so a caller's
  * `throw refusalWithCode(error)` rethrows it untouched. This returns rather than throws, so the
  * throw stays at the call site, where a reader of the handler sees that the path ends there.
  *
@@ -40,7 +40,8 @@ export function refusalWithCode(error: unknown, ...clauses: string[]): unknown {
     `${error.code}: ${error.message}${joined}`,
     error.candidates,
     error.current,
-    error.mismatches
+    error.mismatches,
+    error.textRefusal
   );
 }
 

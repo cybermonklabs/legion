@@ -1740,8 +1740,23 @@ func refuseUndeclaredMembers(value any, body []byte) error {
 
 // readJSONBody decodes r's body, at most limit bytes of it, into value and returns the bytes it
 // read, for the caller to judge the members value does not declare by. A body past limit is
-// tooLarge, the 413 the route answers one with.
+// tooLarge, the 413 the route answers one with. A string the body holds anywhere that carries
+// U+0000 is refused (unstorableJSON).
 func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) ([]byte, error) {
+	body, err := decodeJSONBody(r, value, limit, tooLarge)
+	if err != nil {
+		return nil, err
+	}
+	if refusal := unstorableJSON("", body); refusal != nil {
+		return nil, refusal
+	}
+	return body, nil
+}
+
+// decodeJSONBody is readJSONBody without its refusal of U+0000, for the one route that checks the
+// text its body carries as another route checks it, under that route's name for it: the markdown
+// round trip (postMarkdownRoundTrip, documentTextRefusal).
+func decodeJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) ([]byte, error) {
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || (contentType != "application/json" && !strings.HasSuffix(contentType, "+json")) {
 		return nil, errorf(http.StatusUnsupportedMediaType, "JSON_CONTENT_TYPE", "JSON mutations require Content-Type application/json")
@@ -1758,9 +1773,6 @@ func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) (
 	}
 	if decoder.More() {
 		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "request body must contain one JSON value")
-	}
-	if refusal := unstorableJSON("", read.Bytes()); refusal != nil {
-		return nil, refusal
 	}
 	return read.Bytes(), nil
 }
