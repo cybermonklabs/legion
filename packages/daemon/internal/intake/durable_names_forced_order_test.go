@@ -234,7 +234,7 @@ func collide(t *testing.T, where topology, order collisionOrder, specFor func(je
 	}
 	openIntake(t, js, pool, spec)
 
-	target := copyOf(t, servers, heldInfo(t, stream, predecessor))
+	target := copyOf(t, servers, stream, predecessor, where.replicas)
 	held := hooks.Hold(order.predecessor, testnatsinprocess.OnServer(target), testnatsinprocess.Consumer(predecessor), ackFloorOf(21))
 	ackThrough(t, stream, predecessor, 21)
 	parked := held.Reached(t)
@@ -297,26 +297,30 @@ func collide(t *testing.T, where topology, order collisionOrder, specFor func(je
 	return result
 }
 
-// copyOf is the server holding the copy of a consumer whose write a collision holds: the one
-// server, the server of an R1 consumer, or a follower of an R3 one.
-func copyOf(t *testing.T, servers []*testnatsinprocess.Server, info *jetstream.ConsumerInfo) *testnatsinprocess.Server {
+// copyOf is the server holding the copy of consumer name whose write a collision holds: the one
+// server, the server of an R1 consumer, or a follower of an R3 one. A consumer just updated may
+// answer its info before its group reports a leader and every replica, so copyOf reads it until
+// it does.
+func copyOf(t *testing.T, servers []*testnatsinprocess.Server, stream jetstream.Stream, name string, replicas int) *testnatsinprocess.Server {
 	t.Helper()
 	if len(servers) == 1 {
 		return servers[0]
 	}
-	if info == nil || info.Cluster == nil {
-		t.Fatalf("the consumer reports no cluster: %+v", info)
-	}
-	name := info.Cluster.Leader
+	var info *jetstream.ConsumerInfo
+	testwait.Eventually(t, name+"'s leader and every replica reported", func() bool {
+		info = heldInfo(t, stream, name)
+		return info != nil && info.Cluster != nil && info.Cluster.Leader != "" && len(info.Cluster.Replicas) == max(replicas, 1)-1
+	})
+	copyName := info.Cluster.Leader
 	if len(info.Cluster.Replicas) > 0 {
-		name = info.Cluster.Replicas[0].Name
+		copyName = info.Cluster.Replicas[0].Name
 	}
 	for _, server := range servers {
-		if server.Name() == name {
+		if server.Name() == copyName {
 			return server
 		}
 	}
-	t.Fatalf("no server of the cluster is %s", name)
+	t.Fatalf("no server of the cluster is %s", copyName)
 	return nil
 }
 
