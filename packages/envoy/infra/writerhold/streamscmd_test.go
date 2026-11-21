@@ -20,8 +20,14 @@ import (
 )
 
 // streamsRun runs `envoy-infra streams <args>` in the stack with the hold's flags, recorded the
-// census's reader of the recorded session consumers.
+// census's reader of the recorded session consumers, and no writer of the daemon stores.
 func (h *heldStack) streamsRun(recorded RecordedSessionConsumers, args ...string) (int, string, string) {
+	h.t.Helper()
+	return h.streamsRunWith(recorded, nil, args...)
+}
+
+// streamsRunWith is streamsRun with stores, the census's writer of the daemon stores' stream ids.
+func (h *heldStack) streamsRunWith(recorded RecordedSessionConsumers, stores StreamIDWriter, args ...string) (int, string, string) {
 	h.t.Helper()
 	full := append(append([]string{}, args...), commonArgs...)
 	full = append(full, "--minters-report", h.report, "--nats", h.s.Cluster.URL(), "--probe-token-file", "/dev/null", "--replicas", "3")
@@ -29,10 +35,14 @@ func (h *heldStack) streamsRun(recorded RecordedSessionConsumers, args ...string
 		full = append(full, "--reason", "the row's streams "+args[0])
 	}
 	var stdout, stderr bytes.Buffer
-	code := runStreams(context.Background(), full, &stdout, &stderr, streamsEnv{env: h.e, recorded: recorded})
+	code := runStreams(context.Background(), full, &stdout, &stderr, streamsEnv{env: h.e, recorded: recorded, stores: stores})
 	h.t.Logf("envoy-infra streams %s: exit %d\n%s%s", strings.Join(args, " "), code, stdout.String(), stderr.String())
 	return code, stdout.String(), stderr.String()
 }
+
+// noStores is a writer of the daemon stores' stream ids for a stack with no daemon store: it
+// changes nothing.
+func noStores(context.Context, *nats.Conn, []string, []string) ([]string, error) { return nil, nil }
 
 // journalCommands are the hold's journal entries, each "<command> <state>".
 func (h *heldStack) journalCommands(id string) []string {
@@ -203,7 +213,7 @@ func TestHoldReleaseAfterAStreamsCensus(t *testing.T) {
 	code, _, stderr = h.run(actionRelease, "--hold", id, "--reason", "over a census with no done entry")
 	require.Equal(t, 1, code, "control: release over a census with no done entry")
 
-	code, stdout, _ := h.streamsRun(stub, "census", "--hold", id, "--family", "session")
+	code, stdout, _ := h.streamsRunWith(stub, noStores, "census", "--hold", id, "--family", "session")
 	require.Zero(t, code, "the census with a reader")
 	require.Contains(t, stdout, "streams census done in hold")
 	require.Contains(t, h.journalCommands(id), "streams census done")

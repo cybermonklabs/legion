@@ -40,7 +40,8 @@ var ErrNoRecordReader = errors.New("this build passes the census no reader of th
 
 const streamsUsage = `usage: envoy-infra streams update [--hold ID] --reason R [settings] <the hold's flags>
        envoy-infra streams census [--hold ID] --reason R --family F... [--listener-machine-id M]...
-                                  [--daemon-consumer <name>=<filter>[,<filter>...]]... [settings] <the hold's flags>
+                                  [--daemon-consumer <name>=<filter>[,<filter>...]]...
+                                  [--daemon-database <project>=<file>]... [settings] <the hold's flags>
 
 The writer hold's two stream commands. update makes each missing protected stream with the build's
 configuration and raises each by a start's own rules, inside a streams-update hold; census, once
@@ -63,19 +64,37 @@ type streamsOptions struct {
 	word, holdID, reason              string
 	families, machineIDs, daemons     stringList
 	replicas, maxBytes, sessionMaxAge string
+	daemonDatabases                   stringList
 }
+
+// StreamIDWriter reconciles each daemon store's recorded StreamID with the current identity of
+// ENVOY_NOTIFICATIONS, which it reads on conn, the census's own operator connection: for each
+// family daemon/<P> it opens the store at daemonDatabases' <P>=<file> entry and writes the identity
+// where the store's differs, and returns one line per store it changed,
+// `daemon/<P>: stream_id "old" -> "new"`. A store it cannot read, or a stream with no identity, is
+// its error, and it writes nothing. It is consumernames.ReconcileDaemonStreamIDs, whose package
+// imports this one, so cmd/envoy-infra passes it in.
+type StreamIDWriter func(ctx context.Context, conn *nats.Conn, families, daemonDatabases []string) ([]string, error)
+
+// ErrNoStoreWriter is a census run with no writer of the daemon stores' StreamIDs: a store left
+// with a recreated stream's old identity would resume against sequences of a stream that is gone,
+// so the census is UNKNOWN rather than done.
+var ErrNoStoreWriter = errors.New("this build passes the census no writer of the daemon stores' stream ids")
 
 // streamsEnv is what a streams run reaches outside the process.
 type streamsEnv struct {
 	env
 	recorded RecordedSessionConsumers
+	stores   StreamIDWriter
 }
 
 // StreamsCommand runs `envoy-infra streams update|census` with args, the words after "streams",
-// and returns its exit code. recorded is the census's reader of the recorded session consumers; a
-// census with none is UNKNOWN (exit 2).
-func StreamsCommand(ctx context.Context, args []string, stdout, stderr io.Writer, recorded RecordedSessionConsumers) int {
-	return runStreams(ctx, args, stdout, stderr, streamsEnv{env: realEnv(), recorded: recorded})
+// and returns its exit code. recorded is the census's reader of the recorded session consumers and
+// stores its writer of the daemon stores' StreamIDs; a census with either nil is UNKNOWN (exit 2).
+// The census is the final command of every workflow that can recreate ENVOY_NOTIFICATIONS (the
+// cutover, hub-restore, streams-update's own and streams-census), so its reconcile covers each.
+func StreamsCommand(ctx context.Context, args []string, stdout, stderr io.Writer, recorded RecordedSessionConsumers, stores StreamIDWriter) int {
+	return runStreams(ctx, args, stdout, stderr, streamsEnv{env: realEnv(), recorded: recorded, stores: stores})
 }
 
 func runStreams(ctx context.Context, args []string, stdout, stderr io.Writer, e streamsEnv) int {
@@ -93,6 +112,7 @@ func runStreams(ctx context.Context, args []string, stdout, stderr io.Writer, e 
 	flags.Var(&o.families, "family", "a cutover family the declared set names (session, dispatch, daemon/<project key>); repeat")
 	flags.Var(&o.machineIDs, "listener-machine-id", "a machine id of the deployment's listeners; repeat")
 	flags.Var(&o.daemons, "daemon-consumer", "a Legion daemon's consumer, <name>=<filter>[,<filter>...]; repeat")
+	flags.Var(&o.daemonDatabases, "daemon-database", "a daemon store's database, <project>=<file> (the file holds its URL); repeat")
 	flags.StringVar(&o.replicas, "replicas", os.Getenv(bus.ReplicasEnvVar), "the deployment's replica count")
 	flags.StringVar(&o.maxBytes, "stream-max-bytes", os.Getenv(bus.StreamMaxBytesEnvVar), "the notification stream's byte limit")
 	flags.StringVar(&o.sessionMaxAge, "session-max-age", os.Getenv(bus.SessionMaxAgeEnvVar), "the session bucket's age")
@@ -216,9 +236,7 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 			})
 			result = r
 			changes := streamChanges(r)
-			// Each barrier is one write the census made into its bucket, which the postcheck counts.
-			for bucket, n := range barriers {
-				stream := kvStreamPrefix + bucket
+			write := func(stream string, n uint64) {
 				change := changes[stream]
 				if change.Kind == "" {
 					change.Kind = ChangeKept
@@ -226,7 +244,15 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 				change.Writes += n
 				changes[stream] = change
 			}
-			return changes, nil, streamsRefusal(r, err)
+			// Each barrier is one write the census made into its bucket, which the postcheck counts.
+			for bucket, n := range barriers {
+				write(kvStreamPrefix+bucket, n)
+			}
+			if refused := streamsRefusal(r, err); refused != nil {
+				return changes, nil, refused
+			}
+			outputs, err := reconcileStreamIDs(ctx, nc, e.stores, o.families, o.daemonDatabases, stdout)
+			return changes, outputs, err
 		}
 	}
 	_, err = RunHeld(ctx, records, op, c, e.now, stdout)
@@ -237,6 +263,29 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 		return 0, err
 	}
 	return result.ExitCode(), nil
+}
+
+// reconcileStreamIDs has stores bring every daemon store's StreamID to ENVOY_NOTIFICATIONS'
+// current identity, after the census's complete listing and its phase and convert checks. Each
+// line stores returns (`daemon/<P>: stream_id "old" -> "new"`) is printed as a CHANGED line and
+// named in the census's done entry, as stream_id.daemon/<P>. The stores are the daemons' own
+// databases, no stream of the hub, so the postcheck counts none of these writes. With no stores,
+// or an error of theirs (a store it cannot read, a stream with no identity), it is UNKNOWN.
+func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWriter, families, daemonDatabases []string, stdout io.Writer) (map[string]string, error) {
+	if stores == nil {
+		return nil, unknownf(StepPostcheck, ErrNoStoreWriter, "reconcile the daemon stores' stream ids")
+	}
+	changed, err := stores(ctx, nc, families, daemonDatabases)
+	if err != nil {
+		return nil, unknownf(StepPostcheck, err, "reconcile the daemon stores' stream ids")
+	}
+	outputs := map[string]string{}
+	for _, line := range changed {
+		fmt.Fprintln(stdout, "CHANGED "+line)
+		store, _, _ := strings.Cut(line, ":")
+		outputs["stream_id."+store] = line
+	}
+	return outputs, nil
 }
 
 // streamsRefusal is a streams run's error, or its report's verdict when it is not clean: an UNKNOWN
