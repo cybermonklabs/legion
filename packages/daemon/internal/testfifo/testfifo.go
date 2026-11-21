@@ -27,10 +27,10 @@ type Fifo struct {
 // Plant first runs its own control on a scratch fifo of its own: a reader held there must be shown
 // nothing while no writer has opened it, and must be shown a writer's open and close. A kernel
 // where either does not hold fails the test there by name, rather than let OpenedForWriting give
-// a verdict it cannot see. The control's fifo is not the one at path because some gVisor releases
-// (before 2026-11-07's "Report FIFO hangups per open reader") show a hang-up to every reader of a
-// fifo that ever had a writer, which a reader held at path after the control's writer would read
-// as an open the code under test never made.
+// a verdict it cannot see. The control's fifo is not the one at path because gVisor releases up to
+// at least 20261109.0 show a hang-up to every reader of a fifo that ever had a writer, which a
+// reader held at path after the control's writer would read as an open the code under test never
+// made.
 func Plant(t *testing.T, path string, perm uint32) *Fifo {
 	t.Helper()
 	scratch := filepath.Join(t.TempDir(), "control.fifo")
