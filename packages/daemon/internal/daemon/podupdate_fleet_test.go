@@ -477,9 +477,6 @@ func (d *fleetHandoffs) EventsAfter(context.Context, string, int64) ([]json.RawM
 func (d *fleetHandoffs) Approval(context.Context, string) (dispatch.Approval, error) {
 	return dispatch.Approval{}, nil
 }
-func (d *fleetHandoffs) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 
 // complete is one worker's phase completion through the daemon's own route, with a grant minted
 // for its claim as the grants route mints one. A phase that ends with a handoff record has one

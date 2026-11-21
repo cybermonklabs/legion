@@ -142,7 +142,7 @@ export const HELP_LINES = freeze({
  * What the page says in its own `role="status"` when a key has nowhere to go (R9, R21). A key
  * that reports is a key that did nothing: the line says where the key could not go, so a
  * reader on the keyboard is never left wondering whether the page took the press at all. It is
- * an answer to the reader's own press, and never drawn on load (`ANSWER_SOURCES`).
+ * an answer to the reader's own act, a press or an address followed (`ANSWER_SOURCES`).
  */
 export const KEY_REPORTS = freeze({
   /** The next-question key, with no open question after the node the reader is on (R6). */
@@ -151,6 +151,14 @@ export const KEY_REPORTS = freeze({
   no_decision: "No decision is recorded behind this row.",
   /** The edit key, on a node whose text no document of this issue holds. */
   no_text: "This row has no text to put the caret in.",
-  /** The key that zooms back out, with the whole issue already drawn. */
+  first_row: "This is the first row.",
+  last_row: "This is the last row.",
+  nothing_under: "Nothing is under this row.",
+  parent_zoomed: "The tree is already zoomed to this row's parent.",
+  already_zoomed: "The tree is already zoomed to this row.",
+  editor_closed: "This row's editor could not open.",
+  /** The zoom-out key, and Left on a row whose parent is the issue, the whole issue drawn. */
   whole_tree: "The tree is already showing the whole issue.",
+  /** The row an address lands on, for a turn of a thread only agents wrote in. */
+  agents_thread: "This thread is the agents' alone.",
 } as const);

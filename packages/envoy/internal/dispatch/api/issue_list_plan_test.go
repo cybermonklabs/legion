@@ -15,15 +15,22 @@ import (
 // analyzedNode is what these tests read of one node of an `EXPLAIN (ANALYZE, FORMAT JSON)` plan:
 // how many times the node ran, how many rows it answered on each of those runs, what it reads,
 // and where it hangs. `loops` and `actual rows` are only in an ANALYZE plan, which is why these
-// tests run the statements rather than only plan them.
+// tests run the statements rather than only plan them. The rows each filter threw away and the
+// shared buffers the node and the nodes below it accessed are what the speed test counts
+// (speedWork); the buffer counts are only in a plan run with BUFFERS.
 type analyzedNode struct {
-	NodeType     string         `json:"Node Type"`
-	Relationship string         `json:"Parent Relationship,omitempty"`
-	RelationName string         `json:"Relation Name,omitempty"`
-	IndexName    string         `json:"Index Name,omitempty"`
-	Rows         float64        `json:"Actual Rows"`
-	Loops        float64        `json:"Actual Loops"`
-	Plans        []analyzedNode `json:"Plans,omitempty"`
+	NodeType         string         `json:"Node Type"`
+	Relationship     string         `json:"Parent Relationship,omitempty"`
+	RelationName     string         `json:"Relation Name,omitempty"`
+	IndexName        string         `json:"Index Name,omitempty"`
+	Rows             float64        `json:"Actual Rows"`
+	Loops            float64        `json:"Actual Loops"`
+	RemovedByFilter  float64        `json:"Rows Removed by Filter,omitempty"`
+	RemovedByJoin    float64        `json:"Rows Removed by Join Filter,omitempty"`
+	RemovedByRecheck float64        `json:"Rows Removed by Index Recheck,omitempty"`
+	SharedHitBlocks  float64        `json:"Shared Hit Blocks,omitempty"`
+	SharedReadBlocks float64        `json:"Shared Read Blocks,omitempty"`
+	Plans            []analyzedNode `json:"Plans,omitempty"`
 }
 
 // name is the node as a failure cites it: the type, and the relation or index it reads.
