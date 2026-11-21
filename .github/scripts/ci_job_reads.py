@@ -1803,6 +1803,15 @@ WEB_FIXTURE_PATTERN = names_pattern(WEB_FIXTURE_TESTS)
 # The fixture check's `-run` and its `-args --check` are not flags the simple form reduces, and
 # they move no closure: the whole pmdoc package compiles, whichever test the run selects.
 FIXTURE_SCRIPT = f"go test -count=1 -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PACKAGE}/ -args --check"
+# pmdoc's readers on tables in a build made without inlining (-gcflags=all=-l), envoy-go-checks'
+# step of its own: goldmark builds pmdoc's readers through an interface, which Go's initialization
+# order does not look through, so a reader that copies a variable of pmdoc can be handed nil in
+# that build alone. The table tests read through the block reader, and the display fixture test
+# through the display reader. Its `-run` and `-gcflags` are not flags the simple form reduces, and
+# they move no closure: the whole pmdoc package compiles, whichever test the run selects.
+NO_INLINE_TABLE_STEP = "Test pmdoc's tables in a build without inlining"
+NO_INLINE_TABLE_SCRIPT = (f"go test -count=1 -gcflags=all=-l "
+                          f"-run '^(TestTable.*|TestReadForDisplayMatchesItsFixtures)$' ./{WEB_FIXTURE_PACKAGE}/")
 # The skip belongs to the step that would otherwise run these tests, so the two are held together
 # here rather than by a reader noticing: the unit step runs every package of the module its
 # `grep -Ev` does not take out, and pmdoc taken out of it - moved into the race lane, say - while
@@ -3334,6 +3343,11 @@ GATES = [
         # The display-tree fixture check: one test of pmdoc, which compiles that package.
         pinned_step("envoy-go-checks", FIXTURE_STEP, ENVOY, FIXTURE_SCRIPT, [
             (ENVOY, ["./internal/dispatch/pmdoc/"], "go test ./internal/dispatch/pmdoc/", {}),
+        ]),
+        # The table tests of pmdoc in a build without inlining: the same package, compiled again
+        # with -gcflags=all=-l.
+        pinned_step("envoy-go-checks", NO_INLINE_TABLE_STEP, ENVOY, NO_INLINE_TABLE_SCRIPT, [
+            (ENVOY, ["./internal/dispatch/pmdoc/"], "go test -gcflags=all=-l ./internal/dispatch/pmdoc/", {}),
         ]),
         darwin_vet("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY),
     ], reads=reads(
