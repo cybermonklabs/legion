@@ -147,8 +147,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// respondWithExistingExternalIssue would also record a related-check outcome on. Nothing
 	// is written before this point.
 	// callerProject is empty for a credential that names none, which is every caller that
-	// exists today; the dependency lock step and writeBlockedBy below read it again, since a
-	// blocked_by target's project is no part of this address.
+	// exists today; the dependency lock step, the parent's read and writeBlockedBy below read it
+	// again, since neither a blocked_by target's project nor the parent's is part of this address.
 	callerProject, scoped := s.callerProject(r)
 	if scoped && callerProject != input.Project {
 		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
@@ -247,9 +247,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// `external` at each site.
 	//
 	// The gate's candidate set leaves out the new issue's whole ancestor chain, which is read
-	// here, before the transaction. A parent that does not exist or sits in another project
-	// yields an empty chain and still gets its own refusal inside the transaction, so no error
-	// changes order.
+	// here, before the transaction. A parent that does not exist yields an empty chain and still
+	// gets its own refusal inside the transaction, so no error changes order.
 	var outcome nearCopyOutcome
 	// nearCopyRecord is this create's near_copy_checks row, holding outcome.Check, the gate's
 	// answer, at each write: at the 409, or once the create has committed (recordNearCopyCheck),
@@ -305,10 +304,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// A create with blockers can close a wait cycle, and a create with a parent adds a link the
 	// depth cap counts (refuseParentTooDeep): both take the dependency locks before the project's
 	// owner lock, the number and the rank (lockIssueDependencyWrite). A new issue with neither
-	// takes none. Only the blockers can name another project, since a parent is of the issue's own
-	// project.
+	// takes none. The blockers and the parent may each be an issue of another project, whose
+	// dependency lock the write takes too.
 	if len(blockers) > 0 || parentKey != "" {
-		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, blockers); err != nil {
+		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, blockers, parentKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -325,8 +324,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if parentProject != input.Project {
-			writeError(w, "PARENT_INPUT", http.StatusBadRequest, "parent must be in the same project")
+		// A parent may be an issue of any project, but not for a credential that may write one
+		// project alone: the authoritative refusal, under the locks, of what the lock step
+		// refused before them.
+		if callerProject != "" && parentProject != callerProject {
+			s.writeHandlerError(w, refuseParentOutsideCallerProject(callerProject, parentKey, parentProject))
 			return
 		}
 		if err := refuseParentTooDeep(r.Context(), tx, "", parentKey); err != nil {

@@ -182,9 +182,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	defer ledger.Discard()
 
 	dependencyWrite := input.BlockedBy != nil || parentProvided
-	// A credential that names one project is refused a target outside it where a target's
-	// project is read, since this route's own address names no target (project_scope.go): the
-	// lock step refuses it before any lock, and writeBlockedBy again under them.
+	// A credential that names one project is refused a target or a parent outside it where its
+	// project is read, since this route's own address names neither (project_scope.go): the lock
+	// step refuses it before any lock, and writeBlockedBy or validateIssueParent again under them.
 	callerProject, _ := s.callerProject(r)
 	if dependencyWrite || input.Rank != nil {
 		var project string
@@ -193,7 +193,11 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if dependencyWrite {
-			if err := lockIssueDependencyWrite(r.Context(), tx, project, callerProject, blockers); err != nil {
+			parentKey := ""
+			if parent != nil {
+				parentKey = *parent
+			}
+			if err := lockIssueDependencyWrite(r.Context(), tx, project, callerProject, blockers, parentKey); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -245,7 +249,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if parentProvided && parent != nil {
-		if err := validateIssueParent(r.Context(), tx, key, before.Project, *parent); err != nil {
+		if err := validateIssueParent(r.Context(), tx, key, callerProject, *parent); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
