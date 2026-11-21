@@ -27,8 +27,13 @@
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
--- paragraph (migrations.WayBack), run with this release's daemon stopped and before the release
--- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1.
+-- paragraph (migrations.WayBack), run with every daemon of the database stopped and before the
+-- release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. dispatch_issues holds
+-- the rows of every project that shares the database, and a daemon of this release names the
+-- column in every write of the copy (record's PutDispatchIssue), so one still running for another
+-- project after the drop would fail every issue fact it applies. Every daemon that shares the
+-- database moves together, on the way up and on the way back, as the header of
+-- 20261120055717_dispatch_issue_value_sequences says of the same table.
 --
 -- The drop and the delete of this migration's row go together. The release before this one needs
 -- neither to run, since it never names the column: the delete is what makes the version the store
