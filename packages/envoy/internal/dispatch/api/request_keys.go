@@ -925,7 +925,9 @@ func answerHeldKey(w http.ResponseWriter, r *http.Request, key string, held held
 // answered 409 KEY_IN_FLIGHT at once, with nothing read: it has sent nothing, so the answer is as
 // fresh as the key, and a read would ask it for its whole body only to judge it.
 //
-// The body is read for at most drainTime (readFor): one that stops arriving is answered 409
+// The body is read under a deadline: the write limit's own where that layer put one on the body
+// (deadlinedBody, which each read that brings bytes sets again), and otherwise the drain's
+// (readFor, drainBound from the read's start). One that stops arriving is answered 409
 // KEY_IN_FLIGHT, which is what the key said, and the connection closes after it. A body past the
 // route's limit is answered the route's 413 (routeBody), as a first request's body past it is.
 // Either keeps the read's deadline for net/http's own reads after the answer; only a body read to

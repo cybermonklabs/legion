@@ -203,10 +203,31 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 		default:
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
+		if testHookPattern(route.Pattern) {
+			t.Fatalf("route %q is served without test hooks, and only a test hook's path holds a _test segment", key)
+		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+15 {
-		t.Fatalf("test hooks add fifteen routes: got %d, want %d", got, len(routes)+15)
+	// The hooks are read off the table, not pinned: a hook count is a number two branches that each
+	// add a hook cannot both be right about, for the reason given above for the routes.
+	hooked := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
+	hooks := 0
+	for _, route := range hooked {
+		if testHookPattern(route.Pattern) {
+			hooks++
+		}
 	}
+	if hooks == 0 {
+		t.Fatal("Deps.TestHooksEnabled mounts no row whose path holds a _test segment")
+	}
+	if len(hooked) != len(routes)+hooks {
+		t.Fatalf("test hooks add %d routes, want the %d whose path holds a _test segment and no other", len(hooked)-len(routes), hooks)
+	}
+}
+
+// testHookPattern is whether pattern is a test hook's: a path holding a _test segment, which every
+// row Deps.TestHooksEnabled adds carries and no row the table serves does.
+func testHookPattern(pattern string) bool {
+	return slices.Contains(strings.Split(pattern, "/"), "_test")
 }
 
 // The Inbox route's description states the rule the person a question reaches is resolved by —

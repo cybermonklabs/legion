@@ -8,6 +8,7 @@ import type {
   ConnectionCallbacks,
   ConnectionState,
   DocumentConnection,
+  ReconnectWait,
 } from "../features/doc/connection";
 import {
   type CreateEditor,
@@ -53,6 +54,8 @@ interface FakeConnection extends DocumentConnection {
   destroyed: boolean;
   /** How many times the host asked the server to admit this connection again. */
   readmitted: number;
+  /** How many times the host asked for the waiting reconnect to go out now. */
+  reconnectedNow: number;
 }
 
 export interface FakeDocumentRuntime {
@@ -62,6 +65,9 @@ export interface FakeDocumentRuntime {
   connections: FakeConnection[];
   editors: FakeEditor[];
   pending(state: PendingState): void;
+  /** Tells the host what the connection's backoff is waiting before its next socket, or
+   *  `undefined` once that socket is made (`ConnectionCallbacks.onReconnectWait`). */
+  reconnectWait(wait: ReconnectWait | undefined): void;
   /** The server refuses the current socket because the stored document is outside the Proof
    * schema; a destroyed provider hears nothing more, so earlier connections are not told. */
   refuse(): void;
@@ -111,6 +117,10 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
         connection.readmitted += 1;
       },
       readmitted: 0,
+      reconnectedNow: 0,
+      reconnectNow() {
+        connection.reconnectedNow += 1;
+      },
     };
     callbacks.push(nextCallbacks);
     connections.push(connection);
@@ -235,6 +245,11 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
     pending(state) {
       for (const callback of callbacks) {
         callback.onPending(state);
+      }
+    },
+    reconnectWait(wait) {
+      for (const callback of callbacks) {
+        callback.onReconnectWait(wait);
       }
     },
     refuse() {

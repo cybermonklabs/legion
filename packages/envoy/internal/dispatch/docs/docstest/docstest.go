@@ -5,14 +5,22 @@
 package docstest
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"path"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +29,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 	ygsync "github.com/reearth/ygo/sync"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 )
 
@@ -29,6 +38,10 @@ const (
 	messageSync      = 0
 	messageAwareness = 1
 	messageAuth      = 2
+	messageStateless = 5
+	// messageSyncStatus is the room's answer to each sync step 2 or update a peer sends: one
+	// number, 1 where the room applied it and 0 where it did not.
+	messageSyncStatus = 8
 )
 
 // The auth message's sub-kinds: the client's token, and the room's two answers to it.
@@ -48,8 +61,14 @@ const (
 type Peer struct {
 	// Doc is the peer's copy of the document. The peer's reader applies the room's updates to it.
 	Doc *crdt.Doc
-	// Answers carries the content of each sync step 2 the room sends, once Doc holds it. One that
-	// arrives while sixteen are waiting to be read is dropped.
+	// Given is the client id the room's admission gave the page in the socket's first frame, for
+	// a peer that took one (DialGiven); zero for one that did not.
+	Given crdt.ClientID
+	// Answers carries the whole of each answer the room makes to a sync step 1, once Doc holds
+	// it: the room answers with Update frames of about 64 KiB each and then one sync step 2
+	// carrying only what no Update could (sjawhar/ygo v1.55.1-sami.3), and what arrives here is
+	// those frames merged, which is byte for byte what the one sync step 2 of before carried.
+	// An answer that arrives while sixteen are waiting to be read is dropped.
 	Answers <-chan []byte
 	// Awareness carries the entries of each awareness update the room sends, in order, once
 	// AwarenessStates holds them. One that arrives while sixty-four are waiting to be read is
@@ -67,6 +86,9 @@ type Peer struct {
 	writes sync.Mutex
 	// auth carries the room's answers to Authenticate.
 	auth chan authReply
+	// answering is the reader's own: the Update frames of the answer it is reading, merged into
+	// the sync step 2 that ends that answer (applySync). Nothing else touches it.
+	answering [][]byte
 	// mu guards the fields below it.
 	mu sync.Mutex
 	// awareness is every client the room has sent a state of, a client that left included, as
@@ -77,9 +99,26 @@ type Peer struct {
 	// clocks is the clock of the last state SetAwareness sent for each client.
 	clocks map[uint64]uint64
 	scope  string
-	// endedAt and closeCode are written by the reader before Ended closes, and read after.
-	endedAt   time.Time
-	closeCode int
+	// endedAt and closed are written by the reader before Ended closes, and read after.
+	endedAt time.Time
+	// closed is the close frame the room ended the connection with, nil for one that ended
+	// otherwise.
+	closed *gws.CloseError
+	// hearing is whether the peer keeps what it hears (Hear), and heard is each SyncStatus answer
+	// the room sent and the connection's end, as they arrived since (Heard).
+	hearing atomic.Bool
+	heard   []Heard
+	// owed is how many frames the peer has sent that the room answers with a SyncStatus - each
+	// Update and sync step 2, the reader's own answers to the room's sync step 1 included - and
+	// answered how many SyncStatus answers it has read, hearing or not (AwaitAnswered).
+	owed, answered atomic.Int64
+}
+
+// Heard is one thing a peer heard from the room - a SyncStatus answer or the connection's end -
+// and when, for a test that has to say what a peer was told when it fails.
+type Heard struct {
+	At   time.Time
+	What string
 }
 
 // AwarenessEntry is one client's state in an awareness update: its client id, its clock, and its
@@ -118,6 +157,41 @@ func Dial(t testing.TB, url string, header http.Header, artifactID string, doc *
 // DialContext is Dial for a caller that is not a test, such as a load driver: ctx bounds the
 // connection's opening, a failure is returned, and the caller closes the peer.
 func DialContext(ctx context.Context, url string, header http.Header, artifactID string, doc *crdt.Doc) (*Peer, error) {
+	return dial(ctx, url, header, artifactID, false, func(crdt.ClientID) *crdt.Doc { return doc })
+}
+
+// DialGiven connects a peer as a page that takes its client id from Dispatch does: url presents
+// the client id the page holds under contracts.DocumentClientIdParameter (empty for none), the
+// room's admission names the id it gives the page in the socket's first frame, a stateless
+// message (contracts.DocumentClientIdMessagePrefix), and doc makes the peer's copy of the document
+// from that id - a new document under it, or the copy a reconnecting page kept. The peer's Given is
+// that id. It fails t where the room gives no id. The connection closes when t ends.
+func DialGiven(t testing.TB, url string, header http.Header, artifactID string, doc func(given crdt.ClientID) *crdt.Doc) *Peer {
+	t.Helper()
+	peer, err := DialGivenContext(context.Background(), url, header, artifactID, doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(peer.Close)
+	if peer.Given == 0 {
+		t.Fatalf("document %s's room gave the page no client id in the socket's first frame", artifactID)
+	}
+	return peer
+}
+
+// DialGivenContext is DialGiven for a caller that is not a test, such as a load driver: ctx
+// bounds the connection's opening, a failure is returned, and the caller closes the peer. A room
+// that gives no id - a Dispatch build from before client ids - is no failure: its first frame is
+// another (its sync step 1), which the peer's reader handles as it does every frame, doc is
+// passed 0 and makes the copy under an id of the caller's own, and Given is 0.
+func DialGivenContext(ctx context.Context, url string, header http.Header, artifactID string, doc func(given crdt.ClientID) *crdt.Doc) (*Peer, error) {
+	return dial(ctx, url, header, artifactID, true, doc)
+}
+
+// dial connects the peer, reading the socket's first frame for the client id it names first where
+// takes says the page takes one, then makes the peer's document with doc, starts its reader, which
+// handles that first frame where it names no id, and asks the room for what the document lacks.
+func dial(ctx context.Context, url string, header http.Header, artifactID string, takes bool, doc func(crdt.ClientID) *crdt.Doc) (*Peer, error) {
 	connection, response, err := gws.DefaultDialer.DialContext(ctx, url, header)
 	if err != nil {
 		if response != nil {
@@ -127,28 +201,226 @@ func DialContext(ctx context.Context, url string, header http.Header, artifactID
 		}
 		return nil, fmt.Errorf("connect a peer to document %s: %w", artifactID, err)
 	}
+	var client crdt.ClientID
+	var first []byte
+	if takes {
+		if client, _, first, err = ReadGivenClient(connection); err != nil {
+			connection.Close()
+			return nil, fmt.Errorf("read the first frame of document %s's socket: %w", artifactID, err)
+		}
+	}
 	answers, awareness, ended := make(chan []byte, 16), make(chan []AwarenessEntry, 64), make(chan struct{})
 	peer := &Peer{
-		Doc: doc, Answers: answers, Awareness: awareness, Ended: ended, UpgradeHeader: response.Header,
+		Doc: doc(client), Given: client, Answers: answers, Awareness: awareness, Ended: ended, UpgradeHeader: response.Header,
 		artifactID: artifactID, connection: connection, auth: make(chan authReply, 4),
 		awareness: make(map[uint64]AwarenessEntry), awarenessChanged: make(chan struct{}), clocks: make(map[uint64]uint64),
 	}
 	go func() {
-		peer.read(answers, awareness)
+		peer.read(first, answers, awareness)
 		peer.endedAt = time.Now()
 		close(ended)
 	}()
-	if err := peer.Write(ygsync.EncodeSyncStep1(doc)); err != nil {
+	if err := peer.Write(ygsync.EncodeSyncStep1(peer.Doc)); err != nil {
 		peer.Close()
 		return nil, fmt.Errorf("ask document %s's room for the document: %w", artifactID, err)
 	}
 	return peer, nil
 }
 
+// ReadGivenClient reads a document socket's first frame, within ten seconds, for the client id the
+// room gives the page, as the dashboard's readClientIdMessage does: given is true and client the
+// id where the frame is the stateless message naming it (contracts.DocumentClientIdMessagePrefix,
+// then the id in decimal, as internal/dispatch/docs clientIDFrame writes it). Where the frame is
+// anything else - a room that gives no id, such as a Dispatch build from before client ids, sends
+// its sync step 1 first - given is false and first is that frame, for the caller to handle as it
+// does every frame: dropping it would lose the room's ask for the page's state. An id past 2^53-1,
+// which no Yjs document holds, is none. err is a read that failed.
+func ReadGivenClient(connection *gws.Conn) (client crdt.ClientID, given bool, first []byte, err error) {
+	if err := connection.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return 0, false, nil, err
+	}
+	_, message, err := connection.ReadMessage()
+	if err != nil {
+		return 0, false, nil, err
+	}
+	if err := connection.SetReadDeadline(time.Time{}); err != nil {
+		return 0, false, nil, err
+	}
+	decoder := encoding.NewDecoder(message)
+	if _, err := decoder.ReadVarString(); err != nil {
+		return 0, false, message, nil
+	}
+	if kind, err := decoder.ReadVarUint(); err != nil || kind != messageStateless {
+		return 0, false, message, nil
+	}
+	payload, err := decoder.ReadVarString()
+	if err != nil {
+		return 0, false, message, nil
+	}
+	digits, named := strings.CutPrefix(payload, contracts.DocumentClientIdMessagePrefix)
+	id, err := strconv.ParseUint(digits, 10, 64)
+	if !named || err != nil || id >= 1<<53 {
+		return 0, false, message, nil
+	}
+	return crdt.ClientID(id), true, nil, nil
+}
+
+// ClientIDRoom serves a document room as Dispatch's document socket serves a page that takes its
+// client id, for a test of a client that has no Dispatch behind it (GivingClientIDs).
+type ClientIDRoom struct {
+	room http.Handler
+
+	mu sync.Mutex
+	// next is the id the next fresh admission gives out; owners is the person each id given out
+	// is for.
+	next       crdt.ClientID
+	owners     map[crdt.ClientID]string
+	admissions []Admission
+}
+
+// Admission is one socket a ClientIDRoom gave a client id: the person the socket was signed in as
+// (X-Dispatch-User), the id it presented under contracts.DocumentClientIdParameter ("" for an
+// empty one) and the id it was given.
+type Admission struct {
+	Person    string
+	Presented string
+	Given     crdt.ClientID
+}
+
+// GivingClientIDs serves room, a room's websocket handler (ygo's websocket server on Hocuspocus
+// framing), with a reduced form of how internal/dispatch/docs admits a document socket's page
+// (admitClients): a socket that presents contracts.DocumentClientIdParameter is given back an id
+// it presents where this handler gave that id to the same person, and a fresh one otherwise, from
+// 2^32 up in order. docs draws its own at random at mintedClientFloor, 2^32, or above, and also
+// gives back a presented id from 2^32 up that no row names, which this handler, keeping no rows,
+// does not. The id is the stateless message of the socket's first frame, written in the one write
+// of the upgrade's answer (clientIDWriter and clientIDConn; the frame as clientIDFrame encodes it).
+// A socket that presents no parameter is served as docs serves a legacy page: given nothing, with
+// no such frame. It stores nothing and judges no update's client ids (judgeClients).
+func GivingClientIDs(room http.Handler) *ClientIDRoom {
+	return &ClientIDRoom{room: room, next: 1 << 32, owners: map[crdt.ClientID]string{}}
+}
+
+// Admissions is every socket the room has given a client id, in the order they were admitted.
+func (g *ClientIDRoom) Admissions() []Admission {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.admissions)
+}
+
+func (g *ClientIDRoom) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	presented, takes := r.URL.Query()[contracts.DocumentClientIdParameter]
+	if !takes {
+		g.room.ServeHTTP(w, r)
+		return
+	}
+	admission := Admission{Person: r.Header.Get("X-Dispatch-User"), Presented: presented[0]}
+	g.mu.Lock()
+	if client, err := strconv.ParseUint(admission.Presented, 10, 64); err == nil && g.gave(crdt.ClientID(client), admission.Person) {
+		admission.Given = crdt.ClientID(client)
+	} else {
+		admission.Given = g.next
+		g.owners[g.next] = admission.Person
+		g.next++
+	}
+	g.admissions = append(g.admissions, admission)
+	g.mu.Unlock()
+	message := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+		encoder.WriteVarString(path.Base(r.URL.Path))
+		encoder.WriteVarUint(messageStateless)
+		encoder.WriteVarString(contracts.DocumentClientIdMessagePrefix + strconv.FormatUint(uint64(admission.Given), 10))
+	})
+	g.room.ServeHTTP(&firstFrameWriter{ResponseWriter: w, frame: serverFrame(message)}, r)
+}
+
+// gave is whether this room gave client to person; the caller holds g.mu.
+func (g *ClientIDRoom) gave(client crdt.ClientID, person string) bool {
+	owner, given := g.owners[client]
+	return given && owner == person
+}
+
+// serverFrame is message as one final, unmasked binary websocket frame, as a server sends it (RFC
+// 6455 section 5.2; docs frameHeader).
+func serverFrame(message []byte) []byte {
+	frame := []byte{0x80 | gws.BinaryMessage}
+	switch length := len(message); {
+	case length < 126:
+		frame = append(frame, byte(length))
+	case length <= 0xffff:
+		frame = binary.BigEndian.AppendUint16(append(frame, 126), uint16(length))
+	default:
+		frame = binary.BigEndian.AppendUint64(append(frame, 127), uint64(length))
+	}
+	return append(frame, message...)
+}
+
+// firstFrameWriter is a response writer whose hijacked connection writes frame right after the
+// upgrade's answer (docs clientIDWriter).
+type firstFrameWriter struct {
+	http.ResponseWriter
+	frame []byte
+}
+
+func (w *firstFrameWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, buffers, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	return &firstFrameConn{Conn: conn, frame: w.frame}, buffers, nil
+}
+
+// Unwrap gives http.ResponseController the writer underneath.
+func (w *firstFrameWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// firstFrameConn is a hijacked connection whose first write, the upgrade's 101 answer, which
+// gorilla writes in one write, carries frame after it (docs clientIDConn).
+type firstFrameConn struct {
+	net.Conn
+	frame []byte
+}
+
+func (c *firstFrameConn) Write(p []byte) (int, error) {
+	frame := c.frame
+	if frame == nil {
+		return c.Conn.Write(p)
+	}
+	c.frame = nil
+	if !bytes.HasPrefix(p, []byte("HTTP/1.1 101 ")) {
+		return c.Conn.Write(p)
+	}
+	written, err := c.Conn.Write(slices.Concat(p, frame))
+	return min(written, len(p)), err
+}
+
 // Write sends syncMessage to the room as Hocuspocus carries it: the document's name, then the sync
-// kind.
+// kind. An Update or a sync step 2 is owed the SyncStatus the room answers it with
+// (AwaitAnswered).
 func (p *Peer) Write(syncMessage []byte) error {
+	if kind, _, err := ygsync.ReadSyncMessage(syncMessage); err == nil && (kind == ygsync.MsgUpdate || kind == ygsync.MsgSyncStep2) {
+		p.owed.Add(1)
+	}
 	return p.writeFrame(messageSync, func(encoder *encoding.Encoder) { encoder.WriteRaw(syncMessage) })
+}
+
+// AwaitAnswered waits until the room has answered every frame the peer sent that it answers with a
+// SyncStatus, or the connection has ended, within within. The room answers a socket's frames in
+// the order they came, each once what it waits on is known: under Server.AnswerOnceStored a frame
+// that commits nothing is answered once every commit the room had made when it was read is stored
+// (theorem-labs/ygo v1.55.1-theorem.10), so a later frame's other answers, such as the document a
+// sync step 1 asks for, can come first.
+func (p *Peer) AwaitAnswered(within time.Duration) error {
+	deadline := time.Now().Add(within)
+	for p.answered.Load() < p.owed.Load() {
+		select {
+		case <-p.Ended:
+			return nil
+		case <-time.After(10 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the room answered %d of the %d frames the peer sent within %s", p.answered.Load(), p.owed.Load(), within)
+		}
+	}
+	return nil
 }
 
 // writeFrame sends the room one Hocuspocus frame: the document's name, kind, then what body writes.
@@ -307,6 +579,32 @@ func (p *Peer) Scope() string {
 	return p.scope
 }
 
+// Hear starts keeping what the peer hears from the room, for Heard: each SyncStatus answer and the
+// connection's end from now on. A peer keeps none until asked, since one answers a SyncStatus for
+// every frame it sends, and a load driver's peers send one a keystroke for as long as they type.
+func (p *Peer) Hear() {
+	p.hearing.Store(true)
+}
+
+// Heard is each SyncStatus answer the room has sent this peer since Hear and, once the
+// connection has ended, its end, in the order they arrived.
+func (p *Peer) Heard() []Heard {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.heard)
+}
+
+// hear records what format and args say as heard now, where the peer keeps what it hears (Hear).
+func (p *Peer) hear(format string, args ...any) {
+	if !p.hearing.Load() {
+		return
+	}
+	what := fmt.Sprintf(format, args...)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.heard = append(p.heard, Heard{At: time.Now(), What: what})
+}
+
 // Close closes the connection and waits for the reader to stop.
 func (p *Peer) Close() {
 	_ = p.connection.Close()
@@ -319,26 +617,44 @@ func (p *Peer) EndedAt() time.Time {
 	return p.endedAt
 }
 
+// Closed is the close frame the room ended the connection with - its code and reason - or nil
+// for a connection that ended without one. It waits for the connection to end.
+func (p *Peer) Closed() *gws.CloseError {
+	<-p.Ended
+	return p.closed
+}
+
 // CloseCode is the websocket close code the connection ended with: the room's close frame's, 1006
 // for a connection that dropped without one, or 0 for one this side closed (Close). It waits for
 // Ended.
 func (p *Peer) CloseCode() int {
-	<-p.Ended
-	return p.closeCode
+	if closed := p.Closed(); closed != nil {
+		return closed.Code
+	}
+	return 0
 }
 
 // read applies every sync frame the room sends and answers its sync step 1, keeps every awareness
 // update and hands on every auth answer, until the connection closes, handing answers the content
 // of each sync step 2 once it is applied and awareness each awareness update once it is kept.
-func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
+// first, when not nil, is the socket's first frame, already read (ReadGivenClient), which it
+// handles before it reads another.
+func (p *Peer) read(first []byte, answers chan<- []byte, awareness chan<- []AwarenessEntry) {
+	message, held := first, first != nil
 	for {
-		_, message, err := p.connection.ReadMessage()
-		if err != nil {
-			if closed := (*gws.CloseError)(nil); errors.As(err, &closed) {
-				p.closeCode = closed.Code
+		if !held {
+			_, read, err := p.connection.ReadMessage()
+			if err != nil {
+				var closed *gws.CloseError
+				if errors.As(err, &closed) {
+					p.closed = closed
+				}
+				p.hear("the connection ended: %v", err)
+				return
 			}
-			return
+			message = read
 		}
+		held = false
 		decoder := encoding.NewDecoder(message)
 		if _, err := decoder.ReadVarString(); err != nil {
 			return
@@ -368,12 +684,23 @@ func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 			}
 		case messageAuth:
 			p.readAuth(decoder)
+		case messageSyncStatus:
+			if applied, err := decoder.ReadVarUint(); err == nil {
+				p.answered.Add(1)
+				p.hear("SyncStatus %d (applied: %t)", applied, applied == 1)
+			}
 		}
 	}
 }
 
 // applySync applies one sync message the room sent and answers its sync step 1, handing answers
-// the content of a sync step 2 once Doc holds it.
+// the whole of each answer to a sync step 1 once Doc holds it.
+//
+// A room's answer is a series since sjawhar/ygo v1.55.1-sami.3: Update frames of about 64 KiB
+// each and then one sync step 2 carrying only what no Update could. The Update frames are kept
+// in answering and merged into the sync step 2 that ends the answer, so what reaches answers is
+// byte for byte what the one sync step 2 of before carried; a reader that took the last message
+// alone would read the remainder rather than the state. Only the reader touches answering.
 func (p *Peer) applySync(payload []byte, answers chan<- []byte) error {
 	kind, content, err := ygsync.ReadSyncMessage(payload)
 	if err != nil {
@@ -388,9 +715,22 @@ func (p *Peer) applySync(payload []byte, answers chan<- []byte) error {
 			return err
 		}
 	}
+	if kind == ygsync.MsgUpdate {
+		p.answering = append(p.answering, append([]byte(nil), content...))
+		return nil
+	}
 	if kind == ygsync.MsgSyncStep2 {
+		answer := content
+		if len(p.answering) > 0 {
+			merged, err := crdt.MergeUpdatesV1(append(p.answering, content)...)
+			if err != nil {
+				return err
+			}
+			answer = merged
+		}
+		p.answering = nil
 		select {
-		case answers <- content:
+		case answers <- answer:
 		default:
 		}
 	}

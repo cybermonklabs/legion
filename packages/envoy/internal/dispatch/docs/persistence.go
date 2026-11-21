@@ -66,10 +66,21 @@ type PgVersioned struct {
 	// (compactRoom). An entry goes when the room compacts.
 	unfoldableMu sync.Mutex
 	unfoldable   map[string]rowVersion
+	// disagreeingMu guards disagreeing: for each room whose stored version a compaction found
+	// disagreeing with the rows at or below its fold point (disagreeingVersion), that fold point,
+	// so the next compaction of the same rows skips them rather than folding and checking them
+	// again, and the document is logged once (recordDisagreeing). An entry goes when the room
+	// compacts.
+	disagreeingMu sync.Mutex
+	disagreeing   map[string]rowVersion
 	// duringCompactionFold runs once a compaction has read and folded a room's rows, before it
 	// takes the room's lock to write the fold back. Nil outside tests; tests use it to hold a
 	// compaction inside its fold while another writer changes the document.
 	duringCompactionFold func(room string)
+	// duringVersionCheck runs as a compaction starts to check the stored versions inside a fold
+	// whose document parked something (disagreeingVersion). Nil outside tests; tests count the
+	// checks.
+	duringVersionCheck func(room string)
 	// beforeFold runs as a load or a compaction starts to fold a room's rows (foldRead): once its
 	// read transaction has committed when it read them into memory, inside that transaction when
 	// it streams them. Nil outside tests; tests use it to see which connection a fold holds.
@@ -131,8 +142,8 @@ func NewPgVersioned(database *store.Store) *PgVersioned {
 // (onLoadDocument).
 func (p *PgVersioned) Load(ctx context.Context, room string) (persistence.LoadResult, error) {
 	var update []byte
-	stamp, err := p.loadStored(ctx, room, func(head persistence.Version, updates updateSource) (err error) {
-		update, err = stateThrough(room, head, updates, p.maxPendingItems)
+	stamp, err := p.loadStored(ctx, room, func(ctx context.Context, head persistence.Version, updates updateSource) (err error) {
+		update, err = stateThrough(ctx, room, head, updates, p.maxPendingItems)
 		return err
 	})
 	if err != nil {
@@ -149,7 +160,7 @@ func (p *PgVersioned) Load(ctx context.Context, room string) (persistence.LoadRe
 // room with no stored update commits and hands use nothing. It returns the stamp it read, and once
 // its transaction has ended it notes the room (noted) when it read more than one row: one row has
 // nothing to fold, and any later append notes the room itself.
-func (p *PgVersioned) loadStored(ctx context.Context, room string, use func(head persistence.Version, updates updateSource) error) (DocumentStamp, error) {
+func (p *PgVersioned) loadStored(ctx context.Context, room string, use func(ctx context.Context, head persistence.Version, updates updateSource) error) (DocumentStamp, error) {
 	if err := ctx.Err(); err != nil {
 		return DocumentStamp{}, err
 	}
@@ -173,8 +184,8 @@ func (p *PgVersioned) loadStored(ctx context.Context, room string, use func(head
 		}
 		return stored.stamp, nil
 	}
-	if err := p.foldRead(ctx, tx, room, head, stored.rows, stored.bytes, "document load", func(updates updateSource) error {
-		return use(head, updates)
+	if err := p.foldRead(ctx, tx, room, head, stored.rows, stored.bytes, "document load", func(ctx context.Context, updates updateSource) error {
+		return use(ctx, head, updates)
 	}); err != nil {
 		return DocumentStamp{}, err
 	}
@@ -208,17 +219,6 @@ func (p *PgVersioned) DocumentStamp(ctx context.Context, room string) (DocumentS
 // (AppendUpdatesWithCredit), with no credit, gated on the room cursor ctx is marked with, if any.
 func (p *PgVersioned) AppendUpdate(ctx context.Context, room string, update []byte) (persistence.Version, error) {
 	return p.AppendUpdatesWithCredit(ctx, room, []BrowserUpdate{{Update: update, ContentChanged: true}})
-}
-
-// AppendParkedUpdate stores a room's parked bytes - what a peer's update kept but could not
-// integrate, since it waits for an edit the room has not received (storeParked) - as one update
-// with no class, no credit and no pending authors, and without marking the document owing a
-// settlement: they change nothing a settlement reads, and the commit that later integrates them
-// marks the document owed itself. It runs the transaction a room's batch of one does
-// (appendUpdates), so it is gated on the room cursor ctx is marked with and announces the change
-// as any append does.
-func (p *PgVersioned) AppendParkedUpdate(ctx context.Context, room string, update []byte) (persistence.Version, error) {
-	return p.appendUpdates(ctx, room, []BrowserUpdate{{Update: update}}, false)
 }
 
 // AppendUpdateTx appends an already validated V1 update inside tx, recording whether it changes
@@ -480,7 +480,9 @@ func (p *PgVersioned) GetUpdate(ctx context.Context, room string, version persis
 }
 
 // MaterializeAt rebuilds the V1 state at version (stateThrough), or the latest state before it
-// when a requested version is newer than the room head.
+// when a requested version is newer than the room head. Its fold streams the rows inside the
+// transaction it opens, under one slot of the pod's load concurrency its decode takes and gives
+// back as the state goes to its caller (loadSlots, fold).
 func (p *PgVersioned) MaterializeAt(ctx context.Context, room string, version persistence.Version) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -507,7 +509,9 @@ func (p *PgVersioned) MaterializeAt(ctx context.Context, room string, version pe
 	if version > head {
 		version = head
 	}
-	update, err := stateThrough(room, version, storedUpdates(ctx, tx, room, version), p.maxPendingItems)
+	ctx, _, done := withLoadSlot(ctx)
+	defer done()
+	update, err := stateThrough(ctx, room, version, storedUpdates(ctx, tx, room, version), p.maxPendingItems)
 	if err != nil {
 		return nil, err
 	}
@@ -636,11 +640,21 @@ func (p *PgVersioned) PruneAfter(ctx context.Context, room string, target persis
 // decision itself, and refuses with ErrDocumentLive, writing nothing, when the head it reads
 // under the lock is no longer loaded. Another rebuild committed since (on this process or
 // another, which loaded the same history and was let through the owner's lock first), or an
-// append landed: either way the history the caller judged is not the one it would replace. What
-// the rebuild removes is counted under the lock, before its deletes, which go through write with
-// the seed's insert, so a joined transaction runs them in its write phase.
+// append landed: either way the history the caller judged is not the one it would replace. The
+// seed is a whole state, and its validation decodes it under a grant of the pod's load
+// concurrency, taken before the room's lock is taken and given back once the decode is done, and
+// weighed on the seed it decodes: its bytes and the structs its headers declare
+// (storedCopyWeight). What the rebuild removes is counted under the lock, before its deletes,
+// which go through write with the seed's insert, so a joined transaction runs them in its write
+// phase.
 func (p *PgVersioned) RebuildTx(ctx context.Context, tx pgx.Tx, room string, loaded persistence.Version, seed []byte) (RebuildReport, error) {
-	if err := validateUpdate(seed, p.maxPendingItems); err != nil {
+	release, err := holdLoad(ctx, storedCopyWeight(seed))
+	if err != nil {
+		return RebuildReport{}, err
+	}
+	err = validateUpdate(seed, p.maxPendingItems)
+	release()
+	if err != nil {
 		return RebuildReport{}, wrapUnlessTooLarge(itemCapError(seed, p.maxPendingItems, err), "validate rebuilt document seed")
 	}
 	if err := lockDocumentRoom(ctx, tx, room); err != nil {
@@ -1021,25 +1035,46 @@ var _ persistence.VersionedPersistence = (*PgVersioned)(nil)
 // does not export. TestUploadRefusesADocumentTooLargeToStore (api) holds the two together: a
 // document encoding to more than this is refused by ygo and answered as CAP_EXCEEDED with the count.
 // No single upload reaches it: the heaviest document pmdoc's element limit admits encodes to about
-// 131,000 items. Repeated versions can take a live state to it, so every joined write (applyLive
-// and applyMargin, through recordLiveOperation) decodes its state before appending once its clocks
-// pass this cap (refuseUndecodable, growth.go) - not settlement's own repairs, which write outside
-// both and never reach it (growth.go's own doc comment names the three).
+// 131,000 items, an eighth of it. Repeated versions can take a live state to it, so every joined
+// write (applyLive and applyMargin, through recordLiveOperation) counts its state's structs before
+// appending once a ceiling of them without an encode passes this cap (refuseUndecodable,
+// structCeiling, growth.go), and the block-id stamp, the sweep of unrecorded marks and
+// settlement's repair of a returning answer, which write into the live document outside both, ask
+// whether the document their write would leave stays within it and leave the document as it was
+// where it would not (Service.leavesPastDecodeCap; growth.go's own doc comment names the three).
+// The clock sum in that ceiling is only the cheap first question, never the answer: it counts
+// characters, where this cap counts items, so a busy document sums past it long before it holds
+// that many - 1,050,470 clocks at a mebibyte of typed-over markdown, and 1,310,720 at 256 KiB
+// after a mebibyte of typing and deleting, both of which decode (growth.go gives the figures).
 //
-// It is also the pending queue every decode of document bytes takes, whether the service builds
-// the decoder (newDocumentCopy, and newCappedDocumentCopy at the cap of the instance the decode
-// runs for) or ygo builds it for the service (Server.MaxPendingItems: the rooms). Two fields hold
-// that per-instance cap - PgVersioned.maxPendingItems, which the store's folds, read-backs and
-// seed check take, and Service.maxPendingItems, which the rooms and the check they are compared
-// with take - and their constructors set both to this (NewPgVersioned, New), so every production
+// It is also the pending queue every decode of document bytes the service builds a decoder for
+// takes (newDocumentCopy, and newCappedDocumentCopy at the cap of the instance the decode runs
+// for). Two fields hold that per-instance cap - PgVersioned.maxPendingItems, which the store's
+// folds, read-backs and seed check take, and Service.maxPendingItems, which the copies of a room's
+// stored state (loadTree's or LoadDoc's decodeStoredCopy) and the check they are compared with
+// take - and their constructors set both to this (NewPgVersioned, New), so every such production
 // decode takes this queue; only a test lowers the two (shrinkPendingItems), to make a log that
-// does not fold out of a few dozen items. ygo's decoder parks each item whose parent it cannot
-// place yet, and each later item of that client behind it, and refuses the update once its queue
-// is full, 100,000 items at ygo's default. An update decoded alone parks every item that leans on
-// the document it was written against, and no update carries more items than this, so no decode
-// parks past it. ygo's own check of each update the service broadcasts (Server.BroadcastUpdate)
-// takes no pending queue at all: it is the check ygo's bundled stores run, since the room has
-// already applied the update (reearth/ygo#268, in the pinned fork).
+// does not fold out of a few dozen items. The rooms, whose documents ygo builds for the service,
+// park far fewer: Server.MaxPendingItems, maxParkedStructs, which ygo sets before it runs their
+// load hook (sjawhar/ygo v1.55.1-sami.8, loadRoom, provider/websocket/server.go:1921-1924) and
+// which that hook's own decode of the stored state takes, ygo being handed no bytes to decode with
+// the queue lifted (bootstrapLoadedState), so a state whose decode parks past it fails the room's
+// load; every read that judges a history holds what a decode under this queue parks against the
+// rooms' caps (parkedPastRoomCaps), so such a state reads as one that cannot load, and the rebuild
+// takes it. ygo's decoder parks each item whose parent it cannot place yet, and each later item of
+// that client behind it, and refuses the update once its queue is full, 100,000
+// items at ygo's default. An update decoded alone parks every item that leans on the document it
+// was written against, and no update carries more items than this, so no decode parks items past
+// it. The queue caps, apart, the delete ranges parked for structs the document does not hold
+// (checkParkedDeletes, crdt/delete_set.go:250-283, called from applyV1Txn at
+// crdt/update.go:761-763): one update can name more of them than this, up to this many for each
+// of its clients, and a decode that would park more than this is refused, so a history holding
+// more parked delete ranges than this does not load. A room stores nothing it parks
+// (leaveParkedOut), so no room the peer update hook guards stores one, and the room's own queue
+// of them is held far below this, at a cap of its own (Server.MaxPendingDeleteRanges,
+// maxParkedDeleteRanges), by the same check. ygo's own check of each update the service broadcasts
+// (Server.BroadcastUpdate) takes no pending queue at all: it is the check ygo's bundled stores
+// run, since the room has already applied the update (reearth/ygo#268, in the pinned fork).
 // TestTheStoreTakesOneBrowserUpdateItsRoomTook is an update the store decodes itself under this
 // queue (PgVersioned.AppendUpdatesWithCredit) and a check at ygo's default would refuse;
 // TestASettlementStampsMoreBlocksThanYgosDefaultQueue is one nothing decodes alone any more - the

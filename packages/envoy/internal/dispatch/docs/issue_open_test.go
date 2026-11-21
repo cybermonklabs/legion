@@ -365,7 +365,7 @@ func foldHistoryPastRoom(t *testing.T, holder pgx.Tx, artifactID string, head in
 	t.Helper()
 	ctx := context.Background()
 	through := persistence.Version(head)
-	stored, err := documentThrough(artifactID, through, storedUpdates(ctx, holder, artifactID, through), maxUpdateItems)
+	stored, err := documentThrough(ctx, artifactID, through, storedUpdates(ctx, holder, artifactID, through), maxUpdateItems)
 	if err != nil {
 		t.Fatalf("read the stored document: %v", err)
 	}
@@ -380,7 +380,7 @@ func foldHistoryPastRoom(t *testing.T, holder pgx.Tx, artifactID string, head in
 		t.Fatalf("write the document as task B: %v", err)
 	}
 	folding := persistence.Version(writtenAt)
-	state, _, misread, err := fold(storedUpdates(ctx, holder, artifactID, folding), maxUpdateItems)
+	state, _, _, misread, err := fold(ctx, storedUpdates(ctx, holder, artifactID, folding), maxUpdateItems)
 	if err != nil {
 		t.Fatalf("fold the document's history: %v", err)
 	}
@@ -472,7 +472,7 @@ func TestABatchStraddlingTheIssuesCloseStoresWhatTheRoomTookInTime(t *testing.T)
 	queued := queueAKeystrokeEachSideOfTheClose(t, database, service, alice, artifactID, "before", 3*closeMargin)
 	// The batch of the first keystroke runs through the second: without that this would be two
 	// appends of one update each, not one run the close cuts.
-	if through, _, _ := service.roomBatchThrough(artifactID, queued[0], false); through != queued[1].seq {
+	if through := service.roomBatchThrough(artifactID, queued[0]); through != queued[1].seq {
 		t.Fatalf("the batch of the first keystroke runs through position %d, not the second keystroke's %d: the two are not one run", through, queued[1].seq)
 	}
 

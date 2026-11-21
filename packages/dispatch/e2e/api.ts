@@ -973,6 +973,21 @@ export function getArtifactVersion(id: string, version: number, options: ApiOpti
   );
 }
 
+/** The document's newest version, as `getArtifact` lists its versions, with the markdown that
+ *  version holds; undefined while it has none. */
+export async function newestArtifactVersion(id: string, options: ApiOptions = {}) {
+  const versions = (await getArtifact(id, options)).versions ?? [];
+  const newest = versions.reduce<(typeof versions)[number] | undefined>(
+    (latest, version) => (latest && latest.number > version.number ? latest : version),
+    undefined
+  );
+  if (newest === undefined) {
+    return undefined;
+  }
+  const { markdown } = await getArtifactVersion(id, newest.number, options);
+  return { markdown, version: newest };
+}
+
 export function editArtifact(
   id: string,
   input: Body<"/api/v1/artifacts/{id}/edits", "post">,
@@ -1200,6 +1215,24 @@ export function rotateLiveSockets(options: ApiOptions = {}) {
  */
 export function quiesceDocuments(options: ApiOptions = {}) {
   return post("/api/v1/artifacts/_test/quiesce", {}, { as: "agent", ...options });
+}
+
+/**
+ * Makes the document's next socket wait `ms` before its admission, as a browser in a burst waits
+ * for its room before the server answers its upgrade; 0 takes the hold back. Test-only endpoint
+ * (mounted when DISPATCH_TEST_HOOKS=1, see run-server.sh).
+ */
+export function holdDocumentAdmission(
+  artifactId: string,
+  ms: number,
+  options: ApiOptions = {}
+): Promise<void> {
+  return request<void>(
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/_test/hold-admission`,
+    "POST",
+    { ms },
+    options
+  );
 }
 
 /**

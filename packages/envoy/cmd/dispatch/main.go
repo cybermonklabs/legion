@@ -11,17 +11,20 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/KimMachineGun/automemlimit/memlimit"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -259,12 +262,73 @@ type bootConfig struct {
 	Answerer answererConfig
 }
 
+// setGoMemoryLimit gives the Go runtime a soft memory limit of 90% of the container's, so the
+// collector works harder as the heap nears it rather than letting garbage pile up until the
+// container is killed at its limit (the deployment's appMemory, which sizedResources sets as the
+// container's limit for newDispatchKubernetes: 4Gi where the stack leaves it
+// unset, defaultDispatchAppMemory, and 20Gi in production since 2026-11-05, theorem-labs/agent-infra
+// dispatch/Pulumi.prod.yaml's appMemory); nothing else tells the runtime that limit
+// exists. The ratio is automemlimit's default, 0.9. provider reads the
+// container's limit: main passes memlimit.FromCgroup, which reads memory.max under control group
+// v2 and memory.limit_in_bytes under v1, takes the smallest in the hierarchy and reports `max` as
+// no limit; a test passes its own rather than depending on the runner's control group. Where no
+// limit is readable the runtime keeps having none. GOMEMLIMIT and AUTOMEMLIMIT stay automemlimit's
+// own variables, read inside memlimit.Set and not settings rows (setting): a GOMEMLIMIT,
+// or AUTOMEMLIMIT=off, skips the provider, and any other AUTOMEMLIMIT replaces the ratio. It logs
+// one line naming the limit it read and the limit it set.
+//
+// It then logs the memory bounds the document service derives from the limit the runtime holds
+// afterwards, whichever way it got there (docs.BoundsForLimit), and returns that limit for main
+// to hand the service (docs.Deps.GoMemoryLimit), so the bounds an operator reads in the boot log
+// are the bounds the service runs under.
+func setGoMemoryLimit(provider memlimit.Provider) int64 {
+	read, readErr, called := uint64(0), error(nil), false
+	limit, err := memlimit.Set(memlimit.WithProvider(func() (uint64, error) {
+		called = true
+		read, readErr = provider()
+		return read, readErr
+	}))
+	switch {
+	case called && readErr != nil:
+		// memlimit.ErrNoLimit, or no control group to read (a laptop, a host outside a
+		// container): either way the limit stays unset.
+		slog.Info("dispatch: no go memory limit set: no container memory limit readable", "reason", readErr.Error())
+	case err != nil:
+		// An AUTOMEMLIMIT that is neither `off` nor a ratio in (0, 1]: the library refuses it
+		// before reading anything and leaves the limit as it was.
+		slog.Warn("dispatch: no go memory limit set", "error", err)
+	case called:
+		slog.Info("dispatch: go memory limit set from the container's", "container_limit_bytes", read, "go_memory_limit_bytes", limit)
+	case limit == math.MaxInt64:
+		slog.Info("dispatch: no go memory limit set: GOMEMLIMIT or AUTOMEMLIMIT=off in the environment, so the container's was not read")
+	default:
+		slog.Info("dispatch: go memory limit taken from GOMEMLIMIT; the container's was not read", "go_memory_limit_bytes", limit)
+	}
+	held := debug.SetMemoryLimit(-1)
+	bounds := docs.BoundsForLimit(held)
+	slog.Info("dispatch: the document service's memory bounds",
+		"go_memory_limit_bytes", bounds.Limit,
+		"room_budget_bytes", bounds.RoomBudget,
+		"document_read_cache_bytes", bounds.DocumentReadCache,
+		"load_slots", bounds.LoadSlots,
+		"peer_write_queue_bytes", bounds.PeerWriteQueue)
+	return held
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	// First, before the server allocates anything the collector would have to catch up on. The
+	// limit it returns is what the document service derives its memory bounds from
+	// (docs.Deps.GoMemoryLimit).
+	goMemoryLimit := setGoMemoryLimit(memlimit.FromCgroup)
 	env := processSettings()
 	if len(os.Args) > 1 {
 		os.Exit(runSubcommand(context.Background(), os.Args[1:], env, os.Stdout, os.Stderr))
 	}
+	// Before the server serves, so an operator's trace holds the whole of what it then maps; a
+	// subcommand, which has exited by here, writes none. Its context never ends, so the trace
+	// runs to the end of the process.
+	startMemoryTrace(context.Background(), env.get("DISPATCH_MEMORY_TRACE"))
 	boot, err := resolveBootConfig(env)
 	if err != nil {
 		slog.Error("dispatch: resolve boot config", "error", err)
@@ -496,6 +560,10 @@ func main() {
 		Events:    broker,
 		Identity:  requestIdentity,
 		ServerURL: serverURL,
+		// The limit the boot read from this container, which every bound of the open documents'
+		// memory is a share of (docs' MemoryBounds, INFRA-179). It is no boot setting, so it is
+		// filled in here rather than by documentDeps.
+		GoMemoryLimit: goMemoryLimit,
 	})
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
@@ -909,6 +977,13 @@ func main() {
 	// version write stored: every mention indexed before migration 0092, and each rebuild-refs
 	// inserts (LEGION-531), woken by the refs trigger that announces each mention left owed.
 	go documentService.RunReferenceExcerptReconciliation(ctx, referenceExcerptLeases, excerptsWake)
+	// The first boot of a build that gives client ids out records when that was, once: an id
+	// below 2^32 that the stored history names stays claimable for 30 days from it, and so does
+	// any id a page that presents a client id claims, while a socket that presents none claims an
+	// id no history names at any time; no later boot moves it (docs.Service.RecordClientIDsSince).
+	if err := documentService.RecordClientIDsSince(ctx); err != nil {
+		slog.Error("dispatch: boot", "error", err)
+	}
 	// Documents the compaction queues let go - every room a restart, a Shutdown or a Quiesce
 	// dropped from one - fold within an hour of coming due, whether or not NATS is configured
 	// (INFRA-593).

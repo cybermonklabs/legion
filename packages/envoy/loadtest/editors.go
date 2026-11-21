@@ -25,6 +25,8 @@ import (
 	"github.com/reearth/ygo/encoding"
 	ygsync "github.com/reearth/ygo/sync"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
@@ -102,11 +104,14 @@ func (s *editorStats) add(f func(*editorStats)) {
 // editorConn is one editor's connection to its document's room: a browser's provider as the
 // dashboard runs it (packages/dispatch/web/src/features/doc/connection.ts), on Hocuspocus framing.
 type editorConn struct {
-	doc    *editorDoc
-	stats  *editorStats
-	ws     *gws.Conn
-	ydoc   *crdt.Doc
+	doc   *editorDoc
+	stats *editorStats
+	ws    *gws.Conn
+	ydoc  *crdt.Doc
+	// client is the client id ydoc writes under: the one the room gave the connection, or, where
+	// the room gave none (given false), the copy's own.
 	client crdt.ClientID
+	given  bool
 	// ended is closed once the reader has stopped and the connection left its document.
 	ended chan struct{}
 
@@ -152,12 +157,35 @@ type connectError struct {
 func (e *connectError) Error() string { return e.reason + ": " + e.err.Error() }
 
 // dialEditor connects an editor to d's room at url, the document websocket's full address with
-// its schema_version, as login, and starts its reader. As @hocuspocus/provider does, it sends
-// the token (the dashboard's is its schema version) and then sync step 1; the room's sync step 2
-// makes it synced.
-func dialEditor(ctx context.Context, url, login, token string, d *editorDoc, st *editorStats) (*editorConn, error) {
+// its schema_version, as login, and starts its reader. kept and held are the copy of the
+// document the editor's last connection held and the client id it wrote under (nil and 0 before
+// its first connection).
+//
+// The editor takes its client id from Dispatch, as the dashboard's page does (connection.ts
+// takeClientId): it presents held under contracts.DocumentClientIdParameter, empty on its first
+// connection, and the socket's first frame is the stateless message naming the id the room gives
+// it (docstest.ReadGivenClient), which the editor writes under and presents on its next
+// connection. Where the room gives held back the editor carries on in kept, as a reconnecting tab
+// keeps its document; otherwise it starts a new copy under the given id. A new copy of held would
+// not do: the room's state holds the editor's own edits under held, and applying it would move the
+// copy's own clock, which makes ygo draw the copy a fresh random id (crdt.Doc.ClientID) that no
+// admission gave out.
+//
+// A room that gives no id - a Dispatch build from before client ids - sends another frame first,
+// its sync step 1. The editor then writes under its copy's own id (kept's, or the one a new copy
+// draws), which it presents on its next connection as the dashboard does, and its reader handles
+// that frame as it does every frame: its answer is how the room gets what the copy holds and the
+// room lacks.
+//
+// Then, as @hocuspocus/provider does, it sends the token (the dashboard's is its schema version)
+// and sync step 1; the room's sync step 2 makes it synced.
+func dialEditor(ctx context.Context, url, login, token string, kept *crdt.Doc, held crdt.ClientID, d *editorDoc, st *editorStats) (*editorConn, error) {
+	presented := ""
+	if held != 0 {
+		presented = strconv.FormatUint(uint64(held), 10)
+	}
 	dialer := gws.Dialer{HandshakeTimeout: 10 * time.Second}
-	ws, resp, err := dialer.DialContext(ctx, url, http.Header{"X-Dispatch-User": []string{login}})
+	ws, resp, err := dialer.DialContext(ctx, url+"&"+contracts.DocumentClientIdParameter+"="+presented, http.Header{"X-Dispatch-User": []string{login}})
 	if err != nil {
 		reason := "dial"
 		if resp != nil {
@@ -165,9 +193,20 @@ func dialEditor(ctx context.Context, url, login, token string, d *editorDoc, st 
 		}
 		return nil, &connectError{reason: reason, err: err}
 	}
-	ydoc := crdt.New()
-	c := &editorConn{doc: d, stats: st, ws: ws, ydoc: ydoc, client: ydoc.ClientID(), ended: make(chan struct{}), cursors: map[*editorConn]int{}}
-	go c.read()
+	client, given, first, err := docstest.ReadGivenClient(ws)
+	if err != nil {
+		_ = ws.Close()
+		return nil, &connectError{reason: "dial", err: err}
+	}
+	ydoc := kept
+	switch {
+	case given && (kept == nil || kept.ClientID() != client):
+		ydoc = crdt.New(crdt.WithClientID(client))
+	case !given && kept == nil:
+		ydoc = crdt.New()
+	}
+	c := &editorConn{doc: d, stats: st, ws: ws, ydoc: ydoc, client: ydoc.ClientID(), given: given, ended: make(chan struct{}), cursors: map[*editorConn]int{}}
+	go c.read(first)
 	auth := encoding.EncodeBytes(func(e *encoding.Encoder) {
 		e.WriteVarUint(hocuspocusAuthToken)
 		e.WriteVarString(token)
@@ -209,23 +248,29 @@ func (c *editorConn) close() {
 }
 
 // read handles every frame the room sends until the connection ends, then records how it ended
-// and leaves the document.
-func (c *editorConn) read() {
+// and leaves the document. first, when not nil, is the socket's first frame, already read
+// (dialEditor), which it handles before it reads another.
+func (c *editorConn) read(first []byte) {
 	defer close(c.ended)
 	defer c.leave()
+	message, held := first, first != nil
 	for {
-		_, message, err := c.ws.ReadMessage()
-		if err != nil {
-			if !c.closing.Load() {
-				reason := "read error"
-				var ce *gws.CloseError
-				if errors.As(err, &ce) {
-					reason = strconv.Itoa(ce.Code)
+		if !held {
+			_, read, err := c.ws.ReadMessage()
+			if err != nil {
+				if !c.closing.Load() {
+					reason := "read error"
+					var ce *gws.CloseError
+					if errors.As(err, &ce) {
+						reason = strconv.Itoa(ce.Code)
+					}
+					c.stats.add(func(s *editorStats) { s.closes[reason]++ })
 				}
-				c.stats.add(func(s *editorStats) { s.closes[reason]++ })
+				return
 			}
-			return
+			message = read
 		}
+		held = false
 		if err := c.handle(message, time.Now()); err != nil {
 			if !c.closing.Load() {
 				c.stats.add(func(s *editorStats) { s.closes["unreadable frame"]++ })
@@ -477,8 +522,12 @@ func (st *step) startEditors(ctx context.Context) *editorWorkload {
 		login := fmt.Sprintf("person-%d", i)
 		var current atomic.Pointer[editorConn]
 		w.all.Go(func() {
+			// kept and held are the copy and the client id of the editor's last connection, which
+			// its next one carries on with (dialEditor).
+			var kept *crdt.Doc
+			var held crdt.ClientID
 			for ctx.Err() == nil {
-				c, err := dialEditor(ctx, url, login, schema, d, w.stats)
+				c, err := dialEditor(ctx, url, login, schema, kept, held, d, w.stats)
 				if err != nil {
 					if ctx.Err() == nil {
 						var ce *connectError
@@ -491,6 +540,13 @@ func (st *step) startEditors(ctx context.Context) *editorWorkload {
 					sleepUntil(ctx, time.Now().Add(editorReconnectDelay))
 					continue
 				}
+				switch {
+				case !c.given:
+					lg.Printf("editors: %s on %s: the room gave no client id; the editor writes under its copy's own %d", login, d.key, c.client)
+				case held != 0 && c.client != held:
+					lg.Printf("editors: %s on %s presented client id %d and was given %d; it goes on in a new copy of the document", login, d.key, held, c.client)
+				}
+				kept, held = c.ydoc, c.client
 				w.stats.add(func(s *editorStats) { s.connects++ })
 				current.Store(c)
 				select {

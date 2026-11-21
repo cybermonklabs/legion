@@ -401,6 +401,7 @@ test("ProofDocument reports connection status and pending edits through the tool
         readOnly: false,
         rebuiltAt: undefined,
         stored: true,
+        unsent: false,
       });
       status("offline");
     });
@@ -410,6 +411,7 @@ test("ProofDocument reports connection status and pending edits through the tool
         readOnly: false,
         rebuiltAt: undefined,
         stored: true,
+        unsent: false,
       })
     );
     await waitFor(() => expect(toolbar.current?.connection).toBe("offline"));
@@ -419,6 +421,46 @@ test("ProofDocument reports connection status and pending edits through the tool
     expect(
       within(view.container).getByText("This issue is closed. Its document is read-only.")
     ).toBeDefined();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A wait the backoff has grown is a wait the page made on purpose (dispatch://INFRA-179): the
+// person is told it is reconnecting, when, and that their typing is kept, and is given the way
+// out. The first attempt's spread is the blip every dropped socket starts with, and shows
+// nothing: it is over before a notice would be read.
+test("ProofDocument shows a grown reconnect wait with a retry, and nothing for the first attempt", async () => {
+  const user = userEvent.setup();
+  const { connections, editors, pending, reconnectWait, sync, view } = renderProofDocument();
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    act(() => {
+      pending({ count: 2, readOnly: false, rebuiltAt: undefined, stored: true, unsent: false });
+      reconnectWait({ at: Date.now() + 1_700, attempt: 0 });
+    });
+    expect(within(view.container).queryByRole("button", { name: "Retry now" })).toBeNull();
+
+    act(() => reconnectWait({ at: Date.now() + 23_000, attempt: 6 }));
+    const notice = await within(view.container).findByText(
+      "Reconnecting to the document in 23 s. Your edits are kept in this browser until they are sent."
+    );
+    expect(notice).toBeInTheDocument();
+    // The screen reader hears the same sentence without the count, which no tick rewrites.
+    expect(
+      within(view.container).getByText(
+        "Reconnecting to the document. Your edits are kept in this browser until they are sent."
+      )
+    ).toHaveAttribute("role", "status");
+
+    await user.click(within(view.container).getByRole("button", { name: "Retry now" }));
+    expect(connections.at(-1)?.reconnectedNow).toBe(1);
+
+    // The socket that wait was for is made: the connection takes the wait back and the notice goes.
+    act(() => reconnectWait(undefined));
+    expect(within(view.container).queryByRole("button", { name: "Retry now" })).toBeNull();
   } finally {
     view.unmount();
   }
@@ -444,6 +486,7 @@ test("the margin's wait for this browser's edits is answered by a report taken a
         readOnly: false,
         rebuiltAt: undefined,
         stored: true,
+        unsent: false,
       })
     );
     let answered = false;
@@ -459,6 +502,7 @@ test("the margin's wait for this browser's edits is answered by a report taken a
         readOnly: false,
         rebuiltAt: undefined,
         stored: true,
+        unsent: false,
       })
     );
     await Promise.resolve();
@@ -470,6 +514,7 @@ test("the margin's wait for this browser's edits is answered by a report taken a
         readOnly: false,
         rebuiltAt: undefined,
         stored: true,
+        unsent: false,
       })
     );
     await waiting;
@@ -484,6 +529,7 @@ test("the margin's wait for this browser's edits is answered by a report taken a
         readOnly: true,
         rebuiltAt: undefined,
         stored: true,
+        unsent: false,
       })
     );
     await bridge.whenSent(0);

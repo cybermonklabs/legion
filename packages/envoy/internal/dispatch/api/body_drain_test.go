@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -341,6 +342,45 @@ func TestAnEarlyAnswerDrainsTheBodyUpToTheRoutesLimit(t *testing.T) {
 			}
 		})
 	}
+}
+
+// requireEveryAnswersHeaders fails unless header carries what every answer of this server carries,
+// whichever writer wrote it: X-Content-Type-Options: nosniff and Vary: Accept-Encoding
+// (compressAnswers), and Vary: Dispatch-Trees (varyOnDisplayTrees).
+func requireEveryAnswersHeaders(t *testing.T, header http.Header, what string) {
+	t.Helper()
+	if got := header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("%s: X-Content-Type-Options = %q, want nosniff", what, got)
+	}
+	if got := slices.Sorted(slices.Values(header.Values("Vary"))); !slices.Equal(got, []string{"Accept-Encoding", displayTreesHeader}) {
+		t.Errorf("%s: Vary = %q, want Accept-Encoding and %s", what, got, displayTreesHeader)
+	}
+}
+
+// dispatch://INFRA-179. The limit's 413, put in place of an early answer to a body that runs past
+// its route's limit (drainingWriter), keeps the headers every answer of this server carries: the
+// nosniff and both Vary values. The replacement emptied the whole header before it wrote, so a
+// caller whose body ran past the limit was answered with neither the sniffing protection nor the
+// Vary a cache between it and Dispatch needs. The answer is read over a real connection, as
+// net/http writes it: the client sends the limit and one byte more of a body twice the limit's
+// length - what the drain reads before it answers - and holds back the rest, which is more than
+// net/http discards on its own after an answer, so nothing waits for it.
+func TestTheLimitsAnswerToABodyPastItKeepsTheHeadersEveryAnswerCarries(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{})
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	issue := createArtifactIssue(t, handler)
+	header := http.Header{}
+	header.Set("Content-Type", "application/json")
+	header.Set("X-Dispatch-User", "alice")
+	header.Set(contracts.DispatchLoginHeader, "bob")
+	drained := bytes.Repeat([]byte("a"), int(maxJSONRequestBytes)+1)
+	held := sendPartOfBody(t, server.Listener.Addr().String(), "/api/v1/issues/"+issue.Key+"/messages", header, 2*int(maxJSONRequestBytes), drained)
+	response, answer := held.answer()
+	if response.StatusCode != http.StatusRequestEntityTooLarge || refusalCode(answer) != "REQUEST_TOO_LARGE" {
+		t.Fatalf("a message pressed by another login, past the JSON limit, was answered %d %s, want 413 REQUEST_TOO_LARGE", response.StatusCode, answer)
+	}
+	requireEveryAnswersHeaders(t, response.Header, "the 413 of a body past the JSON limit")
 }
 
 // holdKeyInFlight leaves login's key held by a first request to path that is still running: a row

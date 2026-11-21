@@ -5,7 +5,7 @@ import { messageYjsSyncStep2, messageYjsUpdate } from "y-protocols/sync";
 import * as Y from "yjs";
 
 import type { PendingEdits, PendingKey, RestoredEdit } from "./pending-edits";
-import { FRAGMENT_NAME, MARKS_MAP_NAME } from "./roots";
+import { RETIRED_MAP_NAME } from "./roots";
 import { readField } from "./sync-frame";
 
 export interface PendingState {
@@ -17,27 +17,69 @@ export interface PendingState {
   rebuiltAt: number | undefined;
   /** Whether this browser has an IndexedDB store for these edits. */
   stored: boolean;
+  /**
+   * Whether the rows this browser holds have waited longer than `UNSENT_NOTICE_MS` for the
+   * server to take one of its frames: the edits are saved here and have not reached Dispatch.
+   */
+  unsent: boolean;
 }
+
+/**
+ * How long the rows this browser holds may wait for the server to take one of its frames before
+ * a person is told the edits have not reached Dispatch. One frame's round trip on this pod is
+ * 31 ms at the median of a keystroke, 176 ms at the 90th percentile and 539 ms at the 99th, and
+ * no single frame a room sends is larger than 64 KiB, so two seconds is close to four of the
+ * slowest round trips and longer than the wait any one frame costs: typing never reaches it, and
+ * a handover or an acknowledgement that has stopped always does. The wait starts over every time
+ * the server takes a frame, so a person typing steadily is never named either.
+ */
+export const UNSENT_NOTICE_MS = 2_000;
 
 export interface PendingSync {
   /** Starts a fresh acknowledgement sequence for a newly opened socket. */
   socketOpened(): void;
   /** Counts a SyncStep2 or Update frame that actually reached the socket. */
   frameWritten(frame: Uint8Array): void;
-  /** Pairs an incoming SyncStatus frame with the next counted sent frame. */
-  frameReceived(frame: Uint8Array): Promise<void>;
+  /**
+   * Pairs an incoming SyncStatus frame with the next counted sent frame, and reports the flag it
+   * read: whether the server applied the frame it acknowledges, and `undefined` for a frame that
+   * is no SyncStatus, one that does not parse and one this sync is destroyed for. It is the one
+   * parse of the frame, so a caller watching for the server to take a frame again reads it here
+   * (`connection.ts`, `onBusy`).
+   */
+  frameReceived(frame: Uint8Array): Promise<boolean | undefined>;
+  /**
+   * Deletes the saved row of the Update frame this socket's server last answered as not applied,
+   * once `restored` - this admission's restore (`synced`) - has settled, so the rows that restore
+   * replaced are gone before the document is rebuilt. The frame is taken when this is called, from
+   * the socket the server has just closed with `DOCUMENT_TOO_LARGE_CLOSE_CODE` after that answer:
+   * the edit would take the document past its size bound, so resending it can only earn the same
+   * refusal. A plain not-applied answer drops nothing, which is what keeps a read-only admission's
+   * rows.
+   */
+  dropRefused(restored: Promise<void>): Promise<void>;
+  /**
+   * Deletes every saved row - this tab's and every other tab's - whose edit is under one of
+   * `clients`, or, where none are named, under a client of the Update frame this socket's server
+   * last answered as not applied, once `restored` has settled, and answers how many saved rows it
+   * deleted. The server refused that frame with `DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON`: the
+   * client id it writes under is not this person's, so every other row under that id would meet
+   * the same refusal, one reconnect at a time, and they go together. Rows under other ids stay,
+   * and the rebuilt document replays them as it replays any row.
+   */
+  dropClientRows(restored: Promise<void>, clients?: readonly number[]): Promise<number>;
   /**
    * Takes the current socket's admission as it authenticates: whether it is read-only decides from
-   * then on whether a local update is a person's edit to store. Restoring and pruning the stored
-   * rows wait for `synced`.
+   * then on whether a local update is a person's edit to store. Restoring the stored rows waits
+   * for `synced`.
    */
   authenticated(readOnly: boolean): void;
   /**
    * Takes the current socket's admission once that socket has both synced and authenticated. The
    * first, and each later one whose read-only flag differs from the last one taken, decides what
-   * the stored rows need: a writable admission restores them, judging each against this document,
-   * so a row that builds on what the server took meanwhile applies; a read-only one restores none
-   * and drops the rows that change nothing.
+   * the stored rows need: a writable admission replays them, each sent again and kept until an
+   * applied answer covers it, whatever of it this document already holds; a read-only one keeps
+   * them all for the next writable admission.
    */
   synced(): Promise<void>;
   destroy(): void;
@@ -57,12 +99,32 @@ export interface PendingSyncOptions {
   onChange(state: PendingState): void;
   /** Updates received from the provider must never be stored as local edits. */
   remoteOrigin: unknown;
+  /**
+   * Sends `update` to the server as an Update frame on the current socket. A restored row is
+   * applied as the server's own update, which the provider does not send, and sent whole through
+   * this, so the answer that clears it answers its own bytes (`admit`).
+   */
+  send(update: Uint8Array): void;
   /** Opening IndexedDB must not delay constructing the provider. */
   store: Promise<PendingEdits | undefined>;
 }
 
 function equals(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((byte, index) => byte === right[index]);
+}
+
+/**
+ * The flag of a SyncStatus frame: true when the server applied the frame it answers, false when it
+ * did not, and undefined for any other frame. Throws for a frame that does not parse.
+ */
+export function readSyncStatus(frame: Uint8Array): boolean | undefined {
+  const decoder = createDecoder(frame);
+  readField(decoder); // the document name
+  if (readVarUint(decoder) !== MessageType.SyncStatus) {
+    return undefined;
+  }
+  // The server writes the flag as a VarUint: 1 applied, 0 not applied.
+  return readVarUint(decoder) === 1;
 }
 
 function covers(
@@ -84,28 +146,29 @@ function covers(
   return false;
 }
 
-/** Whether applying an update added a parked delete that the live document did not already hold. */
-function addsPendingDeletes(before: Uint8Array | null, after: Uint8Array | null): boolean {
+/** The clients of the parked deletes applying an update added that the live document did not hold. */
+function addedPendingDeletes(before: Uint8Array | null, after: Uint8Array | null): number[] {
   if (after === null) {
-    return false;
+    return [];
   }
-  if (before === null) {
-    return true;
-  }
-  const beforeDeletes = Y.decodeUpdateV2(before).ds.clients;
-  const afterDeletes = Y.decodeUpdateV2(after).ds.clients;
-  for (const [client, afterRanges] of afterDeletes) {
+  const beforeDeletes =
+    before === null
+      ? new Map<number, { clock: number; len: number }[]>()
+      : Y.decodeUpdateV2(before).ds.clients;
+  const added: number[] = [];
+  for (const [client, afterRanges] of Y.decodeUpdateV2(after).ds.clients) {
     const beforeRanges = beforeDeletes.get(client) ?? [];
-    for (const range of afterRanges) {
-      if (!covers(beforeRanges, range.clock, range.len)) {
-        return true;
-      }
+    if (afterRanges.some((range) => !covers(beforeRanges, range.clock, range.len))) {
+      added.push(client);
     }
   }
-  return false;
+  return added;
 }
 
-/** A copy of `doc` to test restored rows on, so the live document never takes a row that parks. */
+/**
+ * A copy of `doc` to test restored rows on, so the live document never takes a row typed against
+ * a history a rebuild replaced.
+ */
 function scratchOf(doc: Y.Doc): Y.Doc {
   const scratch = new Y.Doc();
   Y.applyUpdate(scratch, Y.encodeStateAsUpdate(doc));
@@ -113,23 +176,67 @@ function scratchOf(doc: Y.Doc): Y.Doc {
 }
 
 /**
- * Applies a restored row to `scratch` and says whether it parked something the scratch did not
- * already park: a missing client, or a delete of items it does not hold, which is what a row typed
- * against a history the server rebuilt since does. yjs 13.6.32 exposes parked structs and deletes
- * only through these `StructStore` internals. `encodeStateAsUpdate` carries the live document's
- * own parked structs and deletes into the scratch, so only what the row adds counts.
+ * Applies a restored row to `scratch` and answers the clients it parked on that the scratch did not
+ * already park on: a client whose content its structs build on and the scratch lacks, or whose
+ * items it deletes and the scratch does not hold. A row typed against a history the server rebuilt
+ * since parks on that history's clients; one typed after another person's edit the server never
+ * stored parks on that person's. yjs 13.6.32 exposes parked structs and deletes only through these
+ * `StructStore` internals. `encodeStateAsUpdate` carries the live document's own parked structs and
+ * deletes into the scratch, so only what the row adds counts.
  */
-function addsParking(scratch: Y.Doc, update: Uint8Array): boolean {
+function parkedClients(scratch: Y.Doc, update: Uint8Array): Set<number> {
   const beforeMissing = new Set(scratch.store.pendingStructs?.missing.keys() ?? []);
   const beforeDeletes = scratch.store.pendingDs;
 
   Y.applyUpdate(scratch, update);
 
-  const afterMissing = scratch.store.pendingStructs?.missing;
-  const addsMissingClient = [...(afterMissing?.keys() ?? [])].some(
-    (client) => !beforeMissing.has(client)
-  );
-  return addsMissingClient || addsPendingDeletes(beforeDeletes, scratch.store.pendingDs);
+  const parked = new Set<number>();
+  for (const client of scratch.store.pendingStructs?.missing.keys() ?? []) {
+    if (!beforeMissing.has(client)) {
+      parked.add(client);
+    }
+  }
+  for (const client of addedPendingDeletes(beforeDeletes, scratch.store.pendingDs)) {
+    parked.add(client);
+  }
+  return parked;
+}
+
+/**
+ * The clients a rebuild of `doc`'s document retired, each with the clock it had reached in the
+ * history the rebuild replaced, as the rebuilt history lists them (`RETIRED_MAP_NAME`), read as the
+ * server reads the list (`retiredClientsOf`): an entry that is not a client and a clock of at least
+ * one retires nothing. Empty for a document no rebuild has replaced. The list is asked for by its
+ * class only once the document holds it, so a live document is never given a root it lacks.
+ */
+export function retiredClients(doc: Y.Doc): Map<number, number> {
+  const retired = new Map<number, number>();
+  if (!doc.share.has(RETIRED_MAP_NAME)) {
+    return retired;
+  }
+  doc.getMap(RETIRED_MAP_NAME).forEach((clock, key) => {
+    const client = Number(key);
+    if (Number.isSafeInteger(client) && client >= 0 && typeof clock === "number" && clock >= 1) {
+      retired.set(client, clock);
+    }
+  });
+  return retired;
+}
+
+/**
+ * Whether `doc` holds the history a rebuild of its document replaced: a struct of a client the
+ * rebuilt history retired. A client's structs run from clock 0, below any clock the list names,
+ * and the rebuilt room holds none of them, so this document's answer to the room's SyncStep1
+ * would carry them and the room would refuse it (`DOCUMENT_REBUILT_CLOSE_REASON`). A document
+ * built afresh from the rebuilt room holds the list and none of those clients.
+ */
+export function holdsReplacedHistory(doc: Y.Doc): boolean {
+  for (const client of retiredClients(doc).keys()) {
+    if (Y.getState(doc.store, client) > 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -142,92 +249,6 @@ function addsParking(scratch: Y.Doc, update: Uint8Array): boolean {
  */
 function isEditorRepair(origin: unknown, transaction: Y.Transaction): boolean {
   return origin === ySyncPluginKey && !transaction.meta.has("addToHistory");
-}
-
-/** An object's entries ordered by key, so the order Yjs keeps them in does not count. */
-function sortedEntries(record: Record<string, unknown>): [string, unknown][] {
-  return Object.entries(record).sort(([left], [right]) => left.localeCompare(right));
-}
-
-/** One run of an `XmlText` delta: its text or embed, and the formats it carries. */
-interface DeltaRun {
-  insert: unknown;
-  attributes?: Record<string, unknown>;
-}
-
-/**
- * The runs a reader sees of a text: adjacent text of the same formats is joined, so how Yjs
- * happens to split the same text into items does not count as a change.
- */
-function readableRuns(delta: readonly DeltaRun[]): unknown[] {
-  const runs: { text?: string; embed?: unknown; marks: [string, unknown][] }[] = [];
-  for (const { insert, attributes } of delta) {
-    const marks = sortedEntries(attributes ?? {});
-    const last = runs.at(-1);
-    if (typeof insert !== "string") {
-      runs.push({ embed: readableValue(insert), marks });
-    } else if (last?.text !== undefined && JSON.stringify(last.marks) === JSON.stringify(marks)) {
-      last.text += insert;
-    } else {
-      runs.push({ text: insert, marks });
-    }
-  }
-  return runs;
-}
-
-/** What a reader sees of one node of the editor's tree: its name, attributes and content. */
-function readableNode(node: Y.XmlElement | Y.XmlText | Y.XmlHook): unknown {
-  if (node instanceof Y.XmlText) {
-    return ["text", sortedEntries(node.getAttributes()), readableRuns(node.toDelta())];
-  }
-  if (node instanceof Y.XmlElement) {
-    return [node.nodeName, sortedEntries(node.getAttributes()), node.toArray().map(readableNode)];
-  }
-  return [node.hookName, sortedEntries(node.toJSON())];
-}
-
-/** What a reader sees of an embed: a node of the tree read as one, another type as JSON. */
-function readableValue(value: unknown): unknown {
-  if (value instanceof Y.XmlElement || value instanceof Y.XmlText || value instanceof Y.XmlHook) {
-    return readableNode(value);
-  }
-  return value instanceof Y.AbstractType ? value.toJSON() : value;
-}
-
-/**
- * Everything a reader of `scratch` sees, as one string to compare: the editor's tree and the
- * margin records, the only two roots a Dispatch document holds. A root nobody has asked for by
- * its class yet - the editor's fragment before the editor exists - is a bare type that shows
- * nothing, so both are asked for by their class here. That defines them on the document it is
- * called on, so it is only ever called on a scratch copy, never on the live document the editor
- * binds. Only public reads are used: children, names, attributes, a text's delta with its
- * formats, and the margin records as JSON. Values are compared as JSON, so an object attribute is
- * compared by what it holds rather than printed as `[object Object]`.
- */
-function readable(scratch: Y.Doc): string {
-  return JSON.stringify([
-    scratch.getXmlFragment(FRAGMENT_NAME).toArray().map(readableNode),
-    sortedEntries(scratch.getMap(MARKS_MAP_NAME).toJSON()),
-  ]);
-}
-
-/**
- * Whether one browser client's stored rows, applied in order to a copy of `doc`, park nothing and
- * leave what the copy shows as it was. Rows the document already holds do; so do rows whose only
- * change the editor of this load derived again. Rows that park never do, so a row typed against a
- * rebuilt history stays named. A copy that holds any root but the tree and the margin records,
- * before or after the rows, holds something the comparison cannot read, so its rows are kept
- * rather than risk dropping a person's unsent edit. Applying a row adds roots and never removes
- * one, so the roots after the rows cover those before.
- */
-function changesNothing(doc: Y.Doc, updates: readonly Uint8Array[]): boolean {
-  const scratch = scratchOf(doc);
-  const before = readable(scratch);
-  return (
-    updates.every((update) => !addsParking(scratch, update)) &&
-    [...scratch.share.keys()].every((name) => name === FRAGMENT_NAME || name === MARKS_MAP_NAME) &&
-    readable(scratch) === before
-  );
 }
 
 /**
@@ -275,6 +296,7 @@ export function startPendingSync({
   doc,
   onChange,
   remoteOrigin,
+  send,
   store,
 }: PendingSyncOptions): PendingSync {
   let destroyed = false;
@@ -288,7 +310,7 @@ export function startPendingSync({
   // typed after one parks on a reload unless the server or the store holds it. So a person's edit
   // records the held updates first, in order.
   let derived: { ordinal: number; update: Uint8Array }[] = [];
-  // Whether the stored rows were last restored for a writable admission (false) or pruned for a
+  // Whether the stored rows were last restored for a writable admission (false) or kept for a
   // read-only one (true); undefined before the first. A later admission with the same flag
   // changes nothing the stored rows need.
   let syncedReadOnly: boolean | undefined;
@@ -305,6 +327,19 @@ export function startPendingSync({
   let recordedThrough = 0;
   let recorded: RecordedUpdate[] = [];
   let sent: SentFrame[] = [];
+  let refused: SentFrame | undefined;
+  // Whether the rows this browser holds have waited out `UNSENT_NOTICE_MS` without the server
+  // taking a frame, and the timer that is counting that wait down.
+  let unsent = false;
+  let unsentWait: ReturnType<typeof setTimeout> | undefined;
+  /** Starts the wait over: the server has taken a frame, or this browser holds no row. */
+  const restartUnsentWait = (): void => {
+    if (unsentWait !== undefined) {
+      clearTimeout(unsentWait);
+      unsentWait = undefined;
+    }
+    unsent = false;
+  };
 
   const ready = store
     .catch((error: unknown) => {
@@ -345,18 +380,30 @@ export function startPendingSync({
         // asks for a fresh one as soon as it settles, whether the store takes the row or
         // refuses it (`record`).
         if (countedThrough !== recordedThrough) continue;
+        if (count === 0) {
+          // Everything this browser held has reached the server, so nothing is waiting.
+          restartUnsentWait();
+        } else if (!unsent && unsentWait === undefined) {
+          unsentWait = setTimeout(() => {
+            unsentWait = undefined;
+            unsent = true;
+            void report();
+          }, UNSENT_NOTICE_MS);
+        }
         const state: PendingState = {
           count,
           readOnly,
           rebuiltAt,
           stored: edits !== undefined,
+          unsent,
         };
         if (
           lastState === undefined ||
           lastState.count !== state.count ||
           lastState.readOnly !== state.readOnly ||
           lastState.rebuiltAt !== state.rebuiltAt ||
-          lastState.stored !== state.stored
+          lastState.stored !== state.stored ||
+          lastState.unsent !== state.unsent
         ) {
           lastState = state;
           onChange(state);
@@ -381,10 +428,13 @@ export function startPendingSync({
     };
     recorded.push(entry);
     entry.written = ready
-      .then((edits) => {
+      .then(async (edits) => {
         if (edits === undefined) {
           return;
         }
+        // The store counts and reads from the moment it opens, and keys a row only once it knows
+        // the client id this tab's rows are keyed by, the document's first (`PendingEdits.keyed`).
+        await edits.keyed;
         const row = edits.record(update);
         entry.seq = row.seq;
         recordedThrough = row.seq;
@@ -405,63 +455,14 @@ export function startPendingSync({
     return entry;
   };
 
-  // The stored rows of every client but this tab's. This tab's own rows hold edits this document
-  // already has: applying them again records nothing anew, and judged against this document they
-  // always look as if they changed nothing, so restoring or pruning them would drop what the
-  // server may not have acknowledged yet.
-  const otherClientsRows = (rows: readonly RestoredEdit[]): RestoredEdit[] =>
-    rows.filter((row) => row.key[1] !== doc.clientID);
-
-  // Judges the stored rows of a read-only admission again, one pass at a time: a pass queued while
-  // none has started yet covers every request made before it starts.
-  let pruning: Promise<void> = Promise.resolve();
-  let pruneQueued = false;
-  const dropRedundantRows = (): Promise<void> => {
-    if (pruneQueued) {
-      return pruning;
-    }
-    pruneQueued = true;
-    pruning = pruning.then(async () => {
-      pruneQueued = false;
-      try {
-        const edits = await ready;
-        if (destroyed || edits === undefined) {
-          return;
-        }
-        const rows = await edits.restoreRows();
-        if (destroyed) {
-          return;
-        }
-        // A client's rows are judged and dropped together: each continues the clock of the row
-        // before it, so a later row cannot apply without the earlier ones. A writable load whose
-        // socket was down stores its editor's heading-id stamp first and what its reader typed
-        // after; a read-only load that derives the same stamp leaves that first row alone
-        // changing nothing, yet dropping it would lose the typing.
-        const byClient = new Map<number, RestoredEdit[]>();
-        for (const row of otherClientsRows(rows)) {
-          const client = byClient.get(row.key[1]);
-          if (client === undefined) {
-            byClient.set(row.key[1], [row]);
-          } else {
-            client.push(row);
-          }
-        }
-        const redundant: PendingKey[] = [];
-        for (const clientRows of byClient.values()) {
-          const updates = clientRows.map((row) => row.update);
-          if (changesNothing(doc, updates)) {
-            redundant.push(...clientRows.map((row) => row.key));
-          }
-        }
-        if (redundant.length > 0) {
-          await edits.drop(redundant);
-        }
-      } catch (error) {
-        console.error("Could not drop the browser's redundant pending document edits", error);
-      }
-      await report();
-    });
-    return pruning;
+  // The stored rows of every client but this tab's. This tab's rows are the ones under the id its
+  // store keys them by (`PendingEdits.keyed`): the document's first id, which is not always the one
+  // it writes under, since a later socket can move a document that has written nothing to another
+  // id (`connection.ts`, `takeClientId`). They hold edits this document already has, which this
+  // tab's own frames carry and their answers clear.
+  const otherClientsRows = async (edits: PendingEdits): Promise<RestoredEdit[]> => {
+    const own = await edits.keyed;
+    return (await edits.restoreRows()).filter((row) => row.key[1] !== own);
   };
 
   // The editor's repair is never kept. A page whose schema lacks an element is admitted read-only,
@@ -482,15 +483,10 @@ export function startPendingSync({
       return;
     }
     // An update that changes only what the editor derives is held in memory, uncounted and
-    // unstored, until the server acknowledges it or a person's edit stores it. What a read-only
-    // admission's editor derives can make a row an earlier read-only load stored change nothing,
-    // so such an admission judges the stored rows again.
+    // unstored, until the server acknowledges it or a person's edit stores it.
     if (changesOnlyDerived(transaction)) {
       nextOrdinal += 1;
       derived.push({ ordinal: nextOrdinal, update });
-      if (readOnly) {
-        void dropRedundantRows();
-      }
       return;
     }
     // A read-only admission's editor takes no typing, so any other update it makes is still one
@@ -498,7 +494,6 @@ export function startPendingSync({
     // derives again: no edit of a person's to keep. Should the admission turn writable, the
     // reconnect's SyncStep2, which carries all this document holds that the server lacks, sends it.
     if (readOnly) {
-      void dropRedundantRows();
       return;
     }
     // A person's edit continues the clock of the updates held before it, so they are stored first
@@ -574,24 +569,22 @@ export function startPendingSync({
 
   void report();
 
-  // Restores or prunes the stored rows for the current admission, once its socket has synced: a
-  // writable one restores the rows other tabs and earlier pages left.
+  // Restores the stored rows for the current admission, once its socket has synced: a writable one
+  // replays the rows other tabs and earlier pages left, and a read-only one keeps them all for the
+  // next writable admission to send. No row is dropped because this document already holds what it
+  // carries: the document holds what the room relayed, which the room sends before its store takes
+  // it, so holding a row's content says nothing of whether the server keeps it. Each row is sent
+  // again, and cleared only by an applied answer that covers it (`clearUpdate`).
   const admit = async (): Promise<void> => {
     const admittedReadOnly = readOnly;
     syncedReadOnly = admittedReadOnly;
     const edits = await ready;
-    if (destroyed || edits === undefined) {
+    if (destroyed || edits === undefined || admittedReadOnly) {
       await report();
       return;
     }
-    if (admittedReadOnly) {
-      // A read-only admission applies no row: each stays for a writable one to send, except a
-      // row that changes nothing, which an earlier read-only load may have stored.
-      await dropRedundantRows();
-      return;
-    }
     try {
-      const restored = otherClientsRows(await edits.restoreRows());
+      const restored = await otherClientsRows(edits);
       if (destroyed || restored.length === 0) {
         await report();
         return;
@@ -601,28 +594,47 @@ export function startPendingSync({
       // only after a row it refused, whose parked structs would otherwise hide the next stale
       // row from the same lost history. One document encode, plus one per refused row.
       let scratch = scratchOf(doc);
+      // The clients whose content marks a row as typed against a history a rebuild replaced: the
+      // ones the rebuilt document lists as retired, which the room refuses for good, and the
+      // clients of each row this restore drops as such, whose later rows continue its clock.
+      const replaced = new Set(retiredClients(doc).keys());
       const handled: PendingKey[] = [];
       const rerecorded: Promise<void>[] = [];
       for (const row of restored) {
+        // The admission this restore began for can turn read-only while it runs - the issue
+        // closed, and this socket was admitted again read-only. The rows left stay for the next
+        // writable admission, which this forgets having settled so that `synced` restores them
+        // rather than take the admission as one it has already answered.
+        if (readOnly !== admittedReadOnly) {
+          syncedReadOnly = undefined;
+          break;
+        }
         handled.push(row.key);
-        if (addsParking(scratch, row.update)) {
+        const parked = parkedClients(scratch, row.update);
+        if ([...parked].some((client) => replaced.has(client))) {
           rebuiltAt = Math.min(rebuiltAt ?? row.at, row.at);
+          for (const client of Y.parseUpdateMeta(row.update).from.keys()) {
+            replaced.add(client);
+          }
           scratch = scratchOf(doc);
           continue;
         }
-        const before = recorded.length;
-        // Applying through the live document deliberately reuses the normal local-update path:
-        // the provider sends this restored diff and this listener records its new client row,
-        // after any held updates it continues; a diff that changes only what the editor derives
-        // is held as this tab's own is.
-        Y.applyUpdate(doc, row.update, { restored: true });
-        for (const entry of recorded.slice(before)) {
-          rerecorded.push(entry.written);
-        }
+        // The row is applied as the server's own update, which neither this listener records nor
+        // the provider sends, and is recorded again under this tab and sent here instead, whole,
+        // whatever of it the document already holds. One that builds on content neither this
+        // document nor the server holds yet - another person's edit the room relayed to this
+        // browser and then lost before its store, which that person's browser kept and sends again
+        // - parks here as it does on the scratch, and on the server, which answers it not applied
+        // and holds it until that edit lands; it clears on the SyncStep2 that answers the resync
+        // the room sends once it has stored what the row waited on.
+        Y.applyUpdate(doc, row.update, remoteOrigin);
+        nextOrdinal += 1;
+        rerecorded.push(record(row.update, nextOrdinal).written);
+        send(row.update);
       }
       // The old rows go only once every re-recorded row is stored, in one IndexedDB write.
       await Promise.all(rerecorded);
-      // A destroy here leaves the rows; the next first sync re-applies them, which changes nothing.
+      // A destroy here leaves the rows; the next first sync replays them again, which loses nothing.
       if (!destroyed) {
         await edits.drop(handled);
       }
@@ -637,6 +649,7 @@ export function startPendingSync({
     socketOpened() {
       if (!destroyed) {
         sent = [];
+        refused = undefined;
       }
     },
     frameWritten(frame) {
@@ -666,30 +679,31 @@ export function startPendingSync({
     },
     async frameReceived(frame) {
       if (destroyed) {
-        return;
+        return undefined;
       }
-      let applied: boolean;
+      let applied: boolean | undefined;
       try {
-        const decoder = createDecoder(frame);
-        readField(decoder); // the document name
-        if (readVarUint(decoder) !== MessageType.SyncStatus) {
-          return;
-        }
-        // The server writes the flag as a VarUint: 1 applied, 0 not applied.
-        applied = readVarUint(decoder) === 1;
+        applied = readSyncStatus(frame);
       } catch (error) {
         console.error("Could not parse a document SyncStatus frame", error);
-        return;
+        return undefined;
+      }
+      if (applied === undefined) {
+        return undefined;
       }
       const entry = sent.shift();
       if (entry === undefined) {
         console.error("The document server acknowledged a frame this browser did not send.");
-        return;
+        return applied;
       }
       if (!applied) {
+        refused = entry;
         await Promise.all(recorded.map((record) => record.written));
-        return;
+        return applied;
       }
+      // The server took a frame of this browser's, so whatever is still saved here has not been
+      // waiting on a silent server: the wait starts over.
+      restartUnsentWait();
       try {
         if (entry.kind === "update") {
           await clearUpdate(entry);
@@ -698,6 +712,67 @@ export function startPendingSync({
         }
       } catch (error) {
         console.error("Could not clear an acknowledged pending document edit", error);
+      }
+      return applied;
+    },
+    async dropRefused(restored) {
+      const entry = refused;
+      refused = undefined;
+      await restored;
+      // A refused SyncStep2 carries every row at once and names none of them, so its rows stay:
+      // the rebuilt document replays each restored row as an Update of its own, and the one the
+      // server refuses then is the one dropped.
+      if (destroyed || entry?.kind !== "update") {
+        return;
+      }
+      try {
+        await clearUpdate(entry);
+      } catch (error) {
+        console.error("Could not drop a refused pending document edit", error);
+      }
+    },
+    async dropClientRows(restored, clients) {
+      const entry = refused;
+      refused = undefined;
+      await restored;
+      // A refused SyncStep2 names no client of its own here, as it names no row: the rebuilt
+      // document replays each restored row as an Update of its own, and the client of the one
+      // the server refuses then is the one whose rows go.
+      const named = new Set(
+        clients ?? (entry?.kind === "update" ? Y.parseUpdateMeta(entry.update).from.keys() : [])
+      );
+      if (destroyed || named.size === 0) {
+        return 0;
+      }
+      const writesUnder = (update: Uint8Array): boolean =>
+        [...Y.parseUpdateMeta(update).from.keys()].some((client) => named.has(client));
+      try {
+        derived = derived.filter((held) => !writesUnder(held.update));
+        const dropping: RecordedUpdate[] = [];
+        const kept: RecordedUpdate[] = [];
+        for (const entry of recorded) {
+          (writesUnder(entry.update) ? dropping : kept).push(entry);
+        }
+        recorded = kept;
+        await Promise.all(dropping.map((entry) => entry.written));
+        for (const entry of dropping) {
+          persistedSeqByOrdinal.delete(entry.ordinal);
+        }
+        const edits = await ready;
+        if (edits === undefined) {
+          return dropping.length;
+        }
+        const keys = (await edits.restoreRows())
+          .filter((row) => writesUnder(row.update))
+          .map((row) => row.key);
+        if (keys.length > 0) {
+          await edits.drop(keys);
+        }
+        await report();
+        return keys.length;
+      } catch (error) {
+        console.error("Could not drop the pending document edits under a refused client id", error);
+        return 0;
       }
     },
     authenticated(nextReadOnly) {
@@ -713,6 +788,7 @@ export function startPendingSync({
         return;
       }
       destroyed = true;
+      restartUnsentWait();
       derived = [];
       doc.off("update", onUpdate);
       void ready.then((edits) => edits?.close());

@@ -1,6 +1,12 @@
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { createIssue, createProject, getArtifactText, patchIssue } from "./api";
-import { connectedDot, documentEditor, documentTransport, typeAtEnd } from "./editor";
+import {
+  connectedDot,
+  documentEditor,
+  documentTransport,
+  pendingEditCount,
+  typeAtEnd,
+} from "./editor";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -10,10 +16,13 @@ const INITIAL = "# Offline edits\n\nOriginal paragraph.\n";
  *  ladder would first see it a quarter-second late. */
 const PROBE = { intervals: [50, 50, 100, 200, 500] };
 
-/** Spends the document socket's reconnect draw - a uniform [0, RECONNECT_SPREAD_MS) set at the
- *  previous open (`web/src/features/doc/connection.ts`) - on the page's own clock. The close that
- *  arms the draw may not have reached the page when the first jump lands, so the jump repeats
- *  until the page is connected again. */
+/** Spends the document socket's reconnect wait on the page's own clock: the backoff
+ *  `web/src/features/doc/connection.ts` draws as a socket closes, a uniform
+ *  [0, RECONNECT_SPREAD_MS) for the page's first reconnect and the first after a socket that
+ *  stayed up 30 s, then [1, 2) s, [2, 4) s and on up to [15, 30) s for each reconnect after a
+ *  socket that closed sooner. The close that draws it may not have reached the page when the first
+ *  jump lands, and a later reconnect's wait outlasts one jump, so the jump repeats until the page
+ *  is connected again. */
 async function reconnectNow(page: Parameters<typeof documentTransport>[0]): Promise<void> {
   await expect
     .poll(async () => {
@@ -22,40 +31,6 @@ async function reconnectNow(page: Parameters<typeof documentTransport>[0]): Prom
     }, PROBE)
     .toBe(1);
   await expect(connectedDot(page)).toHaveText("connected");
-}
-
-async function pendingEditCount(page: Parameters<typeof documentTransport>[0], artifactId: string) {
-  return page.evaluate(async (id) => {
-    const database = await new Promise<IDBDatabase | undefined>((resolve, reject) => {
-      let request: IDBOpenDBRequest;
-      try {
-        request = indexedDB.open("dispatch-pending-edits");
-      } catch {
-        resolve(undefined);
-        return;
-      }
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve(request.result);
-    });
-    if (database === undefined) {
-      return 0;
-    }
-    try {
-      if (!database.objectStoreNames.contains("edits")) {
-        return 0;
-      }
-      return await new Promise<number>((resolve, reject) => {
-        const request = database
-          .transaction("edits", "readonly")
-          .objectStore("edits")
-          .count(IDBKeyRange.bound([id], [id, []]));
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => resolve(request.result);
-      });
-    } finally {
-      database.close();
-    }
-  }, artifactId);
 }
 
 async function makeIssue() {
@@ -288,8 +263,10 @@ test("a reopened issue's page names no unsent edit before typing, and an edit ty
 });
 
 // SLOW(>=2s): two document loads with a Yjs sync each; the row's claim is about what the second
-// one finds in the tab's store, so neither load can go.
-test("an edit applied before its acknowledgement clears its row on reload", async ({ browser }) => {
+// one does with the rows the first left, so neither load can go.
+test("an edit applied before its acknowledgement is sent again on reload and its row clears on that send's answer", async ({
+  browser,
+}) => {
   const issue = await makeIssue();
   const alice = await asUser(browser, "alice");
   const paragraph = "applied before acknowledgement";
@@ -299,6 +276,7 @@ test("an edit applied before its acknowledgement clears its row on reload", asyn
     await page.goto(`/issues/${issue.key}/spec`);
     await expect(connectedDot(page)).toHaveText("connected");
 
+    // The server applies the typing and every answer it sends is held, so the tab keeps each row.
     transport.holdServerFrames();
     await typeAtEnd(page, paragraph);
     await expect
@@ -308,10 +286,20 @@ test("an edit applied before its acknowledgement clears its row on reload", asyn
       .poll(() => pendingEditCount(page, issue.primary_artifact_id), PROBE)
       .toBeGreaterThan(0);
 
+    // The reloaded page is a client of its own, and sends each row the earlier load left again
+    // (web/src/features/doc/pending-sync.ts, `admit`). Its document already holds the paragraph,
+    // which says nothing of whether the server stored it - the room relays an edit before its store
+    // takes it - so a row clears only on the server's applied answer to the frame that sent it
+    // again, and while those answers are held every row stays.
     await page.reload();
-    await expect.poll(() => pendingEditCount(page, issue.primary_artifact_id), PROBE).toBe(0);
+    await expect(documentEditor(page)).toContainText(paragraph);
+    expect(await pendingEditCount(page, issue.primary_artifact_id)).toBeGreaterThan(0);
     await transport.releaseServerFrames();
-    expect((await getArtifactText(issue.primary_artifact_id)).markdown).toContain(paragraph);
+    await expect.poll(() => pendingEditCount(page, issue.primary_artifact_id), PROBE).toBe(0);
+    // Sent again, the edit lands nothing new: the document holds the paragraph once.
+    expect(
+      (await getArtifactText(issue.primary_artifact_id)).markdown.split(paragraph)
+    ).toHaveLength(2);
   } finally {
     await alice.close();
   }

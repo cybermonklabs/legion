@@ -272,7 +272,7 @@ func TestColdReadCacheEvictionPlateaus(t *testing.T) {
 		}
 	})
 	if listening == nil {
-		t.Fatalf("the reader logged no line naming its profiler's address:\n%s", reader.outputTail())
+		t.Fatalf("the reader logged no line naming its profiler's address:\n%s", reader.output.tail())
 	}
 	cache := func() docs.ReadCacheFigures {
 		t.Helper()

@@ -155,6 +155,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/artifacts/_test/room-budget": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Test hook: set the open documents' memory budget to bytes (0 restores the real one), so a browser test can fill it. */
+    post: operations["postApiV1ArtifactsTestRoomBudget"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/artifacts/_test/room-charges": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Test hook: what the room budget charges each room it holds a charge for, beside its own figures, {charges, used, limit}. */
+    get: operations["getApiV1ArtifactsTestRoomCharges"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/artifacts/_test/rooms": {
     parameters: {
       query?: never;
@@ -191,6 +225,23 @@ export interface paths {
     patch: operations["patchApiV1ArtifactsById"];
     trace?: never;
   };
+  "/api/v1/artifacts/{id}/_test/hold-admission": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Test hook: make the document's next socket wait ms before its admission, as a browser in a burst waits for its room (0 takes the hold back). */
+    post: operations["postApiV1ArtifactsByIdTestHoldAdmission"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/artifacts/{id}/_test/hold-persistence": {
     parameters: {
       query?: never;
@@ -202,6 +253,23 @@ export interface paths {
     put?: never;
     /** @description Test hook: hold this process's appends of a document's browser updates for a duration. */
     post: operations["postApiV1ArtifactsByIdTestHoldPersistence"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/artifacts/{id}/_test/live": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Test hook: whether the document's room is resident in this server, {live}; loads and rebuilds nothing. */
+    get: operations["getApiV1ArtifactsByIdTestLive"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -222,6 +290,23 @@ export interface paths {
     post?: never;
     /** @description Test hook: release the live write parked at the pause and disarm it. */
     delete: operations["deleteApiV1ArtifactsByIdTestLiveWritePausesByPoint"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/artifacts/{id}/_test/near-decode-cap": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Test hook: close the document's room and append deleted characters that leave its history near the decode cap, so the rebuild takes it and the page's read says so. */
+    post: operations["postApiV1ArtifactsByIdTestNearDecodeCap"];
+    delete?: never;
     options?: never;
     head?: never;
     patch?: never;
@@ -261,6 +346,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/artifacts/{id}/_test/refuse-next-update": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Test hook: make the document's room refuse the next update a read-write browser sends it, as it refuses one holding content the document does not take. */
+    post: operations["postApiV1ArtifactsByIdTestRefuseNextUpdate"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/artifacts/{id}/_test/room-counters": {
     parameters: {
       query?: never;
@@ -272,6 +374,40 @@ export interface paths {
     get: operations["getApiV1ArtifactsByIdTestRoomCounters"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/artifacts/{id}/_test/tangled": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Test hook: close the document's room and append a tangle no one apply of a browser's may scan through. */
+    post: operations["postApiV1ArtifactsByIdTestTangled"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/artifacts/{id}/_test/used-up": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Test hook: close the document's room and append a stored history whose re-scan uses up a room's scan total. */
+    post: operations["postApiV1ArtifactsByIdTestUsedUp"];
     delete?: never;
     options?: never;
     head?: never;
@@ -442,7 +578,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Rebuild a document history ygo cannot load from its latest saved markdown; a live document is 409 DOCUMENT_LIVE and one that loads is 409 DOCUMENT_LOADS. */
+    /** @description Rebuild a document's history into one fresh update, keeping its block ids, anchors and margin records as far as its history or its rows record them: a history ygo cannot load, from its latest saved markdown or supplied {markdown}; a history so near the decode cap or the edit-scan total that a write it must still take is refused (a write of its whole text, near the decode cap), from its own text or supplied markdown, closing its room in this server first, whose connected browsers drop their unsent edits - a room this server holds decides that on its own; 409 DOCUMENT_LIVE for any other document live in this server, 409 DOCUMENT_LOADS for any other history that loads. */
     post: operations["postApiV1ArtifactsByIdRebuild"];
     delete?: never;
     options?: never;
@@ -3570,6 +3706,8 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
+      near_decode_cap?: boolean;
+      near_decode_cap_reason?: string;
       token: string;
       version: null | number;
     };
@@ -5079,6 +5217,10 @@ export interface components {
       phase: string;
       version: number;
     };
+    HoldAdmissionInput: {
+      /** Format: int64 */
+      ms?: number;
+    };
     HoldPersistenceInput: {
       duration: string;
     };
@@ -6326,6 +6468,23 @@ export interface components {
       reason?: "repository_unreadable" | "read_failed";
       repo?: string;
     };
+    RoomBudgetInput: {
+      /** Format: int64 */
+      bytes?: number;
+    };
+    RoomBudgetState: {
+      /** Format: int64 */
+      bytes: number;
+    };
+    RoomChargesState: {
+      charges: {
+        [key: string]: number;
+      } | null;
+      /** Format: int64 */
+      limit: number;
+      /** Format: int64 */
+      used: number;
+    };
     RoomCounters: {
       awareness_clients: number;
       /** Format: int64 */
@@ -6335,6 +6494,10 @@ export interface components {
       /** Format: int64 */
       room_failures: number;
       settlement_resumptions: string[] | null;
+    };
+    RoomLiveState: {
+      holding: string;
+      live: boolean;
     };
     RouteIndex: {
       docs: string;
@@ -7154,6 +7317,74 @@ export interface operations {
       };
     };
   };
+  postApiV1ArtifactsTestRoomBudget: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RoomBudgetInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RoomBudgetState"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ArtifactsTestRoomCharges: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RoomChargesState"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1ArtifactsTestRooms: {
     parameters: {
       query?: {
@@ -7290,6 +7521,42 @@ export interface operations {
       };
     };
   };
+  postApiV1ArtifactsByIdTestHoldAdmission: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["HoldAdmissionInput"];
+      };
+    };
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   postApiV1ArtifactsByIdTestHoldPersistence: {
     parameters: {
       query?: {
@@ -7314,6 +7581,40 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ArtifactsByIdTestLive: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RoomLiveState"];
+        };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
@@ -7430,6 +7731,38 @@ export interface operations {
       };
     };
   };
+  postApiV1ArtifactsByIdTestNearDecodeCap: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   postApiV1ArtifactsByIdTestNewerContent: {
     parameters: {
       query?: {
@@ -7494,6 +7827,38 @@ export interface operations {
       };
     };
   };
+  postApiV1ArtifactsByIdTestRefuseNextUpdate: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1ArtifactsByIdTestRoomCounters: {
     parameters: {
       query?: {
@@ -7516,6 +7881,70 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["RoomCounters"];
         };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1ArtifactsByIdTestTangled: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1ArtifactsByIdTestUsedUp: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
@@ -15025,6 +15454,7 @@ export type GraphNodeRead = components["schemas"]["GraphNodeRead"];
 export type GraphReferences = components["schemas"]["GraphReferences"];
 export type Handoff = components["schemas"]["Handoff"];
 export type HandoffSummary = components["schemas"]["HandoffSummary"];
+export type HoldAdmissionInput = components["schemas"]["HoldAdmissionInput"];
 export type HoldPersistenceInput = components["schemas"]["HoldPersistenceInput"];
 export type InboxDismissRequest = components["schemas"]["InboxDismissRequest"];
 export type InboxDismissResponse = components["schemas"]["InboxDismissResponse"];
@@ -15163,7 +15593,11 @@ export type RequirementCoverage = components["schemas"]["RequirementCoverage"];
 export type ResidentRooms = components["schemas"]["ResidentRooms"];
 export type ResolveAskInput = components["schemas"]["ResolveAskInput"];
 export type ResultCommitStands = components["schemas"]["ResultCommitStands"];
+export type RoomBudgetInput = components["schemas"]["RoomBudgetInput"];
+export type RoomBudgetState = components["schemas"]["RoomBudgetState"];
+export type RoomChargesState = components["schemas"]["RoomChargesState"];
 export type RoomCounters = components["schemas"]["RoomCounters"];
+export type RoomLiveState = components["schemas"]["RoomLiveState"];
 export type RouteIndex = components["schemas"]["RouteIndex"];
 export type RouteIndexEntry = components["schemas"]["RouteIndexEntry"];
 export type SearchArtifactRef = components["schemas"]["SearchArtifactRef"];

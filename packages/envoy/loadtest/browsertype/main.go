@@ -8,8 +8,16 @@
 // transaction), some delete a short range. It writes only text inside existing paragraphs, never
 // block structure, so every document stays valid.
 //
-// At the end it prints one line per peer, and exits 1 when a peer failed to connect or its
-// connection ended with an error before the run did, 2 on a usage error.
+// Each peer writes under the client id Dispatch gives it, as the dashboard's page does: it
+// presents an empty contracts.DocumentClientIdParameter, and the socket's first frame is the
+// stateless message naming the id its document is made under. A room that gives no id - a
+// Dispatch build from before client ids - sends its sync step 1 first instead, which the peer
+// handles as it does every frame; the peer then writes under the id its own document drew, and
+// says so on stderr once for that connection. A peer never reconnects, so it never presents an
+// id back.
+//
+// At the end it prints one line per peer on stdout, and exits 1 when a peer failed to connect or
+// its connection ended with an error before the run did, 2 on a usage error.
 package main
 
 import (
@@ -30,6 +38,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 	ygsync "github.com/reearth/ygo/sync"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -193,7 +202,8 @@ func (l *stringList) String() string     { return strings.Join(*l, ",") }
 func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
 
 // roomURL is artifact's document websocket at base, at the schema version the dashboard presents,
-// so the room takes the peer's edits rather than holding it read-only.
+// so the room takes the peer's edits rather than holding it read-only, and with an empty
+// contracts.DocumentClientIdParameter, so the room gives the peer a fresh client id.
 func roomURL(base *url.URL, artifact string) string {
 	room := *base
 	room.Scheme = "ws"
@@ -201,21 +211,33 @@ func roomURL(base *url.URL, artifact string) string {
 		room.Scheme = "wss"
 	}
 	room.Path = strings.TrimSuffix(base.Path, "/") + "/ws/doc/" + url.PathEscape(artifact)
-	room.RawQuery = url.Values{"schema_version": {strconv.Itoa(pmdoc.SchemaVersion())}}.Encode()
+	room.RawQuery = url.Values{
+		"schema_version":                    {strconv.Itoa(pmdoc.SchemaVersion())},
+		contracts.DocumentClientIdParameter: {""},
+	}.Encode()
 	return room.String()
 }
 
 // typePeer connects one peer, waits until it holds the room's document, and types until ctx ends,
-// recording what it did in r.
+// recording what it did in r. Its document is made under the client id the room gives it, or
+// under one of its own where the room gives none.
 func typePeer(ctx context.Context, cfg config, room string, header http.Header, random *rand.Rand, r *result) {
 	connectCtx, cancelConnect := context.WithTimeout(ctx, cfg.connectTimeout)
 	defer cancelConnect()
-	peer, err := docstest.DialContext(connectCtx, room, header, r.artifact, crdt.New())
+	peer, err := docstest.DialGivenContext(connectCtx, room, header, r.artifact, func(given crdt.ClientID) *crdt.Doc {
+		if given == 0 {
+			return crdt.New()
+		}
+		return crdt.New(crdt.WithClientID(given))
+	})
 	if err != nil {
 		r.err = err
 		return
 	}
 	defer peer.Close()
+	if peer.Given == 0 {
+		fmt.Fprintf(os.Stderr, "browsertype: artifact=%s peer=%d: the room gave no client id; the peer writes under its document's own %d\n", r.artifact, r.peer, peer.Doc.ClientID())
+	}
 	if err := peer.AskForDocument(); err != nil {
 		r.err = fmt.Errorf("ask for the room's document: %w", err)
 		return

@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"maps"
 	"runtime"
-	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -63,7 +62,8 @@ func renderReuseDocument() string {
 type renderPaths struct {
 	observerReused, observerRendered                   uint64
 	observerIncremental, observerUntouched             uint64
-	observerMarginOnly                                 uint64
+	observerMarginOnly, observerChecked                uint64
+	checkUntouched, checkIncremental, checkRendered    uint64
 	beforeFromReplica, beforeFromWrite, beforeRendered uint64
 	catchUpFromLoad, catchUpRendered                   uint64
 }
@@ -76,6 +76,10 @@ func readRenderPaths(service *Service) renderPaths {
 		observerIncremental: counts.observerIncremental.Load(),
 		observerUntouched:   counts.observerUntouched.Load(),
 		observerMarginOnly:  counts.observerMarginOnly.Load(),
+		observerChecked:     counts.observerChecked.Load(),
+		checkUntouched:      counts.checkUntouched.Load(),
+		checkIncremental:    counts.checkIncremental.Load(),
+		checkRendered:       counts.checkRendered.Load(),
 		beforeFromReplica:   counts.beforeFromReplica.Load(),
 		beforeFromWrite:     counts.beforeFromWrite.Load(),
 		beforeRendered:      counts.beforeRendered.Load(),
@@ -91,6 +95,10 @@ func (p renderPaths) minus(base renderPaths) renderPaths {
 		observerIncremental: p.observerIncremental - base.observerIncremental,
 		observerUntouched:   p.observerUntouched - base.observerUntouched,
 		observerMarginOnly:  p.observerMarginOnly - base.observerMarginOnly,
+		observerChecked:     p.observerChecked - base.observerChecked,
+		checkUntouched:      p.checkUntouched - base.checkUntouched,
+		checkIncremental:    p.checkIncremental - base.checkIncremental,
+		checkRendered:       p.checkRendered - base.checkRendered,
 		beforeFromReplica:   p.beforeFromReplica - base.beforeFromReplica,
 		beforeFromWrite:     p.beforeFromWrite - base.beforeFromWrite,
 		beforeRendered:      p.beforeRendered - base.beforeRendered,
@@ -100,9 +108,10 @@ func (p renderPaths) minus(base renderPaths) renderPaths {
 }
 
 // observed is how many logged updates the update observer classified on any of its paths. A
-// replica's start is no such path: it classifies no update.
+// replica's start is no such path: it classifies no update, and neither does the room's apply
+// check, whose renders the observer takes (observerChecked).
 func (p renderPaths) observed() int {
-	return int(p.observerReused + p.observerRendered + p.observerIncremental + p.observerUntouched + p.observerMarginOnly)
+	return int(p.observerReused + p.observerRendered + p.observerIncremental + p.observerUntouched + p.observerMarginOnly + p.observerChecked)
 }
 
 // withoutCatchUps is p without the counts of the replica's starts (catchUpFromLoad,
@@ -266,8 +275,9 @@ func describeRendering(markdown *string) string {
 	return fmt.Sprintf("%d bytes", len(*markdown))
 }
 
-// take moves the shadow through what log has logged since its last drain, rendering after each
-// update. The caller holds sh.mu.
+// take moves the shadow through what log has logged since its last drain - each update and then
+// what its transaction parked, as the replica takes them (renderedReplica.observe) - rendering
+// after each update. The caller holds sh.mu.
 func (room *shadowRoom) take(sh *renderShadow, log *crdt.UpdateLog) {
 	base, updates := log.Drain()
 	if base != nil {
@@ -852,6 +862,43 @@ func TestRenderReuseAWarmAskKeepsItsAuthor(t *testing.T) {
 	sh.check(t)
 }
 
+// A write whose rendering the room's observer reuses is the room's measurement too: the reuse
+// takes the operation's rendering as the replica's and publishes its size, as keep publishes a
+// changed rendering's (renderedReplica.changedBy, publishSize), so the bytes the peer update hook
+// weighs the room's next browser update against (roomWeighing.size, which the hook reads through
+// roomWeighingOf) are the rendering the write left rather than the one before it. The write here
+// adds an ask block, which is the one reuse that changes the markdown (E3): the reuse of a
+// rendering equal to the replica's changes nothing, and leaves the measurement where it stands.
+func TestRenderReuseAWritesReusedRenderingIsTheRoomsMeasurement(t *testing.T) {
+	service, artifactID, sh := newWarmRenderReuseRoom(t)
+	weighing := service.roomWeighingOf(service.srv.GetDoc(artifactID))
+	if weighing == nil {
+		t.Fatal("the warm room's document is not listed, so the hook reads no weighing of it")
+	}
+	before, measured := weighing.size()
+	if !measured {
+		t.Fatal("the warm room published no measurement before the write")
+	}
+	m := sh.measure()
+	write := sh.write(t, applyOps(service, artifactID, reuseAgent, model.EditOp{
+		Op: "insert", After: "end", Markdown: ":::ask{#measured-ask urgency=\"high\" multiple=\"false\"}\nWhich store backs the cache?\n:::",
+	}))
+	sh.check(t)
+	m.expect(t, renderPaths{beforeFromReplica: 1, observerReused: 1}, 0)
+	if stored := sh.versions(t, write); len(stored) != 1 || !stored[0] {
+		t.Errorf("content_changed = %v, want [true]", stored)
+	}
+	rendering := renderedLive(t, service, artifactID)
+	if int64(len(rendering)) == before {
+		t.Fatalf("the write left the room rendering %d bytes, the measurement it already had: this case cannot tell the write's measurement from the one before it", before)
+	}
+	published, measured := weighing.size()
+	if !measured || published != int64(len(rendering)) {
+		t.Fatalf("the room measures %d bytes (measured %t) after the write, want its rendering's %d; it measured %d before the write",
+			published, measured, len(rendering), before)
+	}
+}
+
 // E4, E5. A browser edit committed into the room once the write's fork has read it moves the
 // replica past that read: the write's update is measured by the observer, and so is the browser's.
 // The browser's adds or drops a top-level block, which changes the document's fragment, so it is
@@ -1391,12 +1438,13 @@ func TestRenderReuseARoomBehindTheHeadRendersThePublish(t *testing.T) {
 // first transaction's, which the room lacks, so the room parks them and the commit integrates
 // nothing. ygo calls no update observer for that commit, but logs it with what it parked
 // (crdt.LoggedUpdate.Parked), and the room drains it right after the transaction
-// (onLoadDocument's after-transaction drain), so the replica holds what the room holds parked
-// while it waits, and the peer's update hook stores those parked bytes (onPeerUpdate). When the
-// first transaction arrives both integrate what waited behind it: the room, the replica and a
-// render of the room all hold the text of both transactions, and the commit that brought them is
-// a content change.
-func TestRenderReuseAReplicaRebuiltFromTheLogHoldsWhatTheRoomParked(t *testing.T) {
+// (onLoadDocument's after-transaction drain). What parked is no part of the document until it
+// lands (leaveParkedOut): the replica takes the commit as a position and applies nothing of it,
+// so it holds the room's document while the structs wait, and nothing stores the parked bytes.
+// When the first transaction arrives both integrate what waited behind it: the room, the replica
+// and a render of the room all hold the text of both transactions, and the commit that brought
+// them is a content change.
+func TestRenderReuseAReplicaRebuiltFromTheLogHoldsTheRoomAcrossACommitThatOnlyParked(t *testing.T) {
 	service, artifactID, sh := newWarmRenderReuseRoom(t)
 	live := service.srv.GetDoc(artifactID)
 	replica := service.replicaOf(live)
@@ -1451,16 +1499,26 @@ func TestRenderReuseAReplicaRebuiltFromTheLogHoldsWhatTheRoomParked(t *testing.T
 		t.Errorf("the replica renders %s and the room %d bytes", describeRendering(markdown), len(rendered))
 	}
 	// The commit that integrated what the room parked rendered two blocks more, so it changed the
-	// room's markdown; the commit that only parked changed nothing of it. ygo hands the room's
-	// persistence no update for that commit, so what is stored of it is the bytes it parked, which
-	// the peer's update hook stored as no content change.
+	// room's markdown. The commit that only parked changed nothing of it, and ygo hands the room's
+	// persistence no update for it, so the room stores nothing of what it parked: the editor that
+	// sent it keeps it until it lands.
 	if changed := storedClassOf(t, service, artifactID, integrated.Update); !changed {
 		t.Error("the commit that integrated what the room parked was not recorded as a content change")
 	}
-	if changed := storedClassOf(t, service, artifactID, logged.Parked); changed {
-		t.Error("the bytes the commit that only parked kept were recorded as a content change")
+	var parkedRows int
+	if err := service.store.Pool.QueryRow(context.Background(),
+		`select count(*) from doc_updates where artifact_id = $1 and update = $2`, artifactID, logged.Parked).Scan(&parkedRows); err != nil {
+		t.Fatal(err)
 	}
-	m.expect(t, renderPaths{observerUntouched: 1, observerRendered: 1}, 0)
+	if parkedRows != 0 {
+		t.Errorf("the room stored the bytes the commit that only parked kept in %d rows, want none", parkedRows)
+	}
+	// The commit that only parked changed nothing, so the room's apply check was not called for it
+	// and the observer classified it untouched. The one that filled the gap was checked once
+	// before it committed (renderCheck), with what waited behind it already integrated beside its
+	// own block: it changed the fragment, so the check rendered it whole, and the observer took
+	// that rendering in place of one of its own (takeChecked).
+	m.expect(t, renderPaths{observerUntouched: 1, observerChecked: 1, checkRendered: 1}, 0)
 }
 
 // peerAppendsBlock writes markdown as a paragraph at the end of the peer's document, in one
@@ -1481,11 +1539,11 @@ func peerAppendsBlock(t *testing.T, peer *roomPeer, markdown string) {
 }
 
 // sendPeerUpdate applies one of the peer's updates to the room as its connection does - through
-// the service's peer update hook (onPeerUpdate) - and returns once the room's update observer, or
-// its after-transaction drain for a commit that changed nothing, has run for it.
+// the service's peer update hook (weighPeerUpdate) - and returns once the room's update observer,
+// or its after-transaction drain for a commit that changed nothing, has run for it.
 func sendPeerUpdate(t *testing.T, service *Service, artifactID string, live *crdt.Doc, update []byte) {
 	t.Helper()
-	if err := service.onPeerUpdate(ygws.PeerUpdateInfo{Room: artifactID, Doc: live, Update: update, Origin: "peer"}, func() error {
+	if err := service.weighPeerUpdate(ygws.PeerUpdateInfo{Room: artifactID, Doc: live, Update: update, Origin: "peer"}, func() error {
 		return crdt.ApplyUpdateV1(live, update, "peer")
 	}); err != nil {
 		t.Fatalf("apply the peer's update to the room: %v", err)
@@ -1504,27 +1562,26 @@ func drainOneLoggedUpdate(t *testing.T, log *crdt.UpdateLog, made string) crdt.L
 }
 
 // replicaHoldsTheRoom asserts that the replica, once it holds every logged commit, is the room,
-// read every way a drift shows in: the same state vector, the same structs and deletions parked
-// (crdt.Doc.PendingStats), the same delete set - a format cleanup the replica ran alone
-// tombstones markers the room keeps - the same tree, the same runs and marks for every text node
-// of the fragment, walked in order, and the same whole state, which carries what is parked
-// (crdt.EncodeStateAsUpdateV1). The room is read first, with nothing else writing it, so neither
-// read walks a document another holds. It stops the test at the first commit that diverges,
-// since every later one compares a replica that has already drifted.
+// read every way a drift shows in: the same state vector, the same delete set - a format cleanup
+// the replica ran alone tombstones markers the room keeps - the same tree, the same runs and marks
+// for every text node of the fragment, walked in order, and the same whole state
+// (crdt.EncodeStateAsUpdateV1). The pending queues are not compared: what the room parks is no
+// part of its document until it lands (leaveParkedOut), the replica applies only what each
+// commit integrated, so it parks nothing of what the room parks, and the commit that lands it
+// carries it to both. The room is read first, with nothing else writing it, so neither read walks
+// a document another holds. It stops the test at the first commit that diverges, since every
+// later one compares a replica that has already drifted.
 func replicaHoldsTheRoom(t *testing.T, live *crdt.Doc, replica *renderedReplica, after string) {
 	t.Helper()
 	if replica == nil {
 		t.Fatalf("after %s the room has no replica", after)
 	}
-	clocks, waiting, tree := live.StateVector(), live.PendingStats(), live.GetXmlFragment(fragmentName).ToXML()
+	clocks, tree := live.StateVector(), live.GetXmlFragment(fragmentName).ToXML()
 	deletes, state, want := crdt.DeleteSetFromDoc(live), crdt.EncodeStateAsUpdateV1(live, nil), allTextRuns(live)
 	doc := heldReplica(t, replica)
 	defer replica.mu.Unlock()
 	if got := doc.StateVector(); !maps.Equal(got, clocks) {
 		t.Fatalf("after %s the replica stands at state vector %v and the room at %v", after, got, clocks)
-	}
-	if got := doc.PendingStats(); got.Items != waiting.Items || got.DeleteRanges != waiting.DeleteRanges || !slices.Equal(got.MissingFor, waiting.MissingFor) {
-		t.Fatalf("after %s the replica holds %+v parked and the room %+v", after, got, waiting)
 	}
 	if got := crdt.DeleteSetFromDoc(doc); !sameDeletes(deletes, got) {
 		t.Fatalf("after %s the replica tombstones what the room does not: %s", after, deleteDifference(got, deletes))
@@ -1835,46 +1892,30 @@ func topLevelAskElement(t *testing.T, fragment *crdt.YXmlFragment) *crdt.YXmlEle
 	return nil
 }
 
-// A4. A room's replica takes, as its base's, the rendering the room's load made of the state the
-// replica starts from, in place of rendering that base again, when its first run starts while the
-// rendering is still there; a collection since the load, or a recover, leaves the run to render its
-// base. Either way the replica equals the shadow's independent render after every commit. Each case
-// that needs the load's rendering alive turns the collector off from just before the load until the
-// replica has started (pauseCollections), since the replica holds the rendering only weakly and a
-// collection in between would otherwise decide the counts; the collector runs again before the
-// shadow renders, so a race build's memory does not grow through the whole test.
+// A4. A room's replica starts from the copy its load decoded, holding the rendering that load
+// made of the very state the copy stands at (keepReplica), so its first commit is measured and
+// spliced against that rendering and nothing renders the base again. A replica its load handed no
+// copy starts from the base the room's log records instead, and takes the load's rendering as that
+// base's while the rendering is still there - it holds that one only weakly - so a collection
+// since the load, or a recover, leaves the run to render its base. Either way the replica equals
+// an independent render of the room after every commit.
 func TestRenderReuseACatchUpTakesTheLoadsRendering(t *testing.T) {
-	t.Run("the first commit takes the load's rendering", func(t *testing.T) {
+	t.Run("the load's copy comes with the load's rendering", func(t *testing.T) {
 		service, artifactID, sh := newRenderReuseService(t)
 		m := sh.measure()
-		resume := pauseCollections(t)
 		replica := loadRoomForCatchUp(t, service, artifactID)
-		if heldLoadRendering(replica) == nil {
-			t.Fatal("the replica holds no rendering of the load before its first commit")
+		if heldRendering(replica) == nil {
+			t.Fatal("the loaded room's replica holds no rendering of its load")
 		}
-		firstCatchUpCommit(t, service, artifactID, sh, m, resume)
 		expectCatchUps(t, m, 1, 0)
-		if heldLoadRendering(replica) != nil {
-			t.Error("the replica still holds the load's rendering after its first run")
-		}
-	})
-	t.Run("a collection before the first commit leaves it to render", func(t *testing.T) {
-		service, artifactID, sh := newRenderReuseService(t)
-		m := sh.measure()
-		replica := loadRoomForCatchUp(t, service, artifactID)
-		runtime.GC()
-		if heldLoadRendering(replica) != nil {
-			t.Fatal("the load's rendering outlived a collection, so something holds it strongly")
-		}
 		firstCatchUpCommit(t, service, artifactID, sh, m, func() {})
-		expectCatchUps(t, m, 0, 1)
+		expectCatchUps(t, m, 1, 0)
 	})
 	t.Run("a run after a recover renders", func(t *testing.T) {
 		service, artifactID, sh := newRenderReuseService(t)
 		m := sh.measure()
-		resume := pauseCollections(t)
 		replica := loadRoomForCatchUp(t, service, artifactID)
-		firstCatchUpCommit(t, service, artifactID, sh, m, resume)
+		firstCatchUpCommit(t, service, artifactID, sh, m, func() {})
 		expectCatchUps(t, m, 1, 0)
 		m = sh.measure()
 		// As E8 does: a replica that holds no document hands the next update to recover.
@@ -1887,40 +1928,80 @@ func TestRenderReuseACatchUpTakesTheLoadsRendering(t *testing.T) {
 		m.expect(t, renderPaths{observerIncremental: 1}, 1)
 		expectCatchUps(t, m, 0, 1)
 	})
-	t.Run("a recover before the first run drops the load's rendering", func(t *testing.T) {
-		service, artifactID, sh := newRenderReuseService(t)
-		m := sh.measure()
-		resume := pauseCollections(t)
-		replica := loadRoomForCatchUp(t, service, artifactID)
-		if heldLoadRendering(replica) == nil {
-			t.Fatal("the replica holds no rendering of the load before its first commit")
-		}
-		replica.mu.Lock()
-		replica.recover(artifactID, nil, nil)
-		replica.mu.Unlock()
-		resume()
+	t.Run("a replica its load handed no copy takes the load's rendering for its base", func(t *testing.T) {
+		service, live, _ := peerUpdateRoom(t, catchUpMarkdown, 0)
+		rendering := liveRendering(t, live)
+		before := readRenderPaths(service)
+		replica := keptWithoutTheLoadsCopy(t, service, live, rendering)
+		typeIntoCatchUpRoom(t, live)
+		replica.observe("room")
+		requireCaughtUp(t, replica, live, readRenderPaths(service).minus(before), renderPaths{catchUpFromLoad: 1, observerIncremental: 1})
+		runtime.KeepAlive(rendering)
+	})
+	t.Run("a collection before that run leaves it to render", func(t *testing.T) {
+		service, live, _ := peerUpdateRoom(t, catchUpMarkdown, 0)
+		before := readRenderPaths(service)
+		replica := keptWithoutTheLoadsCopy(t, service, live, liveRendering(t, live))
+		runtime.GC()
 		if heldLoadRendering(replica) != nil {
-			t.Fatal("the recovered replica still holds the load's rendering")
+			t.Fatal("the load's rendering outlived a collection, so something holds it strongly")
 		}
-		firstCatchUpCommit(t, service, artifactID, sh, m, func() {})
-		expectCatchUps(t, m, 0, 1)
+		typeIntoCatchUpRoom(t, live)
+		replica.observe("room")
+		requireCaughtUp(t, replica, live, readRenderPaths(service).minus(before), renderPaths{catchUpRendered: 1, observerIncremental: 1})
 	})
 }
 
-// pauseCollections turns the garbage collector off until the answered resume is called, or t
-// ends, so nothing collects the load's rendering, which the replica holds only weakly, before the
-// test's first commit has started the replica.
-func pauseCollections(t *testing.T) (resume func()) {
+// catchUpMarkdown is the document the catch-up cases that need no room hold: two paragraphs, so a
+// keystroke in the first changes one top-level block and the update is spliced into the rendering
+// the replica started from.
+const catchUpMarkdown = "# Title\n\nParagraph one of the room.\n\nParagraph two of the room.\n"
+
+// keptWithoutTheLoadsCopy is live's replica as keepReplica makes one for a load whose own decode
+// handed it no copy: it holds rendering, the load's, only weakly, and starts from the base the
+// update log records at the room's next commit. The log is opened before that commit and closed
+// when the test ends.
+func keptWithoutTheLoadsCopy(t *testing.T, service *Service, live *crdt.Doc, rendering *replicaRendering) *renderedReplica {
 	t.Helper()
-	previous := debug.SetGCPercent(-1)
-	var once sync.Once
-	resume = func() { once.Do(func() { debug.SetGCPercent(previous) }) }
-	t.Cleanup(resume)
-	return resume
+	log := live.OpenUpdateLog()
+	t.Cleanup(log.Close)
+	replica := service.keepReplica(live, log, rendering, nil)
+	if replica.doc != nil {
+		t.Fatal("the replica holds a document, so its load handed it a copy")
+	}
+	return replica
+}
+
+// typeIntoCatchUpRoom types one character into the first paragraph of live, the room's first
+// commit since its update log opened.
+func typeIntoCatchUpRoom(t *testing.T, live *crdt.Doc) {
+	t.Helper()
+	texts := paragraphTexts(live)
+	if len(texts) == 0 {
+		t.Fatal("the document holds no paragraph text")
+	}
+	live.Transact(func(txn *crdt.Transaction) { texts[0].Insert(txn, 0, "A", nil) })
+}
+
+// requireCaughtUp holds the replica's rendering after its first run to an independent render of
+// the room, and the paths that run took to want.
+func requireCaughtUp(t *testing.T, replica *renderedReplica, live *crdt.Doc, took, want renderPaths) {
+	t.Helper()
+	if took != want {
+		t.Errorf("the first run took the paths %+v, want %+v", took, want)
+	}
+	room, err := renderDocument(live)
+	if err != nil {
+		t.Fatalf("render the room: %v", err)
+	}
+	held := markdownAt(replica.rendering)
+	if held == nil || *held != room {
+		t.Errorf("the replica renders %s, want the room's %q", describeRendering(held), room)
+	}
 }
 
 // loadRoomForCatchUp loads artifactID's room, committing nothing, and answers its replica, which
-// has not started.
+// holds the copy its load decoded and has had no commit to take yet.
 func loadRoomForCatchUp(t *testing.T, service *Service, artifactID string) *renderedReplica {
 	t.Helper()
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
@@ -1932,13 +2013,21 @@ func loadRoomForCatchUp(t *testing.T, service *Service, artifactID string) *rend
 	}
 	replica.mu.Lock()
 	defer replica.mu.Unlock()
-	if replica.doc != nil {
-		t.Fatal("the room committed during its load, so its replica has started")
+	if replica.doc == nil {
+		t.Fatal("the loaded room's replica holds no copy of its load")
 	}
 	return replica
 }
 
-// heldLoadRendering is the load's rendering replica still holds, or nil.
+// heldRendering is the rendering replica holds as the room's own, or nil.
+func heldRendering(replica *renderedReplica) *replicaRendering {
+	replica.mu.Lock()
+	defer replica.mu.Unlock()
+	return replica.rendering
+}
+
+// heldLoadRendering is the load's rendering replica still holds weakly, for its first run to take
+// (renderedReplica.start), or nil.
 func heldLoadRendering(replica *renderedReplica) *replicaRendering {
 	replica.mu.Lock()
 	defer replica.mu.Unlock()
@@ -1946,8 +2035,8 @@ func heldLoadRendering(replica *renderedReplica) *replicaRendering {
 }
 
 // firstCatchUpCommit makes the loaded room's first commit, a browser's edit of one paragraph,
-// which starts the replica and is spliced in, calls resume once that commit has landed, and checks
-// the replica against the shadow.
+// which is spliced into the rendering the replica started from, calls resume once that commit has
+// landed, and checks the replica against the shadow.
 func firstCatchUpCommit(t *testing.T, service *Service, artifactID string, sh *renderShadow, m renderMeasure, resume func()) {
 	t.Helper()
 	editAsConnectedPeer(t, service, artifactID, 1, reuseBob, replaceRun("Paragraph 0 opens", "Paragraph 0 first opens"))

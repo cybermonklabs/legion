@@ -344,10 +344,13 @@ export function countDocumentSockets(page: Page, documentId?: string): () => num
  *  ladder would first see it a quarter-second late. */
 const PROBE = { intervals: [50, 50, 100, 200, 500] };
 
-/** Spends the document socket's reconnect draw - a uniform [0, RECONNECT_SPREAD_MS) set at the
- *  previous open (`web/src/features/doc/connection.ts`) - on the page's own clock, until the page
- *  holds `count` document sockets, as `countDocumentSockets` counts them. What armed the draw may
- *  not have reached the page when the first jump lands, so the jump repeats. */
+/** Spends the document socket's reconnect wait on the page's own clock, until the page holds
+ *  `count` document sockets, as `countDocumentSockets` counts them. The wait is the backoff
+ *  `web/src/features/doc/connection.ts` draws as a socket closes: a uniform
+ *  [0, RECONNECT_SPREAD_MS) for the page's first reconnect and the first after a socket that
+ *  stayed up 30 s, then [1, 2) s, [2, 4) s and on up to [15, 30) s for each reconnect after a
+ *  socket that closed sooner. The close that draws it may not have reached the page when the first
+ *  jump lands, and a later reconnect's wait outlasts one jump, so the jump repeats. */
 export async function reconnectedSockets(
   page: Page,
   sockets: () => number,
@@ -372,6 +375,39 @@ export function openDocumentSockets(page: Page): () => number {
     });
   });
   return () => open;
+}
+
+/** How many saved rows the page's browser holds for the document, in the database the page keeps
+ *  its unsent edits in (web/src/features/doc/pending-edits.ts): 0 where the browser holds no such
+ *  database yet or refuses to open one. */
+export function pendingEditCount(page: Page, artifactId: string): Promise<number> {
+  return page.evaluate(async (id) => {
+    let opening: IDBOpenDBRequest;
+    try {
+      opening = indexedDB.open("dispatch-pending-edits");
+    } catch {
+      return 0;
+    }
+    const opened = Promise.withResolvers<IDBDatabase>();
+    opening.onerror = () => opened.reject(opening.error);
+    opening.onsuccess = () => opened.resolve(opening.result);
+    const database = await opened.promise;
+    try {
+      if (!database.objectStoreNames.contains("edits")) {
+        return 0;
+      }
+      const counted = Promise.withResolvers<number>();
+      const counting = database
+        .transaction("edits", "readonly")
+        .objectStore("edits")
+        .count(IDBKeyRange.bound([id], [id, []]));
+      counting.onerror = () => counted.reject(counting.error);
+      counting.onsuccess = () => counted.resolve(counting.result);
+      return await counted.promise;
+    } finally {
+      database.close();
+    }
+  }, artifactId);
 }
 
 /** Identifies a Hocuspocus server acknowledgement without duplicating its wire constants. */

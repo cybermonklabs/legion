@@ -87,6 +87,8 @@ export const realStackReasons: Record<string, string> = {
     "unresponsive, takeable and a second agent's refusal are server decisions",
   "claim.e2e.ts":
     "a claim is taken, refused and released by the server, and the page reads back what it decided",
+  "client-ids.e2e.ts":
+    "the client id is minted by the document socket's admission, stored with the person and given back to the socket that presents it; the row reads what the live room relays and what a settled version holds under it",
   "close-withdraws-asks.e2e.ts":
     "close withdraws asks server-side, then reopen and version history are re-read",
   "closed-issue-posting.e2e.ts": "posts on a closed issue and asserts the server accepted them",
@@ -120,6 +122,8 @@ export const realStackReasons: Record<string, string> = {
   "doc-reload-line.e2e.ts": "the read-only admission is decided at socket open",
   "doc.e2e.ts": "every row lives in the live document room, its connections and versions",
   "document-and-comment-read-alike.e2e.ts": "each row asserts inside the live spec editor",
+  "document-refusals.e2e.ts":
+    "every row drives a refusal the document room alone decides - the bounds a browser's update is weighed against and the close code it is given - and reads what the editor shows and whether the stored document moved",
   "document-way-back.e2e.ts":
     "a correction and two removals written and then re-read on the open page, the issue's list and its Activity; the refused removal is the server's judgement that the document holds writing, which only a settled version makes true",
   "document.e2e.ts": "collaboration, uploads, marks, and the live connection dot",

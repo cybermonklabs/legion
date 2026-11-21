@@ -1,4 +1,12 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import {
+  DOCUMENT_BUSY_CLOSE_CODE,
+  DOCUMENT_CLIENT_ID_MESSAGE_PREFIX,
+  DOCUMENT_CLIENT_ID_PARAMETER,
+  DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON,
+  DOCUMENT_REBUILT_CLOSE_REASON,
+  DOCUMENT_TOO_LARGE_CLOSE_CODE,
+} from "@legion/contracts";
 import { waitFor } from "@testing-library/react";
 import { createDecoder, readVarString, readVarUint, readVarUint8Array } from "lib0/decoding";
 import * as Y from "yjs";
@@ -12,6 +20,9 @@ import {
   isSchemaReadOnly,
   loadDocumentTransport,
   pendingNotice,
+  type ReconnectWait,
+  reconnectingNotice,
+  refusedEditNotice,
   wsUrl,
 } from "./connection";
 import {
@@ -21,17 +32,20 @@ import {
   closeStores,
   frame,
   paragraphText,
+  rebuiltRoom,
   rowsOf,
   savedChanges,
   savedEdit,
   serverWith,
   serverWithHeading,
   stampHeadingId,
+  storeFor,
   syncStatusFrame,
   syncStep1Frame,
   syncStep2Frame,
   typeInto,
   typeParagraph,
+  varBytes,
 } from "./pending-fixture";
 import * as pendingSyncModule from "./pending-sync";
 import { type PendingState, startPendingSync } from "./pending-sync";
@@ -59,12 +73,13 @@ test("a read-only Hocuspocus admission signals a schema reload", () => {
   expect(isSchemaReadOnly(undefined)).toBe(false);
 });
 
-test("pending document labels describe retained, read-only, rebuilt, and unretained edits", () => {
+test("pending document labels describe retained, read-only, rebuilt, unsent, and unretained edits", () => {
   const retained = {
     count: 2,
     readOnly: false,
     rebuiltAt: undefined,
     stored: true,
+    unsent: false,
   };
   expect(connectionLabel("offline", pendingNotice("offline", retained))).toBe(
     "offline · 2 edits saved in this browser, not sent yet."
@@ -83,6 +98,25 @@ test("pending document labels describe retained, read-only, rebuilt, and unretai
   expect(pendingNotice("offline", { ...retained, count: 1 })).toBe(
     "1 edit saved in this browser, not sent yet."
   );
+  // Rows that have waited out `UNSENT_NOTICE_MS` on a connected, writable socket are named; the
+  // same rows inside that wait are not, which is what keeps the sentence off ordinary typing.
+  const unsent = { ...retained, unsent: true };
+  expect(pendingNotice("connected", unsent)).toBe(
+    "2 edits saved in this browser, not sent to Dispatch yet. Dispatch keeps trying."
+  );
+  expect(connectionLabel("connected", pendingNotice("connected", unsent))).toBe(
+    "connected · 2 edits saved in this browser, not sent to Dispatch yet. Dispatch keeps trying."
+  );
+  expect(pendingNotice("connected", { ...unsent, count: 1 })).toBe(
+    "1 edit saved in this browser, not sent to Dispatch yet. Dispatch keeps trying."
+  );
+  // The read-only sentence and the offline one are unchanged by it, and rows that have landed
+  // are named by nothing.
+  expect(pendingNotice("connected", { ...unsent, readOnly: true })).toBe(
+    "2 edits saved in this browser can't be sent: this document is read-only."
+  );
+  expect(pendingNotice("offline", unsent)).toBe("2 edits saved in this browser, not sent yet.");
+  expect(pendingNotice("connected", { ...unsent, count: 0 })).toBeUndefined();
 });
 
 /** A socket already open, as the browser's is once it connects; the test plays the server. */
@@ -98,7 +132,12 @@ class OpenSocket extends EventTarget {
     queueMicrotask(() => this.dispatchEvent(new Event("open")));
   }
 
-  close(): void {}
+  /** Whether the client closed this socket. */
+  closed = false;
+
+  close(): void {
+    this.closed = true;
+  }
 
   send(data: Uint8Array): void {
     this.sent.push(new Uint8Array(data));
@@ -134,6 +173,15 @@ interface ProviderHarness {
   admissions: boolean[];
   /** Each pending state the host was told of, in order. */
   pending: PendingState[];
+  /** Each close for want of room the host was told of, `true` as it closes and `false` once a
+   *  frame of this browser's is applied again (`DOCUMENT_BUSY_CLOSE_CODE`). */
+  busy: boolean[];
+  /** The reason of each refused edit the host was told of (`DOCUMENT_TOO_LARGE_CLOSE_CODE`). */
+  refusals: string[];
+  /** How many saved edits went with each refused edit, where the connection said. */
+  dropped: (number | undefined)[];
+  /** Each reconnect wait the host was told of, and each `undefined` taking one back, in order. */
+  waits: (ReconnectWait | undefined)[];
   /** Whether the host was told that the first admission's restore finished. */
   synced(): boolean;
   /** The `index`th socket the provider opened, once the provider has written to it. */
@@ -165,10 +213,20 @@ async function withProvider(
     let synced = false;
     const admissions: boolean[] = [];
     const pending: PendingState[] = [];
+    const busy: boolean[] = [];
+    const refusals: string[] = [];
+    const dropped: (number | undefined)[] = [];
+    const waits: (ReconnectWait | undefined)[] = [];
     connection = connect(artifact, {
       onAdmission: (readOnly) => admissions.push(readOnly),
+      onBusy: (waiting) => busy.push(waiting),
+      onEditRefused: (reason, count) => {
+        refusals.push(reason);
+        dropped.push(count);
+      },
       onOutsideSchema() {},
       onPending: (state) => pending.push(state),
+      onReconnectWait: (wait) => waits.push(wait),
       onStatus() {},
       onSynced: () => {
         synced = true;
@@ -178,14 +236,18 @@ async function withProvider(
     });
     await body({
       admissions,
+      busy,
       connection,
       draw: (next) => random.mockReturnValue(next),
+      dropped,
       pending,
+      refusals,
       async socket(index) {
         await waitFor(() => expect(OpenSocket.opened[index]?.sent.length).toBeGreaterThan(0));
         return OpenSocket.opened[index] as OpenSocket;
       },
       synced: () => synced,
+      waits,
     });
   } finally {
     connection?.destroy();
@@ -783,7 +845,7 @@ test("a document whose browser keeps no edits says so, and still connects", asyn
       await waitFor(() => expect(OpenSocket.opened).toHaveLength(1));
       await waitFor(() =>
         expect(pending).toEqual([
-          { count: 0, readOnly: false, rebuiltAt: undefined, stored: false },
+          { count: 0, readOnly: false, rebuiltAt: undefined, stored: false, unsent: false },
         ])
       );
     });
@@ -798,48 +860,975 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 10; i += 1) await Promise.resolve();
 }
 
-test("a document's first connect opens at once, and each reconnect after a server close waits a fresh draw of the 2 s spread", async () => {
+/**
+ * Runs `body` over the real transport on a held clock (`jest.useFakeTimers()`), every draw of the
+ * reconnect backoff half way unless `body` draws again. The page's first socket has been made by
+ * then, and opened.
+ */
+async function onHeldClock(
+  body: (held: { artifact: string; first: OpenSocket; harness: ProviderHarness }) => Promise<void>,
+  socketClass: typeof OpenSocket = OpenSocket
+): Promise<void> {
   const artifact = artifactId();
   try {
     await withProvider(
       artifact,
-      async ({ draw }) => {
+      async (harness) => {
         // The page's first connect waits nothing, whatever the draw would be.
         expect(OpenSocket.opened).toHaveLength(1);
-
-        // The socket opens with the draw at 0.5: the reconnect after it waits 0.5 of 2 s.
         jest.useFakeTimers();
-        draw(0.5);
+        harness.draw(0.5);
         await settle();
-        const first = OpenSocket.opened[0] as OpenSocket;
-        first.receive(authenticatedFrame("read-write", artifact));
-        // Dispatch restarts: the server closes the socket.
-        first.drop();
-        await settle();
-        expect(OpenSocket.opened).toHaveLength(1);
-        jest.advanceTimersByTime(999);
-        await settle();
-        expect(OpenSocket.opened).toHaveLength(1);
-        // The next socket opens with a fresh draw: 0.25 of 2 s.
-        draw(0.25);
-        jest.advanceTimersByTime(1);
-        await settle();
-        expect(OpenSocket.opened).toHaveLength(2);
-
-        const second = OpenSocket.opened[1] as OpenSocket;
-        second.receive(authenticatedFrame("read-write", artifact));
-        second.drop();
-        await settle();
-        jest.advanceTimersByTime(499);
-        await settle();
-        expect(OpenSocket.opened).toHaveLength(2);
-        jest.advanceTimersByTime(1);
-        await settle();
-        expect(OpenSocket.opened).toHaveLength(3);
+        await body({ artifact, first: OpenSocket.opened[0] as OpenSocket, harness });
       },
-      0.999
+      0.999,
+      socketClass
     );
   } finally {
     jest.useRealTimers();
   }
+}
+
+/**
+ * Runs the held clock `wait` ms on and requires the provider's next socket to be made at that
+ * moment and not a millisecond before it, then returns that socket, opened. The wait is part of
+ * what each check compares, so a failure names the wait it was reading.
+ */
+async function nextSocketAfter(wait: number): Promise<OpenSocket> {
+  const before = OpenSocket.opened.length;
+  jest.advanceTimersByTime(wait - 1);
+  await settle();
+  expect({ opened: OpenSocket.opened.length - before, wait }).toEqual({ opened: 0, wait });
+  jest.advanceTimersByTime(1);
+  await settle();
+  expect({ opened: OpenSocket.opened.length - before, wait }).toEqual({ opened: 1, wait });
+  return OpenSocket.opened[before] as OpenSocket;
+}
+
+/** The server answers `socket`, which then stays up `upFor` ms before it drops as a reset drops it. */
+async function answerThenDrop(socket: OpenSocket, artifact: string, upFor = 0): Promise<void> {
+  socket.receive(authenticatedFrame("read-write", artifact));
+  jest.advanceTimersByTime(upFor);
+  socket.drop();
+  await settle();
+}
+
+// A pod that admits the page and then dies, again and again (dispatch://INFRA-179): every socket
+// is answered, then dropped. The provider's own backoff restarts at a socket's first frame, so it
+// brought the page back within the first attempt's 2 s spread after every one of them, for ever.
+// The connection's own backoff restarts only after a socket that stayed up 30 s. At half-way draws
+// it waits the spread's 1 s, then 1.5, 3, 6 and 12 s, and 22.5 s from the 30 s cap on.
+test("a document's first connect opens at once, and its reconnects after answered sockets back off until one stays up 30 s", async () => {
+  await onHeldClock(async ({ artifact, first }) => {
+    let socket = first;
+    for (const wait of [1_000, 1_500, 3_000, 6_000, 12_000, 22_500, 22_500]) {
+      await answerThenDrop(socket, artifact);
+      socket = await nextSocketAfter(wait);
+    }
+    // A socket up a millisecond short of 30 s leaves the backoff at its cap...
+    await answerThenDrop(socket, artifact, 29_999);
+    socket = await nextSocketAfter(22_500);
+    // ...and one up for 30 s starts it over: the spread, then the second attempt's 1.5 s.
+    await answerThenDrop(socket, artifact, 30_000);
+    socket = await nextSocketAfter(1_000);
+    await answerThenDrop(socket, artifact);
+    await nextSocketAfter(1_500);
+  });
+});
+
+// A pod that is down: each socket after the first closes before the server answers it. The
+// provider would try again on its own backoff, 1 s and then a draw between 1 s and a doubling
+// ceiling: 1, 1.5 and 2.5 s at these draws. The connection cancels that retry and waits its own
+// backoff instead, 1.5, 3 and 6 s, so one policy decides every wait.
+test("a socket that closes before the server answers it waits the connection's backoff, not the provider's", async () => {
+  await onHeldClock(async ({ artifact, first }) => {
+    await answerThenDrop(first, artifact);
+    let socket = await nextSocketAfter(1_000);
+    for (const wait of [1_500, 3_000, 6_000]) {
+      socket.drop();
+      await settle();
+      socket = await nextSocketAfter(wait);
+    }
+  });
+});
+
+// A busy close after the admission, as the server's refusal of the edit a full pod cannot take
+// gives it: the edit waits for room, and the reconnects that carry it back off as any other.
+test("busy closes after admissions back off, and the busy notice stays up across them", async () => {
+  await onHeldClock(async ({ artifact, first, harness }) => {
+    let socket = first;
+    for (const wait of [1_000, 1_500, 3_000]) {
+      socket.receive(authenticatedFrame("read-write", artifact));
+      socket.dispatchEvent(
+        new CloseEvent("close", { code: DOCUMENT_BUSY_CLOSE_CODE, reason: "DOC_BUSY" })
+      );
+      await settle();
+      socket = await nextSocketAfter(wait);
+    }
+    expect(harness.busy).toEqual([true]);
+  });
+});
+
+// A readmission is the page's own close, so it says nothing of the server: its reconnect waits
+// the first attempt's spread, as it did before the connection kept a backoff of its own. A readmit
+// closes only a socket admitted read-only (`readmit`), so the socket here is answered read-only.
+test("a readmission reconnects within the first attempt's spread, whatever backoff earlier closes built", async () => {
+  await onHeldClock(async ({ artifact, first, harness }) => {
+    await answerThenDrop(first, artifact);
+    let socket = await nextSocketAfter(1_000);
+    await answerThenDrop(socket, artifact);
+    socket = await nextSocketAfter(1_500);
+    socket.receive(authenticatedFrame("readonly", artifact));
+    harness.connection.readmit();
+    await settle();
+    await nextSocketAfter(1_000);
+  }, ClosingSocket);
+});
+
+// The same holds where the readmit found its socket unanswered and the answer then came read-only:
+// that close is the page's own as well, so it too waits the first attempt's spread, not the 3 s the
+// two dropped sockets before it built.
+test("a readmission whose socket answers read-only after the readmit reconnects within the first attempt's spread", async () => {
+  await onHeldClock(async ({ artifact, first, harness }) => {
+    await answerThenDrop(first, artifact);
+    let socket = await nextSocketAfter(1_000);
+    await answerThenDrop(socket, artifact);
+    socket = await nextSocketAfter(1_500);
+    harness.connection.readmit();
+    socket.receive(authenticatedFrame("readonly", artifact));
+    await settle();
+    await nextSocketAfter(1_000);
+  }, ClosingSocket);
+});
+
+// The provider stops for good after a close it takes as final: an unauthorized one, one forbidden
+// and a message too big. The connection's backoff reconnects only where the provider would have.
+for (const code of [4401, 4403, 1009]) {
+  test(`a socket closed ${code} after its admission is not reconnected`, async () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await onHeldClock(async ({ artifact, first }) => {
+        first.receive(authenticatedFrame("read-write", artifact));
+        first.dispatchEvent(new CloseEvent("close", { code }));
+        await settle();
+        jest.advanceTimersByTime(60_000);
+        await settle();
+        expect(OpenSocket.opened).toHaveLength(1);
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+}
+
+/**
+ * Requires the last wait the host was told of to be `attempt`'s and to end `inMs` from now. The
+ * end is read against the clock rather than compared exactly: the held clock's `Date.now` still
+ * takes the odd real millisecond, and a wait is a span to show a person, not a stamp.
+ */
+function expectWait(harness: ProviderHarness, attempt: number, inMs: number): void {
+  const wait = harness.waits.at(-1);
+  const left = wait === undefined ? undefined : wait.at - Date.now();
+  expect({ attempt: wait?.attempt, left: Math.round((left ?? Number.NaN) / 100) * 100 }).toEqual({
+    attempt,
+    left: inMs,
+  });
+}
+
+// What the page shows while a wait runs rests on being told of it: the wait, the attempt it is,
+// and when it ends, taken back as the socket it waited for is made.
+test("each reconnect wait is told to the host with its attempt and end, and taken back as its socket is made", async () => {
+  await onHeldClock(async ({ artifact, first, harness }) => {
+    await answerThenDrop(first, artifact);
+    expect(harness.waits).toHaveLength(1);
+    expectWait(harness, 0, 1_000);
+    const second = await nextSocketAfter(1_000);
+    expect(harness.waits).toHaveLength(2);
+    expect(harness.waits.at(-1)).toBeUndefined();
+
+    await answerThenDrop(second, artifact);
+    expectWait(harness, 1, 1_500);
+    await nextSocketAfter(1_500);
+    expect(harness.waits.at(-1)).toBeUndefined();
+  });
+});
+
+// The person who will not wait out a grown backoff presses Retry now. It sends the socket that
+// wait was for and nothing else: the attempt was counted as the wait began, so a socket that
+// closes again waits the attempt after it, and the growth the storm's bound rests on is kept.
+test("reconnectNow sends the waiting socket at once and leaves the backoff where it stands", async () => {
+  await onHeldClock(async ({ artifact, first, harness }) => {
+    let socket = first;
+    for (const wait of [1_000, 1_500, 3_000]) {
+      await answerThenDrop(socket, artifact);
+      socket = await nextSocketAfter(wait);
+    }
+    // The fourth wait is 6 s away; the person presses the button a second into it.
+    await answerThenDrop(socket, artifact);
+    expectWait(harness, 3, 6_000);
+    jest.advanceTimersByTime(1_000);
+    await settle();
+    expect(OpenSocket.opened).toHaveLength(4);
+
+    harness.connection.reconnectNow();
+    jest.advanceTimersByTime(1);
+    await settle();
+    expect(OpenSocket.opened).toHaveLength(5);
+    expect(harness.waits.at(-1)).toBeUndefined();
+    socket = OpenSocket.opened[4] as OpenSocket;
+    // The wait the press cut short opens nothing when its own 6 s would have been up.
+    jest.advanceTimersByTime(6_000);
+    await settle();
+    expect(OpenSocket.opened).toHaveLength(5);
+
+    // The socket it sent closes as the others did: the next wait is the attempt after it, 12 s,
+    // not the 6 s this press spent and not the spread a reset would give.
+    await answerThenDrop(socket, artifact);
+    expectWait(harness, 4, 12_000);
+    await nextSocketAfter(12_000);
+  });
+});
+
+test("reconnectNow does nothing while a socket is open and after the connection is destroyed", async () => {
+  await onHeldClock(async ({ artifact, first, harness }) => {
+    // No wait is on: the socket is up, and the press opens no second socket.
+    harness.connection.reconnectNow();
+    await settle();
+    expect(OpenSocket.opened).toHaveLength(1);
+
+    await answerThenDrop(first, artifact);
+    expectWait(harness, 0, 1_000);
+    // A destroyed connection takes its wait back and opens nothing, pressed or not.
+    harness.connection.destroy();
+    expect(harness.waits.at(-1)).toBeUndefined();
+    harness.connection.reconnectNow();
+    jest.advanceTimersByTime(60_000);
+    await settle();
+    expect(OpenSocket.opened).toHaveLength(1);
+  });
+});
+
+test("the reconnecting notice says what this browser keeps of the typing", () => {
+  const pending = { count: 2, readOnly: false, rebuiltAt: undefined, stored: true, unsent: false };
+  expect(reconnectingNotice(pending, 23)).toBe(
+    "Reconnecting to the document in 23 s. Your edits are kept in this browser until they are sent."
+  );
+  expect(reconnectingNotice(pending)).toBe(
+    "Reconnecting to the document. Your edits are kept in this browser until they are sent."
+  );
+  expect(reconnectingNotice({ ...pending, stored: false }, 4)).toBe(
+    "Reconnecting to the document in 4 s. Your edits stay on this page, but a reload would lose them."
+  );
+  // A read-only admission takes no typing, and a document whose rows are not known yet promises
+  // nothing of them.
+  expect(reconnectingNotice({ ...pending, readOnly: true }, 4)).toBe(
+    "Reconnecting to the document in 4 s."
+  );
+  expect(reconnectingNotice(undefined, 4)).toBe("Reconnecting to the document in 4 s.");
+});
+
+/**
+ * Takes the provider's `index`th socket through a writable admission and the acknowledgement of
+ * the SyncStep2 it wrote, which is what every refusal test below starts from.
+ */
+async function admitWritable(
+  harness: ProviderHarness,
+  artifact: string,
+  index: number
+): Promise<OpenSocket> {
+  const socket = await harness.socket(index);
+  socket.receive(authenticatedFrame("read-write", artifact));
+  socket.receive(syncStep1Frame(Uint8Array.of(0), artifact));
+  socket.receive(syncStep2Frame(Y.encodeStateAsUpdate(new Y.Doc()), artifact));
+  await waitFor(() => expect(harness.synced()).toBe(true));
+  socket.receive(syncStatusFrame(true, artifact));
+  return socket;
+}
+
+for (const refusal of [
+  {
+    name: "too large",
+    reason: "DOC_TOO_LARGE",
+    notice:
+      "Your last edit was not saved: it would make this document larger than a Dispatch document may be. Your other edits are kept.",
+  },
+  {
+    name: "too tangled to merge",
+    reason: "DOC_TOO_TANGLED",
+    notice:
+      "Your last edit was not saved: Dispatch could not merge it into this document quickly enough. Your other edits are kept.",
+  },
+  {
+    name: "needing a rebuild",
+    reason: "DOC_NEEDS_REBUILD",
+    notice:
+      "This document has been edited so much that it must be rebuilt before it can take this edit. Your other edits are kept.",
+  },
+  {
+    name: "typed against a history a rebuild replaced",
+    reason: "DOC_REBUILT",
+    notice:
+      "Someone else rebuilt this document, so the edits you had not sent could not be kept. Dispatch has reloaded the rebuilt document.",
+  },
+  {
+    name: "holding content the document does not take",
+    reason: "DOC_UPDATE_REFUSED",
+    notice: "Your last edit was not saved: it holds content this document does not take.",
+  },
+]) {
+  test(`a real provider closed as ${refusal.name} drops the refused edit's row and stops for the host`, async () => {
+    const artifact = artifactId();
+    await withProvider(artifact, async (harness) => {
+      const socket = await admitWritable(harness, artifact, 0);
+      const text = harness.connection.doc.getText("t");
+      text.insert(0, "kept");
+      text.insert(text.length, " refused");
+      const clientId = harness.connection.doc.clientID;
+      await waitFor(async () =>
+        expect(await rowsOf(artifact)).toEqual([
+          [artifact, clientId, 1],
+          [artifact, clientId, 2],
+        ])
+      );
+      socket.receive(syncStatusFrame(true, artifact));
+      socket.receive(syncStatusFrame(false, artifact));
+      socket.dispatchEvent(
+        new CloseEvent("close", { code: DOCUMENT_TOO_LARGE_CLOSE_CODE, reason: refusal.reason })
+      );
+
+      await waitFor(() => expect(harness.refusals).toEqual([refusal.reason]));
+      expect(refusedEditNotice(refusal.reason)).toBe(refusal.notice);
+      expect(await rowsOf(artifact)).toEqual([]);
+      // The provider's own close handler starts a reconnect before the connection's runs; the
+      // connection's disconnect closes it, so no socket is left for the provider to sync on.
+      expect(OpenSocket.opened.every((opened) => opened.closed)).toBe(true);
+    });
+  });
+}
+
+// The rebuilt room refuses the history it replaced and closes the socket at once, and the
+// connection's reset can overtake that close: in Chromium the page then sees an abnormal closure
+// with no reason, and at times without the refusal's SyncStatus either (document-refusals.e2e.ts's
+// used-up row). The room's state reached the page before it, so the page knows its document holds
+// that history, and a reconnect would hand it back to the same refusal.
+test("a document holding the history a rebuild replaced is not reconnected when the room's refusal reaches it as an abnormal closure", async () => {
+  const artifact = artifactId();
+  const history = serverWith("before the rebuild", 100);
+  await withProvider(artifact, async ({ refusals, socket, synced }) => {
+    const first = await socket(0);
+    serveInYgoOrder(first, history, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+
+    // Someone else rebuilds the document: the room closes the page's socket, and the page's
+    // reconnect meets the rebuilt room, whose SyncStep1 it answers with the history it holds.
+    const rebuilt = rebuiltRoom(history, "after the rebuild", 300);
+    first.drop();
+    const second = await socket(1);
+    second.receive(syncStep1Frame(Y.encodeStateVector(rebuilt), artifact));
+    const handed = syncPayloads(second, artifact, 1).at(0);
+    if (handed === undefined) {
+      throw new Error("the provider answers the rebuilt room's SyncStep1 with a SyncStep2");
+    }
+    expect(Y.decodeUpdate(handed).structs.some(({ id }) => id.client === 100)).toBe(true);
+    // The room sends its state, then refuses that answer, and the page sees the socket end with
+    // no SyncStatus and no reason.
+    second.receive(authenticatedFrame("read-write", artifact));
+    second.receive(syncStep2Frame(Y.encodeStateAsUpdate(rebuilt), artifact));
+    second.drop();
+
+    await waitFor(() => expect(refusals).toEqual([DOCUMENT_REBUILT_CLOSE_REASON]));
+    // The provider's own close handler starts a reconnect before the connection's runs; the
+    // connection's disconnect closes it, so no socket is left to hand the history back on.
+    expect(OpenSocket.opened.slice(2).every((opened) => opened.closed)).toBe(true);
+  });
+});
+
+// A document the host built afresh from the rebuilt room holds the room's list of retired clients
+// and none of their history, so a dropped socket is reconnected as any other. This row passes
+// without the connection's check of that history too: it guards how far the check reaches, and a
+// check that read the list alone (`doc.share.has("retired")`) fails it.
+test("a document built afresh from a rebuilt room reconnects after its socket drops", async () => {
+  const artifact = artifactId();
+  const rebuilt = rebuiltRoom(serverWith("before the rebuild", 100), "after the rebuild", 300);
+  await withProvider(artifact, async ({ refusals, socket, synced }) => {
+    const first = await socket(0);
+    serveInYgoOrder(first, rebuilt, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+
+    first.drop();
+    const second = await socket(1);
+    expect(second.closed).toBe(false);
+    expect(refusals).toEqual([]);
+  });
+});
+
+// What document-refusals.e2e.ts's row of a browser holding the history someone else's rebuild
+// replaced reads off the page. The page typed while its socket was down, and its reconnect meets
+// the rebuilt room, which answers the typed frame not applied, since it parks behind the history
+// the rebuild replaced, and refuses the SyncStep2 that hands that history back. The refusal drops
+// no saved row, so the document the host reads afresh from the rebuilt room (ProofDocument's
+// `onEditRefused`) drops them as rows typed against a rebuilt history, and its connection dot,
+// once connected, says when they were saved.
+test("edits a page typed against the history someone else's rebuild replaced are named as dropped by the document read afresh", async () => {
+  const artifact = artifactId();
+  const history = serverWith("before the rebuild", 100);
+  const rebuilt = rebuiltRoom(history, "after the rebuild", 300);
+  await withProvider(artifact, async ({ connection, refusals, socket, synced }) => {
+    const first = await socket(0);
+    serveInYgoOrder(first, history, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+
+    first.drop();
+    typeInto(connection.doc, " typed offline");
+    const clientId = connection.doc.clientID;
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([[artifact, clientId, 1]]));
+    const second = await socket(1);
+    second.receive(syncStep1Frame(Y.encodeStateVector(rebuilt), artifact));
+    // The frame the provider held while no socket was open goes out as the socket first answers.
+    expect(syncPayloads(second, artifact, 2)).toHaveLength(1);
+    second.receive(authenticatedFrame("read-write", artifact));
+    second.receive(syncStep2Frame(Y.encodeStateAsUpdate(rebuilt), artifact));
+    // The typed frame parks behind the replaced history and is answered not applied, and the
+    // SyncStep2 that hands that history back is refused.
+    second.receive(syncStatusFrame(false, artifact));
+    second.receive(syncStatusFrame(false, artifact));
+    second.dispatchEvent(
+      new CloseEvent("close", {
+        code: DOCUMENT_TOO_LARGE_CLOSE_CODE,
+        reason: DOCUMENT_REBUILT_CLOSE_REASON,
+      })
+    );
+    await waitFor(() => expect(refusals).toEqual([DOCUMENT_REBUILT_CLOSE_REASON]));
+    expect(await rowsOf(artifact)).toEqual([[artifact, clientId, 1]]);
+  });
+
+  await withProvider(artifact, async ({ pending, socket, synced }) => {
+    serveInYgoOrder(await socket(0), rebuilt, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    expect(await rowsOf(artifact)).toEqual([]);
+    const reported = pending.at(-1);
+    if (reported?.rebuiltAt === undefined) {
+      throw new Error(
+        "the document read afresh names no edit it dropped as typed before the rebuild"
+      );
+    }
+    expect(reported.count).toBe(0);
+    expect(connectionLabel("connected", pendingNotice("connected", reported))).toBe(
+      `connected · Edits saved in this browser at ${new Date(reported.rebuiltAt).toLocaleString()} could not be applied: the document was rebuilt since.`
+    );
+  });
+});
+
+test("a real provider closed as busy reconnects, keeps the edit, and says when it is taken", async () => {
+  const artifact = artifactId();
+  await withProvider(artifact, async (harness) => {
+    const socket = await admitWritable(harness, artifact, 0);
+    harness.connection.doc.getText("t").insert(0, "waits for room");
+    const clientId = harness.connection.doc.clientID;
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([[artifact, clientId, 1]]));
+    socket.receive(syncStatusFrame(false, artifact));
+    socket.dispatchEvent(
+      new CloseEvent("close", { code: DOCUMENT_BUSY_CLOSE_CODE, reason: "DOC_BUSY" })
+    );
+
+    expect(harness.busy).toEqual([true]);
+    await waitFor(() => expect(OpenSocket.opened).toHaveLength(2));
+    expect(await rowsOf(artifact)).toEqual([[artifact, clientId, 1]]);
+    const reconnected = await harness.socket(1);
+    reconnected.receive(authenticatedFrame("read-write", artifact));
+    reconnected.receive(syncStep1Frame(Uint8Array.of(0), artifact));
+    reconnected.receive(syncStep2Frame(Y.encodeStateAsUpdate(new Y.Doc()), artifact));
+    // The reconnected provider's SyncStep2 carries the edit, and the server applies it.
+    reconnected.receive(syncStatusFrame(true, artifact));
+
+    await waitFor(() => expect(harness.busy).toEqual([true, false]));
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([]));
+    expect(harness.refusals).toEqual([]);
+  });
+});
+
+test("a busy close that arrives after an applied answer keeps the busy notice up", async () => {
+  const artifact = artifactId();
+  await withProvider(artifact, async (harness) => {
+    const socket = await admitWritable(harness, artifact, 0);
+    const text = harness.connection.doc.getText("t");
+    text.insert(0, "waits for room");
+    const clientId = harness.connection.doc.clientID;
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([[artifact, clientId, 1]]));
+    socket.receive(syncStatusFrame(false, artifact));
+    socket.dispatchEvent(
+      new CloseEvent("close", { code: DOCUMENT_BUSY_CLOSE_CODE, reason: "DOC_BUSY" })
+    );
+    expect(harness.busy).toEqual([true]);
+    await waitFor(() => expect(OpenSocket.opened).toHaveLength(2));
+    const reconnected = await harness.socket(1);
+    reconnected.receive(authenticatedFrame("read-write", artifact));
+    reconnected.receive(syncStep1Frame(Uint8Array.of(0), artifact));
+    reconnected.receive(syncStep2Frame(Y.encodeStateAsUpdate(new Y.Doc()), artifact));
+    // The server applies the reconnected provider's SyncStep2, then turns this browser's next edit
+    // away for want of room, in the same turn: the busy close lands while the pending sync is
+    // still clearing the row the applied answer acknowledged.
+    reconnected.receive(syncStatusFrame(true, artifact));
+    reconnected.dispatchEvent(
+      new CloseEvent("close", { code: DOCUMENT_BUSY_CLOSE_CODE, reason: "DOC_BUSY" })
+    );
+
+    // The row's clear is what the applied answer waits on, and its transaction completes before
+    // the read that finds it gone, so the answer has been handled by the time this reads it.
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([]));
+    expect(harness.busy).toEqual([true]);
+  });
+});
+
+/** The stateless frame Dispatch writes first on a socket, giving the page `client` (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`). */
+function clientIdFrame(client: number, name: string): Uint8Array {
+  return frame(
+    name,
+    [5],
+    varBytes(new TextEncoder().encode(`${DOCUMENT_CLIENT_ID_MESSAGE_PREFIX}${client}`))
+  );
+}
+
+/** The client id the socket presented when it opened (`DOCUMENT_CLIENT_ID_PARAMETER`). */
+function presentedClientId(socket: OpenSocket): string | null {
+  return new URL(socket.url).searchParams.get(DOCUMENT_CLIENT_ID_PARAMETER);
+}
+
+/** Every client an awareness frame the socket wrote names, in order. */
+function announcedClients(socket: OpenSocket, name: string): number[] {
+  const prefix = frame(name, [1]);
+  return socket.sent
+    .filter((written) => prefix.every((byte, index) => written[index] === byte))
+    .flatMap((written) => {
+      const decoder = createDecoder(written);
+      readVarString(decoder); // the document name
+      readVarUint(decoder); // Awareness
+      const update = createDecoder(readVarUint8Array(decoder));
+      const clients: number[] = [];
+      for (let count = readVarUint(update); count > 0; count -= 1) {
+        clients.push(readVarUint(update));
+        readVarUint(update); // the clock
+        readVarString(update); // the state
+      }
+      return clients;
+    });
+}
+
+/** The client of every struct in the Update frames a socket wrote. */
+function updateClients(socket: OpenSocket, name: string): number[] {
+  return syncPayloads(socket, name, 2).flatMap((update) =>
+    Y.decodeUpdate(update).structs.map((struct) => struct.id.client)
+  );
+}
+
+test("a page takes the client id its socket's first frame gives it, announces and writes under it alone, and presents it on every reconnect", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  const given = 2 ** 32 + 4_321;
+  await withProvider(artifact, async ({ connection, refusals, socket, synced }) => {
+    const first = await socket(0);
+    expect(presentedClientId(first)).toBe("");
+    // The provider's own announcement at the socket's open carries nothing: the page has no id yet.
+    expect(announcedClients(first, artifact)).toEqual([]);
+    first.receive(clientIdFrame(given, artifact));
+    expect(connection.doc.clientID).toBe(given);
+    expect(connection.awareness.clientID).toBe(given);
+    serveInYgoOrder(first, server, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    typeInto(connection.doc, " typed");
+    await waitFor(() => expect(updateClients(first, artifact)).toEqual([given]));
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([[artifact, given, 1]]));
+    expect(new Set(announcedClients(first, artifact))).toEqual(new Set([given]));
+
+    first.drop();
+    const second = await socket(1);
+    expect(presentedClientId(second)).toBe(String(given));
+    second.receive(clientIdFrame(given, artifact));
+    serveInYgoOrder(second, server, "read-write", artifact);
+    typeInto(connection.doc, " again");
+    await waitFor(() => expect(updateClients(second, artifact)).toContain(given));
+    expect(connection.doc.clientID).toBe(given);
+    expect(new Set(announcedClients(second, artifact))).toEqual(new Set([given]));
+    expect(refusals).toEqual([]);
+  });
+});
+
+test("a page that has written under its client id and is given another is refused as an edit under an id it may not write under", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  const given = 2 ** 32 + 7;
+  await withProvider(artifact, async ({ connection, refusals, socket, synced }) => {
+    const first = await socket(0);
+    first.receive(clientIdFrame(given, artifact));
+    serveInYgoOrder(first, server, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    typeInto(connection.doc, " typed");
+    await waitFor(() => expect(updateClients(first, artifact)).toEqual([given]));
+
+    first.drop();
+    const second = await socket(1);
+    second.receive(clientIdFrame(given + 1, artifact));
+    await waitFor(() => expect(refusals).toEqual([DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON]));
+    expect(connection.doc.clientID).toBe(given);
+  });
+});
+
+// The room took every edit the page typed under the id its first socket gave it, and a later
+// socket gives it another: its person signed in again as someone else, say, whose admission is
+// given an id of its own (client_ids_admission.go, keepsClient). The page is refused as one
+// holding edits under an id it may not write under, though no saved row goes with the refusal:
+// the room holds every edit, so the notice names none as lost.
+test("a page refused its client id after the room took every edit under it is told no edit went", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  const given = 2 ** 32 + 21;
+  await withProvider(artifact, async ({ connection, dropped, refusals, socket, synced }) => {
+    const first = await socket(0);
+    first.receive(clientIdFrame(given, artifact));
+    serveInYgoOrder(first, server, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    typeInto(connection.doc, " typed");
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([[artifact, given, 1]]));
+    answerUpdates(first, server, artifact);
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([]));
+
+    first.drop();
+    const second = await socket(1);
+    second.receive(clientIdFrame(given + 1, artifact));
+    await waitFor(() => expect(refusals).toEqual([DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON]));
+    expect(dropped).toEqual([0]);
+    expect(refusedEditNotice(DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON, dropped[0])).toBe(
+      "Dispatch has reloaded the document: this page held edits under an editing identity it may not write under. Every edit of yours that reached Dispatch is kept, and those saved in this browser are sent again."
+    );
+  });
+});
+
+// A page that has typed nothing under the id its first socket gave it takes the one a later
+// socket gives it instead (`takeClientId`): its person signed in again as someone else, say. Its
+// saved rows stay keyed by the first id (`PendingEdits.keyed`), so what it types after is saved
+// under that key and written under the new id, and is still this page's own: a read-only
+// admission, which judges the rows of other tabs, leaves it saved until the room takes it.
+test("a page given another client id before it typed keeps what it types after as its own saved rows", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  const firstGiven = 2 ** 32 + 31;
+  const laterGiven = 2 ** 32 + 32;
+  // Each admission's restore or prune of the saved rows, which the transport starts.
+  const running: Promise<void>[] = [];
+  const realStart = startPendingSync;
+  const started = spyOn(pendingSyncModule, "startPendingSync").mockImplementation((options) => {
+    const sync = realStart(options);
+    return {
+      ...sync,
+      synced() {
+        const admitting = sync.synced();
+        running.push(admitting);
+        return admitting;
+      },
+    };
+  });
+  try {
+    await withProvider(artifact, async ({ connection, pending, socket, synced }) => {
+      const first = await socket(0);
+      first.receive(clientIdFrame(firstGiven, artifact));
+      serveInYgoOrder(first, server, "read-write", artifact);
+      await waitFor(() => expect(synced()).toBe(true));
+
+      first.drop();
+      const second = await socket(1);
+      second.receive(clientIdFrame(laterGiven, artifact));
+      expect(connection.doc.clientID).toBe(laterGiven);
+      serveInYgoOrder(second, server, "read-write", artifact);
+      typeInto(connection.doc, " typed");
+      await waitFor(() => expect(updateClients(second, artifact)).toEqual([laterGiven]));
+      await waitFor(async () =>
+        expect(await rowsOf(artifact)).toEqual([[artifact, firstGiven, 1]])
+      );
+
+      // The issue closes before the room takes the edit, and the socket reconnects read-only.
+      second.drop();
+      const third = await socket(2);
+      third.receive(clientIdFrame(laterGiven, artifact));
+      serveInYgoOrder(third, server, "readonly", artifact);
+      await Promise.all(running);
+      expect(await rowsOf(artifact)).toEqual([[artifact, firstGiven, 1]]);
+      expect(pending.at(-1)).toMatchObject({ count: 1, readOnly: true });
+    });
+  } finally {
+    started.mockRestore();
+  }
+});
+
+// A read-only admission stores no client id for the page: Dispatch sends it one drawn for it alone,
+// which no row names (client_ids_admission.go, admitClients). The page takes it, having written
+// nothing, and presents it on its next socket; once that socket is admitted writable, Dispatch
+// finds no row for it and gives one afresh, which the page takes too (`takeClientId`), since a
+// read-only page writes nothing. What it types then goes out under the fresh id, is kept as a
+// saved row until the room acknowledges it, and the room holds it: no refusal, and nothing lost.
+test("a page admitted read-only and then writable takes the fresh client id its writable socket gives it and writes under it", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  const drawn = 2 ** 32 + 51;
+  const fresh = 2 ** 32 + 52;
+  await withProvider(artifact, async ({ connection, refusals, socket, synced }) => {
+    const first = await socket(0);
+    first.receive(clientIdFrame(drawn, artifact));
+    expect(connection.doc.clientID).toBe(drawn);
+    serveInYgoOrder(first, server, "readonly", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    expect(updateClients(first, artifact)).toEqual([]);
+
+    first.drop();
+    const second = await socket(1);
+    expect(presentedClientId(second)).toBe(String(drawn));
+    second.receive(clientIdFrame(fresh, artifact));
+    expect(connection.doc.clientID).toBe(fresh);
+    expect(connection.awareness.clientID).toBe(fresh);
+    serveInYgoOrder(second, server, "read-write", artifact);
+    typeInto(connection.doc, " typed");
+    await waitFor(() => expect(updateClients(second, artifact)).toEqual([fresh]));
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([[artifact, drawn, 1]]));
+    answerUpdates(second, server, artifact);
+    expect(server.getXmlFragment("prosemirror").toString()).toContain(" typed");
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([]));
+    expect(refusals).toEqual([]);
+  });
+});
+
+test("a server that gives no client id leaves the page the id its document drew, and its presence goes out once that is known", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  await withProvider(artifact, async ({ connection, socket, synced }) => {
+    const drawn = connection.doc.clientID;
+    const first = await socket(0);
+    expect(connection.awareness.getLocalState()).toBeNull();
+    serveInYgoOrder(first, server, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    expect(connection.doc.clientID).toBe(drawn);
+    expect(connection.awareness.getLocalState()).toEqual({});
+    typeInto(connection.doc, " typed");
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([[artifact, drawn, 1]]));
+  });
+});
+
+// What a tab of the build before client ids sends once the reader reloads it: the page of this
+// build is given an id of its own, and replays the row the earlier page saved under the id that
+// page drew for itself, which is below 2^32, so the server must take an edit under an id it never
+// gave out (client_ids.go, claimClients).
+test("a reloaded page replays a row an earlier page saved under the client id that page drew", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  const [saved] = await savedChanges(artifact, server, (browser) => typeInto(browser, " saved"));
+  if (saved === undefined) {
+    throw new Error("one change saves one row");
+  }
+  const earlier = saved.key[1];
+  const given = 2 ** 32 + 99;
+  await withProvider(artifact, async ({ connection, socket, synced }) => {
+    const first = await socket(0);
+    first.receive(clientIdFrame(given, artifact));
+    serveInYgoOrder(first, server, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    await waitFor(() => expect(paragraphText(connection.doc).toString()).toBe("shared saved"));
+    await waitFor(() => expect(updateClients(first, artifact)).toEqual([earlier]));
+    expect(earlier).toBeLessThan(2 ** 32);
+    expect(connection.doc.clientID).toBe(given);
+  });
+});
+
+// A reload while the network is down: the page's socket is never answered, so the page never
+// learns the client id it would write under, and it still names the edits an earlier page saved
+// in this browser ("1 edit saved in this browser, not sent yet.", `pendingNotice`).
+test("a page whose socket has not answered names the edits an earlier page saved in this browser", async () => {
+  const artifact = artifactId();
+  await savedChanges(artifact, serverWith("shared", 100), (browser) => typeInto(browser, " saved"));
+  await withProvider(artifact, async ({ pending, socket }) => {
+    // The provider has written its first frames, and the test, as the server, answers none.
+    await socket(0);
+    await waitFor(() =>
+      expect(pending).toEqual([
+        { count: 1, readOnly: false, rebuiltAt: undefined, stored: true, unsent: false },
+      ])
+    );
+  });
+});
+
+// A refusal of a replayed row as under another person's client id: what a reloaded tab of the
+// build before client ids meets when someone claimed its id first (client_ids.go, claimClients).
+// Every saved row under the refused id goes at once, and the host is told how many; a row another
+// earlier tab saved under an id of its own stays, to be replayed by the rebuilt document.
+test("a refusal of a row under another person's client id drops every row under that id at once and keeps the rest", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  const claimed = await savedChanges(
+    artifact,
+    server,
+    (browser) => typeInto(browser, " first"),
+    (browser) => typeInto(browser, " second")
+  );
+  const [kept] = await savedChanges(artifact, server, (browser) => typeInto(browser, " kept"));
+  const refusedClient = claimed[0]?.key[1];
+  const keptClient = kept?.key[1];
+  if (refusedClient === undefined || keptClient === undefined) {
+    throw new Error("each change saves one row");
+  }
+  const given = 2 ** 32 + 5;
+  await withProvider(artifact, async ({ dropped, refusals, socket, synced }) => {
+    const first = await socket(0);
+    first.receive(clientIdFrame(given, artifact));
+    serveInYgoOrder(first, server, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    await waitFor(() => expect(syncPayloads(first, artifact, 2)).toHaveLength(3));
+    await waitFor(async () => expect(await rowsOf(artifact)).toHaveLength(3));
+    // The replays go out in the store's order; the server takes each before the first under the
+    // claimed id and refuses that one.
+    const writers = syncPayloads(first, artifact, 2).map(
+      (update) => Y.decodeUpdate(update).structs[0]?.id.client
+    );
+    const refusedAt = writers.indexOf(refusedClient);
+    for (let i = 0; i < refusedAt; i += 1) {
+      first.receive(syncStatusFrame(true, artifact));
+    }
+    first.receive(syncStatusFrame(false, artifact));
+    first.dispatchEvent(
+      new CloseEvent("close", {
+        code: DOCUMENT_TOO_LARGE_CLOSE_CODE,
+        reason: DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON,
+      })
+    );
+    await waitFor(() => expect(refusals).toEqual([DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON]));
+    expect(dropped).toEqual([2]);
+    const left = async () =>
+      (await (await storeFor(artifact, -1)).restoreRows()).map(
+        (row) => Y.decodeUpdate(row.update).structs[0]?.id.client
+      );
+    await waitFor(async () =>
+      expect(await left()).toEqual(writers.indexOf(keptClient) < refusedAt ? [] : [keptClient])
+    );
+    expect(refusedEditNotice(DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON, 2)).toBe(
+      "2 of your edits were not saved: they were made under an editing identity this page may not write under. Dispatch has reloaded the document."
+    );
+  });
+});
+
+/** The step (0 SyncStep1, 1 SyncStep2, 2 Update) of each Sync frame a socket wrote, in order. */
+function syncSteps(socket: OpenSocket, name: string): number[] {
+  const prefix = frame(name, [0]);
+  return socket.sent
+    .filter((written) => prefix.every((byte, index) => written[index] === byte))
+    .map((written) => {
+      const decoder = createDecoder(written);
+      readVarString(decoder); // the document name
+      readVarUint(decoder); // Sync
+      return readVarUint(decoder);
+    });
+}
+
+/** A Sync Update frame the room sends: what it relays of another browser's edit. */
+function relayedFrame(update: Uint8Array, name: string): Uint8Array {
+  return frame(name, [0, 2], varBytes(update));
+}
+
+// The room relayed another person's edit to this page and then lost it before its store, and the
+// page's person typed right after it while the socket was down. The reconnect's SyncStep2 hands
+// back the lost edit beside the person's own, and the room refuses it whole as an edit under an id
+// this person may not write under (client_ids_judgement.go, judgeClients). A SyncStep2 names no
+// saved row, so none goes: the row is kept, and the notice says the document was reloaded and the
+// person's saved edits are sent again. The document read afresh from the room (ProofDocument's
+// `onEditRefused`) does send it: the row parks there on the other person's lost edit, which no
+// rebuild retired, so the restore records it again and sends it as an Update of its own. The room
+// holds it back and answers it not applied, and the row stays saved until the room has landed it
+// beside the resent edit and the SyncStep2 that answers the room's resync is answered applied.
+test("a SyncStep2 refused for another person's lost edit keeps the page's own row, and the document read afresh sends it until it lands", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  const given = 2 ** 32 + 41;
+  const alice = new Y.Doc();
+  alice.clientID = 2 ** 32 + 42;
+  Y.applyUpdate(alice, Y.encodeStateAsUpdate(server));
+  typeInto(alice, " L");
+  const lostEdit = Y.encodeStateAsUpdate(alice, Y.encodeStateVector(server));
+  await withProvider(artifact, async ({ connection, dropped, refusals, socket, synced }) => {
+    const first = await socket(0);
+    first.receive(clientIdFrame(given, artifact));
+    serveInYgoOrder(first, server, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    // The room relays alice's edit, and then loses it before its store: its socket drops.
+    first.receive(relayedFrame(lostEdit, artifact));
+    await waitFor(() => expect(paragraphText(connection.doc).toString()).toBe("shared L"));
+    first.drop();
+    typeInto(connection.doc, " D");
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([[artifact, given, 1]]));
+
+    // The reconnect: the room, which lacks alice's edit, asks for what the page holds.
+    const second = await socket(1);
+    second.receive(clientIdFrame(given, artifact));
+    second.receive(syncStep1Frame(Y.encodeStateVector(server), artifact));
+    second.receive(syncStep2Frame(Y.encodeStateAsUpdate(server), artifact));
+    second.receive(awarenessFrame(artifact));
+    const handed = syncPayloads(second, artifact, 1).at(-1);
+    if (handed === undefined) {
+      throw new Error("the provider answers the room's SyncStep1 with a SyncStep2");
+    }
+    expect(Y.decodeUpdate(handed).structs.map((struct) => struct.id.client)).toContain(
+      alice.clientID
+    );
+    // The room answers the frames in order: the queued Update of the typing parks, not applied,
+    // and the SyncStep2 is refused and the socket closed.
+    for (const step of syncSteps(second, artifact).filter((written) => written !== 0)) {
+      second.receive(syncStatusFrame(false, artifact));
+      if (step === 1) {
+        break;
+      }
+    }
+    second.dispatchEvent(
+      new CloseEvent("close", {
+        code: DOCUMENT_TOO_LARGE_CLOSE_CODE,
+        reason: DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON,
+      })
+    );
+    await waitFor(() => expect(refusals).toEqual([DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON]));
+    expect(dropped).toEqual([0]);
+    expect(await rowsOf(artifact)).toEqual([[artifact, given, 1]]);
+    expect(refusedEditNotice(DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON, dropped[0])).toBe(
+      "Dispatch has reloaded the document: this page held edits under an editing identity it may not write under. Every edit of yours that reached Dispatch is kept, and those saved in this browser are sent again."
+    );
+  });
+
+  // The document read afresh from the room, under a fresh id.
+  const rebuiltGiven = 2 ** 32 + 43;
+  await withProvider(artifact, async ({ connection, pending, socket, synced }) => {
+    const first = await socket(0);
+    first.receive(clientIdFrame(rebuiltGiven, artifact));
+    serveInYgoOrder(first, server, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    await waitFor(() => expect(updateClients(first, artifact)).toEqual([given]));
+    await waitFor(async () =>
+      expect(await rowsOf(artifact)).toEqual([[artifact, rebuiltGiven, 1]])
+    );
+    await waitFor(() => expect(pending.at(-1)).toMatchObject({ count: 1, rebuiltAt: undefined }));
+    expect(paragraphText(connection.doc).toString()).toBe("shared");
+
+    // The room holds the replayed row back, behind alice's lost edit.
+    first.receive(syncStatusFrame(false, artifact));
+    expect(await rowsOf(artifact)).toEqual([[artifact, rebuiltGiven, 1]]);
+
+    // Alice's browser sends her edit again: the room lands it and the row, relays both, and once
+    // it has stored them resyncs this page, whose SyncStep2 it answers applied.
+    const [replayed] = syncPayloads(first, artifact, 2);
+    if (replayed === undefined) {
+      throw new Error("the document read afresh sends the saved row as an Update");
+    }
+    const held = Y.encodeStateVector(connection.doc);
+    Y.applyUpdate(server, lostEdit);
+    Y.applyUpdate(server, replayed);
+    first.receive(relayedFrame(Y.encodeStateAsUpdate(server, held), artifact));
+    await waitFor(() => expect(paragraphText(connection.doc).toString()).toBe("shared L D"));
+    expect(await rowsOf(artifact)).toEqual([[artifact, rebuiltGiven, 1]]);
+    first.receive(syncStep1Frame(Y.encodeStateVector(server), artifact));
+    await waitFor(() => expect(syncPayloads(first, artifact, 1).length).toBeGreaterThan(1));
+    first.receive(syncStatusFrame(true, artifact));
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([]));
+    await waitFor(() => expect(pending.at(-1)?.count).toBe(0));
+  });
 });

@@ -38,7 +38,7 @@ var ErrRoomBehindHead = fmt.Errorf("%w: the document's room is behind its durabl
 type appendKind int
 
 const (
-	// appendBrowser is a raw client delta (servicePersistenceAdapter.StoreUpdateContext): a Yjs
+	// appendBrowser is a raw client delta (servicePersistenceAdapter.StoreUpdateStored): a Yjs
 	// update commutes with whatever landed since, so it is admitted from a room that is behind
 	// with its history intact, at the head, and its room's cursor folds it in once catch-up fills
 	// the gap. A replaced history refuses it unless that history still holds every item it builds
@@ -259,6 +259,16 @@ func updateAge(observed time.Time) time.Duration {
 // and reloaded at the head (Service.closeRoomOnReplacedHistory), rather than taking every later
 // update of its browsers down this path, a decode of the whole stored document under the
 // document's lock each.
+//
+// The decodes that check makes share one grant of the pod's load concurrency, taken under ctx
+// (storedHistoryHolds). The room's persistence worker marks its append's context to take only
+// free bytes (StoreUpdateStored, withFreeLoadOnly): it holds the document's lock and a connection
+// of the room-appends pool here, and a heavy apply holding its grant through its commit waits on
+// the room's queue of updates to store, which this worker alone reads, so a wait for the pool
+// here would hold that apply and this worker against each other. Its decodes take what is free
+// at once and otherwise run beside the pool's holders. A transaction's flush of a room
+// (AppendRoomUpdatesTx) passes an unmarked context and waits for its bytes, as every other decode
+// does.
 func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind appendKind, updates []BrowserUpdate, read appendGateRead, maxPending int) (latest int64, admitted int, replaced bool, err error) {
 	if len(updates) == 0 {
 		return 0, 0, false, fmt.Errorf("append document updates: no update to append")
@@ -305,14 +315,55 @@ func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind
 // folds, so it holds what a room's update was made on; a rebuild's seed is a document of other
 // items, which a room's update parks on. A history that already parks something answers false, as
 // does a run it cannot apply: the run is admitted whole or not at all.
+//
+// Its decodes share one grant of the pod's load concurrency (withLoadSlot): the grant ctx carries,
+// or one of its own given back as it returns, so the document is counted for its whole life here.
+// The grant is taken on the history's rows as the fold reads them: each row's bytes and the
+// structs its header declares are added before the fold decodes it (copyWeight, declaredStructs),
+// so the fold's own document is counted from its first row, and once every row is read the grant
+// holds what foldRead takes for the same rows read into memory. The rows are summed as they are
+// read, not by the gate's statement, which every append runs and which would then fetch every
+// row of the history rather than read its index (appendGateStatement). The fold's read-back, or
+// the decode of the history's runs where it does not fold (fold, runsDocument), raises the grant
+// where its document weighs more. The run is then decoded onto that document, a whole decode of
+// each of its updates, and the grant is raised by what the run's copy costs - its bytes and the
+// structs their headers declare, as storedCopyWeight weighs one update, read before anything of
+// the run is decoded - so it covers the document and the run together until the run is judged.
+// Under the context the room's persistence worker marks (withFreeLoadOnly, gateAppend) each take
+// takes only bytes free at once and otherwise leaves its decode beside the pool's holders; under
+// any other it waits for them, as foldRead's does, and a wait ctx ends is the error.
 func storedHistoryHolds(ctx context.Context, q Queryer, room string, head int64, updates []BrowserUpdate, maxPending int) (bool, error) {
+	ctx, slot, done := withLoadSlot(ctx)
+	defer done()
 	version := persistence.Version(head)
-	doc, err := documentThrough(room, version, storedUpdates(ctx, q, room, version), maxPending)
+	stored := storedUpdates(ctx, q, room, version)
+	weighed := func(use func([]byte) error) error {
+		var bytes, structs int64
+		return stored(func(update []byte) error {
+			bytes += int64(len(update))
+			structs += int64(declaredStructs(update))
+			if err := slot.take(ctx, copyWeight(bytes, structs)); err != nil {
+				return err
+			}
+			return use(update)
+		})
+	}
+	doc, err := documentThrough(ctx, room, version, weighed, maxPending)
 	if err != nil || doc == nil {
 		return false, err
 	}
 	if parks(doc) {
 		return false, nil
+	}
+	var bytes, structs int64
+	for _, update := range updates {
+		bytes += int64(len(update.Update))
+		structs += int64(declaredStructs(update.Update))
+	}
+	// The sum is capped at one slot, as every copy's weight is (copyWeight): the pool may hold one
+	// slot alone, and a take past it would never be admitted.
+	if err := slot.take(ctx, min(slot.bytes+copyWeight(bytes, structs), loadSlotBytes)); err != nil {
+		return false, err
 	}
 	for _, update := range updates {
 		if err := crdt.ApplyUpdateV1(doc, update.Update, nil); err != nil {
@@ -344,7 +395,7 @@ type roomCursorContextKey struct{}
 // room outside any live write mark their own context, since no ledger of theirs names the document
 // they were made on: settlement's repairs (settleRoomWithin), the block-id backfill's stamp
 // (backfillBlockIDs) and the room's own append of an update its observer recorded no class for
-// (servicePersistenceAdapter.StoreUpdateContext). A room's own batch of browser updates is gated
+// (servicePersistenceAdapter.StoreUpdateStored). A room's own batch of browser updates is gated
 // on the flush it stores instead (RoomFlush, appendRoomTx).
 func withRoomCursor(ctx context.Context, cursor *roomCursor) context.Context {
 	if cursor == nil {

@@ -399,9 +399,9 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 		t.Fatalf("hold the room's lock: %v", err)
 	}
 
-	// The keystroke's batch lingers for the room's next keystrokes before it goes
-	// (roomAppendLinger), so it reaches the lock a linger after the room applied it; roomWait
-	// covers that, as it covers the rest of the room's own work.
+	// The keystroke's batch goes as soon as its commit is handed over (group commit,
+	// room_appends.go); roomWait covers the wait for the lock, as it covers the rest of the room's
+	// own work.
 	editAsConnectedPeer(t, service, artifactID, 1, storedOrderBob, replaceRun("Second.", "Second, bob."))
 	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
 		t.Fatal("the keystroke's append never came to wait on the room's lock")

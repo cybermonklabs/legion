@@ -391,8 +391,9 @@ export function isDecisionBlockInBody(error: unknown): error is ApiError {
   return error instanceof ApiError && error.code === "DECISION_BLOCK_IN_BODY";
 }
 
-// A document whose stored history cannot load at all: the state a rebuild from its latest saved
-// version repairs, and retrying the read cannot.
+// A document whose stored history cannot load at all: the state a rebuild repairs - from the
+// history's own text where Dispatch can still read it, else from its latest saved version - and
+// retrying the read cannot.
 export function isDocumentUnloadable(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "DOCUMENT_UNLOADABLE";
 }
@@ -402,6 +403,31 @@ export function isDocumentUnloadable(error: unknown): boolean {
 // and shows nothing more. The page offers its own Retry instead.
 export function isReferencesTimeout(error: unknown): boolean {
   return error instanceof ApiError && error.status === 503 && error.code === "REFERENCES_TIMEOUT";
+}
+
+/** The words the document service's refusal of a write at the decode cap carries when a rebuild
+ *  would take that write (`refuseUndecodable`, `packages/envoy/internal/dispatch/docs/growth.go`),
+ *  and that no other `CAP_EXCEEDED` refusal holds: it says them only once the rebuild route's own
+ *  test (`nearACap`) answers that the document is near the cap, its history rather than its text
+ *  holding it there. A change past the 1 MiB or element bound, or one so large it would carry a
+ *  document far from the cap past it, is refused without them, and no rebuild mends it. */
+const NEAR_CAP_REFUSAL = "a person can rebuild the document";
+
+/** The rebuild route the same refusal names, with the id of the document it refused the write for. */
+const NEAR_CAP_REBUILD_ROUTE = /POST \/api\/v1\/artifacts\/([^/\s]+)\/rebuild/;
+
+/** The document a write was refused for because only a rebuild lets that document take it: the
+ *  id in a `413 CAP_EXCEEDED` refusal that carries `NEAR_CAP_REFUSAL`, read from the rebuild route
+ *  it names. Undefined for every other error and every other `CAP_EXCEEDED`, so the page of the
+ *  document it names is the one place that offers the rebuild for it. */
+export function nearCapRefusalDocument(error: unknown): string | undefined {
+  if (!(error instanceof ApiError) || error.status !== 413 || error.code !== "CAP_EXCEEDED") {
+    return undefined;
+  }
+  if (!error.message.includes(NEAR_CAP_REFUSAL)) {
+    return undefined;
+  }
+  return NEAR_CAP_REBUILD_ROUTE.exec(error.message)?.[1];
 }
 
 // A stored document holding an element this Dispatch process's build cannot read: a newer build

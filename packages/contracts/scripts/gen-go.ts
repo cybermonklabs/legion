@@ -11,10 +11,21 @@ import {
   DISPATCH_SIGN_IN_REQUIRED,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON,
+  DOCUMENT_BUSY_CLOSE_CODE,
+  DOCUMENT_BUSY_CLOSE_REASON,
+  DOCUMENT_CLIENT_ID_MESSAGE_PREFIX,
+  DOCUMENT_CLIENT_ID_PARAMETER,
+  DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON,
+  DOCUMENT_NEEDS_REBUILD_CLOSE_REASON,
   DOCUMENT_NEWER_CONTENT_CLOSE_CODE,
   DOCUMENT_NEWER_CONTENT_CLOSE_REASON,
+  DOCUMENT_REBUILT_CLOSE_REASON,
   DOCUMENT_SCHEMA_CLOSE_CODE,
   DOCUMENT_SCHEMA_CLOSE_REASON,
+  DOCUMENT_TOO_LARGE_CLOSE_CODE,
+  DOCUMENT_TOO_LARGE_CLOSE_REASON,
+  DOCUMENT_TOO_TANGLED_CLOSE_REASON,
+  DOCUMENT_UPDATE_REFUSED_CLOSE_REASON,
   ID_AMBIGUOUS,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -597,6 +608,52 @@ const ProjectNameMax = ${PROJECT_NAME_MAX}
 // reading of it cannot drift apart.
 const DocumentSchemaCloseCode = ${DOCUMENT_SCHEMA_CLOSE_CODE}
 const DocumentSchemaCloseReason = ${JSON.stringify(DOCUMENT_SCHEMA_CLOSE_REASON)}
+
+// DocumentTooLargeCloseCode and DocumentTooLargeCloseReason close the one browser whose update
+// would grow a document past a bound of its own; with the same code, DocumentTooTangledCloseReason
+// closes the one whose update would scan more of the document than the room allows one apply to
+// scan, with the browsers whose parked edits a drain held that would scan, or split, more than
+// the apply releasing it may, DocumentNeedsRebuildCloseReason the one whose update the document
+// cannot take until it is rebuilt - it would carry the room's encoded state past the most one
+// room may hold, or the document past the structs ygo decodes in one update, or its history has
+// used up what the room lets its applies scan - DocumentRebuiltCloseReason
+// the one that still holds a history a rebuild replaced, DocumentUpdateRefusedCloseReason the
+// one whose update holds content the document does not take - bytes the decoder refuses, content
+// the Proof editor never sends, or a document this build cannot render, with the browsers whose
+// parked edits a drain refused for that held - and DocumentClientIdRefusedCloseReason the one whose
+// update carries an edit under a client id that is not the sender's, or would take its socket past
+// the client ids one socket may write under; DocumentBusyCloseCode and
+// DocumentBusyCloseReason close a browser the room-memory budget has no room for, one whose
+// person holds every client id no edit has landed under that a document allows them, each held by
+// a socket still open - at its admission, or at an update under an id the room would give them -
+// the one whose update would grow a document while that budget is full, the one whose update's
+// client ids the table could not be read or written for, the one whose update the render
+// check could not size yet with the browsers whose parked edits a drain refused for that held, and
+// the one whose first sync the pod's copy heap had no room to answer.
+// Generated from DOCUMENT_TOO_LARGE_CLOSE_CODE, DOCUMENT_TOO_LARGE_CLOSE_REASON,
+// DOCUMENT_TOO_TANGLED_CLOSE_REASON, DOCUMENT_NEEDS_REBUILD_CLOSE_REASON,
+// DOCUMENT_REBUILT_CLOSE_REASON, DOCUMENT_UPDATE_REFUSED_CLOSE_REASON,
+// DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON, DOCUMENT_BUSY_CLOSE_CODE and
+// DOCUMENT_BUSY_CLOSE_REASON in packages/contracts so the server's closes and the dashboard's
+// reading of them cannot drift apart.
+const DocumentTooLargeCloseCode = ${DOCUMENT_TOO_LARGE_CLOSE_CODE}
+const DocumentTooLargeCloseReason = ${JSON.stringify(DOCUMENT_TOO_LARGE_CLOSE_REASON)}
+const DocumentTooTangledCloseReason = ${JSON.stringify(DOCUMENT_TOO_TANGLED_CLOSE_REASON)}
+const DocumentNeedsRebuildCloseReason = ${JSON.stringify(DOCUMENT_NEEDS_REBUILD_CLOSE_REASON)}
+const DocumentRebuiltCloseReason = ${JSON.stringify(DOCUMENT_REBUILT_CLOSE_REASON)}
+const DocumentUpdateRefusedCloseReason = ${JSON.stringify(DOCUMENT_UPDATE_REFUSED_CLOSE_REASON)}
+const DocumentClientIdRefusedCloseReason = ${JSON.stringify(DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON)}
+const DocumentBusyCloseCode = ${DOCUMENT_BUSY_CLOSE_CODE}
+const DocumentBusyCloseReason = ${JSON.stringify(DOCUMENT_BUSY_CLOSE_REASON)}
+
+// DocumentClientIdParameter is the query parameter a document websocket's page presents the Yjs
+// client id it holds for that document under, and DocumentClientIdMessagePrefix starts the
+// stateless message that socket is sent first, naming the client id Dispatch gives the page.
+// Generated from DOCUMENT_CLIENT_ID_PARAMETER and DOCUMENT_CLIENT_ID_MESSAGE_PREFIX in
+// packages/contracts so the server's admission and the dashboard's reading of it cannot drift
+// apart.
+const DocumentClientIdParameter = ${JSON.stringify(DOCUMENT_CLIENT_ID_PARAMETER)}
+const DocumentClientIdMessagePrefix = ${JSON.stringify(DOCUMENT_CLIENT_ID_MESSAGE_PREFIX)}
 
 // DocumentNewerContentCloseCode and DocumentNewerContentCloseReason close a document websocket
 // whose room holds an element this build cannot read, before any sync. The Hocuspocus provider

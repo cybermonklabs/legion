@@ -32,6 +32,35 @@ func ReadBlockForRendering(e *crdt.YXmlElement) (*Node, error) {
 	return readElement(e, readLiveText, 1, false)
 }
 
+// ReadInView is ReadForRendering of frag as a remote apply has left it, read through view, the
+// apply's own view of the document (crdt.ApplyView), for the document's apply check
+// (crdt.WithApplyCheck), which runs under the document's write lock: ReadForRendering reads each
+// text through ygo's ToDelta, which takes that lock and so deadlocks there. view.TextDelta answers
+// what ToDelta answers and takes no lock, and the rest of the walk - an element's children, its
+// name and its attribute values - takes none either. Like ReadForRendering it makes no copy of
+// the document's values, so the caller renders the tree and drops it before the check returns.
+func ReadInView(view *crdt.ApplyView, frag *crdt.YXmlFragment) (*Node, error) {
+	return readDocument(frag, viewTextReader(view), false)
+}
+
+// ReadBlockInView is ReadBlockForRendering of e, a top-level block of the document's fragment, as
+// a remote apply has left it, read through view (ReadInView). It does not validate the block
+// (Layout.Splice does).
+func ReadBlockInView(view *crdt.ApplyView, e *crdt.YXmlElement) (*Node, error) {
+	if e == nil {
+		return nil, fmt.Errorf("%w: ReadBlockInView wants an element, got nil", ErrSchema)
+	}
+	return readElement(e, viewTextReader(view), 1, false)
+}
+
+// viewTextReader reads a text through view's delta of it (crdt.ApplyView.TextDelta), which is the
+// delta readLiveText reads through ToDelta, taken without the document's lock.
+func viewTextReader(view *crdt.ApplyView) textReader {
+	return func(text *crdt.YXmlText, copyAttrs bool) ([]*Node, error) {
+		return textNodesOfDelta(view.TextDelta(&text.YText), copyAttrs)
+	}
+}
+
 // ReadUnshared is Read for a document no other goroutine reads or writes for the whole of the
 // call - its caller either holds the only reference to the document or holds the lock every
 // reader and writer of it takes. The tree is the caller's own, as Read's is (ownedValue). It
@@ -179,7 +208,7 @@ func deltaTextNode(insert any, attributes crdt.Attributes, copyAttrs bool) (*Nod
 }
 
 // readUnsharedText is text's nodes as readLiveText reads them, without ygo's ToDelta: it is
-// ToDelta's loop (crdt/ytext.go, YText.ToDelta, sjawhar/ygo v1.55.1-sami.2) with its state, the
+// ToDelta's loop (crdt/ytext.go, YText.ToDelta, sjawhar/ygo v1.55.1-sami.7) with its state, the
 // buffered run's text and attribute snapshot, attrsDirty and the live attribute set, emitting each
 // delta ToDelta would emit as its node (deltaTextNode) instead, in the same order, so the first
 // node refused is the one readLiveText refuses. It takes no lock, which is what ReadUnshared

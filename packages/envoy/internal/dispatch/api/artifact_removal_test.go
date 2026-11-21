@@ -634,8 +634,26 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		issue := createInteractionIssue(t, roomHandler, "ROOM", "A room of its own", "# Spec\n")
 		document := emptyDocument(t, roomHandler, issue.Key, "Room notes")
 
-		// The room loads, and a version pass over it writes nothing, because the document reads
-		// as it did: the settlement a typed document gets, over one nobody typed in.
+		// The room loads before the version pass reads it and before the removal, so what is said
+		// of it after is said of a room that existed. Nothing this test calls is sure to load it:
+		// a version capture of a document no room holds loads one only while the room budget's
+		// one opening for the server's own work is free, and reads the stored document where it is
+		// not (docs' captureLiveTextAndAuthors, roomBudget.openServerRoom). What loads it is the
+		// settlement the document's creation queued (Docs.ScheduleSettlement, artifacts.go), which
+		// waits for that opening rather than going without (awaitServerRoom), and the opening can
+		// be held as the test gets here: the issue's creation queued its spec's settlement the same
+		// way an instant before (issue_create.go), and a settlement holds the opening until it has
+		// settled the room it loaded (settleRoomWithin). So the test waits for the document's own
+		// settlement to load the room and finish with it, and the version pass and the removal
+		// below meet a room nothing is settling.
+		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+			return slices.Contains(documents.ResidentRooms(), document.ID) && documents.RoomHoldingForTest(document.ID) == ""
+		}) {
+			t.Fatalf("this process holds the rooms %v, and the room of %s, which the removal must close, is held by %q; want it loaded with its settlement done",
+				documents.ResidentRooms(), document.ID, documents.RoomHoldingForTest(document.ID))
+		}
+		// A version pass over the room writes nothing, because the document reads as it did: the
+		// settlement a typed document gets, over one nobody typed in.
 		if text, err := documents.Text(ctx, document.ID); err != nil || text != "" {
 			t.Fatalf("read the live document = %q, %v; want the empty document it was made as", text, err)
 		}
@@ -643,21 +661,16 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		if err != nil || version.Wrote {
 			t.Fatalf("the settlement pass over the untouched document wrote %#v (%v); want nothing written", version, err)
 		}
-		// The room is read live before the removal, so what is said of it after is said of a room
-		// that existed.
-		if rooms := documents.ResidentRooms(); !slices.Contains(rooms, document.ID) {
-			t.Fatalf("this process holds the rooms %v, and not %s, whose room the removal must close", rooms, document.ID)
-		}
 
 		removedDocument(t, roomHandler, document.ID)
 
 		if rooms := documents.ResidentRooms(); slices.Contains(rooms, document.ID) {
 			t.Fatalf("this process still holds the room of the removed document %s: %v", document.ID, rooms)
 		}
-		// Nothing settles against the row that has gone: the eviction ended what the room had
-		// armed, so a settle window passes with no room loaded again and nothing said about the
-		// document in the service's log. The log is taken from after the removal, so the
-		// request's own line is not one of the lines read.
+		// Nothing settles against the row that has gone: the document's settlement ran before the
+		// removal and the eviction leaves nothing armed, so a settle window passes with no room
+		// loaded again and nothing said about the document in the service's log. The log is taken
+		// from after the removal, so the request's own line is not one of the lines read.
 		logs := captureLogs(t)
 		if testwait.Holds(time.Second, 10*time.Millisecond, func() bool {
 			return slices.Contains(documents.ResidentRooms(), document.ID) || strings.Contains(logs.String(), document.ID)

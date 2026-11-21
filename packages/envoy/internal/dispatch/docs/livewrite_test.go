@@ -214,15 +214,16 @@ func TestAJoinedWritesVersionNamesItsWriterNotAConnectedBrowser(t *testing.T) {
 	}
 }
 
-// A browser's update that its room's batch still holds back, lingering for the keystrokes after it,
-// can be stored first by a transaction that reads the room: a snapshot's capture stores the room's
-// unstored updates through the point it read (Ledger.flushThrough). That update is the room's own,
-// and the instance's cursor advances over it only when the transaction commits, so the
-// transaction's next write must still fork the room, not the committed store, which holds neither
-// the update nor anything after it. A comment the browser anchored on the words that update typed
-// - the margin's re-anchor after a refused send (packages/dispatch/e2e/compose-wait.e2e.ts) - was
-// otherwise refused, or marked orphaned by the refresh of the stale fork's anchors.
-func TestAWriteAfterItsTransactionStoredTheRoomsLingeringUpdateForksTheRoom(t *testing.T) {
+// A browser's update its room has not stored yet - one whose append waits behind another append's
+// transaction (group commit, room_appends.go) - can be stored first by a transaction that reads
+// the room: a snapshot's capture stores the room's unstored updates through the point it read
+// (Ledger.flushThrough). That update is the room's own, and the instance's cursor advances over it
+// only when the transaction commits, so the transaction's next write must still fork the room, not
+// the committed store, which holds neither the update nor anything after it. A comment the browser
+// anchored on the words that update typed - the margin's re-anchor after a refused send
+// (packages/dispatch/e2e/compose-wait.e2e.ts) - was otherwise refused, or marked orphaned by the
+// refresh of the stale fork's anchors.
+func TestAWriteAfterItsTransactionStoredTheRoomsUnstoredUpdateForksTheRoom(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	appends := &heldStore{VersionedStore: NewPgVersioned(database), room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
@@ -233,7 +234,7 @@ func TestAWriteAfterItsTransactionStoredTheRoomsLingeringUpdateForksTheRoom(t *t
 	waitForLandedAppends(t, service, artifactID)
 
 	// The browser's update reaches the room's persistence, whose batch is held before it takes the
-	// document's lock, as one lingering for the keystrokes after it is.
+	// document's lock, as one waiting behind another append's transaction is.
 	appends.armed.Store(true)
 	editAsPeer(t, service, artifactID, appendBlocks(t, "Browser words.\n"))
 	select {

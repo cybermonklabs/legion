@@ -1,0 +1,221 @@
+package docs
+
+// This file holds the prices the room budget charges a loaded room at - the heap one copy of a
+// document is measured to hold for each byte of its encoded state and for each struct, and the
+// heap the live copy holds for each delete range its pending queue parks - and the arithmetic
+// that turns a room's tracked state, its struct count and its parked ranges into the weight the
+// budget carries (roomWeight, roomChargeWeight) and into what one copy of it takes of the pod's
+// load concurrency (copyWeight).
+
+// bytesOfHeapAStateByte is the heap one copy of a document holds for each byte of its encoded
+// state. Measured again 2026-11-09 on ygo v1.55.1-sami.8, whose crdt.Item carries a parked
+// struct's allowed roots and so costs 32 bytes more a struct than the sami.7 the first
+// measurement was taken on, over the eight shapes a run without DISPATCH_MEASURE_STRUCT_HEAP
+// measures (TestAResidentRoomsHeapPerByteOfItsState): the most 16.36 bytes a state byte (a
+// paragraph typed into 100,000 times before its last character and then deleted, 13.66 at
+// sami.7), the least 1.01 (one paragraph of a mebibyte typed in one transaction), a spread of
+// 16.2 between them. It is set past the most.
+//
+// These two prices replaced the six the budget charged before - an element, a struct held, a
+// rendered byte, a byte at the densest, a struct added, a split - because the encoded state and
+// the struct count are the two measures of a document every shape's heap follows within those
+// spreads, and because they are the measures the room can keep without reading the document: a
+// whole-state encode costs
+// 18.7 ms and 5,495,143 bytes allocated on a mebibyte of prose, 64 times what a keystroke's apply
+// costs, so nothing on the keystroke path may take one.
+const bytesOfHeapAStateByte = 17
+
+// bytesOfHeapAStruct is the heap one copy of a document holds for each struct it holds.
+// Measured 2026-11-09 on ygo v1.55.1-sami.8 over the four shapes where a room's structs and its
+// state bytes come apart (TestAResidentRoomsHeapPerStructItHolds, run with
+// `DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" go test ./internal/dispatch/docs/ -count=1
+// -timeout 40m -run TestAResidentRoomsHeapPerStructItHolds -v`): the most 625.48 bytes a struct
+// (a room of 200,000 empty paragraphs, 250,190,840 bytes of heap over its two copies), then
+// 617.48 (200,000 elements outside the Proof schema), 409.76 (a mebibyte of prose) and the
+// least 185.31 (a run of half a million characters with every other one deleted, 499,722
+// structs in 185,208,392 bytes), a spread of 3.4 between the most and the least. It is set past
+// the most.
+//
+// An empty element is the heaviest struct there is because it is a whole shared type - the item,
+// its content, the type and the type's own maps - where a run of text is one item holding a
+// string, which is why the split-dense room measures under a third of it a struct and is
+// answered by its own count instead.
+//
+// Of the four, only a mebibyte of prose is a room the state term already covers (10.48 bytes a
+// state byte of the 17 charged); the other three hold 17.73, 34.91 and 41.39, so the state term
+// alone under-charges each of them and the struct term is what answers them.
+const bytesOfHeapAStruct = 630
+
+// roomCopies is the copies of its document a room is charged at, from its load (roomBudget.load)
+// to its retirement (retire): its live document and the rendered replica its update observer
+// keeps (renderedReplica), which the room holds from its load on, the copy its load decoded of
+// the stored state (keepReplica). Every byte of state the room takes, the replica takes too: the
+// replica holds the live document's whole state and then takes every update the room commits
+// (renderedReplica.observe).
+const roomCopies = 2
+
+// roomWeight is what the budget charges a room whose tracked state is stateBytes long and whose
+// document holds structs structs for its two copies: the larger of its state at
+// bytesOfHeapAStateByte and its structs at bytesOfHeapAStruct, in each of them. A mebibyte of
+// prose, whose state is 3,035,240 bytes and which holds 77,600 structs, is charged 103,198,160 by
+// its state, where its structs alone would charge it 97,776,000; it holds 63,594,680
+// (TestAResidentRoomsHeapPerStructItHolds). What its live copy parks of delete ranges is charged
+// beside it (roomChargeWeight).
+//
+// Two terms and not one because the two measures come apart in both directions, and a budget
+// that bounds what the open rooms hold must follow whichever is the larger. The state bytes are
+// tracked, never re-read (roomApplies.state): the bytes of the stored state the room's load
+// decoded, plus what each commit since added to the encoded state as the library counts it -
+// each remote apply's own report (crdt.ApplyReport.StateBytes), and for a commit no report
+// covers, the replica's report of the same update (renderedReplica.countCommit) - re-based at
+// each load and at each compaction that folds the room's whole stored history into one row
+// (Service.rebaseRoomState). That figure reads at or above the state itself, which is the safe
+// side for a budget, the splits a delete makes included, since the report counts each split
+// where it is made. But one update can take a room far past what its state bytes charge it:
+// a delete of every other character of a run splits
+// one item into a struct for each character, and the splits a delete makes are not the update's
+// own, so one 2.2 MB frame took a room from 4 structs to 1,100,002, its charge by 61.4 MB and its
+// two copies by 336.6 MB (dispatch://INFRA-179, review 5891480448). The decode cap refuses that
+// exact room now, the apply's allowance counting the splits it would make
+// (crdt.ApplyBudget.Split, peerApplyAllowance), but every such delete short of the cap stands,
+// and the struct term is what answers it: structs is what the room holds, as the library
+// reports it at the end of each apply that commits - the structs its store holds with those
+// parked in its pending queue beside them (crdt.ApplyReport.Structs, roomApplies.structsHeld),
+// read off the room's own record with neither an encode nor a walk, so the second term costs
+// nothing to read. The parked structs are counted because the live document holds each of them
+// in its pending queue, with the record of the apply that parked it (crdt.Doc.parkedBy), until it
+// lands or a refused drain discards it, and none of that is in the encoded state the state term
+// reads, nor in the stored state (leaveParkedOut): so a room holding a backlog costs the pod what
+// that backlog holds of its heap. The term charges a parked struct in both copies where only the
+// live one holds it - the replica applies only what each commit integrated
+// (renderedReplica.takeLocked) - which errs on the side of the budget.
+//
+// A caller that can reach no document passes no structs, and zero means the state term alone
+// decides: what a fold passes for rows it has not read yet (foldRead). A site that holds the bytes
+// of a stored history reads the structs they declare from their headers before anything decodes
+// them instead (storedCopyWeight).
+func roomWeight(stateBytes, structs int64) int64 {
+	return max(stateBytes*bytesOfHeapAStateByte, structs*bytesOfHeapAStruct) * roomCopies
+}
+
+// bytesOfHeapAParkedRange is the heap a room's live document holds for each delete range its
+// pending queue parks: the range in the store's pending delete set (crdt.StructStore.pendingDs, a
+// crdt.DeleteRange of two uint64s in its client's entry) and in the record of who parked it, which
+// the room keeps so that a refused drain can name who parked what it discards
+// (crdt.Doc.parkedDsBy, which SetDiscardRefusedDrain turns on: leaveParkedOut). Since
+// theorem-labs/ygo v1.55.1-theorem.11 the record keeps one delete set for each sender, the
+// connection the provider applies an update for (its origin, provider/websocket/peer.go:357),
+// compacted as the pending deletes are and cut to what they still hold, and after every apply it
+// holds at most twice the parked ranges plus 16; an apply with no sender records nothing.
+//
+// Measured 2026-11-20 on theorem-labs/ygo v1.55.1-theorem.11 (f80e73e7), over this package at
+// fae59209, each shape parking 4,096 ranges, the cap, through the hook (weighPeerUpdate), with the
+// heap read once the frames were freed. The repro's frames, one range a frame under one client
+// applied with no sender (`DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" go test
+// ./internal/dispatch/docs/ -count=1 -run TestRV9ParkedRangesOneAFrameHoldNoMoreHeapThanTheirCharge
+// -v`), held 16.3 to 18.0 bytes a range over three runs. Every other shape applied each frame for
+// a sender, as the provider does, and each figure is the most of three runs: the repro's frames
+// for one sender, 36.4 bytes a range; a client of its own for each range, which adds a map entry
+// to the pending delete set and to each sender's set, 228.5 for one sender, in one frame or in a
+// frame each, and 223.6 with a sender for each 128 clients (maxConfirmedClients); a sender for
+// each range, which adds a set of its own, 550.4; and the heaviest, each client's range parked in
+// two halves by two senders, so the record holds twice the ranges the queue does, 994.4 bytes a
+// range over three runs and 994.9 and 995.8 (4,078,736 bytes) in two runs of its own test
+// (TestParkedDeleteRangesHoldNoMoreHeapThanTheirChargeAtTheirHeaviestShape, run as the repro is).
+// It is set past the most.
+//
+// It is charged on the live document alone, outside roomCopies: the room's replica applies only
+// what each commit integrated (renderedReplica.takeLocked), and a live write's fork is that
+// replica cloned (warmFork), so neither holds a range the room parks.
+const bytesOfHeapAParkedRange = 1_000
+
+// maxParkedDeleteRanges is the most delete ranges one room's document parks
+// (websocket.Server.MaxPendingDeleteRanges, which New sets; crdt.WithMaxPendingDeleteRanges): an
+// update whose delete set would park more is refused before it changes anything
+// (crdt.ErrPendingCap), and its sender answered not applied and left connected, as for the
+// structs the queue parks, which MaxPendingItems caps at maxParkedStructs apart (refusedByApply).
+// A frame that parks only ranges already parked - the same frame sent again - is not refused.
+//
+// No count of honest ranges sets it, since honest traffic parks none: over every honest drive of
+// round 9 - the browser suite's a2 block and its offline rows, the reconnect and lost-commit
+// drives, five editors typing and the render check's generated frames - no room held a parked
+// delete range at any moment (dispatch://INFRA-179/artifact/infra179-r9-caps-measure-md). A range
+// parks only under a client the sender's socket holds (parkJudge), so an honest page parks one
+// only after a frame of its own parked or was refused. Its cost sets it instead: 4,096 ranges at
+// bytesOfHeapAParkedRange are 4,096,000 bytes a room, which the room budget charges, past the
+// 4,078,736 the heaviest shape measured held. At maxUpdateItems, the cap ranges shared with the
+// structs before, one 4,186,013-byte frame held 29,370,136 bytes of a room's heap.
+const maxParkedDeleteRanges = 4096
+
+// maxParkedStructs is the most structs one room's document parks
+// (websocket.Server.MaxPendingItems, which New sets; crdt.WithMaxPendingItems): an update that
+// would park more is refused before it changes anything (crdt.ErrPendingCap), and its sender
+// answered not applied and left connected (refusedByApply), as for the delete ranges the queue
+// parks (maxParkedDeleteRanges).
+//
+// Its cost sets it, as the ranges' does. It is far below the decode cap (maxUpdateItems), which it
+// was until round 10, because a parked struct counts twice against that cap (ceilingWithQueue) and
+// is charged in both of the room's copies at bytesOfHeapAStruct (roomWeight), while it is one item
+// of the live copy's queue. At the decode cap one writer's frames parked 524,282 GC structs, each
+// behind a one-clock skip, under her own given id in a room of 10 structs: the room was weighed at
+// 1,048,574 items of the cap's 1,048,576 and charged 660,607,920 bytes for a stored state of 250
+// bytes, and another person's keystroke was refused DOC_NEEDS_REBUILD
+// (TestRV9ParkedStructsUnderTheSendersOwnIdLockASmallDocument, review 9's finding 5). At 4,096,
+// what a room parks takes at most 8,192 items of the cap's headroom and 5,160,960 bytes of the
+// room budget, beside the 4,096,000 its parked ranges may.
+//
+// No count of honest parked structs sets it. A struct parks only behind a clock the room lacks -
+// an edit typed after one the room lost or has not received yet
+// (TestAnEditParkedBehindALostCommitIsUnsavedUntilTheCommitThatLandsItIsStored) - and a frame past
+// the cap is answered not applied, which keeps the editor's row for the edit.
+//
+// The room's own decode of its stored state runs under it too, as under the ranges' cap: ygo sets
+// both before the load hook decodes that state into the room (bootstrapLoadedState). A room stores
+// nothing it parks (leaveParkedOut), so only rows an earlier build stored of what parked can park
+// at a load, and a history whose decode would park more than this, or more delete ranges than
+// maxParkedDeleteRanges, fails that load, logged with the cap and what it parks
+// (parkedPastCapLoadLine). Every read that judges a history holds it against the same two caps
+// (parkedPastRoomCaps): it answers such a history as one that cannot load
+// (ErrDocumentUnloadable, logged as parkedPastCapReadLine), and the rebuild takes it from its own
+// text.
+const maxParkedStructs = 4096
+
+// roomChargeWeight is what the budget charges a loaded room in all (roomCharge.weigh): its two
+// copies' weight at its resident bytes, stateBytes, and its structs (roomWeight), and the
+// parkedRanges delete ranges its live document parks at bytesOfHeapAParkedRange each, once,
+// outside roomCopies. The ranges are the hook's reading of the room's pending queue after its last
+// apply (roomApplies.parkedRangeCount).
+func roomChargeWeight(stateBytes, structs, parkedRanges int64) int64 {
+	return roomWeight(stateBytes, structs) + parkedRanges*bytesOfHeapAParkedRange
+}
+
+// copyWeight is what one whole-document copy built from stateBytes bytes of state holding
+// structs structs takes of the pod's load concurrency (loadSlots): the larger of the two terms
+// roomWeight charges in the one copy, against the two roomWeight charges a room for. A mebibyte
+// of prose, whose state is 3,035,240 bytes over 77,600 structs, takes 51,599,080 bytes, where
+// its room is charged 103,198,160.
+//
+// A split-dense copy is as heavy in the pool as it is in the budget, so it is weighed the same
+// way: the structs decide where the state does not.
+//
+// It is clamped to at least one byte, so every taker holds something of the pool and the pool is
+// what bounds them rather than their number, and to at most loadSlotBytes, one slot: that is the
+// figure the slot was sized from, the heaviest whole-document decode measured and more
+// (loadSlotBytes), and a copy capped at it can always be admitted on its own, however heavy the
+// document, since the pool is never smaller than one slot (newLoadSlots).
+func copyWeight(stateBytes, structs int64) int64 {
+	return min(max(max(stateBytes*bytesOfHeapAStateByte, structs*bytesOfHeapAStruct), 1), loadSlotBytes)
+}
+
+// storedCopyWeight is what one copy decoded from state, a V1 update of stored history or a whole
+// encoded state, takes of the pod's load concurrency: its bytes and the structs its client groups
+// declare at copyWeight (declaredStructs), read from the headers alone before anything decodes it.
+// The declared count is never below what the decode builds - it reads every struct a header
+// declares, and merges runs only once they are read - so a struct-dense history is weighed by its
+// structs, where its bytes alone were weighed before: a 3,583,504-byte history of 200,000 empty
+// paragraphs decodes into a copy of 125,094,000 bytes of heap, 34.91 a byte of its state, which its
+// bytes alone granted 60,919,568 and its 200,000 declared structs grant 126,000,000
+// (TestADecodeOfStoredStateIsGrantedWhatItsCopyHolds).
+func storedCopyWeight(state []byte) int64 {
+	return copyWeight(int64(len(state)), int64(declaredStructs(state)))
+}

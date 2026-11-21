@@ -5,10 +5,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -94,21 +97,90 @@ const documentNewerContentCloseCode = contracts.DocumentNewerContentCloseCode
 // upgrade.
 func refuseOutsideSchema(w http.ResponseWriter, r *http.Request, room string, cause error) {
 	slog.Warn("dispatch: refuse a document socket outside Proof schema; a replacement from markdown repairs it", "room", room, "error", cause)
-	closeRefusedSocket(w, r, documentSchemaCloseCode, contracts.DocumentSchemaCloseReason)
+	closeAtUpgrade(w, r, documentSchemaCloseCode, contracts.DocumentSchemaCloseReason)
 }
 
 // refuseNewerContent completes the upgrade only to close it with documentNewerContentCloseCode
 // before anything of the document is sent.
 func refuseNewerContent(w http.ResponseWriter, r *http.Request, room string, cause error) {
 	slog.Warn("dispatch: refuse a document socket holding an element this build cannot read; the provider reconnects", "room", room, "error", cause)
-	closeRefusedSocket(w, r, documentNewerContentCloseCode, contracts.DocumentNewerContentCloseReason)
+	closeAtUpgrade(w, r, documentNewerContentCloseCode, contracts.DocumentNewerContentCloseReason)
 }
 
-// closeRefusedSocket completes the upgrade only to close it with code and reason. The zero
-// upgrader keeps the same-origin rule ygo's own upgrade applies with no AllowedOrigins
-// configured.
-func closeRefusedSocket(w http.ResponseWriter, r *http.Request, code int, reason string) {
-	var upgrader gws.Upgrader
+// refuseOverRoomBudget closes a socket the room budget has no room for (errRoomBudgetFull), with
+// the transient code the editor retries, before any room is made. The line names the document and
+// the budget's reason, which carries the weight the admission was refused against
+// (roomBudget.refusal), so a drive can read every refusal the server made off its log
+// (cmd/dispatch's budgetRefusalLine, roomRefusalLine).
+func refuseOverRoomBudget(w http.ResponseWriter, r *http.Request, room string, cause error) {
+	slog.Warn("dispatch: refuse a document socket; the open documents fill their memory budget", "room", room, "error", cause)
+	closeAtUpgrade(w, r, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason)
+}
+
+// refuseMintsLive closes a socket whose person holds every unlanded client id the document allows
+// them, each held by an open socket (errMintsLive), with the transient code the editor retries,
+// before any room is made: by its retry a page that has gone has let its id lapse, and no mint
+// gives back an id an open page writes under.
+func refuseMintsLive(w http.ResponseWriter, r *http.Request, room string, cause error) {
+	slog.Warn("dispatch: refuse a document socket; its person's unlanded client ids in the document are all held by open sockets",
+		"room", room, "most", maxUnlandedMintsADocument, "error", cause)
+	closeAtUpgrade(w, r, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason)
+}
+
+// refusedAtUpgrade answers r as ygo's upgrade answers a request it refuses, and reports whether it
+// did, without taking the connection. It asks gorilla's Upgrader itself, called as ygo's upgrade
+// calls it - no response header, and the same-origin rule ygo keeps with no AllowedOrigins
+// configured (sameOrigin) - so it refuses what that upgrade refuses, with the status that upgrade
+// gives (Upgrader.Upgrade, gorilla/websocket server.go): 400 for no `Connection: upgrade`, 405 for
+// a method other than GET, 400 for a version other than 13, 403 for another origin, 400 for a
+// Sec-WebSocket-Key that is not 16 bytes in base64, and for no `Upgrade: websocket` 400 in
+// gorilla/websocket v1.5.3 and 426 in later commits, whichever the build resolves. The
+// upgrader checks the whole request before it takes the connection, and is handed a writer it
+// cannot take (unhijackable), so a request that passes every check meets the one refusal after
+// them, the 500 of a writer that is no http.Hijacker, where nothing is written and this reports
+// false. A refusal is written as gorilla writes its own (returnError): its status, with
+// Sec-WebSocket-Version 13 beside it. The admission asks this before it gives the page a client
+// id, so a request the upgrade refuses is given no id and stores nothing; the refusals that can
+// come after the id are named in ServeHTTP's doc. It cannot see the connection: a client that
+// sends bytes before the 101 arrives is dropped by the upgrade with no answer, after its id was
+// given out.
+func refusedAtUpgrade(w http.ResponseWriter, r *http.Request) bool {
+	refused := false
+	upgrader := gws.Upgrader{
+		CheckOrigin: sameOrigin,
+		Error: func(w http.ResponseWriter, _ *http.Request, status int, _ error) {
+			if status == http.StatusInternalServerError {
+				return // past every check of the request, at the writer it cannot take
+			}
+			refused = true
+			w.Header().Set("Sec-Websocket-Version", "13")
+			http.Error(w, http.StatusText(status), status)
+		},
+	}
+	_, _ = upgrader.Upgrade(unhijackable{w}, r, nil)
+	return refused
+}
+
+// unhijackable is a ResponseWriter that is no http.Hijacker, whatever the one it wraps is.
+type unhijackable struct{ http.ResponseWriter }
+
+// sameOrigin is the origin rule ygo's upgrade keeps with no AllowedOrigins configured
+// (Server.checkOrigin): a request with no Origin passes, and one with an Origin passes where its
+// host is the request's.
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	return err == nil && strings.EqualFold(parsed.Host, r.Host)
+}
+
+// closeAtUpgrade completes the upgrade only to close the socket with code and reason, under the
+// same-origin rule ygo's own upgrade applies with no AllowedOrigins configured (sameOrigin), so
+// a request that upgrade would admit is closed with code and not answered 403.
+func closeAtUpgrade(w http.ResponseWriter, r *http.Request, code int, reason string) {
+	upgrader := gws.Upgrader{CheckOrigin: sameOrigin}
 	connection, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return // the upgrader has answered the request
@@ -156,6 +228,34 @@ func socketRoom(r *http.Request) string {
 // ends it; a socket that ends unregistered - its admission or its authorization refused, its room's
 // load failed or panicked - gives it back. The room's place the socket gives back however it ends,
 // and a room ygo loaded keeps a place of its own until it unloads (releaseUnloadedRoom).
+//
+// The room budget admits the browser after that read, not before it: it joins a room the budget
+// already charges, and is otherwise weighed carrying the weight of the room it is about to load,
+// which the read has just measured exactly (roomBudget.refusal). It is refused while the open
+// rooms and the other admissions' reservations leave no room for it and the sweeps it starts can
+// close nothing. maxLiveRooms stays the count backstop above.
+//
+// The budget charges a room only when its load ends, so an admission weighed on the charges
+// alone would read the same headroom as every other admission in flight and they would all
+// pass: measured, twenty-four browsers arriving together were all admitted, their rooms
+// charged 5,976,639,564 bytes against a 2,147,483,648-byte budget, and the pod's kernel
+// charged 7,225 MiB of its 4,096 (INFRA-179). What closes that is the reservation each
+// admission holds from its weighing until its room's load charges it (roomBudget.load), so each
+// is weighed against every other's room as well as against the rooms already open. A refused
+// socket is closed at its upgrade with 4503 DOC_BUSY, before any room is made
+// (refuseOverRoomBudget), and the read it made is offered to no load.
+//
+// Last of all, once nothing above can refuse the socket, the admission decides whether the
+// socket's page may write (decideWritable) and then its client id (admitClients), so a read-only
+// admission stores no row. A request ygo's upgrade would refuse - no websocket upgrade, a method
+// other than GET, a websocket version or key it does not take, or one from another origin - is
+// answered as that upgrade answers it before either (refusedAtUpgrade), and stores nothing; and a
+// page whose person holds every unlanded id the document allows them, each held by an open
+// socket, is closed at its upgrade with 4503 DOC_BUSY (refuseMintsLive). What ygo's ServeHTTP
+// still refuses comes after the id: authorize's 401 for a failed room, ygo's 500 for a room whose
+// load fails, a client dropped for bytes sent before its 101, and a socket whose room ygo dropped
+// before it joined. The row such a refusal leaves for a page that may write is an unlanded mint,
+// which lapses once no socket presents it and is held by maxUnlandedMintsADocument (client_ids.go).
 //
 // The room's name has to be the document's id as Dispatch writes it, lower case and hyphenated,
 // and a name uuid.Parse takes in any other spelling - upper case, braced, a dash-free run of hex,
@@ -236,7 +336,38 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.afterSocketIssueRead != nil {
 		s.afterSocketIssueRead(room)
 	}
-	withdraw, documentSince, err := s.admitDocument(ctx, room)
+	if wait, holding := s.admissionHolds.LoadAndDelete(room); holding {
+		select {
+		case <-time.After(wait.(time.Duration)):
+		case <-r.Context().Done():
+			return
+		}
+	}
+	// What the admission reads is what the budget weighs: the stored state it decodes is the
+	// state the room is about to load, so its length is the weight of the room this admission
+	// adds. That read is a whole-document decode, so it takes of the pod's load concurrency for
+	// the read alone and gives it back before the weighing: no admission holds any of the pool
+	// while it waits on the budget, which would couple it to every other holder. A socket to a
+	// room this process already holds reads no stored state and takes nothing.
+	//
+	// It takes a whole slot, where every other taker takes what its own copy costs (copyWeight):
+	// the admission has not read the state it is about to decode, and nothing here could learn
+	// its size without reading the store a second time to measure what it is about to read. The
+	// whole slot is also what keeps the cold loads of a reconnect storm one at a time at the
+	// calibration, where the pool is one slot, so the room budget sees each room's weight before
+	// the next load begins (MemoryBounds.LoadSlots). The decode the read makes inside it covers
+	// this grant and takes nothing more (loadDecodedHistory).
+	readSlot := newLoadSlot()
+	if s.srv.GetDoc(room) == nil {
+		if err := readSlot.take(r.Context(), loadSlotBytes); err != nil {
+			slog.Warn("dispatch: a document socket's admission gave up waiting for a load slot; answered 503",
+				"room", room, "error", err)
+			http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
+			return
+		}
+	}
+	loaded, structs, rendered, documentSince, err := s.admitDocument(readSlot.carriedBy(ctx), room)
+	readSlot.release()
 	if errors.Is(err, ErrDocNewerContent) {
 		refuseNewerContent(w, r, room, err)
 		return
@@ -249,12 +380,83 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	defer withdraw()
-	connection.admission.documentSince = documentSince
+	admitting := time.Now()
+	var reservation *roomReservation
+	if !s.budget.join(room) {
+		// The weight is the room this admission is about to load, which the budget does not
+		// charge until that load ends: the stored state the read above decoded and the structs
+		// that decode counted, at roomWeight. A read that loaded nothing adds no room
+		// (heldTree), and a room the budget already charges is joined above and weighed at
+		// nothing. The reservation is held until that room's load charges it or this handler
+		// returns, whichever comes first, so every other admission in flight is weighed against
+		// this room too.
+		weight := int64(0)
+		if loaded != nil {
+			weight = roomWeight(int64(len(loaded.Update)), structs)
+		}
+		reservation, err = s.budget.refusal(r.Context(), time.Now().Add(s.admissionWait), room, weight)
+	}
+	defer s.budget.release(reservation)
+	if errors.Is(err, errRoomBudgetFull) {
+		refuseOverRoomBudget(w, r, room, err)
+		return
+	}
+	if err != nil {
+		// Anything but the budget's refusal is answered 503, which the editor's backoff retries;
+		// the line says why, and whether the browser had already gone.
+		slog.Warn("dispatch: a document socket's admission failed; answered 503", "room", room, "error", err,
+			"waited", time.Since(admitting), "request_ended", r.Context().Err() != nil)
+		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	// The page's client id is decided last, once nothing above can refuse the socket
+	// (admitClients, client_ids_admission.go): a request ygo's upgrade would refuse is answered as
+	// it would answer it first, and the page's write is decided before its id, so a read-only page
+	// is given one stored nowhere. ygo's ServeHTTP below can still refuse the request after the id
+	// - a 401 for a failed room (authorize), a 500 for a room whose load fails - and the unlanded
+	// row that leaves lapses once no socket presents it (maxUnlandedMintsADocument).
+	if refusedAtUpgrade(w, r) {
+		return
+	}
+	if err := s.decideWritable(r.Context(), room, connection, r.URL.Query(), documentSince); err != nil {
+		slog.Warn("dispatch: a document socket's admission could not decide whether its page may write; answered 503",
+			"room", room, "error", err)
+		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	clients, err := s.admitClients(ctx, room, actor, r, connection.admission.writable)
+	if errors.Is(err, errMintsLive) {
+		refuseMintsLive(w, r, room, err)
+		return
+	}
+	if err != nil {
+		slog.Warn("dispatch: a document socket's admission could not give its page a client id; answered 503",
+			"room", room, "error", err)
+		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	connection.clients = clients
+	// An open socket presents its page's id again while its row records no edit landed under it, so
+	// no mint of its person's gives that id back while the socket is open (keepPresenting).
+	defer s.keepPresenting(room, actor, clients)()
+	// The state the admission read is offered to the room's load only now, once the budget has
+	// made room for that load: a socket refused above makes no room and leaves nothing behind
+	// for one (offerPreload, takePreload).
+	if loaded != nil {
+		defer s.offerPreload(room, loaded, rendered)()
+	}
 	ctx = context.WithValue(ctx, connectionContextKey{}, connection)
+	// A page that takes the client id Dispatch gives it is sent that id as the socket's first
+	// frame (clientIDWriter).
+	if !clients.legacy {
+		w = &clientIDWriter{ResponseWriter: w, frame: clientIDFrame(room, clients.own)}
+	}
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
-	// frames (awareness_limit.go).
-	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room}, r.WithContext(ctx))
+	// frames, to the ids the socket may announce under, and a read-only socket's awareness, which
+	// ygo discards, is not read at all (awareness_limit.go). Every other frame reaches ygo unread, a
+	// sync step 2 among them, which the peer update hook judges as it judges an update
+	// (judgeClients).
+	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room, clients: clients, connection: connection}, r.WithContext(ctx))
 }
 
 // ProcessHeader names, on every answer to a document socket's request and on its upgrade above
@@ -340,16 +542,21 @@ func (c *processHeaderConn) Write(p []byte) (int, error) {
 // without a read. Only a room with no verdict - not resident, or with a replica that lost the
 // room's state - is rendered here. The tree is read either way, since the document's since is
 // read off it and no rendering records it; for a resident room that read holds the room's own
-// document and makes no query of the stored history (heldTree). A cold socket offers the state it
-// read, and what it rendered of it, to the room's load (offerPreload), and withdraw is what the
-// socket's end runs to take that offer back.
-func (s *Service) admitDocument(ctx context.Context, room string) (withdraw func(), documentSince int, err error) {
+// document and makes no query of the stored history (heldTree).
+//
+// It answers the durable state a cold socket read, the structs that state decoded to, and what
+// it rendered of it, rather than offering them to the room's load itself: that state and those
+// structs are also the weight of the room this socket is about to make, which the budget weighs
+// the socket against before anything is offered or any room is made (ServeHTTP, roomWeight,
+// offerPreload). A socket to a room this server already holds reads no stored state and answers
+// none.
+func (s *Service) admitDocument(ctx context.Context, room string) (loaded *persistence.LoadResult, structs int64, rendered admissionRendering, documentSince int, err error) {
 	verdict := s.residentVerdict(room)
 	if verdict == verdictOutsideSchema {
-		return nil, 0, ErrDocOutsideSchema
+		return nil, 0, admissionRendering{}, 0, ErrDocOutsideSchema
 	}
-	tree, loaded, err := s.loadTree(ctx, room)
-	rendered := admissionRendering{tree: tree}
+	tree, loaded, structs, err := s.loadTree(ctx, room)
+	rendered = admissionRendering{tree: tree}
 	if err == nil && tree != nil && verdict != verdictInsideSchema {
 		if s.admissionRendered != nil {
 			s.admissionRendered(room)
@@ -361,13 +568,9 @@ func (s *Service) admitDocument(ctx context.Context, room string) (withdraw func
 		}
 	}
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, admissionRendering{}, 0, err
 	}
-	documentSince = pmdoc.DocumentSince(tree)
-	if loaded == nil {
-		return func() {}, documentSince, nil
-	}
-	return s.offerPreload(room, loaded, rendered), documentSince, nil
+	return loaded, structs, rendered, pmdoc.DocumentSince(tree), nil
 }
 
 // offerPreload offers loaded, the durable state a cold socket's admission read for room, and
@@ -402,33 +605,52 @@ func (s *Service) offerPreload(room string, loaded *persistence.LoadResult, rend
 	return func() { s.preloads.CompareAndDelete(room, preload) }
 }
 
+// decideWritable decides, before the page's client id, whether connection's socket to room may
+// write: its issue is open as the admission read it and as the room's state records it while the
+// admission holds that state, a close recorded since included (admittedIssueRead), and the live
+// fleet admits the page query presents for a document whose elements need documentSince
+// (schemaFleet.admits). It records the page and documentSince on the admission, which a re-check
+// reads again (revokeUnless). authorize, which ygo calls next, only ever turns the admission
+// read-only - for an issue the room's state records closed by then - so a socket decided
+// read-only here, whose page admitClients gives an id stored nowhere, writes under none.
+func (s *Service) decideWritable(ctx context.Context, room string, connection *connectionState, query url.Values, documentSince int) error {
+	fleet, err := readSchemaFleet(ctx, s.queryFrom(ctx))
+	if err != nil {
+		return fmt.Errorf("read the live server processes: %w", err)
+	}
+	open := connection.issue.open
+	if recorded, held := s.admittedIssueRead(room); held && !recorded.open {
+		open = false
+	}
+	admission := connection.admission
+	admission.page = schemaPageOf(query)
+	admission.documentSince = documentSince
+	admission.writable = open && fleet.admits(admission.page, documentSince)
+	return nil
+}
+
 // authorize is ygo's authorization of a document socket ServeHTTP admitted, read-only unless its
-// page may write (schemaFleet.admits). It registers the browser as the caller ServeHTTP resolved,
-// and takes the issue read ServeHTTP made, so it resolves and reads neither again. The connection
-// is counted already: ServeHTTP took its place under the connection cap (reserveConnection)
-// before it loaded anything, so registering it counts nothing more, and no cap refuses it here,
-// where a refusal would reach the browser as ygo's 401, which says it is not signed in. The issue
-// is closed for the socket when that read says so or the room's state records it closed:
-// ServeHTTP's hold on the state (holdForAdmission) is where a close made while the socket loaded
-// its document is recorded (setRoomIssueOpen), so such a socket is admitted read-only, as one
-// opened after the close is. A closed issue, or a page the live fleet does not admit, admits the
-// socket read-only; a request no admission read the issue for is refused, as is a socket to a
-// failed room.
+// admission decided its page may write (decideWritable). It registers the browser as the caller
+// ServeHTTP resolved, and takes the issue read ServeHTTP made, so it resolves and reads neither
+// again. The connection is counted already: ServeHTTP took its place under the connection cap
+// (reserveConnection) before it loaded anything, so registering it counts nothing more, and no cap
+// refuses it here, where a refusal would reach the browser as ygo's 401, which says it is not
+// signed in. The issue is closed for the socket when that read says so or the room's state
+// records it closed: ServeHTTP's hold on the state (holdForAdmission) is where a close made while
+// the socket loaded its document is recorded (setRoomIssueOpen), so such a socket is admitted
+// read-only, as one opened after the close is. It only ever turns the admission read-only, never
+// writable: a page decided read-only was given a client id stored nowhere (admitClients). A
+// request no admission read the issue for is refused, as is a socket to a failed room.
 //
-// It decides the admission ServeHTTP put on the socket's context and records it with the service,
-// so a re-check can close the socket again (schemaAdmissions); the answer to the socket's token
-// is that same admission (authorizeSchemaVersion).
+// It records the admission ServeHTTP put on the socket's context with the service, so a re-check
+// can close the socket again (schemaAdmissions); the answer to the socket's token is that same
+// admission (authorizeSchemaVersion).
 func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) {
 	connection, _ := r.Context().Value(connectionContextKey{}).(*connectionState)
 	if connection == nil {
 		return websocket.ConnectionConfig{}, false
 	}
 	room := socketRoom(r)
-	fleet, err := readSchemaFleet(r.Context(), s.queryFrom(r.Context()))
-	if err != nil {
-		slog.Warn("dispatch: refuse a document socket: read the live server processes", "room", room, "error", err)
-		return websocket.ConnectionConfig{}, false
-	}
 	state := s.lockState(room)
 	if state.failed != nil {
 		s.unlockState(room, state)
@@ -441,11 +663,9 @@ func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) 
 	connection.added = true
 	s.registerConnectionLocked(state, connection.id, connection.actor)
 	s.unlockState(room, state)
-	query := r.URL.Query()
 	admission := connection.admission
-	admission.key = schemaAdmissionKey{room: room, token: query.Get("schema_version")}
-	admission.page = schemaPageOf(query)
-	admission.writable = open && fleet.admits(admission.page, admission.documentSince)
+	admission.key = schemaAdmissionKey{room: room, token: r.URL.Query().Get("schema_version")}
+	admission.writable = admission.writable && open
 	s.schemaAdmissions.admit(admission)
 	// A reader joining a room already resident here asks the other processes for their readers'
 	// awareness, so their cursors reach it at once; a room this join has yet to load asks once its

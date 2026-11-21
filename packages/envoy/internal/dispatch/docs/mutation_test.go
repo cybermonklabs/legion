@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 	"testing"
@@ -1157,4 +1158,60 @@ func TestVersionWritersReportChangedReferenceTargets(t *testing.T) {
 	if !reflect.DeepEqual(named.Changes.Targets, want) {
 		t.Fatalf("named version changes = %#v, want %#v", named.Changes.Targets, want)
 	}
+}
+
+// A cold socket's admission reads and decodes a room's stored state before any room is made, and
+// the weight it reserves against the room budget is roomWeight of the bytes it read and the
+// structs that decode counted (ServeHTTP, loadTree, roomWeight). A crafted update can leave a
+// stored state parking structs behind a gap in its client's clocks, so a reading of the structs
+// in the store alone (crdt.Doc.StructCount) reserves less than the room the admission is about to
+// load, by everything in its pending queue: the class of review 5856254176's second High, the
+// third site of it (dispatch://INFRA-179). The structs loadTree answers are read as an apply
+// reports them (heldStructs), parked structs included, so the reservation holds the room the load
+// will hold.
+//
+// The stored state is a small document of prose and one browser's frame of 2,000 GC structs
+// parked behind a gap in its client's clocks (parkedGCFrame), whose structs outweigh their bytes
+// in the budget, so the two readings reserve weights apart. A guard fails the test when the two
+// are equal, so a fixture that stopped parking could not pass it unseen (copy_heap_test's own
+// test guards the same way).
+func TestAColdAdmissionReservesTheStructsTheRoomsStoredStateParks(t *testing.T) {
+	const parker, parkedStructs = 8_100_001, 2_000
+	service, artifactID := newTestService(t)
+	// The stored state as its persistence reads it: built with the pending cap lifted so the
+	// frame parks, then set to the server's cap, as a room's load decodes it (loadDecodedHistory,
+	// decodeStoredCopy).
+	doc := crdt.New(crdt.WithMaxPendingItems(math.MaxInt))
+	for _, update := range [][]byte{seededState(t), parkedGCFrame(parker, parkedStructs)} {
+		if err := crdt.ApplyUpdateV1(doc, update, nil); err != nil {
+			t.Fatalf("decode the room's state: %v", err)
+		}
+	}
+	doc.SetMaxPendingItems(service.srv.MaxPendingItems)
+	stored, parked := int64(doc.StructCount()), int64(doc.PendingStats().Items)
+	if parked != parkedStructs {
+		t.Fatalf("the stored state parks %d structs, want the frame's %d", parked, parkedStructs)
+	}
+	storeHistory(t, service, artifactID, crdt.EncodeStateAsUpdateV1(doc, nil))
+
+	tree, loaded, structs, err := service.loadTree(context.Background(), artifactID)
+	if err != nil || loaded == nil || tree == nil {
+		t.Fatalf("the admission answered %v with state %v and tree %v, want the cold history read and decoded", err, loaded, tree)
+	}
+	stateBytes := int64(len(loaded.Update))
+	want, short := roomWeight(stateBytes, stored+parked), roomWeight(stateBytes, stored)
+	if short >= want {
+		t.Fatalf("roomWeight of %d bytes reserves %d at the %d structs of the store and %d with the %d it parks, so the fixture does not tell the two readings apart",
+			stateBytes, short, stored, want, parked)
+	}
+	switch got := roomWeight(stateBytes, structs); {
+	case got == short:
+		t.Fatalf("the admission reserved %d bytes, what its %d bytes of state and the %d structs of the store alone come to, want the %d they come to with the %d structs the state parks: the admission decodes them too",
+			got, stateBytes, stored, want, parked)
+	case got != want:
+		t.Fatalf("the admission reserved %d bytes, want the %d its %d bytes of state and its %d structs with the %d it parks come to",
+			got, want, stateBytes, stored+parked, parked)
+	}
+	t.Logf("a cold admission of a room with %d structs in its store and %d parked, %d bytes of state, reserved %d bytes against the room budget, where its state and its store's structs alone come to %d",
+		stored, parked, stateBytes, want, short)
 }

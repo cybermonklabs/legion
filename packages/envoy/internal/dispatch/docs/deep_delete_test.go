@@ -16,12 +16,19 @@ import (
 	"github.com/sjawhar/envoy/internal/stacktest"
 )
 
-// An authenticated peer grows a nested element chain through the document websocket, in updates
-// small enough that none is remarkable on its own, and then sends one ordinary delete of the
-// chain's root. Deleting an element deletes everything inside it, and ygo walked those children
-// with one stack frame per level (crdt.(*Item).delete), so the stack that delete needed grew with
-// the nesting the peer chose; past the goroutine's stack limit that is a fatal error no recover
-// sees, in the process serving every other room. The pinned fork walks them iteratively.
+// A room holds a nested element chain far deeper than the schema allows, and a peer sends one
+// ordinary delete of the chain's root through the document websocket. Deleting an element deletes
+// everything inside it, and ygo walked those children with one stack frame per level
+// (crdt.(*Item).delete), so the stack that delete needed grew with the nesting; past the
+// goroutine's stack limit that is a fatal error no recover sees, in the process serving every
+// other room. The pinned fork walks them iteratively.
+//
+// The chain is written by the server's own writes, in transactions of the room itself: a browser
+// can no longer grow one, since the room's apply check refuses an update that leaves the document
+// rendering nothing where it rendered before (renderCheck), and the chain leaves the schema at its
+// first, empty blockquote. A document can still come to hold one - stored before the check, or
+// written by a server write the check does not judge - and the delete must not need a stack per
+// level there either.
 //
 // The cap below is far under Go's one-gigabyte default, so the chain stays cheap to build: a frame
 // of the recursive delete is 208 bytes, so at this depth it needs about 40 MiB, two and a half
@@ -34,50 +41,59 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 		)
 		service, artifactID := newTestService(t)
 		service.settle = time.Hour
+		// The chain leaves the Proof schema (a document nests at most 1,000 levels), so no count of
+		// its rendering ever lands, and the room budget charges every element the server's writes
+		// add at the densest price until one does (roomCharge): the budget would be past its limit
+		// long before the chain is deep enough to need a stack per level. What is under test is the
+		// delete, not the budget.
+		service.budget.setLimit(1 << 50)
 		seedServiceText(t, service, artifactID, "before")
 		httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 		t.Cleanup(httpServer.Close)
 
 		peer := connectPeer(t, httpServer.URL, artifactID, "alice")
-		// The peer writes on the room's document, as a browser does once the room has sent it, so
-		// the chain's root always lands beside the seeded paragraph.
+		// The peer is sent the room's document, as a browser is, before the server writes anything
+		// of the chain, so the chain's root lands beside the seeded paragraph and the peer is sent
+		// both.
 		if err := peer.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
 			t.Fatal(err)
 		}
 		fragment := peer.Doc.GetXmlFragment(fragmentName)
 		root := crdt.NewYXmlElement("blockquote")
-		if _, err := peer.Send(func(txn *crdt.Transaction) { fragment.InsertElement(txn, 0, root) }); err != nil {
-			t.Fatalf("send the chain's root: %v", err)
+		serverWrite := func(write func(txn *crdt.Transaction, live *crdt.YXmlFragment)) {
+			t.Helper()
+			if err := service.srv.Apply(context.Background(), artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
+				live := doc.GetXmlFragment(fragmentName)
+				transact(func(txn *crdt.Transaction) { write(txn, live) })
+			}); err != nil {
+				t.Fatalf("write the chain into the room: %v", err)
+			}
 		}
+		serverWrite(func(txn *crdt.Transaction, live *crdt.YXmlFragment) { live.InsertElement(txn, 0, root) })
+		// The peer's reader applies what the room sends to its document while this polls it, and
+		// ygo reads a type's children under no lock of its own, so the count is read inside a
+		// transaction of the peer's document, which holds that document's lock (peerMarkdown).
+		waitFor(t, 30*time.Second, "the peer to be sent the chain's root", func() bool {
+			var blocks int
+			peer.Doc.Transact(func(*crdt.Transaction) { blocks = fragment.Len() })
+			return blocks == 2
+		})
 		// The delete is written on the peer's document as it stands here, holding the chain's root
 		// and the paragraph beside it but none of the chain, so the peer sends the same delete an
-		// ordinary client would and this test process does not walk the chain itself. The root's
-		// own update is not enough: it names the paragraph as the root's right origin, so a
-		// document holding that update alone parks the root and its delete deletes nothing.
+		// ordinary client would and this test process does not walk the chain to write it.
 		opening := crdt.EncodeStateAsUpdateV1(peer.Doc, nil)
 		deepest := root
 		for grown := 1; grown < levels; {
 			batch := min(levelsPerUp, levels-grown)
-			if _, err := peer.Send(func(txn *crdt.Transaction) {
+			serverWrite(func(txn *crdt.Transaction, _ *crdt.YXmlFragment) {
 				for range batch {
 					child := crdt.NewYXmlElement("blockquote")
 					deepest.InsertElement(txn, 0, child)
 					deepest = child
 				}
-			}); err != nil {
-				t.Fatalf("grow the chain: %v", err)
-			}
+			})
 			grown += batch
 		}
-		// The room takes the peer's updates one at a time, in order, so it holds the whole chain
-		// once its clock for the peer's client reaches the peer's own. The delete's wait below
-		// then times the delete alone, not the batches still queued ahead of it.
-		client := peer.Doc.ClientID()
-		sent := peer.Doc.StateVector().Clock(client)
-		live := service.srv.GetDoc(artifactID)
-		waitFor(t, 30*time.Second, "the room to hold the nested chain", func() bool {
-			return live.StateVector().Clock(client) == sent
-		})
 		if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocSchema) {
 			t.Fatalf("the room holding the chain reads as %v, want %v", err, ErrDocSchema)
 		}

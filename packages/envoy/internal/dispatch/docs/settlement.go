@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -46,6 +47,10 @@ type settlement struct {
 	state      *roomState
 	doc        *crdt.Doc
 	generation uint64
+	// opened is whether take holds an opening of the room budget for the room it warmed, which
+	// settleRoomWithin gives back once the settlement's hold on the room is released
+	// (closeIfOpenedOverBudget).
+	opened bool
 	// stoppedShort is the outcome of a settlement that stopped short with err having written
 	// nothing into the room (settleRoomWithin).
 	stoppedShort func(error) settleOutcome
@@ -214,6 +219,15 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	}
 	state.settling++
 	s.unlockState(room, state)
+	// The room budget's opening, where this settlement's take warms a room of its own. Registered
+	// before the release of this settlement's hold on the room, so it runs after it: the opening
+	// is given back only once the room is closable and the close the budget owes it has begun
+	// (closeIfOpenedOverBudget), and so only one room the budget had not weighed ever stands.
+	defer func() {
+		if settle.opened {
+			s.budget.closeServerRoom()
+		}
+	}()
 	defer func() {
 		state.mu.Lock()
 		state.settling--
@@ -285,6 +299,25 @@ func (st *settlement) take(parent context.Context, mayLoad bool) (settleStep, se
 		return settleDone, settleOutcome{}
 	}
 	if s.srv.GetDoc(room) == nil {
+		// The warm-up loads the room, which the room budget must have an opening for: it charges
+		// every room whoever opened it and refuses the server's own work none, so a burst of
+		// settlements of documents no browser holds - the one each write to such a document
+		// leaves owed - would otherwise load a room for each of them at once and take the pod
+		// past its memory (roomBudget, awaitServerRoom). This one waits for its turn, since
+		// unlike a publish it cannot do without the room, and is armed again where no opening
+		// came free within the wait (settleNoRoom): the pending-settlement row stands until a
+		// settlement commits, so nothing is lost by waiting or by giving up.
+		//
+		// It waits as a browser's admission does (admissionWait, ServeHTTP), and holds no
+		// pooled connection while it waits: its transaction opens after this stage.
+		st.opened = s.budget.awaitServerRoom(parent, time.Now().Add(s.admissionWait), room)
+		if !st.opened {
+			return settleDone, settleOutcome{
+				next:       settleNoRoom,
+				err:        fmt.Errorf("%w: no opening for the room this settlement must warm", errRoomBudgetFull),
+				generation: st.generation,
+			}
+		}
 		state.mu.Lock()
 		state.settleWarming = true
 		s.unlockState(room, state)
@@ -409,7 +442,7 @@ func (st *settlement) endOnRefusedUpdate() settleOutcome {
 // first read to its commit, so no append of the room is refused between the two reads. A refusal
 // the worker made before the settlement took the lock is the one the first read can miss: the
 // worker takes the mark after its refused transaction has released the lock. But it takes the
-// mark before it drops the update from the room's queue (StoreUpdateContext, finishUpdateClass).
+// mark before it drops the update from the room's queue (StoreUpdateStored, finishUpdateClass).
 // So when the settlement stores the room's updates, either that update is still queued, and the
 // gate refuses the settlement's own write (the first order), or it has gone, and its mark was
 // taken before, which the second read finds.
@@ -438,14 +471,23 @@ func (st *settlement) commitFailed(advanced bool, err error) settleOutcome {
 func (st *settlement) applyStamp(ctx context.Context) (settleStep, settleOutcome) {
 	s, room, state := st.service, st.room, st.state
 	st.reconciled = st.read
-	if pmdoc.BlockIDRepairCount(st.read) > 0 {
+	if repairs := pmdoc.BlockIDRepairCount(st.read); repairs > 0 {
 		slot, update, err := s.applySuppressed(ctx, room, st.doc, func(doc *crdt.Doc, origin any) error {
 			var stampErr error
-			st.reconciled, _, st.renamed, stampErr = stampBlockIDs(doc, origin)
+			st.reconciled, _, st.renamed, stampErr = s.stampBlockIDs(doc, origin, repairs)
 			return stampErr
 		})
 		st.keep(slot, update)
-		if err != nil {
+		switch {
+		case errors.Is(err, errPastDecodeCap):
+			// The stamp wrote nothing (stampBlockIDs), so the settlement carries on with the tree it
+			// read, ids unrepaired, rather than ending: a document at the decode cap stays there
+			// short of a rebuild, so it would refuse every later stamp too, and a settlement that
+			// ended here would leave its browsers' edits unversioned until it was rebuilt. Nothing
+			// failed, so no settle failure is counted.
+			st.reconciled = st.read
+			s.logPastDecodeCap(room, "settlement's block-id stamp")
+		case err != nil:
 			if len(st.slots) == 0 && skipUnreadableSettlement(room, err) {
 				return settleDone, settleOutcome{}
 			}
@@ -540,7 +582,7 @@ func (st *settlement) commitStamp(ctx context.Context) (settleStep, settleOutcom
 // version's authors.
 func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcome) {
 	s := st.service
-	reconciliation, err := s.reconcileAskBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit, st.markdown, st.issueClosed)
+	reconciliation, err := s.reconcileAskBlocks(ctx, st.tx, st.room, st.owner, st.doc, st.reconciled, st.credit, st.markdown, st.issueClosed)
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}

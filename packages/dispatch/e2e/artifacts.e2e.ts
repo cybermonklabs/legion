@@ -785,7 +785,7 @@ test("an edit typed while the socket was down survives a text refetch the server
   await sleep(250);
   await expect(documentEditor(page)).toBeVisible();
   await expect(documentEditor(page)).toContainText("offline edit");
-  await expect(page.getByRole("button", { name: "Rebuild from the latest version" })).toHaveCount(
+  await expect(page.getByRole("button", { name: "Rebuild this document's history" })).toHaveCount(
     0
   );
   await expect(page.getByText("This document could not load")).toHaveCount(0);

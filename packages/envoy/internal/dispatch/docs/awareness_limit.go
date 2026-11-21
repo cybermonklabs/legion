@@ -41,6 +41,34 @@ import (
 // the other processes like any other removal, and the filter frees a client's place as the socket
 // takes that client away. So a room's awareness holds its sockets' clients at most, and the
 // sockets of a process are themselves bounded (Service.canAddConnection).
+//
+// Before the count, a socket carries awareness only under the client ids it may announce
+// (socketClients.announces, client_ids_admission.go): a page given its client id by the socket's
+// admission announces its presence under that id alone, so the filter drops every other entry -
+// another reader's cursor sent under that reader's id, as much as the echo of it an honest
+// provider sends back - and a page of an earlier build may name no id Dispatch gave anyone. A
+// cursor or a presence is the same act under a client id as an edit is, and the same rule
+// refuses it.
+//
+// A read-only socket's awareness is decoded by nothing at all. ygo answers a read-only peer's
+// awareness message with a reply of its own and applies and relays none of it
+// (provider/websocket/peer.go:113-125 in theorem-labs/ygo v1.55.1-theorem.9), so reading one here
+// would only be work the read path does for nothing, outside any load slot. The filter passes over
+// such a message's bytes as it passes a message too large to read (skip) and hands ygo an
+// awareness message naming no client in its place. It learns that a socket is read-only from the
+// socket's admission, which the admission decides before ygo's upgrade builds the filter and ygo's
+// Authorize can only narrow (decideWritable, authorize): a page that turns itself read-only later,
+// by the token it sends, has its awareness read as a writable page's is, and ygo still discards it.
+//
+// Every other message reaches ygo as it arrived, a sync step 2 among them: the filter reads no
+// more of one than its Hocuspocus header. ygo hands the peer update hook a step 2 and an
+// incremental update alike, and the hook judges both the same way (judgeClients), under the load
+// slot an update past unslottedApplyBytes or declaring more than unslottedApplyStructs structs
+// takes (weighPeerUpdate), so the filter decodes nothing of a document's content outside that
+// slot. A read-only socket's step 2 reaches no hook: ygo answers one past unslottedApplyBytes not
+// applied without decoding it, and decodes a shorter one to answer it, no further than
+// unslottedApplyStructs values (Server.ReadOnlySyncStep2MaxBytes and
+// Server.ReadOnlySyncStep2MaxValues, New).
 
 const (
 	// maxAwarenessClientsPerSocket is how many awareness clients one document socket may hold at
@@ -116,6 +144,12 @@ const (
 type awarenessLimitWriter struct {
 	http.ResponseWriter
 	room string
+	// clients is the ids the socket may announce under, nil for a socket no admission decided
+	// them for, whose entries only the count holds.
+	clients *socketClients
+	// connection is the socket's admission, which says once the upgrade is under way whether its
+	// page may write (connectionState.admission), nil for a socket no admission decided.
+	connection *connectionState
 }
 
 func (w *awarenessLimitWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
@@ -133,6 +167,9 @@ func (w *awarenessLimitWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		pending = bytes.Clone(head)
 	}
 	filtered := newAwarenessLimitConn(conn, w.room, pending)
+	filtered.clients = w.clients
+	// The admission is final by now: ygo's Authorize ran before the upgrade that hijacks.
+	filtered.readOnly = w.connection != nil && w.connection.admission != nil && !w.connection.admission.writable
 	buffers.Reader.Reset(filtered)
 	return filtered, buffers, nil
 }
@@ -146,12 +183,18 @@ func (w *awarenessLimitWriter) Unwrap() http.ResponseWriter { return w.ResponseW
 type awarenessLimitConn struct {
 	net.Conn
 	room string
+	// clients is the ids the socket may announce under (awarenessLimitWriter.clients).
+	clients *socketClients
+	// readOnly is whether the socket's page was admitted read-only, whose awareness ygo discards
+	// unread, so the filter reads none of it (awarenessLimitWriter.Hijack, decide).
+	readOnly bool
 	// live is the awareness clients this socket holds now: a client announced takes a place and a
 	// client taken away gives it back, so a socket that announces and removes one client at a
 	// time is never refused.
 	live map[uint64]struct{}
 	src  *bufio.Reader
-	// out is the rewritten bytes ygo's reader has yet to take.
+	// out is the rewritten bytes ygo's reader has yet to take. A buffer grown past the largest
+	// frame of an awareness message is let go once ygo has taken it all (Read).
 	out bytes.Buffer
 	// through is how much of the frame being read reaches ygo unread, straight from src.
 	through int64
@@ -185,7 +228,11 @@ func (c *awarenessLimitConn) Read(p []byte) (int, error) {
 		}
 	}
 	if c.out.Len() > 0 {
-		return c.out.Read(p)
+		read, err := c.out.Read(p)
+		if c.out.Len() == 0 && c.out.Cap() > maxAwarenessMessageBytes+maxFrameHeader {
+			c.out = bytes.Buffer{}
+		}
+		return read, err
 	}
 	if int64(len(p)) > c.through {
 		p = p[:c.through]
@@ -253,12 +300,9 @@ func (c *awarenessLimitConn) decide(payload int64, final bool) error {
 	if want <= 0 {
 		return fmt.Errorf("dispatch: a document socket's message does not name its document and type within %d bytes", maxDocumentMessageHeader)
 	}
-	start := len(c.message)
-	c.message = append(c.message, make([]byte, want)...)
-	if _, err := io.ReadFull(c.src, c.message[start:]); err != nil {
+	if err := c.readMessage(want); err != nil {
 		return err
 	}
-	c.unmask(start)
 	rest := payload - want
 	name, kind, read, named := documentMessageKind(c.message)
 	switch {
@@ -272,6 +316,12 @@ func (c *awarenessLimitConn) decide(payload int64, final bool) error {
 		// The header runs into the next frame of the message.
 		c.mode = limitDeciding
 		return nil
+	case kind == hocuspocusAwareness && c.readOnly:
+		// ygo discards a read-only socket's awareness, so nothing of it is read: its bytes are
+		// passed over and ygo is handed an awareness message naming no client.
+		c.name = name
+		c.message = c.message[:0]
+		return c.skip(rest, final)
 	case kind == hocuspocusAwareness:
 		c.name = name
 		c.message = append(c.message[:0], c.message[read:]...)
@@ -293,12 +343,9 @@ func (c *awarenessLimitConn) collect(n int64, final bool) error {
 		c.message = c.message[:0]
 		return c.skip(n, final)
 	}
-	start := len(c.message)
-	c.message = append(c.message, make([]byte, n)...)
-	if _, err := io.ReadFull(c.src, c.message[start:]); err != nil {
+	if err := c.readMessage(n); err != nil {
 		return err
 	}
-	c.unmask(start)
 	c.mode = limitAwareness
 	if !final {
 		return nil
@@ -340,18 +387,25 @@ func (c *awarenessLimitConn) pass(rest int64, final bool) {
 	}
 }
 
-// unmask takes the mask off the message's bytes from start, the first of the frame in hand: each
-// stands at its own offset within that frame, which the key repeats over every four bytes.
-func (c *awarenessLimitConn) unmask(start int) {
+// readMessage reads n more bytes of the frame in hand onto the message and takes the mask off
+// them: each stands at its own offset within that frame, which the key repeats over every four
+// bytes.
+func (c *awarenessLimitConn) readMessage(n int64) error {
+	start := len(c.message)
+	c.message = append(c.message, make([]byte, n)...)
+	if _, err := io.ReadFull(c.src, c.message[start:]); err != nil {
+		return err
+	}
 	for i := start; i < len(c.message); i++ {
 		c.message[i] ^= c.key[(i-start)%4]
 	}
+	return nil
 }
 
 // allowed is the awareness update a socket may send of the one it sent: the entries of the
-// clients it holds, and of the clients it may still take, in the order they arrived. A client it
-// takes away gives its place back, and the removal of a client it never held says nothing and is
-// dropped with the rest.
+// clients it holds, and of the clients it may still take, in the order they arrived, each under an
+// id the socket may announce under. A client it takes away gives its place back, and the removal
+// of a client it never held says nothing and is dropped with the rest.
 func (c *awarenessLimitConn) allowed(message []byte) []byte {
 	update, err := encoding.NewDecoder(message).ReadVarBytes()
 	if err != nil {
@@ -365,6 +419,9 @@ func (c *awarenessLimitConn) allowed(message []byte) []byte {
 	}
 	kept := make([][]byte, 0, len(entries))
 	for _, entry := range entries {
+		if c.clients != nil && !c.clients.announces(entry.client) {
+			continue
+		}
 		_, held := c.live[entry.client]
 		switch {
 		case entry.removed:
@@ -405,8 +462,10 @@ func (c *awarenessLimitConn) writeAwareness(update []byte) {
 // as every frame a client sends is.
 func (c *awarenessLimitConn) writeFrame(opcode byte, final bool, payload []byte) {
 	c.out.Write(frameHeader(opcode, final, int64(len(payload)), c.key[:]))
-	for i, b := range payload {
-		c.out.WriteByte(b ^ c.key[i%4])
+	c.out.Write(payload)
+	masked := c.out.Bytes()[c.out.Len()-len(payload):]
+	for i := range masked {
+		masked[i] ^= c.key[i%4]
 	}
 }
 

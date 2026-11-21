@@ -516,7 +516,7 @@ func readIssueAskStateWrites(
 	for _, block := range blocks {
 		if row, indexed := rows[block.id]; indexed {
 			if ask, write := wanted(row); write && ask.State != "answered" {
-				found.writes.repairs = append(found.writes.repairs, askRepair(block.id, askServerAttributes(ask, "", false)))
+				found.writes.repairs = append(found.writes.repairs, askRepair(block.id, askServerAttributes(ask, "", false), len(askServerAttributeNames)))
 			}
 			continue
 		}
@@ -526,7 +526,7 @@ func readIssueAskStateWrites(
 				if ask.State == "answered" {
 					set = answeredCopyAttributes(ask, source.document)
 				}
-				found.writes.repairs = append(found.writes.repairs, askRepair(block.id, set))
+				found.writes.repairs = append(found.writes.repairs, askRepair(block.id, set, len(askServerAttributeNames)))
 			}
 			continue
 		}
@@ -538,7 +538,7 @@ func readIssueAskStateWrites(
 				}
 				found.marked = append(found.marked, ref)
 				return true
-			}))
+			}, 1))
 		}
 	}
 	return found, nil

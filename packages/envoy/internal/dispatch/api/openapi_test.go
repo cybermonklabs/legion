@@ -165,9 +165,17 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 			}
 		}
 	}
-	hooks := openAPIHookRoutes()
-	if len(hooks) != 15 {
-		t.Fatalf("the table mounts %d test hooks with Deps.TestHooksEnabled, want 15", len(hooks))
+	// The hooks are read off the table, not pinned: a hook count is a number two branches that each
+	// add a hook cannot both be right about. They are the rows whose path holds a _test segment
+	// (testHookPattern), not openAPIHookRoutes, which the emitter marks from and would check itself.
+	hooks := map[string]bool{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		if testHookPattern(route.Pattern) {
+			hooks[route.Method+" "+route.Pattern] = true
+		}
+	}
+	if len(hooks) == 0 {
+		t.Fatal("the table mounts no test hook with Deps.TestHooksEnabled")
 	}
 	for name := range hooks {
 		if !marked[name] {

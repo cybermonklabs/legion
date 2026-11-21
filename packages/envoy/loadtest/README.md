@@ -1288,13 +1288,32 @@ document websocket, as the dashboard's editor does
 - Editor i edits spec i mod D of the first D seeded specs in key order (`--editor-docs`), as the
   person `person-<i>`: the request carries `X-Dispatch-User: person-<i>`, the stack's header
   identity, which the document websocket takes as a person (`docs.Service.requestActor`).
-- It connects to `/ws/doc/{artifact_id}?schema_version=<pmdoc.SchemaVersion()>`, on Hocuspocus
-  framing (each frame starts with the document's name). As `@hocuspocus/provider` does, it sends
-  the token frame (the dashboard's token is its schema version), then sync step 1. It answers the
-  room's sync step 1 and applies every update the room relays. It is synced once the room's sync
-  step 2 has arrived.
+- It connects to `/ws/doc/{artifact_id}?schema_version=<pmdoc.SchemaVersion()>&client_id=<id>`,
+  on Hocuspocus framing (each frame starts with the document's name), and writes under the client
+  id Dispatch gives it, as the dashboard's page does (`connection.ts` `takeClientId`). `client_id`
+  (`contracts.DocumentClientIdParameter`) is empty on an editor's first connection, and on every
+  later one the id its last connection wrote under. The socket's first frame is a Hocuspocus
+  stateless message, `dispatch.client_id:` and the id in decimal
+  (`contracts.DocumentClientIdMessagePrefix`), naming the id Dispatch gives it
+  (`docstest.ReadGivenClient`, the one reader of it that both load-test clients use).
+- A Dispatch build from before client ids gives no id: the socket's first frame is the room's
+  sync step 1. That is no failure. The editor writes under the id its own copy drew, and presents
+  that id on its next connection, as the dashboard does; a build that gives ids then claims it for
+  that person. The frame goes to the editor's reader like any other, whose answer carries what the
+  copy holds and the room lacks. `run.log` has one line for each such connection: `editors:
+  person-<i> on <key>: the room gave no client id; the editor writes under its copy's own <id>`.
+- Then, as `@hocuspocus/provider` does, it sends the token frame (the dashboard's token is its
+  schema version), then sync step 1. It answers the room's sync step 1 and applies every update
+  the room relays. It is synced once the room's sync step 2 has arrived.
 - The editors connect when the step starts, at the start of the warm-up. An editor whose
-  connection ends or fails connects again 1 s later, with a new copy of the document.
+  connection ends or fails connects again 1 s later, with the copy of the document it held and
+  the client id it wrote under, as a tab keeps its document across reconnects. An update its last
+  connection did not deliver is still in that copy, and the new connection's sync carries it to
+  the room, so a marker in it is found then. Where the room gives another id than the one the
+  editor presented, the editor goes on in a new copy under the id it is given, and `run.log` names
+  it. A new copy under the held id would not do: the room's state holds the editor's own edits
+  under that id, and applying it would move the copy's own clock, which makes ygo draw the copy a
+  fresh id that no admission gave out.
 - Each editor sends updates at `--editor-rate` per second, open-loop Poisson from the RNG seed
   (stream 3 + i, which also picks each update's word), from the step's start to the window's end.
   Where an update lands in the document comes from another stream, so a skipped update does not
@@ -2797,11 +2816,12 @@ Compare the right rows:
 
 `cluster/cluster.sh` runs this load on a full-size copy of Dispatch in a Kubernetes namespace
 ([INFRA-598](dispatch://INFRA-598)). It runs from a Legion worker pod. The copy is Postgres at the
-Cloud SQL tier's size, Dispatch at the size of production's pod, the Envoy listener, a three-pod
-NATS JetStream hub, and a runner pod in which `loadgen` runs. Every pod of the copy carries the
-label `dispatch-loadtest/run=<run id>`. The copy holds the harness's synthetic seed and, for the
-replay, INFRA-639's seed of LINUX (The replay on the copy, below). It takes no production
-credential: every token and password is random and made for the run.
+Cloud SQL tier's size, Dispatch at 16 CPU / 32Gi, production's size until 2026-11-05 (production
+has run 20Gi since: `theorem-labs/agent-infra` `dispatch/Pulumi.prod.yaml`), the Envoy listener,
+a three-pod NATS JetStream hub, and a runner pod in which `loadgen` runs. Every pod of the copy
+carries the label `dispatch-loadtest/run=<run id>`. The copy holds the harness's synthetic seed
+and, for the replay, INFRA-639's seed of LINUX (The replay on the copy, below). It takes no
+production credential: every token and password is random and made for the run.
 
 ### Prerequisites
 
@@ -3278,6 +3298,19 @@ run` starts, so the peers connect during its 30 s warm-up, the runner starts:
   -duration <s> -seed 1 -protect 'Revision token'
 ```
 
+Each peer writes under the client id Dispatch gives it, as the dashboard's page does: it connects
+to `/ws/doc/<id>?client_id=&schema_version=<n>`, with an empty `client_id`
+(`contracts.DocumentClientIdParameter`), takes the id the socket's first frame names, a
+Hocuspocus stateless message `dispatch.client_id:<id>` (`contracts.DocumentClientIdMessagePrefix`,
+read by `docstest.ReadGivenClient`), and makes its copy of the document under it before it sends
+anything. A copy whose Dispatch is from before client ids gives no id, and its first frame is the
+room's sync step 1. That is no failure: the peer hands that frame to its reader like any other,
+types under the id its own document drew, and writes one line on stderr for that connection,
+`browsertype: artifact=<id> peer=<i>: the room gave no client id; the peer writes under its
+document's own <id>`, which `browsertype.txt` holds beside the peer lines and the sums below
+leave out. A peer never reconnects (a connection that ends is its error, `the connection ended
+before the run did`), so it never presents an id back.
+
 `-duration` is `loadgen run`'s bound (its warm-up, window, grace and drain), the stored-order
 check's 7,200 s and 600 s more, so it outlasts the window and both of the check's calls.
 `cluster.sh` stops it with SIGTERM right after the last stored-order command ends, while the
@@ -3285,8 +3318,9 @@ peers still hold their rooms, before
 the evidence export (and at the latest when the step ends, also when the step dies on the way).
 The step then writes:
 
-- `browsertype.txt`: browsertype's output, one line per peer: `artifact=<id> peer=<i> sent=<n>
-  skipped=<n> errors=<0|1> error="<message>"`.
+- `browsertype.txt`: browsertype's standard output and standard error together: one line per
+  peer, `artifact=<id> peer=<i> sent=<n> skipped=<n> errors=<0|1> error="<message>"`, and on
+  stderr a line for each connection a room gave no client id (above), which the sums leave out.
 - `browsertype.json`: `commit`, `docs` (the copy ids), `planned_versions` (a load step's planned
   edits and uploads of each typed document, by artifact id; `null` for a replay), `peers`,
   `rate`, `exit` (0, or 1 when a
@@ -3351,7 +3385,7 @@ its cores and working set from `cgroup.json`. It also holds:
 | `loadgen.out` | The output of `loadgen run` in the runner. |
 | `stored-order.txt`, `stored-order.json`, `stored-order-evidence/` | The output of `envoy-dispatch stored-order --since <window_start>` over every document after the step, and the checker's fields (`dispatch_commit`, `built_from`, `overlay_source`, `overlay_files`, `registration`, `renderer_matches`, `sha256`), `exit`, `since` and the counts of its summary line (`null` without one, never 0) and `evidence`; and the rows of each mismatched or refused document, never uploaded (The stored-order check, above). A non-zero exit is a correctness finding, not a `step-failed.json` reason. |
 | `stored-order-typed.txt`, `stored-order-typed.json` | Only with `--typing`: the same two files of the call over the typed documents alone (one `--artifact <id>` each), which runs first (The stored-order check, above). |
-| `browsertype.txt`, `browsertype.json` | Only with `--typing`: browsertype's output, one line per peer, and `commit`, `docs`, `planned_versions` (a load step's planned edits and uploads of each typed document; `null` for a replay), `peers`, `rate`, `exit` and the sums `sent`, `skipped` and `errors` (Browser typing, above). A peer error is reported, not a `step-failed.json` reason. |
+| `browsertype.txt`, `browsertype.json` | Only with `--typing`: browsertype's output, one line per peer and, from stderr, one for each connection a room gave no client id, and `commit`, `docs`, `planned_versions` (a load step's planned edits and uploads of each typed document; `null` for a replay), `peers`, `rate`, `exit` and the sums `sent`, `skipped` and `errors` of the peer lines (Browser typing, above). A peer error is reported, not a `step-failed.json` reason. |
 | `dispatch.log`, `listener.log`, `postgres.log`, `nats-0.log`, `nats-1.log`, `nats-2.log` | Each container's log from the step's start. |
 | `CODEPATHS.md`, `codepaths.json` | `loadgen codepaths` (a replay step's from `replay` and again from `collect`, with the replay's flags; every other step's from `collect`): Dispatch's CPU by entry point and by subsystem (cores = the share × the Dispatch container's `cores_mean`), its working set at the window's end split into heap by code path, heap idle retained (HeapSys − HeapInuse − HeapReleased), stacks, other runtime memory and non-Go memory (working set − (Sys − HeapReleased)), with HeapReleased, the heap the runtime has returned to the OS and so outside the working set, on a line under the table and in no row (a `runtime.MemStats` block without HeapReleased keeps HeapSys − HeapInuse and working set − Sys, with a note saying so), and the outage's 10-minute buckets beside it. |
 

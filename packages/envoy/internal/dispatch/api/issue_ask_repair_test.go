@@ -620,8 +620,8 @@ func TestARepairThatChangesNothingAppendsNoUpdateAndMarksNoDocument(t *testing.T
 	peer.appendParagraph(t, `:::ask{#browser-decision urgency="low" multiple="false"}`+"\nWritten in a browser?\n:::\n")
 	peer.barrier(t)
 	awaitLiveText(t, f.handler, older.PrimaryArtifactID, "#browser-decision")
-	// The room holds the block, and its room stores it in a batch of its own that goes a linger
-	// after the room took it (docs.roomAppendLinger). The close below is backdated an hour, and
+	// The room holds the block, and its room stores it in a batch of its own once the room's
+	// persistence hands it over (group commit). The close below is backdated an hour, and
 	// the append gate refuses a browser update its room took that long after the issue closed,
 	// so a block still waiting to be stored then would be dropped rather than stored - and the
 	// repair, which reads the document the store holds once the room has closed, would have
@@ -911,7 +911,7 @@ func storedUpdateCount(t *testing.T, database *store.Store, document string) int
 
 // awaitStoredUpdates waits until document's stored history holds at least want updates, which is
 // how a test waits for a browser's update to be durable: its room stores it in a batch of its
-// own, after the linger that gathers the room's next keystrokes into the same one.
+// own once its persistence hands it over, after any append already in flight.
 func awaitStoredUpdates(t *testing.T, database *store.Store, document string, want int) {
 	t.Helper()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {

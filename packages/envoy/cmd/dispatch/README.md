@@ -72,8 +72,16 @@ Each item below names a variable, then its purpose.
   `POST /api/v1/artifacts/_test/quiesce` closes every live document and waits for settlements;
   `POST /api/v1/artifacts/{id}/_test/outside-schema` writes the crafted malformed document e2e uses;
   `POST /api/v1/artifacts/{id}/_test/newer-content` appends an element no build knows, so the document holds newer content;
+  `POST /api/v1/artifacts/_test/room-budget` sets the open documents' memory budget, so a browser test can fill it;
+  `GET /api/v1/artifacts/{id}/_test/live` answers whether the document's room is resident here;
+  `POST /api/v1/artifacts/{id}/_test/hold-admission` makes the document's next socket wait before its admission;
+  `POST /api/v1/artifacts/{id}/_test/refuse-next-update` makes the document's room refuse the next update a read-write browser sends it;
+  `POST /api/v1/artifacts/{id}/_test/used-up` leaves the document a history whose re-scan uses up a room's scan total;
+  `POST /api/v1/artifacts/{id}/_test/tangled` leaves it one ending in a tangle no one apply of a browser's may scan through;
+  `POST /api/v1/artifacts/{id}/_test/near-decode-cap` leaves it a history of deleted characters near the decode cap, which the rebuild takes and the dashboard's `/text` read reports (`near_decode_cap`);
   and `POST /api/v1/writes/_test/slow` `{method, path, delay_ms}` makes every keyed run of that method and exact path wait `delay_ms` once its key is claimed.
   The first four act on every process serving the database, whichever one the call reached (Running more than one process, below), and the flag costs each process one more Postgres connection outside the shared pool, the one those hooks listen on.
+  Each is a row of `routes()` in `internal/dispatch/api/routes_table.go`, mounted only under the flag (`TestHooksEnabled`), and its summary and handler there give its rules.
   Leave unset in every real deployment.
 
 - `DISPATCH_DEV_SIGNIN`
@@ -148,6 +156,21 @@ Each item below names a variable, then its purpose.
   `DISPATCH_AZURE_CHAT_SCOPE` is configuration because one Azure AI Foundry resource serves two inference families:
   the models inference endpoint (`/models`, an `api-version`, scope `https://cognitiveservices.azure.com/.default`) and the Azure OpenAI endpoint (`/openai/v1`, no `api-version`, scope `https://ai.azure.com/.default`), and which of the two a deployment serves is named by that deployment.
 
+- `DISPATCH_MEMORY_TRACE`
+
+  Path of a file the server writes one line of memory figures to every 50 ms, for telling a pod that is near its memory limit from one the Go runtime is holding comfortably inside it.
+  Each line is `key=value` pairs: the time it was taken;
+  every class `total` is the sum of (`heap_objects`, `heap_unused`, `heap_free`, `heap_released`, `heap_stacks`, `os_stacks`, the `metadata_*` classes, `profiling_buckets` and `other`);
+  `go_memory_limit` and `heap_goal`;
+  `gc_cycles` and `gc_limiter_last_enabled_cycle`, which names the cycle the collector last spent more than half the processor on;
+  `goroutines`;
+  the process's `vmrss`, `rssanon`, `rssfile` and `vmhwm` from `/proc/self/status`, each `-1` where the kernel keeps no such line;
+  and the container's `cgroup_memory_current`.
+  The limit the boot sets bounds `total - heap_released`, so that is the figure to compare with the container's:
+  a `vmrss` past the limit while `total - heap_released` is under it is memory the runtime has handed back that this kernel still counts (gVisor does: it drops a page only where the `madvise(MADV_DONTNEED)` that released it covered 2 MiB or more, and the scavenger releases in smaller pieces).
+  A sample costs two small file reads and one `runtime/metrics` read, and an hour of tracing is some 70,000 lines and 35 MB;
+  unset, nothing is sampled and no file is written.
+
 - `DISPATCH_MAX_LIVE_ROOMS`, `DISPATCH_MAX_DOC_CONNECTIONS`
 
   Each process's own caps on the document rooms it holds in memory and the browser connections to them, so two processes of one deployment hold up to twice each;
@@ -158,7 +181,6 @@ Each item below names a variable, then its purpose.
   Boot logs both with the cold reads' cache budget, `dispatch: document rooms' limits` with `max_live_rooms`, `max_doc_connections` and `read_budget_bytes`;
   that budget is no setting but one sixteenth of the Go memory limit, at least 64 MiB and at most 1 GiB, and 256 MiB when no limit is set.
   `/debug/vars` (Profiling, below) shows how near each cap a running process is.
-
 `DISPATCH_REPO_PROJECTS` optionally seeds repository-to-project settings at boot with comma-separated `owner/repo=KEY` entries.
 Each repository is read as a mapping's path is, lower-cased with one trailing `.git` trimmed, and held to the names GitHub allows as the settings route holds a mapping's path: an entry such as `acme/.git=KEY`, which reads as `acme/`, or `acme/..=KEY` is refused, naming the entry, and the boot with it.
 Existing dashboard mappings take precedence over this seed:
@@ -848,8 +870,10 @@ curl -s http://127.0.0.1:<port>/debug/vars | jq .dispatch_rooms
 - `resident_bytes`: the encoded bytes the resident rooms took, each load and every update since: loaded state only.
   It leaves out the updates a room parks after it loaded, while they wait for an edit it has not received;
   parked rows already stored are part of the history a load decodes, so they count.
-  ygo bounds those per room by `MaxPendingItems`, which Dispatch sets to `maxUpdateItems` (1<<20, `internal/dispatch/docs/service.go` `New`):
-  a count of parked items and, separately, of parked delete ranges, not bytes.
+  ygo bounds those per room by count, not bytes: parked items by `MaxPendingItems`, which Dispatch sets to `maxParkedStructs` (4,096, `internal/dispatch/docs/service.go` `New`), far below the 1,048,576-struct decode cap, since each parked struct counts twice against that cap and is charged in both of the room's copies,
+  and parked delete ranges, apart, by `MaxPendingDeleteRanges`, which it sets to `maxParkedDeleteRanges` (4,096).
+  A browser's update that would park past either is answered not applied, its socket left open, since the edits it waits on may still arrive and the browser sends it again.
+  A stored history whose decode would park past either, which only rows an earlier build stored can be, loads in no room: every read answers it `409 DOCUMENT_UNLOADABLE`, and a rebuild takes it from its own text (Document errors).
 
 - `settlement_wakeups`: the wakes of the waits for a room's appends.
 
@@ -3644,7 +3668,11 @@ Every other answer Dispatch gives before it has read a request's body - `KEY_INV
 A browser that sends a whole upload before it reads the answer (WebKit, Firefox) otherwise met the connection's close as a reset and never saw the answer.
 A body past the limit is answered `413 CAP_EXCEEDED` (the upload routes and the handoff write) or `413 REQUEST_TOO_LARGE` in that answer's place, and the connection closes;
 a `401` is the one early answer that stands, since a caller nobody resolves is refused before any limit is judged.
-Both reads wait at most a minute for a body: one that stops arriving is given its answer with `Connection: close`.
+An early answer's drain waits at most a minute for the rest of a body, counted from when the drain begins.
+The key layer's read of a repeat's body, its spool of a first request's body and a handler's read wait, for a caller Dispatch resolves, at most 20 seconds for the body's next bytes and at most a minute from their first read.
+A body that stops arriving, or is still arriving at the minute, is given its answer with `Connection: close`:
+a repeat's answer is `409 KEY_IN_FLIGHT`, what the key said;
+and where a spool or a handler's read was cut, the `400` answered for a body it never had whole becomes `503 BODY_STALLED` for a body that stopped arriving for 20 seconds and `503 BODY_TOO_SLOW` for one still arriving at the minute, which the caller retries.
 An `Expect: 100-continue` request answered early is never asked for its body: Dispatch sends no `100 Continue`, sends the answer and closes the connection.
 
 Each item below names a status and code, then its meaning.
@@ -4015,6 +4043,49 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/artifacts/{id}/_test/newer-content` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 
   Append an element no build knows, so the document holds newer content (the cross-build browser test); not mounted otherwise.
+
+- `/api/v1/artifacts/{id}/_test/live` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  Answer `{live}`, whether the document's room is resident in this server, loading and rebuilding nothing;
+  the real-process memory drives read it.
+  Not mounted otherwise.
+
+- `/api/v1/artifacts/{id}/_test/hold-admission` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  Make the document's next socket wait `ms` (0 to 120000; 0 takes the hold back) before its admission, as a browser in a burst waits for its room;
+  the browser test of the editor's first sync uses it.
+  Not mounted otherwise.
+
+- `/api/v1/artifacts/{id}/_test/refuse-next-update` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  Make the document's room refuse the next update a read-write browser sends it, as it refuses one holding content the editor never sends, so a browser test can drive `4413 DOC_UPDATE_REFUSED` from the editor, which sends no such content.
+  One update is armed, and the update that meets it takes the arming; arming another document forgets the first.
+  Not mounted otherwise.
+
+- `/api/v1/artifacts/_test/room-budget` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  Set the open documents' memory budget to `bytes`, or restore the real one with `0` - the share of this process's Go memory limit the budget takes, 2 GiB at the 4 GiB limit the figures are calibrated on and 10 GiB on the production pod's 20Gi - and answer the budget it set, so a browser test can fill the budget with a few small documents and drive the editor's handling of `4503 DOC_BUSY`;
+  the real-process drives use the real budget.
+  Not mounted otherwise.
+
+- `/api/v1/artifacts/{id}/_test/used-up` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  Close the document's room and append a stored history whose re-scan uses up a room's 1,000,000-item scan total, so the next room it loads is used up and a browser test can drive `4413 DOC_NEEDS_REBUILD` and the rebuild the dashboard offers without typing the scans a real room takes.
+  Not mounted otherwise.
+
+- `/api/v1/artifacts/{id}/_test/tangled` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  Close the document's room and append a stored history ending in a tangle - tens of thousands of items chained onto the end of its last text - that no one apply of a browser's may scan through, so an edit a browser made at that place before the tangle arrived is refused `4413 DOC_TOO_TANGLED` rather than `DOC_NEEDS_REBUILD`:
+  the tangle costs the room's load about one scan an item, which leaves far more of its 1,000,000-item scan total than one apply may scan.
+  The hook answers an error rather than leave a tangle an insert at its head scans within the items one unweighed apply may (`scanCeiling`), or one that leaves the room near its scan total.
+  Not mounted otherwise.
+
+- `/api/v1/artifacts/{id}/_test/near-decode-cap` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  Close the document's room and append deleted characters to its last written text - each its own item, none merging in the room or a decode - that carry its stored history to 1,048,577 structs less its top-level blocks, at most four, so a browser test can drive the page's offer of the rebuild to a person who met no refusal without the hundreds of whole-text uploads a real document takes.
+  A document of four top-level blocks or more is then near for a write of its whole text while a keystroke still fits; one of fewer is carried past a write's smallest replacement, which refuses its keystrokes too.
+  The document reads as it did; the hook answers an error unless the stored history then decodes to that total and the rebuild route's own check answers it near.
+  Not mounted otherwise.
 
 - `/api/v1/artifacts/{id}/_test/room-counters` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 
@@ -4973,24 +5044,43 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/artifacts/{id}/rebuild` (POST; cookie, trusted header, or bearer; needs the `person` scope)
 
-  Rebuild a document only when its durable history cannot load (`409 DOCUMENT_UNLOADABLE` on its reads):
-  deletes its document updates, checkpoints, and snapshots, then writes one fresh update from the latest saved version or optional `{markdown}`.
+  Rebuild a document whose durable history no write can change:
+  a history that does not decode (`409 DOCUMENT_UNLOADABLE` on its reads), rebuilt from the latest saved version or optional `{markdown}`;
+  a history that decodes but parks more than a room's document may, 4,096 structs or 4,096 delete ranges (`409 DOCUMENT_UNLOADABLE` on its reads too, since no room loads it), rebuilt from its own text, unsettled edits included, or optional `{markdown}`, the fresh update holding nothing the history parked;
+  and a history that loads but stands so near a cap that a write it must still take is refused (`docs.nearACap`), rebuilt from its own text, unsettled edits included, or optional `{markdown}`.
+
+  - Near the decode cap (1,048,576 structs) means that a write's smallest replacement, or a write of the document's whole text in its own shape, would carry its struct total past the cap;
+    the whole-text write counts what a fresh encode of the text holds, and two structs the write splits off for each text, each run and each mark a run carries (`docs.wholeTextWriteAdds`), so a document whose whole-text uploads carried it to within one upload of the cap is taken while a small write still lands on it.
+    Near the state cap means its encoded state stands within 64 KiB of the 16,777,216 bytes one room may hold, and near the edit-scan total that a re-scan of its state scans within 35,800 items of the room's 1,000,000.
+    A write the decode cap refuses on a document the rebuild takes is `413 CAP_EXCEEDED` naming this route (`a person can rebuild the document`), which the document's page offers;
+    every other write the decode cap refuses is told to shorten the change.
+
+  - The rebuilt document keeps its block ids, its open comments', suggestions' and asks' anchor marks, and its margin records:
+    from a history that decodes, those of its own tree and marks, or of supplied markdown taken as an upload over that tree (unchanged blocks keep their ids, and anchors are marked again where their quotes stand);
+    from a history that does not decode, what the rows record of it (the block index's ids for blocks of the same type and text, each open anchor marked again nearest the block its row names, and each marked comment's and suggestion's margin record rebuilt from its rows).
+
+  It deletes the document's updates, checkpoints, and snapshots, then writes one fresh update that lists the replaced history's clients as retired, so a browser still holding that history is closed `4413` with reason `DOC_REBUILT` rather than handing it back.
+  A document near a cap whose room this server holds is judged by that room alone, and the room is closed first, flushed into the stored history, so the document is rebuilt whatever a decode of that history would weigh;
+  the browsers connected to it reconnect to the rebuilt document and drop their unsent edits.
   A supplied markdown source that changes the document writes the next immutable version, emits `artifact.version`, and moves an open approval request to that version, where it waits on its agent, as every version does;
   an omitted source keeps the existing latest-version behavior.
   The rebuild, that version, its event and the move commit in one transaction, and every refusal comes before anything is written:
-  a live room is `409 DOCUMENT_LIVE`; a healthy, non-resident document is `409 DOCUMENT_LOADS`;
+  any other document live in this server is `409 DOCUMENT_LIVE`; any other history that loads is `409 DOCUMENT_LOADS`, with or without markdown;
   supplied markdown on a closed issue's document is `409 ISSUE_CLOSED`;
   supplied markdown held to a new document's limits - more than 65,536 elements, or stored as markdown longer than 1 MiB or making more than 65,536 elements - is `413 CAP_EXCEEDED`.
   Supplied markdown holding a check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   The latest saved version rebuilds whatever it weighs, except a document whose tree is more items than ygo decodes in one update (1,048,576), which no document can hold and which is `413 CAP_EXCEEDED` naming the count, from either source.
   A refused or failed rebuild leaves the document unchanged.
-  It answers the report, whose `source_version` is the version the rebuilt document holds: its latest saved version, or the version supplied markdown wrote.
+  It answers the report, whose `source_version` is the version the rebuilt document holds: its latest saved version, or the version supplied markdown wrote, and whose `validation_error` says why the history was rebuilt.
 
 - `/api/v1/artifacts/{id}/text` (GET; cookie, trusted header, or bearer)
 
   Read a live document's markdown.
   `{id}` must be a UUID.
   A stored tree outside the Proof schema is `409 DOC_SCHEMA`, a stored tree holding an element this build cannot read `409 DOC_NEWER_CONTENT`, and a stored history that cannot load `409 DOCUMENT_UNLOADABLE` (Document errors).
+  A read sending `Dispatch-Trees: 1`, as the dashboard does, also answers `near_decode_cap`, whether the rebuild route takes the document because it stands near the decode cap, and `near_decode_cap_reason`, why, where it does (`docs.Service.NearDecodeCap`).
+  The server answers it from what it holds, encoding and writing nothing: a resident room's struct total and one struct for each of its top-level blocks, or, for a document no room holds, the struct total of the stored state the cold read decoded and a walk of the tree it rendered;
+  either counts a floor under the route's whole-text count, so it answers true only where the route takes the document, and may answer false where the route would take it.
 
 - `/api/v1/artifacts/{id}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
@@ -5231,7 +5321,7 @@ A row holding text in a cell past the table's width is rejected as `TABLE_WIDTH`
 
 ## Element weights
 
-One write's markdown, and the markdown a document stores, make at most 65,536 elements (`pmdoc.MaxDocumentElements`), weighed node by node over the tree goldmark parses, front matter apart.
+One write's markdown, and the markdown a write leaves a document storing, make at most 65,536 elements (`pmdoc.MaxDocumentElements`), weighed node by node over the tree goldmark parses, front matter apart.
 Every route that takes caller markdown refuses past that with `413 CAP_EXCEEDED`, and its message lists these weights, written once in `pmdoc/elements.go` (`weighed`):
 
 | Node | Weight |
@@ -5273,6 +5363,13 @@ What each node type weighs:
 | `image` | an image; its alt text's nodes weigh 1 each | 3 | source, alt, title |
 | `html` | a piece of inline HTML | 2 | the HTML |
 | `footnote_reference` | a footnote reference | 2 | label |
+
+A browser's edits over the document websocket are weighed by the bounds that socket holds, not by this count.
+No element count stands between a keystroke and the room, so a live document can hold more than 65,536 elements.
+A server write to such a document is refused `413 CAP_EXCEEDED` for as long as it would leave it heavier still, until someone shortens it, while a write that leaves it no heavier passes and a rebuild from its latest stored version restores it whatever it weighs.
+What a browser is refused instead is `4413 DOC_TOO_LARGE`: at the byte bound (1 MiB, with 64 KiB of creep past it and 8 KiB of new content in one update at the bound), for an update whose rendering would end past that bound and its creep and larger than it was, at the 1,200,000 values one apply may decode, at the decode cap (1,048,576 structs) and at the 16,777,216 bytes of encoded state one room may hold.
+At those last two the close is `4413 DOC_NEEDS_REBUILD` where the rebuild route would take the room as it stands, since only there is a rebuild the remedy; Document errors below has the rest.
+
 ## Input errors
 
 Each item below names a status and code, then its meaning.
@@ -5394,19 +5491,24 @@ Each item below names a status and code, then its meaning.
   No route repairs it: an upload or replacement over it is refused with this code and leaves the document unchanged, and settlement writes no version of it.
   The document websocket admits no connection to such a room:
   it completes the upgrade and closes with code `4425` (reason `DOC_NEWER_CONTENT`, `DOCUMENT_NEWER_CONTENT_CLOSE_CODE` and `DOCUMENT_NEWER_CONTENT_CLOSE_REASON` in `packages/contracts`, generated into Go) before any sync.
-  The Hocuspocus provider reconnects on that code with its backoff, so a later connection can reach a build that reads the document.
+  The dashboard reconnects on that code, on its own backoff (`reconnectDelayMs`), so a later connection can reach a build that reads the document.
 
 - `409 DOCUMENT_UNLOADABLE`
 
-  A document's stored history does not decode, so nothing can read or open it.
-  A rebuild from its latest saved version (`POST /api/v1/artifacts/{id}/rebuild`) discards every edit made after that version, and a person decides whether to do it;
-  the dashboard offers that rebuild for this code alone.
+  A document's stored history cannot load, so nothing can read or open it:
+  it does not decode, or its decode parks more than a room's document may, 4,096 structs or 4,096 delete ranges, which only rows an earlier build stored can do.
+  Where Dispatch can still read the history, a rebuild (`POST /api/v1/artifacts/{id}/rebuild`) keeps its text and drops only what it parked;
+  otherwise a rebuild from its latest saved version discards every edit made after that version.
+  A person decides whether to rebuild;
+  the dashboard offers the rebuild for this code, and for the `4413 DOC_NEEDS_REBUILD` close below.
+  The document socket refuses such a document `503` at its admission, before any room loads.
+  For a history past a room's cap, the server logs each load of the history from which a read answers this code (`dispatch: a read answered a document unloadable: its stored history parks past a room's cap`; reads made at the same moment share one load, and so one line) and each room load the history fails (`dispatch: a document's room did not load: its stored history parks past the room's cap`), each with the document (`room`), the cap (`cap`), its figure (`most`) and what the history parks (`parks`).
   A room or store that could not serve the document stays `503 DOC_SERVICE_UNAVAILABLE`, which is retried, not rebuilt.
 
 - `409 DOCUMENT_LIVE`
 
-  A rebuild found the document resident in this server or in another Dispatch process on the database (it asks every member, and waits 500 ms at most for the answers):
-  open in an editor, or left by its last editor less than 90 seconds ago (a room stays resident a minute after its last peer leaves, and the sweep that evicts it runs every 30 seconds).
+  A rebuild found the document resident in this server or in another Dispatch process on the database (it asks every member, and waits 500 ms at most for the answers) - open in an editor, or left by its last editor less than 90 seconds ago (a room stays resident a minute after its last peer leaves, and the sweep that evicts it runs every 30 seconds) - and its history far from both caps a rebuild recovers.
+  A document near the decode cap or the edit-scan total whose room this server holds is not refused for that room: the rebuild closes the room first.
   Nothing was deleted.
   The message says whether this process or another one holds the document, names the latest saved version N a rebuild from it would discard every later edit back to, and tells the caller to stop and ask a person whether to rebuild the document after two minutes;
   it offers no other repair.
@@ -5417,10 +5519,104 @@ Each item below names a status and code, then its meaning.
 
 - `409 DOCUMENT_LOADS`
 
-  A rebuild found that the document's durable history loads.
+  A rebuild found that the document's durable history loads and stands far from both the decode cap and the edit-scan total, so a write can still change it.
   Nothing was deleted.
-  The message names the latest saved version, says that Dispatch rebuilds only a document whose stored history cannot load, and tells the caller to stop and ask a person what to do with the document;
+  The message names the latest saved version, says that Dispatch rebuilds only a document whose stored history cannot load, because it does not decode or parks more than a room may, or stands so near a cap that a write it must take is refused, and tells the caller to stop and ask a person what to do with the document;
   it offers no repair.
+
+- `4413 DOC_TOO_LARGE`
+
+  The document websocket (`/ws/doc/{room}`) refuses one browser's update that would take the document past a bound of its own:
+  it stores and relays nothing of the update and closes that one browser with code `4413` (`DOCUMENT_TOO_LARGE_CLOSE_CODE` and `DOCUMENT_TOO_LARGE_CLOSE_REASON` in `packages/contracts`, generated into Go), leaving every other browser of the room editing.
+  The bounds are the byte bound every server write obeys (1 MiB of rendering; past it an update may still carry 8 KiB of new content, for the editor's own derived writes and for typing, until the rendering has crept 64 KiB past the bound, after which only an update carrying nothing new at all is taken), the rendering the update leaves, and the 1,200,000 values one apply of a browser's update may decode (each struct, each lib0 Any value at any depth, each Any map entry and each JSON member), which is past the decode cap itself, so an honest whole-state handoff decodes within it.
+  An update's bytes do not show what it does to the rendering - a few bytes setting a list's start number or deleting a code mark's format items can grow it by hundreds of kilobytes - so the room renders what each browser's update leaves before it commits, and refuses one whose rendering would end past 1 MiB and its 64 KiB of creep and larger than the rendering it found;
+  an update that leaves the rendering no larger is taken, so a document already past the bound can be shortened.
+  An edit that waits in the room for an earlier edit it builds on is weighed when that earlier edit lands it: where the room refuses what the landing adds, the update that filled the gap stands, and each browser whose waiting edit the landing held is closed with the refusal's own reason - `DOC_TOO_LARGE` for a rendering past the bound, `DOC_UPDATE_REFUSED` for one this build cannot render, and `DOC_TOO_TANGLED` where the landing's scans or splits pass the apply's allowance - except where the rendering the landing starts from is not known, a landing in a write of the server's own included, which past the bound is refused for now and closes those browsers `4503 DOC_BUSY` (below).
+  The 4400-4499 band is permanent, so the dashboard drops the refused edit, re-reads the document and says so in one sentence, rather than reconnecting into the same refusal.
+
+- `4413 DOC_TOO_TANGLED`
+
+  The same close for an update the server could not merge quickly enough:
+  its apply's conflict scans would pass the scans the room allows that apply - a per-apply ceiling of 400,000 items, or what is left of the room's 1,000,000-item scan total, whichever is less - so it is refused whole and taken back out of the document.
+  Permanent like `DOC_TOO_LARGE`.
+
+- `4413 DOC_NEEDS_REBUILD`
+
+  The same close for an update the document cannot take until it is rebuilt:
+  its apply would carry the room's encoded state past the 16,777,216 bytes one room may hold, a quarter of the 64 MiB message floor so that four such handoffs fit the floor; or it would carry the document past the decode cap, the 1,048,576 structs ygo decodes in one update, counting both the structs the update carries and the items a delete inside a run splits, since a room holding more could never be loaded again; or the room's scan total is used up, where it still takes an update whose scans pass 64 items or fewer so that typing in place goes on.
+  The close is given only in a room the rebuild route takes as it stands, since only there is a rebuild the remedy:
+  elsewhere the same update is closed `DOC_TOO_LARGE` at the two caps and `DOC_TOO_TANGLED` for the used-up scan total, since there a smaller edit lands.
+  The dashboard drops the refused edit and offers the rebuild (`POST /api/v1/artifacts/{id}/rebuild`), as it does for `409 DOCUMENT_UNLOADABLE`.
+
+- `4413 DOC_REBUILT`
+
+  The same close for an update carrying the edit history a rebuild of the document replaced, which applied would put the old document beside the rebuilt one.
+  The dashboard drops the refused edit, says the document was rebuilt by someone else and that the edits typed against the replaced history could not be kept, reads the rebuilt document and offers no rebuild: a rebuild of a document just rebuilt is answered `409 DOCUMENT_LOADS`.
+
+- `4413 DOC_UPDATE_REFUSED`
+
+  The same close for an update holding content the document does not take:
+  bytes the server's own decoder refuses, or content the Proof editor never sends - an embed, raw binary content, a subdocument, a root outside the document's tree and its margin, or a write of the list of clients a rebuild retired - which ygo refuses as it decodes the update, rolling the whole apply back, storing and relaying nothing of it;
+  or an update that leaves a document this build cannot render where it rendered before, which the room's render of what the update leaves refuses before it commits.
+  Permanent like `DOC_TOO_LARGE`: the client that sent it would send it again on every reconnect, so the dashboard drops the refused edit and re-reads the document.
+
+- `4413 DOC_CLIENT_ID_REFUSED`
+
+  The same close for an update carrying an edit under a Yjs client id that is not its sender's:
+  one the document's admissions gave another person or another person's edit was given first, one another person's edit claimed first, one at 2^35 or above, which no admission gives out, or one from 2^32 up that no row names where the document holds an edit under it or the client presents no `client_id`;
+  for an edit under an id below 2^32 that another person claimed, at clocks the room already holds from the claim on, whose content differs from what the room holds there;
+  and for a claim past the bounds below, or an edit under more ids than one socket may hold.
+
+  - Each document socket's admission gives its page a client id of its own, stored with the person the socket is signed in as (`document_client_ids`) where the page may write, and names it in the socket's first frame, a stateless message starting `dispatch.client_id:` (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`);
+    the page presents that id again on every reconnect (`client_id`, `DOCUMENT_CLIENT_ID_PARAMETER`) and is given it back, so a tab keeps one id across reconnects and offline edits.
+    A page admitted read-only writes under no id, and its admission stores nothing: it is given back an id its person's row names, or sent one drawn as a fresh one is that no row names, which it presents again at each read-only reconnect and is given back while no row names it, since its editor writes under it as it reads even though nothing it writes there lands.
+    A writable admission presented an id from 2^32 up and below 2^35 that no row names stores that id as the page's, counted against the 64 below as a fresh one is: the one a read-only admission sent, so a page admitted read-only and then writable keeps its id and what its editor wrote under it lands, or the page's own whose row was given back or swept (below).
+    Where another person's row names the id, the page is given a fresh one.
+    No id is given out for a request the server refuses before its admission gives one: the sign-in, a document it cannot find, its caps and waits, a schema or newer-content close, the room budget, a read or a decision that failed, and every request the websocket upgrade would refuse, which is answered as that upgrade answers it before any id is given: `400` for one with no `Connection: upgrade`, a websocket version other than 13 or no valid `Sec-WebSocket-Key`, `403` for one from another origin, `405` for a method other than `GET`, and, for one with no `Upgrade: websocket`, `400` in gorilla/websocket v1.5.3 and `426` in later commits, whichever the build takes.
+    Four refusals come after the id is given, inside the websocket server, which the admission cannot ask first: the `401` for a room whose load failed, the `500` where the room's load fails or the request ends waiting for it, the drop with no answer of a client that sent bytes before its `101`, and the close of a socket upgraded into a room the server dropped before it joined.
+    The id each of those four gives a page that may write is stored, and no socket presents it, so it lapses after 15 minutes as an id a page has left does, and is given back or swept as below.
+
+  - An id below 2^32 that no row names - one a page of a build from before client ids, or a client that presents no `client_id` at all, drew for itself - may be claimed by the first person whose browser lands an edit under it, so such a tab, the rows it saved, and the clients deployed without an id still land, and by a page of this build that presents it, at its writable admission:
+    every claim, on every kind of socket, counts against 64 claims a person makes in one document in one UTC day, counted from `document_client_ids`, and the claims one socket's updates make against 64 a socket besides, past either of which the update is refused and nothing in it is claimed, and an update's claim is given back where its update does not stand and kept where it stands, its edit parked or not, so the id stays its claimant's;
+    a socket that presents no `client_id` may claim an id the stored history does not name at any time;
+    an id the stored history names may be claimed for 30 days from the first boot of a build that gives client ids out (`document_client_ids_since`, set once and never moved), and only by a person a version or a pending author row lists as having edited the document since the history first named it;
+    and a page that presents a `client_id` claims an id only within those 30 days, its admission's claim stored as landed and counted in those 64 a day, and a fresh id given where it is refused.
+
+  - A sync step 2 is judged as an incremental update is: one carrying another person's structs past what the room holds - a browser handing back on its reconnect an edit the room relayed to it and then lost before its store - is refused whole and nothing of it lands, so no answer tells the browser that edit is saved.
+    The person whose edit it was resends it from their own browser, which kept it unsaved.
+    A delete of what the room holds is not judged: a person deletes other people's text.
+    Nor are structs the room already holds, which land nothing whoever sends them, so a browser may hand back the whole history it holds,
+    with one exception that keeps a lost edit from passing in silence: structs under an id below 2^32 that another person claimed are compared, from the clock the claim started at (`claimed_from`), with what the room holds at the same clocks, and refused where they differ.
+    Only an update carrying such structs under at most 4 claimed ids is compared, as a keystroke in flight, a resend or a replayed saved row is;
+    a whole-state handoff carrying them under more is neither compared nor refused for it from a page that presents a `client_id`, and is refused whole from one that presents none, since an honest tab of that kind writes under one id.
+    A co-author who claims an earlier build's tab's id first, or a reader who reads an id no history names off the tab's presence and claims it first, at the clock the tab writes next, otherwise left the tab's own edit at that clock a duplicate the room dropped while the tab believed it saved; an equal resend passes.
+
+  - A delete past the clocks the room holds of a client id waits in the room for that client's next edits and would delete each as it landed, while its writer was answered saved, so it is taken only under an id the socket holds, judged where it would wait (`parkJudge`), and refused the same way otherwise, with the id in the refusal's log line;
+    the close is this permanent one even where the room is behind another process's rows that carry those clocks, since the room cannot tell that exactly, and the page that sent it rebuilds from the room and loses only that delete.
+    A socket holds the id its page was given and each id its edits showed is its person's, claimed or named theirs in `document_client_ids`, and keeps every one while it is open, up to 128 besides its own, its claims among them: so a delete waits under any id the socket has written under, and an edit that would make the socket hold more is refused the same way.
+
+  - A person holds at most 64 client ids in a document that no edit landed under - integrated, not only parked behind a clock the room lacks - and an admission past them gives back, in the statement that stores its own, the one presented least recently, never one an open socket holds: an open socket presents its id again every 5 minutes until its row records an edit landed under it, and only an id no admission or socket presented for 15 minutes is given back; where every one of them is that fresh, the admission is closed `4503 DOC_BUSY` for the editor to retry.
+    A row records an edit landed under its id once an update of a socket of its person's that holds the id leaves the room holding an edit under it, a page replaying a closed tab's saved edits under it included, or once the room has stored a later commit that landed such a socket's waiting edit while the socket was still open, and is then neither given back nor swept.
+    A page whose id was given back is given that id again at its next admission where no other row names it by then, and keeps what it typed offline under it.
+    So does another page of the same browser that replays what a closed tab saved under its given-back id: an edit under an id from 2^32 up and below 2^35 that no row names and the document holds nothing under stores that id as its sender's, counted against these 64 as an admission's is, and lands, and of two people whose edits reach such an id together, the first is given it and the second is refused.
+    Where another person's row names the id by then, the page is given a fresh one, or its replay is refused, and it loses only what it typed offline under the old one that never landed.
+    A client id no edit landed under and nothing presented for 30 days is deleted by the hourly compaction sweep, and a page that presents it after that is given it again the same way.
+    The socket's awareness carries presence only under the id its page was given, so a cursor cannot be announced under another person's id either.
+
+  Permanent like `DOC_TOO_LARGE`: the dashboard drops the refused edit and every edit it saved under the same id, which would each meet the same refusal, says how many it dropped, re-reads the document and takes a fresh client id with it.
+  A refused sync step 2 drops no saved edit, since it names none: the re-read document replays each edit the browser saved as an update of its own, one that waits on the lost edit included, which the room holds back and answers not applied until that edit lands, and an edit there under an id the browser's person does not hold is refused and dropped as above.
+
+- `4503 DOC_BUSY`
+
+  The memory budget over the documents this server holds open is full and no room can be closed:
+  a browser asking for one more document is closed with code `4503` (`DOCUMENT_BUSY_CLOSE_CODE` and `DOCUMENT_BUSY_CLOSE_REASON` in `packages/contracts`) before any room is made for it, once its admission has waited for the sweep it started, and an update into a document already open is closed with it too unless it integrates no struct, adds no byte of content and cuts at most 8 of the items the room holds, since an insert of fewer bytes than it deletes can still multiply what the room holds.
+  The budget is the share of the server's Go memory limit the open rooms are charged together (2 GiB at the 4 GiB limit the figures are calibrated on, 10 GiB on the production pod's 20Gi; the boot line `dispatch: the document service's memory bounds` names it), and what is admitted while it is full integrates no struct and adds no content - a delete of whole items, a delete inside a word that cuts the items it lands in, or a frame of structs the room already holds - and its cuts grow a room's structs by at most 256 over the whole of the pressure, past which an update that cuts an item is refused too, so a full document can still be cut.
+  The 4500-4599 band is transient, so the dashboard keeps the edit it could not send and reconnects on its own backoff, the live socket's (`reconnectDelayMs`), which spreads a crowd of tabs and caps at 30 s, to retry it.
+  The same close refuses for now an update whose rendering would end past the 1 MiB bound and its creep where the rendering of the commit it starts from is not known yet, since a commit no browser's apply made - a write of the server's own, a catch-up or ygo's format cleanup - has landed since and the room's rendered copy has not taken it;
+  the edit is sent again on the backoff and weighed once the room's rendering is known, an edit that shortens the document taken and one that grows it past the bound refused `DOC_TOO_LARGE`.
+  A waiting edit that a write of the server's own lands - a catch-up of another process's rows, or a live write's publish - is refused for now the same way where the landing would leave the rendering past the bound, since the room does not render what that write itself left; and so is one that lands behind an update that changed nothing itself where such a write has landed since the room's last rendering.
+  Each browser whose waiting edit it held is closed with this code and sends the edit again, which the room then weighs as that browser's own update, its gap filled.
+  It also closes, for a retry, a socket whose update's client ids the server could not read or write `document_client_ids` for, one whose first sync the pod's copy heap had no room to answer within the server's wait bound, and one whose person holds the 64 client ids no edit landed under that a document allows them, each held by an open socket: at its upgrade, or at an update under an id from 2^32 up that the server would store for them.
 
 ## Comment errors
 
@@ -5454,7 +5650,7 @@ A claim about two processes, or two builds, on one database needs evidence from 
 Each needs `DISPATCH_TEST_DATABASE_URL`.
 
 ```sh
-go test -tags memory -count=1 -timeout 60m ./cmd/dispatch        # resident memory of real servers
+go test -tags memory -count=1 -timeout 3h ./cmd/dispatch         # resident memory of real servers
 go test -tags multiprocess -count=1 -timeout 30m ./cmd/dispatch  # two servers, one database
 bash scripts/build-dispatch-build.sh --previous-release --out "$TMPDIR/dispatch-previous"
 bash scripts/build-dispatch-build.sh --commit edb69e0d7588ec037847182e74a04a343a0664c9 --out "$TMPDIR/dispatch-first-rollout"
@@ -5463,3 +5659,8 @@ DISPATCH_PREVIOUS_BUILD="$TMPDIR/dispatch-previous" DISPATCH_FIRST_ROLLOUT_BUILD
 ```
 
 "Two builds at once", above, says what the two-build test runs and why it needs the first-rollout build.
+
+The real-process memory tests (`memory_test.go` and every other file built under the `memory` tag) start real Dispatch servers and read their resident memory from `/proc`.
+CI's `dispatch-memory` job runs only the tests the tag adds, by the `-run` list `.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch` reads off the source, so a test added under the tag needs no edit there;
+its step runs them under `-timeout 90m` and records the time they took (`.github/workflows/ci-job-dispatch-memory.yaml`).
+Those tests alone take about an hour, so a local run of the whole package under the tag, which runs its untagged tests beside them, takes the 3-hour deadline above.

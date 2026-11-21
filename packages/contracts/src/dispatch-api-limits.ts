@@ -448,6 +448,132 @@ export const DOCUMENT_SCHEMA_CLOSE_CODE = 4409;
 export const DOCUMENT_SCHEMA_CLOSE_REASON = "DOC_SCHEMA";
 
 /**
+ * The close code the document websocket (`/ws/doc/{room}`) refuses one browser's update with when
+ * applying it would take the document past a bound of its own: the size bound every server write
+ * obeys (`pmdoc.MaxDocumentBytes`, with a small allowance past it for the editor's own derived
+ * writes and for typing, and nothing at all once the document has crept past that allowance), or
+ * the values one apply may decode. The update is neither stored nor relayed, and that one browser
+ * is closed with this code and `DOCUMENT_TOO_LARGE_CLOSE_REASON`. It is in the 4400-4499 band
+ * collaborative servers publish as permanent, so the dashboard acts on the close — it drops the
+ * refused edit and re-reads the document — instead of reconnecting into the same refusal. The two
+ * bounds only a rebuild clears close with `DOCUMENT_NEEDS_REBUILD_CLOSE_REASON` under this same
+ * code. Generated into Go as `contracts.DocumentTooLargeCloseCode`.
+ */
+export const DOCUMENT_TOO_LARGE_CLOSE_CODE = 4413;
+
+/** The reason the document websocket closes with `DOCUMENT_TOO_LARGE_CLOSE_CODE` when the update
+ *  would grow the document past a bound. Generated into Go as
+ *  `contracts.DocumentTooLargeCloseReason`. */
+export const DOCUMENT_TOO_LARGE_CLOSE_REASON = "DOC_TOO_LARGE";
+
+/** The reason the document websocket closes with `DOCUMENT_TOO_LARGE_CLOSE_CODE` when the server
+ *  could not merge the update into the document quickly enough: its merge would scan more of the
+ *  document's items than the room allows one apply to scan, so it is
+ *  refused whole, with nothing of it stored or relayed. A browser whose parked edit lands in a
+ *  drain of the pending queue that would scan more, or split more of the document's items, than
+ *  the apply that released it may is closed with it too, and the drain is discarded. Permanent
+ *  like the size refusal: the dashboard drops the refused edit and re-reads the document, and
+ *  tells the person in words of its own. Generated into Go as
+ *  `contracts.DocumentTooTangledCloseReason`. */
+export const DOCUMENT_TOO_TANGLED_CLOSE_REASON = "DOC_TOO_TANGLED";
+
+/** The reason the document websocket closes with `DOCUMENT_TOO_LARGE_CLOSE_CODE` when the document
+ *  must be rebuilt before it can take the update: the update would carry the room's encoded state
+ *  past the most one room may hold, or carry the document past the structs ygo decodes in one
+ *  update (counting the items a delete inside a run splits as well as the items the update
+ *  carries), or its edit history has used up what the room lets its applies scan. The update is
+ *  refused whole, with nothing of it stored or relayed.
+ *  Permanent like the size refusal: the dashboard drops the refused edit, re-reads the document
+ *  and offers the rebuild. Generated into Go as `contracts.DocumentNeedsRebuildCloseReason`. */
+export const DOCUMENT_NEEDS_REBUILD_CLOSE_REASON = "DOC_NEEDS_REBUILD";
+
+/** The reason the document websocket closes with `DOCUMENT_TOO_LARGE_CLOSE_CODE` when the browser
+ *  still holds the edit history a rebuild of the document replaced: its update carries that
+ *  history back, so it is refused whole, with nothing of it stored or relayed, and the rows it
+ *  typed against that history are dropped when the browser reads the rebuilt document. Permanent
+ *  like the size refusal, and no document to rebuild: the document was just rebuilt, so the
+ *  dashboard says so, drops those edits and re-reads the document, and offers no rebuild of its
+ *  own. Generated into Go as `contracts.DocumentRebuiltCloseReason`. */
+export const DOCUMENT_REBUILT_CLOSE_REASON = "DOC_REBUILT";
+
+/** The reason the document websocket closes with `DOCUMENT_TOO_LARGE_CLOSE_CODE` when the update
+ *  holds content the document does not take: bytes the server's decoder refuses, or content the
+ *  Proof editor never sends (a subdocument, a root the schema has no place for, an entry of the
+ *  list a rebuild writes), or when it would leave a document this build cannot render where the
+ *  document rendered before. Nothing of it is stored or relayed. A browser whose parked edit lands
+ *  in a drain of the pending queue that would leave such a document is closed with it too, and
+ *  the drain is discarded. Permanent like the size refusal, and for the same reason: the one
+ *  browser that sent it would send it again on every reconnect, so the dashboard drops the refused
+ *  edit and re-reads the document. Generated into Go as
+ *  `contracts.DocumentUpdateRefusedCloseReason`. */
+export const DOCUMENT_UPDATE_REFUSED_CLOSE_REASON = "DOC_UPDATE_REFUSED";
+
+/** The reason the document websocket closes with `DOCUMENT_TOO_LARGE_CLOSE_CODE` when the update
+ *  carries an edit under a client id that is not the sender's: one Dispatch gave another person,
+ *  before the sender's edit under it or while that edit was judged, one another person's edits
+ *  claimed first, one at 2^35 or above, which Dispatch never gives out
+ *  (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`), one from 2^32 up that Dispatch stores for no one while
+ *  the document holds an edit under it, or that a client presenting no
+ *  `DOCUMENT_CLIENT_ID_PARAMETER` sends, or one below 2^32 that the sender may not claim - one the
+ *  document's history names, past the 30-day claim window or by a person who did not edit the
+ *  document since, or one past the bounds every claim is held to on every socket, 64 a socket and
+ *  64 a person in one document in one UTC day. It is the same close for an update that would
+ *  take its socket past the 128 client ids one socket may write under besides its own, its claims
+ *  among them, for an edit at clocks another person claimed first that differs from what the
+ *  document holds there, and for a socket presenting no client id whose update carries such clocks
+ *  under more than 4 claimed ids. Nothing of it is stored or relayed. Permanent like the size
+ *  refusal: the browser that sent it would send it again on every reconnect, so the dashboard
+ *  drops the refused edit, re-reads the document and takes a fresh client id with it. Generated
+ *  into Go as
+ *  `contracts.DocumentClientIdRefusedCloseReason`. */
+export const DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON = "DOC_CLIENT_ID_REFUSED";
+
+/** The query parameter a document websocket's page presents the Yjs client id it holds for that
+ *  document under, empty when it holds none yet. Its presence says the page takes the client id
+ *  Dispatch gives it (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`); a page that sends no such parameter is
+ *  a build from before Dispatch gave client ids out. Generated into Go as
+ *  `contracts.DocumentClientIdParameter`. */
+export const DOCUMENT_CLIENT_ID_PARAMETER = "client_id";
+
+/** The start of the Hocuspocus stateless message a document websocket sends first, before any
+ *  other frame, on a socket that presented `DOCUMENT_CLIENT_ID_PARAMETER`: this prefix, then the
+ *  decimal client id Dispatch gives that socket's page for the document. It is the id the page
+ *  presented where Dispatch stores that id for the same person, or where Dispatch stores it for no
+ *  one and it is from 2^32 up and below 2^35 - the page's own, whose stored record Dispatch gave
+ *  back or swept, or one a read-only admission sent it - or, for a page that may write, below 2^32
+ *  and one it may claim; and an id given out afresh otherwise. A writable admission stores the id
+ *  it gives for the page's person. A page admitted read-only writes under no id and its admission
+ *  stores nothing, so an id it is sent that Dispatch stores for no one, presented or drawn as a
+ *  fresh one is, stays so until a writable admission of the page, which keeps it where Dispatch
+ *  stores it for no other person by then. The page writes and announces its presence under no
+ *  other id. Generated into Go as `contracts.DocumentClientIdMessagePrefix`. */
+export const DOCUMENT_CLIENT_ID_MESSAGE_PREFIX = "dispatch.client_id:";
+
+/**
+ * The close code the document websocket (`/ws/doc/{room}`) refuses with when the memory budget over
+ * the documents it holds open is full and no room can be closed: a browser asking for one more
+ * document is closed with it before any room is made, and an update that would grow a document
+ * already open is closed with it too, while an update that shrinks one still applies. A browser
+ * asking for a document is closed with it as well where its person holds the 64 client ids no edit
+ * has landed under that one document allows a person, and each is held by a socket still open, and
+ * so is an update under an id from 2^32 up that Dispatch would store for that person then. It is
+ * also the close of an update the server cannot judge for now: one whose client ids it could not
+ * read from its table or write to it, and one that would leave the rendering past its bound where
+ * a server write has committed since the room's last rendering, so what the update started from
+ * is not known yet - with every browser whose parked edit lands in a drain refused that way. And
+ * it is the close of a browser whose first sync the server's copy memory had no room to answer
+ * within its wait bound. It is in the 4500-4599 band collaborative servers publish as transient,
+ * so the dashboard keeps the edit it could not send and reconnects on its own backoff, the live
+ * socket's (`reconnectDelayMs`), which spreads a crowd of tabs and caps at 30 s, to retry it.
+ * Generated into Go as `contracts.DocumentBusyCloseCode`.
+ */
+export const DOCUMENT_BUSY_CLOSE_CODE = 4503;
+
+/** The reason the document websocket closes with `DOCUMENT_BUSY_CLOSE_CODE`. Generated into Go as
+ *  `contracts.DocumentBusyCloseReason`. */
+export const DOCUMENT_BUSY_CLOSE_REASON = "DOC_BUSY";
+
+/**
  * The close code the document websocket (`/ws/doc/{room}`) refuses a room with when the tree it
  * holds has an element that this Dispatch process's build cannot read: a newer build wrote it while
  * two builds serve one database during a release. It completes the upgrade and closes with this

@@ -1,9 +1,9 @@
 /**
  * The edits a browser made to a live document that the server has not yet said it applied, kept
  * in IndexedDB so a reload does not lose them. One database for every document, one object store
- * of rows keyed `[artifactId, clientId, seq]`: each tab writes under its own document's client id,
- * so no tab overwrites another's rows, and `seq` counts that client's edits in the order it made
- * them. `pending-sync.ts` decides what is recorded and when a row is cleared.
+ * of rows keyed `[artifactId, clientId, seq]`: each tab keys its rows by the first client id its
+ * document took, so no tab overwrites another's rows, and `seq` counts that client's edits in the
+ * order it made them. `pending-sync.ts` decides what is recorded and when a row is cleared.
  */
 
 const DATABASE = "dispatch-pending-edits";
@@ -30,6 +30,12 @@ export interface RestoredEdit {
 }
 
 export interface PendingEdits {
+  /** Settles with the client id this browser's rows are keyed by, once the store holds it and has
+   * read that client's last sequence number: `record`, `clear` and `clearThrough` are that
+   * client's, and are called only after it has, while the reads of every client's rows answer from
+   * the moment the store opens. The id never changes after, so the rows under it are the ones this
+   * store recorded, whatever id its document writes under later (`pending-sync.ts`). */
+  keyed: Promise<number>;
   /** Appends `update` as this client's next row. The sequence number is assigned at once;
    * `written` settles when the row is stored. */
   record(update: Uint8Array): { seq: number; written: Promise<void> };
@@ -95,24 +101,42 @@ function openDatabase(): Promise<IDBDatabase | undefined> {
   return promise;
 }
 
+/**
+ * Opens this browser's store of `artifactId`'s rows. It answers as soon as the database opens,
+ * before `clientId` settles, so the rows earlier pages left are counted and read while the caller
+ * has yet to learn the id it writes under: a page whose document socket has not answered still
+ * names the edits saved here (`connection.ts` takes the id from that socket's first frame).
+ */
 export async function openPendingEdits(
   artifactId: string,
-  clientId: number
+  clientId: number | Promise<number>
 ): Promise<PendingEdits | undefined> {
   const database = await openDatabase();
   if (database === undefined) {
     return undefined;
   }
-  const last = await settled(
-    database
-      .transaction(STORE, "readonly")
-      .objectStore(STORE)
-      .openKeyCursor(
-        IDBKeyRange.bound([artifactId, clientId, 0], [artifactId, clientId, Number.MAX_VALUE]),
-        "prev"
-      )
-  );
-  let seq = last === null ? 0 : (last.primaryKey as PendingKey)[2];
+  let own: { id: number; seq: number } | undefined;
+  const keyed = Promise.resolve(clientId).then(async (id) => {
+    const last = await settled(
+      database
+        .transaction(STORE, "readonly")
+        .objectStore(STORE)
+        .openKeyCursor(
+          IDBKeyRange.bound([artifactId, id, 0], [artifactId, id, Number.MAX_VALUE]),
+          "prev"
+        )
+    );
+    own = { id, seq: last === null ? 0 : (last.primaryKey as PendingKey)[2] };
+    return id;
+  });
+  // A store closed before its id came refuses that read; whoever waits on `keyed` is told.
+  void keyed.catch(() => undefined);
+  const owner = (): { id: number; seq: number } => {
+    if (own === undefined) {
+      throw new Error("This browser's pending edits have no client id to be kept under yet.");
+    }
+    return own;
+  };
 
   const write = (change: (store: IDBObjectStore) => void): Promise<void> => {
     const transaction = database.transaction(STORE, "readwrite");
@@ -121,17 +145,22 @@ export async function openPendingEdits(
   };
 
   return {
+    keyed,
     record(update) {
-      seq += 1;
-      const row: PendingRow = { artifactId, at: Date.now(), clientId, seq, update };
+      const client = owner();
+      client.seq += 1;
+      const { seq } = client;
+      const row: PendingRow = { artifactId, at: Date.now(), clientId: client.id, seq, update };
       return { seq, written: write((store) => store.add(row)) };
     },
-    clear(at) {
-      return write((store) => store.delete([artifactId, clientId, at]));
+    async clear(at) {
+      const { id } = owner();
+      return write((store) => store.delete([artifactId, id, at]));
     },
-    clearThrough(through) {
+    async clearThrough(through) {
+      const { id } = owner();
       return write((store) =>
-        store.delete(IDBKeyRange.bound([artifactId, clientId, 0], [artifactId, clientId, through]))
+        store.delete(IDBKeyRange.bound([artifactId, id, 0], [artifactId, id, through]))
       );
     },
     async restoreRows() {

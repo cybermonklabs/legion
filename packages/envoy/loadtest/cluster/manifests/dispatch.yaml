@@ -1,7 +1,8 @@
 # dispatch.yaml: the copy's Dispatch, production's pod
-# (packages/envoy/infra/gcp/dispatch_kube.go) at production's size, with an environment written
-# from scratch: no production credential, address or setting. cluster.sh fills every
-# placeholder from validated values.
+# (packages/envoy/infra/gcp/dispatch_kube.go) at 16 CPU / 32Gi, production's size until
+# 2026-11-05 (production has run 20Gi since: theorem-labs/agent-infra dispatch/Pulumi.prod.yaml),
+# with an environment written from scratch: no production credential, address or setting.
+# cluster.sh fills every placeholder from validated values.
 #
 # The Deployment starts at 0 replicas: cluster.sh scales the listener up first and Dispatch after
 # it, so the listener creates ENVOY_NOTIFICATIONS with ENVOY_NATS_REPLICAS=3.

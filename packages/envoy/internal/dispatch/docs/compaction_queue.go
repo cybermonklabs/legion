@@ -177,6 +177,10 @@ func (s *Service) tryCompaction(ctx context.Context, room string, retrying bool)
 	if (retrying && !check.aged) || (!retrying && !check.due) {
 		return compactionAttempt{try: tryNotDue, check: check}
 	}
+	// What the room held of what the store did not, read before the fold reads the rows, so a
+	// re-base can tell a reading that covers the room from one that leaves its newest commits out
+	// (rebaseRoomState, markRebase).
+	mark := s.markRebase(room)
 	result, err := s.persistence.compactRoom(ctx, room, tailRule, false)
 	if err != nil {
 		warnCompaction(ctx, warnCompactionCompact, room, err)
@@ -184,6 +188,13 @@ func (s *Service) tryCompaction(ctx context.Context, room string, retrying bool)
 	}
 	switch result.outcome {
 	case compactCompacted:
+		// The room, where this server holds it, is tracked at what its applies reported adding
+		// since its load; a fold of its whole stored history is a reading of the state itself,
+		// read without encoding the document, which the re-base takes as the truth where it
+		// covers everything the room holds (rebaseRoomState).
+		if result.wholeState > 0 {
+			s.rebaseRoomState(room, result.wholeState, mark)
+		}
 		return compactionAttempt{try: tryCompacted, check: check, deleted: result.deleted}
 	case compactDropped, compactBusy:
 		return compactionAttempt{try: tryLater, check: check}

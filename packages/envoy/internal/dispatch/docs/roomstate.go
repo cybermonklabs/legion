@@ -26,11 +26,26 @@ import (
 // holder releases the state through its own unlock, and ygo's OnUnloadDocument releases it when
 // the room is the last thing to go (releaseUnloadedRoom).
 //
-// What a release drops - the unrecorded marks' first sightings and their authors' departures, and
-// the closed flag - is what a restart drops too.
+// What a release drops - the unrecorded marks' first sightings and their authors' departures, the
+// writes that have logged leaving the document alone at the decode cap, and the closed flag - is
+// what a restart drops too.
 type roomState struct {
 	mu        sync.Mutex
 	connected map[uint64]model.Actor
+	// departedPeers is the browsers connected when ygo reported the room's last browser gone
+	// (settleLastPeer), each until its handler forgets it (removeConnection). ygo makes that report
+	// on the leaving browser's own socket (sjawhar/ygo v1.55.1-sami.8, handleDisconnect's
+	// OnLastPeer, provider/websocket/peer.go:709-715), before the handler that registered the
+	// browser returns and removes it from connected (ServeHTTP), and the settlement it owes runs
+	// there first, which takes seconds for a mebibyte; meanwhile connected still names browsers
+	// that have gone. The room budget's sweep counts a room whose connected browsers have all
+	// departed as one that will be closable (onlyDepartedLocked, sweepRooms), so an admission
+	// waits for it rather than being refused as though a browser held it. A browser authorized in
+	// the instant before the report and registered with ygo after it is counted departed too, so
+	// an admission can wait on its room until its deadline; the room is never closed for it,
+	// since connected still names it (unusedLocked). It is the browsers' own ygo ids; departed,
+	// below, is their users' logins.
+	departedPeers map[uint64]struct{}
 	// inflight is F (pending_authors.go): each browser edit's credit from the moment the room's
 	// update observer records it (creditContentChange) until the edit's append lands, keyed by its
 	// creditSeq. creditSeq is atomic so forkLive, which every document write calls, reads it for
@@ -65,36 +80,25 @@ type roomState struct {
 	// updateClasses is the queue of classes the room's update observer recorded, in the order it
 	// recorded them, which is seq order for each room instance (queuedClass). pendingUpdates
 	// counts the durable classes whose update no call of the room's persistence has taken yet,
-	// and queuedBytes is the bytes of the queue's updates, which a batch of the room's browser
-	// appends is bounded by (roomAppendBatchBytes).
+	// and queuedBytes is the bytes of the queue's updates, which the room figures report
+	// (RoomFigures.PendingUpdateBytes).
 	updateClasses  []*queuedClass
 	pendingUpdates int
 	queuedBytes    int
-	// appendLinger is what a lingering browser append of the room waits on, woken to end every
-	// linger at once: when a wait for the room's appends begins (waitForRoomIdle) or another
-	// process's room query asks for them (askRoomAppends) - each records appendsFlushed, so an
-	// update recorded before the ask no longer lingers, and counts itself in appendWaiters, so
-	// no append lingers while it waits - when the queue reaches a batch's cap
-	// (queueUpdateClass), and when the record is handed over (handOverFailedRoomLocked).
-	appendLinger   wakeSignal
-	appendsFlushed time.Time
-	appendWaiters  int
 	// idle is the room's idle signal: what a wait for the room's appends waits on
 	// (waitForRoomIdle) once it finds pendingUpdates or durableAppends above zero, woken once both
 	// are zero again (countsFellLocked), or when the record is handed over with its counts
 	// (handOverFailedRoomLocked). Every place either count falls tells countsFellLocked.
 	idle wakeSignal
-	// parked are the parked bytes of commits that parked something and changed nothing, which no
-	// OnUpdate hands to the room's persistence (classifyDrained). They wait here, with the cursor
-	// of the room instance that parked them, until a drainer that holds no replica lock and no
-	// document lock stores them (storeParked): a drain can run under a settlement's document lock,
-	// and the store takes that lock.
-	parked []parkedBytes
 	// shadow is what the latest committed live write left the room to measure again the classes
 	// of the browser updates stored after its own (roomShadow), nil while none is left.
 	shadow     *roomShadow
 	settle     *time.Timer
 	unrecorded map[pmdoc.MarkRef]time.Time
+	// pastDecodeCap names each server write outside applyLive that has logged leaving this room's
+	// document alone because the write would carry it past the decode cap (logPastDecodeCap), nil
+	// until one has.
+	pastDecodeCap map[string]struct{}
 	// departed is when each user whose browsers have all left this room lost the last of them,
 	// under both spellings a mark's `by` can carry (recordMarkAuthorDeparture). An unrecorded
 	// mark ages from its author's entry rather than from the sweep that last saw that author, so
@@ -172,7 +176,7 @@ type roomState struct {
 // observer of the commit (sameUpdate), whether it changed the content, whether it is durable
 // work the room's state waits on, the browser edit's in-flight credit, nil for an update no
 // browser edit credited, and cursor, the durable version the room instance the update was made in
-// stands at, which gates and then takes in the update's own append (StoreUpdateContext). seq is the
+// stands at, which gates and then takes in the update's own append (StoreUpdateStored). seq is the
 // update's commit position in that room instance (renderedReplica.seq): updates of one instance are
 // stored in seq order (flushThrough). roomCredit is, for a browser update measured as no change
 // while a live write was open, the peers connected as the room took it, outside F and with no
@@ -181,8 +185,7 @@ type roomState struct {
 // committed the update, which the update's bytes count against (queueUpdateClass), nil for a class
 // no room instance made. observed is when the observer classified the update, on this process's
 // monotonic clock, which tells the gate an update the room took before its issue closed from one
-// taken after (observedBeforeClose) and is the instant the batch its own call runs lingers from
-// (roomAppendLinger); zero for a class no observer of the room's log classified.
+// taken after (observedBeforeClose); zero for a class no observer of the room's log classified.
 //
 // An update only the room holds - not a published live write's nor a catch-up's, which are stored
 // already - also names instance, the room instance it was made in, whose list of unstored updates
@@ -268,10 +271,25 @@ func (s *Service) lookUpState(room string, create bool) *roomState {
 }
 
 // unlockState unlocks state, room's, forgetting it first when it holds nothing
-// (releaseIfUnusedLocked).
+// (releaseIfUnusedLocked). A loaded room whose state holds nothing may be one the room budget is
+// waiting to close, which the budget answers without its lock
+// (roomBudget.sweepsForCloses, watchesForCloses): while it is full, or an admission waits on it,
+// the room may be one the last sweep could not close that has just become closable, so it starts
+// a sweep, which closes the room and lowers the signal or admits the admission (sweepRooms,
+// roomBudget.kick). While any room is marked as opened over the budget, it may be that room, now
+// free of the work that opened it (closeIfOpenedOverBudget). Each takes the state again itself,
+// so it starts once the lock is released.
 func (s *Service) unlockState(room string, state *roomState) {
 	s.releaseIfUnusedLocked(room, state)
+	closable := s.budget.watchesForCloses() && !state.released && s.unusedLocked(state) && s.srv.GetDoc(room) != nil
 	state.mu.Unlock()
+	if !closable {
+		return
+	}
+	if s.budget.sweepsForCloses() {
+		s.budget.kick(room)
+	}
+	s.closeIfOpenedOverBudget(room)
 }
 
 // releaseIfUnused forgets room's state when it holds nothing (releaseIfUnusedLocked).
@@ -281,13 +299,14 @@ func (s *Service) releaseIfUnused(room string) {
 	}
 }
 
-// releaseUnloadedRoom is ygo's OnUnloadDocument: the room has gone, so it no longer counts among
-// the resident rooms, nor holds a place under the room cap unless a socket still holds a
-// reservation on it, the bytes of one load of the name no longer count as resident (roomUnloaded,
-// which ends the name's oldest load: the one ending, save in the out-of-order case below), and its
-// state goes too unless something still holds it, whose end releases it instead. A room a
-// settlement loaded for itself (roomState.warmed) is forgotten once its own load's count has ended
-// (warmedRoom), which this unload may be what ended.
+// releaseUnloadedRoom is ygo's OnUnloadDocument: the room has gone, so its charge in the room
+// budget goes, whether or not its state goes with it, since the memory went with the room; it no
+// longer counts among the resident rooms, nor holds a place under the room cap unless a socket
+// still holds a reservation on it, the bytes of one load of the name no longer count as resident
+// (roomUnloaded, which ends the name's oldest load: the one ending, save in the out-of-order case
+// below), and its state goes too unless something still holds it, whose end releases it instead.
+// A room a settlement loaded for itself (roomState.warmed) is forgotten once its own load's count
+// has ended (warmedRoom), which this unload may be what ended.
 // ygo calls it exactly once for each room whose load succeeded, and only for a room that has left
 // its map, whichever way the room goes: the idle sweep, the last peer leaving, CloseRoom.
 //
@@ -301,6 +320,7 @@ func (s *Service) releaseIfUnused(room string) {
 // first to run ends the older load's count and the second the younger's: neither need be its
 // own, and the total is exact once both have run.
 func (s *Service) releaseUnloadedRoom(_ context.Context, room string) {
+	s.budget.retire(room)
 	if s.beforeUnloadEndsLoad != nil {
 		s.beforeUnloadEndsLoad(room)
 	}
@@ -340,7 +360,7 @@ func (s *Service) forgetLocked(room string, state *roomState) {
 // registered in its place. The record has to go: it carries the failure, which every holder of it
 // still reads (failure) and no later access may (roomFailure, which refuses a load and a connect).
 //
-// ygo takes the closed room out of its map before CloseRoom returns (sjawhar/ygo v1.55.1-sami.2,
+// ygo takes the closed room out of its map before CloseRoom returns (sjawhar/ygo v1.55.1-sami.7,
 // provider/websocket/inject.go), and a browser registers as it is authorized, before its room is
 // loaded or joined (authorize), so a browser that opened the document while the eviction ran is on
 // this record. Dropping it outright loses that browser, and with it the credit for the person's
@@ -348,7 +368,7 @@ func (s *Service) forgetLocked(room string, state *roomState) {
 // and what the failed room left is the failed room's, except the
 // updates its persistence has not taken yet. Those are carried, with the counts that hold the
 // record for them: a failed room's update is dropped while the room is failed
-// (StoreUpdateContext), but ygo's stranded persistence can hand one on after the eviction has
+// (StoreUpdateStored), but ygo's stranded persistence can hand one on after the eviction has
 // cleared that failure, and a class the successor does not hold is an append stored with no
 // credit at all - the author of that keystroke is then on no version and in no pending row. An
 // in-flight credit the record still holds is reached through its update's UpdateCredit, which
@@ -364,9 +384,9 @@ func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 	// stored with the class its update observer recorded.
 	state.shadow = nil
 	// Only the updates still waiting for the room's persistence move, with the appends they
-	// count and the bytes a batch of them is bounded by. An append already in flight finishes on
-	// the record that counted it, with its class (finishUpdateClass takes the record
-	// consumeUpdateClass answered), so both stay where they are.
+	// count and the bytes of them the room's figures report (queuedBytes). An append already in
+	// flight finishes on the record that counted it, with its class (finishUpdateClass takes the
+	// record consumeUpdateClass answered), so both stay where they are.
 	var carried []*queuedClass
 	var durable int64
 	var carriedBytes int
@@ -397,8 +417,6 @@ func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 	state.pendingUpdates = 0
 	state.queuedBytes -= carriedBytes
 	state.durableAppends.Add(-durable)
-	// A browser append lingering on this record looks the queue up again on the successor.
-	state.appendLinger.wake()
 	s.rooms.CompareAndSwap(room, state, successor)
 }
 
@@ -406,19 +424,59 @@ func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 // open writer, a running or armed settlement, a latest edit source no settlement has read, a
 // failure being recovered from (whose eviction forgets the state itself, evictRoom), a connected
 // browser, a document socket's admission (admitting), an update the room's persistence has not
-// taken or appended, a commit's parked bytes not yet stored, an in-flight credit whose append has
-// not landed, and a retirement's reservation (retiring). Its caller holds state.mu.
+// taken or appended, an in-flight credit whose append has not landed, and a retirement's
+// reservation (retiring). Its caller holds state.mu.
 func (s *Service) unusedLocked(state *roomState) bool {
 	return state.liveWriter == nil && state.settling == 0 && !s.isSettleTimerArmed(state.settle) &&
 		!state.unsettled && state.failed == nil && len(state.connected) == 0 && state.admitting == 0 &&
 		state.pendingUpdates == 0 && state.durableAppends.Load() == 0 && len(state.inflight) == 0 &&
-		len(state.parked) == 0 && state.retiring == nil
+		state.retiring == nil
 }
 
-// parkedBytes is one commit's parked bytes and the cursor of the room instance that took them.
-type parkedBytes struct {
-	update []byte
-	cursor *roomCursor
+// holdingLocked names what holds state's room open, for the sweep's line over a budget past its
+// limit: the first of the things unusedLocked reads that is not clear, in that order, and "the
+// room is gone" where ygo no longer holds one. It is the one reading that says why a sweep over
+// a full budget closed nothing, which is the difference between a room a browser is editing and
+// one whose own work has not landed yet (INFRA-179). Its caller holds state.mu.
+func (s *Service) holdingLocked(state *roomState) string {
+	switch {
+	case state.liveWriter != nil:
+		return "a writer"
+	case state.settling != 0:
+		return "a settlement running"
+	case s.isSettleTimerArmed(state.settle):
+		return "a settlement armed"
+	case state.unsettled:
+		return "unsettled work"
+	case state.failed != nil:
+		return "a failed room"
+	case len(state.connected) != 0 && !state.onlyDepartedLocked():
+		return "a browser connected"
+	case len(state.connected) != 0:
+		return "a browser gone whose handler has not forgotten it"
+	case state.pendingUpdates != 0:
+		return "updates not yet appended"
+	case state.durableAppends.Load() != 0:
+		return "a durable append"
+	case len(state.inflight) != 0:
+		return "an apply in flight"
+	case state.retiring != nil:
+		return "a retirement's reservation"
+	}
+	return "the room is gone"
+}
+
+// onlyDepartedLocked is whether every browser state names as connected has departed
+// (departedPeers): true with none connected, and true for a room whose last browser ygo has
+// reported gone while the handlers of its browsers have not yet returned to forget them. Its
+// caller holds state.mu.
+func (state *roomState) onlyDepartedLocked() bool {
+	for id := range state.connected {
+		if _, gone := state.departedPeers[id]; !gone {
+			return false
+		}
+	}
+	return true
 }
 
 // queueUpdateClass records what the room's update observer read off one update, for the
@@ -428,11 +486,10 @@ type parkedBytes struct {
 // update a writer other than the room's persistence has already stored, or is storing under the
 // document's advisory lock: a published live write's, or a repair's (classifyDrained).
 //
-// A queue that reaches a batch's cap ends the linger of the room's browser append, whose batch
-// has nothing more to wait for. Every update the room commits is recorded here once, so this is
-// also where the bytes it took count as resident, against the token of the load whose instance
-// committed it (residentLoad, countResidentBytes), which an unload of the name ends. A class
-// carrying no token - one a test built by hand - counts no bytes.
+// Every update the room commits is recorded here once, so this is also where the bytes it took
+// count as resident, against the token of the load whose instance committed it (residentLoad,
+// countResidentBytes), which an unload of the name ends. A class carrying no token - one a test
+// built by hand - counts no bytes.
 func (s *Service) queueUpdateClass(room string, update []byte, class documentUpdateClass, stored bool) *queuedClass {
 	state := s.lockState(room)
 	defer s.unlockState(room, state)
@@ -448,9 +505,6 @@ func (s *Service) queueUpdateClass(room string, update []byte, class documentUpd
 	}
 	state.queuedBytes += len(class.update)
 	s.countResidentBytes(class.resident, int64(len(class.update)))
-	if len(state.updateClasses) >= roomAppendBatchUpdates || state.queuedBytes >= roomAppendBatchBytes {
-		state.appendLinger.wake()
-	}
 	return queued
 }
 

@@ -214,6 +214,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/claim-refilling.e2e.ts` | the claim's lapse is the server's judgement against the agent list |
 | `e2e/claim-unresponsive.e2e.ts` | unresponsive, takeable and a second agent's refusal are server decisions |
 | `e2e/claim.e2e.ts` | a claim is taken, refused and released by the server, and the page reads back what it decided |
+| `e2e/client-ids.e2e.ts` | the client id is minted by the document socket's admission, stored with the person and given back to the socket that presents it; the row reads what the live room relays and what a settled version holds under it |
 | `e2e/close-withdraws-asks.e2e.ts` | close withdraws asks server-side, then reopen and version history are re-read |
 | `e2e/closed-issue-posting.e2e.ts` | posts on a closed issue and asserts the server accepted them |
 | `e2e/code-line-replace.e2e.ts` | typing in the live document editor |
@@ -237,6 +238,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/doc-reload-line.e2e.ts` | the read-only admission is decided at socket open |
 | `e2e/doc.e2e.ts` | every row lives in the live document room, its connections and versions |
 | `e2e/document-and-comment-read-alike.e2e.ts` | each row asserts inside the live spec editor |
+| `e2e/document-refusals.e2e.ts` | every row drives a refusal the document room alone decides - the bounds a browser's update is weighed against and the close code it is given - and reads what the editor shows and whether the stored document moved |
 | `e2e/document-way-back.e2e.ts` | a correction and two removals written and then re-read on the open page, the issue's list and its Activity; the refused removal is the server's judgement that the document holds writing, which only a settled version makes true |
 | `e2e/document.e2e.ts` | collaboration, uploads, marks, and the live connection dot |
 | `e2e/download-names.e2e.ts` | the server computes each download's Content-Disposition, the name the browser saves, and its Cache-Control; the rows write a version and then download again, since an older version's name changes only once a newer one is written |
