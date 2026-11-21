@@ -53,29 +53,36 @@ callout_dir="$WORK_DIR/nats-callout"
 
 if [ "$CALLOUT" = true ]; then
   # The issuer also writes the listener's and Dispatch's tokens for the NATS audience, and each
-  # presents its own to the hub as a service (NATS_SERVICE_TOKEN_FILE).
+  # presents its own to the hub as a service (NATS_SERVICE_TOKEN_FILE). The auth service answers
+  # neither with a stream create or update (natsgrant.ForCallout), so each reads its streams and
+  # makes none (ENVOY_STREAMS_OPERATOR_MADE=1).
   callout_issuer_args=(--token "$callout_audience=$LISTENER_ACCOUNT=$callout_listener_token"
     --token "$callout_audience=$API_ACCOUNT=$callout_dispatch_token")
-  callout_listener_env=(NATS_SERVICE_TOKEN_FILE="$callout_listener_token")
-  callout_dispatch_env=(NATS_SERVICE_TOKEN_FILE="$callout_dispatch_token")
+  callout_listener_env=(NATS_SERVICE_TOKEN_FILE="$callout_listener_token" ENVOY_STREAMS_OPERATOR_MADE=1)
+  callout_dispatch_env=(NATS_SERVICE_TOKEN_FILE="$callout_dispatch_token" ENVOY_STREAMS_OPERATOR_MADE=1)
   # natsd runs behind the auth callout, making its seeds in callout_dir, and serves its monitor
   # port too, the kernel's choice, whose connection list (/connz?auth=true) names the user the
-  # auth service admitted each connection as.
+  # auth service admitted each connection as. Once it serves it makes every declared stream as an
+  # admin user of its own (internal/testnats/cmd/natsd), before the listener and Dispatch start, as
+  # the operator's update makes them in a deployment.
   callout_natsd_args=(-callout-keys "$callout_dir" -m -1)
 fi
 
-# callout_after_natsd, with --callout, waits for natsd to report that monitor port, and sets
+# callout_after_natsd, with --callout, waits for natsd to report that monitor port and that it has
+# made the declared streams, so no program that only reads them starts before they exist, and sets
 # callout_broker_env, which has every broker also run the NATS auth service on that natsd: the
 # seeds natsd made, the listener and Dispatch listed by account under their machine ids, and the
 # NATS audience their tokens carry.
 callout_monitor_url=""
 nats_monitor_in() { sed -n 's/.*Starting http monitor on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$1" | head -n1; }
+nats_streams_made_in() { grep -q '^natsd: made the declared streams as its admin user$' "$1" && echo made; }
 callout_after_natsd() {
   [ "$CALLOUT" = true ] || return 0
   await natsd "$NATS_PID" "$NATS_LOG" "$NATS_LOG" 'its monitor port' nats_monitor_in
   # shellcheck disable=SC2154 # await sets awaited
   callout_monitor_url="http://127.0.0.1:$awaited"
   echo "dev-stack: natsd monitor $callout_monitor_url" >&2
+  await natsd "$NATS_PID" "$NATS_LOG" "$NATS_LOG" 'the declared streams it makes' nats_streams_made_in
   callout_broker_env=(
     BROKER_NATS_URLS="$NATS_URL"
     BROKER_NATS_SEED_FILE="$callout_dir/service.seed"

@@ -110,6 +110,13 @@ const ExceptionTopicPrefix = NotificationTopicPrefix + "envoy.exceptions."
 // only on a released claim of its own project.
 const LegionWakeTopic = NotificationTopicPrefix + "legion.wake"
 
+// WebhookRedeliveryRetention is the webhook redelivery bucket's TTL, GitHub's own horizon: past
+// three days GitHub neither lists nor redelivers an attempt, so nothing older is worth
+// remembering, and a delivery still failing that long after its first failed attempt is expired
+// (internal/dispatch/redeliver). The operator makes the bucket with it too (internal/streamset),
+// which is why it lives here, beside the bucket's name, and not in Dispatch's code.
+const WebhookRedeliveryRetention = 72 * time.Hour
+
 // DispatchDeliveryDurable is the stream's durable consumer Dispatch's delivery intake binds, over
 // every GitHub notification (internal/dispatch/delivery).
 const DispatchDeliveryDurable = "delivery-events"
@@ -117,6 +124,41 @@ const DispatchDeliveryDurable = "delivery-events"
 // DispatchJobDurable is the stream's durable consumer Dispatch's job intake binds, over a deploy
 // run's job events (internal/dispatch/delivery).
 const DispatchJobDurable = "delivery-jobs"
+
+// DispatchDeliveryFilter is the subject Dispatch's delivery intake consumes: every GitHub
+// notification. DispatchJobFilter is the job intake's: a deploy run's job events.
+const (
+	DispatchDeliveryFilter = NotificationTopicPrefix + "github.>"
+	DispatchJobFilter      = NotificationTopicPrefix + "github.*.*.job.>"
+)
+
+// DispatchDeliveryConsumer is the shape of Dispatch's delivery intake's durable: its name, one
+// push consumer over every GitHub notification, delivered to a reply inbox of its own and
+// acknowledged one message at a time. Dispatch's intake builds its durable on it, adding its ack
+// wait, pending bound and generation (internal/dispatch/delivery), and the operator's census keeps
+// a consumer of that name only while it has this shape (packages/envoy/infra/streams), so the two
+// cannot drift apart.
+func DispatchDeliveryConsumer() nats.ConsumerConfig {
+	return nats.ConsumerConfig{
+		Durable:        DispatchDeliveryDurable,
+		DeliverSubject: nats.NewInbox(),
+		FilterSubject:  DispatchDeliveryFilter,
+		AckPolicy:      nats.AckExplicitPolicy,
+	}
+}
+
+// DispatchJobConsumer is the shape of Dispatch's job intake's durable, as DispatchDeliveryConsumer
+// is the delivery intake's: one push consumer over a deploy run's job events, starting at new
+// messages.
+func DispatchJobConsumer() nats.ConsumerConfig {
+	return nats.ConsumerConfig{
+		Durable:        DispatchJobDurable,
+		DeliverSubject: nats.NewInbox(),
+		FilterSubject:  DispatchJobFilter,
+		DeliverPolicy:  nats.DeliverNewPolicy,
+		AckPolicy:      nats.AckExplicitPolicy,
+	}
+}
 
 // ListenerDurable is the durable consumer of the stream that the listener of machine machineID
 // binds. A space in the machine id is a hyphen in the name.
@@ -1038,6 +1080,49 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		}
 	}
 	return update.sent.Subjects, nil
+}
+
+// ErrStreamNotMade is a stream or a bucket a start beside the auth service
+// (StreamsOperatorMadeEnvVar) found missing: such a start makes no stream, since the auth service
+// answers no client but the operator with a stream create (natsgrant.ForCallout), and the
+// operator makes it at deploy time. The error wrapping it names the stream.
+var ErrStreamNotMade = errors.New("the operator makes every stream: run envoy-infra streams update")
+
+// streamNotMade is the error of a start beside the auth service that found stream missing: it
+// names the stream and the setting, and wraps ErrStreamNotMade, which names the operator's
+// command, and answer, the server's own.
+func streamNotMade(stream string, answer error) error {
+	return fmt.Errorf("%s is missing, and a start beside the auth service (%s=1) makes no stream: %w (%w)", stream, StreamsOperatorMadeEnvVar, ErrStreamNotMade, answer)
+}
+
+// readOperatorMadeStream is ensureStreamWithConfig for a client beside the auth service
+// (StreamsOperatorMadeEnvVar): it reads the stream, sent again while the server leaves the read
+// unanswered (readAgain), and returns the subjects it carries, and a stream it finds missing is
+// streamNotMade. It writes nothing: no create, no reconcile, no role-lane migration. The stream's
+// configuration is the operator's (envoy-infra streams update), so cfg and defaultsAnUnsetCap,
+// which decide what a reconcile writes, are not read. A start (atStart) that finds the stream with
+// no leader, as a raise the deploy just made leaves it, waits for one, as ensureStreamWithConfig
+// does, since a write sent now draws no answer.
+func readOperatorMadeStream(ctx context.Context, js nats.JetStreamContext, _ *nats.StreamConfig, _ bool, at streamEnsure) ([]string, error) {
+	ctx, cancel := hangGuard(ctx, startHangGuard)
+	defer cancel()
+	ctx = withReadLimit(ctx)
+	read := Stream + " STREAM.INFO"
+	info, err := readAgain(ctx, read, readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) })
+	switch {
+	case errors.Is(err, nats.ErrStreamNotFound):
+		return nil, streamNotMade(Stream, err)
+	case unanswered(err) || ctx.Err() != nil:
+		return nil, namedRequest(read, err)
+	case err != nil:
+		return nil, err
+	}
+	if leaderless(info) && at == atStart {
+		if err := awaitStreamLeader(ctx, js, afterOpen, Stream); err != nil {
+			return nil, err
+		}
+	}
+	return info.Config.Subjects, nil
 }
 
 // newerBuild reports whether info's stream carries the settings of a newer build, one that stamped

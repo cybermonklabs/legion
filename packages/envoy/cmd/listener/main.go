@@ -1245,7 +1245,7 @@ func main() {
 	var renames ghrename.Renames
 	if webhookCfg.GitHub != nil {
 		renames = webhookCfg.GitHub.RepositoryRenames
-		ciStore, err = cistore.Open(starting, client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour))
+		ciStore, err = cistore.Open(starting, client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(cistore.Retention))
 		if err != nil {
 			log.Fatalf("open the CI store: %v", err)
 		}

@@ -421,9 +421,13 @@ echo "fake natsd: pid=$$" >&2
 echo "fake natsd: args=$*" >&2
 # The ports it was given, bound as nats-server binds them: -1 is its own choice, which this stub's
 # PID stands for, and any other port is that port.
-client=$$ monitor=""
+client=$$ monitor="" callout=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -callout-keys)
+      callout="$2"
+      shift 2
+      ;;
     -p)
       [[ "$2" == -1 ]] || client="$2"
       shift 2
@@ -452,6 +456,8 @@ MOVES
 echo "[INF] Listening for client connections on 127.0.0.1:$client" >&2
 [[ -z "$monitor" ]] || echo "[INF] Starting http monitor on 127.0.0.1:$monitor" >&2
 echo "[INF] Server is ready" >&2
+# Behind the callout the real natsd then makes the declared streams as its own admin user.
+[[ -z "$callout" ]] || echo "natsd: made the declared streams as its admin user"
 NATSD
       ;;
     listener)
@@ -459,6 +465,7 @@ NATSD
 #!/usr/bin/env bash
 printf '{"level":"INFO","msg":"listener API auth: none","nats":"%s"}\n' "${NATS_URLS:-}" >&2
 echo "fake listener: machine=${ENVOY_MACHINE_ID:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
+echo "fake listener: operator-made=${ENVOY_STREAMS_OPERATOR_MADE:-}" >&2
 echo "fake listener: pid=$$ public=${ENVOY_PUBLIC_URL:-} listen-fd=${ENVOY_LISTEN_FD:-}" >&2
 # It serves the socket it was handed, whose port held-port.py put in ENVOY_PUBLIC_URL; its own PID
 # stands for a port only where it was handed none.
@@ -485,6 +492,7 @@ LISTENER
       cat >"$target" <<'DISPATCH'
 #!/usr/bin/env bash
 echo "fake dispatch: database=${DATABASE_URL:-} server-url=${DISPATCH_SERVER_URL:-} listen-fd=${DISPATCH_LISTEN_FD:-} envoy=${ENVOY_URL:-} broker=${DISPATCH_AGENT_SECRETS_URL:-} nats=${NATS_URLS:-} home=${HOME:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
+echo "fake dispatch: operator-made=${ENVOY_STREAMS_OPERATOR_MADE:-}" >&2
 echo "fake dispatch: oidc-issuer=${DISPATCH_OIDC_ISSUER:-} oidc-audience=${DISPATCH_OIDC_AUDIENCE:-} oidc-accounts=${DISPATCH_OIDC_ACCOUNTS:-} access-accounts=${DISPATCH_ACCESS_ACCOUNTS:-}" >&2
 port=$$
 DISPATCH
@@ -927,6 +935,8 @@ grep -q 'fake broker: nats= seeds=,, nats-audience= services=$' "${work_dir1}/lo
 [[ ! -e "${work_dir1}/logs/broker-2.log" ]] || fail "instance 1, run without --callout, started a second broker"
 grep -q -- '-callout-keys' "${work_dir1}/logs/natsd.log" && fail "instance 1, run without --callout, ran natsd with -callout-keys"
 grep -q 'nats-token=$' "${work_dir1}/logs/listener.log" || fail "instance 1, run without --callout, gave its listener a NATS token"
+grep -qx 'fake listener: operator-made=' "${work_dir1}/logs/listener.log" || fail "instance 1, run without --callout, set its listener's ENVOY_STREAMS_OPERATOR_MADE"
+grep -qx 'fake dispatch: operator-made=' "${work_dir1}/logs/dispatch.log" || fail "instance 1, run without --callout, set Dispatch's ENVOY_STREAMS_OPERATOR_MADE"
 [[ -z "$(exported "$log1" DEV_STACK_CALLOUT)" ]] || fail "instance 1, run without --callout, exported DEV_STACK_CALLOUT"
 printf 'PASS: a run without --callout runs no auth service, no second broker and no NATS token\n'
 
@@ -1417,6 +1427,11 @@ grep -q "fake listener: machine=dev-stack-${run_suffix} nats-token=${work_dir}/l
   fail "the --callout run's listener was not started with its NATS token"
 grep -q "nats-token=${work_dir}/dispatch-nats-token$" "${work_dir}/logs/dispatch.log" ||
   fail "the --callout run's Dispatch was not started with its NATS token"
+# Neither makes a stream beside the auth service, and natsd made them before either started.
+grep -qx 'fake listener: operator-made=1' "${work_dir}/logs/listener.log" ||
+  fail "the --callout run's listener was not started with ENVOY_STREAMS_OPERATOR_MADE=1"
+grep -qx 'fake dispatch: operator-made=1' "${work_dir}/logs/dispatch.log" ||
+  fail "the --callout run's Dispatch was not started with ENVOY_STREAMS_OPERATOR_MADE=1"
 for pair in "DEV_STACK_CALLOUT=1" "NATS_AUTH=broker" "DEV_STACK_NATS_SERVICE_TOKEN_FILE=${work_dir}/listener-nats-token" \
   "DEV_STACK_EXCHANGE_SESSION=example-worker-session" \
   "DEV_STACK_BROKER_PIDS=\"${process_port[broker]} ${second_broker_port}\"" \

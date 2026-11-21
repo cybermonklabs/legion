@@ -29,14 +29,16 @@ func WithKeepInterval(interval time.Duration) ConnectOption {
 // (ensureStreamWithConfig), which keeps buckets (WithKeptBuckets) at cfg's copies too: the
 // constructor's start once install has returned, and the first connection's on a client that
 // connects in the background (ensureStreamOnce), which a Close or Drain can stop first. A client
-// already stopped starts none. The client's stop ends it (Close and Drain wait for it:
+// already stopped starts none, and so does a client beside the auth service
+// (StreamsOperatorMadeEnvVar), which changes no stream: the deploy raises its streams and buckets
+// (envoy-infra streams update). The client's stop ends it (Close and Drain wait for it:
 // awaitKeeper). The check and keeperDone's write are one step under mu, and Close and Drain stop
 // the client before awaitKeeper reads keeperDone under mu, so a keeper either sees the stop or is
 // waited for.
 func (c *Client) startKeeper(cfg nats.StreamConfig, buckets []string, interval time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.stopped() {
+	if c.stopped() || c.operatorMade {
 		return
 	}
 	c.keeperDone = make(chan struct{})

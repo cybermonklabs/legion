@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  No client but the operator can make, change or remove a JetStream stream behind the NATS auth
+  service. The service answers every session and every service but the operator without a stream
+  create, update, delete or restore (`natsgrant.ForCallout`), and `core.Authorization` renders every
+  static user beside a callout the same way. A wider entry such as `$JS.API.>` stays, with a `deny`
+  of each of those calls. A program started with `ENVOY_STREAMS_OPERATOR_MADE=1` reads its streams
+  and buckets and makes, raises or reconciles none. It runs no keeper and leaves the session bucket's
+  age as it is. A missing stream stops the start, naming the stream and `envoy-infra streams update`.
+  `0` or unset keeps today's behaviour, and any other value refuses startup. The new `envoy-infra
+  streams check` reads every declared stream and writes nothing. Its package also holds `Update`,
+  which makes and raises the protected streams and `ENVOY_MEASURE` by a start's own rules, and
+  `Census`, which removes every undeclared stream and consumer. The writer
+  hold runs these two as its held commands `streams update` and `streams census`. `gcp:ClusteredNatsHub` and `gcp:Dispatch` take
+  `streamsOperatorMade`, default `false`, which renders the variable on their listener and Dispatch
+  containers. The dev stack's `--callout` mode makes its streams as natsd's own admin user. Without a
+  callout, every static grant set renders as before.
+time: 2026-11-21T02:35:03Z
+custom:
+    Issue: streams-operator-made

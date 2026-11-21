@@ -411,6 +411,12 @@ type DispatchArgs struct {
 	// the largest. Unset renders nothing and both binaries set no limit, so a deployed stream keeps
 	// the one it has (bus.ParseStreamMaxBytes).
 	StreamMaxBytes *int `pulumi:"streamMaxBytes,optional"`
+	// StreamsOperatorMade is whether Dispatch runs beside the NATS auth service, which answers no
+	// client but the operator with a stream create or update: true renders
+	// ENVOY_STREAMS_OPERATOR_MADE=1 on the same two containers, so each start reads its streams and
+	// makes none, and the operator's `envoy-infra streams update` makes them. Unset or false
+	// renders nothing, as before. The deployment's apply sets it together with the callout.
+	StreamsOperatorMade *bool `pulumi:"streamsOperatorMade,optional"`
 	// SenderMessagesPerMinute and SenderMessageBurst limit the messages each agent session sends
 	// through the listener: ENVOY_SENDER_MESSAGES_PER_MINUTE, from 1 to 60000, and
 	// ENVOY_SENDER_MESSAGE_BURST, at least 1 and only with a rate, on the listener's container
@@ -735,6 +741,7 @@ type dispatchSettings struct {
 	frontDoorReplicas, listenerReplicas         int
 	natsInCluster                               bool
 	natsReplicas, streamMaxBytes                int
+	streamsOperatorMade                         bool
 	senderMessagesPerMinute, senderMessageBurst int
 	signingKeyGenerations                       []int
 	appResources                                dispatchAppResources
@@ -1088,6 +1095,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"natsInCluster", args.NatsInCluster != nil},
 		{"natsReplicas", args.NatsReplicas != nil},
 		{"streamMaxBytes", args.StreamMaxBytes != nil},
+		{"streamsOperatorMade", args.StreamsOperatorMade != nil},
 		{"senderMessagesPerMinute", args.SenderMessagesPerMinute != nil},
 		{"senderMessageBurst", args.SenderMessageBurst != nil},
 		{"signingKeyGenerations", len(args.SigningKeyGenerations) > 0},
@@ -1888,6 +1896,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		}
 		s.streamMaxBytes = *args.StreamMaxBytes
 	}
+	s.streamsOperatorMade = args.StreamsOperatorMade != nil && *args.StreamsOperatorMade
 	// The listener's sender limit, which the app does not read. It is checked here, before anything
 	// registers: dispatchListenerEnv runs only once natsUrl resolves, and reports every refusal of
 	// core's as natsUrl's.

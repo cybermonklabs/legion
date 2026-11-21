@@ -943,6 +943,30 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("stream = %+v, %v; want a byte limit of %d discarding new", info, err, 1<<20)
 			}
 		},
+		"ENVOY_STREAMS_OPERATOR_MADE": func(t *testing.T) {
+			if err := natsConnect(map[string]string{"ENVOY_STREAMS_OPERATOR_MADE": "yes"}, localNATS); err == nil || !strings.Contains(err.Error(), `invalid ENVOY_STREAMS_OPERATOR_MADE "yes"`) {
+				t.Errorf("ENVOY_STREAMS_OPERATOR_MADE=yes: connect = %v, want the value refused by name", err)
+			}
+			// Its reader: the publisher main builds (dispatchStreamOptions), against a server with no
+			// stream, reads it and makes none: its first connection's reconcile fails naming the
+			// stream and the operator's command, and the server is left with no stream.
+			_, url := testnats.Start(t)
+			start := connectDispatchStream(t, []string{url}, map[string]string{"ENVOY_STREAMS_OPERATOR_MADE": "1"})
+			failure := start.awaitHookFailure(t)
+			start.client.Close()
+			if !strings.Contains(failure.Error, bus.Stream) || !strings.Contains(failure.Error, "envoy-infra streams update") {
+				t.Errorf("ENVOY_STREAMS_OPERATOR_MADE=1: the first reconcile failed %q, want it to name %s and envoy-infra streams update", failure.Error, bus.Stream)
+			}
+			admin := testnats.Connect(t, url)
+			defer admin.Close()
+			js, err := admin.JetStream()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := js.StreamInfo(bus.Stream); !errors.Is(err, natsgo.ErrStreamNotFound) {
+				t.Errorf("ENVOY_STREAMS_OPERATOR_MADE=1: the stream after Dispatch's start: %v, want none made", err)
+			}
+		},
 		"NATS_NKEY_SEED": func(t *testing.T) {
 			if err := natsConnect(map[string]string{"NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_NKEY_SEED does not hold a valid nkey seed") {
 				t.Errorf("NATS_NKEY_SEED: err = %v, want the seed refused", err)

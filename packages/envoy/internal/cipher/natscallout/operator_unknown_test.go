@@ -55,7 +55,7 @@ func TestNoOneButTheOperatorGetsTheOperatorGrant(t *testing.T) {
 	r.makeStreams(t, 1, 16, 0)
 	listener := connectService(t, r.cluster.URL(), hourLong(listenerAccount), "")
 	decided := r.decisions.after(t, listenerName, 0)
-	require.Equal(t, natsgrant.Listener("example-hub"), decided.Grant, "the listener %s was not decided with its own grant", listenerAccount)
+	require.Equal(t, natsgrant.ForCallout(natsgrant.Listener("example-hub")), decided.Grant, "the listener %s was not decided with its own grant", listenerAccount)
 	listener.refused(t, "$JS.API.STREAM.DELETE."+kvBucket(bus.SessionBucket), nil)
 
 	_, err := connectSession(t, r.cluster.URL(), a, nil)
@@ -103,10 +103,10 @@ func tE3Rows(t *testing.T, now time.Time, a *session) []tE3Row {
 	t.Helper()
 	return []tE3Row{
 		{"a session", a.request(t, "nonce"), Decision{Name: "session/ses_a", Grant: must(natsgrant.Session("ses_a")), Expires: time.Unix(a.answer.ExpiresAt, 0)}, ""},
-		{"dispatch", serviceRequest("dispatch-token"), Decision{Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch"), Expires: now.Add(time.Hour)}, ""},
-		{"a listener", serviceRequest("listener-token"), Decision{Name: listenerName, Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)}, ""},
-		{"a daemon", serviceRequest("daemon-token"), Decision{Name: "daemon/" + daemonAccount, Grant: natsgrant.Daemon(), Expires: now.Add(30 * time.Minute)}, ""},
-		{"measure", serviceRequest("measure-token"), Decision{Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)}, ""},
+		{"dispatch", serviceRequest("dispatch-token"), Decision{Name: "dispatch/example-dispatch", Grant: natsgrant.ForCallout(natsgrant.Dispatch("example-dispatch")), Expires: now.Add(time.Hour)}, ""},
+		{"a listener", serviceRequest("listener-token"), Decision{Name: listenerName, Grant: natsgrant.ForCallout(natsgrant.Listener("example-hub")), Expires: now.Add(time.Hour)}, ""},
+		{"a daemon", serviceRequest("daemon-token"), Decision{Name: "daemon/" + daemonAccount, Grant: natsgrant.ForCallout(natsgrant.Daemon()), Expires: now.Add(30 * time.Minute)}, ""},
+		{"measure", serviceRequest("measure-token"), Decision{Name: "measure/" + measureAccount, Grant: natsgrant.ForCallout(natsgrant.Measure()), Expires: now.Add(time.Hour)}, ""},
 		{"no credential", Request{UserNkey: "UUSER", ServerID: "NSERVER"}, Decision{}, labelNoCredential},
 		{"an unlisted service", serviceRequest("unlisted-token"), Decision{}, labelServiceNotListed},
 		{"a two-hour token", serviceRequest("two-hours-token"), Decision{}, labelTokenTooLong},

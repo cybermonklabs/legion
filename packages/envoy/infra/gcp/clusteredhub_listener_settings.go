@@ -73,6 +73,9 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 		if args.NatsReplicas != nil {
 			return nil, nil, core.InputErrorf("natsReplicas", "natsReplicas is given without a session listener (listener or tailnet.listener), which alone takes it (ENVOY_NATS_REPLICAS)")
 		}
+		if args.StreamsOperatorMade != nil {
+			return nil, nil, core.InputErrorf("streamsOperatorMade", "streamsOperatorMade is given without a session listener (listener or tailnet.listener), which alone takes it (ENVOY_STREAMS_OPERATOR_MADE)")
+		}
 		return nil, nil, nil
 	}
 	if !imageRule.MatchString(l.Image) {
@@ -157,6 +160,7 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 		StreamMaxBytes:          s.streamMaxBytes,
 		SenderMessagesPerMinute: rate,
 		SenderMessageBurst:      burst,
+		StreamsOperatorMade:     args.StreamsOperatorMade != nil && *args.StreamsOperatorMade,
 	}).Env([]string{s.serviceURL}); err != nil {
 		return nil, nil, err
 	}

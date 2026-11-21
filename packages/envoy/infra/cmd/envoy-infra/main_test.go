@@ -100,7 +100,7 @@ func TestVersionStandsAlone(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Errorf("stdout %q, want none", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "envoy-infra: the command is seed or render, or --version alone\n") {
+	if !strings.Contains(stderr.String(), "envoy-infra: the command is seed, render or streams, or --version alone\n") {
 		t.Errorf("stderr %q does not say what the command takes", stderr.String())
 	}
 	if strings.Contains(stderr.String(), canary) {
