@@ -686,7 +686,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 const pullRequestColumns = `issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 	failing, cancelled, check_runs,
 	generation, snapshot, statuses, pushes, head_moves, head_run, review_seen, review_seen_at, state,
-	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha, conflict_read, merge_forward`
+	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha, conflict_read, merge_forward, excluded_runs`
 
 func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
 	pr, err := scanPullRequest(tx.QueryRow(ctx, "select "+pullRequestColumns+" from pull_requests where issue = $1", issue))
@@ -867,6 +867,10 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: encode moves: %w", pr.Issue, err)
 	}
+	excludedRuns, err := json.Marshal(append([]AttemptRun{}, pr.ExcludedRuns...))
+	if err != nil {
+		return fmt.Errorf("put pull request for %s: encode excluded check runs: %w", pr.Issue, err)
+	}
 	// No head run is null.
 	var run []byte
 	if pr.Run != nil {
@@ -896,9 +900,9 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 		failing, cancelled, check_runs, generation, snapshot, statuses, pushes, head_moves,
 		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha,
-		conflict_read, merge_forward, fix_attempts, blocked_attempts, head_counted)
+		conflict_read, merge_forward, excluded_runs, fix_attempts, blocked_attempts, head_counted)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-		$27, $28, 0, 0, '')
+		$27, $28, $29, 0, 0, '')
 		on conflict (issue) do update set repo = excluded.repo, number = excluded.number, branch = excluded.branch,
 		base = excluded.base, base_moved = excluded.base_moved,
 		head_sha = excluded.head_sha, head_updated_at = excluded.head_updated_at,
@@ -909,12 +913,12 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 		review_seen_at = excluded.review_seen_at, state = excluded.state, checked_head = excluded.checked_head,
 		mergeability = excluded.mergeability, merge_state = excluded.merge_state, state_read_at = excluded.state_read_at,
 		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha,
-		conflict_read = excluded.conflict_read, merge_forward = excluded.merge_forward`,
+		conflict_read = excluded.conflict_read, merge_forward = excluded.merge_forward, excluded_runs = excluded.excluded_runs`,
 		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.Base, pr.BaseMoved, pr.HeadSHA, pr.HeadUpdatedAt,
 		failing, cancelled, checkRuns,
 		pr.Generation, pr.Snapshot, statuses, pushes, moves, run,
 		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead,
-		pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ConflictingHead, pr.MergeSHA, conflictRead, mergeForward,
+		pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ConflictingHead, pr.MergeSHA, conflictRead, mergeForward, excludedRuns,
 	)
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: %w", pr.Issue, err)
@@ -1454,8 +1458,9 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 	for _, statement := range []string{
 		"delete from pull_requests where " + where + " and state <> 'open'",
 		// An open pull request is kept across a new generation, but the last one's reading of it is
-		// not: its checks settlement is of a head nobody has judged since, and the
-		// review round's decision goes with the phases below, and so does its head run, whose
+		// not: its checks settlement, with the check runs it excluded (excluded_runs), is of a head
+		// nobody has judged since, and the review round's decision goes with the phases below, and so
+		// does its head run, whose
 		// replay would put the old generation's judgement back. Its pushes stay, each a fact about
 		// two commits, and so does its newest review, which orders every review it will have, and
 		// the checks its base branch requires, which belong to the base, not the generation. So
@@ -1471,7 +1476,7 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// confirmed conflict, whether to ask again.
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
-			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where " + where,
+			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, excluded_runs = '[]'::jsonb, merge_forward = null where " + where,
 		// The entry's task goes with the run, and the entry itself stays where it stands: the
 		// number is never reset, so a worker still holding the old entry's task is behind the row
 		// rather than level with it, and the re-admitted tree's promotion raises the entry again
@@ -1528,12 +1533,12 @@ func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, descri
 
 func scanPullRequest(row scanner) (*PullRequest, error) {
 	var pr PullRequest
-	var failing, cancelled, checkRuns, statuses, pushes, moves, run, conflictRead, mergeForward []byte
+	var failing, cancelled, checkRuns, statuses, pushes, moves, run, conflictRead, mergeForward, excludedRuns []byte
 	if err := row.Scan(&pr.Issue, &pr.Repo, &pr.Number, &pr.Branch, &pr.Base, &pr.BaseMoved, &pr.HeadSHA, &pr.HeadUpdatedAt,
 		&failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot, &statuses,
 		&pushes, &moves, &run, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
 		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.StateReadAt, &pr.ConflictingHead, &pr.MergeSHA,
-		&conflictRead, &mergeForward); err != nil {
+		&conflictRead, &mergeForward, &excludedRuns); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(failing, &pr.Failing); err != nil {
@@ -1553,6 +1558,14 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	}
 	if err := json.Unmarshal(moves, &pr.Moves); err != nil {
 		return nil, fmt.Errorf("decode moves: %w", err)
+	}
+	// No excluded run reads as nil, as classify leaves it (record.PullRequest.ExcludedRuns), though
+	// the column holds the empty list.
+	if err := json.Unmarshal(excludedRuns, &pr.ExcludedRuns); err != nil {
+		return nil, fmt.Errorf("decode excluded check runs: %w", err)
+	}
+	if len(pr.ExcludedRuns) == 0 {
+		pr.ExcludedRuns = nil
 	}
 	if run != nil {
 		if err := json.Unmarshal(run, &pr.Run); err != nil {

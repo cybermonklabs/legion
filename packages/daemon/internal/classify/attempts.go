@@ -51,9 +51,11 @@ func CompareAttemptSets(stored, incoming []record.AttemptRun) AttemptSetOrder {
 // highest id over both sets, sorted by name. The run is kept whole - its id, the head GitHub
 // reported it on and what it concluded - because those facts belong to one run, and a name that
 // took the id of one run and the conclusion of another would report a conclusion no run of it
-// ever had. Nothing is pruned, so a check a settlement leaves out keeps its run, and an older
-// view of that check stays older. An equal id is the same run reported again and the later report
-// is taken, which is how a run stored before it carried a head and a conclusion gains them.
+// ever had. Nothing is pruned here, so a check a settlement leaves out keeps its run, and an older
+// view of that check stays older; the one run that leaves the fence is a run the listener excluded,
+// which ApplySettlement takes out of both sets before they are merged (withoutExcluded). An equal
+// id is the same run reported again and the later report is taken, which is how a run stored
+// before it carried a head and a conclusion gains them.
 func mergeAttemptSets(stored, incoming []record.AttemptRun) []record.AttemptRun {
 	merged := make(map[string]record.AttemptRun, len(stored)+len(incoming))
 	for _, set := range [][]record.AttemptRun{stored, incoming} {

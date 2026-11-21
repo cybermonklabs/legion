@@ -107,6 +107,12 @@ import (
 // is applied after all of these and touches no outbox_kind_check: it adds columns to
 // dispatch_issues at their defaults, an index on its parent, and a refill mark for each project the
 // copy holds rows of.
+// The pull request's excluded check runs (20261121083932) stand above every version this list
+// named before them, so each sentence above that names a version as the last of the list was
+// written of the list before them: an upgrade of a database main migrated applies them after all
+// of the others. The migration adds pull_requests.excluded_runs at its default, the empty list, on
+// every row it finds, and touches no outbox_kind_check, so it needs no row of its own here
+// (migration_20261121083932_test.go reads it).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -116,7 +122,7 @@ var thisBranchsMigrations = []int{
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117064152, 20261117112334, 20261117200337, 20261119003157,
-	20261120042902, 20261120055717,
+	20261120042902, 20261120055717, 20261121083932,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its

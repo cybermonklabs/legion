@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
@@ -21,12 +23,16 @@ const maxPages = 100
 // Writer is the CI record store a pass writes through: the listener's bucket bound by
 // cistore.OpenWriter, which creates nothing. It is an interface rather than the writer itself so
 // that a caller may put its own writer in the pass's way, as every other collaborator of a
-// Reconciler is its caller's to choose; *cistore.Writer satisfies it. Its three record calls
+// Reconciler is its caller's to choose; *cistore.Writer satisfies it. Its four record calls
 // answer whether the observation changed the head's record, which is how the pass knows a head to
-// count.
+// count, and a check run's or a check suite's call also answers whether the record holds the event
+// of the observation's suite's workflow run (cistore.Recorded), which is what the pass names a
+// suite by (record). RecordRunEvent records that event alone, for a suite still running
+// (recordListing).
 type Writer interface {
-	Record(context.Context, contracts.CIObservation) (bool, error)
-	RecordSuite(context.Context, contracts.CIObservation) (bool, error)
+	Record(context.Context, contracts.CIObservation) (cistore.Recorded, error)
+	RecordSuite(context.Context, contracts.CIObservation) (cistore.Recorded, error)
+	RecordRunEvent(context.Context, contracts.CIObservation) (bool, error)
 	RecordStatus(context.Context, contracts.StatusObservation) (bool, error)
 	HasRecord(owner, repo, number, sha string) (bool, error)
 }
@@ -158,10 +164,11 @@ func readPages[T any](ctx context.Context, r *Reconciler, c *counts, tally *int,
 
 // readHead reads one head's check runs and check suites and records what GitHub holds that the
 // listener's record of that head lacks, and then, where the head's token holds Commit statuses,
-// its commit statuses (readStatuses). It answers the stop a rate limit ended the pass at, and nil
-// for every other outcome: a head the pass could not read is named at WARN and the pass goes on
-// to the next.
-func (r *Reconciler) readHead(ctx context.Context, writer Writer, head pullHead, c *counts) *stop {
+// its commit statuses (readStatuses). events is the workflow run event of each suite the query
+// answered of this head (queryHead.events), which record writes before the listings. It answers
+// the stop a rate limit ended the pass at, and nil for every other outcome: a head the pass could
+// not read is named at WARN and the pass goes on to the next.
+func (r *Reconciler) readHead(ctx context.Context, writer Writer, head pullHead, events map[string]string, c *counts) *stop {
 	kept := r.kept(writer, head)
 	runs, err := readPages(ctx, r, c, &c.headRequests, kept.runs, func(ctx context.Context, page int, etag string) (conditionalPage[object], error) {
 		answer, err := r.GitHub.CommitCheckRuns(ctx, head.token, head.owner, head.repo, head.sha, page, etag)
@@ -188,7 +195,7 @@ func (r *Reconciler) readHead(ctx context.Context, writer Writer, head pullHead,
 		// leaves the next pass to read it on the same ETags.
 		hold.statuses = kept.statuses
 	}
-	changed, ok := r.recordHead(ctx, writer, head, runs, suites, nil, kept, hold, c)
+	changed, ok := r.recordHead(ctx, writer, head, false, events, runs, suites, nil, kept, hold, c)
 	if !ok {
 		// Both check listings were read, and a write of them did not land: the head was read,
 		// and recordHead dropped what the pass held of it.
@@ -359,14 +366,17 @@ func (r *Reconciler) headFailed(ctx context.Context, err error, head pullHead, c
 // the status read -- GitHub refusing it, a rate limit, or the pass's own ending -- takes those
 // from the head.
 //
-// hold is what the read itself has to keep -- the ETags of the listings, or the fingerprint of
-// the query's answer -- and kept is what the pass held of the head before this read, which is
-// where the observed flag carries on from. It answers whether a write changed the head's record,
-// and whether every write landed: one that did not must be hidden behind neither an ETag nor a
-// fingerprint, so the pass then holds nothing of the head and the next reads it in full and
-// writes it again.
-func (r *Reconciler) recordHead(ctx context.Context, writer Writer, head pullHead, runs, suites, statuses []pageOf[object], kept, hold headState, c *counts) (changedRecord, ok bool) {
-	wanted, changedRecord, ok := r.record(ctx, writer, head, runs, suites, statuses)
+// queried says GitHub's GraphQL answer carried the head (walk.visitHead), whose every suite
+// carries its workflow run's event or null, and is false for a head read over REST, whose listings
+// carry no event (record). events is, for a head read over REST, the events of its suites the
+// query answered (queryHead.events). hold is what the read itself has to keep -- the ETags of the
+// listings, or the fingerprint of the query's answer -- and kept is what the pass held of the head
+// before this read, which is where the observed flag carries on from. It answers whether a write
+// changed the head's record, and whether every write landed: one that did not must be hidden
+// behind neither an ETag nor a fingerprint, so the pass then holds nothing of the head and the
+// next reads it in full and writes it again.
+func (r *Reconciler) recordHead(ctx context.Context, writer Writer, head pullHead, queried bool, events map[string]string, runs, suites, statuses []pageOf[object], kept, hold headState, c *counts) (changedRecord, ok bool) {
+	wanted, changedRecord, ok := r.record(ctx, writer, head, queried, events, runs, suites, statuses)
 	if changedRecord {
 		// A head's runs, suites and statuses all write the one record cistore.Key names, so a
 		// head whose writes changed that record counts once here however many of them changed
@@ -387,13 +397,14 @@ func (r *Reconciler) recordHead(ctx context.Context, writer Writer, head pullHea
 
 // listing is one of the two check listings a head's record is written from, as recordListing
 // walks either of them: the event name contracts.GithubCIObservation maps its objects under, the
-// store call an observation of it is written with, how a WARN about one of them names it, and
+// store call an observation of it is written with, how a WARN about one of them names it,
 // whether its observations go through the review App's rule, which reads a check's name and so
-// is the runs' alone. A head's commit statuses are the third listing, which maps and writes
-// through calls of its own (recordStatuses).
+// is the runs' alone, and whether the event of the workflow run of an object that is not
+// completed is recorded on its own, which is the suites' alone. A head's commit statuses are the
+// third listing, which maps and writes through calls of its own (recordStatuses).
 type listing struct {
 	event string
-	write func(context.Context, Writer, contracts.CIObservation) (bool, error)
+	write func(context.Context, Writer, contracts.CIObservation) (cistore.Recorded, error)
 	// what and label are how a failed write names this listing and the object it could not
 	// write: `did not record a check run` with the run's own name under `check`, `did not
 	// record a check suite` with the suite's id under `suite`.
@@ -401,6 +412,10 @@ type listing struct {
 	label   string
 	nameOf  func(contracts.CIObservation) string
 	verdict bool
+	// runEvent says a running object's workflow run event is recorded alone (recordListing).
+	// The suites listing names each suite once, and a suite's runs share its event, so one write
+	// for each running suite is enough.
+	runEvent bool
 }
 
 // checkRuns and checkSuites are those two listings. Each is built once rather than at every
@@ -416,21 +431,29 @@ var (
 		verdict: true,
 	}
 	checkSuites = listing{
-		event:  "check_suite",
-		write:  recordSuite,
-		what:   "check suite",
-		label:  "suite",
-		nameOf: func(observation contracts.CIObservation) string { return observation.SuiteID },
+		event:    "check_suite",
+		write:    recordSuite,
+		what:     "check suite",
+		label:    "suite",
+		nameOf:   func(observation contracts.CIObservation) string { return observation.SuiteID },
+		runEvent: true,
 	}
 )
 
-func recordRun(ctx context.Context, writer Writer, observation contracts.CIObservation) (bool, error) {
+func recordRun(ctx context.Context, writer Writer, observation contracts.CIObservation) (cistore.Recorded, error) {
 	return writer.Record(ctx, observation)
 }
 
-func recordSuite(ctx context.Context, writer Writer, observation contracts.CIObservation) (bool, error) {
+func recordSuite(ctx context.Context, writer Writer, observation contracts.CIObservation) (cistore.Recorded, error) {
 	return writer.RecordSuite(ctx, observation)
 }
+
+// The two lines a pass writes about the GitHub Actions suites of a head whose workflow run's event
+// the CI record does not hold, once it has written them (record).
+const (
+	eventlessQueriedLine = "ci reconcile counts check suites whose workflow run event neither GitHub's answer nor the CI record holds"
+	eventlessRESTLine    = "ci reconcile counts check suites of a head read over REST whose workflow run event the CI record does not hold"
+)
 
 // record writes every observation the rules say to record from the pages GitHub answered 200
 // with, under the pull request's number and the owner and name GitHub itself gave. wanted counts
@@ -440,11 +463,69 @@ func recordSuite(ctx context.Context, writer Writer, observation contracts.CIObs
 // listener already holds changes none. ok is false when a write failed and a later pass might
 // make it land, which is every failure but a refusal (refused); it is what makes the pass drop
 // this head's ETags.
-func (r *Reconciler) record(ctx context.Context, writer Writer, head pullHead, runs, suites, statuses []pageOf[object]) (wanted int, changedRecord, ok bool) {
-	wantedRuns, changedRuns, runsOK := r.recordListing(ctx, writer, head, runs, checkRuns)
-	wantedSuites, changedSuites, suitesOK := r.recordListing(ctx, writer, head, suites, checkSuites)
+//
+// The events a query answered of a head it sends to REST (events) are written first, each alone
+// (Writer.RecordRunEvent), where a page of the head's listings answered anything new, so the store
+// judges the listings' check runs by them: no REST listing carries an event. A head whose pages
+// all answered 304 writes nothing, its events included, which the pass that read those pages wrote.
+//
+// A GitHub Actions suite the record holds no event for after the pass wrote it (the store's
+// answer, cistore.Recorded.EventUnknown) is counted by the CI store as every suite was before it
+// read events, so a check run of a run GitHub does not count for the pull request can stand for
+// its name there. The pass names those suites once for the head, with the repository, the pull
+// request, the head's sha and the suites' ids, by what it read: at WARN, eventlessQueriedLine, for
+// a head a query answered (queried), where GitHub answered those suites' workflowRun null; at
+// INFO, eventlessRESTLine, for a head read over REST, whose listings carry no event, which is no
+// fault. A suite whose event the record holds, which the listener took from the run's own
+// webhook or the pass from its query, is named in neither, and a head whose every Actions suite's
+// event the record holds gets no line. A suite is judged by the store's answer to the last write
+// of it, so an event the listener records between two writes of the pass counts.
+func (r *Reconciler) record(ctx context.Context, writer Writer, head pullHead, queried bool, events map[string]string, runs, suites, statuses []pageOf[object]) (wanted int, changedRecord, ok bool) {
+	ok = true
+	if len(events) > 0 && (!everyPageNotModified(runs) || !everyPageNotModified(suites)) {
+		ids := make([]string, 0, len(events))
+		for id := range events {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+		for _, id := range ids {
+			changed, landed := r.recordRunEvent(ctx, writer, head, id, events[id])
+			changedRecord = changedRecord || changed
+			ok = ok && landed
+		}
+	}
+	var eventless map[string]struct{}
+	wantedRuns, changedRuns, runsOK := r.recordListing(ctx, writer, head, runs, checkRuns, &eventless)
+	wantedSuites, changedSuites, suitesOK := r.recordListing(ctx, writer, head, suites, checkSuites, &eventless)
 	wantedStatuses, changedStatuses, statusesOK := r.recordStatuses(ctx, writer, head, statuses)
-	return wantedRuns + wantedSuites + wantedStatuses, changedRuns || changedSuites || changedStatuses, runsOK && suitesOK && statusesOK
+	if len(eventless) > 0 {
+		ids := make([]string, 0, len(eventless))
+		for id := range eventless {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+		if queried {
+			r.Logger.Warn(eventlessQueriedLine, "repository", head.repository(), "pr", head.number, "sha", head.sha, "suites", ids)
+		} else {
+			r.Logger.Info(eventlessRESTLine, "repository", head.repository(), "pr", head.number, "sha", head.sha, "suites", ids)
+		}
+	}
+	return wantedRuns + wantedSuites + wantedStatuses, changedRecord || changedRuns || changedSuites || changedStatuses, ok && runsOK && suitesOK && statusesOK
+}
+
+// recordRunEvent writes the workflow run event of one check suite of head alone
+// (Writer.RecordRunEvent), and answers whether that changed the head's record and whether the
+// write landed or was refused, as recordListing's ok does. A failed write is named at WARN.
+func (r *Reconciler) recordRunEvent(ctx context.Context, writer Writer, head pullHead, suite, event string) (changed, ok bool) {
+	changed, err := writer.RecordRunEvent(ctx, contracts.CIObservation{
+		Owner: head.owner, Repo: head.repo, Number: head.number, SHA: head.sha, SuiteID: suite, RunEvent: event,
+	})
+	if err != nil {
+		r.Logger.Warn("ci reconcile did not record the workflow run event of a check suite",
+			"suite", suite, "event", event, "repository", head.repository(), "pr", head.number, "sha", head.sha, "error", err)
+		return false, refused(err)
+	}
+	return changed, true
 }
 
 // recordStatuses writes each commit status of the pages GitHub answered 200 with whose state the
@@ -483,8 +564,11 @@ func (r *Reconciler) recordStatuses(ctx context.Context, writer Writer, head pul
 }
 
 // recordListing writes one of those two listings, page by page and object by object, and
-// answers for that listing what record answers for the head.
-func (r *Reconciler) recordListing(ctx context.Context, writer Writer, head pullHead, pages []pageOf[object], of listing) (wanted int, changedRecord, ok bool) {
+// answers for that listing what record answers for the head. Each GitHub Actions suite whose event
+// the store answers that the record does not hold after a write of an object of it is added to
+// eventless, which it makes when it adds the first, and one whose event the store answers it holds
+// is taken out, so the store's answer to the last write of a suite is the one that stands.
+func (r *Reconciler) recordListing(ctx context.Context, writer Writer, head pullHead, pages []pageOf[object], of listing, eventless *map[string]struct{}) (wanted int, changedRecord, ok bool) {
 	ok = true
 	for _, page := range pages {
 		if !page.modified {
@@ -496,21 +580,53 @@ func (r *Reconciler) recordListing(ctx context.Context, writer Writer, head pull
 				continue
 			}
 			// Only a completed object is recorded. cistore refuses to settle a head while any
-			// check its record holds is queued or running, and nothing ever takes a check out of
-			// a record, so one run left queued at that commit -- an attempt GitHub abandoned, a
-			// job nobody ran -- would stop ci-ok ever reaching the daemon for that head, which is
-			// the failure this pass exists to mend, and a suite that is not completed holds the
-			// head exactly as a queued run does (cistore's settlementReady). The listener records
-			// a running run because the event completing it follows; a pass reading a listing has
-			// no such promise.
+			// check its record holds is queued or running, and a check leaves a record only when
+			// its run turns out to be one GitHub does not count for the pull request, so one run
+			// left queued at that commit -- an attempt GitHub abandoned, a job nobody ran -- would
+			// stop ci-ok ever reaching the daemon for that head, which is the failure this pass
+			// exists to mend, and a suite that is not completed holds the head exactly as a queued
+			// run does (cistore's settlementReady). The listener records a running run because the
+			// event completing it follows; a pass reading a listing has no such promise.
+			//
+			// Two writes of an object that is not completed are made all the same, since neither
+			// can record a running object the head would wait on. The event that started a
+			// running suite's workflow run is recorded on its own (Writer.RecordRunEvent), with
+			// nothing else of the suite: an event never changes, so it is as true of the suite now
+			// as once it completes, and a suite GitHub does not count leaves the record with the
+			// running suite and check runs the listener recorded of it, which would otherwise hold
+			// the head unsettled until that run ends. And a running check run whose suite's event
+			// the store does not count (cistore.EventCounted) is written: the store records no
+			// such run, so the write can only take out a run the record holds of that id, which a
+			// record written before the store kept a check's suite holds with no suite, where the
+			// suite's own event reaches no run. The listener learns the same events from each
+			// run's workflow_run webhook; these are the copies for a webhook it never got.
 			if observation.Status != "completed" {
+				switch {
+				case observation.RunEvent == "" || observation.SuiteID == "":
+				case of.runEvent:
+					changed, landed := r.recordRunEvent(ctx, writer, head, observation.SuiteID, observation.RunEvent)
+					changedRecord = changedRecord || changed
+					ok = ok && landed
+				case !cistore.EventCounted(observation.RunEvent):
+					recorded, err := of.write(ctx, writer, observation)
+					if err != nil {
+						if !refused(err) {
+							ok = false
+						}
+						r.Logger.Warn("ci reconcile did not record a "+of.what,
+							of.label, of.nameOf(observation), "repository", head.repository(),
+							"pr", head.number, "sha", head.sha, "error", err)
+						continue
+					}
+					changedRecord = changedRecord || recorded.Changed
+				}
 				continue
 			}
 			if of.verdict && !r.recordVerdict(observation, head) {
 				continue
 			}
 			wanted++
-			changed, err := of.write(ctx, writer, observation)
+			recorded, err := of.write(ctx, writer, observation)
 			if err != nil {
 				if !refused(err) {
 					ok = false
@@ -520,9 +636,20 @@ func (r *Reconciler) recordListing(ctx context.Context, writer Writer, head pull
 					"pr", head.number, "sha", head.sha, "error", err)
 				continue
 			}
-			if changed {
+			if recorded.Changed {
 				changedRecord = true
 			}
+			if observation.SuiteID == "" || observation.AppID != contracts.GithubActionsAppID {
+				continue
+			}
+			if !recorded.EventUnknown {
+				delete(*eventless, observation.SuiteID)
+				continue
+			}
+			if *eventless == nil {
+				*eventless = map[string]struct{}{}
+			}
+			(*eventless)[observation.SuiteID] = struct{}{}
 		}
 	}
 	return wanted, changedRecord, ok

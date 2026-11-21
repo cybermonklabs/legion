@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
@@ -406,10 +407,10 @@ type mergingWriter struct {
 	merge func()
 }
 
-func (w *mergingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
-	changed, err := w.Writer.Record(ctx, observation)
+func (w *mergingWriter) Record(ctx context.Context, observation contracts.CIObservation) (cistore.Recorded, error) {
+	recorded, err := w.Writer.Record(ctx, observation)
 	if observation.Number == w.at {
 		w.merge()
 	}
-	return changed, err
+	return recorded, err
 }

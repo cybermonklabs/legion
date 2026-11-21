@@ -2,6 +2,7 @@ package cistore
 
 import (
 	"sort"
+	"strconv"
 )
 
 // category buckets a check into one of the rollup groups.
@@ -72,12 +73,23 @@ type Summary struct {
 	// CheckRuns is the settlement's attempt set: the latest check-run id per
 	// check name, sorted by name, each with GitHub's own conclusion of that run
 	// (CheckRunRef.Conclusion). Consumers order settlements of one commit by it
-	// (within one record per-name ids never decrease) and by each status's
-	// created_at (Statuses), then by Generation where neither says which is newer.
+	// (within one record per-name ids never decrease, but where a run is excluded:
+	// ExcludedCheckRuns) and by each status's created_at (Statuses), then by
+	// Generation where neither says which is newer.
 	// Consumers name a check by its conclusion word; which group a check is in
 	// stays the listener's rule (classify), so a word a consumer does not know
 	// still lands in one group.
-	CheckRuns            []CheckRunRef  `json:"check_runs"`
+	CheckRuns []CheckRunRef `json:"check_runs"`
+	// ExcludedCheckRuns names, by name and id and sorted by name and then id, each check run the
+	// record once held for its name and took out because GitHub does not count its run for the
+	// pull request: a run of a workflow_dispatch run of the pull request's branch, whose event the
+	// record learned after it had counted the run (State.Excluded). Such a run is in no other part
+	// of the settlement. A consumer that keeps a name's run of highest id drops each run named here,
+	// so the lower id that stands in its place in CheckRuns is taken, and a name with no run left is
+	// no check of the head; since an event never changes, a later settlement names every run an
+	// earlier one did, and an earlier settlement delivered late brings no excluded run back. It is
+	// left out when the record excluded none, so such a head settles in the same bytes as before.
+	ExcludedCheckRuns    []CheckRunRef  `json:"excluded_check_runs,omitempty"`
 	Generation           uint64         `json:"generation"`
 	Snapshot             string         `json:"snapshot"`
 	SupersededSettlement string         `json:"superseded_settlement,omitempty"`
@@ -176,6 +188,20 @@ func renderSummary(s State) Summary {
 			status := s.Statuses[name]
 			sum.Statuses[i] = StatusRef{Context: name, State: status.State, CreatedAt: status.CreatedAt}
 		}
+	}
+	if len(s.Excluded) > 0 {
+		sum.ExcludedCheckRuns = make([]CheckRunRef, 0, len(s.Excluded))
+		for id, name := range s.Excluded {
+			runID, err := strconv.ParseUint(id, 10, 64)
+			if err != nil || runID == 0 {
+				continue
+			}
+			sum.ExcludedCheckRuns = append(sum.ExcludedCheckRuns, CheckRunRef{Name: name, ID: runID})
+		}
+		sort.Slice(sum.ExcludedCheckRuns, func(i, j int) bool {
+			a, b := sum.ExcludedCheckRuns[i], sum.ExcludedCheckRuns[j]
+			return a.Name < b.Name || (a.Name == b.Name && a.ID < b.ID)
+		})
 	}
 	if s.EmittedCount > 0 {
 		sum.SupersededSettlement = "true"

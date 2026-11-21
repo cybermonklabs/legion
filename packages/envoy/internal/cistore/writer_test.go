@@ -252,19 +252,19 @@ func TestAWriterReportsWhetherTheObservationChangedTheRecord(t *testing.T) {
 		Conclusion: "success",
 		ObservedAt: "2026-09-07T03:01:00Z",
 	}
-	changed, err := writer.Record(ctx, observation)
+	recorded, err := writer.Record(ctx, observation)
 	if err != nil {
 		t.Fatalf("the first record: %v", err)
 	}
-	if !changed {
+	if !recorded.Changed {
 		t.Fatal("the first observation of a head with no record is reported as no change")
 	}
 
-	changed, err = writer.Record(ctx, observation)
+	recorded, err = writer.Record(ctx, observation)
 	if err != nil {
 		t.Fatalf("the same record again: %v", err)
 	}
-	if changed {
+	if recorded.Changed {
 		t.Fatal("an observation the record already holds is reported as a change")
 	}
 
@@ -272,12 +272,80 @@ func TestAWriterReportsWhetherTheObservationChangedTheRecord(t *testing.T) {
 	older.ObservedAt = "2026-09-07T02:59:00Z"
 	older.Status = "in_progress"
 	older.Conclusion = ""
-	changed, err = writer.Record(ctx, older)
+	recorded, err = writer.Record(ctx, older)
 	if err != nil {
 		t.Fatalf("the older record: %v", err)
 	}
-	if changed {
+	if recorded.Changed {
 		t.Fatal("an older observation of the same check is reported as a change")
+	}
+}
+
+// A writer's Record and RecordSuite also say whether the record, once written, holds the event
+// that started the workflow run of the observation's check suite, which is how Dispatch's CI
+// reconcile names a suite the record counts with no event. A GitHub Actions run of a suite with no
+// event is unknown; an observation carrying its suite's event teaches the record that event, and
+// every later observation of the suite, which carries none, is then known; another App's run is
+// counted whatever started it and is never unknown, and so is a suite whose event GitHub does not
+// evaluate for a pull request, which the record does not count.
+func TestAWriterReportsWhetherTheRecordHoldsTheSuitesEvent(t *testing.T) {
+	ctx := context.Background()
+	_, uri := testnats.Start(t)
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("bus connect: %v", err)
+	}
+	defer client.Close()
+	openListener(t, client.Conn)
+	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"))
+	if err != nil {
+		t.Fatalf("open the writer: %v", err)
+	}
+
+	head := contracts.CIObservation{Owner: "example-org", Repo: "example-repo", Number: "42", SHA: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}
+	run := func(id uint64, name, suite, app string) contracts.CIObservation {
+		observation := head
+		observation.CheckName, observation.CheckRunID, observation.SuiteID, observation.AppID = name, id, suite, app
+		observation.Status, observation.Conclusion, observation.ObservedAt = "completed", "success", "2026-11-21T04:00:00Z"
+		return observation
+	}
+	suite := func(id, event string) contracts.CIObservation {
+		observation := head
+		observation.SuiteID, observation.AppID, observation.RunEvent = id, contracts.GithubActionsAppID, event
+		observation.Status, observation.Conclusion, observation.ObservedAt = "completed", "success", "2026-11-21T04:00:01Z"
+		return observation
+	}
+	for _, step := range []struct {
+		what    string
+		write   func() (cistore.Recorded, error)
+		unknown bool
+	}{
+		{"an Actions run of a suite with no event", func() (cistore.Recorded, error) {
+			return writer.Record(ctx, run(101, "build", "900", contracts.GithubActionsAppID))
+		}, true},
+		{"its suite, carrying the event pull_request", func() (cistore.Recorded, error) {
+			return writer.RecordSuite(ctx, suite("900", "pull_request"))
+		}, false},
+		{"another run of that suite, carrying no event", func() (cistore.Recorded, error) {
+			return writer.Record(ctx, run(102, "test", "900", contracts.GithubActionsAppID))
+		}, false},
+		{"another App's run of a suite with no event", func() (cistore.Recorded, error) {
+			return writer.Record(ctx, run(103, "deploy", "901", "57789"))
+		}, false},
+		{"an Actions suite started by workflow_dispatch", func() (cistore.Recorded, error) {
+			return writer.RecordSuite(ctx, suite("902", "workflow_dispatch"))
+		}, false},
+		{"a run of that workflow_dispatch suite", func() (cistore.Recorded, error) {
+			return writer.Record(ctx, run(104, "lint", "902", contracts.GithubActionsAppID))
+		}, false},
+	} {
+		recorded, err := step.write()
+		if err != nil {
+			t.Fatalf("%s: %v", step.what, err)
+		}
+		if recorded.EventUnknown != step.unknown {
+			t.Errorf("%s: the writer answers %+v, want EventUnknown %v", step.what, recorded, step.unknown)
+		}
 	}
 }
 
@@ -325,8 +393,8 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 		Conclusion: "success",
 		ObservedAt: "2026-09-07T03:01:00Z",
 	}
-	if changed, err := writer.Record(ctx, held); err != nil || !changed {
-		t.Fatalf("seed the record with the check the burst finds it already holding: changed = %v, %v", changed, err)
+	if recorded, err := writer.Record(ctx, held); err != nil || !recorded.Changed {
+		t.Fatalf("seed the record with the check the burst finds it already holding: %+v, %v", recorded, err)
 	}
 	newRun := held
 	newRun.CheckName = "ci-ok"
@@ -344,19 +412,19 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 		ObservedAt: "2026-09-07T03:02:05Z",
 	}
 
-	callers := []func() (bool, error){
-		func() (bool, error) { return writer.Record(ctx, newRun) },
-		func() (bool, error) { return writer.Record(ctx, newRun) },
-		func() (bool, error) { return writer.Record(ctx, held) },
-		func() (bool, error) { return writer.Record(ctx, held) },
-		func() (bool, error) { return writer.RecordSuite(ctx, newSuite) },
-		func() (bool, error) { return writer.RecordSuite(ctx, newSuite) },
+	callers := []func() (cistore.Recorded, error){
+		func() (cistore.Recorded, error) { return writer.Record(ctx, newRun) },
+		func() (cistore.Recorded, error) { return writer.Record(ctx, newRun) },
+		func() (cistore.Recorded, error) { return writer.Record(ctx, held) },
+		func() (cistore.Recorded, error) { return writer.Record(ctx, held) },
+		func() (cistore.Recorded, error) { return writer.RecordSuite(ctx, newSuite) },
+		func() (cistore.Recorded, error) { return writer.RecordSuite(ctx, newSuite) },
 	}
 	// The two observations the seeded record lacks, which is how many of the six callers can
 	// have changed it.
 	const wantChanged = 2
 
-	answers := make([]bool, len(callers))
+	recorded := make([]cistore.Recorded, len(callers))
 	failures := make([]error, len(callers))
 	// Every caller waits on one channel rather than on a sleep, so they reach the record
 	// together whatever the machine is doing, and the test waits for all six rather than for a
@@ -368,19 +436,27 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 		go func() {
 			defer running.Done()
 			<-start
-			answers[i], failures[i] = call()
+			recorded[i], failures[i] = call()
 		}()
 	}
 	close(start)
 	running.Wait()
 
 	changed := 0
-	for i, answer := range answers {
+	answers := make([]bool, len(callers))
+	for i, answer := range recorded {
 		if failures[i] != nil {
 			t.Fatalf("caller %d of the burst: %v", i, failures[i])
 		}
-		if answer {
+		answers[i] = answer.Changed
+		if answer.Changed {
 			changed++
+		}
+		// Each of the six observations is of a suite whose event the record does not hold, or of
+		// no suite at all, and of GitHub Actions or of no App: each caller is told so, from the
+		// write that carried its observation, whichever caller wrote that batch.
+		if !answer.EventUnknown {
+			t.Errorf("caller %d of the burst is told the record holds its suite's event: %+v", i, answer)
 		}
 	}
 	if changed != wantChanged {

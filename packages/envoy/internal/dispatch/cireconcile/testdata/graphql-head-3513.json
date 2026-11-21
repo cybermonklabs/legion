@@ -1,0 +1,1370 @@
+{
+  "data": {
+    "rateLimit": {
+      "cost": 1
+    },
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "number": 3513,
+            "commits": {
+              "nodes": [
+                {
+                  "commit": {
+                    "oid": "a368687e3a5a316f04533f1e83715eaf5e5663f7",
+                    "checkSuites": {
+                      "pageInfo": {
+                        "hasNextPage": false
+                      },
+                      "nodes": [
+                        {
+                          "databaseId": 121419684348,
+                          "app": {
+                            "databaseId": 5341243
+                          },
+                          "status": "QUEUED",
+                          "conclusion": null,
+                          "updatedAt": "2026-11-21T03:18:58Z",
+                          "workflowRun": null,
+                          "checkRuns": {
+                            "pageInfo": {
+                              "hasNextPage": false
+                            },
+                            "nodes": []
+                          }
+                        },
+                        {
+                          "databaseId": 121419706655,
+                          "app": {
+                            "databaseId": 15368
+                          },
+                          "status": "COMPLETED",
+                          "conclusion": "SUCCESS",
+                          "updatedAt": "2026-11-21T03:27:34Z",
+                          "workflowRun": {
+                            "event": "pull_request"
+                          },
+                          "checkRuns": {
+                            "pageInfo": {
+                              "hasNextPage": false
+                            },
+                            "nodes": [
+                              {
+                                "databaseId": 136712492405,
+                                "name": "Analyze (python)",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:20:35Z",
+                                "completedAt": "2026-11-21T03:21:34Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489318/job/136712492405"
+                              },
+                              {
+                                "databaseId": 136712492329,
+                                "name": "Analyze (actions)",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:20:35Z",
+                                "completedAt": "2026-11-21T03:21:25Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489318/job/136712492329"
+                              },
+                              {
+                                "databaseId": 136712492248,
+                                "name": "Analyze (javascript-typescript)",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:20:29Z",
+                                "completedAt": "2026-11-21T03:25:13Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489318/job/136712492248"
+                              },
+                              {
+                                "databaseId": 136712492015,
+                                "name": "Analyze (go)",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:20:17Z",
+                                "completedAt": "2026-11-21T03:27:33Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489318/job/136712492015"
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "databaseId": 121419706669,
+                          "app": {
+                            "databaseId": 15368
+                          },
+                          "status": "COMPLETED",
+                          "conclusion": "SUCCESS",
+                          "updatedAt": "2026-11-21T03:19:34Z",
+                          "workflowRun": {
+                            "event": "pull_request"
+                          },
+                          "checkRuns": {
+                            "pageInfo": {
+                              "hasNextPage": false
+                            },
+                            "nodes": [
+                              {
+                                "databaseId": 136712492062,
+                                "name": "workflow-files",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:19:20Z",
+                                "completedAt": "2026-11-21T03:19:33Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489330/job/136712492062"
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "databaseId": 121419706765,
+                          "app": {
+                            "databaseId": 15368
+                          },
+                          "status": "COMPLETED",
+                          "conclusion": "FAILURE",
+                          "updatedAt": "2026-11-21T03:47:21Z",
+                          "workflowRun": {
+                            "event": "pull_request"
+                          },
+                          "checkRuns": {
+                            "pageInfo": {
+                              "hasNextPage": false
+                            },
+                            "nodes": [
+                              {
+                                "databaseId": 136712492671,
+                                "name": "harness lane, round 2",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:24:03Z",
+                                "completedAt": "2026-11-21T03:43:23Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489360/job/136712492671"
+                              },
+                              {
+                                "databaseId": 136712492643,
+                                "name": "harness lane, round 1",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:24:57Z",
+                                "completedAt": "2026-11-21T03:47:20Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489360/job/136712492643"
+                              },
+                              {
+                                "databaseId": 136712492638,
+                                "name": "web lane, round 3",
+                                "status": "COMPLETED",
+                                "conclusion": "FAILURE",
+                                "startedAt": "2026-11-21T03:25:06Z",
+                                "completedAt": "2026-11-21T03:41:46Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489360/job/136712492638"
+                              },
+                              {
+                                "databaseId": 136712492606,
+                                "name": "web lane, round 1",
+                                "status": "COMPLETED",
+                                "conclusion": "FAILURE",
+                                "startedAt": "2026-11-21T03:22:21Z",
+                                "completedAt": "2026-11-21T03:38:57Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489360/job/136712492606"
+                              },
+                              {
+                                "databaseId": 136712492600,
+                                "name": "harness lane, round 3",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:39Z",
+                                "completedAt": "2026-11-21T03:45:11Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489360/job/136712492600"
+                              },
+                              {
+                                "databaseId": 136712492580,
+                                "name": "web lane, round 2",
+                                "status": "COMPLETED",
+                                "conclusion": "FAILURE",
+                                "startedAt": "2026-11-21T03:22:42Z",
+                                "completedAt": "2026-11-21T03:39:09Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489360/job/136712492580"
+                              },
+                              {
+                                "databaseId": 136712492549,
+                                "name": "web-cold lane, round 3",
+                                "status": "COMPLETED",
+                                "conclusion": "FAILURE",
+                                "startedAt": "2026-11-21T03:22:24Z",
+                                "completedAt": "2026-11-21T03:24:55Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489360/job/136712492549"
+                              },
+                              {
+                                "databaseId": 136712492542,
+                                "name": "web-cold lane, round 2",
+                                "status": "COMPLETED",
+                                "conclusion": "FAILURE",
+                                "startedAt": "2026-11-21T03:21:23Z",
+                                "completedAt": "2026-11-21T03:23:56Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489360/job/136712492542"
+                              },
+                              {
+                                "databaseId": 136712492394,
+                                "name": "web-cold lane, round 1",
+                                "status": "COMPLETED",
+                                "conclusion": "FAILURE",
+                                "startedAt": "2026-11-21T03:20:53Z",
+                                "completedAt": "2026-11-21T03:23:10Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489360/job/136712492394"
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "databaseId": 121419707580,
+                          "app": {
+                            "databaseId": 15368
+                          },
+                          "status": "COMPLETED",
+                          "conclusion": "FAILURE",
+                          "updatedAt": "2026-11-21T03:58:56Z",
+                          "workflowRun": {
+                            "event": "pull_request"
+                          },
+                          "checkRuns": {
+                            "pageInfo": {
+                              "hasNextPage": false
+                            },
+                            "nodes": [
+                              {
+                                "databaseId": 136722779787,
+                                "name": "ci-ok",
+                                "status": "COMPLETED",
+                                "conclusion": "FAILURE",
+                                "startedAt": "2026-11-21T03:58:43Z",
+                                "completedAt": "2026-11-21T03:58:53Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136722779787"
+                              },
+                              {
+                                "databaseId": 136715879012,
+                                "name": "worker-image / attest",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:31:26Z",
+                                "completedAt": "2026-11-21T03:31:25Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136715879012"
+                              },
+                              {
+                                "databaseId": 136714343245,
+                                "name": "claude-envoy / private-names",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:25:50Z",
+                                "completedAt": "2026-11-21T03:25:57Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136714343245"
+                              },
+                              {
+                                "databaseId": 136714129660,
+                                "name": "dispatch-browser / shard",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:24:59Z",
+                                "completedAt": "2026-11-21T03:24:59Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136714129660"
+                              },
+                              {
+                                "databaseId": 136714129628,
+                                "name": "dispatch-browser / multiprocess",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:24:59Z",
+                                "completedAt": "2026-11-21T03:24:59Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136714129628"
+                              },
+                              {
+                                "databaseId": 136714129521,
+                                "name": "dispatch-browser / alone",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:24:59Z",
+                                "completedAt": "2026-11-21T03:24:59Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136714129521"
+                              },
+                              {
+                                "databaseId": 136714129380,
+                                "name": "dispatch-browser / visual",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:24:59Z",
+                                "completedAt": "2026-11-21T03:24:59Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136714129380"
+                              },
+                              {
+                                "databaseId": 136714129084,
+                                "name": "dispatch-browser / embedder",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:24:59Z",
+                                "completedAt": "2026-11-21T03:24:59Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136714129084"
+                              },
+                              {
+                                "databaseId": 136714128377,
+                                "name": "dispatch-browser / merge",
+                                "status": "COMPLETED",
+                                "conclusion": "FAILURE",
+                                "startedAt": "2026-11-21T03:25:51Z",
+                                "completedAt": "2026-11-21T03:26:25Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136714128377"
+                              },
+                              {
+                                "databaseId": 136713582706,
+                                "name": "docs / private-names",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:23:01Z",
+                                "completedAt": "2026-11-21T03:23:00Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136713582706"
+                              },
+                              {
+                                "databaseId": 136713567887,
+                                "name": "browser-image / attest",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:22:58Z",
+                                "completedAt": "2026-11-21T03:22:57Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136713567887"
+                              },
+                              {
+                                "databaseId": 136713421260,
+                                "name": "tool-fallback-arm / tool-fallback-arm",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:23:41Z",
+                                "completedAt": "2026-11-21T03:25:06Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136713421260"
+                              },
+                              {
+                                "databaseId": 136713421213,
+                                "name": "tool-fallback / tool-fallback",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:24:32Z",
+                                "completedAt": "2026-11-21T03:29:08Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136713421213"
+                              },
+                              {
+                                "databaseId": 136712771306,
+                                "name": "envoy-go-docs-finalizers",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:20:07Z",
+                                "completedAt": "2026-11-21T03:20:07Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712771306"
+                              },
+                              {
+                                "databaseId": 136712771258,
+                                "name": "envoy-go-race-docs",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:20:07Z",
+                                "completedAt": "2026-11-21T03:20:07Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712771258"
+                              },
+                              {
+                                "databaseId": 136712771211,
+                                "name": "dispatch-two-builds",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:20:07Z",
+                                "completedAt": "2026-11-21T03:20:07Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712771211"
+                              },
+                              {
+                                "databaseId": 136712770645,
+                                "name": "dispatch-memory",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:20:07Z",
+                                "completedAt": "2026-11-21T03:20:07Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770645"
+                              },
+                              {
+                                "databaseId": 136712770591,
+                                "name": "envoy-go-race",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:20:07Z",
+                                "completedAt": "2026-11-21T03:20:07Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770591"
+                              },
+                              {
+                                "databaseId": 136712770545,
+                                "name": "worker-image / build",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:58Z",
+                                "completedAt": "2026-11-21T03:31:25Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770545"
+                              },
+                              {
+                                "databaseId": 136712770516,
+                                "name": "dispatch-multiprocess",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:20:07Z",
+                                "completedAt": "2026-11-21T03:20:07Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770516"
+                              },
+                              {
+                                "databaseId": 136712770452,
+                                "name": "envoy-go-race-api",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:20:07Z",
+                                "completedAt": "2026-11-21T03:20:07Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770452"
+                              },
+                              {
+                                "databaseId": 136712770395,
+                                "name": "browser-image / build",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:42Z",
+                                "completedAt": "2026-11-21T03:22:57Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770395"
+                              },
+                              {
+                                "databaseId": 136712770360,
+                                "name": "envoy-go",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:20:07Z",
+                                "completedAt": "2026-11-21T03:20:06Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770360"
+                              },
+                              {
+                                "databaseId": 136712770338,
+                                "name": "envoy-smoke",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:20:07Z",
+                                "completedAt": "2026-11-21T03:20:07Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770338"
+                              },
+                              {
+                                "databaseId": 136712770257,
+                                "name": "envoy-infra-go / envoy-infra-go",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:23:25Z",
+                                "completedAt": "2026-11-21T03:32:34Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770257"
+                              },
+                              {
+                                "databaseId": 136712770207,
+                                "name": "envoy-e2e-local / envoy-e2e-local",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:49Z",
+                                "completedAt": "2026-11-21T03:24:32Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770207"
+                              },
+                              {
+                                "databaseId": 136712770189,
+                                "name": "envoy-go-claim-model",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:20:07Z",
+                                "completedAt": "2026-11-21T03:20:07Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770189"
+                              },
+                              {
+                                "databaseId": 136712770183,
+                                "name": "airlock-lean / airlock-lean",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:48Z",
+                                "completedAt": "2026-11-21T03:25:50Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770183"
+                              },
+                              {
+                                "databaseId": 136712770137,
+                                "name": "proof-sdk-offline / proof-sdk-offline",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:23:44Z",
+                                "completedAt": "2026-11-21T03:24:25Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770137"
+                              },
+                              {
+                                "databaseId": 136712770079,
+                                "name": "envoy-session-stall / envoy-session-stall",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:58Z",
+                                "completedAt": "2026-11-21T03:32:21Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770079"
+                              },
+                              {
+                                "databaseId": 136712770073,
+                                "name": "listener-server-change / listener-server-change",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:23:00Z",
+                                "completedAt": "2026-11-21T03:26:26Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770073"
+                              },
+                              {
+                                "databaseId": 136712770068,
+                                "name": "claude-envoy / claude-envoy",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:45Z",
+                                "completedAt": "2026-11-21T03:25:45Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770068"
+                              },
+                              {
+                                "databaseId": 136712770067,
+                                "name": "envoy-client / envoy-client",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:42Z",
+                                "completedAt": "2026-11-21T03:25:50Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770067"
+                              },
+                              {
+                                "databaseId": 136712770054,
+                                "name": "broker-multiprocess / broker-multiprocess",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:42Z",
+                                "completedAt": "2026-11-21T03:25:03Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770054"
+                              },
+                              {
+                                "databaseId": 136712770001,
+                                "name": "envoy-go-checks / envoy-go-checks",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:58Z",
+                                "completedAt": "2026-11-21T03:43:26Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712770001"
+                              },
+                              {
+                                "databaseId": 136712769988,
+                                "name": "ci-filters / ci-filters",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:20Z",
+                                "completedAt": "2026-11-21T03:23:29Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769988"
+                              },
+                              {
+                                "databaseId": 136712769913,
+                                "name": "broker-client / broker-client",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:22Z",
+                                "completedAt": "2026-11-21T03:22:50Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769913"
+                              },
+                              {
+                                "databaseId": 136712769901,
+                                "name": "contracts / contracts",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:28Z",
+                                "completedAt": "2026-11-21T03:21:56Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769901"
+                              },
+                              {
+                                "databaseId": 136712769897,
+                                "name": "dispatch-browser / binaries",
+                                "status": "COMPLETED",
+                                "conclusion": "FAILURE",
+                                "startedAt": "2026-11-21T03:21:46Z",
+                                "completedAt": "2026-11-21T03:24:58Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769897"
+                              },
+                              {
+                                "databaseId": 136712769875,
+                                "name": "pi-legion / pi-legion",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:42Z",
+                                "completedAt": "2026-11-21T03:35:46Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769875"
+                              },
+                              {
+                                "databaseId": 136712769829,
+                                "name": "sessions-script / sessions-script",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:59Z",
+                                "completedAt": "2026-11-21T03:22:32Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769829"
+                              },
+                              {
+                                "databaseId": 136712769808,
+                                "name": "pi-shared / pi-shared",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:25Z",
+                                "completedAt": "2026-11-21T03:22:00Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769808"
+                              },
+                              {
+                                "databaseId": 136712769762,
+                                "name": "conflicts-script / conflicts-script",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:23:11Z",
+                                "completedAt": "2026-11-21T03:23:31Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769762"
+                              },
+                              {
+                                "databaseId": 136712769740,
+                                "name": "pi-envoy / pi-envoy",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:20Z",
+                                "completedAt": "2026-11-21T03:28:57Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769740"
+                              },
+                              {
+                                "databaseId": 136712769738,
+                                "name": "text-checks / text-checks",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:52Z",
+                                "completedAt": "2026-11-21T03:25:38Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769738"
+                              },
+                              {
+                                "databaseId": 136712769712,
+                                "name": "dispatch-ui / dispatch-ui",
+                                "status": "COMPLETED",
+                                "conclusion": "FAILURE",
+                                "startedAt": "2026-11-21T03:21:33Z",
+                                "completedAt": "2026-11-21T03:22:56Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769712"
+                              },
+                              {
+                                "databaseId": 136712769661,
+                                "name": "test-fixtures / test-fixtures",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:53Z",
+                                "completedAt": "2026-11-21T03:22:08Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769661"
+                              },
+                              {
+                                "databaseId": 136712769655,
+                                "name": "private-names-port / private-names-port",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:53Z",
+                                "completedAt": "2026-11-21T03:23:43Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769655"
+                              },
+                              {
+                                "databaseId": 136712769648,
+                                "name": "docs / build",
+                                "status": "COMPLETED",
+                                "conclusion": "FAILURE",
+                                "startedAt": "2026-11-21T03:21:31Z",
+                                "completedAt": "2026-11-21T03:23:00Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769648"
+                              },
+                              {
+                                "databaseId": 136712769491,
+                                "name": "daemon-go / daemon-go",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:53Z",
+                                "completedAt": "2026-11-21T03:58:34Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769491"
+                              },
+                              {
+                                "databaseId": 136712769476,
+                                "name": "lint / private-names",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:23:36Z",
+                                "completedAt": "2026-11-21T03:23:48Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769476"
+                              },
+                              {
+                                "databaseId": 136712769459,
+                                "name": "test / test",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:15Z",
+                                "completedAt": "2026-11-21T03:32:14Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769459"
+                              },
+                              {
+                                "databaseId": 136712769405,
+                                "name": "lint / lint",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:34Z",
+                                "completedAt": "2026-11-21T03:27:54Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769405"
+                              },
+                              {
+                                "databaseId": 136712769384,
+                                "name": "plugin-pack / plugin-pack",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:38Z",
+                                "completedAt": "2026-11-21T03:25:23Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769384"
+                              },
+                              {
+                                "databaseId": 136712769354,
+                                "name": "ci-images / ci-images",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:04Z",
+                                "completedAt": "2026-11-21T03:22:26Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769354"
+                              },
+                              {
+                                "databaseId": 136712769096,
+                                "name": "typecheck / typecheck",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:23:04Z",
+                                "completedAt": "2026-11-21T03:26:29Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712769096"
+                              },
+                              {
+                                "databaseId": 136712495252,
+                                "name": "cancel-started",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:19:06Z",
+                                "completedAt": "2026-11-21T03:19:05Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712495252"
+                              },
+                              {
+                                "databaseId": 136712494038,
+                                "name": "changes",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:19:57Z",
+                                "completedAt": "2026-11-21T03:20:06Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712494038"
+                              },
+                              {
+                                "databaseId": 136712493862,
+                                "name": "pr-title",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:19:40Z",
+                                "completedAt": "2026-11-21T03:19:53Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860489650/job/136712493862"
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "databaseId": 121419789924,
+                          "app": {
+                            "databaseId": 15368
+                          },
+                          "status": "COMPLETED",
+                          "conclusion": "SUCCESS",
+                          "updatedAt": "2026-11-21T04:02:36Z",
+                          "workflowRun": {
+                            "event": "workflow_dispatch"
+                          },
+                          "checkRuns": {
+                            "pageInfo": {
+                              "hasNextPage": false
+                            },
+                            "nodes": [
+                              {
+                                "databaseId": 136723497213,
+                                "name": "ci-ok",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T04:02:28Z",
+                                "completedAt": "2026-11-21T04:02:35Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136723497213"
+                              },
+                              {
+                                "databaseId": 136718945735,
+                                "name": "dispatch-browser / merge",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:43:30Z",
+                                "completedAt": "2026-11-21T03:44:00Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136718945735"
+                              },
+                              {
+                                "databaseId": 136714554669,
+                                "name": "dispatch-browser / shard (1)",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:29:17Z",
+                                "completedAt": "2026-11-21T03:43:11Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136714554669"
+                              },
+                              {
+                                "databaseId": 136714554598,
+                                "name": "dispatch-browser / shard (2)",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:29:10Z",
+                                "completedAt": "2026-11-21T03:42:41Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136714554598"
+                              },
+                              {
+                                "databaseId": 136714554592,
+                                "name": "dispatch-browser / visual",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:29:12Z",
+                                "completedAt": "2026-11-21T03:32:42Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136714554592"
+                              },
+                              {
+                                "databaseId": 136714554573,
+                                "name": "dispatch-browser / multiprocess",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:28:49Z",
+                                "completedAt": "2026-11-21T03:31:02Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136714554573"
+                              },
+                              {
+                                "databaseId": 136714554549,
+                                "name": "dispatch-browser / alone",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:29:02Z",
+                                "completedAt": "2026-11-21T03:32:12Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136714554549"
+                              },
+                              {
+                                "databaseId": 136714554544,
+                                "name": "dispatch-browser / embedder",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:28:37Z",
+                                "completedAt": "2026-11-21T03:29:29Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136714554544"
+                              },
+                              {
+                                "databaseId": 136714484151,
+                                "name": "claude-envoy / private-names",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:28:29Z",
+                                "completedAt": "2026-11-21T03:28:35Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136714484151"
+                              },
+                              {
+                                "databaseId": 136714227362,
+                                "name": "docs / private-names",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:26:44Z",
+                                "completedAt": "2026-11-21T03:26:53Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136714227362"
+                              },
+                              {
+                                "databaseId": 136713593205,
+                                "name": "browser-image / attest",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:23:03Z",
+                                "completedAt": "2026-11-21T03:23:03Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136713593205"
+                              },
+                              {
+                                "databaseId": 136713060412,
+                                "name": "tool-fallback-arm / tool-fallback-arm",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:23:02Z",
+                                "completedAt": "2026-11-21T03:24:14Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136713060412"
+                              },
+                              {
+                                "databaseId": 136713060334,
+                                "name": "tool-fallback / tool-fallback",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:10Z",
+                                "completedAt": "2026-11-21T03:27:00Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136713060334"
+                              },
+                              {
+                                "databaseId": 136712756011,
+                                "name": "dispatch-two-builds / dispatch-two-builds-same",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:20:04Z",
+                                "completedAt": "2026-11-21T03:20:03Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712756011"
+                              },
+                              {
+                                "databaseId": 136712755305,
+                                "name": "worker-image",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:20:04Z",
+                                "completedAt": "2026-11-21T03:20:03Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712755305"
+                              },
+                              {
+                                "databaseId": 136712754751,
+                                "name": "browser-image / build",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:51Z",
+                                "completedAt": "2026-11-21T03:23:02Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754751"
+                              },
+                              {
+                                "databaseId": 136712754450,
+                                "name": "ci-filters / ci-filters",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:36Z",
+                                "completedAt": "2026-11-21T03:23:44Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754450"
+                              },
+                              {
+                                "databaseId": 136712754404,
+                                "name": "text-checks / text-checks",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:32Z",
+                                "completedAt": "2026-11-21T03:25:28Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754404"
+                              },
+                              {
+                                "databaseId": 136712754363,
+                                "name": "airlock-lean / airlock-lean",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:19Z",
+                                "completedAt": "2026-11-21T03:24:16Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754363"
+                              },
+                              {
+                                "databaseId": 136712754334,
+                                "name": "envoy-e2e-local / envoy-e2e-local",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:04Z",
+                                "completedAt": "2026-11-21T03:22:46Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754334"
+                              },
+                              {
+                                "databaseId": 136712754332,
+                                "name": "envoy-session-stall / envoy-session-stall",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:16Z",
+                                "completedAt": "2026-11-21T03:31:27Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754332"
+                              },
+                              {
+                                "databaseId": 136712754330,
+                                "name": "broker-multiprocess / broker-multiprocess",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:23:06Z",
+                                "completedAt": "2026-11-21T03:26:16Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754330"
+                              },
+                              {
+                                "databaseId": 136712754300,
+                                "name": "listener-server-change / listener-server-change",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:30Z",
+                                "completedAt": "2026-11-21T03:25:09Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754300"
+                              },
+                              {
+                                "databaseId": 136712754298,
+                                "name": "envoy-smoke / envoy-smoke",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:41Z",
+                                "completedAt": "2026-11-21T03:32:15Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754298"
+                              },
+                              {
+                                "databaseId": 136712754283,
+                                "name": "dispatch-two-builds / dispatch-two-builds",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:00Z",
+                                "completedAt": "2026-11-21T03:30:29Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754283"
+                              },
+                              {
+                                "databaseId": 136712754245,
+                                "name": "envoy-go-claim-model / envoy-go-claim-model",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:27Z",
+                                "completedAt": "2026-11-21T03:42:04Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754245"
+                              },
+                              {
+                                "databaseId": 136712754237,
+                                "name": "proof-sdk-offline / proof-sdk-offline",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:01Z",
+                                "completedAt": "2026-11-21T03:22:38Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754237"
+                              },
+                              {
+                                "databaseId": 136712754225,
+                                "name": "dispatch-multiprocess / dispatch-multiprocess",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:33Z",
+                                "completedAt": "2026-11-21T03:37:58Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754225"
+                              },
+                              {
+                                "databaseId": 136712754209,
+                                "name": "envoy-go-race-docs / envoy-go-race-docs",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:20:54Z",
+                                "completedAt": "2026-11-21T03:52:47Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754209"
+                              },
+                              {
+                                "databaseId": 136712754195,
+                                "name": "envoy-go-checks / envoy-go-checks",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:53Z",
+                                "completedAt": "2026-11-21T03:40:33Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754195"
+                              },
+                              {
+                                "databaseId": 136712754148,
+                                "name": "dispatch-ui / dispatch-ui",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:38Z",
+                                "completedAt": "2026-11-21T03:27:49Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754148"
+                              },
+                              {
+                                "databaseId": 136712754138,
+                                "name": "envoy-go-race / envoy-go-race",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:19Z",
+                                "completedAt": "2026-11-21T03:40:36Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754138"
+                              },
+                              {
+                                "databaseId": 136712754129,
+                                "name": "claude-envoy / claude-envoy",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:36Z",
+                                "completedAt": "2026-11-21T03:26:17Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754129"
+                              },
+                              {
+                                "databaseId": 136712754045,
+                                "name": "dispatch-browser / binaries",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:47Z",
+                                "completedAt": "2026-11-21T03:26:32Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754045"
+                              },
+                              {
+                                "databaseId": 136712754021,
+                                "name": "pi-shared / pi-shared",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:07Z",
+                                "completedAt": "2026-11-21T03:21:49Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754021"
+                              },
+                              {
+                                "databaseId": 136712754017,
+                                "name": "pi-legion / pi-legion",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:50Z",
+                                "completedAt": "2026-11-21T03:36:51Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754017"
+                              },
+                              {
+                                "databaseId": 136712754014,
+                                "name": "dispatch-memory / dispatch-memory",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:20:52Z",
+                                "completedAt": "2026-11-21T03:51:49Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754014"
+                              },
+                              {
+                                "databaseId": 136712754012,
+                                "name": "envoy-go-docs-finalizers / envoy-go-docs-finalizers",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:58Z",
+                                "completedAt": "2026-11-21T03:40:16Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754012"
+                              },
+                              {
+                                "databaseId": 136712754011,
+                                "name": "broker-client / broker-client",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:37Z",
+                                "completedAt": "2026-11-21T03:22:52Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754011"
+                              },
+                              {
+                                "databaseId": 136712754009,
+                                "name": "envoy-infra-go / envoy-infra-go",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:20:59Z",
+                                "completedAt": "2026-11-21T03:29:28Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754009"
+                              },
+                              {
+                                "databaseId": 136712754000,
+                                "name": "contracts / contracts",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:11Z",
+                                "completedAt": "2026-11-21T03:22:39Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712754000"
+                              },
+                              {
+                                "databaseId": 136712753920,
+                                "name": "envoy-go-race-api / envoy-go-race-api",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:34Z",
+                                "completedAt": "2026-11-21T03:53:25Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753920"
+                              },
+                              {
+                                "databaseId": 136712753879,
+                                "name": "conflicts-script / conflicts-script",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:21Z",
+                                "completedAt": "2026-11-21T03:22:40Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753879"
+                              },
+                              {
+                                "databaseId": 136712753860,
+                                "name": "pi-envoy / pi-envoy",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:32Z",
+                                "completedAt": "2026-11-21T03:29:48Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753860"
+                              },
+                              {
+                                "databaseId": 136712753837,
+                                "name": "envoy-go / envoy-go",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:35Z",
+                                "completedAt": "2026-11-21T03:54:21Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753837"
+                              },
+                              {
+                                "databaseId": 136712753831,
+                                "name": "envoy-client / envoy-client",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:01Z",
+                                "completedAt": "2026-11-21T03:24:07Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753831"
+                              },
+                              {
+                                "databaseId": 136712753799,
+                                "name": "sessions-script / sessions-script",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:05Z",
+                                "completedAt": "2026-11-21T03:21:41Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753799"
+                              },
+                              {
+                                "databaseId": 136712753794,
+                                "name": "private-names-port / private-names-port",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:20:31Z",
+                                "completedAt": "2026-11-21T03:22:12Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753794"
+                              },
+                              {
+                                "databaseId": 136712753757,
+                                "name": "test-fixtures / test-fixtures",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:06Z",
+                                "completedAt": "2026-11-21T03:22:22Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753757"
+                              },
+                              {
+                                "databaseId": 136712753688,
+                                "name": "ci-images / ci-images",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:20:37Z",
+                                "completedAt": "2026-11-21T03:21:06Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753688"
+                              },
+                              {
+                                "databaseId": 136712753671,
+                                "name": "daemon-go / daemon-go",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:18Z",
+                                "completedAt": "2026-11-21T04:01:23Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753671"
+                              },
+                              {
+                                "databaseId": 136712753658,
+                                "name": "test / test",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:21Z",
+                                "completedAt": "2026-11-21T03:31:10Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753658"
+                              },
+                              {
+                                "databaseId": 136712753641,
+                                "name": "lint / private-names",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:30Z",
+                                "completedAt": "2026-11-21T03:22:49Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753641"
+                              },
+                              {
+                                "databaseId": 136712753625,
+                                "name": "plugin-pack / plugin-pack",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:16Z",
+                                "completedAt": "2026-11-21T03:24:38Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753625"
+                              },
+                              {
+                                "databaseId": 136712753586,
+                                "name": "docs / build",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:22:16Z",
+                                "completedAt": "2026-11-21T03:25:19Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753586"
+                              },
+                              {
+                                "databaseId": 136712753556,
+                                "name": "lint / lint",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:21Z",
+                                "completedAt": "2026-11-21T03:26:34Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753556"
+                              },
+                              {
+                                "databaseId": 136712753478,
+                                "name": "typecheck / typecheck",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:20:33Z",
+                                "completedAt": "2026-11-21T03:23:16Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712753478"
+                              },
+                              {
+                                "databaseId": 136712596880,
+                                "name": "pr-title",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:19:28Z",
+                                "completedAt": "2026-11-21T03:19:28Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712596880"
+                              },
+                              {
+                                "databaseId": 136712596519,
+                                "name": "cancel-started",
+                                "status": "COMPLETED",
+                                "conclusion": "SKIPPED",
+                                "startedAt": "2026-11-21T03:19:28Z",
+                                "completedAt": "2026-11-21T03:19:28Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712596519"
+                              },
+                              {
+                                "databaseId": 136712595337,
+                                "name": "changes",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:19:50Z",
+                                "completedAt": "2026-11-21T03:20:03Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/actions/runs/44860519340/job/136712595337"
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "databaseId": 121420214008,
+                          "app": {
+                            "databaseId": 57789
+                          },
+                          "status": "COMPLETED",
+                          "conclusion": "SUCCESS",
+                          "updatedAt": "2026-11-21T03:27:25Z",
+                          "workflowRun": null,
+                          "checkRuns": {
+                            "pageInfo": {
+                              "hasNextPage": false
+                            },
+                            "nodes": [
+                              {
+                                "databaseId": 136713104874,
+                                "name": "CodeQL",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-21T03:21:16Z",
+                                "completedAt": "2026-11-21T03:21:19Z",
+                                "permalink": "https://github.com/cybermonklabs/legion/runs/136713104874"
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

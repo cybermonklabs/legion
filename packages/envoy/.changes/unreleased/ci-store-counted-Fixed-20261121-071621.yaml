@@ -1,0 +1,27 @@
+kind: Fixed
+body: |-
+  The listener's CI store now counts a pull request head's check runs as GitHub's own rollup of
+  the pull request counts them. A check run of a GitHub Actions workflow run that a
+  `workflow_dispatch` or `pull_request_review_comment` event started, the two events the rollup was
+  measured not to count, is no longer one of the head's checks, no longer replaces the pull request
+  run's check of the same name when its id is higher, and no longer holds the head unsettled,
+  moves its snapshot or shows in its settlement. Every other event's runs count, a CodeQL
+  default setup's `dynamic` runs among them, which GitHub's documented list of six events leaves
+  out. Before, a dispatched run's passing `ci-ok` replaced the pull request run's failing `ci-ok`,
+  so a settlement could say CI passed where GitHub refused the merge. The store learns each run's
+  event from the `workflow_run` webhook and from Dispatch's CI reconcile, whose query now asks each
+  check suite for `workflowRun { event }`, and the result does not depend on the order the check
+  runs and the events arrive in. A run the store counted before it learned its event leaves the
+  record, and every later settlement names it in the new field `excluded_check_runs`, which the
+  daemon applies. A suite whose event neither gives is counted as before. The reconcile pass now
+  also records the event of a suite that is still running, and of each suite of a head it reads
+  over REST that its query answered. It names, once for each head it writes, the GitHub Actions
+  suites the record then holds no event for: at WARN (`ci reconcile counts check suites whose
+  workflow run event neither GitHub's answer nor the CI record holds`) where GitHub's GraphQL
+  answered `workflowRun` null, and at INFO (`ci reconcile counts check suites of a head read over
+  REST whose workflow run event the CI record does not hold`) for a head read over REST. A record
+  written before is corrected at the next pass that reads its head's events. A re-run of a counted
+  run still replaces its check. Deploy the listener, then each daemon, then Dispatch.
+time: 2026-11-21T07:16:21Z
+custom:
+    Issue: ci-store-counted

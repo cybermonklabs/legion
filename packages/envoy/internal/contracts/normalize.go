@@ -41,6 +41,9 @@ func GithubEnvelope(input GithubEnvelopeInput) Envelope {
 
 func GithubEnvelopes(input GithubEnvelopeInput, trigger string) []Envelope {
 	if input.Event == "workflow_run" && len(sliceValue(nested(input.Body, "workflow_run", "pull_requests"))) > 0 {
+		// A pull request's workflow run is published nowhere: the webhook handler records the event
+		// that started it in envoy_ci_state (GithubCIObservations), and the pull request's checks
+		// reach the daemon in its settled pr.<n>.checks envelope.
 		return nil
 	}
 	if _, _, ok := githubActionsJob(input.Event, input.Body); ok {
@@ -93,7 +96,7 @@ func GithubEnvelopes(input GithubEnvelopeInput, trigger string) []Envelope {
 	return append(mentions, item)
 }
 
-// CIObservation is a per-PR check_run or check_suite fact for the CI state
+// CIObservation is a per-PR check_run, check_suite or workflow_run fact for the CI state
 // aggregator.
 type CIObservation struct {
 	Owner      string
@@ -103,6 +106,9 @@ type CIObservation struct {
 	AppID      string
 	CheckName  string
 	CheckRunID uint64
+	// SuiteID is the check suite the observation is of: a suite's own id, a check run's
+	// check_suite.id, and a workflow run's check_suite_id. A check run whose object names no
+	// suite has none.
 	SuiteID    string
 	URL        string
 	Status     string
@@ -115,15 +121,31 @@ type CIObservation struct {
 	// is no suite's. It is display only: the CI store names it in the line for a
 	// head it holds, and nothing decides on it.
 	CheckRunCount *int
+	// RunEvent is the event that started the GitHub Actions workflow run of the suite SuiteID
+	// names (workflow_run.event), which decides whether GitHub counts that suite's check runs for
+	// the pull request. A workflow run's observation carries it, and so do the objects Dispatch's
+	// CI reconcile maps from GitHub's GraphQL answer (CheckSuite.workflowRun.event); a check_run or
+	// check_suite webhook, and a REST listing, give none, and it is empty there.
+	RunEvent string
 }
+
+// GithubActionsAppID is the id of the GitHub Actions App on github.com, the App every check run
+// of a workflow job is created by. Whether GitHub counts such a check run for a pull request
+// depends on the event that started its workflow run (cistore.EventCounted); a check run of any
+// other App is counted whatever started it.
+const GithubActionsAppID = "15368"
 
 // GithubCIObservations extracts one CI observation per associated PR. Both
 // check runs and suites are folded into durable per-head state; neither emits a
 // raw webhook envelope. A check suite's observation carries the event's run
 // count (CheckRunCount), which only this mapping reads: GithubCIObservation is
 // shared with Dispatch's CI reconcile, which records only completed suites and
-// so would store no count.
+// so would store no count. A workflow run that lists a pull request maps to one observation per
+// pull request of its suite's id and the event that started it (githubWorkflowRunObservations).
 func GithubCIObservations(event string, body map[string]any) []CIObservation {
+	if event == "workflow_run" {
+		return githubWorkflowRunObservations(body)
+	}
 	numbers := githubCIPullRequests(event, body)
 	if len(numbers) == 0 {
 		// A check suite GitHub runs on a pull request's head carries that head's ref even when it
@@ -144,6 +166,38 @@ func GithubCIObservations(event string, body map[string]any) []CIObservation {
 	}
 	if event == "check_suite" {
 		obs.CheckRunCount = githubCount(object["latest_check_runs_count"])
+	}
+	out := make([]CIObservation, 0, len(numbers))
+	for _, number := range numbers {
+		obs.Number = number
+		out = append(out, obs)
+	}
+	return out
+}
+
+// githubWorkflowRunObservations maps a workflow_run webhook to one observation for each pull
+// request its run lists: the run's head commit, the id of the check suite the run is
+// (workflow_run.check_suite_id), and the event that started it (workflow_run.event), which is all
+// the CI store takes from it. GitHub lists the pull request for a run of a same-repository branch
+// whatever started the run, a workflow_dispatch run of the branch included; a fork's run lists
+// none and maps to none here, and Dispatch's CI reconcile reads that suite's event instead. A run
+// that names no head commit, no suite or no event maps to none.
+func githubWorkflowRunObservations(body map[string]any) []CIObservation {
+	run := mapValue(body["workflow_run"])
+	numbers := githubPullRequestNumbers(run)
+	if len(numbers) == 0 {
+		return nil
+	}
+	owner, repo := githubRepo(body)
+	obs := CIObservation{
+		Owner:    owner,
+		Repo:     repo,
+		SHA:      truncateWithEllipsis(stringValue(run["head_sha"]), maxEnvelopeTextRunes),
+		SuiteID:  nestedNumberString(run, "check_suite_id"),
+		RunEvent: truncateWithEllipsis(stringValue(run["event"]), maxEnvelopeTextRunes),
+	}
+	if obs.SHA == "" || obs.SuiteID == "" || obs.RunEvent == "" {
+		return nil
 	}
 	out := make([]CIObservation, 0, len(numbers))
 	for _, number := range numbers {
@@ -174,6 +228,12 @@ func githubCount(value any) *int {
 // so a reconcile pass over that listing and the webhook produce the same observation for the same
 // object. The number comes from the caller, because that listing returns a short check_suite with
 // no head_branch to attribute by.
+//
+// A check run's suite is its check_suite.id, which the webhook and the REST listing both carry.
+// The event of the suite's workflow run (RunEvent) is read from workflow_run.event, under the
+// check_suite of a check run and on a check suite itself: neither the webhook nor the REST listing
+// carries that field, and Dispatch's CI reconcile writes it into the objects it maps from GitHub's
+// GraphQL answer, so only those carry the event.
 func GithubCIObservation(event string, object map[string]any, owner, repo, number string) (CIObservation, bool) {
 	sha := stringValue(object["head_sha"])
 	if sha == "" {
@@ -201,6 +261,8 @@ func GithubCIObservation(event string, object map[string]any, owner, repo, numbe
 		}
 		obs.CheckName = checkName(stringValue(object["name"]))
 		obs.CheckRunID = checkRunID
+		obs.SuiteID = nestedNumberString(object, "check_suite", "id")
+		obs.RunEvent = truncateWithEllipsis(nestedString(object, "check_suite", "workflow_run", "event"), maxEnvelopeTextRunes)
 		obs.URL = text("html_url")
 		obs.ObservedAt = text("completed_at")
 		if obs.ObservedAt == "" {
@@ -211,6 +273,7 @@ func GithubCIObservation(event string, object map[string]any, owner, repo, numbe
 		}
 	} else {
 		obs.SuiteID = nestedNumberString(object, "id")
+		obs.RunEvent = truncateWithEllipsis(nestedString(object, "workflow_run", "event"), maxEnvelopeTextRunes)
 		obs.ObservedAt = text("updated_at")
 		if obs.SuiteID == "" {
 			return CIObservation{}, false
@@ -706,7 +769,12 @@ func githubCIPullRequests(event string, body map[string]any) []string {
 	if !githubCIEvent(event) {
 		return nil
 	}
-	obj := mapValue(body[event])
+	return githubPullRequestNumbers(mapValue(body[event]))
+}
+
+// githubPullRequestNumbers is the number of each pull request a check run, check suite or
+// workflow run object lists under pull_requests, in GitHub's order.
+func githubPullRequestNumbers(obj map[string]any) []string {
 	if obj == nil {
 		return nil
 	}

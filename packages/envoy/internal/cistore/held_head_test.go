@@ -491,11 +491,11 @@ func TestARecordedSuiteKeepsItsRunCountUntilItCompletes(t *testing.T) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		changed, err := s.recordSuite(ctx, observation)
+		recorded, err := s.recordSuite(ctx, observation)
 		if err != nil {
 			t.Fatalf("record %+v: %v", observation, err)
 		}
-		return changed
+		return recorded.Changed
 	}
 	// storedRunCounts reads each suite's run_count from the bucket's bytes, absent ones left out.
 	storedRunCounts := func() (map[string]any, uint64) {

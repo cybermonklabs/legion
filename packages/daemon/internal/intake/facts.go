@@ -786,6 +786,15 @@ type CheckRun = record.AttemptRun
 // the merge keeps a context a settlement leaves out (classify.ApplySettlement). The flag's one
 // reader is the task of a role the settlement wakes, which names the failed ones of those kept
 // statuses (workflow's wakeOnSettlement).
+//
+// Excluded are the check runs, each by its name and id alone, that the listener once counted for
+// the head and then took out of its record, because GitHub does not count their workflow run for
+// the pull request (the settlement's excluded_check_runs), sorted by name and then id. None of them
+// is in CheckRuns or in the lists. classify drops each from the fence, so the lower id that stands
+// in its place is taken, and a name with no run left keeps no failure of it
+// (classify.SettlementCandidate.Excluded). A settlement that names none, a listener's of an
+// earlier release among them, carries nil, and so does one whose list the decoder could not read
+// (decodeChecks).
 type PullRequestChecks struct {
 	Repo           string
 	Number         int
@@ -797,6 +806,7 @@ type PullRequestChecks struct {
 	Cancelled      []string
 	Statuses       []record.CommitStatus
 	StatusesUnread bool
+	Excluded       []record.AttemptRun
 }
 
 func (PullRequestChecks) namedIssue() (string, bool) { return "", false }

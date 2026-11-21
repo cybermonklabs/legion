@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  The CI check settlement gains `excluded_check_runs`, a list of `{name, id}` sorted by name and
+  then id: each check run the listener counted for its name and then took out, because GitHub's
+  rollup of the pull request does not count its workflow run (`workflow_dispatch` and
+  `pull_request_review_comment`). A consumer drops each run it names, so the lower id that stands
+  in its place in `check_runs` is taken, and a name with no run left keeps no failure. The field is
+  left out when the record excluded no run; a consumer of an earlier release ignores it.
+time: 2026-11-21T09:24:27Z
+custom:
+    Issue: ci-store-counted

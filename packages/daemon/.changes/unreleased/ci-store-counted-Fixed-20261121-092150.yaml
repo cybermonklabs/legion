@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  The daemon now applies the listener's `excluded_check_runs`: the check runs the listener counted
+  for a pull request head and then took out, because GitHub does not count their workflow run for
+  the pull request (for example a `workflow_dispatch` run of the branch). The daemon drops each
+  excluded run from the check runs it keeps for the head. So the lower run that stands in its place
+  is taken, though its id is lower, and a check with no run left is no longer reported failing.
+  Before, the lower id read as an older settlement and was dropped, and a check the settlement left
+  out kept its old failure, so a red head stayed green and a green head stayed red. The pull request
+  keeps the excluded runs, so a settlement published before the exclusion and delivered after it
+  brings no excluded run back, and a re-run of a counted check, at a higher id, still replaces its
+  run. A daemon of the earlier release ignores the field, and so keeps the old verdict for such a
+  head. The kept runs are in the new column `pull_requests.excluded_runs`, which migration
+  `20261121083932_pull_request_excluded_runs` adds at the empty list.
+time: 2026-11-21T09:21:50Z
+custom:
+    Issue: ci-store-counted

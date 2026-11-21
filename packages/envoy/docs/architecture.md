@@ -377,7 +377,7 @@ what changed is how long a silent bus can hold them.
 
 | Path | Bus work | Bound | A call that did not answer |
 | --- | --- | --- | --- |
-| `/webhook/github`, a check_suite or check_run | CI record writes (`cistore.Store.Record`, `RecordSuite`) | each record 4 s (`recordWait`: the wait for a write it queues behind and its own 2 s write budget), every KV call included; all of it ends when GitHub drops the delivery or at the route's write deadline | `503 service unavailable`, as a failed record |
+| `/webhook/github`, a check_suite, a check_run, or a workflow_run that lists a pull request | CI record writes (`cistore.Store.Record`, `RecordSuite`, `RecordRunEvent`) | each record 4 s (`recordWait`: the wait for a write it queues behind and its own 2 s write budget), every KV call included; all of it ends when GitHub drops the delivery or at the route's write deadline | `503 service unavailable`, as a failed record |
 | `/webhook/github`, any other event | publishes | the request, the route's write deadline, and the bus's 5 s a publish | `503 service unavailable` |
 | `/webhook/slack` | publishes | 2.5 s from the handler's start (`slackAnswerBudget`), inside the 3 s Slack waits | `503 service unavailable` |
 | `/webhook/ghostwispr` | publish | the request, and the bus's 5 s | `503 service unavailable` |

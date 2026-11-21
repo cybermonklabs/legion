@@ -1228,7 +1228,8 @@ func TestGithubCIObservationsSkipMalformedCheckRunIDs(t *testing.T) {
 
 // GitHub's REST listing GET /repos/{owner}/{repo}/commits/{sha}/check-runs returns each check run
 // outside any webhook body, with a short check_suite that carries no head_branch, so a caller
-// reading it names the pull request number itself and the mapper attributes nothing.
+// reading it names the pull request number itself and the mapper attributes nothing. The short
+// check_suite carries the suite's id, which the observation keeps as the run's SuiteID.
 func TestGithubCIObservationMapsARestListedCheckRun(t *testing.T) {
 	object := map[string]any{
 		"id":           float64(126934155799),
@@ -1254,6 +1255,7 @@ func TestGithubCIObservationMapsARestListedCheckRun(t *testing.T) {
 		AppID:      "12345",
 		CheckName:  "ci-ok",
 		CheckRunID: 126934155799,
+		SuiteID:    "900",
 		URL:        "https://example-host/checks/126934155799",
 		Status:     "completed",
 		Conclusion: "failure",

@@ -38,7 +38,8 @@ func JudgementChanged(before, after record.PullRequest) bool {
 	b, a := judgementOf(before), judgementOf(after)
 	return b.HeadSHA != a.HeadSHA || b.CheckedHead != a.CheckedHead ||
 		!sameItems(b.Failing, a.Failing) || !sameItems(b.Cancelled, a.Cancelled) || !same(b.CheckRuns, a.CheckRuns) ||
-		b.Generation != a.Generation || b.Snapshot != a.Snapshot || !sameItems(b.Statuses, a.Statuses)
+		b.Generation != a.Generation || b.Snapshot != a.Snapshot || !sameItems(b.Statuses, a.Statuses) ||
+		!sameItems(b.ExcludedRuns, a.ExcludedRuns)
 }
 
 // runStep applies step to pr's open run and replays it.
@@ -122,7 +123,7 @@ func applyStep(pr record.PullRequest, step record.RunStep, names []record.Named,
 		pr, _ = settle(pr, candidateOf(*step.Settlement))
 	case step.Reopened:
 		pr.CheckedHead, pr.Failing, pr.Cancelled, pr.CheckRuns, pr.Generation, pr.Snapshot = "", []string{}, nil, nil, 0, ""
-		pr.Statuses = nil
+		pr.Statuses, pr.ExcludedRuns = nil, nil
 	}
 	return pr, true, names
 }
@@ -159,7 +160,7 @@ func ApplyCheckSettlement(pr record.PullRequest, candidate SettlementCandidate) 
 	}
 	step := record.Settlement{Head: candidate.Head, CheckRuns: clone(candidate.CheckRuns), Generation: candidate.Generation,
 		Snapshot: candidate.Snapshot, Failing: clone(candidate.Failing), Cancelled: clone(candidate.Cancelled),
-		Statuses: clone(candidate.Statuses)}
+		Statuses: clone(candidate.Statuses), Excluded: clone(candidate.Excluded)}
 	if redundantSettlement(pr.Run.Steps, step) {
 		return pr, false
 	}
@@ -197,7 +198,8 @@ func redundantSettlement(steps []record.RunStep, settlement record.Settlement) b
 // (SettlementStatusesOnly).
 func sameSettlement(a, b record.Settlement) bool {
 	return a.Head == b.Head && a.Generation == b.Generation && a.Snapshot == b.Snapshot && sameItems(a.CheckRuns, b.CheckRuns) &&
-		sameItems(a.Failing, b.Failing) && sameItems(a.Cancelled, b.Cancelled) && sameItems(a.Statuses, b.Statuses)
+		sameItems(a.Failing, b.Failing) && sameItems(a.Cancelled, b.Cancelled) && sameItems(a.Statuses, b.Statuses) &&
+		sameItems(a.Excluded, b.Excluded)
 }
 
 // settle applies candidate when it stands for the head and is newer than the recorded settlement,
@@ -216,15 +218,15 @@ func settle(pr record.PullRequest, candidate SettlementCandidate) (record.PullRe
 
 func candidateOf(s record.Settlement) SettlementCandidate {
 	return SettlementCandidate{Head: s.Head, CheckRuns: clone(s.CheckRuns), Generation: s.Generation, Snapshot: s.Snapshot,
-		Failing: clone(s.Failing), Cancelled: clone(s.Cancelled), Statuses: clone(s.Statuses)}
+		Failing: clone(s.Failing), Cancelled: clone(s.Cancelled), Statuses: clone(s.Statuses), Excluded: clone(s.Excluded)}
 }
 
 // judgementOf is the part of pr a head run replays.
 func judgementOf(pr record.PullRequest) record.Judgement {
 	return record.Judgement{HeadSHA: pr.HeadSHA,
 		CheckedHead: pr.CheckedHead, Failing: clone(pr.Failing), Cancelled: clone(pr.Cancelled), CheckRuns: clone(pr.CheckRuns),
-		Generation: pr.Generation, Snapshot: pr.Snapshot, Statuses: clone(pr.Statuses), Moves: clone(pr.Moves),
-		Mergeability: pr.Mergeability, MergeState: pr.MergeState, StateReadAt: pr.StateReadAt}
+		Generation: pr.Generation, Snapshot: pr.Snapshot, Statuses: clone(pr.Statuses), ExcludedRuns: clone(pr.ExcludedRuns),
+		Moves: clone(pr.Moves), Mergeability: pr.Mergeability, MergeState: pr.MergeState, StateReadAt: pr.StateReadAt}
 }
 
 // withJudgement is pr with j as its judgement. GitHub's verdict on merging the head, and the time
@@ -239,7 +241,7 @@ func judgementOf(pr record.PullRequest) record.Judgement {
 func withJudgement(pr record.PullRequest, j record.Judgement) record.PullRequest {
 	pr.HeadSHA = j.HeadSHA
 	pr.CheckedHead, pr.Failing, pr.Cancelled, pr.CheckRuns = j.CheckedHead, clone(j.Failing), clone(j.Cancelled), clone(j.CheckRuns)
-	pr.Generation, pr.Snapshot, pr.Statuses = j.Generation, j.Snapshot, clone(j.Statuses)
+	pr.Generation, pr.Snapshot, pr.Statuses, pr.ExcludedRuns = j.Generation, j.Snapshot, clone(j.Statuses), clone(j.ExcludedRuns)
 	pr.Moves = clone(j.Moves)
 	if pr.MergeState == record.MergeStateUnread {
 		pr.Mergeability, pr.MergeState, pr.StateReadAt = j.Mergeability, j.MergeState, j.StateReadAt

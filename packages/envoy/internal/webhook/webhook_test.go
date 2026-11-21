@@ -26,8 +26,10 @@ func (m *mockPublisher) PublishWithin(_ context.Context, item contracts.Envelope
 type mockRecorder struct {
 	calls      []contracts.CIObservation
 	suiteCalls []contracts.CIObservation
+	eventCalls []contracts.CIObservation
 	err        error
 	suiteErr   error
+	eventErr   error
 }
 
 func (m *mockRecorder) Record(_ context.Context, observation contracts.CIObservation) error {
@@ -38,4 +40,9 @@ func (m *mockRecorder) Record(_ context.Context, observation contracts.CIObserva
 func (m *mockRecorder) RecordSuite(_ context.Context, observation contracts.CIObservation) error {
 	m.suiteCalls = append(m.suiteCalls, observation)
 	return m.suiteErr
+}
+
+func (m *mockRecorder) RecordRunEvent(_ context.Context, observation contracts.CIObservation) error {
+	m.eventCalls = append(m.eventCalls, observation)
+	return m.eventErr
 }

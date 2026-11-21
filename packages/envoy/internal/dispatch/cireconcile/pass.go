@@ -533,7 +533,7 @@ func (w *walk) visitHead(ctx context.Context, head queryHead) *ending {
 		pull.statuses = false
 	}
 	if head.overflow != "" {
-		return w.visitHeadOverREST(ctx, pull, head.overflow)
+		return w.visitHeadOverREST(ctx, pull, head.overflow, head.events)
 	}
 	// The query answered this head whole, so there is nothing to ask GitHub and nothing
 	// the pass's bound can cut short: the writes alone are left.
@@ -554,7 +554,7 @@ func (w *walk) visitHead(ctx context.Context, head queryHead) *ending {
 	// The fingerprint is kept only where every write landed, exactly as the ETags of a head
 	// read over REST are (recordHead): a write that did not land must not be hidden behind it,
 	// and the next pass writes this head again.
-	r.recordHead(ctx, w.writer, pull, pagesOf(head.runs), pagesOf(head.suites), pagesOf(head.statuses), kept, headState{fingerprint: head.fingerprint}, c)
+	r.recordHead(ctx, w.writer, pull, true, nil, pagesOf(head.runs), pagesOf(head.suites), pagesOf(head.statuses), kept, headState{fingerprint: head.fingerprint}, c)
 	c.mark(pull)
 	return nil
 }
@@ -562,9 +562,10 @@ func (w *walk) visitHead(ctx context.Context, head queryHead) *ending {
 // visitHeadOverREST reads and records one head over REST: paged, and conditional on the ETags
 // the pass kept of it. Both the heads one query could not answer whole (visitHead) and every
 // head of a page GitHub would not answer the query for at all (restPage) are read here, and why
-// names which of the two the head's own line reports. The ending it answers is the pass ending
-// at this head, as visitHead's is.
-func (w *walk) visitHeadOverREST(ctx context.Context, pull pullHead, why string) *ending {
+// names which of the two the head's own line reports. events is what the query answered of the
+// head's suites' workflow run events (queryHead.events), nil for a page it did not answer. The
+// ending it answers is the pass ending at this head, as visitHead's is.
+func (w *walk) visitHeadOverREST(ctx context.Context, pull pullHead, why string, events map[string]string) *ending {
 	r, c := w.r, w.c
 	// These reads are budgeted under the installation rather than under GraphQL, so the shared
 	// limits are read again for them.
@@ -574,7 +575,7 @@ func (w *walk) visitHeadOverREST(ctx context.Context, pull pullHead, why string)
 	r.Logger.Info("ci reconcile reads a head over REST",
 		"repository", pull.repository(), "pr", pull.number, "sha", pull.sha, "why", why)
 	see(&r.seenHeads, pull.key())
-	if at := r.readHead(ctx, w.writer, pull, c); at != nil {
+	if at := r.readHead(ctx, w.writer, pull, events, c); at != nil {
 		return w.stopped(at)
 	}
 	if r.cutShort(ctx, c) {

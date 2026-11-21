@@ -1,0 +1,46 @@
+-- 20261121083932_pull_request_excluded_runs.up.sql — the check runs of the checked head that the
+-- listener excluded.
+--
+-- pull_requests.excluded_runs is record.PullRequest.ExcludedRuns: each check run, by its name and
+-- id, that a settlement the daemon applied for the checked head named excluded. The listener's CI
+-- record excludes a check run it had counted once it learns that GitHub does not count the run's
+-- workflow run for the pull request, such as a workflow_dispatch run of the pull request's branch,
+-- and every later settlement of the head names it (the settlement's excluded_check_runs). The
+-- daemon drops each excluded run from the check runs it keeps, so a lower id that stands in its
+-- place is taken and a name with no run left is no longer kept failing, and it keeps the excluded
+-- runs here so a settlement published before the exclusion and delivered after it brings no
+-- excluded run back (classify.ApplySettlement). A settlement of a new checked head and a reopen
+-- clear the list with the check runs (classify.SettlementFor, the reopen step of a head run), and a
+-- new generation clears it with them (record.Store.ClearGeneration).
+--
+-- Every row the table already holds takes the default, the empty list, and nothing fills it: no
+-- release before this one kept an excluded run, and the next settlement of each head names its
+-- own.
+--
+-- The release before this one names each column it reads and writes (record's pullRequestColumns
+-- and PutPullRequest), so it neither reads nor writes this one, and every row it inserts takes the
+-- default. After a rollback that release still moves checked_head and the check runs and leaves this
+-- list as this release left it, so a kept list can be of an earlier checked head. A run id is
+-- GitHub's own and names one run of one commit, so a kept run of another head never matches a run
+-- of the checked head and excludes nothing of it.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the one transaction below, run with the daemon
+-- stopped:
+--
+--   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   begin;
+--   alter table pull_requests drop column if exists excluded_runs;
+--   delete from schema_version where version = 20261121083932;
+--   commit;
+--   SQL
+--
+-- The drop and the delete of this migration's row go together. The release before this one needs
+-- neither, since it never names the column: the column would stand there unread. Both are owed to
+-- the roll-forward. With the column dropped and the row deleted, store.apply finds no row of this
+-- version and runs this file again, which adds the column again at its default.
+--
+-- What the drop costs is the kept exclusions: after the roll-forward each pull request holds none
+-- until the next settlement of its head names them again, which every settlement of a head with an
+-- exclusion does.
+alter table pull_requests add column excluded_runs jsonb not null default '[]'::jsonb;

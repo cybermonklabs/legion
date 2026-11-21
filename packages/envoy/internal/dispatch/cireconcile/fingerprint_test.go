@@ -30,12 +30,12 @@ type countingWriter struct {
 	exists  int
 }
 
-func (w *countingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+func (w *countingWriter) Record(ctx context.Context, observation contracts.CIObservation) (cistore.Recorded, error) {
 	w.count(&w.updates)
 	return w.Writer.Record(ctx, observation)
 }
 
-func (w *countingWriter) RecordSuite(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+func (w *countingWriter) RecordSuite(ctx context.Context, observation contracts.CIObservation) (cistore.Recorded, error) {
 	w.count(&w.updates)
 	return w.Writer.RecordSuite(ctx, observation)
 }

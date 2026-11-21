@@ -106,7 +106,7 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 // whatever the wake's task names in its place.
 func settlementCandidate(fact intake.PullRequestChecks) classify.SettlementCandidate {
 	return classify.SettlementCandidate{Head: fact.HeadSHA, CheckRuns: fact.CheckRuns, Generation: fact.Generation, Snapshot: fact.Snapshot,
-		Failing: fact.Failing, Cancelled: fact.Cancelled, Statuses: fact.Statuses}
+		Failing: fact.Failing, Cancelled: fact.Cancelled, Statuses: fact.Statuses, Excluded: fact.Excluded}
 }
 
 // logUnappliedSettlement names a settlement checks does not apply to pr, the record as it stood

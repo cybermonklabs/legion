@@ -830,7 +830,8 @@ func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (F
 // those costs the rest nothing: each part the decoder cannot read is taken as absent and named in
 // the unread list the consumer logs, every such part rather than the first. A run's word that is
 // no word (rawCheckRuns) is dropped from that run alone, which is then named by its conclusion. A
-// skipped group that cannot be read names no run skipped. Its commit statuses are read last
+// skipped group that cannot be read names no run skipped. A list of excluded check runs that
+// cannot be read (rawExcludedRuns) names no run excluded. Its commit statuses are read last
 // (rawStatuses): a list that cannot be read marks the fact so (PullRequestChecks.StatusesUnread),
 // rather than the settlement's check runs being lost with it.
 //
@@ -895,6 +896,11 @@ func decodeChecks(subject string, repository ghrepo.Repository, raw map[string]j
 		}
 	}
 	checks := PullRequestChecks{Repo: repository.String(), Number: number, HeadSHA: headSHA, CheckRuns: runs, Generation: generation, Snapshot: snapshot, Failing: failed, Cancelled: cancelled}
+	excluded, defect := rawExcludedRuns(raw["excluded_check_runs"])
+	if defect != "" {
+		unread = append(unread, "excluded_check_runs "+defect+": no check run of "+headSHA+" is read as excluded")
+	}
+	checks.Excluded = excluded
 	statuses, defect := rawStatuses(raw["statuses"])
 	if defect != "" {
 		checks.StatusesUnread = true
@@ -950,6 +956,48 @@ func rawCheckRuns(value json.RawMessage) (runs []record.AttemptRun, unread []str
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].Name < runs[j].Name })
 	return runs, unread, ""
+}
+
+// rawExcludedRuns reads a settlement's excluded check runs: each entry's name and id, every name
+// given and every id above 0, sorted by name and then id with no run twice, as the listener lists
+// them, each kept by its name and id alone. An absent, null or empty list names none and is no
+// defect, since the listener leaves the field out of a head that excluded none. Any other list
+// that is not of that form is not read at all, and defect says why.
+func rawExcludedRuns(value json.RawMessage) (excluded []record.AttemptRun, defect string) {
+	if value == nil || string(value) == "null" {
+		return nil, ""
+	}
+	var incoming []struct {
+		Name string `json:"name"`
+		ID   int64  `json:"id"`
+	}
+	if err := json.Unmarshal(value, &incoming); err != nil {
+		return nil, "does not parse as a list of check runs, each a name and an id"
+	}
+	if len(incoming) == 0 {
+		return nil, ""
+	}
+	excluded = make([]record.AttemptRun, 0, len(incoming))
+	for i, item := range incoming {
+		if item.Name == "" {
+			return nil, "names a run with no name"
+		}
+		if item.ID <= 0 {
+			return nil, fmt.Sprintf("names %q with the id %d, not above 0", item.Name, item.ID)
+		}
+		if i > 0 {
+			previous := incoming[i-1]
+			if previous.Name == item.Name && previous.ID == item.ID {
+				return nil, fmt.Sprintf("names %q's run %d twice", item.Name, item.ID)
+			}
+			if previous.Name > item.Name || (previous.Name == item.Name && previous.ID > item.ID) {
+				return nil, fmt.Sprintf("names %q's run %d after %q's run %d, not sorted by name and then id",
+					item.Name, item.ID, previous.Name, previous.ID)
+			}
+		}
+		excluded = append(excluded, record.AttemptRun{Name: item.Name, ID: item.ID})
+	}
+	return excluded, ""
 }
 
 // conclusionWord is the form of a word the daemon keeps as the one GitHub gave a check run:

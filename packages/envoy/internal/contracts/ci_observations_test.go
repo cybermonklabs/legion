@@ -67,6 +67,80 @@ func TestGithubCIObservationsExtractCheckSuite(t *testing.T) {
 	}
 }
 
+// A workflow_run webhook maps to one observation for each pull request its run lists: the run's
+// head commit, its check suite (check_suite_id) and the event that started it, which is what decides
+// whether GitHub counts the suite's check runs for the pull request. GitHub lists the pull request
+// for a workflow_dispatch run of a same-repository branch too, as GET actions/runs/44860519340
+// answered for cybermonklabs/legion#3513 on 2026-11-21. A run that lists no pull request, or names
+// no head commit, no suite or no event, maps to none.
+func TestGithubCIObservationsMapAWorkflowRunToItsSuitesEvent(t *testing.T) {
+	body := func(edit func(run map[string]any)) map[string]any {
+		run := map[string]any{
+			"id": float64(44860519340), "name": "CI", "event": "workflow_dispatch",
+			"check_suite_id": float64(121419789924), "head_sha": "a368687e3a5a316f04533f1e83715eaf5e5663f7",
+			"status": "completed", "conclusion": "success",
+			"pull_requests": []any{map[string]any{"number": float64(3513)}, map[string]any{"number": float64(3514)}},
+		}
+		edit(run)
+		return map[string]any{
+			"action":       "completed",
+			"repository":   map[string]any{"name": "example-repo", "owner": map[string]any{"login": "example-org"}},
+			"workflow_run": run,
+		}
+	}
+	observations := GithubCIObservations("workflow_run", body(func(map[string]any) {}))
+	if len(observations) != 2 {
+		t.Fatalf("observations = %d, want one for each of the run's 2 pull requests: %+v", len(observations), observations)
+	}
+	for i, number := range []string{"3513", "3514"} {
+		want := CIObservation{
+			Owner: "example-org", Repo: "example-repo", Number: number, SHA: "a368687e3a5a316f04533f1e83715eaf5e5663f7",
+			SuiteID: "121419789924", RunEvent: "workflow_dispatch",
+		}
+		if observations[i] != want {
+			t.Errorf("observation %d = %+v, want %+v", i, observations[i], want)
+		}
+	}
+	for name, edit := range map[string]func(run map[string]any){
+		"no pull request": func(run map[string]any) { run["pull_requests"] = []any{} },
+		"no head commit":  func(run map[string]any) { delete(run, "head_sha") },
+		"no suite":        func(run map[string]any) { delete(run, "check_suite_id") },
+		"no event":        func(run map[string]any) { delete(run, "event") },
+	} {
+		if got := GithubCIObservations("workflow_run", body(edit)); len(got) != 0 {
+			t.Errorf("a workflow run with %s maps to %+v, want none", name, got)
+		}
+	}
+}
+
+// A check run's observation carries its suite, check_suite.id, which the webhook and the REST
+// listing both give. Only the objects Dispatch's CI reconcile maps from GitHub's GraphQL answer
+// carry the event of the suite's workflow run, as check_suite.workflow_run.event under a run and
+// workflow_run.event on a suite; a webhook gives none, and its observation carries none.
+func TestGithubCIObservationReadsARunsSuiteAndItsEvent(t *testing.T) {
+	run := map[string]any{
+		"id": float64(136723497213), "name": "ci-ok", "status": "completed", "conclusion": "success",
+		"head_sha": "a368687e3a5a316f04533f1e83715eaf5e5663f7", "completed_at": "2026-11-21T04:40:00Z",
+		"app": map[string]any{"id": float64(15368)}, "check_suite": map[string]any{"id": float64(121419789924)},
+	}
+	observation, ok := GithubCIObservation("check_run", run, "example-org", "example-repo", "3513")
+	if !ok || observation.SuiteID != "121419789924" || observation.AppID != GithubActionsAppID || observation.RunEvent != "" {
+		t.Fatalf("a webhook's check run maps to %+v (ok %v), want suite 121419789924 of GitHub Actions and no event", observation, ok)
+	}
+	run["check_suite"] = map[string]any{"id": float64(121419789924), "workflow_run": map[string]any{"event": "workflow_dispatch"}}
+	if observation, _ = GithubCIObservation("check_run", run, "example-org", "example-repo", "3513"); observation.RunEvent != "workflow_dispatch" {
+		t.Errorf("a reconciled check run maps to %+v, want the event workflow_dispatch", observation)
+	}
+	suite := map[string]any{
+		"id": float64(121419789924), "status": "completed", "conclusion": "success", "updated_at": "2026-11-21T04:40:01Z",
+		"head_sha": "a368687e3a5a316f04533f1e83715eaf5e5663f7", "app": map[string]any{"id": float64(15368)},
+		"workflow_run": map[string]any{"event": "pull_request"},
+	}
+	if observation, ok = GithubCIObservation("check_suite", suite, "example-org", "example-repo", "3513"); !ok || observation.SuiteID != "121419789924" || observation.RunEvent != "pull_request" {
+		t.Errorf("a reconciled check suite maps to %+v (ok %v), want suite 121419789924 and the event pull_request", observation, ok)
+	}
+}
+
 // A check_suite webhook gives its suite's latest_check_runs_count, which the webhook's mapping
 // keeps as CheckRunCount: a count of 0 as 0, not as none, and an event that gives no whole number
 // as none. The two suites are this repository's, each captured with
