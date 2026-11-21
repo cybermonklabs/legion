@@ -62,7 +62,7 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 			labels_seq = case when $11 and (held.labels_seq = 0 or held.labels_seq < $3) then $3 else held.labels_seq end,
 			rank = case when $13 and (held.rank_seq = 0 or held.rank_seq < $3) then excluded.rank else held.rank end,
 			rank_seq = case when $13 and (held.rank_seq = 0 or held.rank_seq < $3) then $3 else held.rank_seq end,
-			applied_seq = case when $14 and held.applied_seq < $3 then $3 else held.applied_seq end
+			applied_seq = greatest(held.applied_seq, excluded.applied_seq)
 		where ($5 and (held.status_seq = 0 or held.status_seq < $3))
 			or ($7 and (held.parent_seq = 0 or held.parent_seq < $3))
 			or ($9 and (held.blockers_seq = 0 or held.blockers_seq < $3))
