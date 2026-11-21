@@ -176,8 +176,10 @@ type ClusteredNatsHubArgs struct {
 	PrivateProjects bool `pulumi:"privateProjects,optional"`
 	// The session listener the hub runs as a workload of its own, declared outside the tailnet
 	// entry: with tailnet the entry's hosts forward the Tailscale Service's port 9020 to it, as
-	// they do to tailnet.listener, and its render is tailnet.listener's; without tailnet it is
-	// reached inside the cluster alone, by the pods of listener.clientNamespaces. The hub runs one
+	// they do to tailnet.listener, and its render is tailnet.listener's but for the listener
+	// container's token check, which this listener always carries and tailnet.listener carries
+	// only with clientNamespaces (clusteredHubListenerCredentialFor); without tailnet it is reached
+	// inside the cluster alone, by the pods of listener.clientNamespaces. The hub runs one
 	// listener, so this and tailnet.listener are refused together.
 	Listener *ClusteredHubListenerArgs `pulumi:"listener,optional"`
 	// The hub's tailnet entry: a Tailscale Service serving NATS and the session listener.

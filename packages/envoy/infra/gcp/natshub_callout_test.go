@@ -86,10 +86,11 @@ func TestAHubWithoutTheCalloutRendersNoCalloutLine(t *testing.T) {
 // A hub behind the auth service runs no listener of its own until the listener has a service
 // identity to connect through the auth service with, which arrives with dispatch://INFRA-840's
 // t-e-13: today the listener connects as a NATS user whose seed the hub stores. So listener
-// (gcp:NatsHub) and tailnet.listener (gcp:ClusteredNatsHub, whose tailnet always runs one) beside
-// authCallout are refused, naming both inputs, and nothing registers. The refusal is this slice's
-// stated behaviour until t-e-13 lands, and the task that sets the listener's service identity
-// removes it.
+// (gcp:NatsHub) beside authCallout is refused, and so is gcp:ClusteredNatsHub's session listener
+// wherever it is declared: tailnet.listener, whose tailnet always runs one, or the hub's own
+// listener input, which the last subtest declares with no tailnet. Each refusal names both inputs,
+// and nothing registers. The refusal is this slice's stated behaviour until t-e-13 lands, and the
+// task that sets the listener's service identity removes it.
 func TestAHubBehindTheAuthServiceRunsNoListenerOfItsOwn(t *testing.T) {
 	t.Run("gcp:NatsHub", func(t *testing.T) {
 		args := calloutNatsHub()
@@ -116,6 +117,21 @@ func TestAHubBehindTheAuthServiceRunsNoListenerOfItsOwn(t *testing.T) {
 		require.ErrorContains(t, err, "its service identity arrives with dispatch://INFRA-840 (t-e-13)")
 		m, err := runClustered(t, "example-clustered-hub", args, nil)
 		require.ErrorContains(t, err, "tailnet.listener and authCallout:")
+		require.Empty(t, m.Registrations(), "nothing registered")
+	})
+	t.Run("gcp:ClusteredNatsHub's own listener", func(t *testing.T) {
+		args := clusteredArgs()
+		standaloneListener(args)
+		args.Users = append(args.Users, authServiceUser())
+		args.AuthCallout = authCallout()
+		_, err := gcp.ResolveClusteredNatsHub(args)
+		var input *core.InputError
+		require.ErrorAs(t, err, &input)
+		require.Equal(t, "listener", input.Input)
+		require.ErrorContains(t, err, "listener and authCallout:")
+		require.NotContains(t, err.Error(), "tailnet.listener")
+		m, err := runClustered(t, "example-clustered-hub", args, nil)
+		require.ErrorContains(t, err, "listener and authCallout:")
 		require.Empty(t, m.Registrations(), "nothing registered")
 	})
 }
