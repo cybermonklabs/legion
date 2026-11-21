@@ -558,6 +558,67 @@ func TestKubectlKeepsTheKubeconfigsCredentialsOutOfItsOutput(t *testing.T) {
 	})
 }
 
+// A kubeconfig cluster's server can carry a user and a password, which kubectl prints whole in
+// `config view` and sends as Basic auth. The record keeps the server without them: they are in
+// neither the record file nor any output of routes record or routes check, and a record then a
+// check of that cluster exit 0. A server that is no URL is refused, exit 2, naming the context and
+// not the value.
+func TestKubectlKeepsAServersPasswordOutOfTheRecord(t *testing.T) {
+	for _, row := range []struct {
+		name, server string
+		record       int
+		want         string
+	}{
+		{"a server with a user and a password", canaryURL("https", "admin", "CANARY-SERVER-PASSWORD", "example-context.example.invalid"), 0,
+			`through context "example-context" of the cluster at "https://example-context.example.invalid"`},
+		{"a server that is no URL", canaryURL("https", "admin", "CANARY-SERVER-PASSWORD", "[example"), 2,
+			`the server of context "example-context" is no URL`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := cleanHub()
+			src, dir := fakeKubeHub(t, h)
+			require.NoError(t, src.Close())
+			config, err := json.Marshal(map[string]any{"current-context": "example-context",
+				"clusters": []any{map[string]any{"name": "example", "cluster": map[string]any{"server": row.server}}}})
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), config, 0o600))
+			run := func(args ...string) (int, string) {
+				t.Helper()
+				var stdout, stderr bytes.Buffer
+				code := routes.Command(context.Background(), append(args, "--namespace", "envoy", "--statefulset", "envoy-nats", "--kubectl",
+					filepath.Join(dir, "kubectl")), &stdout, &stderr, routes.OpenKubectl)
+				return code, stdout.String() + stderr.String()
+			}
+			out := filepath.Join(t.TempDir(), "routes.json")
+			back := h.atEnv()
+			code, output := run("record", "--out", out)
+			back()
+			require.NotContains(t, output, "CANARY-SERVER-PASSWORD")
+			require.Equal(t, row.record, code, output)
+			require.Contains(t, output, row.want)
+			if row.record != 0 {
+				require.NoFileExists(t, out)
+				return
+			}
+			body, err := os.ReadFile(out)
+			require.NoError(t, err)
+			require.NotContains(t, string(body), "CANARY-SERVER-PASSWORD")
+			require.Contains(t, string(body), `"server": "https://example-context.example.invalid"`)
+			code, output = run("check", "--record", out)
+			require.NotContains(t, output, "CANARY-SERVER-PASSWORD")
+			require.Equal(t, 0, code, "the same cluster: %s", output)
+			config, err = json.Marshal(map[string]any{"current-context": "other-context",
+				"clusters": []any{map[string]any{"name": "example", "cluster": map[string]any{"server": row.server}}}})
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), config, 0o600))
+			code, output = run("check", "--record", out)
+			require.NotContains(t, output, "CANARY-SERVER-PASSWORD", "the mismatch message names the server without its password")
+			require.Equal(t, 2, code, output)
+			require.Contains(t, output, `not through context "other-context" of the cluster at "https://example-context.example.invalid"`)
+		})
+	}
+}
+
 // OpenKubectl refuses a kubectl it cannot find, naming it, before it runs anything.
 func TestOpenKubectlNeedsKubectl(t *testing.T) {
 	_, err := routes.OpenKubectl(routes.Target{Kubectl: filepath.Join(t.TempDir(), "no-kubectl")})

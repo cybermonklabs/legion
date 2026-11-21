@@ -1185,6 +1185,8 @@ envoy-infra routes check --namespace envoy --statefulset envoy-nats --record rou
 
 `routes record` saves each pod's `uid`, its nats container's `restartCount` and `startedAt`, the
 time, and the cluster it read: the kubeconfig context it read through, its cluster's API server
+without any user and password its URL carries (kubectl sends them as Basic auth, so neither the
+record nor any output holds them; a server that is no URL is refused, exit 2, naming the context)
 and the SHA-256 of that cluster's CA certificate, from the context's `certificate-authority-data`
 (`kubectl config view --minify --flatten --allow-missing-template-keys=true` with a jsonpath of
 that field alone, so no credential of the kubeconfig's user is in its output, and whose error

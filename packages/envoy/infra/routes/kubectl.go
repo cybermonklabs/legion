@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -133,7 +134,9 @@ var serviceAccountCA = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
 // Cluster reads the context kubectl reads through, the one given or its kubeconfig's current one,
 // and that context's API server, from `kubectl config view --minify`, which keeps that context and
-// its cluster alone and reads no object of the cluster; and the digest of that cluster's CA
+// its cluster alone and reads no object of the cluster; it keeps the server without any user and
+// password its URL carries, which kubectl prints whole and sends as Basic auth (serverWithoutUser);
+// and the digest of that cluster's CA
 // certificate (caDigest) from its certificate-authority-data, which `--flatten` gives for a CA held
 // as data or as a file, and a jsonpath of that field alone keeps the user's credentials out of
 // kubectl's output. In a pod with no kubeconfig, as the operator's Job runs, kubectl reads the
@@ -168,11 +171,26 @@ func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
 	if config.CurrentContext == "" || len(config.Clusters) != 1 || config.Clusters[0].Cluster.Server == "" {
 		return Cluster{}, errors.New("kubectl's configuration names no context with one cluster and its server")
 	}
+	server, err := serverWithoutUser(config.Clusters[0].Cluster.Server)
+	if err != nil {
+		return Cluster{}, fmt.Errorf("the server of context %q is no URL", config.CurrentContext)
+	}
 	ca, err := k.clusterCA(ctx)
 	if err != nil {
 		return Cluster{}, err
 	}
-	return Cluster{Context: config.CurrentContext, Server: config.Clusters[0].Cluster.Server, CA: caDigest(ca)}, nil
+	return Cluster{Context: config.CurrentContext, Server: server, CA: caDigest(ca)}, nil
+}
+
+// serverWithoutUser is a kubeconfig cluster's server URL without its user and password. Its error
+// is url.Parse's, which quotes the whole value, so a caller names the context instead.
+func serverWithoutUser(server string) (string, error) {
+	u, err := url.Parse(server)
+	if err != nil {
+		return "", err
+	}
+	u.User = nil
+	return u.String(), nil
 }
 
 // caDigest is the SHA-256, in hex, of a CA certificate's bytes as the client holds them, or empty
