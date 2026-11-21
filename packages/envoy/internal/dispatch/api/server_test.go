@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -256,6 +257,11 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	database := options.store
 	if database == nil {
 		database = storetest.Open(t)
+	}
+	// The results read runs the statement of a pull request's issue, which main builds after the
+	// migrations (delivery.PrepareAttribution), so every test server builds it too.
+	if err := delivery.PrepareAttribution(context.Background(), database.Pool); err != nil {
+		t.Fatalf("prepare the statement of a pull request's issue: %v", err)
 	}
 	if options.tracer != nil {
 		database = &store.Store{Pool: storetest.Traced(t, database.Pool, options.tracer, nil)}
@@ -948,6 +954,11 @@ func TestExternalIssueResolutionAndAutoCreation(t *testing.T) {
 	}
 }
 
+// An external reference owner/repo#n finds the issue that links either GitHub URL form of n. One
+// URL links one issue (issue_external_links_url), and GitHub numbers issues and pull requests in one
+// sequence, so /issues/42 and /pull/42 name one object: a second issue that links the other form is
+// refused 409 EXTERNAL_LINK_TAKEN naming the holder, it keeps no link, and the reference still finds
+// the holder. A /pull/ link of another number finds its own issue.
 func TestExternalIssueReferenceResolvesBothGitHubURLShapes(t *testing.T) {
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -965,53 +976,95 @@ func TestExternalIssueReferenceResolvesBothGitHubURLShapes(t *testing.T) {
 		}
 		return decodeBody[model.Issue](t, response)
 	}
-	link := func(key, url string) {
+	link := func(key, url string) *httptest.ResponseRecorder {
 		t.Helper()
-		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{
+		return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{
 			"external_links": []map[string]string{{"url": url}},
 		}, "alice")
+	}
+	resolve := func(number, want string) {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/resolve?ref=owner/repo%23"+number, nil, "alice")
 		if response.Code != http.StatusOK {
-			t.Fatalf("link %s: status=%d body=%s", key, response.Code, response.Body.String())
+			t.Fatalf("resolve owner/repo#%s: status=%d body=%s", number, response.Code, response.Body.String())
+		}
+		if got := decodeBody[struct {
+			Key string `json:"key"`
+		}](t, response).Key; got != want {
+			t.Fatalf("resolve owner/repo#%s = %q, want %q", number, got, want)
 		}
 	}
 	issueLink := create("GitHub issue link")
 	pullLink := create("GitHub pull request link")
-	link(issueLink.Key, "https://github.com/owner/repo/issues/42")
+	if response := link(issueLink.Key, "https://github.com/owner/repo/issues/42"); response.Code != http.StatusOK {
+		t.Fatalf("link %s: status=%d body=%s", issueLink.Key, response.Code, response.Body.String())
+	}
+	resolve("42", issueLink.Key)
 
-	resolvedIssue := dispatchRequest(
-		t,
-		handler,
-		http.MethodGet,
-		"/api/v1/issues/resolve?ref=owner/repo%2342",
-		nil,
-		"alice",
-	)
-	if resolvedIssue.Code != http.StatusOK {
-		t.Fatalf("resolve GitHub issue link: status=%d body=%s", resolvedIssue.Code, resolvedIssue.Body.String())
+	refused := link(pullLink.Key, "https://github.com/owner/repo/pull/42")
+	if refused.Code != http.StatusConflict ||
+		!strings.Contains(refused.Body.String(), `"code":"EXTERNAL_LINK_TAKEN"`) ||
+		!strings.Contains(refused.Body.String(), issueLink.Key) {
+		t.Fatalf("link the other form to %s: status=%d body=%s, want 409 EXTERNAL_LINK_TAKEN naming %s", pullLink.Key, refused.Code, refused.Body.String(), issueLink.Key)
 	}
-	if got := decodeBody[struct {
-		Key string `json:"key"`
-	}](t, resolvedIssue).Key; got != issueLink.Key {
-		t.Fatalf("resolved issue key = %q, want %q", got, issueLink.Key)
+	unchanged := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+pullLink.Key, nil, "alice")
+	if links := decodeBody[model.Issue](t, unchanged).ExternalLinks; len(links) != 0 {
+		t.Fatalf("%s external links = %#v, want none after the refused link", pullLink.Key, links)
 	}
+	resolve("42", issueLink.Key)
 
-	link(pullLink.Key, "https://github.com/owner/repo/pull/42")
-	resolvedPull := dispatchRequest(
-		t,
-		handler,
-		http.MethodGet,
-		"/api/v1/issues/resolve?ref=owner/repo%2342",
-		nil,
-		"alice",
-	)
-	if resolvedPull.Code != http.StatusBadRequest {
-		t.Fatalf("resolve ambiguous GitHub links: status=%d body=%s", resolvedPull.Code, resolvedPull.Body.String())
+	if response := link(pullLink.Key, "https://github.com/owner/repo/pull/43"); response.Code != http.StatusOK {
+		t.Fatalf("link %s: status=%d body=%s", pullLink.Key, response.Code, response.Body.String())
 	}
-	body := resolvedPull.Body.String()
-	if !strings.Contains(body, `"code":"AMBIGUOUS_ISSUE_REF"`) ||
-		!strings.Contains(body, issueLink.Key) ||
-		!strings.Contains(body, pullLink.Key) {
-		t.Fatalf("ambiguous response = %s, want AMBIGUOUS_ISSUE_REF naming %s and %s", body, issueLink.Key, pullLink.Key)
+	resolve("43", pullLink.Key)
+}
+
+// Two issues that stored the two GitHub URL forms of one number before the link check refused the
+// second form keep both links: the check refuses a link when it is written, and changes no stored
+// pair. Each issue of the pair sends its own link again beside a new one and is answered 200, and
+// owner/repo#42 answers AMBIGUOUS_ISSUE_REF naming both issues.
+func TestAPairThatLinkedBothFormsOfOneNumberBeforeTheCheckStaysAmbiguous(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "TEST", "name": "Test project",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	keys := []string{}
+	for _, title := range []string{"GitHub issue link", "GitHub pull request link"} {
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": "TEST", "title": title, "force": true,
+		}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create %q: status=%d body=%s", title, response.Code, response.Body.String())
+		}
+		keys = append(keys, decodeBody[model.Issue](t, response).Key)
+	}
+	issueLink, pullLink := keys[0], keys[1]
+	if _, err := database.Pool.Exec(context.Background(), `insert into issue_external_links (issue_key, url, kind) values
+		($1, 'https://github.com/owner/repo/issues/42', 'url'), ($2, 'https://github.com/owner/repo/pull/42', 'url')`, issueLink, pullLink); err != nil {
+		t.Fatalf("store the pair as an older release did: %v", err)
+	}
+	for key, urls := range map[string][]string{
+		issueLink: {"https://github.com/owner/repo/issues/42", "https://github.com/owner/repo/issues/50"},
+		pullLink:  {"https://github.com/owner/repo/pull/42", "https://github.com/owner/repo/pull/51"},
+	} {
+		links := []map[string]string{}
+		for _, url := range urls {
+			links = append(links, map[string]string{"url": url})
+		}
+		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"external_links": links}, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s of the stored pair sends its own link again: status=%d body=%s", key, response.Code, response.Body.String())
+		}
+	}
+	resolved := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/resolve?ref=owner/repo%2342", nil, "alice")
+	if resolved.Code != http.StatusBadRequest {
+		t.Fatalf("resolve the stored pair: status=%d body=%s", resolved.Code, resolved.Body.String())
+	}
+	body := resolved.Body.String()
+	if !strings.Contains(body, `"code":"AMBIGUOUS_ISSUE_REF"`) || !strings.Contains(body, issueLink) || !strings.Contains(body, pullLink) {
+		t.Fatalf("ambiguous response = %s, want AMBIGUOUS_ISSUE_REF naming %s and %s", body, issueLink, pullLink)
 	}
 }
 

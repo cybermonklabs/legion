@@ -250,13 +250,11 @@ const intakeHoldLost = "dispatch delivery: the intake's hold is lost; it stops d
 // run delivers from the durable while this intake holds its hold, and stands by for it otherwise,
 // until ctx ends; then it stops delivering and releases the hold (stop), under the one stop
 // deadline armed at ctx's end (stopContext), so a take-over under way at that moment spends that
-// budget rather than starting one of its own. Each durableBindInterval while it delivers nothing,
-// and ready reports true, it tries for the hold and the durable (attempt); each intakeHoldRenew
-// while it delivers, it checks the durable still delivers to it (check); and the moment its hold
-// is lost it stops delivering. wake, when not nil, answers a channel the loop waits on beside its
-// tickers and takes again each time it fires -- the delivery intake's settings cache storing
-// settings, which is what makes its first attempt ready (Intake.Run).
-func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, ready func() bool) {
+// budget rather than starting one of its own. At once and each durableBindInterval while it
+// delivers nothing, it tries for the hold and the durable (attempt); each intakeHoldRenew while it
+// delivers, it checks the durable still delivers to it (check); and the moment its hold is lost it
+// stops delivering.
+func (d *heldDurable) run(ctx context.Context) {
 	// Armed before the first attempt, so a take-over under way as ctx ends -- a standby's poll,
 	// whose JetStream calls take their own time -- spends the stop's budget rather than starting
 	// it late.
@@ -268,15 +266,9 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 	checks := time.NewTicker(intakeHoldRenew)
 	defer checks.Stop()
 	attempt := func() {
-		if d.subject == "" && ready() {
+		if d.subject == "" {
 			d.attempt(ctx)
 		}
-	}
-	// Taken before each attempt, which reads what the cache holds, so settings stored after that
-	// read wake the loop.
-	var changed <-chan struct{}
-	if wake != nil {
-		changed = wake()
 	}
 	attempt()
 	for {
@@ -288,9 +280,6 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 		select {
 		case <-ctx.Done():
 			return
-		case <-changed:
-			changed = wake()
-			attempt()
 		case <-binds.C:
 			attempt()
 		case <-checks.C:

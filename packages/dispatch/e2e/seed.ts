@@ -29,8 +29,13 @@ const tables = [
   "delivery_runs",
   "delivery_pull_requests",
   // pull_request_heads and check_results are reached by the cascade below (both carry a
-  // foreign key into issues); branch_commits carries none, so it is named here.
+  // foreign key into issues); branch_commits, pull_request_reads_owed (migration
+  // 20261116163445) and commit_pull_reads (migration 20261119173616) carry none, so they are
+  // named here: a read one row owes would have the next row's reconcile read that pull request,
+  // and a claim one row's results read made would hold the next row's read of that commit off.
   "branch_commits",
+  "pull_request_reads_owed",
+  "commit_pull_reads",
   "user_issue_state",
   "user_agent_state",
   // The agents a person pinned (migration 20261106215223), a table of its own that no foreign

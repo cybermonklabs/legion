@@ -664,7 +664,8 @@ func underStatus(field []any) bool {
 
 // errorText is GitHub's errors array as one line of a log, each entry's type and message: the
 // pass names what GitHub refused, which is the only way an operator can tell a permission the
-// App lacks from a query GitHub gave up on.
+// App lacks from a query GitHub gave up on. It is GitHub's text, so it is shown to a body's bound
+// (githubapp.ShownBody): its start and its size.
 func errorText(errors []graphQLError) string {
 	if len(errors) == 0 {
 		return "the answer held no repository and no error"
@@ -673,7 +674,7 @@ func errorText(errors []graphQLError) string {
 	for _, entry := range errors {
 		said = append(said, strings.TrimSpace(entry.Type+" "+entry.Message))
 	}
-	return strings.Join(said, "; ")
+	return githubapp.ShownBody(strings.Join(said, "; "))
 }
 
 // graphQLPace waits for what the query before it in this pass took, so the pass's queries never

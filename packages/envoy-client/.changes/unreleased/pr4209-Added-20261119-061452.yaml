@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+    `dispatch attribution` prints, in seven lines, what the attribution of Dispatch's stored pull
+    requests still waits on: the pull requests that wait for their facts from GitHub, those a
+    reconcile pass still reads, the keys that wait to be read again, the changes of attribution
+    whose events wait, the key reading, the links that more than one issue holds in other letter
+    cases, and the pull requests whose head is not read while a read is owed. `dispatch results`
+    names each pull request whose head Dispatch has not read, and each one whose issue Dispatch
+    does not know yet.
+time: 2026-11-19T06:14:52.000000000Z
+custom:
+    Issue: pr4209

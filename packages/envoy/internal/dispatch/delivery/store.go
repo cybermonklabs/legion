@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -42,8 +43,10 @@ func ScanSettings(row pgx.Row) (DeliverySettings, error) {
 	return settings, nil
 }
 
-// ErrNoSettings is "delivery_settings has no row yet": intake and reconcile stay idle, and the
-// API answers that delivery is not configured, rather than guessing a repository.
+// ErrNoSettings is "delivery_settings has no row yet": the steps of the delivery timeline stay
+// idle and the API answers that delivery is not configured, rather than guessing a repository.
+// The intake still writes every pull request's head and the reconcile still reads the heads
+// (Intake.Run, Reconcile.runOnce): a recorded result is compared with them in every deployment.
 var ErrNoSettings = errors.New("delivery settings are not configured")
 
 // GetSettings reads the one delivery_settings row, or ErrNoSettings when none has been written
@@ -259,9 +262,11 @@ func PruneMergedPullRequestProgress(ctx context.Context, pool *store.Pool, keep 
 
 // PullRequestColumns is the delivery_pull_requests select list ScanPullRequest reads, in scan
 // order.
-const PullRequestColumns = `repo, number, title, url, author, created_at, merged_at, first_commit_at, merge_commit_sha, additions, deletions, rework, issue_key, sessions, partial, unfetchable_at, unfetchable_reason, updated_at, attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys`
+const PullRequestColumns = `repo, number, title, url, author, created_at, merged_at, first_commit_at, merge_commit_sha, additions, deletions, rework, issue_key, sessions, partial, unfetchable_at, unfetchable_reason, updated_at`
 
-// ScanPullRequest decodes one PullRequestColumns row into a DeliveryPullRequest.
+// ScanPullRequest decodes one PullRequestColumns row into a DeliveryPullRequest. Its IssueKey is
+// the stored column. A reader of the timeline replaces it with the statement's answer
+// (attributedIssues).
 func ScanPullRequest(row pgx.Row) (DeliveryPullRequest, error) {
 	return scanPullRequest(row)
 }
@@ -270,60 +275,52 @@ func ScanPullRequest(row pgx.Row) (DeliveryPullRequest, error) {
 // PullRequestColumns, scanned into extra in order.
 func scanPullRequest(row pgx.Row, extra ...any) (DeliveryPullRequest, error) {
 	var pr DeliveryPullRequest
-	var inputs AttributionInputs
 	dest := []any{
 		&pr.Repo, &pr.Number, &pr.Title, &pr.URL, &pr.Author, &pr.CreatedAt, &pr.MergedAt,
 		&pr.FirstCommitAt, &pr.MergeCommitSHA, &pr.Additions, &pr.Deletions, &pr.Rework,
 		&pr.IssueKey, &pr.Sessions, &pr.Partial, &pr.UnfetchableAt, &pr.UnfetchableReason, &pr.UpdatedAt,
-		&inputs.TitleKeys, &inputs.CitedIssues, &inputs.BranchKeys, &inputs.CommitKeys,
 	}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return DeliveryPullRequest{}, err
-	}
-	if inputs.TitleKeys != nil {
-		pr.Attribution = &inputs
 	}
 	return pr, nil
 }
 
 // UpsertPullRequest writes pr, keyed on (repo, number). Every field pr carries overwrites the
-// stored row's EXCEPT when doing so would regress a complete row (Partial: false, real attribution
-// already resolved) to a partial one: the WHERE clause on the UPDATE refuses that specific case,
-// leaving the existing complete row untouched instead. This matters because reconcile's merged-PR
-// search re-finds every PR merged in roughly the last hour on every five-minute pass (its own
-// overlap window), including ones intake's live NATS path already completed moments earlier with
-// real session/issue attribution the search result can't carry -- without this guard, reconcile
-// would silently wipe that attribution back to empty within one pass of every merge, deterministic
-// and immediate, not a race. A live intake write that knows only the envelope's fields passes nil
-// for the rest and Partial true the first time a PR is seen; a later completing fetch or reconcile
-// pass overwrites that same row with the complete fields and Partial false, which the WHERE clause
-// always allows (excluded.partial = false never regresses anything). The one shared upsert both
-// paths call, so "the reconcile catches a missed event" and "the completing fetch completes a
-// partial row" are the same code path, never two implementations that can drift. Every call also
-// clears unfetchable_at/unfetchable_reason to null: a successful write is itself the "it is
-// fetchable after all" signal, whichever path (a webhook retry, a later reconcile pass) made it.
+// stored row's EXCEPT when doing so would regress a complete row (Partial: false) to a partial
+// one: the WHERE clause on the UPDATE refuses that specific case, leaving the existing complete
+// row untouched instead. This matters because reconcile's merged-PR search re-finds every PR
+// merged in roughly the last hour on every five-minute pass (its own overlap window), including
+// ones intake's live NATS path already completed moments earlier with real sessions the search
+// result can't carry -- without this guard, reconcile would silently wipe them back to empty
+// within one pass of every merge, deterministic and immediate, not a race. A live intake write
+// that knows only the envelope's fields passes nil for the rest and Partial true the first time
+// a PR is seen; a later completing fetch or reconcile pass overwrites that same row with the
+// complete fields and Partial false, which the WHERE clause always allows (excluded.partial =
+// false never regresses anything). The one shared upsert both paths call, so "the reconcile
+// catches a missed event" and "the completing fetch completes a partial row" are the same code
+// path, never two implementations that can drift. Every call also clears
+// unfetchable_at/unfetchable_reason to null: a successful write is itself the "it is fetchable
+// after all" signal, whichever path (a webhook retry, a later reconcile pass) made it.
+//
+// The write stores no issue, and it does not read pr.IssueKey. The statement gives the issue of a
+// pull request at each read. SyncAttributions keeps the stored issue_key on that answer for the
+// release before. The title and each session go through freeText, because Postgres stores no NUL
+// in a text value. This function is the one writer of both columns, so no caller cleans them.
 func UpsertPullRequest(ctx context.Context, pool *store.Pool, pr DeliveryPullRequest) error {
-	sessions := pr.Sessions
-	if sessions == nil {
-		// pgx sends a nil slice as SQL NULL, not the column default: an explicit insert value
-		// always wins over the default, so a nil Sessions here would violate the not-null
-		// constraint instead of quietly becoming '{}'.
-		sessions = []string{}
-	}
-	// A write that carries no attribution inputs (a search result, a partial envelope row) keeps
-	// the ones stored: they are what GitHub said about the merged pull request, which does not
-	// change. A write that carries them stores all four, never a nil slice (SQL NULL).
-	var inputs [4][]string
-	if a := pr.Attribution; a != nil {
-		inputs = [4][]string{nonNil(a.TitleKeys), nonNil(a.CitedIssues), nonNil(a.BranchKeys), nonNil(a.CommitKeys)}
+	// make, not pr.Sessions as it is: pgx sends a nil slice as SQL NULL, not the column default,
+	// and an explicit insert value always wins over the default, so a nil Sessions would violate
+	// the not-null constraint instead of quietly becoming '{}'.
+	sessions := make([]string, len(pr.Sessions))
+	for i, session := range pr.Sessions {
+		sessions[i] = freeText(session)
 	}
 	_, err := pool.Exec(ctx, `
 		insert into delivery_pull_requests (
 			repo, number, title, url, author, created_at, merged_at, first_commit_at,
-			merge_commit_sha, additions, deletions, rework, issue_key, sessions, partial,
-			attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys
+			merge_commit_sha, additions, deletions, rework, sessions, partial
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		on conflict (repo, number) do update set
 			title = excluded.title,
 			url = excluded.url,
@@ -335,45 +332,16 @@ func UpsertPullRequest(ctx context.Context, pool *store.Pool, pr DeliveryPullReq
 			additions = excluded.additions,
 			deletions = excluded.deletions,
 			rework = excluded.rework,
-			issue_key = excluded.issue_key,
 			sessions = excluded.sessions,
 			partial = excluded.partial,
-			attribution_title_keys = coalesce(excluded.attribution_title_keys, delivery_pull_requests.attribution_title_keys),
-			attribution_cited_issues = coalesce(excluded.attribution_cited_issues, delivery_pull_requests.attribution_cited_issues),
-			attribution_branch_keys = coalesce(excluded.attribution_branch_keys, delivery_pull_requests.attribution_branch_keys),
-			attribution_commit_keys = coalesce(excluded.attribution_commit_keys, delivery_pull_requests.attribution_commit_keys),
 			unfetchable_at = null,
 			unfetchable_reason = null,
 			updated_at = now()
 		where delivery_pull_requests.partial or not excluded.partial
 	`,
-		pr.Repo, pr.Number, pr.Title, pr.URL, pr.Author, pr.CreatedAt, pr.MergedAt, pr.FirstCommitAt,
-		pr.MergeCommitSHA, pr.Additions, pr.Deletions, pr.Rework, pr.IssueKey, sessions, pr.Partial,
-		inputs[0], inputs[1], inputs[2], inputs[3],
+		pr.Repo, pr.Number, freeText(pr.Title), pr.URL, pr.Author, pr.CreatedAt, pr.MergedAt, pr.FirstCommitAt,
+		pr.MergeCommitSHA, pr.Additions, pr.Deletions, pr.Rework, sessions, pr.Partial,
 	)
-	return err
-}
-
-func nonNil(list []string) []string {
-	if list == nil {
-		return []string{}
-	}
-	return list
-}
-
-// StoreAttributionInputs writes the attribution inputs the backfill read for a complete row, the
-// session trailers its commits name and the issue resolved from them, leaving every other fact
-// the row holds alone. Conditioned on the inputs still being unread, so a concurrent completion
-// that stored them first is never overwritten by this older read.
-func StoreAttributionInputs(ctx context.Context, pool *store.Pool, repo string, number int, inputs AttributionInputs, sessions []string, issueKey *string) error {
-	_, err := pool.Exec(ctx, `
-		update delivery_pull_requests
-		set attribution_title_keys = $3, attribution_cited_issues = $4, attribution_branch_keys = $5,
-			attribution_commit_keys = $6, sessions = $7, issue_key = $8, attribution_checked_at = now(),
-			updated_at = now()
-		where repo = $1 and number = $2 and attribution_title_keys is null
-	`, repo, number, nonNil(inputs.TitleKeys), nonNil(inputs.CitedIssues), nonNil(inputs.BranchKeys),
-		nonNil(inputs.CommitKeys), nonNil(sessions), issueKey)
 	return err
 }
 
@@ -393,7 +361,8 @@ type WaitingPullRequest struct {
 // finished before at had shipped by then, and every one merged at or after it had not: that
 // creation, read through delivery_runs_kind_created newest first, is the one bound this needs. The
 // shipping run is read here rather than from the window's own runs, which start at the window and
-// so can miss a run created before it.
+// so can miss a run created before it. Each pull request's issue is the statement's answer
+// (attributedIssues), as on the timeline window.
 func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, deployRepo string, production Production, at time.Time) ([]WaitingPullRequest, error) {
 	rows, err := pool.Query(ctx, `
 		select `+PullRequestColumns+`, ship.run_id, ship.completed_at
@@ -426,7 +395,21 @@ func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, deployRepo
 		w.DeliveryPullRequest = pr
 		waiting = append(waiting, w)
 	}
-	return waiting, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	prs := make([]DeliveryPullRequest, len(waiting))
+	for i := range waiting {
+		prs[i] = waiting[i].DeliveryPullRequest
+	}
+	issues, err := attributedIssues(ctx, pool, prs)
+	if err != nil {
+		return nil, err
+	}
+	for i, issue := range issues {
+		waiting[i].IssueKey, waiting[i].IssueNotKnown = issue.Key, issue.NotKnown
+	}
+	return waiting, nil
 }
 
 // shippingRunJoin is the SQL of when a deploy ships a pull request, the one statement of the rule
@@ -464,22 +447,26 @@ func DeletePullRequest(ctx context.Context, pool *store.Pool, repo string, numbe
 	return err
 }
 
-// MarkPullRequestUnfetchable records that repo#number's completing fetch answered a permanent
-// 404 or 410 (FetchPullRequest's ErrPullRequestNotFound) or a 404 resolving which installation
-// covers the repository (githubapp.ErrNoInstallation): the pull request or its repository no
-// longer exists, or no longer reaches this token. ListPartialPullRequests and
-// ListUnreadAttributionPullRequests stop returning the row until a later successful
-// UpsertPullRequest clears it (a webhook retry, or a reconcile pass once the repository or PR
-// becomes reachable again). Conditioned on the row still needing that fetch (partial, or its
-// attribution inputs unread): a concurrent write (a live webhook, or another goroutine of this
-// same reconcile pass racing a retried fetch) can complete the row between this caller's own
-// failed fetch and this UPDATE running, and marking it unfetchable after that would silently
-// throw the completion away.
+// MarkPullRequestUnfetchable records that GitHub no longer has repo#number, once
+// pullRequestAbsent proved it: the facts line marks a timeline row with no results row
+// (readFactsLine), and the completion of a partial row marks that row
+// (completePartialPullRequest). ListPartialPullRequests and the facts line stop reading the row
+// until a later successful UpsertPullRequest clears it (a webhook retry, or a reconcile pass once
+// the pull request becomes reachable again). Conditioned on the row still needing a read: it is
+// partial, or no results row of the pull request exists under any name of its repository, which
+// is the timeline row the facts line reads (factsLineJudged). A concurrent write (a live webhook,
+// a read-through, or another goroutine of this same reconcile pass racing a retried fetch) can
+// complete the row, or store its results row, between this caller's own failed fetch and this
+// UPDATE running, and marking it unfetchable after that would throw GitHub's answer away. The
+// condition names no attribution_* column: the contracting migration of the next release drops
+// them, and this build reads none of them.
 func MarkPullRequestUnfetchable(ctx context.Context, pool *store.Pool, repo string, number int, reason string) error {
 	_, err := pool.Exec(ctx, `
-		update delivery_pull_requests
+		update delivery_pull_requests d
 		set unfetchable_at = now(), unfetchable_reason = $3
-		where repo = $1 and number = $2 and (partial or attribution_title_keys is null)
+		where d.repo = $1 and d.number = $2 and (d.partial or not exists (
+			select 1 from pull_request_heads x
+			where x.number = d.number and lower(`+refs.CanonicalRepoSQL("x.repo")+`) = lower(`+refs.CanonicalRepoSQL("d.repo")+`)))
 	`, repo, number, reason)
 	return err
 }
@@ -504,19 +491,6 @@ func ListPartialPullRequests(ctx context.Context, pool *store.Pool) ([]DeliveryP
 		where partial and unfetchable_at is null
 		order by repo, number
 	`)
-}
-
-// ListUnreadAttributionPullRequests lists up to limit complete rows whose attribution inputs
-// have never been read from GitHub (rows stored before they were), newest merge first: the
-// reconcile's backfill of them, through delivery_pull_requests_attribution_unread.
-func ListUnreadAttributionPullRequests(ctx context.Context, pool *store.Pool, limit int) ([]DeliveryPullRequest, error) {
-	return listPullRequests(ctx, pool, `
-		select `+PullRequestColumns+`
-		from delivery_pull_requests
-		where attribution_title_keys is null and not partial and unfetchable_at is null
-		order by merged_at desc nulls last, repo, number
-		limit $1
-	`, limit)
 }
 
 func listPullRequests(ctx context.Context, pool *store.Pool, query string, args ...any) ([]DeliveryPullRequest, error) {
@@ -1010,7 +984,8 @@ const maxPullRequestsPerWindow = 50_000
 // page's live merge keeps: applyDelta.ts's ORDERS.prs), up to maxPullRequestsPerWindow: the API's
 // timeline window and the facet computations that run over it. A partial row (merged_at still
 // null) is never in range and so never appears here — exactly right, since its lead time and
-// shipped status are not yet knowable.
+// shipped status are not yet knowable. Each pull request's issue is the statement's answer
+// (attributedIssues), the answer the results route reads too, never the stored issue_key alone.
 func ListPullRequestsInWindow(ctx context.Context, pool *store.Pool, from, to time.Time) ([]DeliveryPullRequest, error) {
 	rows, err := pool.Query(ctx, `
 		select `+PullRequestColumns+`
@@ -1031,7 +1006,17 @@ func ListPullRequestsInWindow(ctx context.Context, pool *store.Pool, from, to ti
 		}
 		prs = append(prs, pr)
 	}
-	return prs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	issues, err := attributedIssues(ctx, pool, prs)
+	if err != nil {
+		return nil, err
+	}
+	for i, issue := range issues {
+		prs[i].IssueKey, prs[i].IssueNotKnown = issue.Key, issue.NotKnown
+	}
+	return prs, nil
 }
 
 // OpenP0Keys is every open P0 issue's key, across every project: the issues whose change can move

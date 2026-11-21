@@ -141,7 +141,7 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	fake.handle("GET /repos/{owner}/{repo}/pulls/{number}", func(w http.ResponseWriter, _ *http.Request) {
 		enter.Do(func() { close(entered) })
 		<-held
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusNotFound)
 	})
 	github := fake.newTestClient()
 	release := sync.OnceFunc(func() { close(held) })

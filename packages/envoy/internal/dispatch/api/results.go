@@ -177,7 +177,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	if request.linkedCommitRepo != nil {
 		readThrough = request.linkedCommitRepo
 	}
-	s.readThroughPullRequests(r.Context(), request.check.IssueKey, written.result.CommitSHA, readThrough)
+	s.readThroughPullRequests(r.Context(), written.result.CommitSHA, readThrough)
 	s.publish(r.Context(), written.event)
 	s.storeDisplayTrees(r.Context(), written.result.ID, written.result.Observed)
 	WriteJSON(w, http.StatusCreated, checkResultRecorded{
@@ -281,11 +281,10 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// a check that compares with nothing from one it could not compare (results_comparison.go,
 	// nothingReason). This route takes the repository alone, on purpose: the refusal below and
 	// the read-through it answers for are already answered by a nil, and the two nothings would
-	// earn one answer here anyway. Only GitHub's proof that the repository holds no such commit,
-	// a read of a linked repository that did not answer and a failed read of the issue's links
-	// refuse a record, and none of them is asked of a nil repository, so a resolve that did not
-	// answer stores the result, exactly as a deployment with no App key and an issue with no
-	// repository do.
+	// earn one answer here anyway. Only GitHub's proof that no repository the result may name
+	// holds the commit and a failed read of the issue's links refuse a record, and neither is
+	// asked of a nil repository, so a resolve that did not answer stores the result, exactly as a
+	// deployment with no App key and an issue with no repository do.
 	var checkRepo *string
 	if s.deps.GitHub != nil {
 		checkRepo, _ = s.checkIssueRepository(r.Context(), pool, check.IssueKey)
@@ -294,12 +293,12 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// Asked here for the reason resolveCheck is asked here, before the transaction opens: it is
 	// one GitHub round trip or more, and the comment over that resolve records what a slow read
 	// under the two issues' owner locks costs. Nothing is written before it, so a refusal leaves
-	// no row and no event behind. linkedCommitRepo is the linked repository the commit is taken
-	// to be of, and nil where it is taken to be checkRepo's: a result at the head of a pull
-	// request the issue links in another repository names a commit of that repository. A linked
-	// read that did not answer, where no repository was shown to hold the commit, refuses the
-	// record for now rather than storing it under a repository no read showed to hold it
-	// (refuseUnknownCommit, results_linked.go).
+	// no row and no event behind. linkedCommitRepo is the repository other than checkRepo the
+	// commit is taken to be of, and nil where it is taken to be checkRepo's: a result at the head
+	// of a pull request the issue links in another repository names a commit of that repository.
+	// A read that did not answer, or a repository Dispatch cannot read, where no repository was
+	// shown to hold the commit, stores the result as checkRepo's (R17 of the spec of several open
+	// pull requests; refuseUnknownCommit, results_linked.go).
 	linkedCommitRepo, err := s.refuseUnknownCommit(r.Context(), pool, check.IssueKey, checkRepo, input.Commit)
 	if err != nil {
 		return refused(err)
@@ -505,6 +504,12 @@ type issueCheckResults struct {
 	Checks                 []model.CheckBlock `json:"checks"`
 	Issue                  string             `json:"issue"`
 	VerificationArtifactID string             `json:"verification_artifact_id"`
+	// UnreadableLinks is each link of the issue to a pull request or an issue of a repository the
+	// App is not installed on, whose read GitHub refused, and which no pass reads again until a
+	// new link or an event owes the read again or the App's installations cover the repository
+	// (delivery.UnreadableLinksOf). It is read whether or not the issue holds a Verification
+	// document, and no check's answer turns on it.
+	UnreadableLinks []model.UnreadableLink `json:"unreadable_links,omitempty"`
 }
 
 // GET /api/v1/issues/{key}/results  (any authenticated caller)
@@ -543,7 +548,12 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	body := issueCheckResults{Checks: []model.CheckBlock{}, Issue: issueKey, VerificationArtifactID: artifact.ID}
+	unreadable, err := delivery.UnreadableLinksOf(r.Context(), s.deps.Store.Pool, issueKey)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	body := issueCheckResults{Checks: []model.CheckBlock{}, Issue: issueKey, VerificationArtifactID: artifact.ID, UnreadableLinks: unreadable}
 	if !held {
 		WriteJSON(w, http.StatusOK, body)
 		return
@@ -576,7 +586,10 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	if err := s.deriveCIResults(r.Context(), issueKey, checks); err != nil {
+	// The CI read and the comparison share one reader, so the repository and its default branch
+	// are read once for both.
+	reader := newComparisonReader(s, at)
+	if err := s.deriveCIResults(r.Context(), reader, issueKey, checks); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -590,7 +603,6 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	// Every head GitHub has to be asked for is learned before the first check is answered, so
 	// two `before_merge` checks of one issue name one list of bases and not two
 	// (comparisonReader.learn).
-	reader := newComparisonReader(s, at)
 	reader.learn(r.Context(), checks)
 	for index := range checks {
 		reader.answer(r.Context(), &checks[index])
@@ -1406,32 +1418,26 @@ func scanCheckResult(row pgx.Row) (model.CheckResult, error) {
 }
 
 // readThroughPullRequests teaches Dispatch the pull requests GitHub names for a result's
-// commit when that commit is the head of none it already knows for the check's issue, so a
-// result recorded at the head of a pull request no event has reached Dispatch for stands at
-// that head at once. It asks about the check's own issue and reads through repo, the one the
-// commit is taken to be of: the linked repository refuseUnknownCommit answered before the write
-// (results_linked.go), and else the repository the check's issue resolves to. So the pull
-// request of a linked repository is learned from that repository, not from the one the issue
-// resolves to, which does not hold the commit. A nil repo — a deployment with no App key, an
-// issue resolving to no repository, or a resolve that failed — leaves nothing to read through,
-// and it is answered before the database is read, since no head this read found could be used.
+// commit, so a result recorded at the head of a pull request no event has reached Dispatch for
+// stands at that head at once. It reads a commit that a pull request Dispatch holds already
+// heads too: GitHub can name a second pull request at the same head, whose own event never
+// arrived, and the read stores its row. It reads through repo, the one the commit is taken to be
+// of: the linked repository refuseUnknownCommit answered before the write (results_linked.go),
+// and else the repository the check's issue resolves to, which readResultRequest resolved before
+// the write: the issue comparisonReader.headBases names the heads of. So the pull request of a
+// linked repository is learned from that repository, not from the one the issue resolves to,
+// which does not hold the commit. A nil repo — a deployment with no App key, an issue resolving
+// to no repository, or a resolve that failed — leaves nothing to read through, and it is answered
+// before anything is read, since no head this read found could be used.
 //
 // It never fails the record: the row is written, and a head Dispatch could not learn leaves
 // the result read exactly as it would have been without the call.
-func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha string, repo *string) {
+func (s *server) readThroughPullRequests(ctx context.Context, sha string, repo *string) {
 	if repo == nil || s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return
 	}
-	known, err := delivery.HeadAttributedTo(ctx, s.deps.Store.Pool, checkIssueKey, sha)
-	if err != nil {
-		slog.Warn("dispatch: read the pull request heads of a recorded result", "issue", checkIssueKey, "error", err)
-		return
-	}
-	if known {
-		return
-	}
 	if _, _, err := delivery.ReadThroughCommitPulls(
-		ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, *repo, sha, time.Now()); err != nil {
+		ctx, s.deps.Store.Pool, s.deps.GitHub, *repo, sha, time.Now()); err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a recorded result's commit",
 			"repo", *repo, "commit", sha, "error", err)
 	}

@@ -37,7 +37,8 @@ type IssueDeployedEventPayload struct {
 }
 
 // shippedPullRequest is one row listUnrecordedShipped answers: a merged pull request of the deploy
-// repository attributed to an issue, with the run that shipped it, whose event is not written yet.
+// repository that the statement attributes to an issue, with the run that shipped it, whose event
+// is not written yet.
 type shippedPullRequest struct {
 	Repo        string
 	Number      int
@@ -53,9 +54,10 @@ type shippedPullRequest struct {
 // the event names the run the Delivery page shows. Once per pull request: the marker is set in the
 // event's transaction, under the row's lock and only while still null, so a second pass writes
 // nothing, and of intake and the reconcile running at once, which both call this, the second finds
-// the row marked and appends nothing. A pull request whose issue was deleted between the read and
-// the write (its issue_key set null by the foreign key) is skipped the same way. A failed row ends
-// the pass with its error: the rows before it stay written, the rest wait for the next call. The
+// the row marked and appends nothing. A pull request whose issue changed between the read and the
+// write (a deleted issue, a new link, a new read of its texts) is skipped the same way, because the
+// event's transaction reads the statement again. A failed row ends the pass with its error: the
+// rows before it stay written, the rest wait for the next call. The
 // payload is IssueDeployedEventPayload; the actor DeployedEventActor. The marker is the database's
 // now(): only whether it is null is ever read.
 func RecordDeployedEvents(ctx context.Context, pool *store.Pool, settings DeliverySettings, broker *events.Broker) (int, error) {
@@ -76,15 +78,17 @@ func RecordDeployedEvents(ctx context.Context, pool *store.Pool, settings Delive
 	return written, nil
 }
 
-// listUnrecordedShipped lists the deploy repository's merged pull requests that name an issue, carry
-// no deployed_event_at, and that a production run has shipped (shippingRunJoin), oldest merge first
-// and those merged in one instant by id, as ListPullRequestsWaitingAt orders them.
+// listUnrecordedShipped lists the deploy repository's merged pull requests that carry no
+// deployed_event_at and that a production run has shipped (shippingRunJoin), oldest merge first
+// and those merged in one instant by id, as ListPullRequestsWaitingAt orders them. It keeps those
+// that the statement attributes to an issue (attributedIssues), the issue the timeline shows. A
+// pull request of nobody, and one whose issue is not known, records no event.
 func listUnrecordedShipped(ctx context.Context, pool *store.Pool, deployRepo string, production Production) ([]shippedPullRequest, error) {
 	rows, err := pool.Query(ctx, `
 		select pr.repo, pr.number, pr.issue_key, ship.run_id, ship.completed_at
 		from delivery_pull_requests pr
 		`+shippingRunJoin("$1", "$2", "$3")+`
-		where pr.repo = $1 and pr.merged_at is not null and pr.issue_key is not null
+		where pr.repo = $1 and pr.merged_at is not null
 			and pr.deployed_event_at is null and ship.run_id is not null
 		order by pr.merged_at, (pr.repo || '#' || pr.number) collate "C"
 	`, deployRepo, production.JobNames, production.ApplyStep)
@@ -92,34 +96,56 @@ func listUnrecordedShipped(ctx context.Context, pool *store.Pool, deployRepo str
 		return nil, fmt.Errorf("list shipped pull requests without their issue.deployed: %w", err)
 	}
 	defer rows.Close()
-	var shipped []shippedPullRequest
+	var listed []shippedPullRequest
+	var prs []DeliveryPullRequest
 	for rows.Next() {
-		var pr shippedPullRequest
-		if err := rows.Scan(&pr.Repo, &pr.Number, &pr.IssueKey, &pr.RunID, &pr.CompletedAt); err != nil {
+		var pr DeliveryPullRequest
+		var ship shippedPullRequest
+		if err := rows.Scan(&pr.Repo, &pr.Number, &pr.IssueKey, &ship.RunID, &ship.CompletedAt); err != nil {
 			return nil, err
 		}
-		shipped = append(shipped, pr)
+		ship.Repo, ship.Number = pr.Repo, pr.Number
+		listed = append(listed, ship)
+		prs = append(prs, pr)
 	}
-	return shipped, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	issues, err := attributedIssues(ctx, pool, prs)
+	if err != nil {
+		return nil, fmt.Errorf("read the issues of the shipped pull requests: %w", err)
+	}
+	var shipped []shippedPullRequest
+	for i, issue := range issues {
+		if issue.Key == nil {
+			continue
+		}
+		listed[i].IssueKey = *issue.Key
+		shipped = append(shipped, listed[i])
+	}
+	return shipped, nil
 }
 
 // recordDeployedEvent marks pr and appends its event in one transaction, and reports whether it did:
-// false when another writer marked the row first, or the row no longer names pr's issue.
+// false when another writer marked the row first, or the statement no longer gives pr's issue.
 //
 // It runs in the two phases every writer runs in (INFRA-636): a read phase holding no
-// transaction id, which takes the issue's owner lock, and a write phase of the marking update
-// and the event's append, back to back. The issue is known before the write - the pass read it
-// off the row (listUnrecordedShipped) - and it is the event's owner, so its lock is the one the
-// append would otherwise be the first to take (events' lockEventOwner), by which time the
-// update had already given this transaction a transaction id to wait on it with, holding back
-// every reader's snapshot while this pass queued behind the issue's own writers.
+// transaction id, which takes the issue's owner lock, and a write phase of the marking update,
+// the statement's read of pr's issue and the event's append, back to back. The issue is known
+// before the write - the pass read it from the statement (listUnrecordedShipped) - and it is the
+// event's owner, so its lock is the one the append would otherwise be the first to take (events'
+// lockEventOwner), by which time the update had already given this transaction a transaction id
+// to wait on it with, holding back every reader's snapshot while this pass queued behind the
+// issue's own writers.
 //
-// Nothing is read under that lock: what the write is decided on is the row's own state, and the
-// update's predicate is what reads it. No lock holds that row still - the intake's upsert and
-// the attribution pass write it in statements of their own, outside any owner's lock - so a read
-// before the update could only be read again by the update itself. Of two passes that cross
-// here, intake's and the reconcile's, the second therefore finds deployed_event_at set, or the
-// row naming another issue, and writes nothing, as it did when the row's own lock ordered them.
+// Nothing is read under that lock before the update: the update's predicate reads the row's own
+// state. No lock holds that row still - the intake's upsert and the attribution pass write it in
+// statements of their own, outside any owner's lock - so a read before the update could only be
+// read again by the update itself. The update holds the row's lock, and the transaction then
+// reads the statement again, so an issue that changed since the list gets no event. Of two
+// passes that cross here, intake's and the reconcile's, the second therefore finds
+// deployed_event_at set, or the statement giving another issue, and writes nothing, as it did
+// when the row's own lock ordered them.
 func recordDeployedEvent(ctx context.Context, pool *store.Pool, broker *events.Broker, pr shippedPullRequest) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -131,12 +157,22 @@ func recordDeployedEvent(ctx context.Context, pool *store.Pool, broker *events.B
 	}
 	tag, err := tx.Exec(ctx, `
 		update delivery_pull_requests set deployed_event_at = now()
-		where repo = $1 and number = $2 and issue_key = $3 and deployed_event_at is null
-	`, pr.Repo, pr.Number, pr.IssueKey)
+		where repo = $1 and number = $2 and deployed_event_at is null
+	`, pr.Repo, pr.Number)
 	if err != nil {
 		return false, fmt.Errorf("mark the pull request: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	// The update holds the row's lock. The transaction reads the statement again under it, so an
+	// issue that changed since the list gets no event, and the rollback removes the mark.
+	key := PullRequestKey{Repo: pr.Repo, Number: pr.Number}
+	answers, err := PullRequestIssues(ctx, tx, []PullRequestKey{key})
+	if err != nil {
+		return false, fmt.Errorf("read the issue of the pull request: %w", err)
+	}
+	if answer := answers[key]; answer.IssueKey == nil || *answer.IssueKey != pr.IssueKey {
 		return false, nil
 	}
 	event, err := broker.Append(ctx, tx, model.Event{

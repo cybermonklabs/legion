@@ -154,6 +154,22 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
         document_bytes: 1048576,
         handoff_bytes: 262144,
       });
+    // The counts the server's own `GET /api/v1/delivery/attribution` answers
+    // (`api/delivery_attribution.go`). Each count has its own value, so each line shows its field.
+    case "GET /api/v1/delivery/attribution":
+      return response({
+        facts_left: 1204,
+        reads_left: 1530,
+        facts_refused: 17,
+        reading: "3c59dc048e8850243be8079a5c74d079",
+        keys_on_another_reading: 42,
+        moves_queued: 9,
+        links_in_two_cases: 2,
+        owed_failures: 23,
+        owed_failures_oldest_at: "2026-11-17T06:05:00Z",
+        owed_refusals: 4,
+        owed_refusals_since: "2026-11-17T08:09:00Z",
+      });
     case "GET /api/v1/references":
       return response({ node: { kind: "issue", id: ISSUE }, edges: [] });
     // The Inbox's two lists, both empty: every line the summary prints from a row carries the

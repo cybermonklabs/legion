@@ -938,7 +938,9 @@ left is the closure of `go test -race ./internal/dispatch/api/` (`go list -deps
 -test -race` in packages/envoy), one pattern per directory, with what those
 packages embed and the testdata of the package whose tests this job runs: a
 dependency's testdata is read by that package's own tests, which run in a job of
-their own.
+their own. The filter holds packages/envoy/internal/testnats/*, because
+internal/dispatch/api/results_pull_request_event_test.go runs the delivery intake on an
+in-process NATS server.
 
 ## envoy_go_race_api: The API's CI-reconcile passes route reads cireconcile's
 
@@ -1822,6 +1824,26 @@ The mention sender's claim model alone, on a runner of its own: its search takes
 the runner has for as long as it runs, which beside envoy-go's other steps would put its
 minutes on theirs and theirs on its deadline. Its rules' test opens the store, so the job
 carries a Postgres service.
+
+## The PostgreSQL 16 job: three delivery tests on the version an envoy-infra stack can run
+
+`envoy-go-postgres16` runs three tests of the Dispatch delivery package against PostgreSQL 16, on a
+runner of its own: every other job runs PostgreSQL 18, where a read of a catalog column that 16
+lacks and the places 16 keeps in a function's stored body both pass unseen. The steps' comment in
+ci-job-envoy-go-postgres16.yaml says which tests and why. Its service is the PostgreSQL 16 row of
+.github/ci-images.yaml, so the job needs ci-images for order, as tool-fallback does: a row and its
+first consumer can land in one push, since the copy of that run lands before this job pulls it. It
+carries `!cancelled()` for the reason tool-fallback's note gives: a run that selected this job and
+not ci-images still runs it.
+
+Its filter, `envoy_go_postgres16`, is the closure of the plain test build of
+./internal/dispatch/delivery (`go list -deps -test` in packages/envoy), one pattern per directory:
+the job runs three tests with `go test -run`, and a -run moves no closure. Beside it are what those
+packages embed and the testdata of the package whose tests the job runs: the two schema files
+internal/dispatch/pmdoc embeds; every migration, which internal/dispatch/store embeds and whose
+20261117111040 attribution_locale_test.go also reads from disk; and packages/envoy/cmd/dispatch/README.md,
+which delivery's counts_in_documents_test.go holds to the constants that decide the intake hold's
+lease, renewal and retry (docnumbers.Check).
 
 ## Why the document service runs alone under the race detector
 

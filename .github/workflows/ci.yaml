@@ -56,6 +56,7 @@ env:
       "envoy-infra-go": "envoy_infra_go",
       "text-checks": "text_checks",
       "envoy-go-claim-model": "envoy_go_claim_model",
+      "envoy-go-postgres16": "envoy_go_postgres16",
       "envoy-go-race": "envoy_go_race",
       "envoy-go-race-api": "envoy_go_race_api",
       "envoy-go-race-docs": "envoy_go_race_docs",
@@ -204,6 +205,9 @@ jobs:
       # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
       # so it comes back on every push that selects it, as the two suites above do.
       airlock_lean: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.airlock_lean }}
+      # The PostgreSQL 16 job, three tests of one package: no `full-ci` term, so it comes back on
+      # every push that selects it, as airlock_lean does.
+      envoy_go_postgres16: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_go_postgres16 }}
       # A slow suite, gated as .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
       envoy_smoke: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_e2e_local }}
@@ -647,6 +651,18 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
+  # why: .github/ci-notes/ci.md#the-postgresql-16-job-three-delivery-tests-on-the-version-an-envoy-infra-stack-can-run
+  envoy-go-postgres16:
+    needs: [changes, ci-images]
+    if: ${{ !cancelled() && needs.changes.outputs.envoy_go_postgres16 == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-envoy-go-postgres16.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
   # why: .github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector
   envoy-go-race-docs:
     needs: changes
@@ -928,6 +944,7 @@ jobs:
       - envoy-go-race
       - envoy-go-race-api
       - envoy-go-claim-model
+      - envoy-go-postgres16
       - envoy-go-race-docs
       - envoy-go-docs-finalizers
       - dispatch-memory

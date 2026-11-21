@@ -1,68 +1,23 @@
 package delivery
 
-import (
-	"slices"
-	"testing"
-)
-
-// corpusRow is one body of the differential corpus with the citations the default branch credits
-// for it. main is the answer citedIssues gave at the merge base f164e6a27756, read by restoring
-// that commit's attribution.go into a workspace and running every body of this list through the
-// same call:
+// corpusRow is one body of the differential corpus, with the citations the default branch
+// credited for it. main is the answer citedIssues gave at the merge base f164e6a27756, read by
+// restoring that commit's attribution.go into a workspace and running every body of this list
+// through the same call:
 //
 //	jj file show -r f164e6a27756 packages/envoy/internal/dispatch/delivery/attribution.go > attribution.go
 //	go test ./internal/dispatch/delivery/ -run TestZZProbe        # a scratch probe over this list
 //
 // hostIsNotGitHub marks a body whose authority before the issue path is not github.com. The
-// default branch credits each of them by matching the bytes `github.com/` wherever they fall;
-// this code reads the whole run of host bytes before the path, so a name that merely ends in
-// github.com is another host: `evilgithub.com`, `my-github.com`, `Seegithub.com`, a subdomain
-// such as `www.github.com` or `pages.github.com`, and a percent escape immediately before the
-// host (`?q=see%20github.com/…`, `/%2Fgithub.com/…`), which is part of the host as the bytes
-// stand. That class is what the CodeQL alert this change answers is about.
+// default branch credited each of them, and the Go reading refused each of them.
 //
-// What a failure of this test means, which a reader needs before editing anything here:
-//
-//   - a body whose answer differs from main's and carries no hostIsNotGitHub is a DEFECT, in
-//     either direction. Dropping a citation main credits breaks attribution for a shape somebody
-//     writes; crediting one main does not is a shape nobody has decided. Fix the code, not the row.
-//   - a hostIsNotGitHub row that credits anything is the alert reopening: this code refuses every
-//     one of them, and a change that credits `evilgithub.com` again reddens here first.
-//   - the credits this change adds on purpose are not in this corpus, because they are
-//     differences from main that were decided rather than measured: a host spelled in any case
-//     and a host carrying a port. attribution_test.go and citation_boundary_test.go pin them with
-//     the reason each is wanted.
-//   - the golden list is another branch's behaviour rather than a contract, so it is dated: it is
-//     f164e6a27756's answer and nothing else. Re-measure it with the command above when the base
-//     moves, and never edit a golden entry by hand to make a red test green.
+// readingCorpusInputs puts each body into the corpus of the reading, which holds the lists that
+// the Go reading gave for it. No test reads main or hostIsNotGitHub now. They record what the
+// default branch and the Go reading did with each body.
 type corpusRow struct {
 	body            string
 	main            []string
 	hostIsNotGitHub bool
-}
-
-// TestCitedIssuesAgreesWithTheDefaultBranch is the rule rather than a list of shapes: this code
-// credits exactly what the default branch credits, except that it refuses a citation whose
-// authority is not github.com. The corpus is drawn from the bodies both citation test files hold
-// (three of them escaped once more than there, and a few left out), every example of this
-// change's review rounds and the shapes each round measured by hand; it exists so
-// the next change to this file is answerable without another round finding a shape nobody
-// thought of.
-func TestCitedIssuesAgreesWithTheDefaultBranch(t *testing.T) {
-	for _, row := range citationCorpus {
-		t.Run(row.body, func(t *testing.T) {
-			got := citedIssues("acme/widgets", row.body)
-			if row.hostIsNotGitHub {
-				if len(got) != 0 {
-					t.Errorf("credits %v, whose authority is not github.com; the default branch credits %v and this change exists to refuse it", got, row.main)
-				}
-				return
-			}
-			if !slices.Equal(got, row.main) {
-				t.Errorf("cites %v, where the default branch cites %v", got, row.main)
-			}
-		})
-	}
 }
 
 var citationCorpus = []corpusRow{

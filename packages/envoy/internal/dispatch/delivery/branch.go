@@ -536,15 +536,15 @@ func cannotSeeRepository(err error) bool {
 // commit for good — the squash-merged, branch-deleted case the seed exists for above all
 // (UpsertPullRequestHead).
 //
-// It is lowercased on the way in rather than compared with `lower(repo)`, which is how
-// HeadStoredAt meets the same split one table over, because the two tables were in different
-// positions when each was keyed. pull_request_heads already held rows under GitHub's spelling,
-// with an index built on `(lower(repo), head_sha)` to read them by; branch_commits was new and
-// held no row in any deployment, so it could be keyed once instead. One spelling per row is
-// what keeps its primary key (repo, branch, sha) the whole of its identity: two spellings
-// would make two rows the writer's `on conflict` could not fold together, and a
-// case-insensitive read of them would want a functional index — a migration — where this
-// wants none, since `repo = lower($1)` is an exact lookup on the primary key.
+// It is lowercased on the way in rather than compared with `lower(repo)`, which is how the
+// reads of pull_request_heads meet the same split one table over, because the two tables were
+// in different positions when each was keyed. pull_request_heads already held rows under
+// GitHub's spelling, with an index built on `(lower(repo), head_sha)` to read them by;
+// branch_commits was new and held no row in any deployment, so it could be keyed once instead.
+// One spelling per row is what keeps its primary key (repo, branch, sha) the whole of its
+// identity: two spellings would make two rows the writer's `on conflict` could not fold
+// together, and a case-insensitive read of them would want a functional index — a migration —
+// where this wants none, since `repo = lower($1)` is an exact lookup on the primary key.
 //
 // The branch is not lowercased with it. Git's branch names are case-sensitive, so `Release`
 // and `release` are two branches and a compare read of one says nothing about the other.
@@ -587,9 +587,9 @@ func writeBranchCommit(ctx context.Context, db refs.Execer, repoFull, branch, sh
 // into the owner and repo GitHub's paths take and mints that repository's installation token.
 // A name GitHub's names do not allow comes back as refs.SplitGitHubRepo's own error, before any
 // GitHub call, and a refused mint as that error wrapped under ErrTokenMint: cannotSeeRepository
-// and RepositoryUnreadable classify the mint's own error, and the results route reads
-// ErrTokenMint to name the mint as the read that failed (api/results_linked.go,
-// linkedReadRefusal).
+// and RepositoryUnreadable classify the mint's own error, so the results route stores a result
+// whose commit a repository the App cannot read may hold (api/results_linked.go,
+// refuseUnknownCommit).
 func repositoryRead(ctx context.Context, client *githubapp.Client, repoFull string) (owner, repo, token string, err error) {
 	owner, repo, err = refs.SplitGitHubRepo(repoFull)
 	if err != nil {

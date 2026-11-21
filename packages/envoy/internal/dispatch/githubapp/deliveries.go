@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
@@ -215,9 +216,9 @@ func answeredLimit(status int, header http.Header, body []byte) *RateLimitError 
 
 // GraphQLRateLimit reads a rate-limited answer to a GraphQL query, which GitHub spells several
 // ways and none of them the way it spells a rate-limited REST call, and says which of GitHub's
-// two limits it is. A query past the App's primary GraphQL budget is answered HTTP 200 with an
-// `errors` entry of type RATE_LIMITED and a null `data`, so a caller reading the status alone
-// sees a good answer and a caller reading `data` alone sees an empty one. The request that
+// two limits it is. A query past its installation's primary GraphQL budget is answered HTTP 200
+// with an `errors` entry of type RATE_LIMITED and a null `data`, so a caller reading the status
+// alone sees a good answer and a caller reading `data` alone sees an empty one. The request that
 // spends the last point is answered with its data and `x-ratelimit-remaining: 0`. A secondary
 // limit -- too many points a minute, too many queries at once -- is answered either 200 or 403,
 // with a `retry-after` header, or with GitHub's wording about a secondary rate limit and no
@@ -248,12 +249,12 @@ func answeredLimit(status int, header http.Header, body []byte) *RateLimitError 
 // with, and the response headers, and those are the whole of what is read.
 //
 // secondary tells the two limits apart, which the caller records under different scopes
-// (Client.GraphQL): GitHub budgets the App's GraphQL points apart from its REST calls, while the
-// secondary limits are shared between the two. GitHub's own wording decides it wherever the
-// answer carries it, since GitHub writes that sentence for nothing else; then the two statements
-// that the primary budget is spent, the RATE_LIMITED entry and no requests remaining; and a
-// `retry-after`, or the 429 GitHub answers too many requests with, where neither of those says
-// the budget is spent.
+// (Client.GraphQL): GitHub budgets each installation's GraphQL points apart from its REST calls,
+// while the secondary limits are shared between the two. GitHub's own wording decides it wherever
+// the answer carries it, since GitHub writes that sentence for nothing else; then the two
+// statements that the primary budget is spent, the RATE_LIMITED entry and no requests remaining;
+// and a `retry-after`, or the 429 GitHub answers too many requests with, where neither of those
+// says the budget is spent.
 func GraphQLRateLimit(status int, header http.Header, body []byte) (limited *RateLimitError, secondary bool) {
 	spent, worded := graphQLLimitErrors(body)
 	exhausted := header.Get("X-Ratelimit-Remaining") == "0"
@@ -276,14 +277,14 @@ func GraphQLRateLimit(status int, header http.Header, body []byte) (limited *Rat
 }
 
 // graphQLLimitErrors reads a GraphQL answer for the two things GitHub says a rate limit with in
-// its own envelope: an entry of `errors` whose type is RATE_LIMITED, which is the App's GraphQL
-// budget spent, and GitHub's secondary-limit wording, "You have exceeded a secondary rate
+// its own envelope: an entry of `errors` whose type is RATE_LIMITED, which is the installation's
+// GraphQL budget spent, and GitHub's secondary-limit wording, "You have exceeded a secondary rate
 // limit", which is all a secondary limit gives when it comes with no header and no error type.
 // The wording is read from an entry's message and from the body's own top-level `message`,
 // because GitHub answers a secondary limit at 403 with the REST-shaped body that carries it
 // there and no `errors` at all, and a reader of the entries alone takes such an answer for the
-// App's spent GraphQL budget and records it under the wrong scope. It is matched on the phrase
-// alone, since GitHub has worded the rest of the sentence more than one way.
+// installation's spent GraphQL budget and records it under the wrong scope. It is matched on the
+// phrase alone, since GitHub has worded the rest of the sentence more than one way.
 //
 // `data` is a repository's own, and is read for neither: a body that is not the envelope at all
 // -- which cannot be a 200 from GitHub's GraphQL endpoint -- holds no such entry and no such
@@ -439,7 +440,7 @@ func rateLimitWait(header http.Header) time.Duration {
 
 // StatusError is GitHub answering a request with a status other than 200 that is no rate limit
 // (CheckResponse): the status, and the whole body GitHub answered. Its text is StatusText's, which
-// leaves out the body of an answer at a 2xx status.
+// leaves out the body of an answer at a 2xx status and shows any other body as ShownBody does.
 type StatusError struct {
 	Status int
 	Body   string
@@ -453,6 +454,35 @@ func (e *StatusError) Error() string {
 // body that is not JSON or names none (responseMessage).
 func (e *StatusError) Message() string {
 	return responseMessage([]byte(e.Body))
+}
+
+// shownBodyRunes is how many runes of a body GitHub answered an error's text shows (ShownBody):
+// the start of the body, where GitHub writes the `message` of a refusal, in a line of bounded
+// length.
+const shownBodyRunes = 512
+
+// ShownBody is body, an answer GitHub gave, as an error's text shows it: whole where it is at most
+// shownBodyRunes runes long, and otherwise its first shownBodyRunes runes and `… (<n> bytes)`, n
+// the length of the whole body. Every error of this package whose text holds such a body holds it
+// as this shows it: a line that logs the error writes the text whole, and a body may be as long as
+// a response may be (responseLimit, 1 MiB), which put 1,048,697 bytes into one field of a WARN
+// line (review of cybermonklabs/legion#4209 at def907052c, H3). A reader that finds the body at
+// the end of such a text (api's ciUnreadDetail) finds it as this shows it. It reads at most
+// shownBodyRunes × 4 bytes of body, the most that many runes take, and never splits a rune; a byte
+// that is no UTF-8 counts as one rune.
+func ShownBody[Body ~string | ~[]byte](body Body) string {
+	head := string(body[:min(len(body), shownBodyRunes*utf8.UTFMax)])
+	runes := 0
+	for at := range head {
+		if runes == shownBodyRunes {
+			return fmt.Sprintf("%s… (%d bytes)", head[:at], len(body))
+		}
+		runes++
+	}
+	if len(head) < len(body) {
+		return fmt.Sprintf("%s… (%d bytes)", head, len(body))
+	}
+	return head
 }
 
 // StatusText is the text of an answer GitHub gave with status and body that its reader takes as
@@ -472,15 +502,16 @@ func StatusText[Body string | []byte](status int, body Body) string {
 	return withBody(head, body)
 }
 
-// withBody is head, then `: ` and body when body is not empty: the one rule of every text of an
-// answer this package words (StatusText, RateLimitError, failedAnswer). An answer with no body
-// ends at its head, since a loop notes such a text as it is and GET /healthz serves it as a
-// read's cause, where a `: ` with nothing after it says nothing.
+// withBody is head, then `: ` and body as ShownBody shows it when body is not empty: the one rule
+// of every text of an answer this package words (StatusText, RateLimitError, failedAnswer). An
+// answer with no body ends at its head, since a loop notes such a text as it is and GET /healthz
+// serves it as a read's cause, where a `: ` with nothing after it says nothing. A body is bounded
+// because a response may hold 1 MiB, and a line that logs the text writes it whole.
 func withBody[Body string | []byte](head string, body Body) string {
 	if len(body) == 0 {
 		return head
 	}
-	return head + ": " + string(body)
+	return head + ": " + ShownBody(body)
 }
 
 // CheckResponse turns a response's status/header/body into an error only when status is not 200:
@@ -498,8 +529,15 @@ func CheckResponse(status int, header http.Header, body []byte) error {
 	return &StatusError{Status: status, Body: string(body)}
 }
 
+// nextLinkMaxBytes is the longest next page link nextLink follows. GitHub's links of the deliveries
+// listing are about a hundred bytes. A link is GitHub's text, and once followed it is the target of
+// the next request and of each error that names that request, so a longer one is refused and shown
+// as ShownBody shows GitHub's text.
+const nextLinkMaxBytes = 2048
+
 // nextLink returns the rel="next" target of an RFC 8288 Link header, refusing one outside the
-// client's API origin: the next page is fetched with the App's JWT.
+// client's API origin, since the next page is fetched with the App's JWT, and one longer than
+// nextLinkMaxBytes.
 func nextLink(header, base string) (string, error) {
 	for _, part := range strings.Split(header, ",") {
 		segments := strings.Split(part, ";")
@@ -516,6 +554,9 @@ func nextLink(header, base string) (string, error) {
 			continue
 		}
 		target := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(segments[0]), "<"), ">")
+		if len(target) > nextLinkMaxBytes {
+			return "", fmt.Errorf("next page link %q is longer than %d bytes", ShownBody(target), nextLinkMaxBytes)
+		}
 		parsed, err := url.Parse(target)
 		if err != nil {
 			return "", fmt.Errorf("parse next page link %q: %w", target, err)

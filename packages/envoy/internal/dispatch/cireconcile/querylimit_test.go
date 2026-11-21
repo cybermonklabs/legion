@@ -7,11 +7,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
-// GitHub answers a GraphQL query past the App's budget with HTTP 200 and an `errors` entry of
-// type RATE_LIMITED, beside `x-ratelimit-remaining: 0` and the reset: a 200 the client's REST
-// rate-limit detection cannot see at all. That answer ends the pass where it stands, is
-// recorded in github_rate_limits under the GraphQL scope, and no request of either Dispatch
-// process reaches GitHub before the reset. It is k7.
+// GitHub answers a GraphQL query past its installation's budget with HTTP 200 and an `errors`
+// entry of type RATE_LIMITED, beside `x-ratelimit-remaining: 0` and the reset: a 200 the client's
+// REST rate-limit detection cannot see at all. That answer ends the pass where it stands, is
+// recorded in github_rate_limits under the GraphQL scope of the query's installation, and no
+// request of either Dispatch process reaches GitHub before the reset. It is k7.
 func TestAGraphQLRateLimitStopsEveryProcess(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
@@ -35,8 +35,9 @@ func TestAGraphQLRateLimitStopsEveryProcess(t *testing.T) {
 	if line["rate_limited"] != true {
 		t.Fatalf("the pass reports rate_limited = %v, want true: GitHub answered its query a rate limit: %v", line["rate_limited"], line)
 	}
-	if line["rate_limit_scope"] != githubapp.GraphQLScope {
-		t.Fatalf("the pass names scope %v, want %q, GraphQL's own: %v", line["rate_limit_scope"], githubapp.GraphQLScope, line)
+	graphQL := githubapp.GraphQLInstallationScope(githubapp.InstallationScope(h.github.installationID()))
+	if line["rate_limit_scope"] != graphQL {
+		t.Fatalf("the pass names scope %v, want %q, the installation's GraphQL scope: %v", line["rate_limit_scope"], graphQL, line)
 	}
 	if got := number(t, line, "heads"); got != 0 {
 		t.Errorf("the pass read %d heads under a rate-limited query: %v", got, line)
@@ -45,15 +46,15 @@ func TestAGraphQLRateLimitStopsEveryProcess(t *testing.T) {
 		t.Errorf("the pass skipped %d mappings; a rate limit stops the pass, it does not skip a repository: %v", got, line)
 	}
 
-	limit, found, err := h.reconciler.Limits.Get(h.ctx, githubapp.GraphQLScope)
+	limit, found, err := h.reconciler.Limits.Get(h.ctx, graphQL)
 	if err != nil {
 		t.Fatalf("read the shared GitHub rate limits: %v", err)
 	}
 	if !found {
-		t.Fatalf("github_rate_limits holds no limit under %s", githubapp.GraphQLScope)
+		t.Fatalf("github_rate_limits holds no limit under %s", graphQL)
 	}
 	if limit.Wait <= 0 {
-		t.Fatalf("the limit under %s has %s left, want GitHub's own reset still in force", githubapp.GraphQLScope, limit.Wait)
+		t.Fatalf("the limit under %s has %s left, want GitHub's own reset still in force", graphQL, limit.Wait)
 	}
 
 	// The stand-in answers as it did before; nothing may reach it from either process while the
@@ -69,7 +70,7 @@ func TestAGraphQLRateLimitStopsEveryProcess(t *testing.T) {
 }
 
 // A primary GraphQL limit is recorded under a scope of its own, so it holds no REST read:
-// GitHub budgets an installation's REST calls apart from the App's GraphQL points, and every
+// GitHub budgets an installation's REST calls apart from its GraphQL points, and every
 // other caller in the process -- the delivery reconcile, a person's click, the pass's own
 // identity reads -- goes on reading while the pass's queries wait the limit out. GitHub answers
 // that limit at either status, and the status is never what tells one.
@@ -91,13 +92,14 @@ func TestAPrimaryGraphQLRateLimitLeavesRESTReadsAlone(t *testing.T) {
 			h.pass()
 
 			line := h.passLine()
-			if line["rate_limit_scope"] != githubapp.GraphQLScope {
-				t.Fatalf("the pass names scope %v, want %q, GraphQL's own: %v", line["rate_limit_scope"], githubapp.GraphQLScope, line)
-			}
-			if _, found, err := h.reconciler.Limits.Get(h.ctx, githubapp.GraphQLScope); err != nil || !found {
-				t.Fatalf("the GraphQL limit was recorded under %s: %v, %v", githubapp.GraphQLScope, found, err)
-			}
 			installation := githubapp.InstallationScope(h.github.installationID())
+			graphQL := githubapp.GraphQLInstallationScope(installation)
+			if line["rate_limit_scope"] != graphQL {
+				t.Fatalf("the pass names scope %v, want %q, the installation's GraphQL scope: %v", line["rate_limit_scope"], graphQL, line)
+			}
+			if _, found, err := h.reconciler.Limits.Get(h.ctx, graphQL); err != nil || !found {
+				t.Fatalf("the GraphQL limit was recorded under %s: %v, %v", graphQL, found, err)
+			}
 			if _, found, err := h.reconciler.Limits.Get(h.ctx, installation); err != nil || found {
 				t.Fatalf("a limit was recorded under %s as well: %v, %v; the GraphQL budget is not the installation's REST budget",
 					installation, found, err)
@@ -210,7 +212,7 @@ func TestACheckRunNamedForTheLimitIsNotALimit(t *testing.T) {
 	if got := number(t, line, "heads"); got != 1 {
 		t.Fatalf("the pass read %d heads, want the one the query answered: %v", got, line)
 	}
-	if _, found, err := h.reconciler.Limits.Get(h.ctx, githubapp.GraphQLScope); err != nil || found {
+	if _, found, err := h.reconciler.Limits.Get(h.ctx, githubapp.GraphQLInstallationScope(githubapp.InstallationScope(h.github.installationID()))); err != nil || found {
 		t.Errorf("a GraphQL limit was recorded for a good answer: %v, %v", found, err)
 	}
 	state, _, held := h.record()

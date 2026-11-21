@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    A pull request event of a repository whose stored rename target is no name GitHub can have (a
+    target stored before the settings route refused such a name, or by direct SQL) is owed a read
+    under the name the event gave, and the reconcile reads it once an operator corrects the target
+    through `PUT /api/v1/settings/repo-projects/{owner}/{repo}`. The event was acknowledged with
+    nothing owed, so its pull request's head never came, also after the correction.
+time: 2026-11-17T12:16:12.000000000Z
+custom:
+    Issue: pr4209

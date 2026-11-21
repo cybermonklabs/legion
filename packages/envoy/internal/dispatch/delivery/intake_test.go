@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,9 +43,16 @@ func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats
 // and on a shared machine that database is the server's postgres, where every other package's
 // harness creates and drops its databases, so another package's create database could hold the
 // build past its lock bound and fail whichever test migrated first (dispatch://INFRA-3904).
+//
+// The readers of a pull request's issue run a statement PrepareAttribution builds, as main
+// builds it after the migrations, so the pool comes with it.
 func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
-	return storetest.Open(t).Pool, t.Context()
+	pool := storetest.Open(t).Pool
+	if err := PrepareAttribution(t.Context(), pool); err != nil {
+		t.Fatalf("prepare the attribution statement: %v", err)
+	}
+	return pool, t.Context()
 }
 
 // branchCommitsMigration is the migration that creates branch_commits, the one table a test of
@@ -53,6 +61,45 @@ func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 // here and in step with it by hand: Migrate skips every version schema_migrations already
 // records, so forgetting the version makes the table exactly as the migration does.
 const branchCommitsMigration = 20261107234701
+
+// refuseOwedReads makes every write of pull_request_reads_owed fail at once, as a database that
+// takes no write of the owed record does, until restore: a trigger that raises SQLSTATE 55P03
+// (lock_not_available), a failure no value causes, so the intake hands the envelope back. A lock
+// of the table would do the same in owedReadWriteTimeout; this fails in milliseconds, so a
+// handler held to a stop's budget still answers through deliver's own path.
+func refuseOwedReads(t *testing.T, ctx context.Context, pool *store.Pool) (restore func()) {
+	t.Helper()
+	return refuseOwedReadsWith(t, ctx, pool, "55P03")
+}
+
+// refuseOwedReadsWith is refuseOwedReads with the SQLSTATE the trigger raises: whatever the code,
+// the intake hands the envelope back (recordRefused, TestAnOwedRecordRefusedForAnyCauseLosesNoHead).
+func refuseOwedReadsWith(t *testing.T, ctx context.Context, pool *store.Pool, sqlstate string) (restore func()) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`
+		create function delivery_test_refuse_owed() returns trigger language plpgsql as $$
+		begin
+		  raise exception 'the test refuses writes of pull_request_reads_owed' using errcode = '%s';
+		end $$;
+		create trigger delivery_test_refuse_owed before insert or update on pull_request_reads_owed
+		  for each row execute function delivery_test_refuse_owed();
+	`, sqlstate)); err != nil {
+		t.Fatalf("make pull_request_reads_owed refuse writes with SQLSTATE %s: %v", sqlstate, err)
+	}
+	restore = sync.OnceFunc(func() {
+		if _, err := pool.Exec(context.WithoutCancel(ctx), refuseOwedReadsUndo); err != nil {
+			t.Errorf("let pull_request_reads_owed take writes again: %v", err)
+		}
+	})
+	t.Cleanup(restore)
+	return restore
+}
+
+// refuseOwedReadsUndo drops what refuseOwedReads made, and nothing where it made nothing.
+const refuseOwedReadsUndo = `
+	drop trigger if exists delivery_test_refuse_owed on pull_request_reads_owed;
+	drop function if exists delivery_test_refuse_owed();
+`
 
 // deliveryTestLeases is the lease pool an intake takes its durable's hold and consumer lease on
 // (intakeHoldName, consumerLease), taken from the test's own pool. Each lease is held on a
@@ -209,8 +256,15 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 // locked. Call it before startIntake, so the default logger is restored only once intake stops.
 func captureLogs(t *testing.T) func() []map[string]any {
 	t.Helper()
+	return captureLogsAt(t, slog.LevelInfo)
+}
+
+// captureLogsAt is captureLogs of every record at level and above, for a test that reads the
+// DEBUG lines too.
+func captureLogsAt(t *testing.T, level slog.Level) func() []map[string]any {
+	t.Helper()
 	var buffer lockedBuffer
-	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, nil))
+	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, &slog.HandlerOptions{Level: level}))
 	return func() []map[string]any {
 		var records []map[string]any
 		for _, line := range strings.Split(strings.TrimSpace(buffer.String()), "\n") {
@@ -243,17 +297,6 @@ func shrinkIntakeFlowControl(t *testing.T) {
 	messageTimeout := intakeMessageTimeout
 	intakeMessageTimeout = 5 * time.Second
 	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
-}
-
-// capHeadWriteDeliveriesAt shrinks headWriteMaxDeliveries to deliveries for one test, the way
-// shrinkIntakeFlowControl shrinks the message timeout: the shipped cap of thirty, at
-// headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what a test of the
-// cap measures is that there is one at all, which two deliveries show as well as thirty.
-func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
-	t.Helper()
-	was := headWriteMaxDeliveries
-	headWriteMaxDeliveries = deliveries
-	t.Cleanup(func() { headWriteMaxDeliveries = was })
 }
 
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and

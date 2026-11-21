@@ -1084,6 +1084,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/delivery/attribution": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description What the attribution of the stored pull requests still waits on, counted at the request, with no delivery settings and no App key: {facts_left, reads_left, facts_refused, reading, keys_on_another_reading, moves_queued, links_in_two_cases, owed_failures, owed_failures_oldest_at, owed_refusals, owed_refusals_since}. reads_left is the pull requests a reconcile pass still reads the facts of: an open or merged results row whose texts are not current or whose commit messages are not read, and a timeline row with no results row; a pull request GitHub proved absent is in no count. facts_left is the part of them with no facts, whose issue is the stored one or not known; facts_refused the part whose last read GitHub refused. reading is the identity of the reading that runs now, and keys_on_another_reading the stored texts whose keys another reading made. moves_queued is the changes of a pull request's issue that wait for their events. links_in_two_cases is the URLs, folded to lower case and a pull request's /issues/N form to its /pull/N form, that more than one issue links. owed_failures and owed_refusals count the pull requests whose head is not read while a read of GitHub is owed: GitHub did not answer the read, or GitHub refuses it; a link recorded as unreadable is owed no read and is in neither count. owed_failures_oldest_at is the oldest time a failure is owed since. owed_refusals_since is the oldest time a refusal is refused since, or owed since where an older release owed it. Each time is absent where its count is 0. */
+    get: operations["getApiV1DeliveryAttribution"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/delivery/measures": {
     parameters: {
       query?: never;
@@ -1177,7 +1194,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __issue_not_known__, __no_priority__, __no_component__ and __no_session__ select by cause, __issue_not_known__ a PR whose issue is not known yet): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
     get: operations["getApiV1DeliveryTimeline"];
     put?: never;
     post?: never;
@@ -1245,7 +1262,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-seven tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-eight tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -1762,10 +1779,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the check's whole content as the tree a reader is shown, links and references kept, and each result's observed_tree, the tree its observed text is shown as. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. Those are the open and merged pull requests attributed to the check's issue, and the open and merged pull requests its external links name (https://github.com/<owner>/<repo>/pull/<n>) in a repository it does not resolve to, each at the head its stored row holds now; the head of a linked one also carries that repository as repo (owner/name), so a reader can tell it from a pull request of the same number in the issue's own repository. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason, repo} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit; a basis in a repository the issue links a pull request in, rather than its own, carries that repository as repo, owner/name, whether it is the head of a pull request linked there, as in compared_with, or a branch of that repository, which a result whose commit is taken to be of it is compared with), other_commit, or unknown with the reason (repository_unreadable, read_failed). An other_commit or unknown answer that a repository the issue links a pull request in decided, the one the result's commit is taken to be of, carries that repository as repo (owner/name), so a reader can tell it from an answer about the issue's own repository, which carries none. check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:<check run id>, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session "", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. */
+    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks, unreadable_links}. A check's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the check's whole content as the tree a reader is shown, links and references kept, and each result's observed_tree, the tree its observed text is shown as. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time on GitHub, as the read that wrote the head answered it (event_at), is the later of the two. Those are the open and merged pull requests of the check's issue, each at the head its stored row holds now: a pull request whose URL (https://github.com/<owner>/<repo>/pull/<n>) the issue links is the issue's in any repository, and the head of one in a repository the issue does not resolve to also carries that repository as repo (owner/name), so a reader can tell it from a pull request of the same number in the issue's own repository. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository), read_failed (a read Dispatch makes did not answer), head_not_read (Dispatch has not read the head of a pull request of the issue yet) or issue_not_known (Dispatch does not know yet whether a pull request it read is this issue's). A before_merge check also carries heads_not_read, each pull request of its issue whose head Dispatch has not read, as {number, refused_as, refused_since}. Such a pull request has no results row yet, or a read of GitHub is owed for it. It is no basis, and no pass stands by it. refused_as (app_not_installed, repository_unreadable or pull_request_not_found) and refused_since, the time of the first refusal, are set where GitHub refuses the read that is owed. A check carries issues_not_known, each {number}, for each pull request of the issue's repository whose answer is not known and that the check's answer turns on: its facts name no issue that Dispatch holds, and its commit messages are not read. heads_not_read never names such a pull request. Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, where a head is not read or an issue is not known and no pass stands, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason, possible_head, repo} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit; a basis in a repository the issue links a pull request in, rather than its own, carries that repository as repo, owner/name, whether it is the head of a pull request linked there, as in compared_with, or a branch of that repository, which a result whose commit is taken to be of it is compared with), other_commit, or unknown with the reason (repository_unreadable, read_failed, head_not_read, issue_not_known). possible_head {repo, pull_request, commit} names the pull request whose answer is not known where the commit is its head. It is set only with the reason issue_not_known, and basis is empty there. An other_commit or unknown answer that a repository the issue links a pull request in decided, the one the result's commit is taken to be of, carries that repository as repo (owner/name), so a reader can tell it from an answer about the issue's own repository, which carries none. check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue), github_unreadable (state unread), head_not_read (state unread: a read of GitHub is owed for that head, so no check run is read) or issue_not_known (state unread: a pull request of the repository whose answer is not known can come before that head, or no head is found, so no check run is read); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:<check run id>, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session "", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. unreadable_links, present where there is one, lists each {url, refused_since} of the issue's links to a pull request or an issue of a repository the App is not installed on: GitHub refused its read at refused_since, and no pass reads it again until a new link or an event of its pull request owes the read again, or until the App is installed on the repository; no check's answer turns on it. */
     get: operations["getApiV1IssuesByKeyResults"];
     put?: never;
-    /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. The commit must be held by the repository the check's issue resolves to, or by a repository in which the external links of the check's issue name a GitHub pull request (https://github.com/<owner>/<repo>/pull/<n>) that is open or merged, in a repository Dispatch's GitHub App is installed on and can read; a commit no such repository holds is 400 RESULT_COMMIT_UNKNOWN, naming the commit, each owner/repo asked, each linked pull request Dispatch could not read as owner/repo#n (repository_unreadable), at most 10 and a count of the rest, and every linked pull request in whose repository it could not read the commit, named the same way, since each spent one of the record's 10 reads, with how to mend those: grant Dispatch's GitHub App that repository, or link a readable pull request. A link names a pull request only where its owner is a login GitHub serves and its name holds only letters, digits, ., - and _ and is not . or ..; any other link spends no read, and no refusal names it. A linked pull request whose repository's name GitHub's naming rule then refuses, such as one of acme/.git, which is empty once .git is trimmed, counts for nothing and spends one of the 10 reads, and the refusal names that repository as one whose links Dispatch set aside, which no grant of the App mends. One record reads at most 10 linked pull requests, and a refusal says how many it left unread past that bound. A linked repository the App is not installed on or cannot read (GitHub's 403 that is no rate limit) does not count. A read of a linked pull request or of a linked repository that does not answer (a rate limit, a 5xx, a transport failure), where no repository is shown to hold the commit, is 502 GITHUB_UNREADABLE naming that repository, the commit and GitHub's error, and stores nothing: record the result again, after the wait a rate limit names, which Retry-After carries too. No repository at all stores the result as before. A repository the check's issue resolves to that Dispatch cannot read stores the result as before only where every linked read answered and no linked repository holds the commit: a linked read that did not answer is the 502 GITHUB_UNREADABLE above, and stores nothing. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. A check reworded by a document version at each of the two attempts this write makes is 409 CHECK_CONTENDED with Retry-After: 1, the second the version that moved it needs to land, and nothing recorded: read the check and retry. The answer is {result, line}, line being the pull-request body line the result implies: its reading keeps only plain words, every rune a visible letter, a digit or one of . , ; : ! ? ' " - ( ) /, and of those leaves out every one that holds a link (://), a host below or ending in .internal, a Tailscale MagicDNS host (.ts.net), this Dispatch's own host, or an issue key of a project this Dispatch holds, in any case, and judges the 80-rune cut again, so the line carries no link to Dispatch, no private host, no issue key and no markup. */
+    /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. The commit must be held by the repository the check's issue resolves to, or by a repository in which the external links of the check's issue name a GitHub pull request (https://github.com/<owner>/<repo>/pull/<n>) that is open or merged; a commit that each such repository answers it does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and each owner/repo asked. A link names a pull request only where its owner is a login GitHub serves and its name holds only letters, digits, ., - and _ and is not . or ..; any other link spends no read, and no refusal names it. A linked pull request whose repository's name GitHub's naming rule then refuses, such as one of acme/.git, which is empty once .git is trimmed, counts for nothing and spends one of the 10 reads, and the refusal names that repository as one whose links Dispatch set aside, which no grant of the App mends. One record reads at most 10 linked pull requests, and a refusal says how many it left unread past that bound. Where Dispatch cannot read one of those repositories, the one the check's issue resolves to or a linked one (the App is not installed on it or cannot read it, GitHub's 403 that is no rate limit, or a read of it or of a pull request linked in it does not answer: a rate limit, a 5xx, a transport failure), and no repository is shown to hold the commit, the result is stored, taken to be at a commit of the repository the check's issue resolves to. No repository at all stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. A check reworded by a document version at each of the two attempts this write makes is 409 CHECK_CONTENDED with Retry-After: 1, the second the version that moved it needs to land, and nothing recorded: read the check and retry. The answer is {result, line}, line being the pull-request body line the result implies: its reading keeps only plain words, every rune a visible letter, a digit or one of . , ; : ! ? ' " - ( ) /, and of those leaves out every one that holds a link (://), a host below or ending in .internal, a Tailscale MagicDNS host (.ts.net), this Dispatch's own host, or an issue key of a project this Dispatch holds, in any case, and judges the 80-rune cut again, so the line carries no link to Dispatch, no private host, no issue key and no markup. */
     post: operations["postApiV1IssuesByKeyResults"];
     delete?: never;
     options?: never;
@@ -1782,7 +1799,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description The dry run of a result's record: the record's body, refused as the record refuses it before it writes (400 RESULT_INPUT, 400 RESULT_CONTRADICTS, 400 UNKNOWN_CHECK, 409 CHECK_AMBIGUOUS, 409 CHECK_PROVED_BY_CI, 400 RESULT_COMMIT_UNKNOWN, 502 GITHUB_UNREADABLE), and otherwise answered {line}, the pull-request body line the record would answer, with nothing recorded and no event appended. A closed issue, a screenshot and a check reworded while the record writes are refused by the record alone. */
+    /** @description The dry run of a result's record: the record's body, refused as the record refuses it before it writes (400 RESULT_INPUT, 400 RESULT_CONTRADICTS, 400 UNKNOWN_CHECK, 409 CHECK_AMBIGUOUS, 409 CHECK_PROVED_BY_CI, 400 RESULT_COMMIT_UNKNOWN), and otherwise answered {line}, the pull-request body line the record would answer, with nothing recorded and no event appended. A closed issue, a screenshot and a check reworded while the record writes are refused by the record alone. */
     post: operations["postApiV1IssuesByKeyResultsDryRun"];
     delete?: never;
     options?: never;
@@ -3817,6 +3834,21 @@ export interface components {
       waiting_on?: string;
       waiting_on_person?: string;
     };
+    AttributionCounts: {
+      facts_left: number;
+      facts_refused: number;
+      keys_on_another_reading: number;
+      links_in_two_cases: number;
+      moves_queued: number;
+      owed_failures: number;
+      /** Format: date-time */
+      owed_failures_oldest_at?: string;
+      owed_refusals: number;
+      /** Format: date-time */
+      owed_refusals_since?: string;
+      reading: string;
+      reads_left: number;
+    };
     BasisLearnedAt: {
       /** Format: date-time */
       at: string;
@@ -3971,9 +4003,16 @@ export interface components {
       ci?: components["schemas"]["CheckCI"];
       ci_check?: string;
       /** @enum {string} */
-      compared_nothing?: "no_pull_request_or_branch" | "repository_unreadable" | "read_failed";
+      compared_nothing?:
+        | "no_pull_request_or_branch"
+        | "repository_unreadable"
+        | "read_failed"
+        | "head_not_read"
+        | "issue_not_known";
       compared_with: components["schemas"]["CheckBasis"][] | null;
+      heads_not_read?: components["schemas"]["HeadNotRead"][];
       issue_key: string;
+      issues_not_known?: components["schemas"]["IssueNotKnown"][];
       negative_control: string;
       pass_stands: components["schemas"]["CheckPassStands"];
       ref: string;
@@ -4571,6 +4610,7 @@ export interface components {
       first_commit_at: null | string;
       id: string;
       issue: null | string;
+      issue_not_known?: boolean;
       issue_title: null | string;
       /** Format: date-time */
       merged_at: null | string;
@@ -5079,6 +5119,13 @@ export interface components {
       phase: string;
       version: number;
     };
+    HeadNotRead: {
+      number: number;
+      /** @enum {string} */
+      refused_as?: "app_not_installed" | "repository_unreadable" | "pull_request_not_found";
+      /** Format: date-time */
+      refused_since?: string;
+    };
     HoldPersistenceInput: {
       duration: string;
     };
@@ -5250,6 +5297,7 @@ export interface components {
     IssueCheckResults: {
       checks: components["schemas"]["CheckBlock"][] | null;
       issue: string;
+      unreadable_links?: components["schemas"]["UnreadableLink"][];
       verification_artifact_id: string;
     };
     IssueChild: {
@@ -5393,6 +5441,9 @@ export interface components {
       candidates: components["schemas"]["DuplicateCandidate"][] | null;
       code: string;
       error: string;
+    };
+    IssueNotKnown: {
+      number: number;
     };
     IssueOpenAsk: {
       anchor: components["schemas"]["Anchor"] | null;
@@ -6008,6 +6059,11 @@ export interface components {
       id: string;
       steps: string[] | null;
     };
+    PossibleHead: {
+      commit: string;
+      pull_request: number;
+      repo: string;
+    };
     Priorities: {
       empty?: string;
       priorities: components["schemas"]["PriorityRow"][] | null;
@@ -6322,8 +6378,9 @@ export interface components {
       /** @enum {string} */
       answer: "at_basis" | "other_commit" | "unknown";
       basis?: components["schemas"]["CheckBasis"];
+      possible_head?: components["schemas"]["PossibleHead"];
       /** @enum {string} */
-      reason?: "repository_unreadable" | "read_failed";
+      reason?: "repository_unreadable" | "read_failed" | "head_not_read" | "issue_not_known";
       repo?: string;
     };
     RoomCounters: {
@@ -6651,6 +6708,11 @@ export interface components {
     UnparsedOpeners: {
       count: number;
       examples: string[] | null;
+    };
+    UnreadableLink: {
+      /** Format: date-time */
+      refused_since?: string;
+      url: string;
     };
     UpdateAgentTokenScopesInput: {
       scopes: null | string[];
@@ -9495,6 +9557,38 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["DashboardBuilds"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1DeliveryAttribution: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AttributionCounts"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -14884,6 +14978,7 @@ export type AskSnooze = components["schemas"]["AskSnooze"];
 export type AskSnoozeInput = components["schemas"]["AskSnoozeInput"];
 export type AskThread = components["schemas"]["AskThread"];
 export type AskWithTrees = components["schemas"]["AskWithTrees"];
+export type AttributionCounts = components["schemas"]["AttributionCounts"];
 export type BasisLearnedAt = components["schemas"]["BasisLearnedAt"];
 export type BlockAttributeValue = components["schemas"]["BlockAttributeValue"];
 export type BlockLink = components["schemas"]["BlockLink"];
@@ -15025,6 +15120,7 @@ export type GraphNodeRead = components["schemas"]["GraphNodeRead"];
 export type GraphReferences = components["schemas"]["GraphReferences"];
 export type Handoff = components["schemas"]["Handoff"];
 export type HandoffSummary = components["schemas"]["HandoffSummary"];
+export type HeadNotRead = components["schemas"]["HeadNotRead"];
 export type HoldPersistenceInput = components["schemas"]["HoldPersistenceInput"];
 export type InboxDismissRequest = components["schemas"]["InboxDismissRequest"];
 export type InboxDismissResponse = components["schemas"]["InboxDismissResponse"];
@@ -15052,6 +15148,7 @@ export type IssueDesignGates = components["schemas"]["IssueDesignGates"];
 export type IssueDesignGatesInput = components["schemas"]["IssueDesignGatesInput"];
 export type IssueDetails = components["schemas"]["IssueDetails"];
 export type IssueDuplicateError = components["schemas"]["IssueDuplicateError"];
+export type IssueNotKnown = components["schemas"]["IssueNotKnown"];
 export type IssueOpenAsk = components["schemas"]["IssueOpenAsk"];
 export type IssueProgress = components["schemas"]["IssueProgress"];
 export type IssueRankInput = components["schemas"]["IssueRankInput"];
@@ -15122,6 +15219,7 @@ export type PlanRecord = components["schemas"]["PlanRecord"];
 export type PlanRecordInput = components["schemas"]["PlanRecordInput"];
 export type PlanTask = components["schemas"]["PlanTask"];
 export type PlanTaskInput = components["schemas"]["PlanTaskInput"];
+export type PossibleHead = components["schemas"]["PossibleHead"];
 export type Priorities = components["schemas"]["Priorities"];
 export type Priority = components["schemas"]["Priority"];
 export type PriorityAct = components["schemas"]["PriorityAct"];
@@ -15200,6 +15298,7 @@ export type TimeToRestore = components["schemas"]["TimeToRestore"];
 export type TmuxPlace = components["schemas"]["TmuxPlace"];
 export type ToolField = components["schemas"]["ToolField"];
 export type UnparsedOpeners = components["schemas"]["UnparsedOpeners"];
+export type UnreadableLink = components["schemas"]["UnreadableLink"];
 export type UpdateAgentTokenScopesInput = components["schemas"]["UpdateAgentTokenScopesInput"];
 export type UpdateDeliverySessionGroupInput =
   components["schemas"]["UpdateDeliverySessionGroupInput"];

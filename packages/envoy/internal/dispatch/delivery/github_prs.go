@@ -17,7 +17,8 @@ import (
 // ErrPullRequestNotFound is a 404 or 410 from GitHub fetching a specific pull request: the pull
 // request or its repository no longer exists, or no longer reaches this token. A permanent
 // condition, unlike every other FetchPullRequest failure (a transient 5xx, a rate limit) --
-// reconcile.completePartialPullRequest marks the row unfetchable rather than retrying it forever.
+// reconcile.completePartialPullRequest marks the row unfetchable once pullRequestAbsent proves it,
+// rather than retrying it forever.
 var ErrPullRequestNotFound = errors.New("pull request not found or gone")
 
 // FetchedPullRequest is one pull request's GitHub facts: everything RawPullRequest needs for the
@@ -27,8 +28,9 @@ var ErrPullRequestNotFound = errors.New("pull request not found or gone")
 // FetchPullRequest fills every field. SearchMergedPullRequests, which reads GitHub's search
 // results rather than the pull request itself, cannot supply MergeCommitSHA, Additions,
 // Deletions, or FirstCommitAt -- GitHub's search-issues response carries none of them -- so those
-// stay nil on a search result; a caller that needs them calls FetchPullRequest afterward (this is
-// reconcile's backfill path; a caller that only needs population-membership facts does not).
+// stay nil on a search result; a caller that needs them reads the pull request itself afterward
+// (the reconcile's completion of a partial row; a caller that only needs population-membership
+// facts does not).
 type FetchedPullRequest struct {
 	Number         int
 	Title          string
@@ -103,13 +105,10 @@ type commitPayload struct {
 }
 
 // FetchPullRequest fetches one pull request's complete facts: GET
-// /repos/{owner}/{repo}/pulls/{number} for everything but the first commit, then GET
-// /repos/{owner}/{repo}/pulls/{number}/commits?per_page=1 for FirstCommitAt (the first page's
-// first element's commit.author.date, or commit.committer.date when GitHub reports no author for
-// that commit). Mints its own token via client.RepositoryToken(ctx, owner, repo). A merged pull
-// request cannot have zero commits, but an empty or malformed commits answer is reported as an
-// error rather than indexed into, and every GitHub call error is wrapped with which call failed
-// and for which pull request.
+// /repos/{owner}/{repo}/pulls/{number} for everything but the first commit, then the first
+// commit (completeFetchedPullRequest). Mints its own token via client.RepositoryToken(ctx,
+// owner, repo). Every GitHub call error is wrapped with which call failed and for which pull
+// request.
 func FetchPullRequest(ctx context.Context, client *githubapp.Client, owner, repo string, number int) (FetchedPullRequest, error) {
 	token, err := client.RepositoryToken(ctx, owner, repo)
 	if err != nil {
@@ -119,8 +118,20 @@ func FetchPullRequest(ctx context.Context, client *githubapp.Client, owner, repo
 	if err != nil {
 		return FetchedPullRequest{}, err
 	}
+	return completeFetchedPullRequest(ctx, client, token, owner, repo, payload)
+}
+
+// completeFetchedPullRequest is FetchPullRequest's answer from a pull request GitHub has
+// already answered (payload): GET /repos/{owner}/{repo}/pulls/{number}/commits?per_page=1 for
+// FirstCommitAt (the first page's first element's commit.author.date, or commit.committer.date
+// when GitHub reports no author for that commit). The intake's merge passes the pull request its
+// head write read, so a merged envelope reads its pull request once. A merged pull request
+// cannot have zero commits, but an empty or malformed commits answer is reported as an error
+// rather than indexed into.
+func completeFetchedPullRequest(ctx context.Context, client *githubapp.Client, token, owner, repo string, payload pullRequestPayload) (FetchedPullRequest, error) {
+	number := payload.Number
 	commitsPath := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=1", url.PathEscape(owner), url.PathEscape(repo), number)
-	commitsBody, commitsStatus, commitsHeader, err := readGitHubPage(ctx, client, token, commitsPath)
+	commitsBody, commitsStatus, commitsHeader, _, err := readGitHubPage(ctx, client, token, commitsPath)
 	if err != nil {
 		return FetchedPullRequest{}, fmt.Errorf("fetch first commit of %s/%s PR #%d: %w", owner, repo, number, err)
 	}
@@ -166,7 +177,7 @@ func FetchPullRequest(ctx context.Context, client *githubapp.Client, owner, repo
 // every pass (RefreshPullRequestHead).
 func fetchPullRequestPayload(ctx context.Context, client *githubapp.Client, token, owner, repo string, number int) (pullRequestPayload, error) {
 	pullPath := fmt.Sprintf("/repos/%s/%s/pulls/%d", url.PathEscape(owner), url.PathEscape(repo), number)
-	body, status, header, err := readGitHubPage(ctx, client, token, pullPath)
+	body, status, header, _, err := readGitHubPage(ctx, client, token, pullPath)
 	if err != nil {
 		return pullRequestPayload{}, fmt.Errorf("fetch %s/%s PR #%d: %w", owner, repo, number, err)
 	}
@@ -186,9 +197,9 @@ func fetchPullRequestPayload(ctx context.Context, client *githubapp.Client, toke
 // fetchCommitPullPayloads is every pull request GitHub associates with one commit
 // (`GET /repos/{owner}/{repo}/commits/{sha}/pulls`) under token, through readGitHubPage's
 // bounded retry, decoded as the same pullRequestPayload the single-pull-request read answers, so
-// both of the head row's GitHub readers build it from one type. Dispatch reads this when a
-// result names a commit that is the head of no pull request it has an event for, so a pull
-// request opened while Dispatch was not listening is known at once.
+// both of the head row's GitHub readers build it from one type. Dispatch reads this for a
+// result's commit (ReadThroughCommitPulls), so a pull request opened while Dispatch was not
+// listening is known at once, a second pull request at a head Dispatch holds included.
 //
 // A commit the repository does not have answers an empty list, as GitHub's own 422 for it
 // does. Every other answer is githubapp.CheckRepositoryResponse's, so a 403 or 404 is
@@ -196,7 +207,7 @@ func fetchPullRequestPayload(ctx context.Context, client *githubapp.Client, toke
 // commit it placed elsewhere.
 func fetchCommitPullPayloads(ctx context.Context, client *githubapp.Client, token, owner, repo, sha string) ([]pullRequestPayload, error) {
 	pullsPath := fmt.Sprintf("/repos/%s/%s/commits/%s/pulls", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(sha))
-	body, status, header, err := readGitHubPage(ctx, client, token, pullsPath)
+	body, status, header, _, err := readGitHubPage(ctx, client, token, pullsPath)
 	if err != nil {
 		return nil, fmt.Errorf("fetch the pull requests of %s/%s@%s: %w", owner, repo, sha, err)
 	}
@@ -212,33 +223,6 @@ func fetchCommitPullPayloads(ctx context.Context, client *githubapp.Client, toke
 		return nil, fmt.Errorf("decode the pull requests of %s@%s: %w", repoFull, sha, err)
 	}
 	return payloads, nil
-}
-
-// fetchAttributionFacts reads what the issue attribution needs of a pull request already stored
-// complete, and nothing else: the pull request (its title, body and head branch) and then its
-// commits' messages, one page of 100 at a time. A complete row already holds every other fact
-// FetchPullRequest reads, its first commit's time included, so the backfill makes one call plus
-// one per commits page rather than FetchPullRequest's two plus fetchCommitMessages' pages. It
-// answers how many calls it made, a failed one included (retries inside readGitHubPage aside),
-// for the backfill's call budget.
-func fetchAttributionFacts(ctx context.Context, client *githubapp.Client, owner, repo, repoFull string, number int) (attributionFacts, int, error) {
-	tokenSource := func() (string, error) { return client.RepositoryToken(ctx, owner, repo) }
-	token, err := tokenSource()
-	if err != nil {
-		return attributionFacts{}, 0, fmt.Errorf("mint installation token for %s PR #%d: %w", repoFull, number, err)
-	}
-	payload, err := fetchPullRequestPayload(ctx, client, token, owner, repo, number)
-	if err != nil {
-		return attributionFacts{}, 1, err
-	}
-	messages, pages, err := fetchCommitMessagesWithToken(ctx, client, tokenSource, owner, repo, number)
-	if err != nil {
-		return attributionFacts{}, 1 + pages, err
-	}
-	return attributionFacts{
-		Repo: repoFull, URL: payload.HTMLURL, Title: payload.Title, Body: payload.Body,
-		HeadRef: payload.Head.Ref, CommitMessages: messages,
-	}, 1 + pages, nil
 }
 
 // commitDate reads one commit's authored time: commit.author.date, or commit.committer.date when
@@ -294,8 +278,8 @@ type searchPullRequestsPage struct {
 // node is some other type) decodes as its zero value and is skipped by requiring a non-zero Number.
 // Carries no `body`: the field is large enough on its own (a long PR description, times up to 100
 // results per page) to push a page over the 1 MiB response limit on its own, and nothing in this
-// path reads it -- reconcile's search-found PRs are stored Partial until a later per-PR
-// FetchPullRequest completes them, which is also where their issue-reference body text is read.
+// path reads it -- reconcile's search-found PRs are stored Partial until a later per-PR read
+// (completePartialPullRequest) completes them, which is also where their body text is read.
 //
 // Author.Typename is GraphQL's own discriminator ("User", "Bot", "Organization", ...) for the
 // `Actor` interface `author` resolves to. GitHub's GraphQL login for a bot-authored pull request
@@ -348,8 +332,8 @@ func fetchedPullRequestFromSearchNode(node searchPullRequestNode) FetchedPullReq
 // day-sized or finer windows on its own, not pass one already that fine. Each result item carries
 // enough to build a FetchedPullRequest-shaped result except MergeCommitSHA, Additions, Deletions
 // and FirstCommitAt (search results carry none of them) -- those fields are left nil, and a
-// caller that needs them calls FetchPullRequest per pull request afterward (reconcile's backfill
-// path does this; a caller that only needs population-membership facts does not).
+// caller that needs them reads each pull request afterward (reconcile's completion of a partial
+// row does this; a caller that only needs population-membership facts does not).
 func SearchMergedPullRequests(ctx context.Context, client *githubapp.Client, owner, repo string, authors []string, since, until time.Time) ([]FetchedPullRequest, error) {
 	token := func() (string, error) { return client.RepositoryToken(ctx, owner, repo) }
 	var found []FetchedPullRequest
@@ -404,16 +388,17 @@ const installationSearchConcurrency = 8
 // goroutines at once. One installation's own failure never stops another: its error is collected
 // by name (which installation, by id and account) rather than aborting the whole search, and
 // everything every other installation visited still stands -- the pass is reported unhealthy,
-// but nothing already imported is thrown away. A *githubapp.RateLimitError is the one
-// exception: it stops every further installation from starting (the ones already in flight
-// still finish), since a rate limit is a global condition on this installation token budget,
-// not one installation's own problem.
+// but nothing already imported is thrown away. A *githubapp.RateLimitError stops no other
+// installation either: a limit is on one installation (githubapp.InstallationScope), so limited
+// keeps it (passRateLimit), the search of every other installation goes on, and the caller
+// answers the limit after the search (limited.err). The limit is not in the error this answers.
 func SearchMergedPullRequestsAcrossInstallation(
 	ctx context.Context,
 	client *githubapp.Client,
 	authors []string,
 	since func(installationID int64) (time.Time, error),
 	until time.Time,
+	limited *passRateLimit,
 	listed func(installations []githubapp.Installation),
 	visit func(installation githubapp.Installation, windowUntil time.Time, prs []FetchedPullRequest) error,
 ) error {
@@ -430,7 +415,9 @@ func SearchMergedPullRequestsAcrossInstallation(
 
 	var mu sync.Mutex
 	var failures []string
-	fanErr := boundedFanOut(ctx, installationSearchConcurrency, installations, func(ctx context.Context, installation githubapp.Installation) error {
+	// The search of an installation answers nil on every path, so the fan-out has no failure of
+	// its own to stop on.
+	_ = boundedFanOut(ctx, installationSearchConcurrency, installations, func(ctx context.Context, installation githubapp.Installation) error {
 		windowStart, err := since(installation.ID)
 		if err != nil {
 			mu.Lock()
@@ -442,19 +429,13 @@ func SearchMergedPullRequestsAcrossInstallation(
 			func(windowUntil time.Time, prs []FetchedPullRequest) error {
 				return visit(installation, windowUntil, prs)
 			})
-		if err != nil {
-			if limited, ok := githubapp.AsRateLimit(err); ok {
-				return limited
-			}
+		if err != nil && !limited.keep(err) {
 			mu.Lock()
 			failures = append(failures, fmt.Sprintf("installation %d (%s): %s", installation.ID, installation.AccountLogin, err))
 			mu.Unlock()
 		}
 		return nil
 	})
-	if fanErr != nil {
-		return fmt.Errorf("rate-limited searching installations: %w", fanErr)
-	}
 	if len(failures) > 0 {
 		return fmt.Errorf("%d of %d installations failed: %s", len(failures), len(installations), strings.Join(failures, "; "))
 	}
@@ -486,7 +467,8 @@ const searchMergedPullRequestsWindow = githubResultCap
 // and a fresh (nil) cursor for every window walkWindowed asks for -- the original call and each
 // recursive half -- so GitHub's own cursor, not a REST page number, is this fetcher's only
 // pagination state. Each page asks token for its own installation token, by readGitHubPage's
-// rule; walkWindowed's error names the scope and the window, and each page's names its cursor.
+// rule; walkWindowed's error names the scope and the window, and each page's names its cursor,
+// which is GitHub's text and so shown to a body's bound (githubapp.ShownBody).
 func searchMergedPullRequests(ctx context.Context, client *githubapp.Client, token func() (string, error), repos, authors []string, since, until time.Time, visit func(time.Time, []FetchedPullRequest) error) error {
 	scope := searchScopeLabel(repos)
 	newFetcher := func(since, until time.Time) func() ([]FetchedPullRequest, int, error) {
@@ -495,7 +477,7 @@ func searchMergedPullRequests(ctx context.Context, client *githubapp.Client, tok
 		return func() ([]FetchedPullRequest, int, error) {
 			current, err := token()
 			if err != nil {
-				return nil, 0, fmt.Errorf("page after %q: mint installation token: %w", cursor, err)
+				return nil, 0, fmt.Errorf("page after %q: mint installation token: %w", githubapp.ShownBody(cursor), err)
 			}
 			result, err := fetchSearchPage(ctx, client, current, query, cursor)
 			if err != nil {
@@ -556,7 +538,8 @@ type searchPage struct {
 
 // fetchSearchPage runs one page of query, after cursor ("" for the first page), returning the
 // page's pull requests, its own pagination cursor, and the connection's total issueCount (the
-// 1,000-result cap walkWindowed checks).
+// 1,000-result cap walkWindowed checks). Its errors name the cursor, GitHub's endCursor of the page
+// before, as githubapp.ShownBody shows GitHub's text: an answer may hold a cursor of up to 1 MiB.
 func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, query, after string) (searchPage, error) {
 	var variables map[string]any
 	if after == "" {
@@ -564,19 +547,19 @@ func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, query
 	} else {
 		variables = map[string]any{"q": query, "after": after}
 	}
-	body, status, header, err := queryGitHubPage(ctx, client, token, searchPullRequestsQuery, variables)
+	body, status, header, attempts, err := queryGitHubPage(ctx, client, token, searchPullRequestsQuery, variables)
 	if err != nil {
-		return searchPage{}, fmt.Errorf("page after %q (%s): %w", after, pageAttemptsNote(), err)
+		return searchPage{}, fmt.Errorf("page after %q%s: %w", githubapp.ShownBody(after), pageAttemptsNote(attempts), err)
 	}
 	if err := githubapp.CheckResponse(status, header, body); err != nil {
-		return searchPage{}, fmt.Errorf("page after %q (%s): %w", after, pageAttemptsNote(), err)
+		return searchPage{}, fmt.Errorf("page after %q%s: %w", githubapp.ShownBody(after), pageAttemptsNote(attempts), err)
 	}
 	var response searchPullRequestsResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		return searchPage{}, fmt.Errorf("decode page after %q: %w", after, err)
+		return searchPage{}, fmt.Errorf("decode page after %q: %w", githubapp.ShownBody(after), err)
 	}
 	if len(response.Errors) > 0 {
-		return searchPage{}, fmt.Errorf("page after %q: %s", after, response.Errors[0].Message)
+		return searchPage{}, fmt.Errorf("page after %q: %s", githubapp.ShownBody(after), githubapp.ShownBody(response.Errors[0].Message))
 	}
 	items := make([]FetchedPullRequest, 0, len(response.Data.Search.Nodes))
 	for _, node := range response.Data.Search.Nodes {

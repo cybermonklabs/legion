@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -34,7 +35,8 @@ type fakeInstallation struct {
 // permission set (contents/actions/pull_requests all "read") and a single-repository
 // installation ("acme/widgets") so an ordinary test needs no boilerplate; a test exercising a
 // missing permission or a multi-repository installation overrides permissions/installationRepos
-// before calling newTestClient.
+// before calling newTestClient. The fake answers the batched query of facts (readFactsBatch)
+// before its mux sees the request (serveHTTP).
 type fakeGitHub struct {
 	t                 *testing.T
 	mux               *http.ServeMux
@@ -52,12 +54,34 @@ type fakeGitHub struct {
 	// zero is GitHub's hour. tokenExpiry records each minted token's expiry for tokenExpired.
 	tokenLifetime time.Duration
 	tokenExpiry   sync.Map
+	// installationOf names the installation GET /repos/{owner}/{repo}/installation answers for a
+	// repository other than installID's, set before newTestClient; notInstalled holds each
+	// repository ("owner/repo") the App is not installed on, which that lookup answers 404 for
+	// while it is held. lookups counts that lookup for each repository (lookupsOf).
+	installationOf map[string]int64
+	notInstalled   sync.Map
+	lookups        sync.Map
+	// served holds each repository serveGitHubPulls answers for, by "owner/repo", which POST
+	// /graphql answers the absence query about (answerAbsenceQuery); the route is registered with
+	// the first of them (absenceRoute).
+	served       sync.Map
+	absenceRoute sync.Once
+	// facts, where a test sets it before newTestClient, answers each batched query of facts in
+	// place of answerFactsQuery. factsQueries counts each such query, whoever answers it.
+	facts        http.HandlerFunc
+	factsQueries atomic.Int32
 	// installationStatus, keyed by "owner/repo", answers that repository's installation lookup
 	// with the status and GitHub's error body rather than the installation: 404 is a repository
 	// the App is not installed on, or one deleted. answerInstallation sets it, under mu, since a
 	// test changes it between passes.
 	mu                 sync.Mutex
 	installationStatus map[string]int
+}
+
+// lookupsOf is how many times GET /repos/{owner}/{repo}/installation was asked about repo.
+func (f *fakeGitHub) lookupsOf(repo string) int32 {
+	counter, _ := f.lookups.LoadOrStore(repo, &atomic.Int32{})
+	return counter.(*atomic.Int32).Load()
 }
 
 // answerInstallation makes the installation lookup of repo ("owner/repo") answer status, and
@@ -93,13 +117,25 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		installationRepos: []string{"acme/widgets"},
 	}
 	f.mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
-		if status := f.installationAnswer(r.PathValue("owner") + "/" + r.PathValue("repo")); status != 0 {
+		name := r.PathValue("owner") + "/" + r.PathValue("repo")
+		counter, _ := f.lookups.LoadOrStore(name, &atomic.Int32{})
+		counter.(*atomic.Int32).Add(1)
+		if _, missing := f.notInstalled.Load(name); missing {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		if status := f.installationAnswer(name); status != 0 {
 			w.WriteHeader(status)
 			fmt.Fprintf(w, `{"message":%q}`, http.StatusText(status))
 			return
 		}
+		id := f.installID
+		if other, ok := f.installationOf[name]; ok {
+			id = other
+		}
 		if err := json.NewEncoder(w).Encode(map[string]any{
-			"id":          f.installID,
+			"id":          id,
 			"app_slug":    "delivery-test",
 			"permissions": f.permissions,
 		}); err != nil {
@@ -132,9 +168,13 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 				}
 			}
 		}
-		payload := make([]map[string]any, len(repos))
-		for i, name := range repos {
-			payload[i] = map[string]any{"full_name": name}
+		// A repository the App is not installed on is in no installation's list, as GitHub's
+		// own lookup of its installation answers 404 for it.
+		payload := []map[string]any{}
+		for _, name := range repos {
+			if _, missing := f.notInstalled.Load(name); !missing {
+				payload = append(payload, map[string]any{"full_name": name})
+			}
 		}
 		mustEncode(t, w, map[string]any{"total_count": len(payload), "repositories": payload})
 	})
@@ -176,7 +216,7 @@ func (f *fakeGitHub) handle(pattern string, handler http.HandlerFunc) {
 // githubapp.WithLimits) where a test needs them.
 func (f *fakeGitHub) newTestClient(options ...githubapp.Option) *githubapp.Client {
 	f.t.Helper()
-	return newAppClient(f.t, githubtest.Spec{Handle: f.mux.ServeHTTP}, options...)
+	return newAppClient(f.t, githubtest.Spec{Handle: f.serveHTTP}, options...)
 }
 
 // newAppClient is a GitHub App client, signed with a key made for the test, of the GitHub
@@ -731,20 +771,116 @@ func TestSearchMergedPullRequestsNormalizesABotAuthorToRESTForm(t *testing.T) {
 
 // searchAllInstallations is SearchMergedPullRequestsAcrossInstallation for a test that wants
 // every result at once, from one window start, rather than per-installation windows with their
-// own recorded progress (reconcile_test.go's subject).
+// own recorded progress (reconcile_test.go's subject). It answers a rate limit that the search
+// kept as an error, as the reconcile's step does (reconcileMergedPullRequests).
 func searchAllInstallations(ctx context.Context, client *githubapp.Client, authors []string, since, until time.Time) ([]FetchedPullRequest, error) {
 	var mu sync.Mutex
 	var found []FetchedPullRequest
+	var limited passRateLimit
 	err := SearchMergedPullRequestsAcrossInstallation(ctx, client, authors,
-		func(int64) (time.Time, error) { return since, nil }, until, nil,
+		func(int64) (time.Time, error) { return since, nil }, until, &limited, nil,
 		func(_ githubapp.Installation, _ time.Time, prs []FetchedPullRequest) error {
 			mu.Lock()
 			defer mu.Unlock()
 			found = append(found, prs...)
 			return nil
 		})
-	if err != nil {
+	if err := errors.Join(limited.err(), err); err != nil {
 		return nil, err
 	}
 	return found, nil
+}
+
+// GitHub's error of a search page it answered 200 is shown to the bound a body is shown to
+// (githubapp.ShownBody): the reconcile's search logs the page's error, and a message of 1 MiB in
+// GitHub's errors array was a line of 1 MiB (the deep audit of cybermonklabs/legion#4209 at
+// 3a21edb2c9, note 1). The start of the message, and its size, are kept.
+func TestASearchPageGitHubAnswersWithAnErrorShowsItToABound(t *testing.T) {
+	fake := newFakeGitHub(t)
+	const start = "The search could not be completed "
+	fake.handle("POST /graphql", func(w http.ResponseWriter, _ *http.Request) {
+		mustEncode(t, w, map[string]any{"data": nil, "errors": []any{map[string]any{"message": start + strings.Repeat("y", 1<<20-200)}}})
+	})
+	_, err := fetchSearchPage(t.Context(), fake.newTestClient(), "ghs_test", "repo:acme/widgets is:pr is:merged", "")
+	if err == nil {
+		t.Fatal("a search page GitHub answered with an error answered no error")
+	}
+	text := err.Error()
+	t.Logf("bytes=%d", len(text))
+	if len(text) > 1024 || !strings.Contains(text, start) || !strings.Contains(text, "bytes)") {
+		t.Errorf("the search page's error is %d bytes and begins %.120q, want at most 1,024 that keep the start of GitHub's message and its size", len(text), text)
+	}
+}
+
+// The cursor a search page names is GitHub's own text, the endCursor of the page before it, so each
+// error of the page shows it to the bound a body is shown to (githubapp.ShownBody), as it shows
+// GitHub's message (TestASearchPageGitHubAnswersWithAnErrorShowsItToABound): an endCursor as long
+// as an answer may hold (githubapp's 1 MiB limit) was a line of that size in each of the five
+// errors that name the cursor. The start of the cursor, and its size, are kept.
+func TestEachErrorOfASearchPageShowsGitHubsCursorToABound(t *testing.T) {
+	const start = "Y3Vyc29yOnYyOpK0"
+	cursor := start + strings.Repeat("Q", 1<<20-4096)
+	for _, page := range []struct {
+		name   string
+		answer http.HandlerFunc
+	}{
+		{name: "github_answers_errors", answer: func(w http.ResponseWriter, _ *http.Request) {
+			mustEncode(t, w, map[string]any{"data": nil, "errors": []any{map[string]any{"message": "Something went wrong"}}})
+		}},
+		{name: "github_refuses_the_page", answer: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			fmt.Fprint(w, `{"message":"Validation Failed"}`)
+		}},
+		{name: "the_page_does_not_decode", answer: func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprint(w, "not json")
+		}},
+		{name: "the_connection_closes", answer: func(w http.ResponseWriter, _ *http.Request) {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack the page's connection: %v", err)
+				return
+			}
+			conn.Close()
+		}},
+	} {
+		t.Run(page.name, func(t *testing.T) {
+			fastPageRetries(t)
+			fake := newFakeGitHub(t)
+			fake.handle("POST /graphql", page.answer)
+			_, err := fetchSearchPage(t.Context(), fake.newTestClient(), "ghs_test", "repo:acme/widgets is:pr is:merged", cursor)
+			requireCursorShownToABound(t, err, start)
+		})
+	}
+	t.Run("the_next_pages_token_is_not_minted", func(t *testing.T) {
+		fake := newFakeGitHub(t)
+		fake.handle("POST /graphql", func(w http.ResponseWriter, _ *http.Request) {
+			node := searchNodeJSON(5, "t", "alice", "2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z")
+			mustEncode(t, w, searchResponseJSON(2, []map[string]any{node}, true, cursor))
+		})
+		var minted atomic.Int32
+		token := func() (string, error) {
+			if minted.Add(1) > 1 {
+				return "", errors.New("the test mints no second token")
+			}
+			return "ghs_test", nil
+		}
+		err := searchMergedPullRequests(t.Context(), fake.newTestClient(), token, []string{"acme/widgets"}, []string{"alice"},
+			time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
+			func(time.Time, []FetchedPullRequest) error { return nil })
+		requireCursorShownToABound(t, err, start)
+	})
+}
+
+// requireCursorShownToABound fails t unless err is an error of at most 1,024 bytes that keeps the
+// start of the cursor and its size.
+func requireCursorShownToABound(t *testing.T, err error, start string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("the page answered no error")
+	}
+	text := err.Error()
+	t.Logf("bytes=%d", len(text))
+	if len(text) > 1024 || !strings.Contains(text, start) || !strings.Contains(text, "bytes)") {
+		t.Errorf("the page's error is %d bytes and begins %.160q, want at most 1,024 that keep the start of GitHub's cursor and its size", len(text), text)
+	}
 }

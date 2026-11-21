@@ -19,13 +19,14 @@ import (
 
 // A production run has shipped a merged pull request, so the pass records its issue's
 // issue.deployed and marks the row, each pull request in a transaction of its own
-// (recordDeployedEvent). That transaction writes its row inline, so its window holds three
-// statements: the row's marking update, the batch appending issue.deployed (the issue owner's
-// lock, which this transaction already holds, the issue's row and the insert), and the COMMIT
-// ending them. Everything that comes before the first of them holds no transaction id - the
-// shipped rows with the run that shipped each of them, read by the pass itself outside any
-// transaction (listUnrecordedShipped), and the issue's owner lock, which the append would
-// otherwise be the first to take and which is advisory (store.LockOwner).
+// (recordDeployedEvent). That transaction writes its row inline, so its window holds four
+// statements: the row's marking update, the statement's read of the pull request's issue under
+// the row's lock (PullRequestIssues), the batch appending issue.deployed (the issue owner's lock,
+// which this transaction already holds, the issue's row and the insert), and the COMMIT ending
+// them. Everything that comes before the first of them holds no transaction id - the shipped rows
+// with the run that shipped each of them and the statement's issue of each, read by the pass
+// itself outside any transaction (listUnrecordedShipped), and the issue's owner lock, which the
+// append would otherwise be the first to take and which is advisory (store.LockOwner).
 func TestXidWindowDeployedEventRecorded(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	tracer := storetest.NewXidTracer()
@@ -49,16 +50,16 @@ func TestXidWindowDeployedEventRecorded(t *testing.T) {
 		t.Fatalf("XID RIG PROBLEM (not a finding about the code): the pass wrote %d issue.deployed events, want 1", written)
 	}
 	requireDeployedEvent(t, ctx, traced, deployedIssue, "acme/widgets", 601, 910, "2024-01-01T02:10:00Z")
-	storetest.AssertXidWindows(t, report, storetest.XidWindowOf(3,
-		"the pull request's marking update, the batch appending issue.deployed and the COMMIT ending them"))
+	storetest.AssertXidWindows(t, report, storetest.XidWindowOf(4,
+		"the pull request's marking update, the statement's read of its issue, the batch appending issue.deployed and the COMMIT ending them"))
 }
 
-// A head write moves a pull request from one issue to another, so it records the move on both
-// issues (UpsertPullRequestHead, appendAttributionChange): the webhook intake's write, the
-// reconcile's refresh and the results read's read-through all make it. Its window opens at the
-// row's own lock, which headIssueBefore takes to read the issue the row held, and holds database
-// statements only: that locked read, the row's upsert, the lock of both issues' owners in lock-key
-// order (events.Broker.LockOwners), one batch per issue appending its
+// A pass appends the events of a queued move of a pull request from one issue to another
+// (AppendAttributionEvents): the head writes and the sync of the statement's answers queue it
+// (SyncAttributions). Its window opens at the take, which locks and deletes the queued move, and
+// holds database statements only: that take, the read of the pull request's URL and of whether
+// each issue still exists, the lock of both issues' owners in lock-key order
+// (events.Broker.LockOwners), one batch per issue appending its
 // issue.pull_request_attribution_changed, and the COMMIT ending them.
 func TestXidWindowAttributionMoveRecorded(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
@@ -67,22 +68,31 @@ func TestXidWindowAttributionMoveRecorded(t *testing.T) {
 	left := seedHeadIssue(t, ctx, traced, 76)
 	reached := seedHeadIssue(t, ctx, traced, 77)
 	broker := events.NewBroker()
-	// The row is credited to the issue it leaves first, so the measured write is a move. The
-	// database is this test's own clone (deliveryTestPool), so the first write creates the row and
-	// records no move on the issue the measured one reaches.
-	if err := UpsertPullRequestHead(ctx, traced, broker, attributedHeadRow(176, &left, sourceTitleBody)); err != nil {
+	// The row is credited to the issue it leaves first, and a pass records that, so the measured
+	// append is a move. The database is this test's own clone (deliveryTestPool), so no other
+	// move waits beside it.
+	if err := UpsertPullRequestHead(ctx, traced, attributedHeadRow(176, &left, sourceTitleBody)); err != nil {
 		t.Fatalf("store the head attributed to %s: %v", left, err)
 	}
+	if _, appended := attributionPass(t, ctx, traced, broker); appended != 1 {
+		t.Fatalf("XID RIG PROBLEM (not a finding about the code): the first pass appended %d events, want 1", appended)
+	}
+	if err := UpsertPullRequestHead(ctx, traced, attributedHeadRow(176, &reached, sourceBranch)); err != nil {
+		t.Fatalf("move the head to %s: %v", reached, err)
+	}
+	syncAttributions(t, ctx, traced)
 
+	var appended int
 	report := tracer.Measure(t, traced, func() {
-		if err := UpsertPullRequestHead(storetest.MarkXid(ctx), traced, broker, attributedHeadRow(176, &reached, sourceBranch)); err != nil {
-			t.Errorf("move the head to %s: %v", reached, err)
+		var err error
+		if appended, err = AppendAttributionEvents(storetest.MarkXid(ctx), traced, broker); err != nil {
+			t.Errorf("append the events of the move to %s: %v", reached, err)
 		}
 	})
-	if moved := attributionEvents(t, ctx, traced, reached); len(moved) != 1 || moved[0].Payload.From == nil || *moved[0].Payload.From != left {
-		t.Fatalf("XID RIG PROBLEM (not a finding about the code): %s carries %+v, want the one move the measured write recorded", reached, moved)
+	if moved := attributionEvents(t, ctx, traced, reached); appended != 2 || len(moved) != 1 || moved[0].Payload.From == nil || *moved[0].Payload.From != left {
+		t.Fatalf("XID RIG PROBLEM (not a finding about the code): %d events appended, %s carries %+v, want the one move the measured append recorded", appended, reached, moved)
 	}
 	storetest.AssertXidWindows(t, report, storetest.XidWindowOf(6,
-		"the row's locked read of the issue it held, the row's upsert, the lock of both issues' owners, "+
+		"the take of the queued move, the read of its pull request and issues, the lock of both issues' owners, "+
 			"the batch appending issue.pull_request_attribution_changed on each of the two issues and the COMMIT ending them"))
 }

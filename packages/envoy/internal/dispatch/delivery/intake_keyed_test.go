@@ -51,6 +51,9 @@ type pullRequestHold struct {
 // holdPullRequestOne holds the first fetch of pull request 1, and of every number in also, each
 // until that number is released (release, releaseNumber). A row that needs two handlers inside
 // their fetches at once names the second number here rather than installing a fake of its own.
+// Every fetch answers GitHub's 404, a pull request it does not have: the intake writes no head
+// row for one and acknowledges its envelope, as these rows want of every message they publish.
+// (A 5xx would be a read that failed, which the intake owes the reconcile and acknowledges.)
 func holdPullRequestOne(fake *fakeGitHub, also ...string) *heldPullRequests {
 	held := newHeldPullRequests(append([]string{"1"}, also...))
 	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +63,7 @@ func holdPullRequestOne(fake *fakeGitHub, also ...string) *heldPullRequests {
 			<-hold.held
 		}
 		held.record("end " + number)
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusNotFound)
 	})
 	return held
 }
@@ -311,7 +314,8 @@ func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 
 // holdPullRequestOneUntilAbandoned is holdPullRequestOne, except that the held fetch also ends when
 // the intake abandons it (the request's context ends), so its end is recorded as soon as the
-// intake stops waiting on it, by a release or by giving the call up.
+// intake stops waiting on it, by a release or by giving the call up. It answers 404 as
+// holdPullRequestOne does.
 func holdPullRequestOneUntilAbandoned(fake *fakeGitHub) *heldPullRequests {
 	held := newHeldPullRequests([]string{"1"})
 	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
@@ -324,7 +328,7 @@ func holdPullRequestOneUntilAbandoned(fake *fakeGitHub) *heldPullRequests {
 			}
 		}
 		held.record("end " + number)
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusNotFound)
 	})
 	return held
 }
@@ -979,8 +983,8 @@ func TestTheCopyUnderARepositorysFormerNameRunsNoSecondHandler(t *testing.T) {
 	fake.handle("GET /repos/cybermonklabs/legion/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
 		fetches.Add(1)
 		// The fetch's answer decides nothing here; what is counted is that it happened once. A
-		// 500 is logged and acknowledged, as every failed fetch of a merged pull request is.
-		w.WriteHeader(http.StatusInternalServerError)
+		// 404 is logged and acknowledged, as a pull request GitHub does not have is.
+		w.WriteHeader(http.StatusNotFound)
 	})
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))

@@ -659,43 +659,36 @@ func (p *Population) fillReportedTrees() {
 
 // readMergeTimes reads the merge time of each issue's pull request from the delivery population,
 // and fetches the ones that population does not hold yet from GitHub (delivery.FetchPullRequest),
-// up to fetchedMergeTimesCap of them. A fetch that fails leaves the issue with no merge time.
+// up to fetchedMergeTimesCap of them. A fetch that fails leaves the issue with no merge time. A
+// pull request is the issue's when the one statement of a pull request's issue gives it to the
+// issue (delivery.ListPullRequestsOfIssues), as the delivery timeline reads it, never by the issue
+// a reconcile pass last stored on its row. A row GitHub proved absent (unfetchable_at) counts for
+// nothing.
 func (p *Population) readMergeTimes(ctx context.Context, pool *store.Pool, github *githubapp.Client, keys []string) error {
-	rows, err := pool.Query(ctx, `
-		select issue_key, repo, number, merged_at
-		from delivery_pull_requests
-		where issue_key = any($1) and unfetchable_at is null
-		order by issue_key, number
-	`, keys)
+	prs, err := delivery.ListPullRequestsOfIssues(ctx, pool, keys)
 	if err != nil {
 		return fmt.Errorf("read the pull requests of the finished issues: %w", err)
 	}
-	defer rows.Close()
 	type unmerged struct {
 		issue, repo string
 		number      int
 	}
 	var fetch []unmerged
-	for rows.Next() {
-		var key, repo string
-		var number int
-		var mergedAt *time.Time
-		if err := rows.Scan(&key, &repo, &number, &mergedAt); err != nil {
-			return fmt.Errorf("scan a pull request: %w", err)
+	for _, pr := range prs {
+		if pr.UnfetchableAt != nil {
+			continue
 		}
+		key := *pr.IssueKey
 		issue := p.Issues[key]
 		if issue == nil {
 			continue
 		}
 		switch {
-		case mergedAt == nil:
-			fetch = append(fetch, unmerged{issue: key, repo: repo, number: number})
-		case issue.MergedAt == nil || mergedAt.Before(*issue.MergedAt):
-			issue.MergedAt = mergedAt
+		case pr.MergedAt == nil:
+			fetch = append(fetch, unmerged{issue: key, repo: pr.Repo, number: pr.Number})
+		case issue.MergedAt == nil || pr.MergedAt.Before(*issue.MergedAt):
+			issue.MergedAt = pr.MergedAt
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the pull requests of the finished issues: %w", err)
 	}
 	if github == nil {
 		return nil

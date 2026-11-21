@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    On PostgreSQL 16, Dispatch keeps the identity of its pull-request key reading when the
+    database creates the reading again from its own definition, as a logical restore does.
+    PostgreSQL 16 records in the stored body where each part stood in the source text, and the
+    identity now leaves those places out, so a restore no longer makes every stored key read
+    as keyed by another reading.
+time: 2026-11-20T00:52:33.000000000Z
+custom:
+    Issue: pr4209

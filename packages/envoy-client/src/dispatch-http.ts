@@ -15,6 +15,7 @@ import type {
   ArtifactVersionText,
   AskRead,
   AskWithTrees,
+  AttributionCounts,
   CheckResultDryRun,
   CheckResultRecorded,
   CheckResultRetraction,
@@ -1389,6 +1390,13 @@ export class DispatchClient {
    *  that enforces it. The client keeps no copy of them: it prints what the server answers. */
   async limits(): Promise<DispatchLimits> {
     return this.#json("GET", ["api", "v1", "limits"]);
+  }
+
+  /** `GET /api/v1/delivery/attribution`: what the attribution of the stored pull requests still
+   *  waits for, counted by the server at the call. The route reads no GitHub and needs no
+   *  delivery settings. */
+  async attribution(): Promise<AttributionCounts> {
+    return this.#json("GET", ["api", "v1", "delivery", "attribution"]);
   }
 
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's

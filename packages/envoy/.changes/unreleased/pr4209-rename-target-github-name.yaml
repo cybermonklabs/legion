@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    `PUT /api/v1/settings/repo-projects/{owner}/{repo}` refuses a `renamed_to` that is no
+    repository name GitHub can have once it is canonical (an owner of 1 to 39 letters, digits,
+    hyphens and underscores, and a name of 1 to 100 letters, digits, hyphens, underscores and
+    periods) with `400 INVALID_REPO_PROJECT`, by the same rule the GitHub intake keys a pull
+    request's rows by. It stored any `owner/name`, and a read owed under the old name of such a
+    rename stayed owed for ever. A target stored before this release is kept as it is; an operator
+    corrects one with a new rename through the same route.
+time: 2026-11-17T08:30:09.000000000Z
+custom:
+    Issue: pr4209

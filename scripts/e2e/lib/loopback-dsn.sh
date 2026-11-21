@@ -132,6 +132,12 @@ run_database_url() {
 # server is one such case: every database made from its template1 holds `vector`, and its login
 # may not create it again. Three callers run it: lib/two-builds.sh's two_builds_reset_database,
 # verification-results.sh and dispatch-claimant-delivery.sh.
+#
+# A routine can depend on another: a body written BEGIN ATOMIC records the routines it calls, as
+# attribution_reading() records attribution_keys() (20261117122117_attribution_reading.up.sql). The
+# cascade of the first routine's drop then drops the second, before the loop reaches it. So the
+# loop reads each routine's oid, and drops it only while pg_proc still holds that oid: cast to
+# regprocedure, an oid that names no routine is a bare number, and the drop is a syntax error.
 empty_public_schema() {
   local reset_sql="do \$\$
 declare object record;
@@ -144,10 +150,12 @@ begin
     end if;
   end loop;
   for object in
-    select p.oid::regprocedure as signature from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    select p.oid from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
   loop
-    execute format('drop routine if exists %s cascade', object.signature);
+    if exists (select 1 from pg_proc where oid = object.oid) then
+      execute format('drop routine if exists %s cascade', object.oid::regprocedure);
+    end if;
   end loop;
   for object in
     select t.oid::regtype as name from pg_type t join pg_namespace n on n.oid = t.typnamespace

@@ -99,9 +99,9 @@ func TestAStoredNameGitHubDoesNotAllowMakesNoGitHubRequest(t *testing.T) {
 		`, old, renamedTo); err != nil {
 			t.Fatalf("record %s as renamed to %s: %v", old, renamedTo, err)
 		}
-		err := RefreshPullRequestHead(ctx, pool, client, nil, old, 7, time.Now())
+		_, _, err := RefreshPullRequestHead(ctx, pool, client, nil, old, 7, time.Now())
 		refused("RefreshPullRequestHead", renamedTo, err)
-		_, _, err = ReadThroughCommitPulls(ctx, pool, client, nil, old, sha, time.Now())
+		_, _, err = ReadThroughCommitPulls(ctx, pool, client, old, sha, time.Now())
 		refused("ReadThroughCommitPulls", renamedTo, err)
 	}
 

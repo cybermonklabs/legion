@@ -114,6 +114,9 @@ func seedMeasuresFixture(t *testing.T, database *store.Store) measuresFixture {
 		}
 	}
 
+	// Each issue resolves to the repository of the pull requests that name it: the statement holds
+	// a pull request's issue to the repository of the pull request.
+	issueRepos := map[string]string{}
 	for _, pr := range fixture.PRs {
 		createdAt, mergedAt := pr.CreatedAt, pr.MergedAt
 		additions, deletions := pr.Additions, pr.Deletions
@@ -121,10 +124,25 @@ func seedMeasuresFixture(t *testing.T, database *store.Store) measuresFixture {
 			Repo: pr.Repo, Number: pr.Number, Title: pr.Title, Author: pr.Author,
 			URL:       "https://github.com/" + pr.Repo + "/pull/" + strconv.Itoa(pr.Number),
 			CreatedAt: &createdAt, MergedAt: &mergedAt, FirstCommitAt: pr.FirstCommitAt,
-			Additions: &additions, Deletions: &deletions, Rework: pr.Rework, IssueKey: pr.Issue,
+			Additions: &additions, Deletions: &deletions, Rework: pr.Rework,
 		}); err != nil {
 			t.Fatalf("seed PR %s#%d: %v", pr.Repo, pr.Number, err)
 		}
+		if pr.Issue == nil {
+			continue
+		}
+		if repo, seen := issueRepos[*pr.Issue]; seen && repo != pr.Repo {
+			t.Fatalf("the fixture names %s from %s and from %s", *pr.Issue, repo, pr.Repo)
+		} else if !seen {
+			issueRepos[*pr.Issue] = pr.Repo
+			if _, err := pool.Exec(ctx, `insert into repo_projects (repo, project, created_by) values ($1, 'ACME', '{"kind":"system","id":"test"}') on conflict do nothing`, pr.Repo); err != nil {
+				t.Fatalf("map %s to ACME: %v", pr.Repo, err)
+			}
+			if _, err := pool.Exec(ctx, `update issues set repo = $1 where key = $2`, pr.Repo, *pr.Issue); err != nil {
+				t.Fatalf("resolve %s to %s: %v", *pr.Issue, pr.Repo, err)
+			}
+		}
+		seedAttributedHead(t, pool, pr.Repo, pr.Number, *pr.Issue)
 	}
 
 	for _, run := range fixture.Runs {

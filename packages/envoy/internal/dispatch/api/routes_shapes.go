@@ -141,12 +141,15 @@ type deliveryWindowQuery struct {
 	// ParentAgent selects pull requests whose first session belongs to these parents;
 	// __no_session__ selects those whose commits name no session.
 	ParentAgent []string `query:"parent_agent"`
-	// Issue selects pull requests of these issues; __no_issue__ selects those naming none.
+	// Issue selects pull requests of these issues. It has no placeholder: priority and component
+	// select a pull request that names no issue.
 	Issue []string `query:"issue"`
-	// Priority selects P0-P3; __no_priority__ selects an issue with none.
+	// Priority selects P0-P3; __no_priority__ selects an issue with none, __no_issue__ a pull
+	// request with no issue, and __issue_not_known__ a pull request whose issue is not known yet.
 	Priority []string `query:"priority"`
-	// Component selects these components, a parent including its children;
-	// __no_component__ selects an issue with none.
+	// Component selects these components, a parent including its children; __no_component__
+	// selects an issue with none, __no_issue__ a pull request with no issue, and
+	// __issue_not_known__ a pull request whose issue is not known yet.
 	Component []string `query:"component"`
 	// Author selects these pull-request authors.
 	Author []string `query:"author"`
@@ -630,7 +633,8 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/delivery/timeline": {
 		Status: http.StatusOK, Response: deliveryTimelineWithMeasures{}, Params: deliveryWindowQuery{},
 	},
-	"GET /api/v1/delivery/runs/{id}": {Status: http.StatusOK, Response: delivery.DeliveryRunDetailView{}},
+	"GET /api/v1/delivery/runs/{id}":   {Status: http.StatusOK, Response: delivery.DeliveryRunDetailView{}},
+	"GET /api/v1/delivery/attribution": {Status: http.StatusOK, Response: delivery.AttributionCounts{}},
 	"GET /api/v1/delivery/measures": {
 		Status: http.StatusOK, Response: deliveryMeasuresResponse{}, Params: deliveryWindowQuery{},
 	},

@@ -2834,7 +2834,7 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 	// inside this row now and then. A pass reads pull requests through the very call that
 	// counts a handling here (delivery.FetchPullRequest), so a pass that re-read one of the
 	// row's own merges would read as a second handling of a message; the merges published here
-	// are complete reads, which the reconcile's merged arm never offers again
+	// are complete reads, which no arm of the reconcile's head pass reads again
 	// (publishMergedPullRequests), and running it throughout is what makes every run of the row
 	// show that rather than most runs missing it.
 	envFor := func(process string) map[string]string {
@@ -3070,9 +3070,12 @@ func (f *mergedPullRequestFake) serve(t *testing.T, process string) string {
 		f.done[number] = append(f.done[number], pullRequestHandling{process: process, at: time.Now()})
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		// The pull request as GitHub holds it, its head and its update time included: a head row
+		// this tree writes from an answer naming both is complete, stamped read and marked a read
+		// of GitHub, so the reconcile pass the row runs every ten seconds reads none of it again.
 		_, _ = fmt.Fprintf(w, `{"number":%d,"title":"A merged pull request","html_url":"https://github.com/acme/deploy/pull/%d",`+
 			`"user":{"login":%q},"labels":[{"name":"non-task"}],"state":"closed","merged":true,`+
-			`"created_at":"2026-10-26T00:00:00Z","merged_at":"2026-10-27T00:00:00Z","merge_commit_sha":"%040d",`+
+			`"created_at":"2026-10-26T00:00:00Z","merged_at":"2026-10-27T00:00:00Z","updated_at":"2026-10-27T00:00:00Z","merge_commit_sha":"%040d",`+
 			`"additions":1,"deletions":1,"head":{"ref":"a-branch","sha":"%040d","repo":{"full_name":"acme/deploy"}},`+
 			`"base":{"ref":"main"}}`, number, number, mergedPullRequestAuthor, number, number)
 	})
@@ -3111,12 +3114,13 @@ func (f *mergedPullRequestFake) handled() map[int][]pullRequestHandling {
 // a server a harness may keep between runs.
 //
 // The payload carries what Envoy's normalizer puts in a `pull_request` envelope
-// (contracts/normalize.go), head_repo above all: a merge whose head is named is a complete read
-// of the pull request's attribution, so the head row it writes is stamped read and judged by
-// this build's rule, and the delivery reconcile's merged arm never offers it again
-// (delivery.ListStalePullRequestHeads). A reconcile pass that did read one of these pull
-// requests again would read it through the very call that counts a handling here, and the row
-// would see it as a second handling of a message.
+// (contracts/normalize.go). This tree writes the head row from the fake's answer, with texts that
+// describe its head and the commit messages that the write pages. So no arm of the delivery
+// reconcile's head pass reads it again: no read is owed for it, the open arm reads only open rows
+// (delivery.ListStalePullRequestHeads), and the facts line reads only rows whose texts or commit
+// messages it still lacks. A reconcile pass that did read one of these pull requests again would
+// read it through the very call that counts a handling here, and the row would see it as a second
+// handling of a message.
 func publishMergedPullRequests(t *testing.T, js natsgo.JetStreamContext, run string, first, count int, every time.Duration) []int {
 	t.Helper()
 	numbers := make([]int, 0, count)

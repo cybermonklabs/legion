@@ -185,6 +185,13 @@ type bootConfig struct {
 	// its jittered first tick; only DISPATCH_TEST_RECONCILE_AT_START=1, under the test hooks, sets
 	// it.
 	ReconcileAtStart bool
+	// KeyRemakeInterval is how often the key remake loop checks the reading of the stored keys,
+	// zero for delivery.KeyRemakeEvery's 30 s; only DISPATCH_TEST_KEY_REMAKE_INTERVAL, under the
+	// test hooks, sets it.
+	KeyRemakeInterval time.Duration
+	// KeyRemakeOff starts no key remake loop, for a test that must see stored keys stay on another
+	// reading; only DISPATCH_TEST_KEY_REMAKE_OFF=1, under the test hooks, sets it.
+	KeyRemakeOff bool
 	// ArchitectureImportAtStart makes the architecture import run one pass as it starts rather than
 	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
 	// the test hooks, sets it.
@@ -398,6 +405,20 @@ func main() {
 	if err := database.Migrate(ctx); err != nil {
 		slog.Error("dispatch: migrate database", "error", explainMigrateError(err))
 		os.Exit(1)
+	}
+	// Every reader of a pull request's issue runs one statement, built here once for the schema
+	// the migrations wrote. It asks the migrations' guard first: a database a logical restore put
+	// in an encoding or a collation the reading cannot use brings its schema_migrations with it,
+	// so no migration refuses it, and this stops the process before it listens.
+	if err := delivery.PrepareAttribution(ctx, database.Pool); err != nil {
+		slog.Error("dispatch: prepare the statement of a pull request's issue", "error", err)
+		os.Exit(1)
+	}
+	// Each process remakes the stored keys of another reading from its start, before it listens:
+	// a change of the reading by a migration, a version of Postgres or any other cause reaches
+	// every row within one interval and one remake, with no App key, no lease and no restart.
+	if !boot.KeyRemakeOff {
+		go delivery.KeyRemakeLoop(ctx, database.Pool, boot.KeyRemakeInterval)
 	}
 
 	// document_search (migration 20261101182447) holds each document's latest search vector,
@@ -1370,6 +1391,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
+		{"DISPATCH_TEST_KEY_REMAKE_INTERVAL", &boot.KeyRemakeInterval},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -1385,6 +1407,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_ROSTER_UNCACHED", &boot.ListenerRosterUncached},
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
+		{"DISPATCH_TEST_KEY_REMAKE_OFF", &boot.KeyRemakeOff},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {

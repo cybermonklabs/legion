@@ -76,6 +76,14 @@ images:
     tag: pgvector-2358fcba
     digest: sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
 
+  # PostgreSQL 16 with pgvector: the `services:` Postgres of the envoy-go-postgres16 job alone.
+  # Every other job runs the PostgreSQL 18 of the row above, and an envoy-infra stack can still
+  # run 16 (`databaseVersion: POSTGRES_16`, packages/envoy/infra/README.md), so the catalog
+  # reads that differ between the two versions are tested on this one in that job.
+  - upstream: docker.io/pgvector/pgvector:pg16
+    tag: pgvector-pg16-484e8380
+    digest: sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f
+
   # NATS: the `services:` NATS of the pi-envoy and pi-legion jobs, both testnats.Image constants,
   # the envoy-client job's pre-pull, nats-server.ts and scripts/e2e/lib/nats-stream.test.ts.
   - upstream: docker.io/library/nats:2.10

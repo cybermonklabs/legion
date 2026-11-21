@@ -2,7 +2,13 @@
 // same colour in both views. Pure: no React, no ECharts. The chart draws on a canvas, so these are
 // colour values rather than Tailwind classes.
 import type { DeliveryColorFacet, DeliveryPR } from "../../../api/types";
-import { NO_COMPONENT, NO_ISSUE, NO_PRIORITY, NO_SESSION, PLACEHOLDER_LABELS } from "./facets";
+import {
+  issuePlaceholder,
+  NO_COMPONENT,
+  NO_PRIORITY,
+  NO_SESSION,
+  PLACEHOLDER_LABELS,
+} from "./facets";
 
 export type ColorFacet = "repo" | "author" | "priority" | "component" | "parentAgent";
 
@@ -45,7 +51,8 @@ export const PLACEHOLDER_COLOR = "#64748b";
 export const OTHER_COLOR = "#a8a29e";
 
 /** The value of `colorBy` a PR is coloured (and, with swimlanes on, laned) by: the first of its
- *  values, as the server's `color_counts` counts it. */
+ *  values, as the server's `color_counts` counts it. A PR with no issue takes its issue placeholder
+ *  (`issuePlaceholder`) by priority and by component. */
 export function colorKeyFor(pr: DeliveryPR, colorBy: ColorFacet): string {
   switch (colorBy) {
     case "repo":
@@ -55,10 +62,10 @@ export function colorKeyFor(pr: DeliveryPR, colorBy: ColorFacet): string {
     case "parentAgent":
       return pr.parent_agent ?? NO_SESSION;
     case "priority":
-      if (pr.issue === null) return NO_ISSUE;
+      if (pr.issue === null) return issuePlaceholder(pr);
       return pr.priority ?? NO_PRIORITY;
     case "component":
-      if (pr.issue === null) return NO_ISSUE;
+      if (pr.issue === null) return issuePlaceholder(pr);
       return (pr.components ?? [])[0] ?? NO_COMPONENT;
   }
 }

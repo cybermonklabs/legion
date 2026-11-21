@@ -4,10 +4,13 @@
 // redelivery or a reconcile re-reading the same fact is a no-op, not a duplicate. A GitHub call
 // that fails here is logged and the message is still acked, because the reconcile that runs
 // every five minutes is the actual catch-up mechanism ("a missed event appears by the next
-// five-minute reconcile", LEGION-567). The one failure that mechanism does not cover is a pull
-// request's head row that was never written, which no pass can offer because the passes read
-// the rows that exist: that envelope is handed back to NATS for a bounded number of
-// redeliveries instead (ErrHeadNotStored, Intake.deliver, headWriteMaxDeliveries).
+// five-minute reconcile"). The one failure that mechanism does not cover by itself
+// is a pull request's head row the envelope's read of GitHub could not write, since the passes
+// read the rows that exist: that delivery records the pull request as owed a read, which the
+// reconcile's next pass makes, and the envelope is acknowledged once that record is written; an
+// envelope whose record the database cannot take now is handed back to NATS, since it is then
+// the only record of the change, and the stream keeps it 72 hours (ErrHeadNotStored,
+// Intake.deliver, owePullRequestRead).
 package delivery
 
 import (
@@ -16,9 +19,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -28,17 +33,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/logging"
 )
 
 // ompSessionTrailer matches a commit message's `Omp-Session: <id>` trailer line (the same shape
 // LEGION-294's own collector reads).
 var ompSessionTrailer = regexp.MustCompile(`(?m)^Omp-Session:\s*(\S+)\s*$`)
-
-// issueKeyCandidate matches a bare Dispatch issue key mention (e.g. ACME-1072), the same shape
-// this codebase's own issueKeyPattern uses elsewhere (packages/envoy/internal/dispatch/api/server.go,
-// packages/envoy/internal/dispatch/text/refs.go) -- duplicated here rather than imported because
-// both are unexported in their own packages and this package does not depend on either.
-var issueKeyCandidate = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
 
 // Intake wires the NATS consumer to the database, the GitHub App client and the event broker the
 // issue.deployed events go through (RecordDeployedEvents). StartIntakes builds it, and only with
@@ -50,6 +50,10 @@ type Intake struct {
 	// settings is the delivery settings every message is routed by, shared with the job intake
 	// (StartIntakes).
 	settings *SettingsCache
+	// redeliverAfter is how long NATS waits before it delivers again an envelope this intake hands
+	// back (deliver): headWriteRedeliverAfter, which newIntake sets. A field, and not a package
+	// variable, so a test shortens the delay of the one intake it builds and of no other.
+	redeliverAfter time.Duration
 	// heldDurable is this intake's delivery from bus.DispatchDeliveryDurable under the durable's
 	// hold: the subscription, StopDelivering and the take-over.
 	heldDurable
@@ -59,7 +63,7 @@ type Intake struct {
 // holding its durable and taking it over under a hold and a lease it takes on leases, and routing
 // by settings.
 func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache) *Intake {
-	in := &Intake{pool: pool, github: github, events: broker, settings: settings}
+	in := &Intake{pool: pool, github: github, events: broker, settings: settings, redeliverAfter: headWriteRedeliverAfter}
 	in.heldDurable = newHeldDurable(natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
 	return in
 }
@@ -67,21 +71,35 @@ func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, gi
 // Run delivers GitHub events from the durable consumer while this process holds the durable's
 // hold, and stands by for the hold while another process holds it, until ctx is cancelled; then
 // it stops delivering and releases the hold (heldDurable.stop) under intakeStopBudget from ctx's
-// end before it returns. Idle until the settings cache holds settings.
+// end before it returns.
+//
+// It binds whether or not delivery settings exist. A `pull_request` envelope's first write is
+// the pull request's head row (recordPullRequestHead), which is what every `before_merge` check
+// result is compared with (api/results_comparison.go), and that reader is served in every
+// deployment, delivery configured or not. No other writer learns of a pull request when it opens:
+// the reconcile's head pass reads only the rows that exist, and a result's read-through asks
+// GitHub about one commit at most once every CommitPullReadStaleAfter. So the intake writes a head
+// row with no settings at all, and leaves the delivery timeline's own facts, a merge of the
+// population and a workflow run, to the settings (route, handlePullRequestEnvelope).
+//
+// The durable is created with JetStream's DeliverAll (deliveryConsumerConfig), so the first bind
+// in a deployment whose durable never existed is handed all the stream keeps (72 hours,
+// ENVOY_NOTIFICATIONS). That backlog writes the head rows of the pull requests the deployment's
+// earlier releases never stored, each in event order, and a write older than the row it lands on
+// changes nothing (UpsertPullRequestHead). Without settings, no envelope of it reaches the
+// delivery timeline.
 //
 // The durable carries one filter subject, githubIntakeSubject, which no setting changes, so no
 // setting rebinds it. Each message is routed by the settings the cache holds when its handler
-// runs, so a settings change -- a different deploy repository or workflow path -- takes effect as
-// soon as the cache has read it, with no restart and no rebind. route does all the filtering,
-// from those settings.
+// runs, so a settings change -- delivery configured for the first time, a different deploy
+// repository or workflow path -- takes effect as soon as the cache has read it, with no restart
+// and no rebind. route does all the filtering, from those settings.
 //
 // Several envoy-dispatch processes run at once during a rolling release, of this build and of the
 // one before it, and exactly one of them delivers from the durable: the one holding its hold
 // (heldDurable). The others stand by, trying for the hold every durableBindInterval for the life
 // of the process, with no deadline, and take the durable over within seconds of the holder
-// releasing its hold, or of the hold lapsing when the holder dies. Two things wake a standby that
-// has nothing to route by yet: the cache storing settings, since an intake with none has nothing
-// to do with a message, and, once it has settings, that ticker. A holder checks every
+// releasing its hold, or of the hold lapsing when the holder dies. A holder checks every
 // intakeHoldRenew that the durable still delivers to it, and stops delivering the moment its hold
 // is lost.
 //
@@ -93,7 +111,7 @@ func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, gi
 // them. Routed rather than ignored because it is the only live-update path for the fork case,
 // which does reach it.
 func (in *Intake) Run(ctx context.Context) {
-	in.run(ctx, in.settings.Changed, func() bool { return in.settings.Load() != nil })
+	in.run(ctx)
 }
 
 // route dispatches one envelope payload by its kind field: a pull request to
@@ -110,10 +128,15 @@ func (in *Intake) Run(ctx context.Context) {
 // merged or another repository's run as well. A payload that is not a JSON object, and a kind that
 // is not a string, are errMalformedPayload.
 //
+// settings is nil where delivery is not configured. A pull request is handled all the same, for
+// its head row, and a workflow run is not handled at all: a run is the delivery timeline's own
+// fact, read for the deploy repository alone.
+//
 // An envelope whose handler stored a fact the issue.deployed rule reads (a pull request's row, a
 // run, its jobs) ends with recordDeployed, whether or not the handler then failed: a run written
 // before its jobs fetch failed may still be the run that shipped a pull request stored earlier.
-func (in *Intake) route(ctx context.Context, settings DeliverySettings, raw string) (handled bool, err error) {
+// Both handlers store such a fact only under settings, so settings is not nil wherever wrote is.
+func (in *Intake) route(ctx context.Context, settings *DeliverySettings, raw string) (handled bool, err error) {
 	if raw == "" {
 		return false, nil
 	}
@@ -127,18 +150,20 @@ func (in *Intake) route(ctx context.Context, settings DeliverySettings, raw stri
 			return false, fmt.Errorf("%w: kind: %w", errMalformedPayload, err)
 		}
 	}
-	var handle func(context.Context, DeliverySettings, map[string]string) (bool, error)
+	var wrote bool
 	switch kind {
 	case "pr":
-		handle = in.handlePullRequestEnvelope
+		wrote, err = in.handlePullRequestEnvelope(ctx, settings, flatPayload(fields))
 	case "workflow":
-		handle = in.routeWorkflowEnvelope
+		if settings == nil {
+			return false, nil
+		}
+		wrote, err = in.routeWorkflowEnvelope(ctx, *settings, flatPayload(fields))
 	default:
 		return false, nil
 	}
-	wrote, err := handle(ctx, settings, flatPayload(fields))
 	if wrote {
-		in.recordDeployed(ctx, settings)
+		in.recordDeployed(ctx, *settings)
 	}
 	return true, err
 }
@@ -150,10 +175,10 @@ func (in *Intake) route(ctx context.Context, settings DeliverySettings, raw stri
 func (in *Intake) recordDeployed(ctx context.Context, settings DeliverySettings) {
 	written, err := RecordDeployedEvents(ctx, in.pool, settings, in.events)
 	if err != nil {
-		slog.Error("dispatch delivery: record issue.deployed after an envelope", "error", err)
+		logging.FromContext(ctx).Error("dispatch delivery: record issue.deployed after an envelope", "error", err)
 	}
 	if written > 0 {
-		slog.Info("dispatch delivery: recorded issue.deployed", "events", written, "by", "intake")
+		logging.FromContext(ctx).Info("dispatch delivery: recorded issue.deployed", "events", written, "by", "intake")
 	}
 }
 
@@ -181,6 +206,95 @@ func (in *Intake) routeWorkflowEnvelope(ctx context.Context, settings DeliverySe
 // errMalformedPayload is an envelope payload route cannot read: not a JSON object, or a kind that
 // is not a string.
 var errMalformedPayload = errors.New("malformed envelope payload")
+
+// errNoPullRequestNamed marks a pull request GitHub cannot have: a number that is not a number or
+// is outside 1 to 2147483647, the range of the integer columns that key a pull request
+// (pull_request_heads.number, pull_request_reads_owed.number), or a repository that is not a name
+// GitHub can have (githubRepositoryName). pullRequestNamed answers it for a `pull_request`
+// envelope before anything is read or written, and checkPullRequestKey answers it for each row
+// that keys a pull request, where the row is built (owePullRequestRead, UpsertPullRequestHead),
+// since the repository a row is keyed by is its canonical name, which comes from repo_projects and
+// not from the envelope. GitHub has no such pull request and no delivery of the envelope can get
+// past it, so deliver acknowledges it at its first delivery and logs one line, and it owes no
+// read. Any caller of Envoy's /v1 publish route can send one.
+var errNoPullRequestNamed = errors.New("the envelope names no pull request GitHub can have")
+
+// githubRepositoryName is the full name of a repository GitHub can have: an owner of 1 to 39
+// letters, digits, hyphens and underscores, and a name of 1 to 100 letters, digits, hyphens,
+// underscores and periods. 39 is GitHub's limit for a login, and a login holds only letters,
+// digits and hyphens, except the login of a managed user account, which ends in an underscore and
+// its enterprise's shortcode ("mona-cat_octo"); 100 is GitHub's limit for a repository name.
+// "." and ".." are no repository names either (IsGitHubRepositoryName). So the values that key a
+// pull request's rows are values the tables take, and an index of them holds the row: a name of
+// 3,500 characters was refused by the btree of pull_request_reads_owed (SQLSTATE 54000) at every
+// delivery (review of cybermonklabs/legion#4209 at ceeec40f46, B4).
+var githubRepositoryName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,39}/[A-Za-z0-9._-]{1,100}$`)
+
+// IsGitHubRepositoryName reports whether full, `owner/name`, is the full name of a repository
+// GitHub can have (githubRepositoryName), and not "." or "..": the one rule of the names that key
+// a pull request's rows (checkPullRequestKey). The settings route holds a repository's rename
+// target to it (api's parseRepoRename), since the intake and the reconcile read a pull request of
+// the old name under the target, and GitHub has no repository of a name this refuses: a read owed
+// under the old name (owePullRequestRead) stays owed until the target is corrected (review of
+// cybermonklabs/legion#4209 at def907052c, N10).
+func IsGitHubRepositoryName(full string) bool {
+	_, name, _ := strings.Cut(full, "/")
+	return githubRepositoryName.MatchString(full) && name != "." && name != ".."
+}
+
+// pullRequestNamed is the repository and the number a `pull_request` envelope's payload names,
+// or errNoPullRequestNamed, which it answers before anything is read or written.
+func pullRequestNamed(payload map[string]string) (repo string, number int, err error) {
+	repo = payload["repo"]
+	number, err = strconv.Atoi(payload["number"])
+	if err != nil {
+		return repo, 0, fmt.Errorf("%w: number %.40q: %w", errNoPullRequestNamed, payload["number"], err)
+	}
+	return repo, number, checkPullRequestKey(repo, number)
+}
+
+// checkPullRequestKey is nil where repo and number are a pull request GitHub can have, and
+// errNoPullRequestNamed naming the bound they break otherwise: the one check of the values that
+// key a pull request's rows, which pullRequestNamed makes of an envelope and each row's builder
+// makes of the values it writes (owePullRequestRead, UpsertPullRequestHead).
+func checkPullRequestKey(repo string, number int) error {
+	if number < 1 || number > math.MaxInt32 {
+		return fmt.Errorf("%w: number %d is outside 1 to %d", errNoPullRequestNamed, number, math.MaxInt32)
+	}
+	if !IsGitHubRepositoryName(repo) {
+		// The name is quoted to its first 140 characters, the longest one GitHub can have, so a
+		// name of any length costs the log line no more.
+		return fmt.Errorf("%w: %.140q is not owner/name, with an owner of 1 to 39 letters, digits, hyphens and underscores and a name of 1 to 100 letters, digits, hyphens, underscores and periods",
+			errNoPullRequestNamed, repo)
+	}
+	return nil
+}
+
+// decodePullRequestNamed is pullRequestNamed of an envelope's raw payload, decoded as route
+// decodes it (flatPayload).
+func decodePullRequestNamed(raw string) (repo string, number int, err error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		return "", 0, fmt.Errorf("%w: %w", errMalformedPayload, err)
+	}
+	return pullRequestNamed(flatPayload(fields))
+}
+
+// recordRefused reports whether err is the owed record of an envelope's pull request refused
+// before any statement (Intake.oweEnvelopesRead): the envelope names no pull request GitHub can
+// have (checkPullRequestKey), or the payload does not decode. No
+// delivery of such an envelope can get past that, so deliver ends it with one ERROR line. A
+// failure of the record's statement is never one of these, whatever its SQLSTATE: the record
+// holds the repository and the number alone, which its builder holds to values the table takes,
+// so a failure of the insert says nothing of the envelope's values. A unique violation of its
+// upsert, for one, is transient: PostgreSQL raises one while a unique index of the table is built
+// or rebuilt concurrently (the page on INSERT, `ON CONFLICT`; review of cybermonklabs/legion#4209
+// at ef5112db43, B5). So every failure of the statement is the database not taking the record
+// now, and deliver hands the envelope back until it does: while Dispatch's database cannot take
+// that record, the bus keeps the event, for as long as the bus keeps events.
+func recordRefused(err error) bool {
+	return errors.Is(err, errNoPullRequestNamed) || errors.Is(err, errMalformedPayload)
+}
 
 // flatPayload is a pull request's or workflow run's string fields as the flat string map its
 // handler reads. A field that is not a string is left out: payload members are additive, so a
@@ -221,11 +335,10 @@ const githubIntakeSubject = "notifications.github.>"
 // intakeMessageTimeout bounds how long one envelope's own handling may take -- its GitHub calls
 // (a pull request plus its commit pages, or a workflow run plus its jobs pages, each with this
 // package's own bounded page retries) and its Postgres writes. A handler that runs past it is
-// cancelled and logged, and acked for every failure but one: the five-minute reconcile is this
-// package's catch-up mechanism, so one slow envelope must not hold the consumer. The one
-// failure it does not cover is a deadline that falls on a pull request's head write, or on
-// either of the reads before it, which leaves a head row no pass can offer (ErrHeadNotStored);
-// that envelope is handed back instead, for the bounded number of redeliveries deliver allows.
+// cancelled and logged, and acked: the five-minute reconcile is this package's catch-up
+// mechanism, so one slow envelope must not hold the consumer. A deadline that falls on a pull
+// request's head write, or on a read before it, leaves the head row unwritten (ErrHeadNotStored),
+// and that delivery records the read the pull request is owed before it acknowledges (deliver).
 // A var so a test can shrink it.
 var intakeMessageTimeout = time.Minute
 
@@ -240,8 +353,12 @@ var intakeMaxAckPending = 4
 // intakeAckWait is how long NATS waits for an acknowledgement before redelivering. Derived from
 // the two values above rather than chosen: when every outstanding message is one key's, the last
 // of intakeMaxAckPending waits for the ones before it, so the bound is their total handling time,
-// plus a minute for the acknowledgement itself to land. A function rather than a value so a test
-// that shrinks either input gets an ack wait derived from it.
+// plus a minute for the acknowledgement itself to land. One handling is at most
+// intakeMessageTimeout and, where its head write failed, owedReadWriteTimeout more for the write
+// of the read it owes, which runs past the message's own deadline (Intake.oweEnvelopesRead):
+// 4 × (60 s + 5 s) = 4 min 20 s, inside the 5 min this answers, so that write takes 20 s of the
+// acknowledgement's minute. A function rather than a value so a test that shrinks either input
+// gets an ack wait derived from it.
 func intakeAckWait() time.Duration {
 	return time.Duration(intakeMaxAckPending)*intakeMessageTimeout + time.Minute
 }
@@ -286,10 +403,11 @@ func consumerGenerationMetadata() map[string]string {
 }
 
 // deliver handles one message on its key's goroutine: it routes the envelope's payload by the
-// settings the cache holds under intakeMessageTimeout, and acks: a malformed envelope has nothing
-// to retry, and a route error (a failed GitHub call, or that deadline passing) is caught up by the
-// next reconcile pass rather than by NATS redelivery -- see the package doc comment. One route
-// error is not, and is the second case below. The deadline is what makes intakeAckWait a bound
+// settings the cache holds, none where delivery is not configured (route), under
+// intakeMessageTimeout, and acks: a malformed envelope has nothing to retry, and a route error (a
+// failed GitHub call, or that deadline passing) is caught up by the next reconcile pass rather
+// than by NATS redelivery -- see the package doc comment. One route error is not, and is the
+// second case below. The deadline is what makes intakeAckWait a bound
 // rather than a hope: without it one stuck GitHub call could hold an in-flight slot past the ack
 // wait and have the message redelivered underneath it. An envelope route does not handle (an
 // empty payload, or a kind route sends to no handler) is acknowledged and nothing else: no log
@@ -304,18 +422,43 @@ func consumerGenerationMetadata() map[string]string {
 // passed (intakeDelivery.handBack), as the stop's own hand-backs are, and the message is then
 // the next holder's take-over to hand over.
 //
-// The other message it does not acknowledge, for as many deliveries as the bound below allows,
-// is one whose pull request's head row could not be stored at all (ErrHeadNotStored,
-// handlePullRequestEnvelope): no reconcile pass catches that up, because the passes read the
-// rows that exist (ListStalePullRequestHeads), so an acknowledged envelope loses that pull
-// request's head for good and with it every `before_merge` result measured against it. It is
-// handed back with a delay (intakeDelivery.handBackOwn), and handed back now rather than at the
-// stop: this message wants redelivering to this same process, which still holds the durable's
-// hold and still routes that key to the one goroutine it is on. The delay is what keeps a
-// failure that repeats from spinning: the write is the same write each time, so asking again
-// within the second would buy nothing. The write is idempotent (both its statements are `on
-// conflict … do update`), so a redelivery of an envelope whose write had in fact landed writes
-// the same pair again.
+// The other message it may not acknowledge is one whose pull request's head row could not be
+// stored (ErrHeadNotStored, handlePullRequestEnvelope): the reconcile's passes over the stored
+// rows do not catch that up, because they read the rows that exist (ListStalePullRequestHeads),
+// and GitHub's answer is the only source of a head. So that
+// delivery records that the envelope's pull request is owed a read of GitHub
+// (owePullRequestRead), which the reconcile's next pass makes and makes again every pass until
+// GitHub answers (Reconcile.readOwedPullRequests). The record names the pull request and nothing
+// else the envelope says, and a later read that writes the head deletes it (recordPullRequestHead).
+//
+// The record is what lets the intake let go. Where it is written at this delivery, the envelope
+// is acknowledged at once, a rate limit included: a delivery that waited for GitHub would hold one
+// of the intakeMaxAckPending in-flight slots, which every repository and every installation
+// shares, so four envelopes of one repository GitHub fails, or of one installation GitHub limits,
+// would stop the events of all the others (review of cybermonklabs/legion#4209 at ff73c7358d,
+// B3). The cost is the wait: the head comes at the reconcile's next pass, or sooner at the next
+// event of that pull request or at a result's own commit lookup (ReadThroughCommitPulls).
+//
+// A record that is not written is refused before its statement (recordRefused) only where the
+// envelope names no pull request GitHub can have, and
+// the envelope then ends at that delivery with one ERROR line. Every failure of the statement is
+// the database not taking a record now, whatever its SQLSTATE, since the record's builder holds
+// its values to what the table takes (checkPullRequestKey), and while the database cannot take it,
+// the envelope on the bus is the only memory of the change, for as long as the bus keeps events:
+// the stream keeps a message 72 hours from its publish (bus.streamCfg's MaxAge,
+// contracts.DeliveryDuplicateWindow), and a hand-back does not renew that. So the envelope is
+// handed back with a delay (intakeDelivery.handBackOwn), for as long as that lasts: the durable
+// sets no MaxDeliver, and no count of deliveries ends it, since R4 keeps which pull request
+// changed until a read succeeds. Where the whole database refuses writes, no other envelope's
+// head write could be stored either, but a lock of pull_request_reads_owed alone (a migration of
+// it) refuses the record while other heads are still written, and for that lock's length each
+// such envelope holds its slot, four of them every slot. The hand-back's WARN line names the
+// record's failure, and is written at an envelope's first delivery and then once every
+// handBackLineEvery deliveries (logHandBack). It is handed back now rather than at the stop:
+// this message wants redelivering to this same process, which still holds the durable's hold and
+// still routes that key to the one goroutine it is on. The write is idempotent (both its
+// statements are `on conflict … do update`), so a redelivery of an envelope whose write had in
+// fact landed writes the same pair again.
 //
 // That hand-back is this process's own answer to the durable, and it is made only while the
 // hold still covers it (intakeDelivery.mayAnswer): a hand-back a process makes after its hold
@@ -325,36 +468,51 @@ func consumerGenerationMetadata() map[string]string {
 // ack floor hands it to the new holder once. Outside any stop, the hand-back is published;
 // on a reconnecting link between attempts it is refused at once, and while an
 // attempt holds nats.go's lock it waits until the attempt ends (intakeDelivery.handBackOwn).
+// The acknowledgement is held to the hold the same way (intakeDelivery.holdCovers): one made
+// after the lapse would settle on the new holder's consumer a message its handler had not
+// handled, so a holder whose hold has lapsed answers nothing and the next holder takes the
+// envelope, which redoes the same idempotent writes.
 //
-// It is handed back a bounded number of times and then acknowledged, with an Error naming the
-// envelope and the deliveries it spent (headWriteMaxDeliveries): a message handed back with a
-// delay stays in the consumer's ack-pending set for the whole of that delay, so a write that
-// fails the same way every time would hold one of the four in-flight slots
-// (intakeMaxAckPending) for ever. The count is the server's own, read off the message
-// (Msg.Metadata, NumDelivered), so it is the count of this envelope's deliveries and not of
-// this process's attempts at it. A message carrying no such metadata is not a JetStream
-// message, so no count can cap it; it is handed back rather than acknowledged, since the
-// whole argument of this path is that nothing else writes that row, and a hand-back the ack
-// wait bounds is the safer of the two answers.
+// An envelope no delivery can get past is not handed back at all: one that names no pull request
+// GitHub can have (errNoPullRequestNamed) reads nothing and owes no read, and one whose owed record
+// is refused before its statement (recordRefused), are acknowledged at their first delivery with
+// one line, and the pull request is read again at its next event. A GitHub answer that holds a
+// value no head row holds (errNoRowHolds, checkHeadRow) is no such envelope: it is a head not
+// stored, owed a read as every other is, and the reconcile keeps that read owed until GitHub
+// answers values a row holds.
 //
 // handling is read from the delivery, which is also what says whether that hand-back may be
 // made, and nothing else calls deliver.
+//
+// Every line the delivery writes, its callees' included, is held until it has answered
+// (deliveryLines): a delivery that hands its envelope back writes them under the hand-back's one
+// cadence (handBackLineDue), and every other delivery at their own levels.
 func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
-	msg, handling := message.msg, d.handling
-	// headNotStored is set by the one route error NATS must redeliver, which the deferred answer
-	// below reads: every other path acknowledges.
-	headNotStored := false
+	msg := message.msg
+	lines := &deliveryLines{}
+	log := lines.logger()
+	handling := logging.NewContext(d.handling, log)
+	// redeliver is set where the head row was not stored and the read it is owed could not be
+	// recorded: the one answer NATS must redeliver, which the deferred answer below reads. Every
+	// other path acknowledges.
+	redeliver := false
 	defer func() {
-		if handling.Err() != nil {
-			slog.Warn("dispatch delivery: the intake stopped before the event's handling finished; handing it back", "subject", msg.Subject)
-			d.handBack(msg)
-			return
+		handedBack := false
+		switch {
+		case handling.Err() != nil:
+			log.Warn("dispatch delivery: the intake stopped before the event's handling finished; handing it back", "subject", msg.Subject)
+			d.handBack(log, msg)
+		case !d.holdCovers(), redeliver && !d.mayAnswer():
+			log.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope is left unanswered with the durable for the next holder's take-over",
+				"subject", msg.Subject, "redeliver", redeliver)
+		case redeliver:
+			d.handBackOwn(log, msg, in.redeliverAfter)
+			handedBack = true
+		default:
+			d.acknowledge(log, msg)
 		}
-		if headNotStored {
-			d.handBackOwn(msg, headWriteRedeliverAfter)
-			return
-		}
-		d.acknowledge(msg)
+		_, due := handBackLineDue(msg)
+		lines.write(handedBack && !due)
 	}()
 	ctx, cancel := context.WithTimeout(handling, intakeMessageTimeout)
 	defer cancel()
@@ -363,158 +521,148 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	if envelope == nil {
 		decoded, err := decodeEnvelope(msg.Data)
 		if err != nil {
-			slog.Error("dispatch delivery: decode envelope", "subject", msg.Subject, "error", err)
+			log.Error("dispatch delivery: decode envelope", "subject", msg.Subject, "error", err)
 			return
 		}
 		envelope = &decoded
 	}
-	settings := in.settings.Load()
-	if settings == nil {
-		return
-	}
-	handled, err := in.route(ctx, *settings, envelope.Payload)
+	handled, err := in.route(ctx, in.settings.Load(), envelope.Payload)
 	switch {
 	case errors.Is(err, errMalformedPayload):
-		slog.Error("dispatch delivery: decode envelope payload", "subject", msg.Subject, "error", err)
+		log.Error("dispatch delivery: decode envelope payload", "subject", msg.Subject, "error", err)
+		return
+	case errors.Is(err, errNoPullRequestNamed):
+		log.Warn("dispatch delivery: acknowledging a pull-request envelope that names no pull request GitHub can have; it reads nothing and owes no read",
+			"subject", msg.Subject, "error", err)
 		return
 	case errors.Is(err, ErrHeadNotStored):
-		delivered, spent := headWriteDeliveriesSpent(msg)
-		if spent {
-			slog.Error("dispatch delivery: a pull request's head row could not be stored in the deliveries allowed; acknowledging the envelope, whose pull request now has no head row until a later `pull_request` event for it, or the read-through a recorded result makes, writes one",
-				"subject", msg.Subject, "deliveries", delivered, "error", err)
-			return
+		repo, number, oweErr := in.oweEnvelopesRead(handling, envelope.Payload)
+		switch {
+		case oweErr == nil:
+			log.Warn("dispatch delivery: a pull request's head row was not stored, and the read it is owed is recorded; acknowledging the envelope, whose pull request the reconcile reads from GitHub every pass until GitHub answers",
+				"subject", msg.Subject, "repo", repo, "number", number, "error", err)
+		case recordRefused(oweErr):
+			log.Error("dispatch delivery: the read a pull request is owed was refused before it was written; acknowledging the envelope, since no delivery of it can get past that, and the pull request is read again at its next event",
+				"subject", msg.Subject, "repo", repo, "number", number, "error", err, "record_error", oweErr)
+		default:
+			logHandBack(log, msg, in.redeliverAfter, repo, number, err, oweErr)
+			redeliver = true
 		}
-		slog.Warn("dispatch delivery: a pull request's head row was not stored; handing the envelope back",
-			"subject", msg.Subject, "delivery", delivered, "deliveries_allowed", headWriteMaxDeliveries,
-			"redeliver_after", headWriteRedeliverAfter, "error", err)
-		headNotStored = true
 		return
 	case err != nil:
-		slog.Warn("dispatch delivery: process event", "subject", msg.Subject, "error", err)
+		log.Warn("dispatch delivery: process event", "subject", msg.Subject, "error", err)
 		return
 	case !handled:
 		return
 	}
 	if err := RecordEventAt(ctx, in.pool); err != nil {
-		slog.Error("dispatch delivery: record event freshness", "error", err)
+		log.Error("dispatch delivery: record event freshness", "error", err)
 	}
 }
 
 // headWriteRedeliverAfter is how long NATS waits before handing back an envelope whose pull
-// request's head row could not be stored (deliver). It is not zero because the write that
-// failed is the same write each time: a plain Nak would have the server redeliver at once, and
-// a database that is refusing writes would then spin the consumer against it as fast as the
-// round trip allows.
+// request's head row could not be stored and whose owed read the database cannot take now either
+// (deliver). It is not zero because the write that failed is the same write each time: a plain
+// Nak would have the server redeliver at once, and a database that is refusing writes would then
+// spin the consumer against it as fast as the round trip allows.
 //
 // What the delay does not do is give the in-flight slot back. A delayed Nak leaves the message
 // in the consumer's ack-pending set — nats-server's processNak moves that pending entry's
 // timestamp and nothing else — so one such envelope holds one of the four slots
-// (intakeMaxAckPending) for every second it is waiting to come round again, and four of them
-// hold all four. Bounding that is headWriteMaxDeliveries' work, not this constant's: ten
-// seconds only sets the rate, which is short beside the five minutes of the reconcile this
-// message cannot wait for, and long enough that the cap's whole run of redeliveries is
-// measured in minutes rather than in round trips.
+// (intakeMaxAckPending) for every second it is waiting to come round again. No count of
+// deliveries ends that: the durable sets no MaxDeliver, since such an envelope is the only record
+// of its change while the database cannot take the owed record, and it is that only for as long as
+// the bus keeps events, 72 hours from its publish (bus.streamCfg). What ends it is the database
+// taking the owed record. Where the whole database refuses writes, no other envelope's write could
+// be stored either; a lock of pull_request_reads_owed alone holds the slot while other envelopes'
+// heads are written. Each Intake holds it as its own redeliverAfter, which a test may shorten for
+// the one intake it builds.
 const headWriteRedeliverAfter = 10 * time.Second
 
-// headWriteMaxDeliveries is how many deliveries one envelope whose head row could not be
-// stored gets before deliver acknowledges it and logs the loss. Without it there is no bound
-// at all: the durable sets no MaxDeliver, and a delayed Nak holds the message in the
-// consumer's ack-pending set, so a write that fails the same way every time is redelivered
-// every headWriteRedeliverAfter for ever and holds an in-flight slot throughout. Four such
-// envelopes stop the intake outright, and everything behind them — every other pull request
-// and every workflow run — waits on a row nothing was ever going to write.
-//
-// Thirty is where the two costs it sits between cross. Too few, and a database away for a
-// minute loses a head row that nothing else repairs: a minute is six deliveries at
-// headWriteRedeliverAfter, and an outage is counted in minutes rather than in seconds, so a
-// cap of five or ten would throw away heads that waiting a little longer was always going to
-// write. Too many, and four envelopes hold the consumer's whole in-flight window for longer
-// than the thing that catches every other failure up. At thirty deliveries and a ten-second
-// delay, one envelope's hand-backs are 29 × 10 s = 4 min 50 s of wall clock, plus what each
-// refused attempt itself spends. A write Postgres refuses outright spends milliseconds, so
-// the window is held for about five minutes — the reconcile's own period, which is already
-// the longest any other failure of this intake waits. A database that hangs rather than
-// refusing spends up to intakeMessageTimeout on each attempt instead, which is a minute, so
-// thirty of them hold the window for about 35 minutes. That is the worst, and the cap is what
-// bounds it: without one the window is held for ever. A database away for anything up to its
-// own case's span still gets the head row written.
-//
-// The count it is measured against is the consumer's, so a take-over starts it afresh: the
-// take-over deletes the durable and creates it again at its ack floor (takeOverConfig), and the
-// recreated consumer has delivered nothing, so an envelope it redelivers arrives at
-// NumDelivered 1 however many deliveries the holder before it spent. That is right for what
-// this cap is for, which is the in-flight window of one consumer (intakeMaxAckPending): the
-// window the new holder must not have held for ever is its own. It does mean the hand-backs are
-// bounded per holder rather than for all time, so a head row nothing can write costs thirty
-// deliveries again after each take-over — at a take-over per rolling release, beside a cap
-// whose whole run is five minutes, that is a cost no reader of this slice can measure.
-//
-// A var so a test can shrink it, as intakeMessageTimeout and intakeMaxAckPending are vars for
-// the same reason: thirty deliveries of one envelope is minutes of wall clock no test should
-// spend.
-var headWriteMaxDeliveries uint64 = 30
-
-// headWriteDeliveriesSpent reports how many times the server has delivered msg and whether
-// that is every delivery headWriteMaxDeliveries allows a head write to fail in.
-//
-// A message whose metadata cannot be read is not a JetStream message at all (Msg.Metadata
-// answers an error for one with no JetStream reply subject). No count can be read from it and
-// so no cap can be applied, and the answer is "not spent": the caller hands it back, which is
-// the answer that keeps the head row's one chance of being written, and the ack wait bounds a
-// hand-back the server never takes.
-func headWriteDeliveriesSpent(msg *natsgo.Msg) (delivered uint64, spent bool) {
-	meta, err := msg.Metadata()
-	if err != nil {
-		slog.Error("dispatch delivery: read how often the envelope whose head row was not stored has been delivered",
-			"subject", msg.Subject, "error", err)
-		return 0, false
+// logHandBack logs through log that the envelope msg carries is handed back, to be delivered again
+// in after, since its pull request's head row was not stored (headErr) and the database cannot
+// take the read it is owed now (recordErr): at WARN where the hand-back's cadence is due
+// (handBackLineDue), at its first delivery and once every handBackLineEvery deliveries after it,
+// and at DEBUG at every other. Each envelope is delivered every headWriteRedeliverAfter while the
+// fault lasts, for up to the 72 hours of the bus, and up to intakeMaxAckPending of them at once, so
+// a line at each delivery would write up to 25,920 lines an envelope, where this writes it at most
+// 865 times, one every 5 minutes or so. A delivery that writes it also writes, at their own
+// levels, the other lines it held (deliveryLines), such as the read of the owed read's revision
+// and the GitHub client's, so an envelope writes the lines of at most 865 of its deliveries above
+// DEBUG, two to three lines each where such a line was held.
+func logHandBack(log *slog.Logger, msg *natsgo.Msg, after time.Duration, repo string, number int, headErr, recordErr error) {
+	delivered, due := handBackLineDue(msg)
+	level := slog.LevelDebug
+	if due {
+		level = slog.LevelWarn
 	}
-	return meta.NumDelivered, meta.NumDelivered >= headWriteMaxDeliveries
+	log.Log(context.Background(), level, "dispatch delivery: a pull request's head row was not stored, and the database cannot take the read it is owed now; handing the envelope back, since it is the only record of the change, which the stream keeps 72 hours",
+		"subject", msg.Subject, "repo", repo, "number", number, "deliveries", delivered,
+		"redeliver_after", after, "line_every", handBackLineEvery,
+		"error", headErr, "record_error", recordErr)
+}
+
+// oweEnvelopesRead records that the pull request a `pull_request` envelope's raw payload names is
+// owed a read of GitHub (owePullRequestRead, which bounds it by owedReadWriteTimeout), on
+// handling and not on the message's context: the message's own deadline may be the failure of
+// this delivery, and a stop still ends the write. It answers the repository and the number it read
+// from the payload, which it decodes as route decoded it (decodePullRequestNamed), so deliver's
+// line names them whether or not the record was written.
+func (in *Intake) oweEnvelopesRead(handling context.Context, raw string) (repo string, number int, err error) {
+	repo, number, err = decodePullRequestNamed(raw)
+	if err != nil {
+		return repo, number, err
+	}
+	return repo, number, owePullRequestRead(handling, in.pool, repo, number, owedFailure, "")
 }
 
 // handlePullRequestEnvelope processes one `kind:"pr"` envelope. Every action — opened,
 // synchronize, reopened, edited and closed — records the pull request's head first
 // (recordPullRequestHead, pull_request_heads.go), for any author and any repository, since a
-// check result is measured against that head. A head write that could not be made at all is
-// the one failure this hands the envelope back for (delivery.ErrHeadNotStored): nothing else
-// repairs a head row that was never stored, since the reconcile's passes read the rows that
-// exist, and both statements behind that write are `on conflict … do update`, so the
-// redelivery writes the same pair. That covers the write itself and the two reads of Postgres
-// before it, the repository's canonical name and the attribution (recordPullRequestHead).
-// Two other failures of it are logged here and the merge handling goes on from them. A rate
-// limit the attribution hit leaves no row either, and no pass offers a row that was never
-// written, but it is acknowledged all the same: handing every rate-limited envelope back
-// would spend the whole limit over again, and the next `pull_request` event of that pull
-// request — a synchronize, a label, the merge — writes the row the limit cost this one. A
-// repository name that is not `owner/repo` is malformed in the envelope itself, so the same
-// envelope delivered again fails on the same name. A read of GitHub the App refused for any
-// other reason is no failure of this write at all: the row is written from the envelope
-// alone, incomplete and unstamped, and the reconcile's own pass reads it again.
+// check result is measured against that head. The head and the state are GitHub's answer about
+// the pull request the envelope names, never the envelope's own fields. A head write that could
+// not be made at all is the one failure this returns to deliver (delivery.ErrHeadNotStored),
+// which owes the pull request a read the reconcile makes, since the reconcile's passes read the
+// rows that exist, and hands the envelope back only where the database cannot take that record
+// now: both statements behind the write are `on conflict … do update`, so a redelivery writes the
+// same pair. That covers the write itself, the reads of Postgres before it, and a read of GitHub
+// that failed, a rate limit included. A pull request GitHub does not know, and a repository the
+// App cannot read, write no row and are not failures here: the pull request is owed a read, which
+// the reconcile makes again in case GitHub's answer had not caught up with its webhook
+// (recordPullRequestHead). An envelope that names no pull request GitHub can have, a number
+// outside 1 to 2147483647 or a repository that is no name GitHub can have (githubRepositoryName),
+// is refused before anything is read or written (errNoPullRequestNamed) and returned to deliver,
+// which acknowledges it, since the same envelope delivered again fails the same way. One whose
+// repository's canonical name is no name GitHub can have is a head not stored, owed a read under
+// the name it gave (recordPullRequestHead, owePullRequestRead).
+// A GitHub answer that holds a value no head row holds is refused where the row is built, before
+// any statement, and is a head not stored (errNoRowHolds, checkHeadRow).
 // Only a merge (action "closed", merged "true") does anything for the delivery timeline
-// after that; its author and excluded-repository checks run on the envelope's own fields, so a
+// after that, and only where delivery is configured (settings is not nil): a deployment with no
+// settings has no population, so the head row is the whole of what an envelope is for there. The
+// merge's author and excluded-repository checks run on the envelope's own fields, so a
 // merge by anyone outside the population costs no GitHub call of its own. It reports whether
 // it stored the pull request's delivery row: a head write is not one, and neither is a row it
 // deleted or a pull request outside the population, so neither ships with anything.
-func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings DeliverySettings, payload map[string]string) (wrote bool, err error) {
+func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings *DeliverySettings, payload map[string]string) (wrote bool, err error) {
 	if payload["kind"] != "pr" {
 		return false, nil
 	}
-	repoFull := payload["repo"]
-	number, err := strconv.Atoi(payload["number"])
+	repoFull, number, err := pullRequestNamed(payload)
 	if err != nil {
-		return false, fmt.Errorf("pull-request envelope: malformed number %q: %w", payload["number"], err)
+		return false, err
 	}
-	// The commit messages the head write read, when it needed them, so the merge below pages
-	// the same commits once rather than twice.
-	messages, headErr := in.recordPullRequestHead(ctx, payload, number)
+	// What the head write read of GitHub, so the merge below reads the same pull request and
+	// pages the same commits once rather than twice.
+	read, headErr := in.recordPullRequestHead(ctx, payload, number)
+	if errors.Is(headErr, ErrHeadNotStored) || errors.Is(headErr, errNoPullRequestNamed) {
+		return false, headErr
+	}
 	if headErr != nil {
-		slog.Warn("dispatch delivery: record a pull request's head",
+		logging.FromContext(ctx).Warn("dispatch delivery: record a pull request's head",
 			"repo", repoFull, "number", number, "error", headErr)
-		if errors.Is(headErr, ErrHeadNotStored) {
-			return false, headErr
-		}
 	}
-	if payload["action"] != "closed" || payload["merged"] != "true" {
+	if settings == nil || payload["action"] != "closed" || payload["merged"] != "true" {
 		return false, nil
 	}
 	author := payload["author"]
@@ -531,7 +679,16 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 		return false, err
 	}
 
-	fetched, fetchErr := FetchPullRequest(ctx, in.github, owner, repo, number)
+	var fetched FetchedPullRequest
+	var fetchErr error
+	switch {
+	case read.refused != nil:
+		fetchErr = read.refused
+	case read.pull != nil:
+		fetched, fetchErr = completeFetchedPullRequest(ctx, in.github, read.token, owner, repo, *read.pull)
+	default:
+		fetched, fetchErr = FetchPullRequest(ctx, in.github, owner, repo, number)
+	}
 	if fetchErr != nil {
 		// The population/task-label decision needs the fetch (labels aren't in the webhook
 		// payload); without it we cannot tell whether this PR belongs in the population at all,
@@ -544,7 +701,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 	}
 
 	raw := RawPullRequest{Repo: repoFull, Number: number, Title: fetched.Title, Author: fetched.Author, Labels: fetched.Labels, MergedAt: *fetched.MergedAt}
-	isPopulation, err := IsPopulationPR(raw, settings, liveIntakeWindow())
+	isPopulation, err := IsPopulationPR(raw, *settings, liveIntakeWindow())
 	if err != nil {
 		// IsTaskPR's "neither label" error: a deploy-repo PR GitHub's own classifier workflow has
 		// not labelled yet. Surfaced, not guessed; the reconcile retries this PR's label on its
@@ -555,28 +712,27 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 		return false, DeletePullRequest(ctx, in.pool, repoFull, number)
 	}
 
-	if err := completePullRequest(ctx, in.pool, in.github, owner, repo, repoFull, number, fetched, messages); err != nil {
+	if err := completePullRequest(ctx, in.pool, in.github, owner, repo, repoFull, number, fetched, read.messages); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// completePullRequest finishes writing one merged pull request's complete row -- session
-// trailers, attribution inputs, issue resolution, and the upsert -- once its GitHub facts
-// (FetchPullRequest's answer) are in hand. The shared tail both intake's live
-// handlePullRequestEnvelope and reconcile's completePartialPullRequest call, so "a live webhook
-// completes a PR" and "reconcile completes a partial row" write through the exact same last
-// steps, never two copies that can drift from each other. A commit fetch that fails, for any
-// reason, returns its error without writing anything: completing the row from what was read
-// would record its sessions and commit-message keys short for good. The row stays as it was
-// (still partial, for reconcile's own caller; unwritten, for intake's, whose merged-PR search then
-// finds it), so the next pass retries the whole completion. A rate limit comes back as the
-// *githubapp.RateLimitError, which stops reconcile's batch.
+// completePullRequest finishes writing one merged pull request's complete row -- its session
+// trailers and the upsert -- once its GitHub facts (FetchPullRequest's answer) are in hand. It
+// resolves no issue: the statement gives the issue at each read, from the texts that the read of
+// GitHub stored. The shared tail both intake's live handlePullRequestEnvelope and reconcile's
+// completePartialPullRequest call, so "a live webhook completes a PR" and "reconcile completes a
+// partial row" write through the exact same last steps, never two copies that can drift from each
+// other. A commit fetch that fails, for any reason, returns its error without writing anything:
+// completing the row from what was read would record its sessions short for good. The row stays
+// as it was (still partial, for reconcile's own caller; unwritten, for intake's, whose merged-PR
+// search then finds it), so the next pass retries the whole completion. A rate limit comes back
+// as the *githubapp.RateLimitError, which stops reconcile's batch.
 //
-// read is the pull request's commit messages when the caller has already paged them — intake's
-// head write does, for a pull request its title, body and branch left unattributed — and nil
-// when it has not, which is reconcile's case and intake's commoner one; a non-nil read spares
-// this the same paginated call a second time.
+// read is the pull request's commit messages when the caller has already paged them — the read
+// of GitHub that stored the texts did, where no higher source named a held issue — and nil when
+// it has not; a non-nil read spares this the same paginated call a second time.
 func completePullRequest(ctx context.Context, pool *store.Pool, github *githubapp.Client, owner, repo, repoFull string, number int, fetched FetchedPullRequest, read []string) error {
 	messages := read
 	if messages == nil {
@@ -589,20 +745,11 @@ func completePullRequest(ctx context.Context, pool *store.Pool, github *githubap
 		}
 		messages = paged
 	}
-	inputs := attributionInputsFrom(attributionFacts{
-		Repo: repoFull, URL: fetched.URL, Title: fetched.Title, Body: fetched.Body,
-		HeadRef: fetched.HeadRef, CommitMessages: messages,
-	})
-	issueKey, _, err := resolveStoredIssueKey(ctx, pool, repoFull, fetched.URL, inputs)
-	if err != nil {
-		return err
-	}
 	return UpsertPullRequest(ctx, pool, DeliveryPullRequest{
 		Repo: repoFull, Number: number, Title: fetched.Title, URL: fetched.URL, Author: fetched.Author,
 		CreatedAt: &fetched.CreatedAt, MergedAt: fetched.MergedAt, FirstCommitAt: fetched.FirstCommitAt,
 		MergeCommitSHA: fetched.MergeCommitSHA, Additions: fetched.Additions, Deletions: fetched.Deletions,
-		Rework: IsRework(fetched.Title), IssueKey: issueKey, Sessions: sessionTrailers(messages),
-		Attribution: &inputs, Partial: false,
+		Rework: IsRework(fetched.Title), Sessions: sessionTrailers(messages), Partial: false,
 	})
 }
 
@@ -674,48 +821,49 @@ type commitMessagePayload struct {
 const maxCommitPages = 5
 
 // fetchCommitMessages reads a pull request's commit messages, in commit order: what its session
-// trailers (sessionTrailers) and its commit-message issue keys (AttributionInputs.CommitKeys) are
-// read from. Shared by Intake and Reconcile (both complete a PR the same way; reconcile must read
-// them itself rather than carrying forward whatever a stale row already had, see store.go's
-// UpsertPullRequest doc comment on why a partial row is never allowed to regress a complete one's
-// attribution). On an error it answers the messages of the pages it read.
+// trailers (sessionTrailers) are read from. Shared by Intake and Reconcile (both complete a PR the
+// same way; reconcile must read them itself rather than carrying forward whatever a stale row
+// already had, see store.go's UpsertPullRequest doc comment on why a partial row is never allowed
+// to regress a complete one's sessions). On an error it answers the messages of the pages it read.
 func fetchCommitMessages(ctx context.Context, client *githubapp.Client, owner, repo string, number int) ([]string, error) {
 	token := func() (string, error) { return client.RepositoryToken(ctx, owner, repo) }
-	messages, _, err := fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number)
+	messages, _, err := fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number, 1)
 	return messages, err
 }
 
 // fetchCommitMessagesWithToken is fetchCommitMessages asking token for each page's installation
-// token, by readGitHubPage's rule. It also answers how many commit pages it asked GitHub for, the
-// failed one included, so a caller can count what a read cost (reconcileAttributionInputs' call
-// budget).
-func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client, token func() (string, error), owner, repo string, number int) ([]string, int, error) {
+// token, by readGitHubPage's rule. It reads from firstPage on: 1 for every message, and 2 for the
+// messages after the 100 that one GraphQL query answers (readFactsBatch). It also answers how
+// many commit pages it asked GitHub for, the failed one included, so a caller can count what a
+// read cost.
+func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client, token func() (string, error), owner, repo string, number, firstPage int) ([]string, int, error) {
 	var messages []string
-	for page := 1; page <= maxCommitPages; page++ {
+	for page := firstPage; page <= maxCommitPages; page++ {
+		asked := page - firstPage + 1
 		current, err := token()
 		if err != nil {
-			return messages, page - 1, fmt.Errorf("mint installation token for %s/%s PR #%d commits page %d: %w", owner, repo, number, page, err)
+			return messages, asked - 1, fmt.Errorf("mint installation token for %s/%s PR #%d commits page %d: %w", owner, repo, number, page, err)
 		}
 		commitsPath := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100&page=%d", url.PathEscape(owner), url.PathEscape(repo), number, page)
-		body, status, header, err := readGitHubPage(ctx, client, current, commitsPath)
+		body, status, header, _, err := readGitHubPage(ctx, client, current, commitsPath)
 		if err != nil {
-			return messages, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
+			return messages, asked, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
 		}
 		if err := githubapp.CheckResponse(status, header, body); err != nil {
-			return messages, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
+			return messages, asked, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
 		}
 		var commits []commitMessagePayload
 		if err := json.Unmarshal(body, &commits); err != nil {
-			return messages, page, fmt.Errorf("decode commits of PR #%d page %d: %w", number, page, err)
+			return messages, asked, fmt.Errorf("decode commits of PR #%d page %d: %w", number, page, err)
 		}
 		for _, c := range commits {
 			messages = append(messages, c.Commit.Message)
 		}
 		if len(commits) < 100 {
-			return messages, page, nil
+			return messages, asked, nil
 		}
 	}
-	return messages, maxCommitPages, nil
+	return messages, max(0, maxCommitPages-firstPage+1), nil
 }
 
 // sessionTrailers is every `Omp-Session:` commit trailer across messages (LEGION-294's rule,

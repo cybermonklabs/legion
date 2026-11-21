@@ -125,7 +125,7 @@ func jobKey(*natsgo.Msg) (string, *contracts.Envelope, bool) { return "job", nil
 func (j *JobIntake) Run(ctx context.Context) {
 	j.ctx = ctx
 	defer j.stopPending()
-	j.run(ctx, nil, func() bool { return true })
+	j.run(ctx)
 }
 
 // jobConsumerConfig is the durable's policy: deliveryConsumerConfig's shape with this consumer's
@@ -156,14 +156,16 @@ func jobConsumerConfig() natsgo.ConsumerConfig {
 // event's early signal on nothing. The two readings are the two ends of the stop. The delivery's
 // own flag covers a message the callback routes once the stop has begun; Run's context covers
 // the moment between run returning on its ctx (heldDurable.run) and the stop setting that flag,
-// in which the keyed runner can still start a job queued behind the one in hand. What the
-// hand-back answers, and whether it is published at all, is the stop's and the hold's to decide
-// (intakeDelivery.handBack): the message stays outstanding either way, and the next holder is
-// handed it.
+// in which the keyed runner can still start a job queued behind the one in hand. A message whose
+// turn comes after the hold's loss deadline is handed back too (intakeDelivery.holdCovers): an
+// acknowledgement made then would settle on the consumer a take-over recreated a message the next
+// holder was to be handed. What the hand-back answers, and whether it is published at all, is
+// the stop's and the hold's to decide (intakeDelivery.handBack): the message stays outstanding
+// either way, and the next holder is handed it.
 func (j *JobIntake) deliver(d *intakeDelivery, message intakeMessage) {
 	msg := message.msg
-	if j.ctx.Err() != nil || d.stopping.Load() {
-		slog.Warn("dispatch delivery: the job intake stopped before this event was handled; handing it back", "subject", msg.Subject)
+	if j.ctx.Err() != nil || d.stopping.Load() || !d.holdCovers() {
+		slog.Warn("dispatch delivery: the job intake may no longer act on this event (it stopped, or its hold lapsed); giving it back", "subject", msg.Subject)
 		d.giveBack(msg)
 		return
 	}

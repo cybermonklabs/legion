@@ -475,7 +475,7 @@ func parseRepoRename(repo string, raw *string) (*string, error) {
 	}
 	owner, name, err := parseSourceRepo(*raw)
 	if err != nil {
-		return nil, errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT", `renamed_to must be "owner/name" (got %q)`, *raw)
+		return nil, errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT", `renamed_to must be "owner/name" (got %.140q)`, *raw)
 	}
 	canonical := owner + "/" + name
 	if canonical == repo {

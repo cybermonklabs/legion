@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    Dispatch's pull-request attribution startup check now works on PostgreSQL 16 as well as
+    PostgreSQL 17. The check reads the catalog field carrying an ICU database's locale only if
+    that server version exposes it, so it refuses an ICU collation such as tr-TR by name rather
+    than failing on a missing catalog field.
+time: 2026-11-19T23:48:31.000000000Z
+custom:
+    Issue: pr4209

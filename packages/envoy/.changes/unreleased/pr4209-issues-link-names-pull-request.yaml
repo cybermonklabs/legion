@@ -1,0 +1,50 @@
+kind: Fixed
+body: |-
+    An issue whose link to its pull request is GitHub's `/issues/<n>` form of the number, the URL
+    `dispatch issue --external <owner>/<repo>#<n>` stores, compares its checks with that pull
+    request's head. GitHub serves a pull request at `/issues/<n>` as well as at `/pull/<n>`, and
+    the two share one sequence of numbers. Such a link now owes a read of the pull request, at
+    the create as at a link by hand, and the attribution takes a link in either form. Before,
+    the link matched no pull request, owed no read, and the checks of the issue compared with
+    nothing until someone linked the `/pull/<n>` URL by hand. An `/issues/<n>` link of a number
+    that is an issue costs one read of GitHub in a repository the App can read, and one absence
+    question that answers that no such pull request exists. In a repository the App is not
+    installed on, such a link, and a `/pull/<n>` link alike, costs one read: GitHub refuses it,
+    and no pass reads it again until the link is written again, an event of that pull request
+    arrives, or the App's installations come to cover the repository. The issue's results name
+    each such link in `unreadable_links`.
+
+    A person who links one form of a number's URL, `/pull/<n>` or `/issues/<n>`, to an issue while
+    another issue already links the other form, in any letter case, now gets
+    `409 EXTERNAL_LINK_TAKEN` naming the other issue, and the link is not stored, as a second link
+    of one URL already was. Before, both links were stored, and a read by `owner/repo#<n>` answered
+    `400 AMBIGUOUS_ISSUE_REF`. Two issues that stored the two forms before this release keep them:
+    each still writes its own links, a read by `owner/repo#<n>` still answers
+    `AMBIGUOUS_ISSUE_REF` naming both, and the pull request's head and results go to the issue whose
+    key comes first in byte order. Two writes at the same moment are held to the same rule: each
+    link write, and the create that `dispatch issue --external` makes, waits for any other write
+    of a link to the same pull request to finish before it checks, so the second is refused with
+    `409 EXTERNAL_LINK_TAKEN`, or the create answers as it does once the link is stored: the issue
+    that holds it, or `400 EXTERNAL_PROJECT_MISMATCH` where that issue is of another project. Both
+    forms are never stored. Before, a create whose own write found the link taken answered the
+    issue that holds it, whatever its project.
+
+    A pull request that an issue links is that issue's in any repository, also one the issue
+    does not resolve to: the results compare the issue's checks with its head, and the timeline
+    names the issue for it. A branch, a title, a body or a commit message that names an issue is
+    still held to the pull request's own repository, and a pull request whose head is in a fork
+    still has no issue.
+
+    Every reader takes a link to a pull request by one rule, the one the link write owes its read
+    by, under the name its repository has today: a link by the name a repository had before a
+    rename names the pull request of the repository it was renamed to. The results, the timeline,
+    the link check, its lock and a read by `owner/repo#<n>` all read it so. Before, the results and
+    the timeline took such a link only where it was the stored pull request's URL, so an issue that
+    linked a pull request by the old name had no head, though the link owed its read and the read
+    stored the head. Once, at its first start, this release owes the read of each pull request
+    that a link stored before it names and whose head Dispatch does not hold, as a link write owes
+    it (migration `20261120171308_pull_request_reads_owed_link_backfill`), so a merged pull
+    request linked before this release gets its head without an event.
+time: 2026-11-19T20:36:28.000000000Z
+custom:
+    Issue: pr4209

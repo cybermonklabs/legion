@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
@@ -157,27 +158,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if input.External != "" {
 		existingKey, err := s.resolveIssueRef(r.Context(), input.External)
 		if err == nil {
-			var existingProject string
-			if err := s.deps.Store.Pool.QueryRow(r.Context(), `
-				select project_key from issues where key = $1
-			`, existingKey).Scan(&existingProject); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-			if existingProject != input.Project {
-				writeError(
-					w,
-					"EXTERNAL_PROJECT_MISMATCH",
-					http.StatusBadRequest,
-					fmt.Sprintf(
-						"external issue project %s must match repository settings project %s",
-						existingProject,
-						input.Project,
-					),
-				)
-				return
-			}
-			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
+			s.answerExistingExternalIssue(w, r, existingKey, input.Project, actor)
 			return
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -485,13 +466,38 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if input.External != "" {
-		if _, err := tx.Exec(r.Context(), `
-			insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github_issue')
-		`, key, externalURL(externalRepo, externalNumber)); err != nil {
-			if !isUniqueViolation(err) {
-				s.writeHandlerError(w, err)
-				return
+		url := externalURL(externalRepo, externalNumber)
+		// resolveIssueRef read the links before this transaction began, so a link write of the
+		// other form of this number on another issue may have committed since, or be in flight.
+		// The lock of the pull request (lockLinkedPullRequests) waits for such a write, and the
+		// read under it sees its row, so the number is answered as the issue that holds it.
+		if err := lockLinkedPullRequests(r.Context(), tx, []model.ExternalLink{{URL: url}}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// Another issue holds the link where it holds any link of the pull request or issue the
+		// URL names, in any form, letter case or name of its repository (linkFormsSQL), as the
+		// statement reads them and the issue PATCH's check compares them.
+		var taken bool
+		if err := tx.QueryRow(r.Context(), `
+			select exists (select 1 from issue_external_links
+				where lower(url) = any(`+linkFormsSQL("$1::text")+`))
+		`, url).Scan(&taken); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !taken {
+			if _, err := tx.Exec(r.Context(), `
+				insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github_issue')
+			`, key, url); err != nil {
+				if !isUniqueViolation(err) {
+					s.writeHandlerError(w, err)
+					return
+				}
+				taken = true
 			}
+		}
+		if taken {
 			if err := tx.Rollback(r.Context()); err != nil {
 				s.writeHandlerError(w, err)
 				return
@@ -501,7 +507,14 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
-			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
+			s.answerExistingExternalIssue(w, r, existingKey, input.Project, actor)
+			return
+		}
+		// The link is GitHub's /issues/ form of the number, which GitHub also serves a pull
+		// request at, so the number owes a read as a link by hand does (patchIssue): where it is
+		// a pull request, the next reconcile pass stores its head and the link attributes it.
+		if err := delivery.OweLinkedPullRequestReads(r.Context(), tx, []string{externalURL(externalRepo, externalNumber)}); err != nil {
+			s.writeHandlerError(w, err)
 			return
 		}
 	}
@@ -694,6 +707,38 @@ func (outcome nearCopyOutcome) unrecorded() nearCopyOutcome {
 	check := *outcome.Check
 	check.outcome, check.reason = nearCopyNotMade, nearCopyNotMadeUnrecorded
 	return nearCopyOutcome{NearCopyCheck: nearCopyCheckUnrecorded(outcome.Refuse[0]), Check: &check}
+}
+
+// answerExistingExternalIssue answers a create naming a GitHub issue Dispatch already holds, as
+// existingKey: with that issue where it is of project, and else with 400
+// EXTERNAL_PROJECT_MISMATCH naming both projects, since the create asked for an issue of project.
+// The create answers so wherever it finds the issue: before it writes, and after its write found
+// the link taken by a write that committed in between, so a create racing a link write answers as
+// a create after it does.
+func (s *server) answerExistingExternalIssue(
+	w http.ResponseWriter,
+	r *http.Request,
+	existingKey string,
+	project string,
+	actor model.Actor,
+) {
+	var existingProject string
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
+		select project_key from issues where key = $1
+	`, existingKey).Scan(&existingProject); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if existingProject != project {
+		writeError(
+			w,
+			"EXTERNAL_PROJECT_MISMATCH",
+			http.StatusBadRequest,
+			fmt.Sprintf("external issue project %s must match repository settings project %s", existingProject, project),
+		)
+		return
+	}
+	s.respondWithExistingExternalIssue(w, r, existingKey, project, actor)
 }
 
 // respondWithExistingExternalIssue answers a create naming a GitHub issue Dispatch already holds

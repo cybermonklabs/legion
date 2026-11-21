@@ -1,0 +1,29 @@
+-- 20261119172039_pull_request_reads_owed_linked.up.sql
+--
+-- Which owed read a link by hand alone made.
+--
+--   pull_request_reads_owed.linked_revision  the revision of the row when a link by hand owed the
+--                                            read and no other owe was on the row
+--                                            (delivery.OweLinkedPullRequestReads). Null on each
+--                                            other row, and on every row a release before this
+--                                            one wrote.
+--
+-- A link by hand owes a read of the pull request that it links, also where Dispatch stores that
+-- pull request's head (R5 of the results lookup). A link says nothing of the head, so that owe
+-- does not make the stored head a head not read: each reader of a head by issue skips a row whose
+-- linked_revision is its revision where a results row of the pull request is stored
+-- (delivery.owedReadJoin). Each other owe, by this release's code or by a trigger of
+-- pull_request_heads, sets the row's revision to a new value of its sequence (20261116163445), and
+-- a value of a sequence never comes back, so after it the two columns differ and the row hides the
+-- head again. That holds whichever of the two owes comes first. A link over a row that is owed
+-- already gives it a new revision and keeps its kind, its refusal, and whether it hides the head.
+-- The reconcile reads the row as any other owed row, and a read of GitHub that answers deletes it
+-- at its revision as before (delivery.settleOwedRead), so a read that began before the later owe
+-- deletes nothing.
+--
+-- No stored row can fail the statement: the column is nullable with no default, so the statement
+-- writes the catalog alone, and the census answers 0. The release before names
+-- pull_request_reads_owed in none of its own statements; the triggers that owe a read for its
+-- writes give the row a new revision, so they hide the head. Rolling back past this migration is
+-- an image rollback alone.
+alter table pull_request_reads_owed add column linked_revision bigint;

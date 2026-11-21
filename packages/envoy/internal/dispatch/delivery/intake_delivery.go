@@ -253,7 +253,7 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		d.held = nil
 		d.mu.Unlock()
 		for _, msg := range held {
-			d.handBack(msg)
+			d.handBack(slog.Default(), msg)
 		}
 		// nats.go ends a drain on a goroutine of its own, once the callback has run every message
 		// the client had buffered, and reports it only by the subscription turning invalid. It ends
@@ -346,7 +346,7 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 		return
 	}
 	d.mu.Unlock()
-	d.handBack(msg)
+	d.handBack(slog.Default(), msg)
 }
 
 // handBack publishes msg's hand-back to the durable, so the server redelivers it at once, or
@@ -354,7 +354,8 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 // (giveBack), a given-up handler's (Intake.deliver) and one an acknowledgement NATS refused makes
 // (acknowledge) -- but for the delayed hand-back a handler makes of its own (handBackOwn), which
 // mayAnswer gates instead of the hold alone, and which can meet mayHandBack's connected read
-// only when a stop begins between the two checks. This is the one place the rule is:
+// only when a stop begins between the two checks. It logs through log, the logger of the
+// delivery that hands msg back. This is the one place the rule is:
 //
 //   - Withheld once the hold's loss deadline has passed (holdCovers). Every hand-back is a publish
 //     at the message's reply subject, which names the durable rather than the consumer the message
@@ -386,14 +387,14 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 // redelivers it after its ack wait. The rule reads the hold, and not the stop's flag as mayAnswer
 // does: the stop is itself one of the callers, and a hand-back of a message this delivery was
 // handed is sound while the hold covers it whether or not this subscription still delivers.
-func (d *intakeDelivery) handBack(msg *natsgo.Msg) {
+func (d *intakeDelivery) handBack(log *slog.Logger, msg *natsgo.Msg) {
 	if !d.holdCovers() {
-		slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the message is left with the durable for the next holder's take-over",
+		log.Warn("dispatch delivery: the hold no longer covers this delivery, so the message is left with the durable for the next holder's take-over",
 			"subject", msg.Subject)
 		return
 	}
 	if !d.mayHandBack() {
-		slog.Info("dispatch delivery: the hand-back is withheld, so the message is left with the durable", "subject", msg.Subject)
+		log.Info("dispatch delivery: the hand-back is withheld, so the message is left with the durable", "subject", msg.Subject)
 		return
 	}
 	d.publishHandBack(msg, 0)
@@ -403,15 +404,16 @@ func (d *intakeDelivery) handBack(msg *natsgo.Msg) {
 // (Intake.deliver's ErrHeadNotStored case): only while this delivery may answer the durable
 // (mayAnswer), which needs !stopping. So the connected read in mayHandBack can withhold only
 // when a stop begins between the two checks. A handler makes it before or after any stop
-// begins, and the stop waits for that handler.
-func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) {
+// begins, and the stop waits for that handler. It logs through log, the logger of that handler's
+// delivery.
+func (d *intakeDelivery) handBackOwn(log *slog.Logger, msg *natsgo.Msg, after time.Duration) {
 	if !d.mayAnswer() {
-		slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope whose head row was not stored is left with the durable for the next holder's take-over",
+		log.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope whose head row was not stored is left with the durable for the next holder's take-over",
 			"subject", msg.Subject)
 		return
 	}
 	if !d.mayHandBack() {
-		slog.Info("dispatch delivery: the hand-back is withheld, so the envelope whose head row was not stored is left with the durable", "subject", msg.Subject)
+		log.Info("dispatch delivery: the hand-back is withheld, so the envelope whose head row was not stored is left with the durable", "subject", msg.Subject)
 		return
 	}
 	d.publishHandBack(msg, after)
@@ -497,14 +499,15 @@ func (d *intakeDelivery) mayHandBack() bool {
 // waits for the handler that makes it, whether that acknowledgement began before the stop or after.
 // An acknowledgement NATS has not taken by then goes on without the caller, which is sound whenever
 // it lands, since the message's handling is done; if it then fails, the message stays outstanding
-// for the ack wait. One NATS refused in time is handed back, under handBack's rule.
-func (d *intakeDelivery) acknowledge(msg *natsgo.Msg) {
+// for the ack wait. One NATS refused in time is handed back, under handBack's rule, logged through
+// log.
+func (d *intakeDelivery) acknowledge(log *slog.Logger, msg *natsgo.Msg) {
 	failed, answered := callNATS("acknowledge message", func() (bool, error) {
 		err := msg.Ack()
 		return err != nil, err
 	}, "subject", msg.Subject)
 	if answered && failed {
-		d.handBack(msg)
+		d.handBack(log, msg)
 	}
 }
 
@@ -533,7 +536,7 @@ func (d *intakeDelivery) receive(msg *natsgo.Msg) {
 	}
 	key, envelope, wanted := d.key(msg)
 	if !wanted {
-		d.acknowledge(msg)
+		d.acknowledge(slog.Default(), msg)
 		return
 	}
 	if !d.keys.run(key, intakeMessage{msg: msg, envelope: envelope}) {

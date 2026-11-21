@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -175,7 +176,7 @@ func startGivenUpRow(t *testing.T) *stopRow {
 	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
 		handling <- struct{}{}
 		<-delivery.handling.Done()
-		delivery.handBack(message.msg)
+		delivery.handBack(slog.Default(), message.msg)
 		select {
 		case decided <- struct{}{}:
 		default:
@@ -346,8 +347,10 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		name string
 		make func(*intakeDelivery, intakeMessage)
 	}{
-		{"an acknowledgement begun before the stop", func(d *intakeDelivery, m intakeMessage) { d.acknowledge(m.msg) }},
-		{"a head-write hand-back begun before the stop", func(d *intakeDelivery, m intakeMessage) { d.handBackOwn(m.msg, headWriteRedeliverAfter) }},
+		{"an acknowledgement begun before the stop", func(d *intakeDelivery, m intakeMessage) { d.acknowledge(slog.Default(), m.msg) }},
+		{"a head-write hand-back begun before the stop", func(d *intakeDelivery, m intakeMessage) {
+			d.handBackOwn(slog.Default(), m.msg, headWriteRedeliverAfter)
+		}},
 		{"a job acknowledgement begun before the stop", func(d *intakeDelivery, m intakeMessage) {
 			(&JobIntake{ctx: context.Background()}).deliver(d, m)
 		}},
@@ -492,7 +495,7 @@ func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing
 		default:
 		}
 		<-writeHeld
-		delivery.handBack(message.msg)
+		delivery.handBack(slog.Default(), message.msg)
 	}, true)
 	nakCount := watchHandBacks(t, row.uri)
 	publishPullRequestEnvelope(t, row.client, "acme", "widgets", 7, map[string]string{
@@ -539,7 +542,7 @@ func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 		default:
 		}
 		<-linkCut
-		delivery.handBack(message.msg)
+		delivery.handBack(slog.Default(), message.msg)
 	}, true)
 	publishPullRequestEnvelope(t, row.client, "acme", "widgets", 7, map[string]string{
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7", "author": "octocat",
@@ -604,7 +607,7 @@ func TestACallNATSThatOutlivesItsWaitStillCompletesItsBookkeeping(t *testing.T) 
 	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
 		// Only the first delivery is handed back: a hand-back with no delay is redelivered at once,
 		// and handing each redelivery back would loop until teardown.
-		first.Do(func() { delivery.handBack(message.msg) })
+		first.Do(func() { delivery.handBack(slog.Default(), message.msg) })
 	}, true)
 	// Registered after startStopRow, so the wait is restored before the row's teardown runs.
 	saved := callNATSWait.Swap(0)

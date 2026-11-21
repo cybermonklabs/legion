@@ -250,7 +250,7 @@ func TestAnIssueTitleChangeDuringTheReadThatFirstNamesItRecomputesAgain(t *testi
 
 	start := rig.mark()
 	point := pause.at(noteIs("recompute read"))
-	upsertPR(t, rig.database, prNaming(1, rig.clock.Now().Add(-2*time.Hour), issue))
+	upsertPRNaming(t, rig.database, 1, rig.clock.Now().Add(-2*time.Hour), issue)
 	point.wait(t, "recompute read")
 	patchHubIssue(t, rig.handler, issue, map[string]any{"title": "Ship the widgets"})
 	rig.waitForEventCursor(t, eventHead(t, rig.database), "the retitle while the read is held")

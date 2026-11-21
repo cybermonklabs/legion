@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strconv"
@@ -126,6 +127,16 @@ const graphQLReset = 90 * time.Second
 // answerQuery answers POST /graphql: one page of a repository's open pull requests with the
 // check suites and check runs of each one's head commit.
 func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	failure := f.queryFailure
+	f.mu.Unlock()
+	if failure.status != 0 {
+		w.WriteHeader(failure.status)
+		if _, err := io.WriteString(w, failure.body); err != nil {
+			f.t.Errorf("write the query's failure: %v", err)
+		}
+		return
+	}
 	var request struct {
 		Query     string         `json:"query"`
 		Variables map[string]any `json:"variables"`
@@ -590,6 +601,13 @@ func (f *fakeGitHub) rateLimitQuery(limit graphQLLimit) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.graphQLLimits = append(f.graphQLLimits, limit)
+}
+
+// failQueries makes every query answer status with body, as GitHub answers one it fails.
+func (f *fakeGitHub) failQueries(status int, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.queryFailure.status, f.queryFailure.body = status, body
 }
 
 // stallQuery holds back the answer to one page of one repository, as stall does for a REST

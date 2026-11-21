@@ -47,7 +47,7 @@ const helper: Agent = {
   title: "Helper",
 };
 
-function renderDrillDown(sessions: readonly string[]) {
+function renderDrillDown(sessions: readonly string[], fields: Partial<DeliveryPR> = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // The agent registry, as the shell's poller last read it: only the helper is running.
   queryClient.setQueryData(["agents"], [helper]);
@@ -58,7 +58,7 @@ function renderDrillDown(sessions: readonly string[]) {
           <DrillDown
             components={{}}
             onClose={() => {}}
-            prs={[{ ...pr, sessions: [...sessions] }]}
+            prs={[{ ...pr, ...fields, sessions: [...sessions] }]}
             runs={[]}
             selection={{ id: pr.id, kind: "pr" }}
             sessionGroups={[]}
@@ -109,6 +109,29 @@ test("a pull request with no sessions shows a dash", () => {
   renderDrillDown([]);
   try {
     expect(detail("Sessions").textContent).toBe("\u2014");
+  } finally {
+    cleanup();
+  }
+});
+
+// The three lines of a PR's issue show the cause of no issue. For an issue that is not known yet,
+// each line shows "Not known yet", and the issue line holds no link.
+test("a pull request whose issue is not known reads Not known yet on each line of its issue", () => {
+  // Control: a PR whose issue_not_known is false shows the dash, "No issue" and "No issue".
+  renderDrillDown([], { issue: null, issue_not_known: false });
+  try {
+    expect(detail("Dispatch issue").textContent).toBe("\u2014");
+    expect(detail("Priority").textContent).toBe("No issue");
+    expect(detail("Components").textContent).toBe("No issue");
+  } finally {
+    cleanup();
+  }
+  renderDrillDown([], { issue: null, issue_not_known: true });
+  try {
+    expect(detail("Dispatch issue").textContent).toBe("Not known yet");
+    expect(detail("Priority").textContent).toBe("Not known yet");
+    expect(detail("Components").textContent).toBe("Not known yet");
+    expect(within(detail("Dispatch issue")).queryByRole("link")).toBeNull();
   } finally {
     cleanup();
   }

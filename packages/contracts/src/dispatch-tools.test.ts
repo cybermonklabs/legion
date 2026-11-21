@@ -199,6 +199,7 @@ const validCalls = {
   dispatch_answers: {},
   dispatch_whoami: {},
   dispatch_limits: {},
+  dispatch_attribution: {},
   dispatch_handoff_write: specFor("dispatch_handoff_write").example,
   dispatch_handoff_read: { issue: "DSP-1", phase: "implement", version: 2 },
   dispatch_steps: { issue: "DSP-1" },
@@ -316,6 +317,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_answers",
       "dispatch_whoami",
       "dispatch_limits",
+      "dispatch_attribution",
       "dispatch_handoff_write",
       "dispatch_handoff_read",
       "dispatch_steps",
@@ -663,6 +665,33 @@ describe("dispatchToolSpecs", () => {
     ]);
   });
 
+  // The description, which --help prints, names each reason a check compared with nothing, in
+  // the words the command prints, and the lines that name each pull request the reasons are
+  // about. The fifth reason says only what Dispatch knows. Control: the first three reasons stay
+  // in the same sentence.
+  test("dispatch_results's description names the five reasons a check compared with nothing", () => {
+    const description = specFor("dispatch_results").description;
+
+    expect(description).toContain(
+      "Where a check compared with nothing, it says which of five things happened: the issue has " +
+        "no pull request and no branch to compare with, Dispatch cannot read the repository, a " +
+        "read Dispatch made did not answer, Dispatch has not read the head of a pull request of " +
+        "the issue, or Dispatch does not know yet whether a pull request it read is this issue's."
+    );
+    expect(description).toContain(
+      "Under its head line, a check names each pull request whose head Dispatch has not read " +
+        "(`Not read yet:`), and why and since when GitHub refuses that read where it does " +
+        "(`Not read:`), then each pull request Dispatch does not know yet is the issue's " +
+        "(`Not known yet:`)."
+    );
+    // A check CI proves names the two cases where it reads no check run.
+    expect(description).toContain(
+      "an issue with no pull request head, a head whose read of GitHub is owed, a pull request " +
+        "that Dispatch does not know yet is the issue's and that can come before the head, or " +
+        "GitHub not read"
+    );
+  });
+
   test("dispatch_send_to_agent takes a session, a body and one delivery mode, and nothing else", () => {
     const schema = schemaFor("dispatch_send_to_agent");
     const call = { session: "sess-1", body: "DSP-1: please take this.", delivery: "aside" };
@@ -707,6 +736,21 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ project: "CORE" }).success).toBe(false);
     expect(specFor("dispatch_limits").description).toContain(
       "Dispatch refuses a text over a bound and names the block or the field it passed"
+    );
+  });
+
+  test("dispatch_attribution accepts no arguments and names what the attribution waits for", () => {
+    const schema = schemaFor("dispatch_attribution");
+
+    expect(schema.safeParse({}).success).toBe(true);
+    expect(schema.safeParse({ project: "CORE" }).success).toBe(false);
+    expect(specFor("dispatch_attribution").description).toContain(
+      "the pull requests that wait for their facts from GitHub"
+    );
+    // The last line of the command, which B5 adds: the heads not read while a read is owed.
+    expect(specFor("dispatch_attribution").description).toContain(
+      "It prints the pull requests whose head is not read while a read of GitHub is owed: those " +
+        "GitHub did not answer and those GitHub refuses, each with the oldest time of its kind."
     );
   });
 

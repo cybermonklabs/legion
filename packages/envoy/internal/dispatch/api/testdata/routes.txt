@@ -63,6 +63,7 @@ POST /api/v1/credential-requests/{id}/deny any
 POST /api/v1/credential-requests/{id}/dismiss any
 GET /api/v1/credentials/capabilities any
 GET /api/v1/dashboard/builds any
+GET /api/v1/delivery/attribution any
 GET /api/v1/delivery/measures any
 GET /api/v1/delivery/pipeline any
 GET /api/v1/delivery/runs/{id} any

@@ -161,7 +161,9 @@ var ErrNotGitHubRepo = errors.New("not an owner/name GitHub allows")
 // and puts the form it stores to this (ParseGitHubRepo), so a name written with the suffix is
 // bounded as it is stored: `acme/<100 characters>.git` written is the 100 characters. The halves
 // come back as full spells them, so a caller keeps its own case and its own suffix; the refusal
-// is ErrNotGitHubRepo, naming full.
+// is ErrNotGitHubRepo, naming full to its first 140 characters, the longest name GitHub can have
+// (an owner of 39, a slash and a name of 100): full can be a stored rename target of any length,
+// which the reconcile reads again, and logs, every pass while it stands.
 //
 // It is the rule the routes and these readers read. The API routes that take a repository from a
 // person put the canonical form they store to it and refuse a name it refuses, and so does the
@@ -180,7 +182,7 @@ var ErrNotGitHubRepo = errors.New("not an owner/name GitHub allows")
 func SplitGitHubRepo(full string) (owner, name string, err error) {
 	owner, name, found := strings.Cut(full, "/")
 	if !found || !gitHubOwner(owner) || !gitHubName(name) || !gitHubName(strings.TrimSuffix(strings.ToLower(name), ".git")) {
-		return "", "", fmt.Errorf("repository %q is %w: an owner of letters, digits, - and _, and a name of 1 to 100 letters, digits, ., - and _ that is not . or .., nor empty, . or .. once a trailing .git is trimmed", full, ErrNotGitHubRepo)
+		return "", "", fmt.Errorf("repository %.140q is %w: an owner of letters, digits, - and _, and a name of 1 to 100 letters, digits, ., - and _ that is not . or .., nor empty, . or .. once a trailing .git is trimmed", full, ErrNotGitHubRepo)
 	}
 	return owner, name, nil
 }

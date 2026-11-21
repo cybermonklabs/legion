@@ -585,6 +585,13 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// the work back to an implementer who cannot cure it. The final gate points at that rule.
 		{"reviewer.md", "Wait for a `ci_check` run still going or unread, and send a name no run answers to the architect."},
 		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
+		// A CI result whose head has not been read or whose attribution is not known is still
+		// in flight. The tester and reviewer wait for it rather than treating a transient state
+		// as a failed run.
+		{"core/tester.md", "Treat `head_not_read` and `issue_not_known` as a run still going."},
+		{"tester.md", "Treat `head_not_read` and `issue_not_known` as a run still going."},
+		{"core/reviewer.md", "Treat `head_not_read` and `issue_not_known` as a run still going."},
+		{"reviewer.md", "Treat `head_not_read` and `issue_not_known` as a run still going."},
 	} {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)

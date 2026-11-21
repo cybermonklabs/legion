@@ -95,6 +95,12 @@ type fakeGitHub struct {
 	// cursor is opaque text this stand-in cannot write or read (answerQueryWith).
 	verbatim     map[string]string
 	cursorsGiven map[string]queryAfter
+	// queryFailure, where its status is set, is the status and body every query is answered
+	// with (failQueries).
+	queryFailure struct {
+		status int
+		body   string
+	}
 }
 
 // fakeRepository is what GET /repos/{owner}/{repo} answers: the name GitHub itself gives the

@@ -1,3 +1,6 @@
+// What `dispatch results` prints of an issue's checks and their results (formatCheckResults), and
+// the time format the attribution counts share (minuteUTC). The commands that fetch them are in
+// issues.ts and session.ts; this module only renders what the server answered.
 import type {
   BasisLearnedAt,
   CheckBasis,
@@ -5,6 +8,7 @@ import type {
   CheckCI,
   CheckPassStands,
   CheckResult,
+  HeadNotRead,
   IssueCheckResults,
 } from "@legion/contracts";
 import { actorText } from "../actor-text";
@@ -14,8 +18,8 @@ import { actorText } from "../actor-text";
  *  that stands at none of the compared commits, and the whole of every other one. */
 const BRIEF_READING_CHARACTERS = 200;
 
-/** The three reasons a check compared its results with nothing, and the two a result's commit
- *  cannot be placed, in words a reader acts on. A check takes all three and a result all but
+/** The five reasons a check compared its results with nothing, and the four a result's commit
+ *  cannot be placed, in words a reader acts on. A check takes all five and a result all but
  *  no_pull_request_or_branch, so the check's set types this map and answers both. Each takes the
  *  repository the answer is about where the server names one (`repo`): a result whose commit is
  *  taken to be of a repository the issue links a pull request in is decided by that repository,
@@ -32,6 +36,9 @@ const COMPARISON_REASONS: Readonly<
     repo === undefined
       ? "a read Dispatch made did not answer"
       : `a read Dispatch made of ${repo} did not answer`,
+  head_not_read: () => "Dispatch has not read the head of a pull request of this issue yet",
+  issue_not_known: () =>
+    "Dispatch does not know yet whether a pull request it read is this issue's",
 };
 
 /** Whether a reason the server sent is one this build words. The server gives the reasons its
@@ -46,6 +53,34 @@ function isComparisonReason(reason: string): reason is keyof typeof COMPARISON_R
 function reasonText(reason: string, repo?: string): string {
   if (isComparisonReason(reason)) return COMPARISON_REASONS[reason](repo);
   return repo === undefined ? reason : `${reason} (${repo})`;
+}
+
+/** Why GitHub refuses the read that is owed for a head, by the word the server gives. */
+const REFUSAL_WORDS: Readonly<Record<NonNullable<HeadNotRead["refused_as"]>, string>> = {
+  app_not_installed: "the GitHub App is not installed on the repository",
+  repository_unreadable: "the GitHub App cannot read the repository",
+  pull_request_not_found: "GitHub has no such pull request",
+};
+
+/** A time the server gives (RFC 3339), in UTC to the minute: `2026-11-17 08:09 UTC`. The minute
+ *  is cut, not rounded. A value that is not a time prints as the server gave it. */
+export function minuteUTC(at: string): string {
+  const time = Date.parse(at);
+  if (Number.isNaN(time)) return at;
+  const iso = new Date(time).toISOString();
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+}
+
+/** The line of one head that Dispatch has not read, and the line of GitHub's refusal of its read
+ *  directly after it, where GitHub refuses that read. */
+function headNotReadLines(head: HeadNotRead): string[] {
+  const line = `  Not read yet: the head of pull request #${head.number}.`;
+  if (head.refused_as === undefined) return [line];
+  const since = head.refused_since === undefined ? "" : `, since ${minuteUTC(head.refused_since)}`;
+  return [
+    line,
+    `  Not read: GitHub refuses the read of pull request #${head.number} (${REFUSAL_WORDS[head.refused_as]})${since}.`,
+  ];
 }
 
 /** When Dispatch learned a pull request's head, and which time that is: `read_at` is Dispatch's
@@ -207,8 +242,9 @@ function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] 
   ];
 }
 
-/** One check: a head line naming what it compared with and whether a pass of it stands, the
- *  check's own words once, then every result recorded against it. */
+/** One check: a head line naming what it compared with and whether a pass of it stands, a line
+ *  for each pull request whose head Dispatch has not read and each one Dispatch does not know is
+ *  this issue's, the check's own words once, then every result recorded against it. */
 function checkLines(check: CheckBlock, brief: boolean): string[] {
   if (check.ci !== undefined) return ciCheckLines(check, check.ci, brief);
   const bases = check.compared_with ?? [];
@@ -222,10 +258,31 @@ function checkLines(check: CheckBlock, brief: boolean): string[] {
   const results = check.results ?? [];
   return [
     `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands)}.`,
+    ...(check.heads_not_read ?? []).flatMap(headNotReadLines),
+    ...(check.issues_not_known ?? []).map(
+      (entry) => `  Not known yet: whether pull request #${entry.number} is this issue's.`
+    ),
     `  The check's words: ${check.text}`,
     ...(results.length === 0
       ? ["  No result is recorded for this check."]
       : results.flatMap((result) => resultLines(check, result, brief))),
+  ];
+}
+
+/** The links of the issue that Dispatch reads no more (`unreadable_links`), one line each: GitHub
+ *  refused the read of each because the GitHub App is not installed on its repository, and Dispatch
+ *  reads it again only once the issue links it again, an event of its pull request arrives, or the
+ *  App is installed on that repository. No check's answer turns on them. */
+function unreadableLinkLines(results: IssueCheckResults): string[] {
+  const links = results.unreadable_links ?? [];
+  if (links.length === 0) return [];
+  return [
+    "Links Dispatch reads no more until the issue links them again, an event of the pull request arrives, or the GitHub App is installed on their repository:",
+    ...links.map((link) => {
+      const since =
+        link.refused_since === undefined ? "" : `, since ${minuteUTC(link.refused_since)}`;
+      return `- ${link.url}: GitHub refuses its read (${REFUSAL_WORDS.app_not_installed})${since}.`;
+    }),
   ];
 }
 
@@ -235,15 +292,21 @@ function checkLines(check: CheckBlock, brief: boolean): string[] {
  *  result, or why it has none, as one line, then whether a pass of it stands (`ciCheckLines`). A
  *  check with no result says so, and an issue with no Verification document says that instead of
  *  printing an empty list: Dispatch answers `verification_artifact_id` "" for such an issue, never
- *  null, so that is what is compared. */
+ *  null, so that is what is compared. The links Dispatch reads no more end the text, whatever the
+ *  checks are (`unreadableLinkLines`). */
 export function formatCheckResults(results: IssueCheckResults, brief = false): string {
+  const unreadable = unreadableLinkLines(results);
+  const withLinks = (text: string): string =>
+    unreadable.length === 0 ? text : [text, unreadable.join("\n")].join("\n\n");
   if (results.verification_artifact_id === "") {
-    return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;
+    return withLinks(
+      `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`
+    );
   }
   const checks = results.checks ?? [];
   if (checks.length === 0) {
-    return `${results.issue}'s Verification document holds no check blocks.`;
+    return withLinks(`${results.issue}'s Verification document holds no check blocks.`);
   }
   const blocks = checks.map((check) => checkLines(check, brief).join("\n"));
-  return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
+  return withLinks([`Checks of ${results.issue}:`, ...blocks].join("\n\n"));
 }

@@ -100,33 +100,35 @@ func (p Production) Conclusion(job DeliveryRunJob) *DeliveryJobConclusion {
 // DeliverySettings.PopulationAuthors, merged, not in an excluded repository, not a task PR.
 // CreatedAt, MergedAt, Additions and Deletions are nil until the completing GitHub fetch (or a
 // reconcile pass) fills them in — GitHub's webhook payload alone never carries them — and
-// Partial is true for exactly as long as that is so. IssueKey is resolved from five sources
-// (attribution.go), Attribution holding what GitHub said for them (nil until it has been read);
+// Partial is true for exactly as long as that is so. The timeline's readers fill IssueKey and
+// IssueNotKnown from the statement of a pull request's issue (attributedIssues). IssueNotKnown is
+// true where the facts that Dispatch stores decide no issue yet, and IssueKey is then nil. No
+// writer stores IssueKey: SyncAttributions keeps the stored column on the statement's answer.
 // Sessions are the raw `Omp-Session` commit trailer values.
 // UnfetchableAt/UnfetchableReason are set when a completing fetch answers a permanent 404/410
 // (the pull request or its repository no longer exists, or no longer reaches this token) rather
 // than retrying forever; both nil for every normal row, and cleared by any later successful
 // fetch of the same pull request.
 type DeliveryPullRequest struct {
-	Repo              string             `json:"repo"`
-	Number            int                `json:"number"`
-	Title             string             `json:"title"`
-	URL               string             `json:"url"`
-	Author            string             `json:"author"`
-	CreatedAt         *time.Time         `json:"created_at"`
-	MergedAt          *time.Time         `json:"merged_at"`
-	FirstCommitAt     *time.Time         `json:"first_commit_at"`
-	MergeCommitSHA    *string            `json:"merge_commit_sha"`
-	Additions         *int               `json:"additions"`
-	Deletions         *int               `json:"deletions"`
-	Rework            bool               `json:"rework"`
-	IssueKey          *string            `json:"issue"`
-	Sessions          []string           `json:"sessions"`
-	Partial           bool               `json:"partial"`
-	UnfetchableAt     *time.Time         `json:"unfetchable_at"`
-	UnfetchableReason *string            `json:"unfetchable_reason"`
-	UpdatedAt         time.Time          `json:"updated_at"`
-	Attribution       *AttributionInputs `json:"-"`
+	Repo              string     `json:"repo"`
+	Number            int        `json:"number"`
+	Title             string     `json:"title"`
+	URL               string     `json:"url"`
+	Author            string     `json:"author"`
+	CreatedAt         *time.Time `json:"created_at"`
+	MergedAt          *time.Time `json:"merged_at"`
+	FirstCommitAt     *time.Time `json:"first_commit_at"`
+	MergeCommitSHA    *string    `json:"merge_commit_sha"`
+	Additions         *int       `json:"additions"`
+	Deletions         *int       `json:"deletions"`
+	Rework            bool       `json:"rework"`
+	IssueKey          *string    `json:"issue"`
+	IssueNotKnown     bool       `json:"issue_not_known,omitempty"`
+	Sessions          []string   `json:"sessions"`
+	Partial           bool       `json:"partial"`
+	UnfetchableAt     *time.Time `json:"unfetchable_at"`
+	UnfetchableReason *string    `json:"unfetchable_reason"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 // DeliveryRunKind distinguishes a deploy-workflow run (on pushes to the configured repository's
@@ -240,7 +242,9 @@ type DeliveryRunJobView struct {
 // the issue read resolves it), and (on DeliveryRunView) RootFailingJob. Mirrors
 // packages/contracts/src/dispatch-api.ts's DeliveryPR exactly. ParentAgent is the Parent agent of
 // the first of Sessions: its session group's `group:<id>`, else that session's title or id
-// (ParentAgents, parent_agent.go).
+// (ParentAgents, parent_agent.go). IssueNotKnown is true for a pull request whose issue is not
+// known yet (DeliveryPullRequest.IssueNotKnown); Issue is then null, and the page shows
+// "Not known yet".
 type DeliveryPRView struct {
 	ID                string         `json:"id"`
 	Repo              string         `json:"repo"`
@@ -256,6 +260,7 @@ type DeliveryPRView struct {
 	Partial           bool           `json:"partial"`
 	Rework            bool           `json:"rework"`
 	Issue             *string        `json:"issue"`
+	IssueNotKnown     bool           `json:"issue_not_known,omitempty"`
 	IssueTitle        *string        `json:"issue_title"`
 	Priority          *string        `json:"priority"`
 	Components        []string       `json:"components"`

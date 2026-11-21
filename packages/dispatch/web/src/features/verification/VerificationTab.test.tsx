@@ -316,6 +316,70 @@ test("a check names what the server compared its results with", async () => {
   expect(compared[1]).toBe("This issue holds no pull request and no branch.");
 });
 
+// A head that Dispatch has not read, and a pull request that Dispatch does not know is this
+// issue's, each have their own reason and their own fact, which names the pull request. Each says
+// only what Dispatch knows. Control: check c-read carries neither list and shows neither fact.
+test("a check names a head Dispatch has not read, and a pull request it does not know is this issue's", async () => {
+  const { getIssueResults, view } = renderTab(verification, [
+    check(
+      "c-not-read",
+      [result({ commit_stands: { answer: "unknown", reason: "head_not_read" } })],
+      {
+        compared_nothing: "head_not_read",
+        compared_with: [],
+        heads_not_read: [{ number: 81 }],
+        pass_stands: { answer: "unknown" },
+      }
+    ),
+    check(
+      "c-not-known",
+      [result({ commit_stands: { answer: "unknown", reason: "issue_not_known" }, id: "result-2" })],
+      {
+        compared_nothing: "issue_not_known",
+        compared_with: [],
+        issues_not_known: [{ number: 85 }],
+        pass_stands: { answer: "unknown" },
+      }
+    ),
+    check("c-read", [result({ id: "result-3" })]),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  await screen.findByTestId("verification-checks");
+  expect(
+    screen.getAllByTestId("verification-check-compared-with").map((row) => row.textContent)
+  ).toEqual([
+    "Dispatch has not read the head of a pull request of this issue yet.",
+    "Dispatch does not know yet whether a pull request it read is this issue's.",
+    `the head of pull request 7 ${commit}`,
+  ]);
+  expect(
+    screen.getAllByTestId("verification-result-commit-stands").map((row) => row.textContent)
+  ).toEqual([
+    "Not known. Dispatch has not read the head of a pull request of this issue yet.",
+    "Not known. Dispatch does not know yet whether a pull request it read is this issue's.",
+    `At the head of pull request 7 ${commit}`,
+  ]);
+  const [notRead, notKnown, read] = screen.getAllByTestId("verification-check");
+  const facts = (row: HTMLElement | undefined) =>
+    Array.from(row?.querySelectorAll("dt") ?? []).map((term) => term.textContent);
+  expect(
+    within(notRead as HTMLElement).getByTestId("verification-check-heads-not-read").textContent
+  ).toBe("pull request 81");
+  expect(facts(notRead)).toContain("Heads not read");
+  expect(facts(notRead)).not.toContain("Issues not known");
+  expect(
+    within(notKnown as HTMLElement).getByTestId("verification-check-issues-not-known").textContent
+  ).toBe("pull request 85");
+  expect(facts(notKnown)).toContain("Issues not known");
+  expect(facts(notKnown)).not.toContain("Heads not read");
+  expect(facts(read)).not.toContain("Heads not read");
+  expect(facts(read)).not.toContain("Issues not known");
+});
+
 // A basis in a repository the issue links a pull request in and does not resolve to carries that
 // repository, so the tab names it: the linked pull request as GitHub names it, owner/repo#7, and a
 // branch of that repository as branch main of owner/repo, beside the issue's own repository's pull

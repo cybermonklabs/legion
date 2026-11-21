@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -28,6 +29,11 @@ func corpus(t *testing.T) *store.Store {
 	t.Helper()
 	database := storetest.Open(t)
 	ctx := context.Background()
+	// The merge times read a pull request's issue through the statement that main builds after the
+	// migrations (delivery.PrepareAttribution), so the corpus builds it too.
+	if err := delivery.PrepareAttribution(ctx, database.Pool); err != nil {
+		t.Fatalf("prepare the statement of a pull request's issue: %v", err)
+	}
 	exec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := database.Pool.Exec(ctx, sql, args...); err != nil {
