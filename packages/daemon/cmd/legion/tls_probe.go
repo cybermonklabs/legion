@@ -126,6 +126,11 @@ type tlsOutcome struct {
 	// own store; at a vendored chain, the server's, which the probe cannot make. It is read from the
 	// client's whole output, of which detail may keep only the ends.
 	signatureFailed bool
+	// leafExpired marks a refusal whose output says a certificate of the chain has expired
+	// (tlsLeafExpired), the one refusal of a served copy's positive control that marks the copy
+	// unasked (probeVendoredTLSSites). It too is read from the client's whole output: curl names the
+	// expiry inside a message the detail's trim can cut.
+	leafExpired bool
 	// ending is what ended the run of a command client (tlsCommandRun.ending): the served copies'
 	// positive controls mark a copy unasked only where the run exited by itself
 	// (probeVendoredTLSSites).
@@ -312,7 +317,7 @@ func probeVendoredTLSSites(ctx context.Context, env []string, stateDir string, s
 		case run.status == tlsNoVerdict:
 			noVerdict = append(noVerdict, fmt.Sprintf("%s positive control %s: %s", site.name, where, run.detail))
 			site.unasked = unasked
-		case !isolated && run.ending == tlsExited && run.status == tlsCertificateRefused && tlsLeafExpired(run.detail):
+		case !isolated && run.ending == tlsExited && run.status == tlsCertificateRefused && run.leafExpired:
 			site.unasked = unasked
 		default:
 			failures = append(failures, fmt.Sprintf("%s positive control %s was %s: %s", site.name, where, run.status, run.detail))
@@ -328,15 +333,18 @@ func probeVendoredTLSSites(ctx context.Context, env []string, stateDir string, s
 	return vendored, nil
 }
 
-// tlsLeafExpired reports whether detail, the positive controls' curl's, refuses a chain because a
-// certificate in it has expired: OpenSSL's verify text "certificate has expired", which curl names
-// after "SSL certificate problem: " (and after "SSL certificate OpenSSL verify result: " from 8.18).
-// Measured on 2026-11-21 in the image of 8cd60ee5c8: at a leaf that ended in 2020, the controls'
-// curl exited 60 with "curl: (60) SSL certificate problem: certificate has expired", and with a root
-// file that is not there it exited 77 with "curl: (77) error setting certificate file: <path>",
-// which is no expiry and fails the probe.
-func tlsLeafExpired(detail string) bool {
-	return strings.Contains(strings.ToLower(detail), "certificate has expired")
+// tlsLeafExpired reports whether message, a client's whole output with its error, refuses a chain
+// because a certificate in it has expired: OpenSSL's verify text "certificate has expired", which
+// curl names after "SSL certificate problem: " (and after "SSL certificate OpenSSL verify result: "
+// from 8.18). It reads the whole output, never the trimmed detail (trimTLSDetail keeps the first
+// 100 bytes and the last 199 of a longer message): curl 8.14.1's refusal, joined as the probe joins
+// it, is 337 bytes and its expiry text ends at byte 75, so 26 more bytes before it would put the
+// expiry out of the detail. Measured on 2026-11-21 in the image of 8cd60ee5c8: at a leaf that ended
+// in 2020, the controls' curl exited 60 with "curl: (60) SSL certificate problem: certificate has
+// expired", and with a root file that is not there it exited 77 with "curl: (77) error setting
+// certificate file: <path>", which is no expiry and fails the probe.
+func tlsLeafExpired(message string) bool {
+	return strings.Contains(strings.ToLower(message), "certificate has expired")
 }
 
 var newVendoredTLSSites = probeVendoredTLSSites
@@ -661,7 +669,8 @@ func (c tlsCommandClient) name() string { return c.clientName }
 // (tlsUntiedRefusal), and is no refusal. A run its own limit ended with neither in its output has
 // no verdict where terms say an earlier run reached the site, and is unavailable where none did;
 // every other run is unavailable. A refusal, or a run that is unavailable, that failed a signature
-// the chain should have carried says so (tlsSignatureFailure).
+// the chain should have carried says so (tlsSignatureFailure), and a refusal of an expired
+// certificate says so (tlsLeafExpired), each read from the whole output.
 func (c tlsCommandClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
 	r := c.run(ctx, site, terms.limit(c.timeout))
 	message := tlsCommandMessage(r.err, r.output)
@@ -674,6 +683,7 @@ func (c tlsCommandClient) probe(ctx context.Context, site tlsSite, terms tlsRunT
 	if outcome.status == tlsCertificateRefused || outcome.status == tlsNetworkUnavailable {
 		outcome.signatureFailed = tlsSignatureFailure(message)
 	}
+	outcome.leafExpired = outcome.status == tlsCertificateRefused && tlsLeafExpired(message)
 	return outcome
 }
 

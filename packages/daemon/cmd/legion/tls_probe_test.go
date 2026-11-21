@@ -1840,6 +1840,21 @@ func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t
 		})
 	}
 
+	// An expiry is read from the whole output, not the trimmed detail: a curl whose refusal names
+	// the expiry past the detail's first 100 bytes and before its last 199 still marks the copy
+	// unasked, and the detail itself no longer holds the expiry text.
+	t.Run("an expiry named past the detail's trim", func(t *testing.T) {
+		long := "curl: (60) " + strings.Repeat("a longer prefix from a later curl, ", 4) + "SSL certificate problem: certificate has expired " + strings.Repeat("and a long tail after it, ", 10)
+		if detail := trimTLSDetail("exit status 60: " + long); strings.Contains(detail, "certificate has expired") {
+			t.Fatalf("the row's refusal keeps its expiry in the trimmed detail %q; the row needs it cut", detail)
+		}
+		install("#!/bin/sh\ncase \"$*\" in\n" + refusesTheControl + "*emsign-ecc-root-ca-g3*) printf '%s\\n' '" + long + "' >&2; exit 60 ;;\nesac\n" + pastTheChain)
+		sites, err := probeVendoredTLSSites(context.Background(), env, stateDir, testTLSSites(stateDir))
+		if err != nil || len(sites) != 2 || sites[0].unasked == "" || sites[1].unasked != "" {
+			t.Fatalf("probeVendoredTLSSites() = %+v, %v; want the emSign copy unasked as expired, the AAA copy asked and no failure", sites, err)
+		}
+	})
+
 	// stalls is a curl that runs action where its arguments match pattern, refuses the control
 	// elsewhere, and gets past every other chain to the server's signature.
 	stalls := func(pattern, action string) string {
