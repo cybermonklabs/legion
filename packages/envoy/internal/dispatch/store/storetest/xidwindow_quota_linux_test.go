@@ -142,8 +142,11 @@ func (s xidQuotaStretchReading) String() string {
 
 // measureUnderQuota runs the child in mode in a scope with the quota xidQuota and answers its
 // reading. The scope comes from the user's systemd manager (systemd-run --user --scope), else from
-// the system's through sudo -n, as the calling user. A machine that gives neither, or has no
-// python3, fails here by name: it cannot show a quota's throttling at all.
+// the system's through sudo -n, as the calling user (--uid, --gid). That second way is safe to
+// try: -n makes sudo refuse at once where it would ask for a password, and what it runs is this
+// file's own Python child, as the user running the test, in a transient scope that ends with it;
+// the child reads only its own /proc files and its own cgroup's. A machine that gives neither, or
+// has no python3, cannot show a quota's throttling at all (requireXidQuota).
 func measureUnderQuota(t *testing.T, mode string) xidQuotaStretchReading {
 	t.Helper()
 	child := []string{"python3", "-c", xidQuotaChild, mode, strconv.FormatInt(int64(xidQuotaStretch), 10)}
@@ -184,8 +187,22 @@ func measureUnderQuota(t *testing.T, mode string) xidQuotaStretchReading {
 		}
 		return reading
 	}
-	t.Fatalf("XID RIG PROBLEM (not a finding about the code): this machine runs no child under a CPU quota, so this run cannot show how a quota's throttling reads: %s", strings.Join(refusals, "; "))
+	requireXidQuota(t, strings.Join(refusals, "; "))
 	return xidQuotaStretchReading{}
+}
+
+// requireXidQuota stops a run that could not put the child under a quota, naming why: it fails
+// where the run sets XidRequireGapsEnv, as CI's step that runs these rows does, so a runner that
+// cannot set a quota turns that step red rather than green on nothing; and it skips everywhere
+// else, as RequireXidGapJudgment does, so a plain go test on a machine without a user systemd
+// manager, passwordless sudo or python3 is not failed by a rig that is fine.
+func requireXidQuota(t *testing.T, why string) {
+	t.Helper()
+	problem := "this machine runs no child under a CPU quota, so this run cannot show how a quota's throttling reads: " + why
+	if xidGapsRequired() {
+		t.Fatalf("XID RIG PROBLEM (not a finding about the code): %s", problem)
+	}
+	t.Skip(problem)
 }
 
 // xidQuotaLine finds the child's XIDQUOTA line in its output and answers its fields by name: each
