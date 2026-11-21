@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  The broker's NATS auth service no longer redials a hub that refuses its own user every 25 ms. A
+  hub whose `auth_callout` does not list that user yet had each replica connect about 35 times a
+  second for as long as it refused (1,055 times in 30 s, measured against an in-process
+  nats-server 2.15.1). The service now redials at once after a cut, within 50 ms, and then after
+  waits drawn between half and all of a bound that doubles from 250 ms up to 20 s: 9 connects in
+  its first 30 s, and once in 15 s on average after that. The waits start over at every connect,
+  so a replica the hub admits again still redials at once the next time its connection drops.
+  `/livez` is unchanged: it reads the service's decision loop and not its connection, so a replica
+  the hub refuses stays live and keeps redialling.
+time: 2026-11-21T00:27:31Z
+custom:
+    Issue: pr4697
