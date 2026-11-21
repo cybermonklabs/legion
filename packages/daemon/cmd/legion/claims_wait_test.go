@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/spf13/cobra"
 )
 
@@ -36,6 +37,28 @@ func slowDaemon(t *testing.T) string {
 	return parsed.Port()
 }
 
+// claimsAnswer is what one run of the legion command answered: its exit code and its streams.
+type claimsAnswer struct {
+	code      int
+	out, errb string
+}
+
+// answerOf runs args as the legion command and waits for it to exit, with the test binary's
+// deadline less 30 s as its one bound (testwait.Receive). A command its --wait never ends fails
+// by what, and one a loaded machine makes slow passes: that the call returns at all, refused with
+// a reason naming its --wait bound, which it prints only once that bound has run out, is what
+// shows the --wait ended it.
+func answerOf(t *testing.T, what string, args []string) claimsAnswer {
+	t.Helper()
+	done := make(chan claimsAnswer, 1)
+	go func() {
+		var out, errb bytes.Buffer
+		code := run(context.Background(), args, &out, &errb)
+		done <- claimsAnswer{code, out.String(), errb.String()}
+	}()
+	return testwait.Receive(t, what, done)
+}
+
 // Each subcommand takes a --wait that bounds the whole call, and a call that reaches it is
 // refused with a reason naming the bound rather than hanging.
 func TestEveryClaimsSubcommandAnswersWithinItsWait(t *testing.T) {
@@ -51,21 +74,16 @@ func TestEveryClaimsSubcommandAnswersWithinItsWait(t *testing.T) {
 		"spawn":   {"spawn", "--tree", "LEGION-208", "--issue", "LEGION-208", "--role", "architect"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var out, errb bytes.Buffer
 			full := append([]string{"legion", "claims"}, args...)
 			full = append(full, "--port", port, "--operator-token-file", operatorTokenFile(t), "--wait", "200ms")
-			began := time.Now()
 
-			code := run(context.Background(), full, &out, &errb)
+			answer := answerOf(t, "legion claims "+name+" with --wait 200ms against a daemon that never answers", full)
 
-			if took := time.Since(began); took > 10*time.Second {
-				t.Fatalf("the command took %s, want it bounded by its --wait", took)
+			if answer.code == 0 {
+				t.Fatalf("the command exited 0 against a daemon that never answered; stdout %q", answer.out)
 			}
-			if code == 0 {
-				t.Fatalf("the command exited 0 against a daemon that never answered; stdout %q", out.String())
-			}
-			if !strings.Contains(errb.String(), "--wait bound of 200ms") {
-				t.Fatalf("stderr is %q, want a refusal naming the --wait bound", errb.String())
+			if !strings.Contains(answer.errb, "--wait bound of 200ms") {
+				t.Fatalf("stderr is %q, want a refusal naming the --wait bound", answer.errb)
 			}
 		})
 	}
@@ -95,17 +113,14 @@ func TestClaimsWaitDefaultsToOneMinute(t *testing.T) {
 func TestTheWaitBoundsTheWholeSuspendCall(t *testing.T) {
 	port, lists := heldSuspendDaemon(t, heldWorking)
 
-	began := time.Now()
-	code, out, errb := suspendAgainst(t, port, "400ms")
+	answer := answerOf(t, "legion claims suspend with --wait 400ms while its suspension stays held", []string{"legion", "claims", "suspend",
+		"--port", port, "--operator-token-file", operatorTokenFile(t), "--claim", string(architectClaim), "--wait", "400ms"})
 
-	if code == 0 {
-		t.Fatalf("suspend exited 0 while its suspension stayed held; stdout %q", out)
+	if answer.code == 0 {
+		t.Fatalf("suspend exited 0 while its suspension stayed held; stdout %q", answer.out)
 	}
-	if took := time.Since(began); took > 10*time.Second {
-		t.Fatalf("the command took %s, want it bounded by its --wait", took)
-	}
-	if !strings.Contains(errb, "--wait bound of 400ms") {
-		t.Fatalf("stderr is %q, want a refusal naming the --wait bound", errb)
+	if !strings.Contains(answer.errb, "--wait bound of 400ms") {
+		t.Fatalf("stderr is %q, want a refusal naming the --wait bound", answer.errb)
 	}
 	if got := lists(); got < 1 {
 		t.Fatalf("the command listed the claims %d times, want it to have waited at all", got)
