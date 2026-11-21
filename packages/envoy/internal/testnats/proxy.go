@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Proxy relays a client's TCP connections to a NATS server, so a test can take one client off
@@ -56,14 +58,15 @@ func ProxyRate(bytesPerSecond int) ProxyOption {
 }
 
 // StartProxy relays to the NATS server at target, a client URL such as Start returns, on a
-// loopback port of its own, until the test ends. URL is the same server through the proxy.
+// loopback port and address of its own (testport.LoopbackIP), until the test ends. URL is the same
+// server through the proxy.
 func StartProxy(t testing.TB, target string, options ...ProxyOption) *Proxy {
 	t.Helper()
 	server, err := url.Parse(target)
 	if err != nil || server.Host == "" {
 		t.Fatalf("read the NATS URL %q the proxy relays to: %v", target, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the NATS proxy: %v", err)
 	}
