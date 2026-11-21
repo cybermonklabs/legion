@@ -58,8 +58,19 @@ func TestRemainingNoDeadlineChild(t *testing.T) {
 	if got != unboundedRemaining {
 		t.Fatalf("under -timeout 0 Remaining = %s, want %s, a span no wait reaches", got, unboundedRemaining)
 	}
-	if now := time.Now(); !now.Add(got).After(now) {
-		t.Fatalf("now plus Remaining's %s is %s, not after now %s", got, now.Add(got), now)
+	if now := time.Now(); !now.Add(4 * got).After(now) {
+		t.Fatalf("now plus four times Remaining's %s is %s, not after now %s", got, now.Add(4*got), now)
+	}
+}
+
+// unboundedRemaining survives the small factors its callers multiply it by (a consumer's handler
+// limit is intake.WindowsPerLimit ack waits): every product up to seven times it is still
+// positive. 1 << 62 times 4 wraps an int64 to 0, which is what this row exists to catch.
+func TestUnboundedRemainingStaysPositiveTimesASmallFactor(t *testing.T) {
+	for factor := time.Duration(1); factor <= 7; factor++ {
+		if product := factor * unboundedRemaining; product <= 0 {
+			t.Errorf("%d times unboundedRemaining (%d ns) is %s, want a positive span", factor, int64(unboundedRemaining), product)
+		}
 	}
 }
 

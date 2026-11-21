@@ -11,9 +11,12 @@ import (
 const giveUpMargin = 30 * time.Second
 
 // unboundedRemaining is Remaining's answer when the test binary has no deadline (-timeout 0):
-// 1 << 62 ns, about 146 years, a span no wait reaches, which time.Now().Add takes without
-// overflowing, as a read deadline or a timer built from it needs.
-const unboundedRemaining = time.Duration(1 << 62)
+// 1 << 60 ns, about 36 years, a span no wait reaches. Callers multiply it by small factors (a
+// consumer's handler limit is intake.WindowsPerLimit ack waits, intake.HandlerLimitFor), so it
+// leaves room in an int64 for up to seven times itself (eight times is 1 << 63, which wraps):
+// 1 << 62 times 4 wraps to 0, which made such a limit fall to its floor. Now plus seven times it
+// is still a time after now, as a read deadline or a timer built from it needs.
+const unboundedRemaining = time.Duration(1 << 60)
 
 // Remaining is how long a wait that begins now in t may last: the test binary's deadline, the one
 // go test's -timeout sets, less giveUpMargin, less now; and unboundedRemaining under -timeout 0.
