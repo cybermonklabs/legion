@@ -299,23 +299,23 @@ func seedUnrecorded(t *testing.T, pool *store.Pool, handoff string) {
 // request on the branch of each implementing issue with a recorded handoff and no open record, and
 // applies the opened the webhook would have carried, which records it and moves the issue on; a
 // pull request the record holds closed is applied as its reopen. It names the repository as a
-// webhook's fact does, the mapping's spelling when the mapping serves it, so the webhooks that
-// follow find the record. An issue whose implementer has not completed, or whose pull request is
-// recorded open or merged, costs no read.
+// webhook's fact does, the spelling GitHub intake hears it by when the heard set names it
+// (heardSpelling), so the webhooks that follow find the record. An issue whose implementer has not
+// completed, or whose pull request is recorded open or merged, costs no read.
 func TestTheReadRecordsAnOpenPullRequestWhoseOpenedHasNotArrived(t *testing.T) {
 	opened := time.Date(2026, 10, 26, 19, 30, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name     string
 		handoff  string
 		recorded record.PullRequestState
-		served   string
+		heard    string
 		want     phase.Phase
 		listed   int32
 		repo     string
 	}{
 		{"the implementer completed", "handoff", "", "", phase.Testing, 1, "acme/widgets"},
 		{"the implementer completed on a pull request recorded closed", "handoff", record.PullRequestClosed, "", phase.Testing, 1, "acme/widgets"},
-		{"the mapping spells the repository otherwise", "handoff", "", "Acme/Widgets", phase.Testing, 1, "Acme/Widgets"},
+		{"GitHub intake hears the repository in another spelling", "handoff", "", "Acme/Widgets", phase.Testing, 1, "Acme/Widgets"},
 		{"the implementer has not completed", "", "", "", phase.Implementing, 0, ""},
 		{"the pull request is recorded open", "handoff", record.PullRequestOpen, "", phase.Implementing, 0, ""},
 		{"the pull request is recorded merged", "handoff", record.PullRequestMerged, "", phase.Implementing, 0, ""},
@@ -333,9 +333,8 @@ func TestTheReadRecordsAnOpenPullRequestWhoseOpenedHasNotArrived(t *testing.T) {
 			}
 			var listed atomic.Int32
 			w := readRuntime(pool, pullRequestStandIn(t, "handoff", opened, &listed).URL, quietLogger())
-			if tc.served != "" {
-				w.repositories = newRepositories("CAPTURE", ghrepo.Renames{})
-				w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse(tc.served), Default: true}}, nil)
+			if tc.heard != "" {
+				w.heard.Store(&[]ghrepo.Repository{ghrepo.MustParse(tc.heard)})
 			}
 			w.readIssuesAtStart(context.Background())
 			got, pr := capturePhase(t, pool)

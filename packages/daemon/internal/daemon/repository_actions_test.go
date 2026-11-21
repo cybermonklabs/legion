@@ -153,7 +153,7 @@ func TestARowQueuedBeforeTheFillActsOnTheFilledRepository(t *testing.T) {
 
 	named := newRepositoryGitHubFor(t, "Zeta/Tools", "release/v7.1")
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-7", ResolvedRepo: "zeta/tools"}}}
-	if err := backfillRepositories(context.Background(), pool, records, client, "LEGION", t.TempDir(),
+	if _, err := backfillRepositories(context.Background(), pool, records, client, "LEGION", t.TempDir(),
 		newDefaultBranches(roleTokens{}, nil, named, defaultBranchTTL, time.Now), ghrepo.Renames{}, quietLogger()); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}

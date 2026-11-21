@@ -774,88 +774,79 @@ func TestAGitHubEventOfAHeardRepositoryInAnotherCaseIsDecoded(t *testing.T) {
 	}
 }
 
-// Dispatch publishes a mapping change on its project's subject, not the issue prefix: the decoder
-// reads the daemon's own project's as a mapping change, and another project's as nothing.
-func TestARepositoryMappingEventIsTheProjectsMappingChange(t *testing.T) {
-	for _, tc := range []struct {
-		name, project string
-		want          Fact
-	}{
-		{"this project", "CAPTURE", RepoMappingChanged{Project: "CAPTURE"}},
-		{"another project", "OTHER", nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := decodeMessage(repoMappingSubject(tc.project), "CAPTURE", capturedRepositories, repoMappingEnvelope(t, tc.project, "acme/widgets"))
-			if err != nil {
-				t.Fatalf("decode the mapping event: %v", err)
-			}
-			if !reflect.DeepEqual(got.Fact, tc.want) {
-				t.Fatalf("fact = %#v, want %#v", got.Fact, tc.want)
-			}
-		})
-	}
-	if _, err := decodeMessage(repoMappingSubject("CAPTURE"), "CAPTURE", capturedRepositories, repoMappingEnvelope(t, "OTHER", "acme/widgets")); err == nil {
-		t.Fatal("a mapping event whose payload names another project than its subject decoded")
-	}
-}
-
-func repoMappingSubject(project string) string {
+// settingsSubject is the subject Dispatch publishes its project settings event
+// settings.repo_project.updated on, for project: Dispatch's own event of its repo-projects table,
+// which no consumer of the daemon filters on. It is named only to prove that, and
+// dispatch://INFRA-3532's own change deletes it and its test, with the rename pass.
+func settingsSubject(project string) string {
 	return "notifications.dispatch.project." + project + ".settings.repo_project.updated"
 }
 
-func repoMappingEnvelope(t *testing.T, project, repo string) []byte {
-	t.Helper()
-	return envelopeJSON(t, "dispatch-70-"+project, "dispatch", fmt.Sprintf(`{"id":70,"issue_key":null,"artifact_id":null,"project":%q,"seq":0,"type":"settings.repo_project.updated","actor":{"kind":"user","id":"smoke"},"notify":true,"created_at":"2026-10-16T18:00:00Z","payload":{"mapping":{"repo":%q,"project":%q,"default":false},"deleted":false}}`, project, repo, project))
-}
-
-// A mapping change is no workflow fact: the consumer has the daemon read the mapping again
-// (ConsumerSpec.RepositoryMapping) before it acknowledges the event, and a failed read is retried.
-func TestConsumeReadsTheMappingAgainOnAMappingChange(t *testing.T) {
+// A boot narrows the Dispatch consumer an earlier daemon made to the issue events alone: the
+// consumer that heard the subject of Dispatch's settings.repo_project.updated beside them is
+// updated in place, its position kept, and its filters read back exactly
+// notifications.dispatch.issue.>. An event Dispatch then publishes on that settings subject is
+// never delivered: once an issue event published after it is acknowledged, nothing is pending
+// or awaiting its acknowledgement, and processed_events holds a row for the issue events alone.
+//
+// The read-back of the filters is the control: with the settings subject put back among them, and
+// no decode of its event left (A8: no branch stays for it), the event is delivered and terminated
+// as poison, so the counts and the rows below read the same, and only the filters tell the two
+// apart (INFRA-4401 P4; dispatch://INFRA-4401 check a-go, item 2). dispatch://INFRA-3532's own
+// change deletes this test, which names Dispatch's settings event only to prove the daemon hears
+// none of it, with the rename pass.
+func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
-	var calls atomic.Int32
-	spec.RepositoryMapping = func(context.Context) error {
-		if calls.Add(1) == 1 {
-			return errors.New("Dispatch is restarting")
-		}
-		return nil
-	}
-	stop := startConsume(t, js, spec, pool, handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) {
-		return Result{}, errors.New("a mapping change reached a workflow handler")
-	}))
-	defer stop()
-
-	publish(t, js, repoMappingSubject("CAPTURE"), repoMappingEnvelope(t, "CAPTURE", "acme/widgets"))
-	testwait.Eventually(t, "the mapping read again after its failed read", func() bool { return calls.Load() == 2 })
-	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("RepositoryMapping ran %d times, want once failed and once read", got)
-	}
-}
-
-// The Dispatch consumer hears the project's mapping subject beside every issue event, and a boot
-// over an earlier daemon's consumer, which filtered on issue events alone, adds it.
-func TestTheDispatchConsumerHearsTheProjectsMappingSubject(t *testing.T) {
-	js, stream := testJetStream(t)
-	spec := consumerSpec(&lockedBuffer{})
+	backlog := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	if _, err := stream.CreateConsumer(context.Background(), jetstream.ConsumerConfig{
-		Durable: dispatchConsumerName(spec.Project), FilterSubject: "notifications.dispatch.issue.>", AckPolicy: jetstream.AckExplicitPolicy, AckWait: spec.AckWait,
+		Durable:        dispatchConsumerName(spec.Project),
+		FilterSubjects: []string{"notifications.dispatch.issue.>", settingsSubject(spec.Project)},
+		AckPolicy:      jetstream.AckExplicitPolicy, AckWait: spec.AckWait,
 	}); err != nil {
 		t.Fatalf("create the earlier daemon's consumer: %v", err)
 	}
-	if _, err := OpenConsumers(context.Background(), js, migratedPool(t), spec); err != nil {
-		t.Fatalf("OpenConsumers: %v", err)
+	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+	if err != nil {
+		t.Fatalf("OpenConsumers over the earlier daemon's consumer: %v", err)
 	}
-	config := consumerInfo(t, stream, dispatchConsumerName(spec.Project)).Config
-	want := []string{"notifications.dispatch.issue.>", repoMappingSubject("CAPTURE")}
-	if config.FilterSubject != "" || !slices.Equal(config.FilterSubjects, want) {
-		t.Fatalf("Dispatch consumer filters = %q %v, want %v", config.FilterSubject, config.FilterSubjects, want)
+	narrowed := consumerInfo(t, stream, dispatchConsumerName(spec.Project))
+	if want := []string{"notifications.dispatch.issue.>"}; narrowed.Config.FilterSubject != "" || !slices.Equal(narrowed.Config.FilterSubjects, want) {
+		t.Fatalf("Dispatch consumer filters = %q %v, want exactly %v", narrowed.Config.FilterSubject, narrowed.Config.FilterSubjects, want)
+	}
+	if narrowed.NumPending != 1 || narrowed.Delivered.Stream != 0 {
+		t.Fatalf("the narrowed consumer has %d pending and delivered through stream sequence %d, want its backlog of 1 (stream sequence %d) kept and nothing delivered: the boot updates the consumer in place",
+			narrowed.NumPending, narrowed.Delivered.Stream, backlog.Sequence)
+	}
+	stop := runConsumers(t, consumers, writeHandler("dispatch", nil))
+	defer stop()
+
+	settings := envelopeJSON(t, "dispatch-70-"+spec.Project, "dispatch", fmt.Sprintf(`{"id":70,"issue_key":null,"artifact_id":null,"project":%q,"seq":0,"type":"settings.repo_project.updated","actor":{"kind":"user","id":"smoke"},"notify":true,"created_at":"2026-10-16T18:00:00Z","payload":{"mapping":{"repo":"acme/widgets","project":%q,"default":false},"deleted":false}}`, spec.Project, spec.Project))
+	publish(t, js, settingsSubject(spec.Project), settings)
+	last := publish(t, js, "notifications.dispatch.issue.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
+	assertAcknowledgedThrough(t, stream, dispatchConsumerName(spec.Project), last)
+	if info := consumerInfo(t, stream, dispatchConsumerName(spec.Project)); info.NumPending != 0 || info.NumAckPending != 0 {
+		t.Fatalf("the Dispatch consumer has %d pending and %d awaiting acknowledgement, want none", info.NumPending, info.NumAckPending)
+	}
+	if got := writeCount(t, pool); got != 2 {
+		t.Fatalf("%d facts applied, want the two issue events alone", got)
+	}
+	rows, err := pool.Query(context.Background(), `select event_id from processed_events where source = 'dispatch' order by event_id`)
+	if err != nil {
+		t.Fatalf("read processed_events: %v", err)
+	}
+	marks, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read processed_events: %v", err)
+	}
+	if want := []string{"dispatch-15", "dispatch-24"}; !slices.Equal(marks, want) {
+		t.Fatalf("processed_events = %q, want the two issue events alone, %q, and no row for the settings event", marks, want)
 	}
 }
 
-// The repositories GitHub intake hears change at runtime with the mapping (SetRepositories): the
+// The repositories GitHub intake hears change at runtime (SetRepositories): the
 // GitHub consumer's filters and the decoder's set change together, so a newly listed repository's
 // event is applied and an unlisted one's is acknowledged untouched.
 func TestSetRepositoriesChangesTheRepositoriesGitHubIntakeHears(t *testing.T) {

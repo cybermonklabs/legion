@@ -137,7 +137,7 @@ func TestPrepareReadsTheDispatchChainAboveAParent(t *testing.T) {
 				putOutboxIssue(t, pool, records, issue)
 			}
 			repos := newRepositories("LEGION", ghrepo.Renames{})
-			repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
+			repos.fill(ghrepo.MustParse("acme/widgets"))
 			branches := newDefaultBranches(roleTokens{}, repos, "", defaultBranchTTL, time.Now)
 			branches.read["acme/widgets"] = defaultBranchRead{repository: ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, at: time.Now()}
 			client := &chainDispatch{issues: map[string]dispatch.Issue{}, failing: tc.failing}
@@ -289,7 +289,7 @@ func TestATodoHeldUnderAnUnreleasedChildQueuesOnceItsParentLeavesTheLiveTree(t *
 		t.Fatalf("seed the running tree: %v", err)
 	}
 	repos := newRepositories("LEGION", ghrepo.Renames{})
-	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
+	repos.fill(ghrepo.MustParse("acme/widgets"))
 	branches := newDefaultBranches(roleTokens{}, repos, "", defaultBranchTTL, time.Now)
 	branches.read["acme/widgets"] = defaultBranchRead{repository: ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, at: time.Now()}
 	client := &chainDispatch{issues: map[string]dispatch.Issue{
@@ -367,7 +367,7 @@ func newAncestryLine(t *testing.T, tree string, recorded ...record.Issue) *ances
 		t.Fatalf("seed the running tree: %v", err)
 	}
 	repos := newRepositories("LEGION", ghrepo.Renames{})
-	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
+	repos.fill(ghrepo.MustParse("acme/widgets"))
 	branches := newDefaultBranches(roleTokens{}, repos, "", defaultBranchTTL, time.Now)
 	branches.read["acme/widgets"] = defaultBranchRead{repository: ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, at: time.Now()}
 	client := &chainDispatch{issues: map[string]dispatch.Issue{tree: shownUnder(tree, "in_progress", "", true)}}

@@ -73,11 +73,11 @@ func readRuntime(pool *store.Pool, api string, log *slog.Logger) *workflowRuntim
 	return w
 }
 
-// servedAcme is the repository mapping of a project that serves acme/widgets alone, the one a
-// read's own spelling of a repository is resolved against.
+// servedAcme is the repository state of a project that has prepared acme/widgets alone, both
+// role Apps installed on it, the one a read's own spelling of a repository is resolved against.
 func servedAcme() *repositories {
 	served := newRepositories("CAPTURE", ghrepo.Renames{})
-	served.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
+	served.fill(ghrepo.MustParse("acme/widgets"))
 	return served
 }
 

@@ -25,7 +25,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -181,16 +183,24 @@ func daemonGrantConfig(uri string) config.Config {
 	}
 }
 
-// grantWorkflow is the workflow the grant tests connect: its project's mapping serves
-// sjawhar/legion, the repository the fixtures' events name, so GitHub intake hears it, and a
-// stand-in GitHub names it, as preparing the Dispatch fixture's todo issue reads it.
+// grantWorkflow is the workflow the grant tests connect: a record of its project names
+// sjawhar/legion, the repository the fixtures' events name, so GitHub intake hears it from the
+// boot's read of the records (heardAtBoot), and a stand-in GitHub names it, as preparing the
+// Dispatch fixture's todo issue reads it.
 func grantWorkflow(t *testing.T, logs *syncBuffer) *workflowRuntime {
 	t.Helper()
 	repos := newRepositories("CAPTURE", ghrepo.Renames{})
-	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("sjawhar/legion"), Default: true}}, nil)
+	repos.fill(ghrepo.MustParse("sjawhar/legion"))
 	github := newNamedGitHub(t, map[string]string{"sjawhar/legion": "sjawhar/legion@main"})
-	return &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "CAPTURE"},
+	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "CAPTURE"},
 		repositories: repos, defaultBranches: newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now), log: grantLogger(logs)}
+	if err := store.Transact(t.Context(), w.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return w.records.PutIssue(ctx, tx, record.Issue{Key: "CAPTURE-90", Tree: "CAPTURE-90", Project: "CAPTURE", Title: "a tree on sjawhar/legion",
+			Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion"})
+	}); err != nil {
+		t.Fatalf("record the tree whose repository GitHub intake hears: %v", err)
+	}
+	return w
 }
 
 func connectDaemonGrant(t *testing.T, uri, seed string, logs *syncBuffer) *workflowRuntime {

@@ -184,20 +184,26 @@ type Issue struct {
 	// the daemon first recorded the issue (a root's admission, a child's recording under its tree, an
 	// orphan's admission). Neither changes after that: a carried child, a re-admission and a
 	// hand-over keep them, and a later edit of the issue's repository in Dispatch is not applied.
+	// This release makes one exception, once: its rename pass writes a configured rename's new
+	// name, in GitHub's spelling, over its old one on Repo and GitHubRepo once GitHub shows the
+	// transfer, while no pod of the issue is live, under tmux while no workspace directory of it
+	// is under the old name (RenameIssueRepository), and dispatch://INFRA-3532's own change removes
+	// that pass.
 	// Every repository-dependent action reads them. Repo is spelled as the issue's workspace and
 	// shared clone are, which can be a clone's spelling that differs from GitHub's in case.
 	Repo          string
 	DefaultBranch string
-	// GitHubRepo is GitHub's own spelling of Repo, taken with it and never changed: what Envoy's
-	// event subjects carry, which NATS matches case-sensitively, so GitHub intake hears the issue's
-	// repository by it, read from the record at boot. Under a configured repository rename
-	// (`repository_renames`) whose two names are Repo and the name GitHub holds the repository
-	// under, it is the pair's spelling of Repo's own side instead, which GitHub publishes nothing
-	// under after the transfer: the record's two repository columns must name one repository, and
-	// a record keeps the name it was recorded under for its whole life. Intake still hears the
-	// issue, because the daemon subscribes to both names of a pair (heardRepositories), and every
-	// GitHub call the daemon makes for the record addresses the repository GitHub serves it under
-	// now (ghrepo.Renames.Serving) rather than this field.
+	// GitHubRepo is GitHub's own spelling of Repo, taken with it and changed only with it, by this
+	// release's rename pass (RenameIssueRepository): what Envoy's event subjects carry, which NATS
+	// matches case-sensitively, so GitHub intake hears the issue's repository by it, read from the
+	// record at boot. Under a configured repository rename (`repository_renames`) whose two names
+	// are Repo and the name GitHub holds the repository under, it is the pair's spelling of Repo's
+	// own side instead, which GitHub publishes nothing under after the transfer: the record's two
+	// repository columns must name one repository, and a record keeps the name it was recorded
+	// under until the rename pass writes the pair's new name, in GitHub's spelling, on both.
+	// Intake still hears the issue, because the daemon subscribes to both names of a pair
+	// (heardRepositories), and every GitHub call the daemon makes for the record addresses the
+	// repository GitHub serves it under now (ghrepo.Renames.Serving) rather than this field.
 	GitHubRepo string
 	// Ancestry is the keys of a root's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the root, as the newest Dispatch observation
@@ -1764,7 +1770,9 @@ type Store interface {
 	SlottedIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
 	// PutIssue writes issue, refusing one without its repository, default branch or GitHub's
 	// spelling of the repository, one whose GitHub spelling names another repository, and one that
-	// would give a recorded issue another of any of them.
+	// would give a recorded issue another of any of them. This release's rename pass writes a
+	// configured rename's new name on a recorded issue through RenameIssueRepository instead, the
+	// one writer that changes a recorded repository, which dispatch://INFRA-3532's own change removes.
 	PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error
 	// MarkIssueMoved records at as when the daemon last saw key move (Issue.MovedAt), the one
 	// writer of that column: the write sites hand it the fact's own moment, and PutIssue names the

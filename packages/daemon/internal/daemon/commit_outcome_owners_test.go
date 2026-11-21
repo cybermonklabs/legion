@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,11 +25,10 @@ import (
 
 // These tests run the owners whose success work follows a write of theirs — the backfill's two
 // writes, the boot's hold of recorded session names, the idle and unowned releases, the cancel of
-// a release that did not finish, the wake of a released pod and the mapping refresh — over a
-// real PostgreSQL through a proxy that cuts one transaction's commit (testdb.CommitFaults). An
-// owner whose commit landed keeps its success work once, whether its reply came back or the store
-// said later that it committed; an owner whose commit never landed runs none of it, and its retry
-// does.
+// a release that did not finish and the wake of a released pod — over a real PostgreSQL through a
+// proxy that cuts one transaction's commit (testdb.CommitFaults). An owner whose commit landed
+// keeps its success work once, whether its reply came back or the store said later that it
+// committed; an owner whose commit never landed runs none of it, and its retry does.
 
 // ownerRig is one owner of success work, run through a faulted pool or store.
 type ownerRig struct {
@@ -58,6 +58,8 @@ func ownerFamilies() []ownerFamily {
 	return []ownerFamily{
 		{name: "backfill fill", match: "update issues set repo =", retried: true, open: backfillOwner("fill")},
 		{name: "backfill name", match: "update issues set github_repo =", retried: true, open: backfillOwner("name")},
+		{name: "refresher backfill", match: "update issues set repo =", retried: true, open: backfillLaterOwner, unknown: backfillLaterUnknown},
+		{name: "rename write", match: renameDeleteMatch, retried: true, open: renameWriteOwner, unknown: renameWriteUnknown},
 		{name: "boot holds", match: "insert into claim_sessions", retried: true, open: bootHoldsOwner},
 		{name: "idle release", match: "insert into issue_releases", retried: true, open: idleReleaseOwner},
 		{name: "unowned release", match: "insert into issue_releases", retried: true, open: unownedReleaseOwner, unknown: unownedReleaseUnknown},
@@ -204,10 +206,13 @@ func backfillOwner(kind string) func(t *testing.T) *ownerRig {
 		return &ownerRig{
 			fault: fault,
 			run: func(*testing.T) error {
+				var err error
 				if kind == "fill" {
-					return fillRepositories(ctx, faulted, records, client, "LEGION", state, named, ghrepo.Renames{}, log)
+					_, err = fillRepositories(ctx, faulted, records, client, "LEGION", state, named, ghrepo.Renames{}, log)
+				} else {
+					_, err = nameRepositories(ctx, faulted, records, "LEGION", named, ghrepo.Renames{}, log)
 				}
-				return nameRepositories(ctx, faulted, records, "LEGION", named, ghrepo.Renames{}, log)
+				return err
 			},
 			changed: func(t *testing.T) bool {
 				var spelled string
@@ -218,6 +223,211 @@ func backfillOwner(kind string) func(t *testing.T) *ownerRig {
 			},
 			work: func(*testing.T) map[string]int { return map[string]int{"journal lines": count(logs, phrase)} },
 		}
+	}
+}
+
+// laterRig is the refresher's backfill (backfillLater) of one record that carries no repository,
+// which Dispatch resolves to acme/widgets and GitHub spells Acme/Widgets, over a faulted pool: what
+// it publishes to GitHub intake and how often it asks for a read of the live records.
+type laterRig struct {
+	w       *workflowRuntime
+	direct  *store.Pool
+	fault   *testdb.CommitFault
+	logs    *syncBuffer
+	mu      sync.Mutex
+	publish int
+}
+
+const backfillRetryLine = "workflow backfill: the records without their repository columns were not read, listed or written"
+
+func newLaterRig(t *testing.T) *laterRig {
+	direct, faulted, fault := faultedPools(t)
+	if _, err := direct.Exec(context.Background(), `insert into issues
+		(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ('LEGION-REVIEW', 'LEGION-REVIEW', 'LEGION', 'review', 'planning', 1, 'in_progress', 'A', 1)`); err != nil {
+		t.Fatalf("seed the record: %v", err)
+	}
+	github := newRepositoryGitHub(t, "main")
+	github.fullName = "Acme/Widgets"
+	logs, log := watchedLog()
+	r := &laterRig{direct: direct, fault: fault, logs: logs}
+	r.w = &workflowRuntime{pool: faulted, records: projectRecords{Store: record.NewStore(), project: "LEGION"},
+		dispatch:        &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-REVIEW", ResolvedRepo: "acme/widgets"}}},
+		dispatchProject: "LEGION", stateDir: t.TempDir(), repositories: newRepositories("LEGION", ghrepo.Renames{}),
+		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now),
+		heardWake:       make(chan struct{}, 1), liveWake: make(chan struct{}, 16), log: log,
+		setRepositories: func(_ context.Context, repos []ghrepo.Repository) error {
+			if !slices.Equal(repositoryNames(repos), []string{"Acme/Widgets"}) {
+				t.Errorf("GitHub intake told to hear %v, want Acme/Widgets alone", repositoryNames(repos))
+			}
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.publish++
+			return nil
+		}}
+	return r
+}
+
+// run is one run of the refresher's backfill job, with a record still left, and its failure: the
+// warning backfillLater logs in place of an error.
+func (r *laterRig) run() error {
+	before := count(r.logs, backfillRetryLine)
+	r.w.backfillPending.Store(true)
+	r.w.backfillLater(context.Background())
+	if count(r.logs, backfillRetryLine) > before {
+		return errors.New("the refresher's backfill was not written")
+	}
+	return nil
+}
+
+func (r *laterRig) work() map[string]int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return map[string]int{"GitHub intake publications of Acme/Widgets": r.publish, "live record reads asked": len(r.w.liveWake)}
+}
+
+// backfillLaterOwner is the refresher's backfill, whose hear of the GitHub spelling the record now
+// keeps, and whose ask for a read of the live records, are hooks of its write's commit
+// (backfillRecords).
+func backfillLaterOwner(t *testing.T) *ownerRig {
+	r := newLaterRig(t)
+	return &ownerRig{
+		fault: r.fault,
+		run:   func(*testing.T) error { return r.run() },
+		changed: func(t *testing.T) bool {
+			var spelled string
+			if err := r.direct.QueryRow(context.Background(), "select coalesce(github_repo, '') from issues where key = 'LEGION-REVIEW'").Scan(&spelled); err != nil {
+				t.Fatalf("read the record: %v", err)
+			}
+			return spelled == "Acme/Widgets"
+		},
+		work: func(*testing.T) map[string]int { return r.work() },
+	}
+}
+
+// A refresher's backfill whose write's outcome the store cannot say publishes nothing and asks for
+// no read yet, and stays pending. Once the store says the write committed, the record's repository
+// is heard and the read asked for, once; the next run finds no record left and adds nothing.
+func backfillLaterUnknown(t *testing.T) {
+	r := newLaterRig(t)
+	fired := r.fault.Cut("update issues set repo =", testdb.CutAfterCommitRefusing)
+	if err := r.run(); err == nil {
+		t.Errorf("the backfill whose outcome the store cannot say = nil, want its warning")
+	}
+	testdb.Met(t, fired)
+	if !strings.Contains(r.logs.String(), store.ErrCommitOutcomeUnknown.Error()) {
+		t.Errorf("the backfill's warning names no unknown outcome: %q", r.logs.String())
+	}
+	if !r.w.backfillPending.Load() {
+		t.Errorf("the backfill is not pending after a write whose outcome is unknown, want it tried again")
+	}
+	wantLater(t, r, 0, "before the store answers:")
+	r.fault.Refuse(false)
+	testwait.WithinPolling(t, testwait.Bounded(t, 10*time.Second, time.Second), testwait.Poll,
+		"the backfill's publication and read once the store says the write committed", func() bool {
+			work := r.work()
+			return work["GitHub intake publications of Acme/Widgets"] == 1 && work["live record reads asked"] == 1
+		})
+	if err := r.run(); err != nil {
+		t.Fatalf("the backfill's next run = %v, want nil", err)
+	}
+	if r.w.backfillPending.Load() {
+		t.Errorf("the backfill is pending after the run that found no record left")
+	}
+	wantLater(t, r, 1, "after the store answered and the next run, but")
+}
+
+// wantLater fails the test for each kind of the refresher backfill's work not counted want times.
+func wantLater(t *testing.T, r *laterRig, want int, when string) {
+	t.Helper()
+	work := r.work()
+	for _, name := range slices.Sorted(maps.Keys(work)) {
+		if work[name] != want {
+			t.Errorf("%s %s = %d, want %d", when, name, work[name], want)
+		}
+	}
+}
+
+// renameDeleteMatch is the statement of the rename write whose new name would hold another issue's
+// pull request branch twice: the write that deletes its pull request row.
+const renameDeleteMatch = "delete from pull_requests where issue ="
+
+// renameRig is the rename pass of INFRA's pair over two done issues on one branch, LEGION-1 on the
+// pair's `from` and LEGION-2 on its `to`, through a faulted pool, keeping no issue: LEGION-1's
+// write moves its record and deletes its pull request row, which LEGION-2's holds under the new
+// name.
+type renameRig struct {
+	w      *workflowRuntime
+	pass   renamePass
+	direct *store.Pool
+	fault  *testdb.CommitFault
+	logs   *syncBuffer
+}
+
+func newRenameRig(t *testing.T) *renameRig {
+	direct, faulted, fault := faultedPools(t)
+	seedRenameRecords(t, direct, "LEGION", renameSeed{key: "LEGION-1", repo: renameFrom, branch: "release/shared"},
+		renameSeed{key: "LEGION-2", repo: renameTo, branch: "release/shared"})
+	logs, log := watchedLog()
+	w := &workflowRuntime{pool: faulted, dispatchProject: "LEGION", stateDir: t.TempDir(), repositories: transferredRepositories(),
+		liveWake: make(chan struct{}, 16), log: log}
+	return &renameRig{w: w, pass: w.renamePass(func(string, []string) string { return "" }), direct: direct, fault: fault, logs: logs}
+}
+
+// run is one rename pass and its failure: the line it logs for a write that failed.
+func (r *renameRig) run() error {
+	before := count(r.logs, renameFailedLine)
+	r.pass.run(context.Background(), nil)
+	if count(r.logs, renameFailedLine) > before {
+		return errors.New("the rename pass's write failed")
+	}
+	return nil
+}
+
+func (r *renameRig) work() map[string]int {
+	return map[string]int{"deletion lines": count(r.logs, renameDeletedLine), "live record reads asked": len(r.w.liveWake)}
+}
+
+// renameWriteOwner is the rename pass's write of one issue, whose line naming the pull request row
+// it deleted, and whose ask for a read of the live records, are hooks of its commit
+// (renamePass.write).
+func renameWriteOwner(t *testing.T) *ownerRig {
+	r := newRenameRig(t)
+	return &ownerRig{
+		fault:   r.fault,
+		run:     func(*testing.T) error { return r.run() },
+		changed: func(t *testing.T) bool { return namedAll(storedRepositoryNames(t, r.direct, "LEGION-1"), renameTo) },
+		work:    func(*testing.T) map[string]int { return r.work() },
+	}
+}
+
+// A rename write whose outcome the store cannot say logs no deletion and asks for no read yet. Once
+// the store says it committed, its deletion line and its ask follow, once; the next pass finds no
+// row on the old name and adds neither.
+func renameWriteUnknown(t *testing.T) {
+	r := newRenameRig(t)
+	fired := r.fault.Cut(renameDeleteMatch, testdb.CutAfterCommitRefusing)
+	if err := r.run(); err == nil {
+		t.Errorf("the pass whose write's outcome the store cannot say = nil, want its failed write's line")
+	}
+	testdb.Met(t, fired)
+	if !strings.Contains(r.logs.String(), store.ErrCommitOutcomeUnknown.Error()) {
+		t.Errorf("the pass's log names no unknown outcome: %q", r.logs.String())
+	}
+	if work := r.work(); work["deletion lines"] != 0 || work["live record reads asked"] != 0 {
+		t.Fatalf("before the store answers: %v, want none", work)
+	}
+	r.fault.Refuse(false)
+	testwait.WithinPolling(t, testwait.Bounded(t, 10*time.Second, time.Second), testwait.Poll,
+		"the write's deletion line and read once the store says it committed", func() bool {
+			work := r.work()
+			return work["deletion lines"] == 1 && work["live record reads asked"] == 1
+		})
+	if err := r.run(); err != nil {
+		t.Fatalf("the next pass = %v, want nil", err)
+	}
+	if work := r.work(); work["deletion lines"] != 1 || work["live record reads asked"] != 1 {
+		t.Errorf("after the next pass: %v, want each once", work)
 	}
 }
 
@@ -555,108 +765,6 @@ func TestAWakeWhoseTakeOutcomeIsUnknownIsResumedByItsRetry(t *testing.T) {
 	}
 	if resumed := len(rig.rt.CallsOf("Resume")) - before; resumed != 1 {
 		t.Errorf("resumes the retry handled = %d, want 1", resumed)
-	}
-}
-
-// mappingDropRig is the mapping rig with its pool faulted, after a read that served acme/widgets
-// and zeta/tools, and with zeta/tools then dropped. Its log begins empty, so callers read only
-// the faulted mapping operation and its retry.
-func mappingDropRig(t *testing.T, opts ...func(*workflowRuntime)) (*workflowRuntime, *testdb.CommitFault, *syncBuffer, func() []string) {
-	t.Helper()
-	var fault *testdb.CommitFault
-	logs, log := watchedLog()
-	faulting := func(w *workflowRuntime) {
-		w.pool, fault = faultedPoolOf(t, w.pool)
-		w.log = log
-	}
-	w, client, _, stream := mappingRigWith(t, &installations{}, append([]func(*workflowRuntime){faulting}, opts...)...)
-	if err := w.refreshMapping(context.Background()); err != nil {
-		t.Fatalf("the first read: %v", err)
-	}
-	if served := repositoryNames(w.repositories.Accepted()); !slices.Equal(served, []string{"acme/widgets", "zeta/tools"}) {
-		t.Fatalf("the first read serves %v, want acme/widgets and zeta/tools", served)
-	}
-	logs.Reset()
-	client.mappings = []dispatch.RepoProject{{Repo: "acme/widgets", Project: "LEGION", Default: true}}
-	return w, fault, logs, func() []string { return githubFilterSubjects(t, stream) }
-}
-
-// A mapping read whose commit's reply is lost wrote nothing, so the store holds the same rows
-// either way: the read answers nil, logs its delta once, and narrows what GitHub intake hears.
-func TestAMappingReadWhoseCommitReplyIsLostLogsItsDeltaAndNarrows(t *testing.T) {
-	for _, cut := range []struct {
-		name string
-		cut  testdb.Cut
-	}{{"cut after the commit", testdb.CutAfterCommit}, {"cut before the commit", testdb.CutBeforeCommit}} {
-		t.Run(cut.name, func(t *testing.T) {
-			storeLogs := &syncBuffer{}
-			previous := slog.Default()
-			slog.SetDefault(slog.New(slog.NewTextHandler(storeLogs, nil)))
-			t.Cleanup(func() { slog.SetDefault(previous) })
-			w, fault, logs, filters := mappingDropRig(t)
-			fired := fault.Cut("legion.apply_fact", cut.cut)
-			err := w.refreshMapping(context.Background())
-			testdb.Met(t, fired)
-			if err != nil {
-				t.Fatalf("the read whose commit's reply was lost = %v, want nil: it wrote nothing", err)
-			}
-			if got := count(logs, "legion workflow repositories changed"); got != 1 {
-				t.Errorf("repositories changed lines = %d, want 1", got)
-			}
-			if got := count(logs, "removed=[zeta/tools]"); got != 1 {
-				t.Errorf("lines naming zeta/tools removed = %d, want 1; log=%q", got, logs.String())
-			}
-			if strings.Contains(storeLogs.String(), "store:") {
-				t.Errorf("the store logged %q, want nothing: a transaction that wrote nothing has no outcome to read", storeLogs.String())
-			}
-			if subjects := filters(); slices.Contains(subjects, "notifications.github.zeta.tools.>") {
-				t.Errorf("GitHub filters = %v, want zeta/tools no longer heard", subjects)
-			}
-		})
-	}
-}
-
-// A narrowing that fails after the read committed leaves the read's line written at the commit,
-// and the refresher's retry, which reads again after any failure, narrows: the retry's own line
-// names nothing removed, and zeta/tools stays named as removed by exactly one line.
-func TestANarrowingThatFailsIsDoneByTheRefreshersRetry(t *testing.T) {
-	failed := false
-	var target *workflowRuntime
-	failNarrowing := func(w *workflowRuntime) {
-		target = w
-		w.setRepositories = func(ctx context.Context, repositories []ghrepo.Repository) error {
-			names := make([]string, 0, len(repositories))
-			for _, repo := range repositories {
-				names = append(names, repo.String())
-			}
-			if !failed && !slices.Contains(names, "zeta/tools") {
-				failed = true
-				return errors.New("JetStream refused the subscription update")
-			}
-			return target.consumers.SetRepositories(ctx, repositories)
-		}
-	}
-	w, _, logs, filters := mappingDropRig(t, failNarrowing)
-	if err := w.refreshMapping(context.Background()); err == nil {
-		t.Fatal("the read whose narrowing failed = nil, want the narrowing's error")
-	}
-	if got := count(logs, "removed=[zeta/tools]"); got != 1 {
-		t.Errorf("after the failed narrowing, lines naming zeta/tools removed = %d, want 1: the line is the commit's; log=%q", got, logs.String())
-	}
-	if subjects := filters(); !slices.Contains(subjects, "notifications.github.zeta.tools.>") {
-		t.Errorf("GitHub filters = %v after the failed narrowing, want zeta/tools still heard", subjects)
-	}
-	if err := w.refreshMapping(context.Background()); err != nil {
-		t.Fatalf("the refresher's retry = %v, want nil", err)
-	}
-	if subjects := filters(); slices.Contains(subjects, "notifications.github.zeta.tools.>") {
-		t.Errorf("GitHub filters = %v after the retry, want zeta/tools no longer heard", subjects)
-	}
-	if got := count(logs, "legion workflow repositories changed"); got != 2 {
-		t.Errorf("repositories changed lines = %d, want 2: the failed read's and the retry's", got)
-	}
-	if got := count(logs, "removed=[zeta/tools]"); got != 1 {
-		t.Errorf("lines naming zeta/tools removed = %d, want 1: the retry's line names nothing removed", got)
 	}
 }
 

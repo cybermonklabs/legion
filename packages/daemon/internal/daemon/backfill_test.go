@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,8 +29,10 @@ func (d *listingDispatch) ListIssues(context.Context, string, []string) ([]dispa
 
 // A record written before the record carried the issue's repository is filled at boot from the
 // repository Dispatch resolves the issue to and that repository's default branch, GitHub read once
-// per repository. A record Dispatch resolves to none refuses the boot, naming every such record,
-// and fills nothing.
+// per repository. A record Dispatch resolves to none is left as it is, and the issue and the cause
+// are logged, while every other record is filled: one record's repository never stops the boot
+// (INFRA-4401 D11), and the backfill answers that a record is left, for the refresher to try it
+// again.
 func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
 	seed := func(t *testing.T) *workflowRuntime {
 		t.Helper()
@@ -54,13 +57,21 @@ func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
 	t.Run("Dispatch resolves none for some", func(t *testing.T) {
 		w := seed(t)
 		client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-7"}, {Key: "LEGION-9", ResolvedRepo: "acme/widgets"}}}
-		err := backfillRepositories(context.Background(), w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger())
-		want := "2 issue records have no repository and Dispatch resolves none for them (LEGION-12, LEGION-7): set the project's default repository in Dispatch (Settings → Repositories → Projects) and restart"
-		if err == nil || err.Error() != want {
-			t.Fatalf("backfill = %v, want %q", err, want)
+		var logs bytes.Buffer
+		left, err := backfillRepositories(context.Background(), w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, slog.New(slog.NewTextHandler(&logs, nil)))
+		if err != nil || !left {
+			t.Fatalf("backfill = left %t, %v; want the two Dispatch resolves none for left, and no error", left, err)
 		}
-		if unfilled := unfilledKeys(t, w); len(unfilled) != 3 {
-			t.Fatalf("records filled after a refused backfill: unfilled %v, want all three", unfilled)
+		if filled := recordedIssue(t, w, "LEGION-9"); filled == nil || filled.GitHubRepo != "Acme/Widgets" {
+			t.Fatalf("LEGION-9's record = %+v, want it filled on GitHub's Acme/Widgets", filled)
+		}
+		if unfilled := unfilledKeys(t, w); !slices.Equal(slices.Sorted(slices.Values(unfilled)), []string{"LEGION-12", "LEGION-7"}) {
+			t.Fatalf("unfilled after the backfill = %v, want LEGION-12 and LEGION-7 left as they are", unfilled)
+		}
+		for _, key := range []string{"LEGION-7", "LEGION-12"} {
+			if !strings.Contains(logs.String(), leftAs(key, `""`, "Dispatch resolves no repository for it: set its repository in Dispatch")) {
+				t.Fatalf("backfill log = %s, want %s named as left with its cause", logs.String(), key)
+			}
 		}
 	})
 
@@ -73,7 +84,7 @@ func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
 			{Key: "LEGION-7", ResolvedRepo: "acme/widgets"}, {Key: "LEGION-9", ResolvedRepo: "acme/widgets"}, {Key: "LEGION-12", ResolvedRepo: "acme/widgets"},
 		}}
 		var logs bytes.Buffer
-		if err := backfillRepositories(context.Background(), w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
+		if _, err := backfillRepositories(context.Background(), w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
 			t.Fatalf("backfill: %v", err)
 		}
 		if unfilled := unfilledKeys(t, w); len(unfilled) != 0 {

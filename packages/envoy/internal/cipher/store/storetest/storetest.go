@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/store"
@@ -103,6 +104,27 @@ func Open(t testing.TB, params ...string) *store.Store {
 	}
 	t.Cleanup(st.Close)
 	return st
+}
+
+// RepeatableReadByDefault opens a second pool on st's database whose connections begin every
+// transaction at REPEATABLE READ unless it names a level (default_transaction_isolation), closed
+// when t ends. A transaction that asks for READ COMMITTED by name reads alike on either pool, so a
+// test that runs the code under test on this one fails once the name is taken away, which on the
+// server's own default, READ COMMITTED, it would not.
+func RepeatableReadByDefault(t testing.TB, st *store.Store) *pgxpool.Pool {
+	t.Helper()
+	config := st.Pool.Config()
+	config.ConnConfig.RuntimeParams["default_transaction_isolation"] = "repeatable read"
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		t.Fatalf("open a REPEATABLE READ pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	var level string
+	if err := pool.QueryRow(context.Background(), `show transaction_isolation`).Scan(&level); err != nil || level != "repeatable read" {
+		t.Fatalf("the REPEATABLE READ pool's transactions run at %q, %v; want repeatable read, or the test that uses it proves nothing", level, err)
+	}
+	return pool
 }
 
 // PerPodLoginSchema applies by hand the one statement the release after this one migrates:

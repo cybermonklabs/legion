@@ -187,12 +187,6 @@ type ConsumerSpec struct {
 	// failed ReviewPermission read is. No resolver (a test, or a daemon without one) leaves every
 	// truncated review's body capped.
 	ReviewBody func(ctx context.Context, review PullRequestReview) (string, error)
-	// RepositoryMapping reads the project's repository mapping again, for Dispatch's
-	// settings.repo_project.updated on the project (RepoMappingChanged): it runs before the event
-	// is acknowledged, within AckWait, which bounds this read alone (ReviewPermission), and in no
-	// transaction, and a failed read is retried after NakDelay. No reader (a test) acknowledges the
-	// event.
-	RepositoryMapping func(ctx context.Context) error
 	// PrepareRepository readies what the workflow reads in memory of the repository a Dispatch
 	// issue event resolves to (DispatchIssue.ResolvedRepo), before the fact is applied, within
 	// AckWait, which bounds this one preparation rather than the delivery (ReviewPermission), and
@@ -228,10 +222,13 @@ func (r *RetryLater) Unwrap() error { return r.Err }
 // set GitHub intake hears and decodes, which SetRepositories replaces under mu. pool is the
 // Postgres every fact is applied on and every consumer's position is kept in (consumer_positions).
 // progress is, per durable consumer, what JetStream does not keep: when this daemon opened it and
-// when it last handled a message (Lag).
+// when it last handled a message (Lag). js is the JetStream they were opened on, where each read of
+// the stream's info opens a handle of its own (DispatchTarget, createConsumer); stream is the
+// handle every other call shares.
 type Consumers struct {
 	spec     ConsumerSpec
 	pool     store.TxPool
+	js       jetstream.JetStream
 	stream   jetstream.Stream
 	dispatch jetstream.Consumer
 	github   jetstream.Consumer
@@ -261,9 +258,9 @@ type Consumers struct {
 //
 // A NATS server that can skip a message on a consumer filtering on a wildcard and a literal at the
 // same token is refused before any consumer is opened, naming its version and the fixed releases
-// (envoy's natsversion.ConnectedRefusal, the rule the listener refuses one by): the Dispatch
-// consumer filters on the issue family beside this project's mapping subject, and the stream is the
-// listener's, whose session consumers need such a server too. The daemon's boot ends on the error.
+// (envoy's natsversion.ConnectedRefusal, the rule the listener refuses one by): the stream is the
+// listener's, whose session consumers filter so and need such a server. The daemon's boot ends on
+// the error.
 // The version is decided on one the connection reports: a connection reconnecting or draining when
 // the boot reaches this is looked at again, within ctx (the boot attempt's 30 s bootTimeout, the
 // bound the stream lookup after this has), and is never read as a server of no version.
@@ -283,20 +280,20 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPoo
 		return nil, fmt.Errorf("open %s: %w", notificationStream, err)
 	}
 
-	dispatch, err := openConsumer(ctx, stream, pool, spec.Logger, jetstream.ConsumerConfig{
+	dispatch, err := openConsumer(ctx, js, stream, pool, spec.Logger, jetstream.ConsumerConfig{
 		Durable:        dispatchConsumerName(spec.Project),
-		FilterSubjects: []string{"notifications.dispatch.issue.>", mappingSubject(spec.Project)},
+		FilterSubjects: []string{"notifications.dispatch.issue.>"},
 		AckPolicy:      jetstream.AckExplicitPolicy,
 		AckWait:        spec.AckWait,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open the Dispatch durable consumer: %w", err)
 	}
-	github, err := openConsumer(ctx, stream, pool, spec.Logger, githubConsumerConfig(spec, spec.Repositories))
+	github, err := openConsumer(ctx, js, stream, pool, spec.Logger, githubConsumerConfig(spec, spec.Repositories))
 	if err != nil {
 		return nil, fmt.Errorf("open the GitHub durable consumer: %w", err)
 	}
-	wake, err := openConsumer(ctx, stream, pool, spec.Logger, jetstream.ConsumerConfig{
+	wake, err := openConsumer(ctx, js, stream, pool, spec.Logger, jetstream.ConsumerConfig{
 		Durable:       wakeConsumerName(spec.Project),
 		FilterSubject: legionWakeSubject,
 		AckPolicy:     jetstream.AckExplicitPolicy,
@@ -305,7 +302,7 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPoo
 	if err != nil {
 		return nil, fmt.Errorf("open the listener wake durable consumer: %w", err)
 	}
-	consumers := &Consumers{spec: spec, pool: pool, stream: stream, dispatch: dispatch, github: github, wake: wake,
+	consumers := &Consumers{spec: spec, pool: pool, js: js, stream: stream, dispatch: dispatch, github: github, wake: wake,
 		repos: slices.Clone(spec.Repositories)}
 	opened := spec.Now()
 	consumers.progress.dispatch = &consumerProgress{name: dispatchConsumerName(spec.Project), opened: opened}
@@ -336,7 +333,7 @@ func (c *Consumers) SetRepositories(ctx context.Context, repositories []ghrepo.R
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	github, err := openConsumer(ctx, c.stream, c.pool, c.spec.Logger, githubConsumerConfig(c.spec, repositories))
+	github, err := openConsumer(ctx, c.js, c.stream, c.pool, c.spec.Logger, githubConsumerConfig(c.spec, repositories))
 	if err != nil {
 		return fmt.Errorf("update the GitHub durable consumer's repositories: %w", err)
 	}
@@ -362,10 +359,10 @@ func (c *Consumers) repositories() []ghrepo.Repository {
 // may have been handled by the consumer before it went missing, or may have been missed. The
 // daemon applied none of them, and nothing replays them. A consumer with no position starts at the
 // next message.
-func openConsumer(ctx context.Context, stream jetstream.Stream, pool store.TxPool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+func openConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool store.TxPool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	existing, err := stream.Consumer(ctx, config.Durable)
 	if errors.Is(err, jetstream.ErrConsumerNotFound) {
-		return createConsumer(ctx, stream, pool, logger, config)
+		return createConsumer(ctx, js, stream, pool, logger, config)
 	}
 	if err != nil {
 		return nil, err
@@ -376,8 +373,10 @@ func openConsumer(ctx context.Context, stream jetstream.Stream, pool store.TxPoo
 }
 
 // createConsumer creates the missing durable consumer config names, at its stored position when
-// pool keeps one and at the next message otherwise (openConsumer).
-func createConsumer(ctx context.Context, stream jetstream.Stream, pool store.TxPool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+// pool keeps one and at the next message otherwise (openConsumer). The stream's info it reads for
+// a stored position comes through a handle of its own on js, as DispatchTarget's does, and never
+// through stream, which other goroutines share.
+func createConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool store.TxPool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	start, stored, err := storedStreamTime(ctx, pool, config.Durable)
 	if err != nil {
 		return nil, err
@@ -386,10 +385,11 @@ func createConsumer(ctx context.Context, stream jetstream.Stream, pool store.TxP
 		config.DeliverPolicy = jetstream.DeliverNewPolicy
 		return stream.CreateConsumer(ctx, config)
 	}
-	info, err := stream.Info(ctx)
+	fresh, err := js.Stream(ctx, notificationStream)
 	if err != nil {
 		return nil, fmt.Errorf("read %s info: %w", notificationStream, err)
 	}
+	info := fresh.CachedInfo()
 	config.DeliverPolicy, config.OptStartTime = jetstream.DeliverByStartTimePolicy, &start
 	consumer, err := stream.CreateConsumer(ctx, config)
 	if err != nil {
@@ -412,13 +412,18 @@ func createConsumer(ctx context.Context, stream jetstream.Stream, pool store.TxP
 // so any record the listing shows behind Dispatch's log is caught up only once the Dispatch
 // consumer's ack floor reaches this position — a stream position, not a per-issue or per-message
 // count, so it needs no correction for redelivery, a nak, or messages the consumer's filter never
-// matches.
+// matches. It reads through a handle of its own (js.Stream: one STREAM.INFO request, the handle's
+// cached info that answer) rather than c.stream.Info: nats.go's Info writes the handle's cached
+// info under no lock, and the refresher's recovery reads the target while a SetRepositories on
+// another goroutine can read the stream's info (createConsumer), so reads on the shared handle
+// raced (the race detector's find in the daemon's boot-listing test). A fresh handle shares
+// nothing with another read.
 func (c *Consumers) DispatchTarget(ctx context.Context) (int64, error) {
-	info, err := c.stream.Info(ctx)
+	stream, err := c.js.Stream(ctx, notificationStream)
 	if err != nil {
 		return 0, fmt.Errorf("read notification stream info: %w", err)
 	}
-	return int64(info.State.LastSeq), nil
+	return int64(stream.CachedInfo().State.LastSeq), nil
 }
 
 // DispatchPosition is the Dispatch consumer's own current position, read fresh from JetStream:
@@ -969,12 +974,6 @@ func nakOutcome(what, nakWhat string, err error) messageOutcome {
 func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpec, pool store.TxPool, decoded decodedMessage, handlers []Handler, dropped *droppedSettlements) messageOutcome {
 	// decoded.Fact is never nil here: consumeMessage acknowledges a message that decodes to none
 	// before it starts the keeper this work runs under.
-	if _, ok := decoded.Fact.(RepoMappingChanged); ok {
-		if err := readMapping(work, spec); err != nil {
-			return nakOutcome("read the project's repository mapping again", "nak the mapping read", err)
-		}
-		return ackOutcome()
-	}
 	recorded, err := recordedPullRequest(work, spec, pool, decoded.Fact)
 	if err != nil {
 		return nakOutcome("read whether the pull request is recorded", "nak the pull request read", err)
@@ -1079,9 +1078,9 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 // one AckWait, made before the review's GitHub reads (resolveReviewBody,
 // resolveReviewPermission): the workflow applies either fact only to a recorded pull request, so
 // one of any other pull request is acknowledged with no transaction under the fact lock
-// (ApplyFact) and no GitHub read, whatever the number of other pull requests a mapped repository
-// reviews and checks. A pull request recorded after this read, by a later opened, gets its checks
-// and reviews from their next event.
+// (ApplyFact) and no GitHub read, whatever the number of other pull requests a repository the
+// daemon hears reviews and checks. A pull request recorded after this read, by a later opened,
+// gets its checks and reviews from their next event.
 func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool store.TxPool, fact Fact) (bool, error) {
 	var repo string
 	var number int
@@ -1100,16 +1099,6 @@ func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool store.TxPo
 			return record.PullRequestRecorded(ctx, tx, name, number)
 		})
 	})
-}
-
-// readMapping runs ConsumerSpec.RepositoryMapping within AckWait; no reader reads nothing.
-func readMapping(ctx context.Context, spec ConsumerSpec) error {
-	if spec.RepositoryMapping == nil {
-		return nil
-	}
-	read, cancel := context.WithTimeout(ctx, spec.AckWait)
-	defer cancel()
-	return spec.RepositoryMapping(read)
 }
 
 // prepareRepository runs ConsumerSpec.PrepareRepository for a Dispatch issue fact, within AckWait,

@@ -36,6 +36,8 @@ func TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch(t *testing
 	r.boot()
 	issue := r.issue(7)
 	const task = "Summarize the incident for the operator."
+	// The launch reads the issue's repository from Dispatch, so Dispatch holds the issue.
+	r.board.place(issue, "todo", "", false)
 	token := r.d.spawn(api.SpawnRequest{Tree: issue, Issue: issue, Role: claim.RoleArchitect, Prompt: "Reply ready and wait.", Task: task})
 	if got := r.count(`select count(*) from issues where key = $1`, issue); got != 0 {
 		t.Fatalf("records of %s = %d, want none: the operator's spawn is of an issue the daemon keeps no record of", issue, got)
@@ -142,6 +144,9 @@ func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld
 				return r.count(`select count(*) from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'`, issue)
 			}
 			const task = "Summarize the incident for the operator."
+			// The launch reads the issue's repository from Dispatch, so Dispatch holds the issue.
+			r.board.place(owedIssue, "todo", "", false)
+			r.board.place(idleIssue, "todo", "", false)
 			owed := r.d.spawn(api.SpawnRequest{Tree: owedIssue, Issue: owedIssue, Role: claim.RoleArchitect,
 				Prompt: "Reply ready and wait.", Task: task})
 			idle := r.d.spawn(api.SpawnRequest{Tree: idleIssue, Issue: idleIssue, Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
@@ -627,6 +632,8 @@ func TestTheResumedSpawnOfAnotherProjectsRootArchitectTouchesNoRowOfThatProjectA
 		t.Fatalf("record %s as the OTHERPROJECT daemon's issue: %v", issue, err)
 	}
 	const task = "Summarize the incident for the operator."
+	// The launch reads the issue's repository from Dispatch, so Dispatch holds the issue.
+	r.board.place(issue, "todo", "", false)
 	token := r.d.spawn(api.SpawnRequest{Tree: issue, Issue: issue, Role: claim.RoleArchitect, Prompt: "Reply ready and wait.", Task: task})
 	pause := r.pauseProject()
 	testwait.Eventually(t, "the pause's stop of the spawn to be held until its agent is ready", func() bool {
@@ -758,6 +765,8 @@ func TestAFactOfTheResumedSpawnOfAnotherProjectsIssueTouchesNoRowOfThatProject(t
 			if err := store.Transact(r.ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
 				t.Fatalf("record %s as the OTHERPROJECT daemon's issue: %v", issue, err)
 			}
+			// The launch reads the issue's repository from Dispatch, so Dispatch holds the issue.
+			r.board.place(issue, "todo", "", false)
 			token := r.d.spawn(api.SpawnRequest{Tree: issue, Issue: issue, Role: role, Prompt: "Reply ready and wait.",
 				Task: "Summarize the incident for the operator."})
 			r.pauseProject()
@@ -854,6 +863,8 @@ func TestThePausesStopOfASpawnOfAnotherProjectsIssueTouchesNoRoleHoldersRowOfTha
 		}
 		return n, *lease
 	}
+	// The launch reads the issue's repository from Dispatch, so Dispatch holds the issue.
+	r.board.place(issue, "todo", "", false)
 	token := r.d.spawn(api.SpawnRequest{Tree: issue, Issue: issue, Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
 	testwait.Eventually(t, "the spawn to launch", func() bool { return len(r.rt.launchesOf(token)) == 1 })
 	launched := r.claim(token)

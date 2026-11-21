@@ -44,6 +44,11 @@ type Session struct {
 	PID          int
 	StartTicks   uint64
 	RegisteredAt time.Time
+	// projects are the Dispatch projects the session names (AGENT_SECRETS_PROJECTS at its first
+	// register, or its record's after a restart), sorted, nil for none. They are fixed for the
+	// session's life: set once before the session is shared and never written again, so a
+	// reader needs no lock, and every enrollment of the session states them.
+	projects []string
 
 	mu sync.Mutex
 	// The four identity fields are mutable: Rename replaces all four at once when a launcher
@@ -136,13 +141,15 @@ type identity struct {
 	// it in its own field, never folded into the live one, so a restart can tell the
 	// enrollment the recorded key holds from one it only has to end.
 	LapsedID string
+	// Projects are the session's projects (Session.projects), which its every enrollment states.
+	Projects []string
 }
 
 func (s *Session) identity() identity {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return identity{RuntimeID: s.runtimeID, SessionID: s.sessionID, Key: s.key, Thumbprint: s.thumbprint,
-		Generation: s.generation, EnrollmentID: s.enrollmentID, Confirmed: s.confirmed, LapsedID: s.lapsedID}
+		Generation: s.generation, EnrollmentID: s.enrollmentID, Confirmed: s.confirmed, LapsedID: s.lapsedID, Projects: s.projects}
 }
 
 // confirmationInFlight is the channel a `register --wait` waits on beside the ready channel,
@@ -516,6 +523,9 @@ type Record struct {
 	SessionID          string     `json:"session_id,omitempty"`
 	Key                string     `json:"key,omitempty"`
 	GoneAt             *time.Time `json:"gone_at,omitempty"`
+	// Projects are the session's projects (Session.projects), which the enrollment this record
+	// names was made under; none for a session naming none, or a record from before the field.
+	Projects []string `json:"projects,omitempty"`
 }
 
 // enrollments is every enrollment the record names that is still the helper's to end: the live
@@ -1029,7 +1039,7 @@ func (r *Registry) Draining() bool {
 // rather than dropping it.
 func (r *Registry) record(s *Session, cur identity) (Record, error) {
 	rec := Record{PID: s.PID, StartTicks: s.StartTicks, BootID: r.bootID, RuntimeID: cur.RuntimeID,
-		EnrollmentID: cur.EnrollmentID, LapsedEnrollmentID: cur.LapsedID, SessionID: cur.SessionID}
+		EnrollmentID: cur.EnrollmentID, LapsedEnrollmentID: cur.LapsedID, SessionID: cur.SessionID, Projects: cur.Projects}
 	if cur.SessionID == "" {
 		return rec, nil
 	}

@@ -36,7 +36,8 @@ const releasedPodUID = "pod-being-released"
 // the issue-level teardown that takes the pod down — the release's (ReleaseIssue), and the
 // close's (SuspendIssue), which a test reaches through the same lane. It also answers what the
 // daemon reads of the pod outside the transaction (issuePods): whether it runs the configured
-// image, and whether the runtime still holds the issue's Sandbox.
+// image, and whether the runtime still holds the issue's Sandbox. The rest of issuePods, which pod
+// the Sandbox holds and whether the runtime keeps the issue's volume, is the embedded fake's.
 type releaseRuntime struct {
 	*fake.Runtime
 	mu        sync.Mutex

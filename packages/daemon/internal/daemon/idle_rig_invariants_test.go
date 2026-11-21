@@ -44,6 +44,14 @@ func (w *idleRigSaveWatch) IssueSandbox(issue string) (string, bool) {
 	return w.pods.IssueSandbox(issue)
 }
 
+func (w *idleRigSaveWatch) IssuePod(issue string) (string, bool) {
+	return w.pods.IssuePod(issue)
+}
+
+func (w *idleRigSaveWatch) IssueKeepsVolume(issue string, since time.Time) bool {
+	return w.pods.IssueKeepsVolume(issue, since)
+}
+
 // A release saves the workspace's unpushed work while the role whose shim builds it is still
 // running, and only then stops it. The save is a row of its own (record.IssueBundle) ahead of the
 // release's `release` rows, because the runtime asks the role's shim and refuses a claim with no

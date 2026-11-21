@@ -112,10 +112,11 @@ func writtenAll(t *testing.T, got []Issue) []Issue {
 }
 
 // An issue's repository, its default branch and GitHub's spelling of the repository are taken when
-// the daemon first records the issue and never change after: the store refuses a record without
-// any of them, or whose GitHub spelling names another repository, and a write that would change
-// any of them on a recorded issue, so no path that forgot them or rebuilt the record from a later
-// observation writes over what was recorded.
+// the daemon first records the issue, and PutIssue never changes them after (only the one-time
+// rename pass, RenameIssueRepository, writes another repository name): the store refuses a record
+// without any of them, or whose GitHub spelling names another repository, and a write that would
+// change any of them on a recorded issue, so no path that forgot them or rebuilt the record from a
+// later observation writes over what was recorded.
 func TestPutIssueRefusesAMissingOrChangedRepository(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -155,7 +156,7 @@ func TestPutIssueRefusesAMissingOrChangedRepository(t *testing.T) {
 			moved := recorded
 			tc.change(&moved)
 			err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.PutIssue(ctx, tx, moved) })
-			want := "record issue LEGION-302: it is recorded on acme/widgets@release/v7.1 (GitHub's Acme/Widgets), and an issue's repository and default branch never change"
+			want := "record issue LEGION-302: it is recorded on acme/widgets@release/v7.1 (GitHub's Acme/Widgets), and a record keeps its repository and default branch: only the one-time rename pass writes another repository name on it"
 			if err == nil || err.Error() != want {
 				t.Fatalf("PutIssue = %v, want %q", err, want)
 			}
