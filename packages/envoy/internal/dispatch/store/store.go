@@ -30,6 +30,22 @@ type Store struct {
 	// whether it held a transaction around it. Nil, which every Store Open makes leaves it,
 	// runs nothing.
 	afterNonTransactionalStatement func(ctx context.Context, conn *pgx.Conn) error
+	// createdFromEmpty is whether this store's Migrate found schema_migrations recording no
+	// version, and so applied the whole set to a database no build had written (CreatedFromEmpty).
+	// Migrate sets it before it applies anything, and a caller reads it once Migrate has returned.
+	createdFromEmpty bool
+}
+
+// CreatedFromEmpty reports whether this store's Migrate created the database from empty:
+// schema_migrations recorded no version when its runner began, so no build of an earlier release
+// ever served the database and none holds rows a rollback could reach. Two processes of one build
+// booting together on an empty database can both read true, which is true of each. It is false
+// before Migrate has run. It is read once, by the boot that opened the store and ran Migrate
+// (startup.Retire's guard), because only that run saw the table before its own versions were
+// recorded: any later read of schema_migrations finds them and cannot tell an empty database from
+// one an earlier release served.
+func (s *Store) CreatedFromEmpty() bool {
+	return s.createdFromEmpty
 }
 
 // Every file in migrations, so pgmigrate.Load judges each one; pgmigratetest.CheckEmbedsEveryFile
@@ -351,6 +367,7 @@ func closeBounded(ctx context.Context, conn *pgx.Conn) {
 func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.Migration) error {
 	widen := slices.ContainsFunc(migrations, func(m pgmigrate.Migration) bool { return m.Version > math.MaxInt32 })
 	var fixes []pgmigrate.Fix
+	var empty bool
 	err := pgmigrate.RetryVersionTableLockTimeouts(ctx, versionTable, func(ctx context.Context) error {
 		fixes = nil
 		return s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
@@ -365,6 +382,11 @@ func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.
 				)
 			`); err != nil {
 				return fmt.Errorf("create schema migrations table: %w", err)
+			}
+			// Read under the key, after the table exists, so a runner that finds a version an
+			// earlier runner recorded reads the database as one a build already served.
+			if err := tx.QueryRow(ctx, `select not exists (select 1 from schema_migrations)`).Scan(&empty); err != nil {
+				return fmt.Errorf("read whether schema migrations records a version: %w", err)
 			}
 			if err := pgmigrate.EnsureIdentityColumns(ctx, tx, versionTable, func(columns map[string]string) []string {
 				if widen && columns["version"] == "integer" {
@@ -385,6 +407,7 @@ func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.
 	if err != nil {
 		return err
 	}
+	s.createdFromEmpty = empty
 	pgmigrate.LogFixes(versionTable, fixes)
 	return nil
 }

@@ -458,6 +458,13 @@ func main() {
 		slog.Info("dispatch: filled document_search for the documents stored before this release", "rows", filled)
 	}
 
+	// The boot's retirements (startup.Retire): the step of every boot that deletes what a release
+	// before this one kept for one release - each entry of startup.Retirements - once the build a
+	// rollback reaches no longer needs it, and only then. It runs after the migrations, before this
+	// process serves, and never stops the boot: a retirement that does not delete, and one whose
+	// transaction fails, leaves its objects in place, logs why, and is tried again at the next boot.
+	startup.Retire(ctx, database.Pool, buildCommit, database.CreatedFromEmpty(), nil, startup.Retirements)
+
 	// The decisions step's first phase (docs.DecisionStep): every asks and ask_followers row the
 	// release before wrote is stated on its ask's node and marked, in committed batches, before
 	// this process serves, as document_search is filled above. A reading's check of its ask takes

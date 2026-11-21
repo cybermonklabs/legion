@@ -13,6 +13,10 @@
 // announces into the table and leaves the publish to the first process whose bus answers. It
 // goes directly through the bus client rather than the outbox: it is no issue's, document's or
 // project's event, and the outbox publishes only those.
+//
+// The package also holds the boot's retirements (Retire, retire.go): the step of every boot that
+// deletes what a release before this one kept for one release, once the build those
+// announcements name as the one a rollback reaches no longer needs it.
 package startup
 
 import (
