@@ -17,7 +17,6 @@ body: |-
   trade then), a project Dispatch does not hold (`project_not_found`), one the entry's person
   cannot see (`project_not_visible`), and a grant that cannot be held to projects
   (`grant_not_holdable`). A dispatch or listener entry with `-` is now refused at startup, as a
-  measurement entry's is. Dispatch's grant there may also write the private-projects bucket, a
-  listener's may read it, and a daemon entry with `*` is also granted its account's own reply
-  prefix. List a Legion daemon with `*` until the daemon release gate opens for a daemon that
-  opens its consumers per project: `-` names consumers today's daemon does not open.
+  measurement entry's is. A daemon entry with `*` is also granted its account's own reply prefix.
+  List a Legion daemon with `*` until the daemon release gate opens for a daemon that opens its
+  consumers per project: `-` names consumers today's daemon does not open.

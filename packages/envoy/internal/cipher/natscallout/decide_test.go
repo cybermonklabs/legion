@@ -5,8 +5,10 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -132,9 +135,9 @@ func TestASessionTokenGetsItsOwnChannel(t *testing.T) {
 }
 
 // A service's platform token, from an account the deployment lists, is answered with its kind's
-// grant from natsgrant, Dispatch's and a listener's with the private-projects bucket beside it and
-// a daemon's with its account's own reply prefix (scopeGrant), named <kind>/<machine id or
-// account>, expiring with the token.
+// grant from natsgrant on a hub not rendered private: Dispatch's and a listener's as the hub
+// renders them, and a daemon's with its account's own reply prefix (scopeGrant), named
+// <kind>/<machine id or account>, expiring with the token.
 func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	now := time.Now()
 	tokens := map[string]platformToken{
@@ -145,8 +148,8 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	}
 	deps := Deps{ServiceToken: serviceTokens(tokens)}
 	for raw, want := range map[string]Decision{
-		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: dispatchCalloutGrant("example-dispatch"), Expires: now.Add(time.Hour)},
-		"listener-token": {Name: "listener/example-hub", Grant: listenerCalloutGrant("example-hub"), Expires: now.Add(time.Hour)},
+		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch"), Expires: now.Add(time.Hour)},
+		"listener-token": {Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)},
 		"daemon-token":   {Name: "daemon/" + daemonAccount, Grant: daemonCalloutGrant(daemonAccount), Expires: now.Add(30 * time.Minute)},
 		"measure-token":  {Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)},
 	} {
@@ -373,4 +376,258 @@ func TestAGrantNamingASystemSubjectIsRefused(t *testing.T) {
 			require.NotEmpty(t, response.Jwt)
 		})
 	}
+}
+
+// proofServices' accounts and a daemon's and Dispatch's listener's beside them: every kind that
+// could present a token of the hub-admission audience.
+var everyKind = append(append([]ServiceEntry{}, proofServices...),
+	ServiceEntry{Kind: KindDaemon, Account: daemonAccount, AllProjects: true},
+	ServiceEntry{Kind: KindDispatchListener, MachineID: dispatchMachineID, Account: dispatchListenerAccount, AllProjects: true},
+)
+
+// Only Dispatch's own account is admitted for the hub-admission proof: a token of the
+// hub-admission audience of a listener's, a daemon's or Dispatch's listener's account is refused
+// hub_admission_not_dispatch on a hub rendered private, naming the account, and Dispatch's is
+// admitted there with natsgrant.HubAdmission alone, named for its machine. An account the
+// deployment lists nowhere is refused as any unlisted service is. The control, a decision that
+// admits any service's proof, admits the listener's, and the test fails naming it.
+func TestOnlyDispatchIsAdmittedForTheProof(t *testing.T) {
+	now := time.Now()
+	proofs := map[string]platformToken{}
+	proof := func(account string) string {
+		raw := serviceJWT(t, natsgrant.HubAdmissionAudience, account, now.Add(time.Hour))
+		proofs[raw] = platformToken{account: account, issued: now, expiry: now.Add(time.Hour)}
+		return raw
+	}
+	dispatch, listener, daemon, dispatchListener := proof(dispatchAccount), proof(listenerAccount), proof(daemonAccount), proof(dispatchListenerAccount)
+	stranger := proof("system:serviceaccount:example-ns:stranger")
+	deps := Deps{HubAdmissionToken: proofTokens(proofs)}
+	for _, row := range []struct {
+		raw, account string
+	}{{listener, listenerAccount}, {daemon, daemonAccount}, {dispatchListener, dispatchListenerAccount}} {
+		_, err := Decide(t.Context(), deps, everyKind, tagged(serviceRequest(row.raw)))
+		requireRefused(t, err, labelHubAdmissionNotDispatch, "hub admission is Dispatch's own account's alone: "+row.account)
+	}
+	_, err := Decide(t.Context(), deps, everyKind, tagged(serviceRequest(stranger)))
+	requireRefused(t, err, labelServiceNotListed, "service not listed: system:serviceaccount:example-ns:stranger")
+
+	decision, err := Decide(t.Context(), deps, everyKind, tagged(serviceRequest(dispatch)))
+	require.NoError(t, err)
+	require.Equal(t, Decision{Name: "hub-admission/" + dispatchMachineID, Grant: natsgrant.HubAdmission(dispatchAccount), Expires: now.Add(time.Hour)}, decision)
+}
+
+// The auth service chooses a service token's verifier by the audience the token names, read
+// before it is verified: a token of natsgrant.HubAdmissionAudience goes to the hub-admission
+// verifier alone and is decided as Dispatch's proof, and a token of the NATS audience goes to the
+// NATS verifier alone and is decided as Dispatch's connection, both tokens being the cluster
+// issuer's. Each stub verifier here would take either token, so a token sent to the wrong one is
+// admitted with the wrong grant. The control chooses by issuer alone: the proof token goes to the
+// NATS verifier and is admitted with Dispatch's whole grant, and the test fails naming it.
+func TestEachServiceTokenIsVerifiedForItsOwnAudience(t *testing.T) {
+	now := time.Now()
+	proof := serviceJWT(t, natsgrant.HubAdmissionAudience, dispatchAccount, now.Add(time.Hour))
+	ordinary := serviceJWT(t, natsAudience, dispatchAccount, now.Add(time.Hour))
+	both := map[string]platformToken{
+		proof:    {account: dispatchAccount, issued: now, expiry: now.Add(time.Hour)},
+		ordinary: {account: dispatchAccount, issued: now, expiry: now.Add(time.Hour)},
+	}
+	var asked struct{ service, proof []string }
+	deps := Deps{
+		ServiceToken: func(ctx context.Context, raw string) (string, bool, time.Time, time.Time, error) {
+			asked.service = append(asked.service, raw)
+			return serviceTokens(both)(ctx, raw)
+		},
+		HubAdmissionToken: func(ctx context.Context, raw string) (string, time.Time, time.Time, error) {
+			asked.proof = append(asked.proof, raw)
+			return proofTokens(both)(ctx, raw)
+		},
+	}
+	decision, err := Decide(t.Context(), deps, proofServices, tagged(serviceRequest(proof)))
+	require.NoError(t, err)
+	require.Equal(t, natsgrant.HubAdmission(dispatchAccount), decision.Grant, "the proof token was decided as %s", decision.Name)
+	require.Equal(t, []string{proof}, asked.proof)
+	require.Empty(t, asked.service, "the proof token went to the NATS audience's verifier")
+
+	decision, err = Decide(t.Context(), deps, proofServices, tagged(serviceRequest(ordinary)))
+	require.NoError(t, err)
+	require.Equal(t, natsgrant.DispatchApp(dispatchMachineID), decision.Grant, "the NATS token was decided as %s", decision.Name)
+	require.Equal(t, []string{ordinary}, asked.service)
+	require.Equal(t, []string{proof}, asked.proof, "the NATS token went to the hub-admission verifier")
+
+	// A broker that verifies no hub-admission token refuses a proof as a token it cannot verify.
+	_, err = Decide(t.Context(), Deps{ServiceToken: serviceTokens(both)}, proofServices, tagged(serviceRequest(proof)))
+	requireRefused(t, err, labelServiceToken, "service token not verified")
+	for _, row := range []struct {
+		raw  string
+		want bool
+	}{
+		{proof, true}, {ordinary, false}, {"not-a-jwt", false},
+		{serviceJWT(t, "", dispatchAccount, now), false},
+		{"e30." + base64.RawURLEncoding.EncodeToString([]byte(`{"aud":["`+natsAudience+`","`+natsgrant.HubAdmissionAudience+`"]}`)) + ".x", true},
+	} {
+		require.Equal(t, row.want, hubAdmissionToken(row.raw), "hubAdmissionToken(%q)", row.raw)
+	}
+}
+
+// privDaemonAccount is the account of a daemon whose exchange entry lists the private project PRIV.
+const privDaemonAccount = "system:serviceaccount:legion-priv:legion-daemon"
+
+// A credential naming a private project is admitted only on a hub rendered private: a session
+// token listing PRIV, or a daemon held to PRIV, is refused private_project_untagged_hub, naming
+// PRIV, on a request without the tag, and admitted with it, while a token listing only PUB is
+// admitted both ways. The private union is the broker's declared projects (BROKER_PRIVATE_PROJECTS)
+// with every project Dispatch has answered private (PrivateProjects.Switched): with it empty,
+// nothing is refused; with PRIV declared and not switched, Dispatch's all-projects entry is
+// admitted on an untagged hub, and once Dispatch has answered PRIV private it is refused there. A
+// union that cannot be read refuses what it would decide, and a tagged hub never reads it.
+// Controls: the decision as #4197 made it admits the PRIV token on the untagged hub; and the
+// union's declared part refusing Dispatch refuses the declared-only row. Each fails the test
+// naming the row.
+func TestACredentialNamingAPrivateProjectNeedsAPrivateHub(t *testing.T) {
+	now := time.Now()
+	priv := newSession(t, "ses_priv", 15*time.Minute)
+	priv.answer.Projects = []string{"PRIV"}
+	pub := newSession(t, "ses_pub", 15*time.Minute)
+	pub.answer.Projects = []string{"PUB"}
+	none := newSession(t, "ses_none", 15*time.Minute)
+	services := []ServiceEntry{
+		{Kind: KindDispatch, MachineID: dispatchMachineID, Account: dispatchAccount, AllProjects: true},
+		{Kind: KindDaemon, Account: privDaemonAccount},
+	}
+	tokens := map[string]platformToken{
+		"dispatch-token":    {account: dispatchAccount, issued: now, expiry: now.Add(time.Hour)},
+		"priv-daemon-token": {account: privDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
+	}
+	dispatchAnswer := &dispatchAnswers{answers: map[string][]string{"PRIV": nil, "PUB": nil}, private: map[string]bool{"PRIV": true}}
+	base := heldDeps(t, tokens, map[string][]string{privDaemonAccount: {"PRIV"}}, dispatchAnswer, services)
+	base.Introspect = introspector(priv, pub, none)
+	with := func(read func(context.Context) (PrivateProjects, error)) Deps {
+		deps := base
+		deps.PrivateProjects = read
+		return deps
+	}
+	declared := with(union(PrivateProjects{Declared: []string{"PRIV"}}))
+	switched := with(union(PrivateProjects{Declared: []string{"PRIV"}, Switched: []string{"PRIV"}}))
+	answeredOnly := with(union(PrivateProjects{Switched: []string{"PRIV"}}))
+	empty := with(union(PrivateProjects{}))
+	failing := with(func(context.Context) (PrivateProjects, error) {
+		return PrivateProjects{}, errors.New("dispatch: 503")
+	})
+	privSession, pubSession := priv.request(t, "nonce"), pub.request(t, "nonce")
+	daemon, dispatch := serviceRequest("priv-daemon-token"), serviceRequest("dispatch-token")
+	for _, row := range []struct {
+		name   string
+		deps   Deps
+		req    Request
+		label  string // empty: admitted
+		reason string
+	}{
+		{"a session listing PRIV on an untagged hub", declared, privSession, labelPrivateUntaggedHub, "a private project needs a hub rendered private: PRIV"},
+		{"a session listing PRIV on a tagged hub", declared, tagged(privSession), "", ""},
+		{"a daemon held to PRIV on an untagged hub", declared, daemon, labelPrivateUntaggedHub, "a private project needs a hub rendered private: PRIV"},
+		{"a daemon held to PRIV on a tagged hub", declared, tagged(daemon), "", ""},
+		{"a session listing only PUB on an untagged hub", declared, pubSession, "", ""},
+		{"a session listing only PUB on a tagged hub", declared, tagged(pubSession), "", ""},
+		{"a session listing PRIV, Dispatch alone having answered it private", answeredOnly, privSession, labelPrivateUntaggedHub, "a private project needs a hub rendered private: PRIV"},
+		{"the union empty: a session listing PRIV", empty, privSession, "", ""},
+		{"the union empty: a session listing PUB", empty, pubSession, "", ""},
+		{"the union empty: Dispatch's all-projects entry", empty, dispatch, "", ""},
+		{"no union read at all: a session listing PRIV", base, privSession, "", ""},
+		{"no union read at all: Dispatch's all-projects entry", base, dispatch, "", ""},
+		{"PRIV declared and not switched: Dispatch's all-projects entry", declared, dispatch, "", ""},
+		{"PRIV switched: Dispatch's all-projects entry on an untagged hub", switched, dispatch, labelPrivateUntaggedHub, "a private project needs a hub rendered private: PRIV"},
+		{"PRIV switched: Dispatch's all-projects entry on a tagged hub", switched, tagged(dispatch), "", ""},
+		{"a union that cannot be read: a session listing PUB on an untagged hub", failing, pubSession, labelPrivateUnknown, "the broker's private projects could not be read"},
+		{"a union that cannot be read: Dispatch on an untagged hub", failing, dispatch, labelPrivateUnknown, "the broker's private projects could not be read"},
+		{"a union that cannot be read: a session listing PRIV on a tagged hub", failing, tagged(privSession), "", ""},
+		{"a union that cannot be read: a session listing no project", failing, none.request(t, "nonce"), "", ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			_, err := Decide(t.Context(), row.deps, services, row.req)
+			if row.label == "" {
+				require.NoError(t, err, "%s was refused", row.name)
+				return
+			}
+			requireRefused(t, err, row.label, row.reason)
+		})
+	}
+}
+
+// A hub rendered private admits a listener only in required privacy mode: a connection the
+// decision would answer with a listener's grant, or Dispatch's listener's, whose client name does
+// not end with natsgrant.PrivacyRequiredSuffix, is refused listener_not_required on a tagged
+// request, naming the account; with the suffix it is admitted with its grant. A request without
+// the tag is decided as today, whatever the name. Today's renewal probe name, the connection's
+// name then " probe", no longer ends with the suffix, and is refused there. The control removes
+// the check: the listener without the suffix is admitted on the tagged request, and the test
+// fails naming it.
+func TestATaggedHubRefusesAListenerNotInRequiredMode(t *testing.T) {
+	now := time.Now()
+	tokens := map[string]platformToken{
+		"listener-token":          {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"dispatch-listener-token": {account: dispatchListenerAccount, issued: now, expiry: now.Add(time.Hour)},
+	}
+	deps := Deps{ServiceToken: serviceTokens(tokens)}
+	required := "envoy-role-lane" + natsgrant.PrivacyRequiredSuffix
+	for _, row := range []struct {
+		raw, account string
+		grant        natsgrant.Permissions
+	}{
+		{"listener-token", listenerAccount, natsgrant.Listener("example-hub")},
+		{"dispatch-listener-token", dispatchListenerAccount, natsgrant.DispatchListener(dispatchMachineID)},
+	} {
+		for _, name := range []string{"envoy-role-lane", "", required + " probe", "envoy-role-lane privacy-required-not"} {
+			_, err := Decide(t.Context(), deps, everyKind, tagged(named(serviceRequest(row.raw), name)))
+			requireRefused(t, err, labelListenerNotRequired, "a hub rendered private admits only a listener in required privacy mode: "+row.account)
+		}
+		for _, req := range []Request{
+			tagged(named(serviceRequest(row.raw), required)),
+			named(serviceRequest(row.raw), required),
+			named(serviceRequest(row.raw), "envoy-role-lane"),
+		} {
+			decision, err := Decide(t.Context(), deps, everyKind, req)
+			require.NoError(t, err, "%s named %q, tags %v", row.raw, req.ClientName, req.ServerTags)
+			require.Equal(t, row.grant, decision.Grant)
+		}
+	}
+}
+
+// mergeBaseDispatch is natsgrant's testdata/merge-base-grants.json entry for Dispatch's static set
+// (core.DispatchPermissions at the merge base), as that fixture writes a set.
+func mergeBaseDispatch(t *testing.T, machineID string) natsgrant.Permissions {
+	t.Helper()
+	raw, err := os.ReadFile("../../../natsgrant/testdata/merge-base-grants.json")
+	require.NoError(t, err)
+	var base struct {
+		Dispatch map[string]struct {
+			Publish   []string `json:"publish"`
+			Subscribe []string `json:"subscribe"`
+		} `json:"dispatch"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &base))
+	set, ok := base.Dispatch[machineID]
+	require.True(t, ok, "the merge-base fixture holds no Dispatch set for %s", machineID)
+	require.NotEmpty(t, set.Publish)
+	return natsgrant.Permissions{Publish: set.Publish, Subscribe: set.Subscribe}
+}
+
+// On a request without the tag, the decision for Dispatch's app account gives the static set a hub
+// rendered for Dispatch at the merge base (natsgrant's testdata/merge-base-grants.json), element
+// for element, through the answer path every answer takes today, and apart from the decision
+// natsgrant.Dispatch equals that set: an all-public deployment, whose hubs carry no tag, keeps
+// today's set (R9). The control answers natsgrant.DispatchApp on the untagged request: the test
+// fails naming the listener durable's CONSUMER.CREATE.
+func TestDispatchsCalloutAnswerIsTodaysOnAnUntaggedHub(t *testing.T) {
+	now := time.Now()
+	tokens := map[string]platformToken{"dispatch-token": {account: dispatchAccount, issued: now, expiry: now.Add(time.Hour)}}
+	want := mergeBaseDispatch(t, dispatchMachineID)
+	require.Equal(t, want, natsgrant.Dispatch(dispatchMachineID))
+	decision, err := Decide(t.Context(), Deps{ServiceToken: serviceTokens(tokens)}, proofServices, serviceRequest("dispatch-token"))
+	require.NoError(t, err)
+	durableCreate := "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + bus.ListenerDurable(dispatchMachineID)
+	require.Contains(t, decision.Grant.Publish, durableCreate, "the untagged answer lacks the listener durable's CONSUMER.CREATE")
+	require.Equal(t, want.Publish, decision.Grant.Publish)
+	require.Equal(t, want.Subscribe, decision.Grant.Subscribe)
+	require.Empty(t, decision.Grant.PublishDeny)
+	require.Empty(t, decision.Grant.SubscribeDeny)
 }

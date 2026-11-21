@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natscred"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // presented records each service token the auth service was presented, in order.
@@ -88,10 +89,10 @@ func TestServiceKeeperReconnectsBeforeExpiry(t *testing.T) {
 
 // While the auth service is down at a service's renewal point, its keeper leaves the connection
 // as it is: a reconnect then is refused until the service answers again, and the user the
-// connection holds still has ServiceRenewBefore to live. It dials a throwaway connection, named for
-// the service's with " probe", with the later token until one is admitted, and only then cuts
-// over, once. The control is the keeper that reconnected unconditionally, which cut the connection
-// at the renewal point with nothing up to admit it again.
+// connection holds still has ServiceRenewBefore to live. It dials a throwaway connection, named
+// "probe " then the service's name, with the later token until one is admitted, and only then
+// cuts over, once. The control is the keeper that reconnected unconditionally, which cut the
+// connection at the renewal point with nothing up to admit it again.
 func TestServiceKeeperHoldsTheConnectionWhileTheAuthServiceIsDown(t *testing.T) {
 	seen := &presented{}
 	rig := newRig(t, nil, seen.serviceToken)
@@ -118,7 +119,7 @@ func TestServiceKeeperHoldsTheConnectionWhileTheAuthServiceIsDown(t *testing.T) 
 		100*time.Millisecond, "the keeper cut the connection while the auth service was down")
 	require.True(t, nc.IsConnected())
 	testwait.WithinPolling(t, 5*time.Second, 100*time.Millisecond, "the hub's record of a refused probe", func() bool {
-		return slices.Contains(closedNames(t, rig.server), "daemon probe")
+		return slices.Contains(closedNames(t, rig.server), "probe daemon")
 	})
 	require.Zero(t, seen.count(later), "the auth service was presented the later token while it was down")
 
@@ -131,6 +132,43 @@ func TestServiceKeeperHoldsTheConnectionWhileTheAuthServiceIsDown(t *testing.T) 
 	require.EqualValues(t, 1, disconnected.Load())
 	require.Equal(t, 2, seen.count(later), "the later token was presented other than by the admitted probe and the reconnect")
 	require.Equal(t, 1, seen.count(first))
+}
+
+// listenerAccount is the account of a listener on a hub rendered with private-project support.
+const listenerAccount = "system:serviceaccount:example-ns:example-listener"
+
+// A listener in required privacy mode renews through its keeper on a hub rendered private: its
+// client name ends with natsgrant.PrivacyRequiredSuffix, and its renewal probe, named "probe "
+// then that name, keeps the suffix last, so the auth service admits the probe with the later token
+// and the keeper cuts over once, with no listener_not_required refusal. The control is the probe
+// named as it was, the connection's name then " probe", which the auth service refuses
+// listener_not_required on that hub, so the keeper never cuts over.
+func TestServiceKeeperRenewsARequiredModeListenerOnAPrivateHub(t *testing.T) {
+	seen := &presented{}
+	keys := testnats.NewCalloutKeys(t)
+	keys.ServerTags = []string{natsgrant.PrivateProjectsServerTag}
+	rig := newRigOf(t, keys, "listener/example-hub/*="+listenerAccount, nil, seen.serviceToken)
+	file := filepath.Join(t.TempDir(), "token")
+	first := platformToken(listenerAccount, time.Now().Add(natscred.ServiceRenewBefore+2*time.Second))
+	later := platformToken(listenerAccount, time.Now().Add(50*time.Minute))
+	require.NoError(t, os.WriteFile(file, []byte(first+"\n"), 0o600))
+
+	option, keeper := natscred.Service(natscred.ServiceFile(file))
+	var reconnected atomic.Int64
+	nc, err := nats.Connect(rig.url, option, nats.Name("envoy-listener"+natsgrant.PrivacyRequiredSuffix), nats.Timeout(10*time.Second),
+		nats.ReconnectHandler(func(*nats.Conn) { reconnected.Add(1) }))
+	require.NoError(t, err, "the listener's token was refused:\n%s", rig.log.String())
+	defer nc.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go keeper.Keep(ctx, nc)
+
+	require.NoError(t, os.WriteFile(file, []byte(later+"\n"), 0o600))
+	testwait.WithinPolling(t, 15*time.Second, 50*time.Millisecond, "the keeper's renewal with the later token on the hub rendered private", func() bool {
+		return reconnected.Load() == 1 && seen.count(later) == 2 && nc.IsConnected()
+	})
+	require.Zero(t, rig.refused(t, "listener_not_required"), "the auth service refused the listener's renewal as not in required mode")
+	require.Contains(t, closedNames(t, rig.server), "probe envoy-listener"+natsgrant.PrivacyRequiredSuffix)
 }
 
 // closedNames is the name of each client connection server has closed, as its monitoring endpoint

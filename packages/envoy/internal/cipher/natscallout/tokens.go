@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // PlatformTokens verifies a service's platform identity token for the NATS audiences, as
@@ -18,7 +20,10 @@ import (
 // BROKER_NATS_K8S_AUDIENCE, from K8sIssuer) or a Google identity token (Google, for
 // BROKER_NATS_GOOGLE_AUDIENCE, from GoogleIssuer). The token's own issuer, read before it is
 // verified, picks which verifier verifies it, so a token is verified once; a verifier left nil is
-// an audience this broker sets none for, whose tokens are refused.
+// an audience this broker sets none for, whose tokens are refused. HubAdmission is the cluster
+// issuer's verifier for natsgrant.HubAdmissionAudience alone, Dispatch's hub-admission proof, as
+// Deps.HubAdmissionToken (VerifyHubAdmission): the decision sends a token there by its audience,
+// never by its issuer, which it shares with every other cluster token.
 type PlatformTokens struct {
 	K8sIssuer string
 	K8s       interface {
@@ -27,6 +32,9 @@ type PlatformTokens struct {
 	GoogleIssuer string
 	Google       interface {
 		VerifyGoogle(ctx context.Context, raw string) (api.GoogleToken, error)
+	}
+	HubAdmission interface {
+		VerifyAccount(ctx context.Context, raw string) (enroll.AccountClaims, error)
 	}
 }
 
@@ -58,23 +66,75 @@ func (p PlatformTokens) Verify(ctx context.Context, raw string) (account string,
 	return "", false, time.Time{}, time.Time{}, fmt.Errorf("natscallout: no NATS audience of this broker takes tokens of the issuer %q", issuer)
 }
 
-// unverifiedIssuer is the 'iss' raw names, read without verifying it: it only picks the verifier.
-func unverifiedIssuer(raw string) (string, error) {
+// VerifyHubAdmission answers the account a hub-admission token names and when it was issued and
+// expires, once the hub-admission verifier has verified it: the cluster issuer's token, for
+// natsgrant.HubAdmissionAudience. Any other issuer's, and every token on a broker with no such
+// verifier, are refused.
+func (p PlatformTokens) VerifyHubAdmission(ctx context.Context, raw string) (account string, issued, expiry time.Time, err error) {
+	claims, err := unverifiedClaimsOf(raw)
+	if err != nil {
+		return "", time.Time{}, time.Time{}, err
+	}
+	if claims.Issuer != p.K8sIssuer || p.HubAdmission == nil {
+		return "", time.Time{}, time.Time{}, fmt.Errorf("natscallout: this broker verifies no hub-admission token of the issuer %q", claims.Issuer)
+	}
+	verified, err := p.HubAdmission.VerifyAccount(ctx, raw)
+	if err != nil {
+		return "", time.Time{}, time.Time{}, err
+	}
+	return verified.Subject, verified.IssuedAt, verified.Expiry, nil
+}
+
+// unverifiedClaims are the claims of a token read without verifying it, which only pick its
+// verifier: its issuer, and its audience, a string or a list of them.
+type unverifiedClaims struct {
+	Issuer   string          `json:"iss"`
+	Audience json.RawMessage `json:"aud"`
+}
+
+// audiences are the claims' audiences, none when the claim is missing or neither form.
+func (c unverifiedClaims) audiences() []string {
+	var one string
+	if json.Unmarshal(c.Audience, &one) == nil {
+		return []string{one}
+	}
+	var many []string
+	if json.Unmarshal(c.Audience, &many) == nil {
+		return many
+	}
+	return nil
+}
+
+// unverifiedClaimsOf reads raw's claims without verifying it.
+func unverifiedClaimsOf(raw string) (unverifiedClaims, error) {
 	parts := strings.Split(raw, ".")
 	if len(parts) != 3 {
-		return "", errors.New("natscallout: the service token is no JWT")
+		return unverifiedClaims{}, errors.New("natscallout: the service token is no JWT")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", errors.New("natscallout: the service token's claims do not decode")
+		return unverifiedClaims{}, errors.New("natscallout: the service token's claims do not decode")
 	}
-	var claims struct {
-		Issuer string `json:"iss"`
-	}
+	var claims unverifiedClaims
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", errors.New("natscallout: the service token's claims do not decode")
+		return unverifiedClaims{}, errors.New("natscallout: the service token's claims do not decode")
 	}
-	return claims.Issuer, nil
+	return claims, nil
+}
+
+// unverifiedIssuer is the 'iss' raw names, read without verifying it: it only picks the verifier.
+func unverifiedIssuer(raw string) (string, error) {
+	claims, err := unverifiedClaimsOf(raw)
+	return claims.Issuer, err
+}
+
+// hubAdmissionToken reports whether raw names natsgrant.HubAdmissionAudience among its
+// audiences, read without verifying it: such a token is decided as Dispatch's hub-admission
+// proof alone, and verified for that audience alone (Deps.HubAdmissionToken). A token naming it
+// beside another audience is a proof too, so no token is decided as both.
+func hubAdmissionToken(raw string) bool {
+	claims, err := unverifiedClaimsOf(raw)
+	return err == nil && slices.Contains(claims.audiences(), natsgrant.HubAdmissionAudience)
 }
 
 // RequireAudiences refuses a list naming a service whose kind of platform token has no NATS

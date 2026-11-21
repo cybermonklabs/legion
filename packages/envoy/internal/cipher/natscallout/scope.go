@@ -10,19 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// scopeGrant is grant, entry's kind's grant, held to the projects entry may reach.
-//
-// Dispatch's grant gains the write of the private-projects bucket (bus.PrivateProjectsBucket),
-// which Dispatch keeps, and a listener's its read, which a listener holds each session to its
-// token's projects by. The static grants a hub renders do not change (natsgrant.Dispatch and
-// natsgrant.Listener hold neither), so on a hub with no auth service a listener's read is refused
-// and reads as no project being private, which is true there: a private project needs the auth
-// service.
+// scopeGrant is grant, entry's kind's grant, held to the projects entry may reach, for the
+// connection req asks about.
 //
 // An all-projects entry takes that grant whole; a daemon's gains its account's own reply prefix
 // (natsgrant.InboxPrefix) beside _INBOX.>, because a Legion daemon presenting its token always
@@ -39,6 +32,8 @@ import (
 // account token in that pass; a project Dispatch does not hold, or whose answer says the entry's
 // person cannot see it; and a grant entry natsgrant.WithinProjects cannot hold. ParseServices
 // refuses a dispatch or listener entry with "-" at start, since their grants carry KV calls.
+// On a hub not rendered private, an entry held to a project of the broker's private union is
+// refused too, naming the project (privateProjectRefusal).
 //
 // Dispatch is never asked inside a decision: a decision reads only the pass the service holds.
 //
@@ -51,13 +46,7 @@ import (
 // projects' wakes for the stream's 72-hour retention after the last listener moves. The change
 // that lists daemon entries with "-" waits on that gate, with both readings quoted in its pull
 // request.
-func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgrant.Permissions) (natsgrant.Permissions, error) {
-	switch entry.Kind {
-	case KindDispatch:
-		grant.Publish = append(slices.Clip(grant.Publish), natsgrant.KVWrite(bus.PrivateProjectsBucket)...)
-	case KindListener:
-		grant.Publish = append(slices.Clip(grant.Publish), natsgrant.KVRead(bus.PrivateProjectsBucket)...)
-	}
+func scopeGrant(ctx context.Context, deps Deps, entry ServiceEntry, grant natsgrant.Permissions, req Request) (natsgrant.Permissions, error) {
 	if entry.AllProjects {
 		if entry.Kind == KindDaemon {
 			grant.Subscribe = append(slices.Clip(grant.Subscribe), natsgrant.InboxPrefix(entry.Account)+".>")
@@ -98,6 +87,9 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 			// its person cannot see the project, so neither may the connection.
 			return natsgrant.Permissions{}, refuse(labelProjectNotVisible, "project not visible to the account's person: "+project)
 		}
+	}
+	if refused := privateProjectRefusal(ctx, deps, req, projects); refused != nil {
+		return natsgrant.Permissions{}, refused
 	}
 	scoped, err := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Identity: entry.Account})
 	if err != nil {

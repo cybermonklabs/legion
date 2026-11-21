@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // DefaultGoogleOIDCIssuer is the issuer of every Google identity token, the one a machine's
@@ -376,12 +377,21 @@ type Config struct {
 	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	JudgeTestSkipChecks bool
 	// BROKER_PROJECT_ACCESS_URL: the base URL of the Dispatch the broker asks whether a project
-	// is private, whether a person may see it, and what kind of member a person is
-	// (internal/cipher/projectaccess), an absolute http(s) URL, read without the slashes it ends
-	// in. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks
-	// Dispatch nothing. A token that names no project, and an operator entry's token, whose
-	// project that operator's own setting chose, are minted as before; a person's trade that
-	// names a project is refused, since nothing could say that person may see it.
+	// is private, whether a person may see it, what kind of member a person is, and which Slack
+	// channels a private project's owner named (internal/cipher/projectaccess), an absolute
+	// http(s) URL, read without the slashes it ends in. The token exchange asks it about the
+	// projects a token names; a session's enrollment, about the projects its list names; each
+	// release and airlock connection of a secret carrying a dispatch-project tag, about that
+	// project and the credential's person; a project-channels secret asked for by a credential
+	// naming a private project, about that project's channels; the approval page, the pending
+	// lists and each decision, about the projects a request touches; and the model judge,
+	// about whether a request is a private project's. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE
+	// or not at all: with neither, the broker asks Dispatch nothing. It then refuses every secret
+	// carrying a dispatch-project tag (project-unchecked) and serves every other secret as
+	// before; a token that names no project, and an operator entry's token, whose project that
+	// operator's own setting chose, are minted as before; a person's trade that names a project,
+	// and a session enrollment that names projects, are refused, since nothing could say that
+	// person may see them.
 	ProjectAccessURL string
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for that Dispatch, minted for Dispatch's audience. Read when the broker
@@ -713,6 +723,13 @@ type Config struct {
 	// BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs
 	// present. Unset, no workflow exchanges.
 	ExchangeWorkflows []exchange.WorkflowEntry
+	// BROKER_PRIVATE_PROJECTS: the Dispatch projects the operator declares private,
+	// whitespace-separated project keys, such as PRIV ACME, each an uppercase letter, then 1 to 9
+	// uppercase letters or digits. A key that is not one, and a key named twice, refuse the
+	// start, naming the key. This build reads and checks the list and acts on none of it: every
+	// token exchange, enrollment and exchange entry is decided as with the setting unset. Unset
+	// or blank, no project is private.
+	PrivateProjects exchange.PrivateProjects
 	// BROKER_ENVOY_URL: an Envoy listener the broker notifies, best effort, when a session's
 	// pending request expires undecided. Unset, the broker sends nothing. Needs
 	// BROKER_ENVOY_ACCOUNT_TOKEN_FILE, the credential it calls the listener with.
@@ -738,15 +755,17 @@ type Config struct {
 	// a seed of its kind (a user, an account, a curve key), naming the variable and never the
 	// value. BROKER_NATS_SERVICES lists the services admitted by platform identity, as
 	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
-	// listener, daemon or measure; * for the kind's whole grant, - for the projects the account's
-	// exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one and read at
-	// start (natscallout.ParseServices). BROKER_NATS_K8S_AUDIENCE is the audience a service's
-	// projected Kubernetes token must carry, verified against BROKER_K8S_OIDC_ISSUER, which it
-	// needs; BROKER_NATS_GOOGLE_AUDIENCE the audience a service's Google identity token must
-	// carry, verified against BROKER_GOOGLE_OIDC_ISSUER; a service entry whose kind of token has
-	// no audience is refused at start naming it. A session presents its broker access token and
-	// needs neither. All unset, the broker runs no auth service; any set needs the URLs and the
-	// three seed files.
+	// listener, dispatch-listener, daemon or measure; * for the kind's whole grant, - for the
+	// projects the account's exchange entry lists), each account written as BROKER_API_ACCOUNTS
+	// writes one and read at start (natscallout.ParseServices). BROKER_NATS_K8S_AUDIENCE is the
+	// audience a service's projected Kubernetes token must carry, verified against
+	// BROKER_K8S_OIDC_ISSUER, which it needs; BROKER_NATS_GOOGLE_AUDIENCE the audience a
+	// service's Google identity token must carry, verified against BROKER_GOOGLE_OIDC_ISSUER; a
+	// service entry whose kind of token has no audience is refused at start naming it. Neither,
+	// nor any other audience of the cluster issuer's tokens, may be natsgrant.HubAdmissionAudience,
+	// the audience of Dispatch's hub-admission proof. A session presents its broker access token
+	// and needs neither. All unset, the broker runs no auth service; any set needs the URLs and
+	// the three seed files.
 	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was
@@ -2386,6 +2405,9 @@ func Load(getenv func(string) string) (Config, error) {
 	if len(cfg.ExchangeWorkflows) > 0 && cfg.ExchangeGitHubIssuer == "" {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
 	}
+	if cfg.PrivateProjects, err = exchange.ParsePrivateProjects(getenv("BROKER_PRIVATE_PROJECTS")); err != nil {
+		return Config{}, fmt.Errorf("BROKER_PRIVATE_PROJECTS: %w", err)
+	}
 	if cfg.EnvoyURL != "" {
 		if cfg.EnvoyAccountTokenFile = strings.TrimSpace(getenv("BROKER_ENVOY_ACCOUNT_TOKEN_FILE")); cfg.EnvoyAccountTokenFile == "" {
 			return Config{}, errors.New("BROKER_ENVOY_URL needs BROKER_ENVOY_ACCOUNT_TOKEN_FILE, the broker's own projected ServiceAccount token, which it presents to the listener")
@@ -2418,6 +2440,21 @@ func Load(getenv func(string) string) (Config, error) {
 			if other.audience == cfg.PodRegistrationAudience {
 				return Config{}, fmt.Errorf("BROKER_POD_REGISTRATION_AUDIENCE is %q, which %s is too: a token of the registration audience is accepted at POST /v1/oauth/exchange/pod-sessions alone, so give it an audience no other setting names", cfg.PodRegistrationAudience, other.setting)
 			}
+		}
+	}
+	// The NATS auth service verifies a token of the hub-admission audience as Dispatch's proof that
+	// a hub was rendered private, and nothing else (natsgrant.HubAdmissionAudience). Every route
+	// that accepts a token of the cluster's issuer at an audience of its own would take a proof
+	// token as its own if that audience were the hub-admission one, and a token minted for that
+	// route would be a proof, so none may be.
+	for _, setting := range []struct{ name, audience string }{
+		{"BROKER_K8S_OIDC_AUDIENCE", cfg.K8sOIDCAudience},
+		{"BROKER_EXCHANGE_K8S_AUDIENCE", cfg.ExchangeK8sAudience},
+		{"BROKER_NATS_K8S_AUDIENCE", cfg.NATS.K8sAudience},
+		{"BROKER_POD_REGISTRATION_AUDIENCE", cfg.PodRegistrationAudience},
+	} {
+		if strings.TrimSpace(setting.audience) == natsgrant.HubAdmissionAudience {
+			return Config{}, fmt.Errorf("%s is %q, the audience of Dispatch's hub-admission proof, which the NATS auth service verifies as that proof alone; give it an audience of its own", setting.name, natsgrant.HubAdmissionAudience)
 		}
 	}
 	// BROKER_POD_OPERATORS is read after every setting mappedAccountRefusal checks it against, so

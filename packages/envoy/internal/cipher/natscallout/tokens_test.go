@@ -99,3 +99,34 @@ func TestRequireAudiences(t *testing.T) {
 	require.ErrorContains(t, err, measureAccount)
 	require.NoError(t, RequireAudiences(nil, "", ""))
 }
+
+// A hub-admission token goes to the hub-admission verifier alone, the cluster issuer's verifier
+// for natsgrant.HubAdmissionAudience, never to the NATS audience's verifier of that same issuer,
+// and is answered with its account and times. A token of another issuer, one that verifier
+// refuses, and any token on a broker with no such verifier are refused. The control verifies it
+// with the NATS audience's verifier (K8s): the test fails naming the verifier asked.
+func TestHubAdmissionTokensVerifyForTheirOwnAudience(t *testing.T) {
+	now := time.Now()
+	k8s := &stubK8s{claims: enroll.AccountClaims{Subject: daemonAccount, IssuedAt: now, Expiry: now.Add(time.Hour)}}
+	admission := &stubK8s{claims: enroll.AccountClaims{Subject: dispatchAccount, IssuedAt: now, Expiry: now.Add(time.Hour)}}
+	tokens := PlatformTokens{K8sIssuer: "https://cluster.example", K8s: k8s, HubAdmission: admission}
+
+	account, issued, expiry, err := tokens.VerifyHubAdmission(t.Context(), issuedBy("https://cluster.example"))
+	require.NoError(t, err)
+	require.Equal(t, dispatchAccount, account)
+	require.Equal(t, now, issued)
+	require.Equal(t, now.Add(time.Hour), expiry)
+	require.Equal(t, 1, admission.asked)
+	require.Equal(t, 0, k8s.asked, "the hub-admission token went to the NATS audience's verifier")
+
+	_, _, _, err = tokens.VerifyHubAdmission(t.Context(), issuedBy("https://accounts.google.com"))
+	require.Error(t, err)
+	_, _, _, err = tokens.VerifyHubAdmission(t.Context(), "not-a-jwt")
+	require.Error(t, err)
+	admission.err = errors.New("audience")
+	_, _, _, err = tokens.VerifyHubAdmission(t.Context(), issuedBy("https://cluster.example"))
+	require.Error(t, err)
+	_, _, _, err = PlatformTokens{K8sIssuer: "https://cluster.example", K8s: k8s}.VerifyHubAdmission(t.Context(), issuedBy("https://cluster.example"))
+	require.Error(t, err, "a broker with no hub-admission verifier verifies no hub-admission token")
+	require.Equal(t, 0, k8s.asked)
+}

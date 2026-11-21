@@ -63,7 +63,7 @@ func TestServiceProbeRacesNoHandlerSet(t *testing.T) {
 	testwait.WithinPolling(t, 15*time.Second, 100*time.Millisecond, "two probes while the handlers were being set", func() bool {
 		probes := 0
 		for _, name := range closedNames(t, rig.server) {
-			if name == "daemon probe" {
+			if name == "probe daemon" {
 				probes++
 			}
 		}

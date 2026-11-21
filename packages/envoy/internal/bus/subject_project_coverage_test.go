@@ -81,15 +81,3 @@ func TestEveryFamilyTheBusCarriesHasASubjectProjectRow(t *testing.T) {
 		}
 	}
 }
-
-// The private-projects record (K7) is read by the listener and written by Dispatch through the
-// auth service's grants alone: no static grant may reach it, so it is in no list of the buckets
-// the listener opens and every static user is granted (ListenerBuckets).
-func TestThePrivateProjectsBucketIsInNoListOfStaticBuckets(t *testing.T) {
-	if PrivateProjectsBucket != "envoy_private_projects" {
-		t.Fatalf("PrivateProjectsBucket = %q, want envoy_private_projects", PrivateProjectsBucket)
-	}
-	if slices.Contains(ListenerBuckets(), PrivateProjectsBucket) {
-		t.Fatalf("ListenerBuckets names %s, which a static grant would then reach", PrivateProjectsBucket)
-	}
-}

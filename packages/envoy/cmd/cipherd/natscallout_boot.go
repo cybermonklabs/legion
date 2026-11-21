@@ -9,13 +9,16 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // natsCalloutBoot is what the NATS auth service needs from the boot, for a deployment that runs
 // it (cfg.NATS): the services BROKER_NATS_SERVICES lists, each refused at start when its kind of
 // platform token has no NATS audience, and one verifier per audience set, on the key set the
-// broker already reads for that issuer. A deployment that runs no auth service gets nothing and
-// reads nothing.
+// broker already reads for that issuer. Beside the cluster's NATS audience it verifies Dispatch's
+// hub-admission proof, the cluster issuer's tokens for natsgrant.HubAdmissionAudience, on the
+// same key set (config.Load refuses every audience setting equal to that one). A deployment that
+// runs no auth service gets nothing and reads nothing.
 func natsCalloutBoot(ctx context.Context, cfg config.Config, discovered verifiers, keysFor keysFunc) ([]natscallout.ServiceEntry, natscallout.PlatformTokens, error) {
 	if !cfg.NATS.Enabled() {
 		return nil, natscallout.PlatformTokens{}, nil
@@ -30,6 +33,7 @@ func natsCalloutBoot(ctx context.Context, cfg config.Config, discovered verifier
 	tokens := natscallout.PlatformTokens{K8sIssuer: cfg.K8sOIDCIssuer, GoogleIssuer: cfg.GoogleOIDCIssuer}
 	if cfg.NATS.K8sAudience != "" {
 		tokens.K8s = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(cfg.K8sOIDCIssuer, cfg.NATS.K8sAudience, discovered.K8sKeys)}
+		tokens.HubAdmission = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(cfg.K8sOIDCIssuer, natsgrant.HubAdmissionAudience, discovered.K8sKeys)}
 	}
 	if cfg.NATS.GoogleAudience != "" {
 		keys := discovered.GoogleKeys

@@ -66,6 +66,9 @@ export interface PoolIdentityOptions {
   readonly securityTokenServiceUrl?: string | undefined;
   /** {@link DEFAULT_IAM_CREDENTIALS_URL} unless a dev stack or a test names a stand-in. */
   readonly iamCredentialsUrl?: string | undefined;
+  /** The fetch both calls go through; the global one by default (Go's `HTTP`). Only a test
+   *  replaces it. */
+  readonly fetch?: typeof fetch | undefined;
 }
 
 /**
@@ -165,6 +168,7 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
   const mintEndpoint = `${iamCredentials}/v1/projects/-/serviceAccounts/${account}:generateIdToken`;
   const securityTokenServiceShown = urlForText(securityTokenService, STS_SETTING);
   const mintEndpointShown = requestForText(iamCredentials, mintEndpoint, IAM_SETTING);
+  const send = options.fetch ?? fetch;
 
   /**
    * Posts `body` to `endpoint` as JSON, with `bearer` on the `Authorization` header where it is
@@ -190,7 +194,7 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
     let answer: Response;
     let text: string;
     try {
-      answer = await fetch(endpoint, {
+      answer = await send(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

@@ -1,0 +1,27 @@
+kind: Added
+body: |-
+  The broker's NATS auth service reads whether the hub that asks about a connection was rendered
+  with private-project support: its authorization request carries the server tag
+  `envoy-private-projects` (`natsgrant.PrivateProjectsServerTag`). On such a hub alone it admits
+  Dispatch's hub-admission proof, a projected ServiceAccount token for the audience
+  `envoy-hub-admission` (`natsgrant.HubAdmissionAudience`) of Dispatch's own account, answered with
+  its own reply prefix and one ping subject under it and nothing else (`natsgrant.HubAdmission`);
+  on any other hub the proof is refused `hub_admission_untagged`, and for any other account
+  `hub_admission_not_dispatch`. It chooses a service token's verifier by the audience the token
+  names. On such a hub it admits a listener only when its connection's client name ends with
+  ` privacy-required` (`listener_not_required` otherwise), and answers Dispatch's own account with
+  `natsgrant.DispatchApp`, Dispatch's grant less the listener durable and the role lanes; on any
+  other hub every connection is answered as before. A new `dispatch-listener/<machine id>/*` entry
+  of `BROKER_NATS_SERVICES` is Dispatch's listener running as an account of its own, answered with
+  a listener's grant without session consumers (`natsgrant.DispatchListener`). On a hub not rendered
+  private, a credential naming a project of the broker's private union is refused
+  `private_project_untagged_hub`, and Dispatch's own account once any project has been switched
+  private; this release wires no private union, so it refuses none. The grants of the
+  private-projects bucket are gone, and with them `bus.PrivateProjectsBucket`. The broker refuses
+  to start when `BROKER_K8S_OIDC_AUDIENCE`, `BROKER_EXCHANGE_K8S_AUDIENCE`,
+  `BROKER_NATS_K8S_AUDIENCE` or `BROKER_POD_REGISTRATION_AUDIENCE` is `envoy-hub-admission`. A
+  service connection's renewal probe is named `probe ` then the connection's name, so a name's last
+  word stays last.
+time: 2026-11-21T04:38:14Z
+custom:
+    Issue: private-hub-admission

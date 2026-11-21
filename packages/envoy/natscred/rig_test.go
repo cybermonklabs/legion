@@ -54,7 +54,14 @@ type rig struct {
 func newRig(t *testing.T, introspect func(context.Context, string) (oauthwire.Introspection, error),
 	serviceToken func(context.Context, string) (string, bool, time.Time, time.Time, error)) *rig {
 	t.Helper()
-	keys := testnats.NewCalloutKeys(t)
+	return newRigOf(t, testnats.NewCalloutKeys(t), "daemon/-/*="+daemonAccount, introspect, serviceToken)
+}
+
+// newRigOf is newRig on a hub with keys, the auth service admitting the services entries lists
+// (BROKER_NATS_SERVICES).
+func newRigOf(t *testing.T, keys testnats.CalloutKeys, entries string, introspect func(context.Context, string) (oauthwire.Introspection, error),
+	serviceToken func(context.Context, string) (string, bool, time.Time, time.Time, error)) *rig {
+	t.Helper()
 	server, url := testnats.StartWithCalloutServer(t, keys)
 	dir := t.TempDir()
 	write := func(name, seed string) string {
@@ -62,7 +69,7 @@ func newRig(t *testing.T, introspect func(context.Context, string) (oauthwire.In
 		require.NoError(t, os.WriteFile(path, []byte(seed), 0o600))
 		return path
 	}
-	services, err := natscallout.ParseServices("daemon/-/*=" + daemonAccount)
+	services, err := natscallout.ParseServices(entries)
 	require.NoError(t, err)
 	log := &logtest.Buffer{}
 	registry := metrics.New()

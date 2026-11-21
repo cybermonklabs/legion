@@ -341,10 +341,21 @@ func main() {
 	// reads are counted with every read after them; broker_unservable_secrets, which reads the
 	// live policy, is registered on it once that first load has answered (LoadPolicy).
 	registry := metrics.New()
+	// The broker's one client of Dispatch's project access (BROKER_PROJECT_ACCESS_URL), read by
+	// the token exchange, an enrollment naming projects, and every request, release and airlock
+	// connection holding a project-tagged secret; nil when unset. It presents the broker's own
+	// projected ServiceAccount token for Dispatch's audience, read at call time through the reader
+	// every projected token here goes through, so a rotation needs no restart. config.Load holds
+	// the two settings to both or neither. Built before the loader, which serves a tagged secret
+	// only when this broker can ask whether its project is private (policy.Loader.ProjectChecks).
+	var projectAccess projectaccess.Access
+	if cfg.ProjectAccessURL != "" {
+		projectAccess = projectaccess.New(cfg.ProjectAccessURL, ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+	}
 	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
 	// policy version is the one it has today.
 	loader := policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: rules.Digest,
-		StoreReads: policy.NewStoreReads(registry)}
+		StoreReads: policy.NewStoreReads(registry), ProjectChecks: projectAccess != nil}
 	// One key source per issuer, read by everything that needs that issuer's keys: the verifiers
 	// discoverVerifiers builds and, for the cluster's issuer and Google's, the RFC 8693 exchange
 	// below, which resolves a subject token's own key through the same *oidc.Keys. So the boot
@@ -456,13 +467,20 @@ func main() {
 	enr := &enroll.Service{
 		Store: st, Lease: lease, Carry: time.Duration(cfg.SessionCarrySeconds) * time.Second, Pod: pod,
 		ServiceLogins: cfg.ServiceLogins, ServicesByAccount: cfg.ServicesByAccount,
-		VMServicesByAccount: cfg.VMServicesByAccount, PodOperators: cfg.PodOperators,
+		VMServicesByAccount: cfg.VMServicesByAccount, PodOperators: cfg.PodOperators, Projects: projectAccess,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
+	// The exchange's listed identities, read here, before the request machine, which reads the
+	// project an operator's entry maps a pod's or a machine's account to from the same entries
+	// the exchange mints from (exchange.Set.MappedProjects), so a token and a release cannot
+	// disagree on a credential's project.
+	exchangePolicy, err := exchange.NewSet(cfg.ExchangeAccounts, cfg.ExchangeReadAccounts, cfg.ExchangeWorkflows, cfg.ExchangeGoogleAccounts, cfg.SignIn.Domain)
+	fatal(err)
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
 	// machine and the model judge share it, its token cache and its client.
 	dispatch := judgeDispatch(cfg)
 	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch)
+	reqMachine.Projects, reqMachine.Exchange = projectAccess, exchangePolicy
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
@@ -489,12 +507,10 @@ func main() {
 	oauthSecret, err := oauthStore.Secret(secretCtx)
 	cancelSecret()
 	fatal(err)
-	// The exchange's listed identities and the issuers whose tokens it accepts as a subject
-	// token. Both halves are optional and the grant is composed either way: a broker told about
-	// no issuer accepts no subject token at all, which the line below says once at boot rather
-	// than leaving an operator to read it out of a refusal.
-	exchangePolicy, err := exchange.NewSet(cfg.ExchangeAccounts, cfg.ExchangeReadAccounts, cfg.ExchangeWorkflows, cfg.ExchangeGoogleAccounts, cfg.SignIn.Domain)
-	fatal(err)
+	// The exchange's issuers whose tokens it accepts as a subject token, beside the listed
+	// identities read above. Both halves are optional and the grant is composed either way: a
+	// broker told about no issuer accepts no subject token at all, which the line below says once
+	// at boot rather than leaving an operator to read it out of a refusal.
 	exchangeConfig := oauth.ExchangeConfig{Policy: exchangePolicy}
 	if cfg.ExchangeK8sAudience != "" {
 		// The key source the account verifier already reads: a subject token is the same
@@ -524,18 +540,12 @@ func main() {
 		fatal(err)
 		exchangeConfig.GitHub = oauth.IssuerConfig{Issuer: cfg.ExchangeGitHubIssuer, Audience: cfg.ExchangeGitHubAudience, Keys: keys}
 	}
-	// projectAccess is Dispatch's project access client, nil with BROKER_PROJECT_ACCESS_URL unset.
-	var projectAccess *projectaccess.Client
-	if cfg.ProjectAccessURL != "" {
-		// The broker's own projected ServiceAccount token for Dispatch's audience, read at call
-		// time through the reader every projected token here goes through, so a rotation needs no
-		// restart. config.Load holds the two settings to both or neither.
-		projectAccess = projectaccess.New(cfg.ProjectAccessURL, ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+	if projectAccess != nil {
 		exchangeConfig.Projects = projectAccess
 		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL))
 	} else {
 		slog.Info("project access check", "state", "off",
-			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token naming no project is minted as before and a person's trade naming one is refused")
+			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a person's trade or session naming one is refused, and a secret tagged with a project is refused project-unchecked")
 	}
 	if cfg.ExchangeK8sAudience == "" && cfg.ExchangeGitHubIssuer == "" && cfg.GoogleOIDCAudience == "" {
 		slog.Info("token exchange", "state", "unconfigured", "detail", "no subject token issuer is set, so no pod, workflow run or machine exchanges")
@@ -786,10 +796,12 @@ func main() {
 		// A service held to its exchange projects is held by the exchange list this broker trades
 		// by and by Dispatch's answers about those projects, which the service reads in the
 		// background; with no Dispatch to ask (BROKER_PROJECT_ACCESS_URL unset), it refuses that
-		// service by name.
+		// service by name. PrivateProjects, the broker's private union, is left nil, an empty
+		// union that refuses nothing, until the configured private projects and Dispatch's
+		// privacy answers are wired into one function the auth service and the private list share.
 		deps := natscallout.Deps{
-			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify, Exchange: exchangePolicy.MappedForAccount,
-			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
+			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify, HubAdmissionToken: natsTokens.VerifyHubAdmission,
+			Exchange: exchangePolicy.MappedForAccount, Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
 		}
 		if projectAccess != nil {
 			deps.Access = projectAccess.Access
@@ -1300,10 +1312,14 @@ const judgeDispatchTimeout = 10 * time.Second
 //
 // ctx is main's own signal.NotifyContext, which the first SIGTERM cancels, and not boot's
 // `serving`, which outlives the drain: every run hangs off it, so one in flight when the broker
-// is asked to stop ends there, before the drain, having written nothing at all and left its
-// request pending for the person who decides it today. That is the right way round for a judge
-// where it is not for the policy reload — a half-finished reload costs a pod stale tags for its
-// drain, while a half-finished run would approve a credential as the pod goes away.
+// is asked to stop ends there, before the drain, and leaves its request pending for the person who
+// decides it today. A run still before its verdict writes nothing at all; one whose approval the
+// stop cuts writes its request.judged row on a context of its own, which lasts until the run's own
+// deadline, and at least a second (judge's rowContext), so the write may go on into the drain,
+// saying the approval was not applied, unless the approval's own row shows it applied. That is
+// the right way round for a judge where it is not for the policy reload — a half-finished reload
+// costs a pod stale tags for its drain, while a half-finished run would approve a credential as
+// the pod goes away.
 func wireJudge(ctx context.Context, cfg config.Config, rules proxyrules.Rules, m *requests.Machine, dispatch *judge.Dispatch) {
 	if cfg.JudgeModelURL == "" {
 		// config.Load refuses a judge beside BROKER_SIGNIN=off, so an off broker always lands here,

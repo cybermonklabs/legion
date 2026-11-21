@@ -68,13 +68,6 @@ const (
 	// WebhookRedeliveryBucket holds the cursor and records of Dispatch's sweep of the GitHub App
 	// webhook's failed deliveries (internal/dispatch/redeliver).
 	WebhookRedeliveryBucket = "envoy_webhook_redelivery"
-	// PrivateProjectsBucket holds one key per private project, its value the repositories
-	// Dispatch maps to it, and a key exists exactly while its project is private: Dispatch writes
-	// it and the listeners read it to hold each session to its token's projects
-	// (dispatch://INFRA-3862). It is deliberately in no list of the buckets a static grant
-	// reaches (ListenerBuckets): only the auth service grants its calls, so a hub that runs none
-	// refuses both its write and its read, which both sides read as no project being private.
-	PrivateProjectsBucket = "envoy_private_projects"
 )
 
 // ListenerBuckets reports the KV buckets envoy-listener opens, in the order its NATS grant lists

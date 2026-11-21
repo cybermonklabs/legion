@@ -267,8 +267,9 @@ func (s *server) listCredentialGrants(w http.ResponseWriter, r *http.Request) {
 }
 
 // revokeCredentialGrant ends a grant as the caller: the broker allows it only when the caller's
-// login is the grant's approver or its enrollment's operator. The browser's body carries nothing
-// Dispatch reads.
+// login is the grant's approver or the person its enrollment acts for (an unmapped person's pod
+// acts for no one), or, for a grant the model judge approved in anyone's stead, anyone who may see
+// it. The browser's body carries nothing Dispatch reads.
 func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {

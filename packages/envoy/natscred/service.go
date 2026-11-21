@@ -148,8 +148,11 @@ func (c *serviceCredential) admitLater(ctx context.Context, nc *nats.Conn, prese
 // service answers and admits token now.
 //
 // It reaches the server as nc does, through the fields of nc's options that say where and how:
-// its servers, name, TLS, dialer, websocket proxy path and headers, and timeout. It reads them as
-// they are when it runs, since by then they are final whatever applied them: internal/bus sets
+// its servers, name, TLS, dialer, websocket proxy path and headers, and timeout. Its name is
+// "probe " then nc's, so whatever ends nc's name ends the probe's too: a listener in required
+// privacy mode ends its name with a suffix the auth service reads on a hub rendered private, and
+// a probe named with a word after it would be refused there. It reads them as they are when it
+// runs, since by then they are final whatever applied them: internal/bus sets
 // the SOCKS5 proxy's dialer, its host lookup and a bounded timeout after the credential's option
 // (connect.go, connectWithContext), so a copy of the options taken when that option was applied
 // would dial the hub around the proxy. It reads no other field, and never copies nc.Opts whole:
@@ -167,7 +170,7 @@ func probe(nc *nats.Conn, token string) error {
 	opts := nats.GetDefaultOptions()
 	opts.Url, opts.Servers, opts.NoRandomize, opts.IgnoreDiscoveredServers = from.Url, from.Servers, from.NoRandomize, from.IgnoreDiscoveredServers
 	opts.InProcessServer = from.InProcessServer
-	opts.Name = strings.TrimSpace(from.Name + " probe")
+	opts.Name = strings.TrimSpace("probe " + from.Name)
 	opts.Secure, opts.TLSConfig, opts.TLSHandshakeFirst = from.Secure, from.TLSConfig, from.TLSHandshakeFirst
 	opts.TLSCertCB, opts.RootCAsCB = from.TLSCertCB, from.RootCAsCB
 	opts.Timeout, opts.Dialer, opts.CustomDialer, opts.SkipHostLookup = from.Timeout, from.Dialer, from.CustomDialer, from.SkipHostLookup

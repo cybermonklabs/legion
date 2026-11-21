@@ -453,64 +453,53 @@ func TestAGrantThatCannotBeHeldToItsProjectsIsRefusedByName(t *testing.T) {
 	requireRefused(t, err, labelGrantNotHoldable, "grant cannot be held to its projects: service daemon/"+pubDaemonAccount+`: natsgrant: scope project "pub" is not a project key`)
 }
 
-// Through the auth service, Dispatch's grant may write the private-projects bucket and a
-// listener's may read it, and nothing more of it: a listener's holds no write to its keys and no
-// create of its stream. The static sets a hub renders hold neither, so a hub with no auth service
-// renders what it rendered before (c-hub-config-unchanged), and the measurement job's grant is
-// unchanged.
-func TestDispatchAndListenerGrantsCarryThePrivateProjectsBucket(t *testing.T) {
+// Dispatch's hub-admission token is admitted only on a hub rendered private: decided for a request
+// without natsgrant.PrivateProjectsServerTag it is refused hub_admission_untagged, naming the
+// account, and with the tag it is admitted with exactly natsgrant.HubAdmission. No grant of any
+// kind, through the auth service or rendered static, holds the private-projects bucket that
+// #4197's grants named, since no such bucket exists: every kind's answer is read on a tagged and on
+// an untagged request, the proof's included. The control is #4197's scopeGrant, which gave
+// Dispatch the bucket's write and a listener its read: the test fails naming Dispatch's.
+func TestTheAdmissionProofNeedsAPrivateHub(t *testing.T) {
 	now := time.Now()
+	proof := serviceJWT(t, natsgrant.HubAdmissionAudience, dispatchAccount, now.Add(time.Hour))
+	deps := Deps{HubAdmissionToken: proofTokens(map[string]platformToken{proof: {account: dispatchAccount, issued: now, expiry: now.Add(time.Hour)}})}
+	_, err := Decide(t.Context(), deps, everyKind, serviceRequest(proof))
+	requireRefused(t, err, labelHubAdmissionUntagged, "hub admission needs a hub rendered private: "+dispatchAccount)
+	decision, err := Decide(t.Context(), deps, everyKind, tagged(serviceRequest(proof)))
+	require.NoError(t, err)
+	require.Equal(t, natsgrant.HubAdmission(dispatchAccount), decision.Grant)
+
 	tokens := map[string]platformToken{
-		"dispatch-token": {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
-		"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
-		"daemon-token":   {account: daemonAccount, issued: now, expiry: now.Add(time.Hour)},
-		"measure-token":  {account: measureAccount, google: true, issued: now, expiry: now.Add(time.Hour)},
+		"dispatch-token":          {account: dispatchAccount, issued: now, expiry: now.Add(time.Hour)},
+		"listener-token":          {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"daemon-token":            {account: daemonAccount, issued: now, expiry: now.Add(time.Hour)},
+		"dispatch-listener-token": {account: dispatchListenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"measure-token":           {account: measureAccount, google: true, issued: now, expiry: now.Add(time.Hour)},
 	}
-	deps := Deps{ServiceToken: serviceTokens(tokens)}
-	decide := func(raw string) natsgrant.Permissions {
-		decision, err := Decide(t.Context(), deps, exampleServices, serviceRequest(raw))
-		require.NoError(t, err)
-		return decision.Grant
-	}
-	bucketKeys := "$KV." + bus.PrivateProjectsBucket + ".>"
-	bucketCreate := "$JS.API.STREAM.CREATE.KV_" + bus.PrivateProjectsBucket
-
-	dispatch := decide("dispatch-token")
-	require.Equal(t, dispatchCalloutGrant("example-dispatch"), dispatch)
-	require.Contains(t, dispatch.Publish, bucketKeys)
-
-	listener := decide("listener-token")
-	require.Equal(t, listenerCalloutGrant("example-hub"), listener)
-	require.Contains(t, listener.Publish, "$JS.API.DIRECT.GET.KV_"+bus.PrivateProjectsBucket+".>")
-	require.NotContains(t, listener.Publish, bucketKeys)
-	require.NotContains(t, listener.Publish, bucketCreate)
-
-	require.Equal(t, daemonCalloutGrant(daemonAccount), decide("daemon-token"))
-	require.Equal(t, natsgrant.Measure(), decide("measure-token"))
-	for name, static := range map[string]natsgrant.Permissions{
-		"dispatch": natsgrant.Dispatch("example-dispatch"), "listener": natsgrant.Listener("example-hub"),
-		"listener host": natsgrant.ListenerHost("example-hub"), "host": natsgrant.Host("example-host"),
-	} {
-		for _, entry := range slices.Concat(static.Publish, static.Subscribe) {
-			require.NotContains(t, entry, bus.PrivateProjectsBucket, "the static %s set a hub renders names the private-projects bucket", name)
+	deps.ServiceToken = serviceTokens(tokens)
+	services := append(append([]ServiceEntry{}, everyKind...), ServiceEntry{Kind: KindMeasure, Account: measureAccount, Google: true, AllProjects: true})
+	grants := map[string]natsgrant.Permissions{"proof": decision.Grant}
+	for raw := range tokens {
+		for _, req := range []Request{serviceRequest(raw), tagged(serviceRequest(raw))} {
+			decision, err := Decide(t.Context(), deps, services, named(req, "envoy-listener"+natsgrant.PrivacyRequiredSuffix))
+			require.NoError(t, err, "%s, tags %v", raw, req.ServerTags)
+			grants[fmt.Sprintf("%s, tags %v", raw, req.ServerTags)] = decision.Grant
 		}
 	}
-}
-
-// dispatchCalloutGrant is the grant the auth service answers Dispatch's connection with as
-// machine machineID: natsgrant.Dispatch, then the private-projects bucket's write.
-func dispatchCalloutGrant(machineID string) natsgrant.Permissions {
-	grant := natsgrant.Dispatch(machineID)
-	grant.Publish = append(grant.Publish, natsgrant.KVWrite(bus.PrivateProjectsBucket)...)
-	return grant
-}
-
-// listenerCalloutGrant is the grant the auth service answers a listener's connection with as
-// machine machineID: natsgrant.Listener, then the private-projects bucket's read.
-func listenerCalloutGrant(machineID string) natsgrant.Permissions {
-	grant := natsgrant.Listener(machineID)
-	grant.Publish = append(grant.Publish, natsgrant.KVRead(bus.PrivateProjectsBucket)...)
-	return grant
+	for name, static := range map[string]natsgrant.Permissions{
+		"dispatch": natsgrant.Dispatch(dispatchMachineID), "listener": natsgrant.Listener("example-hub"),
+		"listener host": natsgrant.ListenerHost("example-hub"), "host": natsgrant.Host("example-host"),
+	} {
+		grants["the static "+name+" set"] = static
+	}
+	for name, grant := range grants {
+		for _, entry := range slices.Concat(grant.Publish, grant.Subscribe) {
+			require.NotContains(t, entry, "KV_envoy_private_projects", "%s holds the private-projects bucket", name)
+			require.NotContains(t, entry, "$KV.envoy_private_projects.", "%s holds the private-projects bucket", name)
+		}
+	}
+	require.Len(t, grants, 1+2*len(tokens)+4, "every kind's grant was read")
 }
 
 // daemonCalloutGrant is the grant the auth service answers a daemon whose entry takes the whole

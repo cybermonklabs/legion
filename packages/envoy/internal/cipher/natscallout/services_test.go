@@ -80,3 +80,18 @@ func TestParseServicesRefusals(t *testing.T) {
 		})
 	}
 }
+
+// Dispatch's listener Deployment, once it runs as an account of its own, is a dispatch-listener
+// entry: it names a machine id as a listener's does, and takes the whole grant, since its grant
+// reads and writes KV buckets every project shares; with no machine id or held to its exchange
+// projects it is refused at start, naming the entry.
+func TestParseServicesReadsADispatchListener(t *testing.T) {
+	services, err := ParseServices("dispatch-listener/example-dispatch/*=" + listenerAccount)
+	require.NoError(t, err)
+	require.Equal(t, []ServiceEntry{{Kind: KindDispatchListener, MachineID: "example-dispatch", Account: listenerAccount, AllProjects: true}}, services)
+	require.Equal(t, "dispatch-listener/example-dispatch", services[0].name())
+	for _, raw := range []string{"dispatch-listener/-/*=" + listenerAccount, "dispatch-listener/example-dispatch/-=" + listenerAccount, "dispatch-listener/a.b/*=" + listenerAccount} {
+		_, err := ParseServices(raw)
+		require.ErrorContains(t, err, `BROKER_NATS_SERVICES entry "`+raw+`"`)
+	}
+}

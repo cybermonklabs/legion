@@ -20,6 +20,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/machine"
@@ -46,6 +48,20 @@ type Deps struct {
 	// Access is Dispatch's answer about one project (projectaccess). A decision never calls it:
 	// the service asks it in the background and decides on the pass it holds (heldAccess).
 	Access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
+	// HubAdmissionToken verifies a projected Kubernetes ServiceAccount token for exactly
+	// natsgrant.HubAdmissionAudience, Dispatch's hub-admission proof (PlatformTokens'
+	// VerifyHubAdmission), and answers the account it names and when it was issued and expires. A
+	// token naming that audience goes to it and never to ServiceToken (hubAdmissionToken). Nil
+	// verifies none, so every proof is refused as a token not verified.
+	HubAdmissionToken func(ctx context.Context, raw string) (account string, issued, expiry time.Time, err error)
+	// PrivateProjects is the broker's private union as it stands now (PrivateProjects): the
+	// projects BROKER_PRIVATE_PROJECTS declares, with every project Dispatch's privacy read has
+	// answered private. A decision reads it only for a request from a hub not rendered private
+	// (taggedPrivate) whose credential names a project, or reaches every project as Dispatch's
+	// own does. Nil is an empty union, which refuses nothing, so a broker that wires none decides
+	// every credential as it did before private projects existed. Whoever wires it owns how old an
+	// answer it may hold: the decision takes what it answers.
+	PrivateProjects func(ctx context.Context) (PrivateProjects, error)
 	// Now is time.Now unless a test replaces it.
 	Now func() time.Time
 	// Log is where the service's reporter writes the refusals, failed answers and drops it
@@ -57,10 +73,25 @@ type Deps struct {
 	// nothing.
 	Metrics *Metrics
 
-	// held is the pass of Dispatch's answers and repository mapping a held entry's grant is built
-	// from, which Start makes and a decision reads (scopeGrant); nil until Start, when no held
-	// entry is admitted.
+	// held is the pass of Dispatch's answers a held entry's grant is built from, which Start makes
+	// and a decision reads (scopeGrant); nil until Start, when no held entry is admitted.
 	held *heldAccess
+}
+
+// PrivateProjects is the broker's private union, in its two parts, each a list of project keys.
+// A credential naming a project of either is admitted only on a hub rendered private; Dispatch's
+// own all-projects entry is refused on any other hub once Switched holds a project, and not for a
+// project that is only declared, since declaring a project switches nothing yet.
+type PrivateProjects struct {
+	// Declared are the projects BROKER_PRIVATE_PROJECTS names.
+	Declared []string
+	// Switched are the projects Dispatch's privacy read has answered private.
+	Switched []string
+}
+
+// holds reports whether project is in either part of the union.
+func (p PrivateProjects) holds(project string) bool {
+	return slices.Contains(p.Declared, project) || slices.Contains(p.Switched, project)
 }
 
 func (d Deps) now() time.Time {
@@ -85,6 +116,20 @@ type Request struct {
 	User, Password string
 	// Host is the client's address, for the log.
 	Host string
+	// ServerTags are the tags of the server that sent the request (its server_tags), which
+	// nats-server copies into every authorization request (claims.Server.Tags); taggedPrivate
+	// reads them.
+	ServerTags []string
+	// ClientName is the name the client gave its connection (claims.ClientInformation.Name), which
+	// a listener in required privacy mode ends with natsgrant.PrivacyRequiredSuffix.
+	ClientName string
+}
+
+// taggedPrivate reports whether req came from a hub rendered with private-project support: its
+// tags hold natsgrant.PrivateProjectsServerTag. Only such a hub's render can carry the tag, so the
+// tag in a request is the hub's own word that it was rendered private.
+func taggedPrivate(req Request) bool {
+	return slices.Contains(req.ServerTags, natsgrant.PrivateProjectsServerTag)
 }
 
 // Decision is the user the service answers a connection with.
@@ -155,6 +200,15 @@ const (
 	labelServiceFailed     = "service_failed"
 	labelUnsealed          = "unsealed"
 	labelWaitingBound      = "waiting_bound"
+	// The private-hub admission's refusals: Dispatch's hub-admission proof on a hub not rendered
+	// private, or for another account; a listener not in required privacy mode on a hub rendered
+	// private; a credential naming a private project on a hub not rendered private; and the
+	// broker's private union not read.
+	labelHubAdmissionUntagged    = "hub_admission_untagged"
+	labelHubAdmissionNotDispatch = "hub_admission_not_dispatch"
+	labelListenerNotRequired     = "listener_not_required"
+	labelPrivateUntaggedHub      = "private_project_untagged_hub"
+	labelPrivateUnknown          = "private_projects_unknown"
 )
 
 // credentialKind is which credential req presents: a session's token beside a proof and no user,
@@ -169,11 +223,20 @@ func credentialKind(req Request) string {
 	return credentialNone
 }
 
-// serviceGrant is entry's kind's grant, before it is held to the entry's projects.
-func serviceGrant(entry ServiceEntry) natsgrant.Permissions {
+// serviceGrant is entry's kind's grant, before it is held to the entry's projects: on a hub
+// rendered private (tagged), Dispatch's own account takes natsgrant.DispatchApp, which binds no
+// listener durable and no role lane, and everywhere else every kind takes the grant its hub's
+// static user of that kind holds; Dispatch's listener takes natsgrant.DispatchListener on every
+// hub.
+func serviceGrant(entry ServiceEntry, tagged bool) natsgrant.Permissions {
 	switch entry.Kind {
 	case KindDispatch:
+		if tagged {
+			return natsgrant.DispatchApp(entry.MachineID)
+		}
 		return natsgrant.Dispatch(entry.MachineID)
+	case KindDispatchListener:
+		return natsgrant.DispatchListener(entry.MachineID)
 	case KindListener:
 		return natsgrant.Listener(entry.MachineID)
 	case KindDaemon:
@@ -184,12 +247,54 @@ func serviceGrant(entry ServiceEntry) natsgrant.Permissions {
 	return natsgrant.Permissions{}
 }
 
+// privateProjectRefusal is the refusal of a credential naming projects, on a request from a hub
+// not rendered private, when one of them is in the broker's private union, naming it; nil on a
+// hub rendered private, for a credential naming no project, and with no union wired. A union that
+// cannot be read refuses the credential, since none of its projects is known to be public; past
+// the decision's budget the refusal names the read.
+func privateProjectRefusal(ctx context.Context, deps Deps, req Request, projects []string) *Refusal {
+	if taggedPrivate(req) || len(projects) == 0 || deps.PrivateProjects == nil {
+		return nil
+	}
+	union, refused := readPrivateProjects(ctx, deps)
+	if refused != nil {
+		return refused
+	}
+	for _, project := range projects {
+		if union.holds(project) {
+			return privateProjectNeedsTag(project)
+		}
+	}
+	return nil
+}
+
+// readPrivateProjects reads the broker's private union, refusing the decision when it cannot.
+func readPrivateProjects(ctx context.Context, deps Deps) (PrivateProjects, *Refusal) {
+	union, err := deps.PrivateProjects(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return PrivateProjects{}, budgetRefusal("the read of the broker's private projects")
+		}
+		return PrivateProjects{}, refuse(labelPrivateUnknown, "the broker's private projects could not be read").because(err)
+	}
+	return union, nil
+}
+
+// privateProjectNeedsTag is the refusal of a credential reaching the private project project on a
+// hub not rendered private.
+func privateProjectNeedsTag(project string) *Refusal {
+	return refuse(labelPrivateUntaggedHub, "a private project needs a hub rendered private: "+project)
+}
+
 // Decide is the user the service answers req with, or the *Refusal it refuses it with. A session
 // is answered with natsgrant.Session of the session its live token names, once its proof verifies
 // over req's nonce; a service with its kind's grant, held to its projects (scopeGrant), once its
 // platform token verifies and lives no longer than a token login may (an hour, beside the proof
-// clock skew) and its account is listed in services. The grant it answers is not yet checked:
-// every answer passes the guard in admit (callout.go), whatever decided it.
+// clock skew) and its account is listed in services; Dispatch's hub-admission token with
+// natsgrant.HubAdmission (decideHubAdmission). On a hub not rendered private (taggedPrivate), a
+// credential naming a project of the broker's private union is refused (privateProjectRefusal);
+// on a hub rendered private, a listener not in required privacy mode is. The grant it answers is
+// not yet checked: every answer passes the guard in admit (callout.go), whatever decided it.
 func Decide(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
 	switch credentialKind(req) {
 	case credentialSession:
@@ -258,6 +363,9 @@ func decideSession(ctx context.Context, deps Deps, req Request) (Decision, error
 	if answer.ExpiresAt <= 0 {
 		return Decision{}, refuse(labelNoExpiry, "token names no expiry")
 	}
+	if refused := privateProjectRefusal(ctx, deps, req, caller.Projects); refused != nil {
+		return Decision{}, refused
+	}
 	grant, err := natsgrant.Session(caller.Session)
 	if err != nil {
 		return Decision{}, refuse(labelBadSessionID, "session id is not one subject token")
@@ -270,7 +378,35 @@ func decideSession(ctx context.Context, deps Deps, req Request) (Decision, error
 // broker's API already holds its listed callers to.
 const longestServiceToken = machine.MaxTokenLoginLifetime + ciphertoken.ProofClockSkew
 
+// verifiedFor is the refusal of a verified platform token's life, or nil when it lives no longer
+// than longestServiceToken from its issue and has not expired.
+func verifiedFor(deps Deps, issued, expiry time.Time) *Refusal {
+	if expiry.Sub(issued) > longestServiceToken {
+		return refuse(labelTokenTooLong, "token lives longer than an hour")
+	}
+	if !expiry.After(deps.now()) {
+		return refuse(labelTokenNotLive, "token not live")
+	}
+	return nil
+}
+
+// listedService is the entry of services for account, nil for an account no entry lists.
+func listedService(services []ServiceEntry, account string, google bool) *ServiceEntry {
+	for index := range services {
+		if services[index].Account == account && services[index].Google == google {
+			return &services[index]
+		}
+	}
+	return nil
+}
+
 func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+	// The token's audience, read before it is verified, picks the verifier: a proof token is
+	// verified for the hub-admission audience alone and decided as a proof, never as a service's
+	// connection, though both are the cluster issuer's tokens.
+	if hubAdmissionToken(req.Password) {
+		return decideHubAdmission(ctx, deps, services, req)
+	}
 	account, google, issued, expiry, err := deps.ServiceToken(ctx, req.Password)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -281,25 +417,72 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 		// (internal/oidc), so the cause is safe to log; it is never answered.
 		return Decision{}, refuse(labelServiceToken, "service token not verified").because(err)
 	}
-	if expiry.Sub(issued) > longestServiceToken {
-		return Decision{}, refuse(labelTokenTooLong, "token lives longer than an hour")
+	if refused := verifiedFor(deps, issued, expiry); refused != nil {
+		return Decision{}, refused
 	}
-	if !expiry.After(deps.now()) {
-		return Decision{}, refuse(labelTokenNotLive, "token not live")
-	}
-	var entry *ServiceEntry
-	for index := range services {
-		if services[index].Account == account && services[index].Google == google {
-			entry = &services[index]
-			break
-		}
-	}
+	entry := listedService(services, account, google)
 	if entry == nil {
 		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+account)
 	}
-	grant, err := scopeGrant(ctx, deps, *entry, serviceGrant(*entry))
+	tagged := taggedPrivate(req)
+	switch {
+	case tagged && (entry.Kind == KindListener || entry.Kind == KindDispatchListener) &&
+		!strings.HasSuffix(req.ClientName, natsgrant.PrivacyRequiredSuffix):
+		// A listener build that predates required privacy mode, or one rolled back to its
+		// all-public render, names its connections without the suffix, and would relay a private
+		// project's messages without reading its privacy; on a hub rendered private it is refused.
+		return Decision{}, refuse(labelListenerNotRequired, "a hub rendered private admits only a listener in required privacy mode: "+account)
+	case !tagged && entry.Kind == KindDispatch && entry.AllProjects && deps.PrivateProjects != nil:
+		// Dispatch's own account reaches every project, so on a hub not rendered private it is
+		// refused once any project has been switched private, and a project only declared private
+		// refuses nothing yet.
+		union, refused := readPrivateProjects(ctx, deps)
+		if refused != nil {
+			return Decision{}, refused
+		}
+		if switched := slices.Sorted(slices.Values(union.Switched)); len(switched) > 0 {
+			return Decision{}, privateProjectNeedsTag(switched[0])
+		}
+	}
+	grant, err := scopeGrant(ctx, deps, *entry, serviceGrant(*entry, tagged), req)
 	if err != nil {
 		return Decision{}, err
 	}
 	return Decision{Name: entry.name(), Grant: grant, Expires: expiry}, nil
+}
+
+// hubAdmissionNamePrefix opens the name of the user Dispatch's hub-admission proof is answered
+// with, which the server reports as the connection's authorized user (/connz).
+const hubAdmissionNamePrefix = "hub-admission/"
+
+// decideHubAdmission decides Dispatch's hub-admission proof, a service token whose audience is
+// natsgrant.HubAdmissionAudience: once the hub-admission verifier verifies it for that audience
+// and it lives as a service's token may, it is admitted with natsgrant.HubAdmission only for
+// Dispatch's own account (its dispatch entry of services) and only on a request carrying
+// natsgrant.PrivateProjectsServerTag. So the proof succeeds only through a hub rendered private,
+// and the connection it makes holds nothing but its own round trip.
+func decideHubAdmission(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+	if deps.HubAdmissionToken == nil {
+		return Decision{}, refuse(labelServiceToken, "service token not verified").because(errors.New("natscallout: this broker verifies no hub-admission token"))
+	}
+	account, issued, expiry, err := deps.HubAdmissionToken(ctx, req.Password)
+	if err != nil {
+		if ctx.Err() != nil {
+			return Decision{}, budgetRefusal("the hub-admission token's verification")
+		}
+		return Decision{}, refuse(labelServiceToken, "service token not verified").because(err)
+	}
+	if refused := verifiedFor(deps, issued, expiry); refused != nil {
+		return Decision{}, refused
+	}
+	entry := listedService(services, account, false)
+	switch {
+	case entry == nil:
+		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+account)
+	case entry.Kind != KindDispatch:
+		return Decision{}, refuse(labelHubAdmissionNotDispatch, "hub admission is Dispatch's own account's alone: "+account)
+	case !taggedPrivate(req):
+		return Decision{}, refuse(labelHubAdmissionUntagged, "hub admission needs a hub rendered private: "+account)
+	}
+	return Decision{Name: hubAdmissionNamePrefix + entry.MachineID, Grant: natsgrant.HubAdmission(account), Expires: expiry}, nil
 }

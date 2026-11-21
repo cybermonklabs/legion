@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // natsSeeds writes a user, an account and a curve seed to files of the test's own and returns
@@ -157,4 +159,37 @@ func TestNATSCalloutSettings(t *testing.T) {
 			t.Fatalf("read %q", cfg.EnvoyAccountTokenFile)
 		}
 	})
+}
+
+// No audience a token of the cluster's issuer is accepted at may be the hub-admission audience
+// (natsgrant.HubAdmissionAudience): the auth service verifies a token of that audience as
+// Dispatch's hub-admission proof alone, so a setting equal to it would make a proof token
+// spendable there, or a token minted for there a proof. Each of the four is refused at start,
+// naming it and the audience; the control is the same environment with each audience its own,
+// which loads.
+func TestNoAudienceIsTheHubAdmissionAudience(t *testing.T) {
+	user, account, curve, _ := natsSeeds(t)
+	audiences := func(set map[string]string) map[string]string {
+		e := withK8sIssuer()
+		e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
+		e["BROKER_NATS_URLS"] = "nats://hub-a:4222"
+		e["BROKER_NATS_SEED_FILE"], e["BROKER_NATS_ISSUER_SEED_FILE"], e["BROKER_NATS_XKEY_SEED_FILE"] = user, account, curve
+		e["BROKER_NATS_K8S_AUDIENCE"] = "envoy-nats"
+		e["BROKER_POD_REGISTRATION_AUDIENCE"] = "legion-broker-pod-registration"
+		for name, value := range set {
+			e[name] = value
+		}
+		return e
+	}
+	if _, err := Load(env(audiences(nil))); err != nil {
+		t.Fatalf("the control, each audience its own, was refused: %v", err)
+	}
+	for _, setting := range []string{"BROKER_K8S_OIDC_AUDIENCE", "BROKER_EXCHANGE_K8S_AUDIENCE", "BROKER_NATS_K8S_AUDIENCE", "BROKER_POD_REGISTRATION_AUDIENCE"} {
+		t.Run(setting, func(t *testing.T) {
+			_, err := Load(env(audiences(map[string]string{setting: natsgrant.HubAdmissionAudience})))
+			if err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), natsgrant.HubAdmissionAudience) {
+				t.Fatalf("Load = %v, want a refusal naming %s and %s", err, setting, natsgrant.HubAdmissionAudience)
+			}
+		})
+	}
 }
