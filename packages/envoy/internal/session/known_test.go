@@ -110,10 +110,12 @@ func TestKnownSessionsTouchKeepsTheRecordAndMovesLastSeen(t *testing.T) {
 
 // observedKnown is openKnown with the store's watcher feeding its cache through a holdingCache, so
 // a test can wait for the watcher to deliver back a record the store wrote through (holdApply on
-// the record's key, opened at once). It replaces the watcher once the first read has completed,
-// as holdingRegistry replaces the session registry's, under openMu, which every read of the field
-// takes, and waits until the replacement's own first read has completed: a delivery the gate meets
-// after that is of a write the test makes.
+// the record's key, opened at once). Once the first read has completed it ends the store's watcher
+// and puts in its place one built as startWatch builds it, over the same bucket, with the store's
+// logger and watch options, the way holdingRegistry replaces the session registry's watcher. Unlike
+// holdingRegistry it writes the field under openMu, which every read of the known store's watcher
+// takes, and it waits until the replacement's own first read has completed, so a delivery the gate
+// meets after that is of a write the test makes.
 func observedKnown(t *testing.T, now func() time.Time) (*KnownSessions, *holdingCache) {
 	t.Helper()
 	known := openKnown(t, now)
@@ -122,7 +124,8 @@ func observedKnown(t *testing.T, now func() time.Time) (*KnownSessions, *holding
 	defer cancel()
 	previous.End(ctx)
 	held := &holdingCache{Cache: knownCache{known}}
-	replacement := kvwatch.New("known session store", previous.KV(), held)
+	replacement := kvwatch.New("known session store", previous.KV(), held,
+		append([]kvwatch.Option{kvwatch.WithLogger(known.log)}, known.watchOptions...)...)
 	known.openMu.Lock()
 	known.watcher = replacement
 	known.openMu.Unlock()
@@ -140,9 +143,13 @@ func observedKnown(t *testing.T, now func() time.Time) (*KnownSessions, *holding
 // revision back a moment later. The sweep's removal keeps that revision in the copy's fence, which
 // drops only older ones (kvwatch.Copy.Remove), so a delivery applied after the sweep puts the
 // record back: a sweep run before the watcher has delivered the write proves nothing about the
-// sweep. So the row sweeps once that delivery has been applied. In production the delivery comes
-// within milliseconds of the write and a record is past the retention only 30 days after it, when
-// the bucket's own TTL, the retention, has removed it, so no delivery of it follows a sweep.
+// sweep. So the row sweeps once that delivery has been applied. In production a delivery can put
+// back a record the sweep took too: a later read of the bucket (a Rewatch) delivers every record
+// the bucket still holds, and the bucket can still hold a record past this store's retention. A
+// bucket that already existed keeps the TTL it was created with (openKnownBucket changes none),
+// and a listener whose clock is behind stamps a record's last_seen earlier than its write, so the
+// record is past the retention here before the bucket's TTL removes it. Get and MatchEach answer no
+// such record, and it costs its memory until the next sweep.
 func TestKnownSessionsAnswerNoRecordPastTheRetention(t *testing.T) {
 	clock := time.Now()
 	known, cache := observedKnown(t, func() time.Time { return clock })
