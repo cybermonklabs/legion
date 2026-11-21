@@ -34,16 +34,20 @@
 #     limits for the REST API", "Exceeding the rate limit"): wait the seconds a retry-after header
 #     names, and where the answer names none, at least one minute. gh prints no header of an
 #     answer but under GH_DEBUG=api, which logs every request and answer between a `* Request at`
-#     line and a `* Request took` line, so the helper runs a command that is gh itself under
-#     GH_DEBUG=api, reads the last answer's headers out of that log, and hands the caller gh's
-#     stderr without it. A command that is not gh itself (a wrapper around it) leaves no headers
-#     to read, and its secondary limit takes the one-minute minimum.
+#     line and a `* Request took` line, so the helper runs `gh api` under GH_DEBUG=api, reads the
+#     last answer's headers out of that log, and hands the caller gh's stderr without it. `gh
+#     api` alone: it has one request open at a time, where gh release view, edit and upload send
+#     a GraphQL lookup and a REST request together, and a log of two open requests holds the
+#     second answer's whole body (a draft release's name and body, ahead of release-push.sh's
+#     leak guard). Every other command, gh's own or a wrapper around it, runs as it is, leaves no
+#     headers to read, and its secondary limit takes the one-minute minimum.
 #
 # Where the limit comes from. GitHub enforces a job's timeout-minutes from the job's start, and
 # a step's from the step's, and the runner exposes neither the limit nor the start to a step.
 # So both limits are passed in: the job's env sets JOB_TIMEOUT_MINUTES, and a step that carries a
 # timeout-minutes of its own sets STEP_TIMEOUT_MINUTES, each the number it stands for, which
-# .github/scripts/check-workflow-files.sh holds equal:
+# .github/scripts/check-workflow-files.sh holds equal (and it refuses a step with a limit of its
+# own that reaches this file and passes none):
 #   JOB_TIMEOUT_MINUTES   the job's timeout-minutes, measured from the job's start;
 #   STEP_TIMEOUT_MINUTES  optional: the step's own timeout-minutes, measured from the step's.
 # and both starts are read off the process tree: GitHub's runner starts one Runner.Worker process
@@ -55,19 +59,22 @@
 # namespace, or a run outside Actions), the helper has no deadline and does not wait.
 #
 # gh_read <command>...: runs the command through gh_wait_reset, and on any failure but a rate
-# limit it could not wait for runs it again twice, GH_RETRY_SECONDS (10 by default; the tests set
-# 0) and then twice as many seconds apart. It prints the stdout of the attempt that succeeded and
-# nothing else; every attempt's stderr goes to the caller's stderr, where the job log holds it.
-# It returns 0 for the attempt that succeeded, 75 when gh_wait_reset failed by name (another
-# attempt within seconds cannot find a limit that lifts later), and 1 when all three were
-# refused otherwise, which is the caller's to answer: a refused jobs list leaves ci-ok-report.sh
-# with no result to name for the jobs that have not ended, a refused post leaves no ci-ok at all,
-# and a refused PATCH leaves a stale ci-ok on the head. Its callers: the jobs list of
-# ci-ok-report.sh, the check-run post of post-check-run.sh, the check-run list and each PATCH of
-# ci-ok-reconcile.sh, the check-run and annotation reads of runner-shutdown.sh, and the jobs read
-# of dispatch-browser-run-reads.sh, which bounds each attempt with `timeout 30`. GitHub refuses
-# a call now and then (a 502), and ci-ok, the check main's ruleset
-# requires, is posted from what one call answered.
+# limit it could not wait for within a limit runs it again twice, GH_RETRY_SECONDS (10 by
+# default; the tests set 0) and then twice as many seconds apart. A rate limit met with no limit
+# set (JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES unset, or no Runner.Worker to measure from)
+# keeps those two later attempts, as the ladder made them before the wait existed: one may land
+# after a short reset. It prints the stdout of the attempt that succeeded and nothing else; every
+# attempt's stderr goes to the caller's stderr, where the job log holds it. It returns 0 for the
+# attempt that succeeded, 75 when gh_wait_reset failed by name on the attempt it stopped at (past
+# a limit, another attempt within seconds cannot find a limit that lifts later), and 1 when all
+# three were refused otherwise, which is the caller's to answer: a refused jobs list leaves
+# ci-ok-report.sh with no result to name for the jobs that have not ended, a refused post leaves
+# no ci-ok at all, and a refused PATCH leaves a stale ci-ok on the head. Its callers: the jobs
+# list of ci-ok-report.sh, the check-run post of post-check-run.sh, the check-run list and each
+# PATCH of ci-ok-reconcile.sh, the check-run and annotation reads of runner-shutdown.sh, and the
+# jobs read of dispatch-browser-run-reads.sh, which bounds each attempt with `timeout 30`. GitHub
+# refuses a call now and then (a 502), and ci-ok, the check main's ruleset requires, is posted
+# from what one call answered.
 
 # Seconds the deadline must leave after the reset: the repeated call and what the step does after
 # it run in that time. A gh call takes about a second and a paginated read a few.
@@ -77,7 +84,7 @@ GH_WAIT_MARGIN=30
 # `set -e` (and inherit_errexit) reaches the decision below rather than leaving at the first
 # refused run.
 gh_wait_reset() {
-  local into='' dir status=0 kind reset seconds named until wake now limit deadline why failure=''
+  local into='' dir status=0 kind reset=0 seconds named until wake now pause limit deadline why failure=''
   if [ "${1:-}" = --stderr ]; then
     into=$2
     shift 2
@@ -86,16 +93,18 @@ gh_wait_reset() {
   _gh_read_run "$dir" "$@" || status=$?
   kind=$(_gh_read_refusal "$status" "$dir/err")
   if [ -n "$kind" ]; then
+    if [ "$kind" = budget ] && ! reset=$(_gh_read_reset 2> "$dir/probe"); then
+      failure="GitHub refused this call for its API rate limit, and its rate_limit route did not say when the budget resets ($(head -n 1 "$dir/probe"))"
+      reset=0
+    fi
+    # Read after the rate_limit read, which can take its whole 30 s bound: a clock from before it
+    # would sleep that long past the reset, into the margin the deadline check left.
     now=$(date +%s)
     wake=$now
-    if [ "$kind" = budget ]; then
-      if ! reset=$(_gh_read_reset 2> "$dir/probe"); then
-        failure="GitHub refused this call for its API rate limit, and its rate_limit route did not say when the budget resets ($(head -n 1 "$dir/probe"))"
-      elif [ "$reset" -gt 0 ]; then
-        wake=$((reset + 1 > now ? reset + 1 : now))
-        until="the API budget is spent until $(_gh_read_utc "$reset")"
-      fi
-    else
+    if [ "$kind" = budget ] && [ "$reset" -gt 0 ]; then
+      wake=$((reset + 1 > now ? reset + 1 : now))
+      until="the API budget is spent until $(_gh_read_utc "$reset")"
+    elif [ "$kind" = secondary ]; then
       seconds=$(awk -F': *' 'tolower($1) == "retry-after" { value = $2 } END { print value }' "$dir/headers")
       seconds=${seconds%$'\r'}
       if [[ $seconds =~ ^[0-9]+$ ]]; then
@@ -119,16 +128,18 @@ gh_wait_reset() {
     if [ -z "$failure" ]; then
       # The refused run's words stay in the log; the run below is the one the caller gets.
       cat "$dir/err" >&2
-      if [ "$wake" -gt "$now" ]; then
-        echo "::warning::$until; waiting $((wake - now)) s for it, within this $why's limit at $(_gh_read_utc "$deadline"), then calling once more" >&2
-        sleep $((wake - now))
+      now=$(date +%s)
+      pause=$((wake > now ? wake - now : 0))
+      if [ "$pause" -gt 0 ]; then
+        echo "::warning::$until; waiting $pause s for it, within this $why's limit at $(_gh_read_utc "$deadline"), then calling once more" >&2
+        sleep "$pause"
       fi
       status=0
       _gh_read_run "$dir" "$@" || status=$?
       if [ -n "$(_gh_read_refusal "$status" "$dir/err")" ]; then
-        if [ "$wake" -gt "$now" ] && [ "$kind" = budget ]; then
+        if [ "$kind" = budget ] && [ "$reset" -gt 0 ]; then
           failure="the API budget is still spent after the wait for its reset at $(_gh_read_utc "$reset"); re-run the job once GitHub's rate_limit route shows it back"
-        elif [ "$wake" -gt "$now" ]; then
+        elif [ "$kind" = secondary ]; then
           failure="GitHub refused this call for its rate limit again after the wait ($until); re-run the job"
         else
           failure="GitHub refused this call for its API rate limit twice, and its rate_limit route showed neither the core nor the graphql budget at 0 between the two; re-run the job"
@@ -161,18 +172,26 @@ gh_read() {
     else
       status=$?
     fi
-    [ "$status" -ne 75 ] || return 75
+    # Past a limit, later attempts within seconds meet the same refusal; with no limit set, the
+    # ladder's later attempts are the only retry there is, and one may land after a short reset.
+    if [ "$status" -eq 75 ] && _gh_read_deadline > /dev/null; then
+      return 75
+    fi
     [ "$attempt" -eq 3 ] || sleep $((attempt * ${GH_RETRY_SECONDS:-10}))
   done
+  [ "$status" -ne 75 ] || return 75
   return 1
 }
 
 # _gh_read_run <dir> <command>...: one run, its stdout kept in <dir>/out and its stderr in
-# <dir>/err. A command that is gh itself runs under GH_DEBUG=api, whose log of each request and
-# answer, from its `* Request at` line to its `* Request took` line, is left out of <dir>/err; the
-# last answer's headers in that log go to <dir>/headers, one `Name: value` a line. Lines outside
-# those blocks are gh's own and are kept as they came, and a block gh never closed (gh killed
-# mid-request) ends the log with nothing of gh's own after it.
+# <dir>/err. `gh api` runs under GH_DEBUG=api, whose log of each request and answer, from its
+# `* Request at` line to its `* Request took` line, is left out of <dir>/err; the last answer's
+# headers in that log go to <dir>/headers, one `Name: value` a line. The filter counts the
+# requests open, and a line reaches <dir>/err only while none is: gh prints both `at` lines of two
+# requests it sends together before either `took`. Lines outside every block are gh's own and are
+# kept as they came (gh closes a block on a failed connection too, then prints its error), and a
+# block gh never closed (gh killed mid-request) ends the log with nothing of gh's own after it.
+# Every other command runs as it is, its stderr whole in <dir>/err.
 _gh_read_run() {
   local dir=$1 status=0
   shift
@@ -180,17 +199,17 @@ _gh_read_run() {
   # own: a repeated run that printed none would otherwise hand on the refused run's words.
   : > "$dir/headers"
   : > "$dir/err"
-  if [ "$1" != gh ]; then
+  if [ "$1" != gh ] || [ "${2:-}" != api ]; then
     "$@" > "$dir/out" 2> "$dir/err" || status=$?
     return "$status"
   fi
   GH_DEBUG=api "$@" > "$dir/out" 2> "$dir/trace" || status=$?
   awk -v err="$dir/err" -v headers="$dir/headers" '
-    /^\* Request at / { block = 1 }
-    block {
+    /^\* Request at / { open++ }
+    open > 0 {
       if (/^< HTTP\//) { answer = "" }
       else if (/^< /) { answer = answer substr($0, 3) "\n" }
-      if (/^\* Request took /) { block = 0; last = answer }
+      if (/^\* Request took /) { open--; last = answer }
       next
     }
     { print > err }

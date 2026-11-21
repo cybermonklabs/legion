@@ -34,7 +34,13 @@
 #      from the job's start and the step's, and GitHub cancels the job at its timeout-minutes, so a
 #      larger number would let the wait outlive the job, and a smaller one would fail by name a wait
 #      the job had time for. The values are compared as written, so an expression must be the same
-#      expression.
+#      expression. Three more ways to give the wait a wrong number are refused with it: either name
+#      in the workflow's own `env:`, which stands for no one job's limit; STEP_TIMEOUT_MINUTES in a
+#      job's `env:`, which stands for no one step's; and a step with a timeout-minutes of its own
+#      that reaches gh-read.sh and sets no STEP_TIMEOUT_MINUTES, whose wait would see only the
+#      job's limit. A step reaches gh-read.sh when its `run:` names it, or names a script of
+#      .github/scripts that reaches it (sources it, or names one that does; test files aside), or
+#      when its `uses:` is an action of .github/actions whose action.yml names one.
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
 # faults.
@@ -58,6 +64,7 @@ scripts=$(dirname "$(readlink -f "$0")")
 cd "$(dirname "$0")/../.."
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$scripts" python3 <<'PY'
+import re
 import sys
 from pathlib import Path
 
@@ -229,23 +236,102 @@ def scalar(node: object) -> str | None:
     return node.value.strip() if isinstance(node, yaml.ScalarNode) else None
 
 
-def check_timeout_variables(path: Path, root: object) -> None:
+HELPER = "gh-read.sh"
+# The ways a line of shell runs or sources a script, or keeps its path in a variable to run later:
+# the path as a command's first word (a line's start, or after `;`, `&`, `|`, `!`, `$(`, `( `, a
+# shell keyword, bash, sh, exec, time, env's assignments or timeout's limit); `source` or `.`
+# followed, anywhere later on the line, by the path, however a `$(...)` builds its directory; and
+# a shell assignment (no space around the `=`) whose value ends in the path. A path named in a
+# comment, a description or a Python string runs nothing and is no reach.
+COMMAND_PLACE = (
+    r"(?:^|[;&|!]|\$\(|\(\s|\b(?:then|do|else|if|while|until|bash|sh|exec|time)\s"
+    r"|\btimeout\s+\S+\s|\benv(?:\s+\w+=\S*)*\s)\s*[\"']?[^\s\"';&|()]*/"
+)
+SOURCED = r"(?:^|[\s;&|])(?:source|\.)\s.*/"
+ASSIGNED = r"(?:^|[\s;&|])[A-Za-z_]\w*=.*/"
+
+
+def runs_any(text: str, names: set[str]) -> list[str]:
+    """The names among `names` that a line of shell text outside a comment runs or sources, by a
+    path ending in that name in one of the places above."""
+    found = set()
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        for name in names:
+            end = re.escape(name) + r"(?![\w.-])"
+            if any(re.search(place + end, line) for place in (COMMAND_PLACE, SOURCED, ASSIGNED)):
+                found.add(name)
+    return sorted(found)
+
+
+def helper_reachers() -> tuple[set[str], set[str]]:
+    """The basenames of the scripts of .github/scripts that reach HELPER, HELPER itself among
+    them, and the names of the actions of .github/actions whose steps' `run:` reaches one: a
+    script reaches it when a line of it runs or sources HELPER or a script that does
+    (runs_any), followed until nothing more joins. Test files and their libraries run no step's
+    API call and are left out."""
+    texts: dict[str, str] = {}
+    for script in Path(".github/scripts").glob("*.sh"):
+        if script.name.endswith(".test.sh") or "test-lib" in script.name:
+            continue
+        try:
+            texts[script.name] = script.read_text(errors="replace")
+        except OSError:
+            continue
+    scripts = {HELPER}
+    while True:
+        joined = {name for name, text in texts.items() if name not in scripts and runs_any(text, scripts)}
+        if not joined:
+            break
+        scripts |= joined
+    actions: set[str] = set()
+    for action in Path(".github/actions").glob("*/action.y*ml"):
+        try:
+            doc = yaml.safe_load(action.read_text(errors="replace"))
+        except (OSError, yaml.YAMLError):
+            continue
+        runs = doc.get("runs") if isinstance(doc, dict) else None
+        steps = runs.get("steps") if isinstance(runs, dict) else None
+        if not isinstance(steps, list):
+            continue
+        text = "\n".join(str(step.get("run", "")) for step in steps if isinstance(step, dict))
+        if runs_any(text, scripts):
+            actions.add(action.parent.name)
+    return scripts, actions
+
+
+def check_timeout_variables(path: Path, root: object, reachers: tuple[set[str], set[str]]) -> None:
     """Rule 6 of the header: each JOB_TIMEOUT_MINUTES a job or its steps set is the job's
-    timeout-minutes, and each STEP_TIMEOUT_MINUTES a step sets is that step's."""
-    jobs = mapping_get(root, "jobs")
-    if not isinstance(jobs, yaml.MappingNode):
-        return
+    timeout-minutes, each STEP_TIMEOUT_MINUTES a step sets is that step's, neither name stands in
+    the workflow's env, STEP_TIMEOUT_MINUTES stands in no job's env, and a step with a limit of
+    its own that reaches gh-read.sh passes that limit."""
     why = (
         " .github/scripts/gh-read.sh waits for a spent API budget within this number, measured from "
         "the job's start (STEP_TIMEOUT_MINUTES: the step's), and GitHub cancels the job at its "
         "timeout-minutes: a larger number lets the wait outlive the job, and a smaller one fails "
         "by name a wait the job had time for. Write the two as one number."
     )
+    scripts, actions = reachers
 
     def refuse(where: object, who: str, name: str, value: str, limit: str) -> None:
         line = where.start_mark.line + 1
         problem(path, f"{path}:{line}: {who} sets {name} to {value}, but {limit}." + why, line=line)
 
+    def misplaced(where: object, text: str) -> None:
+        line = where.start_mark.line + 1
+        problem(path, f"{path}:{line}: {text}", line=line)
+
+    for name in ("JOB_TIMEOUT_MINUTES", "STEP_TIMEOUT_MINUTES"):
+        value = mapping_get(mapping_get(root, "env"), name)
+        if value is not None:
+            misplaced(value, f"the workflow's env sets {name}, which stands for no one "
+                             f"{'job' if name.startswith('JOB') else 'step'}'s timeout-minutes: set it "
+                             f"in the env of each {'job' if name.startswith('JOB') else 'step'} it is "
+                             f"that limit of, where this check holds it to that number.")
+    jobs = mapping_get(root, "jobs")
+    if not isinstance(jobs, yaml.MappingNode):
+        return
     for job_name, job in jobs.value:
         if not isinstance(job, yaml.MappingNode):
             continue
@@ -259,24 +345,44 @@ def check_timeout_variables(path: Path, root: object) -> None:
         value = mapping_get(mapping_get(job, "env"), "JOB_TIMEOUT_MINUTES")
         if value is not None and scalar(value) != job_limit:
             refuse(value, f"job {job_id}", "JOB_TIMEOUT_MINUTES", scalar(value), job_said)
+        value = mapping_get(mapping_get(job, "env"), "STEP_TIMEOUT_MINUTES")
+        if value is not None:
+            misplaced(value, f"job {job_id}'s env sets STEP_TIMEOUT_MINUTES, which stands for no one "
+                             f"step's timeout-minutes: set it in the env of the step it is that limit of.")
         steps = mapping_get(job, "steps")
         if not isinstance(steps, yaml.SequenceNode):
             continue
         for index, step in enumerate(steps.value, start=1):
             env = mapping_get(step, "env")
+            own = mapping_get(step, "timeout-minutes")
             value = mapping_get(env, "JOB_TIMEOUT_MINUTES")
             if value is not None and scalar(value) != job_limit:
                 refuse(value, f"job {job_id}", "JOB_TIMEOUT_MINUTES", scalar(value), job_said)
             value = mapping_get(env, "STEP_TIMEOUT_MINUTES")
             if value is None:
+                if own is None:
+                    continue
+                run = scalar(mapping_get(step, "run")) or ""
+                uses = scalar(mapping_get(step, "uses")) or ""
+                via = runs_any(run, scripts)
+                if uses.startswith("./.github/actions/") and uses.rstrip("/").rsplit("/", 1)[-1] in actions:
+                    via.append(uses)
+                if via:
+                    misplaced(own, f"step {index} of job {job_id} sets timeout-minutes {scalar(own)} and "
+                                   f"reaches gh-read.sh (through {', '.join(via)}), but sets no "
+                                   f"STEP_TIMEOUT_MINUTES: its wait for a spent API budget would see only "
+                                   f"the job's limit and could outlive the step's. Set STEP_TIMEOUT_MINUTES "
+                                   f"to {scalar(own)} in the step's env.")
                 continue
-            own = mapping_get(step, "timeout-minutes")
             if own is None:
                 refuse(value, f"step {index} of job {job_id}", "STEP_TIMEOUT_MINUTES", scalar(value),
                        "the step sets no timeout-minutes")
             elif scalar(value) != scalar(own):
                 refuse(value, f"step {index} of job {job_id}", "STEP_TIMEOUT_MINUTES", scalar(value),
                        f"its timeout-minutes is {scalar(own)} (line {own.start_mark.line + 1})")
+
+
+REACHERS = helper_reachers()
 
 
 for path in targets:
@@ -317,7 +423,7 @@ for path in targets:
         continue
 
     check_folded_keys(path, node)
-    check_timeout_variables(path, node)
+    check_timeout_variables(path, node, REACHERS)
 
     called = unique_callees(path)
     if len(called) > CALL_LIMIT:

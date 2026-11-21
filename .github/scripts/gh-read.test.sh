@@ -46,6 +46,13 @@ fi
 #                budget stays whole.
 #   answer       what a route answers once the budget is back: 200 or 404.
 #   body         the body of a 200.
+#   release      present: the release routes answer v1 as a release whose name and body must
+#                reach no log (RELEASE below), each answer held `release-delay` seconds (0.3 by
+#                default), and POST /graphql answers gh's draft lookup at once with no draft. gh
+#                release view and edit send that lookup and the REST read together and take the
+#                REST answer when the lookup finds no draft, so the REST answer closes second,
+#                after both requests opened.
+#   rate-limit-delay  seconds the rate_limit route holds its answer, read when it was asked.
 # and appends `<epoch> <method> <path>` to `log` for every request it answers.
 cat > "$work/github.py" <<'PY'
 import http.server
@@ -57,6 +64,13 @@ import time
 import urllib.parse
 
 state, portfile = sys.argv[1:3]
+RELEASE = {"id": 1, "tag_name": "v1", "name": "the draft's name", "body": "the draft's body, before the leak guard",
+           "draft": True, "prerelease": False, "target_commitish": "main", "assets": [],
+           "author": {"login": "builder"}, "created_at": "2026-11-21T00:00:00Z", "published_at": None,
+           "url": "http://api.github.localhost/repos/o/r/releases/1",
+           "html_url": "http://github.localhost/o/r/releases/tag/v1",
+           "upload_url": "http://uploads.github.localhost/repos/o/r/releases/1/assets{?name,label}",
+           "tarball_url": "t", "zipball_url": "z"}
 
 
 def read(name, default=""):
@@ -95,6 +109,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             bucket = {"limit": 15000, "used": 15000 if spent else 0,
                       "remaining": 0 if spent else 15000,
                       "reset": spent_until if spent else int(now) + 3600}
+            time.sleep(float(read("rate-limit-delay", "0")))
             self.answer(200, {"resources": {"core": bucket, "graphql": dict(bucket, limit=5000)},
                               "rate": bucket})
         elif (path != "/rate_limit" and read("secondary")
@@ -114,6 +129,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         [("x-ratelimit-limit", "15000"), ("x-ratelimit-remaining", "0"),
                          ("x-ratelimit-used", "15000"), ("x-ratelimit-reset", str(spent_until)),
                          ("x-ratelimit-resource", "core")])
+        elif os.path.exists(os.path.join(state, "release")) and path == "/graphql":
+            self.answer(200, {"data": {"repository": {"release": None}}})
+        elif os.path.exists(os.path.join(state, "release")) and path.startswith("/repos/o/r/releases"):
+            time.sleep(float(read("release-delay", "0.3")))
+            self.answer(200, RELEASE)
         elif read("answer", "200") == "404":
             self.answer(404, {"message": "Not Found",
                               "documentation_url": "https://docs.github.com/rest", "status": "404"})
@@ -126,8 +146,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-socketserver.ThreadingTCPServer.allow_reuse_address = True
-with socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler) as httpd:
+class Server(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+
+    # gh drops the slower of two requests it raced; the write into its closed socket is no fault.
+    def handle_error(self, request, client_address):
+        pass
+
+
+with Server(("127.0.0.1", 0), Handler) as httpd:
     with open(portfile, "w") as handle:
         handle.write(str(httpd.server_address[1]))
     httpd.serve_forever()
@@ -425,8 +452,8 @@ check "after waiting once" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
 check "naming it" "$(contains "$err" "^::error::GitHub refused this call for its rate limit again after the wait")"
 
 echo "case: a wrapped command's secondary rate limit takes the minimum, its headers unread"
-# The helper reads the headers of gh's own answers alone: a command it does not run as gh itself
-# (the browser lane's bash wrapper) has none it can read.
+# The helper reads the headers of `gh api`'s own answers alone: a command it does not run as `gh
+# api` itself (the browser lane's bash wrapper, gh release, gh run) has none it can read.
 github never
 secondary 403 3
 drive JOB_TIMEOUT_MINUTES=1 -- 'gh_wait_reset bash -c "gh api repos/o/r/pulls/1"'
@@ -441,6 +468,68 @@ check "exits 0" "$(is "$status" 0)"
 check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
 check "the second call made after the wait, not by the ladder at once" \
   "$(contains "$err" "^::warning::GitHub's secondary rate limit asks this call to wait 2 s (its retry-after)")"
+
+# gh release view, edit and upload send a GraphQL lookup and a REST request together, so both are
+# open at once. The helper reads gh's request trace (GH_DEBUG=api) for `gh api` alone, which has
+# one request open at a time: a trace of two open requests let the second answer's headers and
+# body through to the log, a draft release's name and body among them, ahead of release-push.sh's
+# leak guard.
+echo "case: gh release view through the helper prints the release and nothing on stderr"
+github never
+touch "$work/state/release"
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh release view v1 --repo o/r --json name,body -q ".name, .body"'
+check "exits 0" "$(is "$status" 0)"
+check "prints the name and the body on stdout" "$(is "$out" "the draft's name
+the draft's body, before the leak guard")"
+check "and nothing on stderr: no answer, no header, no trace" "$(is "$err" '')"
+check "both requests were made, the REST answer closing second" \
+  "$(is "$(calls /graphql)|$(calls /repos/o/r/releases/tags/v1)" '1|1')"
+
+echo "case: gh release edit through the helper writes nothing on stderr"
+github never
+touch "$work/state/release"
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh release edit v1 --repo o/r --draft=false'
+check "exits 0" "$(is "$status" 0)"
+check "and nothing on stderr" "$(is "$err" '')"
+check "it patched the release" "$(is "$(calls /repos/o/r/releases/1)" 1)"
+
+echo "case: gh release view under a spent budget waits, and the log holds no release"
+github 3
+touch "$work/state/release"
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh release view v1 --repo o/r --json name,body -q ".name, .body"'
+check "exits 0" "$(is "$status" 0)"
+check "prints the release on stdout" "$(contains "$out" "^the draft's name$")"
+check "after one wait" "$(is "$(warnings)" 1)"
+check "with nothing of the release on stderr" "$(is "$(contains "$err" "the draft's")" false)"
+check "and no line of a trace" "$(is "$(contains "$err" '^\* Request\|^< \|^> \|^{')" false)"
+
+echo "case: the wait is measured from after the rate_limit read, not before it"
+# The rate_limit route takes 5 s to answer a reset 3 s after the refusal: the budget is back by the
+# time the answer arrives, so the call goes again at once. A clock read before the probe sleeps the
+# reset's 4 s on top of the probe's 5.
+github 3
+echo 5 > "$work/state/rate-limit-delay"
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+reset=$(spent_until)
+check "exits 0" "$(is "$status" 0)"
+check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
+check "the second call no later than 3 s after the reset" "$(at_least "$((reset + 3))" "$(nth_at /repos/o/r/pulls/1 2)")"
+
+echo "case: gh_read with no limit set keeps its ladder's retries for a rate limit"
+# With no limit the helper cannot wait, and says so; the ladder still makes its later attempts, as
+# it did before the helper, and one lands after a short reset.
+# The attempts come about 8 s and 24 s after the first; the budget is back between 19 and 20 s
+# after it (the stand-in floors its clock). Each refused attempt's rate_limit read must land before
+# the reset, or the helper reads the window as turned over and calls again at once, so the second
+# attempt has 10 s of room for a slow gh on a loaded machine (a read that took over 6 s was seen),
+# and the third lands 4 s after the reset.
+github 20
+drive GH_RETRY_SECONDS=8 -- 'gh_read gh api repos/o/r/pulls/1'
+check "exits 0" "$(is "$status" 0)"
+check "prints the answer" "$(is "$out" '{"title":"t"}')"
+check "after three attempts" "$(is "$(calls /repos/o/r/pulls/1)" 3)"
+check "the two refused ones each named the missing limit" \
+  "$(is "$(grep -c 'names no time limit to wait within' <<<"$err")" 2)"
 
 echo "case: on a GitHub runner, the job's start is read off the real Runner.Worker"
 if [ "${GITHUB_ACTIONS:-}" = true ]; then
