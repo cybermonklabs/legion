@@ -241,21 +241,18 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 }
 
 // TestCitedIssuesCostsNoMoreThanTheBodyIsLong holds that the reading is linear in the body: the
-// finder walks it once, and each match reads at most a host name's length of digits and host
-// bytes before its path. The body is 1 MiB with no whitespace in it and an issue path every
-// thirteen bytes, which is the shape a reading that walks back to the nearest space pays the
-// square of: such a walk costs about 1.5 s at 64 KiB and so about 380 s at 1 MiB, where this one
-// costs about a third of a second, nearly all of it the finder's own pass. The deadline is some
-// thirty times that, so a loaded machine stays green and a walking reader cannot pass.
+// finder walks it once, and each path's decision is handed at most citationReach bytes of the
+// body before the path, so it can read no more there. The row counts what each decision is handed
+// (citationWork) instead of timing the call, so how busy the machine is decides nothing. The body
+// is 1 MiB with no whitespace in it and an issue path every thirteen bytes, which is the shape a
+// reading that walks back to the nearest space pays the square of: such a reading needs the body
+// back to its start at every path.
 func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 	const cited = "https://github.com/acme/widgets/issues/7"
-	const deadline = 10 * time.Second
 	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
-	began := time.Now()
-	got := citedIssues("acme/widgets", body)
-	if took := time.Since(began); took > deadline {
-		t.Errorf("citedIssues over %d bytes took %s, want under %s", len(body), took, deadline)
-	}
+	var work citationWork
+	got := readCitedIssues("acme/widgets", body, &work)
+	holdToTheReach(t, "a body of "+strconv.Itoa(len(body))+" bytes", body, work)
 	if !slices.Equal(got, []string{cited}) {
 		t.Fatalf("a body of %d bytes cites %v, want %s and nothing else", len(body), got, cited)
 	}

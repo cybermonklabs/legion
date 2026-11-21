@@ -4,7 +4,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestCitedIssuesReadsAURLAsAURL holds the whole citation decision, not the expression that
@@ -202,36 +201,43 @@ func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
 // TestCitedIssuesCostsNoMoreForACitationFarFromASpace is the cost test, written so that it fails
 // on the shape it guards against rather than on a clock. Two bodies of the same length carry the
 // same 200 citations and differ only in what separates them: spaces, which end a word at once,
-// and commas, which do not. A reader that walks back to the nearest space pays the body's length
-// for every match and the comma body costs many times the space one; a reader that reads a
-// bounded run pays the same for both.
-//
-// The two bodies are timed in turn, three times each, and each keeps its quickest: the machine's
-// load only ever adds to a time, and in turn it reaches both bodies over the same stretch of the
-// run, where all three runs of one body and then all three of the other put whatever the load did
-// between them into the ratio.
-//
-// Measured in this pod at this head, best of three each: 5.83 ms and 5.05 ms, a ratio under one.
-// The same bodies against the walk this change replaced (ebb65528's reader): 5.74 ms and
-// 134.77 ms, a ratio of 23. The bound below is 8, which no linear reader approaches and no
-// walking one meets.
+// and commas, which do not. A reader that walks back to the nearest space needs the 65,536 bytes
+// of prose for every path of the comma body; a reader that reads a bounded run needs the same
+// bytes for both, since neither a space nor a comma is a host byte. The row counts what each
+// path's decision is handed (citationWork), holds each to citationReach bytes before its path,
+// and holds the two bodies to the same counts: a count has no noise to allow for, so the bound is
+// the claim itself rather than a ratio.
 func TestCitedIssuesCostsNoMoreForACitationFarFromASpace(t *testing.T) {
 	const repo = "acme/widgets"
 	one := "github.com/acme/widgets/issues/7"
 	prose := strings.Repeat("a", 65536)
 	bySpace := prose + " " + strings.TrimSuffix(strings.Repeat(one+" ", 200), " ")
 	byComma := prose + "," + strings.TrimSuffix(strings.Repeat(one+",", 200), ",")
-	timed := func(body string) time.Duration {
-		started := time.Now()
-		citedIssues(repo, body)
-		return time.Since(started)
+	var space, comma citationWork
+	readCitedIssues(repo, bySpace, &space)
+	readCitedIssues(repo, byComma, &comma)
+	holdToTheReach(t, "the citations separated by spaces", bySpace, space)
+	holdToTheReach(t, "the citations separated by commas", byComma, comma)
+	if comma != space {
+		t.Errorf("citing %d bytes separated by commas handed the decisions %+v, and separated by spaces %+v, want the same: a path's decision is handed the body back to the nearest space rather than a bounded run", len(byComma), comma, space)
 	}
-	space, comma := timed(bySpace), timed(byComma)
-	for range 2 {
-		space, comma = min(space, timed(bySpace)), min(comma, timed(byComma))
+}
+
+// holdToTheReach fails t unless work, what citedIssues handed its decisions over body, holds one
+// decision for every issue path the finder answers in body, some bytes before a path (each body
+// here has bytes before a path, so a count of 0 saw nothing of what the decisions are handed),
+// and at most citationReach bytes before any one path.
+func holdToTheReach(t *testing.T, what, body string, work citationWork) {
+	t.Helper()
+	t.Logf("%s: %+v", what, work)
+	if paths := len(githubIssuePath.FindAllStringIndex(body, -1)); work.decisions != paths {
+		t.Errorf("%s: the count saw %d decisions for the %d issue paths the finder answers, so it did not count every path", what, work.decisions, paths)
 	}
-	if comma > 8*space {
-		t.Errorf("citing %d bytes separated by commas took %v against %v separated by spaces, more than 8 times as long: a match is reading back to the nearest space rather than a bounded run", len(byComma), comma, space)
+	if work.before == 0 {
+		t.Errorf("%s: the decisions were handed 0 bytes before their paths, where every body here has bytes before a path: the count saw nothing of what they are handed", what)
+	}
+	if work.longestBefore > citationReach {
+		t.Errorf("%s: one path's decision was handed %d bytes before the path, want at most %d (citationReach): a path's decision is handed the body back to the nearest space rather than a bounded run", what, work.longestBefore, citationReach)
 	}
 }
 
