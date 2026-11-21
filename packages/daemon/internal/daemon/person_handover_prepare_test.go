@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -303,5 +304,79 @@ func TestBootReconcileReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) 
 	err = w.reconcile(ctx)
 	if err == nil || !strings.Contains(err.Error(), unrecorded) || !strings.Contains(err.Error(), "Dispatch is restarting") {
 		t.Fatalf("reconcile with the log unreadable = %v; want the failed read to fail the reconcile, naming %s", err, unrecorded)
+	}
+}
+
+// A labelled triage root the daemon does not record whose Dispatch event log the daemon cannot
+// read (here its last event, a person's edit, carries a `null` payload) is left out of the boot
+// listing's decision, with one ERROR line naming the issue and the event, and the boot goes on:
+// the rest of the listing is decided as ever, so another such root a person labelled is queued as
+// that person's handover and an unrecorded labelled todo root is recorded. The root left out has
+// no record and no outbox row, and its row in the copy of Dispatch's issues is still written.
+func TestBootReconcileLeavesOutATriageRootWhoseEventLogCannotBeRead(t *testing.T) {
+	const readable, unreadable, todo = "CAPTURE-755", "CAPTURE-760", "CAPTURE-761"
+	const leftOut = "workflow: the listing leaves out of admission an issue whose Dispatch event log cannot be read"
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	consumers := bootClaimConsumers(t, pool)
+	logs := &syncBuffer{}
+	log := slog.New(slog.NewJSONHandler(logs, nil))
+	records := record.NewStore()
+	nullEdit := json.RawMessage(fmt.Sprintf(`{"id":3,"issue_key":%q,"seq":3,"type":"issue.updated","actor":{"kind":"user","id":"user-1"},"notify":true,"payload":null}`, unreadable))
+	client := &eventLogDispatch{logs: map[string][]json.RawMessage{
+		readable:   labelledBy(readable, "user"),
+		unreadable: append(labelledBy(unreadable, "user"), nullEdit),
+	}}
+	client.listed = []dispatch.IssueSummary{
+		{Key: readable, ResolvedRepo: "acme/widgets", Title: readable, Status: "triage", Rank: "A", HandedOver: true, LastSeq: 2},
+		{Key: unreadable, ResolvedRepo: "acme/widgets", Title: unreadable, Status: "triage", Rank: "B", HandedOver: true, LastSeq: 3},
+		{Key: todo, ResolvedRepo: "acme/widgets", Title: todo, Status: "todo", Rank: "C", HandedOver: true, LastSeq: 1},
+	}
+	// acme/widgets is read already, so the boot records the todo root on it without reading GitHub.
+	repos := newRepositories("CAPTURE", ghrepo.Renames{})
+	repos.fill(ghrepo.MustParse("acme/widgets"))
+	engine := workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
+	admission := admit.New(records, engine, 2, "CAPTURE", log)
+	w := &workflowRuntime{
+		pool: pool, records: records, admission: admission, engine: engine, handlers: []intake.Handler{engine, admission}, repositories: repos,
+		dispatch: client, dispatchProject: "CAPTURE", bootID: "handover-boot", log: log, consumers: consumers,
+	}
+
+	if err := w.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile with one unreadable event log = %v, want the boot to go on without that issue", err)
+	}
+
+	var payload []byte
+	if err := pool.QueryRow(ctx, "select payload from outbox where issue = $1 and kind = $2", readable, string(record.OutboxKindDispatchStatus)).Scan(&payload); err != nil {
+		t.Fatalf("read the status row of %s: %v; want the person's handover queued", readable, err)
+	}
+	queued, err := record.DecodeOutboxPayload(record.OutboxRow{Kind: record.OutboxKindDispatchStatus, Issue: readable, Payload: payload})
+	if err != nil {
+		t.Fatalf("decode the status row of %s (%s): %v", readable, payload, err)
+	}
+	if want := record.PersonHandoverStatusWrite("todo", "triage"); queued != want {
+		t.Fatalf("the status row of %s = %#v, want the person's handover %#v", readable, queued, want)
+	}
+	if got := readIssue(t, pool, todo); got == nil {
+		t.Fatalf("%s has no record after the boot, want the labelled todo root recorded", todo)
+	}
+	if got := readIssue(t, pool, unreadable); got != nil {
+		t.Fatalf("%s = %#v after the boot, want no record: admission decides nothing on an issue whose log it cannot read", unreadable, got)
+	}
+	if rows := outboxRowsOf(t, pool, unreadable); rows != 0 {
+		t.Fatalf("%s has %d outbox rows after the boot, want none", unreadable, rows)
+	}
+	if got := copied(t, pool, unreadable).status; got != "triage" {
+		t.Fatalf("the copy of %s = %q; want its listed status, triage: the listing still copies an issue it leaves out of admission", unreadable, got)
+	}
+
+	lines := loggedMessages(t, logs.String(), leftOut)
+	if len(lines) != 1 {
+		t.Fatalf("the boot logged %d lines %q, want one:\n%s", len(lines), leftOut, logs.String())
+	}
+	line := lines[0]
+	if line["level"] != "ERROR" || line["issue"] != unreadable || line["event"] != 3.0 || line["seq"] != 3.0 ||
+		!strings.Contains(fmt.Sprint(line["error"]), "decode Dispatch issue payload of event 3 of 3: the payload is not a JSON object") {
+		t.Fatalf("the line leaving %s out = %v, want ERROR naming %s, event 3, seq 3 and the decode error", unreadable, line, unreadable)
 	}
 }

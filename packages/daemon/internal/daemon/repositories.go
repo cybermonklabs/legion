@@ -2491,10 +2491,13 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 // labelSetter is the kind of the Dispatch actor that added the label to key, read from the issue's
 // whole Dispatch event log, from sequence 0, by intake.LabelSetter's rule: one paged read per call,
 // outside the fact lock as the rest of a preparation reads, for an event's preparation
-// (prepareIssue) and the boot listing's (reconcileListing) alike. A read that fails, or a log the
-// daemon cannot decode, is an error naming the key, for the caller to fail the preparation on, so
-// the event or the listing is read again rather than applied with a setter nobody read: a setter
-// of "" would keep today's triage wake for a label a person set.
+// (prepareIssue) and a listing's, the boot's or a recovery's (reconcileListing), alike. A read
+// that fails, or a log the daemon cannot decode, is an error naming the key, so no caller applies a
+// setter nobody read: a setter of "" would keep today's triage wake for a label a person set. An
+// event's preparation fails on either, so the event is delivered again. A listing fails on a read
+// that fails, so the listing is read again, and leaves out of admission's decision an issue whose
+// log does not decode (the error wraps intake.UnreadableEventLog), so one such log does not stop
+// the listing.
 func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, error) {
 	events, err := w.dispatch.EventsAfter(ctx, key, 0)
 	if err != nil {

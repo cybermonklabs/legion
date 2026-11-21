@@ -33,8 +33,8 @@ func (a DispatchArtifact) WithStatusChange(events []json.RawMessage) (DispatchAr
 // last issue event at or before it, and an issue event after seq changes the status when it
 // carries another status than the issue event before it. When no issue event stands at or before
 // seq, the first one after it sets the status the later ones are compared with, and is no change
-// itself. A log walkIssueEvents cannot read is an error, since a log the daemon cannot read cannot
-// say the status stayed.
+// itself. For a log walkIssueEvents cannot read, it returns the walk's *UnreadableEventLog, since a
+// log the daemon cannot read cannot say the status stayed.
 //
 // The walk reads the log from sequence 0 because an event carries the status it leaves, not the
 // one it found: no event after seq says what the status was at seq, so only the events at or

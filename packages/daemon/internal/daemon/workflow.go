@@ -1335,6 +1335,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		if keep != nil && !keep(records, summary) {
 			continue
 		}
+		// Every kept summary is in scope, an issue left out of admission's decision below too:
+		// scope feeds the copy of Dispatch's issues, the claims the boot releases, and the boot
+		// refill's check of which keys the listing holds.
+		scope = append(scope, summary)
 		fact := intake.ListedIssue(summary)
 		labelledTriageRoot := fact.LabelledTriageRoot()
 		if fact.Status == "todo" || labelledTriageRoot {
@@ -1357,12 +1361,22 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		case labelledTriageRoot && records[summary.Key] == nil:
 			// The listing carries no actor, so the setter is read from the log as an event's is;
 			// a recorded root a person moved back to triage is never queued again, so its log is
-			// not read.
-			if fact.LabelSetter, err = w.labelSetter(ctx, summary.Key); err != nil {
+			// not read. A failed read of the log fails the listing, so the listing is read again.
+			// A log the daemon read and cannot decode (intake.UnreadableEventLog) leaves the issue
+			// out of admission's decision, so one such issue does not stop the listing: no record,
+			// no queue, no handover. The issue's next event reads the log again, and its
+			// preparation fails while the log stays unreadable.
+			var unreadable *intake.UnreadableEventLog
+			fact.LabelSetter, err = w.labelSetter(ctx, summary.Key)
+			if errors.As(err, &unreadable) {
+				w.log.Error("workflow: the listing leaves out of admission an issue whose Dispatch event log cannot be read",
+					"issue", summary.Key, "event", unreadable.Event, "seq", unreadable.Seq, "error", err)
+				continue
+			}
+			if err != nil {
 				return fmt.Errorf("prepare who set the label of %s for admission: %w", summary.Key, err)
 			}
 		}
-		scope = append(scope, summary)
 		listed = append(listed, fact)
 	}
 	target, err := w.consumers.DispatchTarget(ctx)
