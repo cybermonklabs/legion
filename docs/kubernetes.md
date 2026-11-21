@@ -469,7 +469,7 @@ Then:
   This release refuses one operator mount the release before it took: a `runtime.kubernetes.pod.volume_mounts[].mount_path` at `/var/run/legion/testpg.log` (or `/run/legion/testpg.log`, the same path through the image's link), where role-init now binds the server's log.
   The loader refuses it in every deployment, whether or not it sets `runtime.kubernetes.test_postgres`:
   `runtime.kubernetes.pod.volume_mounts[<i>].mount_path /var/run/legion/testpg.log overlaps /var/run/legion/testpg.log, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's` (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
-  A daemon of this release does not start on a file it refuses, so run this release's `legion config check` on the file before the rollout, and move such a mount elsewhere.
+  A daemon of this release does not start on a file it refuses, so run this release's `legion config check` on the file before the rollout (`legion start --check-config` on a release from before that command), and move such a mount elsewhere.
   A pod on a worker image of an earlier release reads no log and tells no role `LEGION_TEST_PG_LOG`, whatever release the daemon runs: the launcher, role-init and the file the log is bound over all come from the image.
 
 ### Image size and pull time
@@ -2024,7 +2024,7 @@ Do these steps in this order:
    by an admin with `CREATEROLE` that is not a superuser, on a daemon login a superuser created, it failed as quoted;
    by an admin that created the daemon login itself, it and the `createdb -O` both exited 0.
 
-4. **Put `legion.yaml` back**, the copy of the whole file step 6 said to keep, and run the earlier release's `legion config check` on it.
+4. **Put `legion.yaml` back**, the copy of the whole file step 6 said to keep, and run the earlier release's `legion start --check-config` on it.
    The earlier release reads the file before it opens the database or the cluster, and refuses this release's shape key by key, so a daemon re-pinned on the file as this release left it never starts:
 
    - the top-level keys this release added, each `unknown key <key>` (`classify` in `internal/config/config.go` at `legion-v10.0.0`):
@@ -2070,7 +2070,7 @@ A rollback below it has one step of its own, and one effect on the pods that sti
 
 **`runtime.kubernetes.memory_guard` must come out of `legion.yaml` first.**
 An earlier loader knows no such key and refuses the file by name (`unknown key runtime.kubernetes.memory_guard`), so its daemon does not start while the block stands.
-Take the block out before the earlier image is pinned, and `legion config check` on the earlier image reads the file clean.
+Take the block out before the earlier image is pinned, and `legion start --check-config` on the earlier image reads the file clean.
 A file that never set the block needs nothing.
 
 **A pod of this release's worker image runs with the guard off under an earlier daemon.**
@@ -2663,7 +2663,7 @@ A statement naming `notice` here deletes nothing and leaves the row standing.
 
 **`stalled_tree_notice_hours` must come out of `legion.yaml` in the same change.**
 The loader refuses a key it does not know, naming it (`unknown key stalled_tree_notice_hours`), and the earlier release's loader knows nothing of this key, so that daemon refuses to start while the line stands in the file.
-Take the line out, and `legion config check` on the earlier image reads the file clean.
+Take the line out, and `legion start --check-config` on the earlier image reads the file clean.
 
 What the rollback brings back is the earlier release's slot rule: an issue holds one of the cap's slots through every phase up to its merge, so an issue in `accepting`, `retro` or `merging` counts against the cap again.
 That release's first admission pass gives each of them a row again out of its cap, and its `legion state` counts them among the slot holders.
@@ -2844,7 +2844,7 @@ keep a copy of the block as it was, which a rollback puts back.
 the volume names `role-homes` and `role-probe`;
 a mount at, under or above `/var/run/legion/roles`, `/var/run/legion/home`, `/var/run/legion/role-probe`, `/dev/mqueue`, `/dev/ptmx`, `/dev/pts` or `/proc`;
 and a mount at or above `/tmp`, `/var/tmp`, `/run/lock`, `/var/lock` or `/dev/shm`, or the image's other spellings of them.
-Run this release's `legion config check` on the file before the rollout.
+Run this release's `legion config check` on the file before the rollout (`legion start --check-config` on a release from before that command).
 The release that adds microVM issue pods takes one more volume name, `workload-identity-token` ("Upgrading" in [Pods in microVMs](#pods-in-microvms)).
 
 To roll this release back to contract 38, every stored locator and every issue Sandbox both go back to what the earlier release reads.
@@ -2948,7 +2948,7 @@ In this order:
    `runtime.kubernetes.resources key "issue" must be a role (architect, planner, implementer,
    tester, reviewer, merger, controller)` (`readResources` in `internal/config/kubernetes.go`).
    Leave `session_store` and its key as they are: both releases require a store that keeps sessions in a database.
-   Run the earlier release's `legion config check` on the file before re-pinning it.
+   Run the earlier release's `legion start --check-config` on the file before re-pinning it.
 
 6. **Re-pin the earlier daemon and its worker image together**, and start the daemon.
 
@@ -4241,7 +4241,7 @@ The release that adds the block, daemon API contract 151, refuses one volume nam
 The name is now the daemon's own, for the projected token volume of the metadata endpoint ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 The loader refuses it in every deployment, one that runs only gVisor pods and sets no `sandbox` block included:
 `runtime.kubernetes.pod.volumes[<i>].name workload-identity-token is a volume Legion puts in every pod`, where `<i>` is the volume's place in the list, from 0 (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
-A daemon of that release does not start on a file it refuses, so run that release's `legion config check` on the file before the rollout.
+A daemon of that release does not start on a file it refuses, so run that release's `legion config check` on the file before the rollout (`legion start --check-config` on a release from before that command).
 Where the check refuses the name, give that volume another name, in `volumes` and in each `volume_mounts` entry whose `volume` names it.
 The release that runs the controller's pod in the project's sandbox, the one with the entry for `dispatch://INFRA-4567` ("Rolling back", below), refuses one mount path that the release before it took: a `runtime.kubernetes.pod.volume_mounts[].mount_path` at or under `/var/run/legion/workload-identity`.
 The path is now the daemon's own, where a microVM controller pod mounts the metadata endpoint's token (`ControllerWorkloadIdentityDir`, `names.go`).
@@ -4253,7 +4253,7 @@ Where the check refuses the path, mount that volume at another path.
 **Rolling back.**
 The release that adds the block is daemon API contract 151, whose entry in `packages/daemon/internal/api/version.go` is for `dispatch://INFRA-3729`.
 A daemon below contract 151 refuses the key at boot (`unknown key runtime.kubernetes.sandbox`), so a rollback below that contract removes the `sandbox` block from `legion.yaml` before it pins the earlier release.
-`legion config check` of that release shows the refusal first.
+`legion start --check-config` of that release shows the refusal first.
 An earlier daemon reads no `sandbox` member in a pod's recorded shape, so it replaces a microVM pod only for another drift.
 The earlier image is such a drift, so each microVM pod's update round brings its issue back to a gVisor pod.
 Where a microVM pod's launcher connects to such a daemon before that round replaces the pod, the daemon's answer carries no `kernelKills`.
