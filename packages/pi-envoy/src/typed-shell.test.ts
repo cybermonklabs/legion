@@ -84,7 +84,15 @@ describe("running a person's command", () => {
   beforeEach(() => {
     procmgr.__resetShellConfigCacheForTests();
   });
+  /** The `stop` of each command a row started with a `started` hook. A command runs in a process
+   *  group of its own, and `typed-shell`'s kill of every running group as the process exits does
+   *  not run under `bun test`, which fires no `exit` listener; bun's own kill of a timed-out row's
+   *  spawned process reaches the command's shell and not a child it started. So a row that bun
+   *  fails before the command ends leaves that child running unless the teardown stops the
+   *  command, which kills the whole group. A stop after the command ended does nothing. */
+  const rowStops: (() => void)[] = [];
   afterEach(() => {
+    for (const stop of rowStops.splice(0)) stop();
     procmgr.__resetShellConfigCacheForTests();
   });
 
@@ -452,6 +460,7 @@ describe("running a person's command", () => {
         cwd: directory,
         limitMs: 60_000,
         started: (stop) => {
+          rowStops.push(stop);
           void untilTrue(() => existsSync(ready)).then(stop);
         },
       });
@@ -489,6 +498,7 @@ describe("running a person's command", () => {
           cwd: directory,
           limitMs: 60_000,
           started: (stop) => {
+            rowStops.push(stop);
             // The shell leaves the process table when it is reaped, which is what resolves the
             // wait on it, so by the time a poll of this machine's table can see it gone the
             // command has ended here too: the stop below lands after that end and inside the
