@@ -26,7 +26,7 @@ A tree is a root issue and the issues beneath it. When another tree's open pull 
    jj -R "$LEGION_WORKSPACE" describe -r @ -m ""
    ```
 
-   Skip the `squash` when there is no resolution to move. `@-` is then the merge, with step 1's message and your resolutions, which step 4 pushes. `@` holds only the other paths and has no description, so a role's launch keeps it as `@` (the launch puts a new change on a described `@` only) and the next role that commits sets it aside at its turn start. Run no `jj new` here. Tell the architect each such path and `@`'s change id. Before your next commit, run your role prompt's turn-start rule.
+   Skip the `squash` when there is no resolution to move. `@-` is then the merge, with step 1's message and your resolutions, which step 4 pushes. `@` holds only the other paths and has no description, so the daemon's adoption of the working copy before it sends a role a phase task keeps it as `@` (the adoption puts a new change on a described `@` only) and the next role that commits sets it aside at its turn start. Run no `jj new` here. Tell the architect each such path and `@`'s change id. Before your next commit, run your role prompt's turn-start rule.
 
    When one path holds both your resolution and another role's edit, push nothing, and tell the architect.
 3. A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round. A finding's class is the defect it named wherever the head holds it, not the one line it cited: search the whole head, not the lines the merge changed alone.

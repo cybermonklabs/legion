@@ -32,7 +32,8 @@ If it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`. If it prints `false
 change id of `@` with `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'change_id.short()'`, then
 run `jj -R "$LEGION_WORKSPACE" new @-` too, never `jj new`: `@` can hold another role's edits,
 since a role whose phase ends leaves them there. `jj new @-` sets that change aside, and nothing
-is lost. Before you take back a path, read its diff in that change:
+is lost. A planner whose issue moved back from implementing starts as its role part says instead,
+never with `jj new @-`. Before you take back a path, read its diff in that change:
 `jj -R "$LEGION_WORKSPACE" diff -r <change id> <path>` (`--name-only` in place of `<path>` lists
 every path the change holds). Take back with
 `jj -R "$LEGION_WORKSPACE" restore --from <change id> <path>` only a path whose every hunk is

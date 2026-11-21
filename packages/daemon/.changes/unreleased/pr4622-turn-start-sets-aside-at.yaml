@@ -4,5 +4,5 @@ custom:
 body: |-
   The role prompts' turn-start step now runs `jj new @-`, never `jj new`, and takes back
   only the role's own edits from the change it sets aside, telling the architect the rest.
-  A planner whose issue moved back from implementing reads `@`'s change id, starts on the remote
-  tip with `jj new legion/<KEY>@origin` and tells the architect the change id it left, instead.
+  A planner whose issue moved back from implementing reads the change ids of `@` and `@-`, starts
+  on the remote tip with `jj new legion/<KEY>@origin` and tells the architect both ids, instead.

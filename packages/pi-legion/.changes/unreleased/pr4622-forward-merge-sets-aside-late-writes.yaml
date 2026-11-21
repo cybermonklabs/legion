@@ -4,4 +4,5 @@ custom:
 body: |-
   The forward merge lists the paths the merge changes beyond its parents' auto-merge and, when
   another role's write is among them, pushes a merge without it and leaves that write, undescribed,
-  in the working copy for the next role that commits to set aside.
+  in the working copy for the next role that commits to set aside; when one path holds both, it
+  pushes nothing and tells the architect.
