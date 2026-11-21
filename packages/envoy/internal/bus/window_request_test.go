@@ -111,12 +111,18 @@ func TestARequestNobodyAnswersIsNotAcknowledgedWithinItsTimeout(t *testing.T) {
 // not acknowledge under `unanswered` and a forward that may never have left this process under
 // `failed` - and both wrap ErrNotAcknowledged, so a caller that only backs the send off is
 // unaffected.
+//
+// The confirmed Request's timeout is 5 s, as the Requests of
+// TestARequestAFullStreamRefusesIsAnsweredByThatRefusalAtOnce wait: its flush runs on a goroutine
+// of its own, bounded by the same deadline, and a timeout a loaded scheduler can outrun before that
+// goroutine runs ends the flush unconfirmed, so the first half's verdict would be the scheduler's
+// rather than the flush's.
 func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
 	server, _, client := requestClient(t)
 	window := client.WindowUntil(nil)
 
 	err := answerOf(t, window.Request("notifications.role.request-confirmed", forwardEnvelope("confirmed"),
-		bus.RequestOptions{MsgID: bus.ForwardMsgID("confirmed", "notifications.role.request-confirmed"), Timeout: 300 * time.Millisecond}))
+		bus.RequestOptions{MsgID: bus.ForwardMsgID("confirmed", "notifications.role.request-confirmed"), Timeout: 5 * time.Second}))
 	if !errors.Is(err, bus.ErrNotAcknowledged) || errors.Is(err, bus.ErrPublishUnconfirmed) {
 		t.Fatalf("an unanswered Request whose publish was confirmed returned %v, want ErrNotAcknowledged and not ErrPublishUnconfirmed", err)
 	}
@@ -324,9 +330,12 @@ func TestProbeAnswersWhetherTheWindowsConnectionStillAnswers(t *testing.T) {
 
 // A window with a deadline (WindowUntil) writes nothing at or past it. Its first send, made while
 // the client has no connection, waits for one only until the deadline, 200 ms on, and answers
-// ErrWindowDeadline then, though the connection comes back later and the window's wait for a
-// connection is otherwise 5 s: the stream holds nothing it sent once the client is connected again.
-// A window pinned to a live connection answers a send past its deadline the same way, at once.
+// ErrWindowDeadline then, though the window's wait for a connection is otherwise 5 s. The server
+// starts again only once that send has answered: a server started inside the 200 ms let the
+// connection come back before the deadline whenever the client's next reconnect attempt, due every
+// second from the loss, fell there, and the send was written. The stream holds nothing it sent
+// once the client is connected again. A window pinned to a live connection answers a send past its
+// deadline the same way, at once.
 func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	server, _, client := requestClient(t)
 	subject := contracts.LegacyAgentSubject("ses_window_deadline")
@@ -342,12 +351,6 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	started := time.Now()
 	deadline := started.Add(200 * time.Millisecond)
 	window := client.WindowUntil(func() time.Time { return deadline })
-	restarted := make(chan struct{})
-	go func() {
-		defer close(restarted)
-		time.Sleep(100 * time.Millisecond)
-		server.Start(t)
-	}()
 	item := forwardEnvelope("deadline")
 	item.Topic = subject
 	err := answerOf(t, window.PublishAsync(item))
@@ -363,7 +366,7 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 		t.Fatalf("a Request past the window's deadline answered %v, want ErrWindowDeadline", err)
 	}
 
-	<-restarted
+	server.Start(t)
 	waitUntil = time.Now().Add(10 * time.Second)
 	for !client.Connected() {
 		if time.Now().After(waitUntil) {
