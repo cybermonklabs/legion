@@ -183,11 +183,13 @@ func insertIssueEvent(t *testing.T, database *store.Store, key, eventType, actor
 	}
 }
 
-func wantStatus(t *testing.T, what string, response *httptest.ResponseRecorder, status int) {
+// wantStatus fails unless response answered status, and answers it.
+func wantStatus(t *testing.T, what string, response *httptest.ResponseRecorder, status int) *httptest.ResponseRecorder {
 	t.Helper()
 	if response.Code != status {
 		t.Fatalf("%s: status=%d body=%s, want %d", what, response.Code, response.Body.String(), status)
 	}
+	return response
 }
 
 // Every source names its collaborator through the real write routes: the assignee, a claim, an

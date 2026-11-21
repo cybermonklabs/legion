@@ -383,7 +383,7 @@ func TestAnyoneApproverAdmitsEveryLoginButItself(t *testing.T) {
 		{"Agent_Secret", shared, "bob@example.com", ""},
 		{KindLauncherCredential, owned, "Sami@Example.com", "sami@example.com"},
 	} {
-		got, err := c.body.ApproverLogin(c.kind, "", c.login)
+		got, err := c.body.ApproverLogin(c.kind, "", c.login, nil)
 		if c.want == "" && !errors.Is(err, ErrNotApprover) || c.want != "" && (err != nil || got != c.want) {
 			t.Errorf("ApproverLogin(%s, approver %q, login %q) = %q, %v; want %q", c.kind, c.body.Approver, c.login, got, err, c.want)
 		}
@@ -464,7 +464,7 @@ func TestAServiceLoginIsDecidedByAnyoneAndAPersonsByThemAlone(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: VerifyRequestObject: %v", c.name, err)
 		}
-		got, err := c.body.ApproverLogin(KindLauncherCredential, obj.Service(), c.login)
+		got, err := c.body.ApproverLogin(KindLauncherCredential, obj.Service(), c.login, nil)
 		if c.want == "" && !errors.Is(err, ErrNotApprover) || c.want != "" && (err != nil || got != c.want) {
 			t.Errorf("%s: ApproverLogin(login %q) = %q, %v; want %q", c.name, c.login, got, err, c.want)
 		}
@@ -727,10 +727,10 @@ func TestNoJudgeActorDecidesARecordAsAPerson(t *testing.T) {
 		{KindLauncherCredential, AnyoneApprover, "legion-daemon"},
 		{KindLauncherCredential, judge, "legion-daemon"},
 	} {
-		if MayDecide(c.kind, c.approver, c.service, judge) {
+		if MayDecide(c.kind, c.approver, c.service, judge, nil) {
 			t.Errorf("MayDecide(%s, approver %q, service %q, login %q) admitted the judge as a person", c.kind, c.approver, c.service, judge)
 		}
-		if !MayDecide(c.kind, c.approver, c.service, "sami@example.com") && c.approver != judge {
+		if !MayDecide(c.kind, c.approver, c.service, "sami@example.com", nil) && c.approver != judge {
 			t.Errorf("MayDecide(%s, approver %q, service %q) refused a person too", c.kind, c.approver, c.service)
 		}
 	}
