@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,9 +43,11 @@ func runIssueStatus(ctx context.Context, c *operatorCall, issue, status string) 
 	}
 	var grant string
 	if code := c.send(ctx, op, http.MethodPost, "/legion/v1/grants", struct{}{}, func(_ io.Writer, answer []byte) error {
+		// The answer is named by its member, never printed: it is the daemon's word, and the
+		// grant it should hold is a credential.
 		var minted api.GrantResponse
 		if err := json.Unmarshal(answer, &minted); err != nil || minted.GrantID == "" {
-			return fmt.Errorf("no grant in it: %s", answer)
+			return errors.New("it names no grant (grantId)")
 		}
 		grant = minted.GrantID
 		return nil

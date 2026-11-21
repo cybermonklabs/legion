@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -97,11 +99,35 @@ func writeAnswer(w io.Writer, answer []byte) error {
 }
 
 // decodeAnswer reads a 2xx answer into into, refusing a member the struct does not have: a daemon
-// whose wire this binary does not speak says so rather than printing half of it.
+// whose wire this binary does not speak says so rather than printing half of it. Its error is
+// fixed text naming what into is and, where encoding/json names it, the member of into's own type
+// that did not decode and the JSON kind it held; never a value or a member name the answer wrote,
+// since encoding/json's errors quote a member into does not have, and the errors of the types it
+// decodes into (time.Time's among them) quote the value they could not read.
 func decodeAnswer(answer []byte, into any) error {
 	decoder := json.NewDecoder(bytes.NewReader(answer))
 	decoder.DisallowUnknownFields()
-	return decoder.Decode(into)
+	err := decoder.Decode(into)
+	if err == nil {
+		return nil
+	}
+	what := reflect.TypeOf(into).Elem().String()
+	var syntax *json.SyntaxError
+	var typed *json.UnmarshalTypeError
+	switch {
+	case errors.As(err, &syntax):
+		return fmt.Errorf("it is not JSON (at byte %d), so it is no %s", syntax.Offset, what)
+	case errors.As(err, &typed):
+		member := "the whole of it"
+		if typed.Field != "" {
+			member = fmt.Sprintf("its %q", typed.Field)
+		}
+		kind, _, _ := strings.Cut(typed.Value, " ")
+		return fmt.Errorf("%s is a JSON %s where the %s this legion reads holds a %s", member, kind, what, typed.Type)
+	case strings.HasPrefix(err.Error(), "json: unknown field "):
+		return fmt.Errorf("it holds a member the %s this legion reads does not have: the daemon is of another release than this legion", what)
+	}
+	return fmt.Errorf("a value of it does not decode into the %s this legion reads", what)
 }
 
 // printClaim is the claim a route answered, as the one line writeClaimLine writes.

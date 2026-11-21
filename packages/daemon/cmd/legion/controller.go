@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -495,7 +493,7 @@ func probeAndMint(ctx context.Context, daemonURL string, probe daemon.Controller
 // docs/site/src/content/docs/legion/concepts.md, "Admission and the `legion` label"). It refuses
 // only an unusable read: a body without a `repositories` object
 // (absent or null, a shape no conforming daemon serves) and a mapped entry that is not
-// `owner/name`.
+// `owner/name`, each named by its member and never by its value, which is the daemon's word.
 func checkControllerRepositories(ctx context.Context, daemonURL string) error {
 	timed, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
@@ -509,17 +507,15 @@ func checkControllerRepositories(ctx context.Context, daemonURL string) error {
 	var state struct {
 		Repositories *api.RepositoriesView `json:"repositories"`
 	}
-	var body bytes.Buffer
-	_, _ = answered.StreamTo(&body)
-	if err := json.Unmarshal(body.Bytes(), &state); err != nil {
+	if err := answered.Decode(&state); err != nil {
 		return fmt.Errorf("%s/legion/v1/state answered with a body that is not a JSON object naming repositories: %w", daemonURL, err)
 	}
 	if state.Repositories == nil {
 		return fmt.Errorf("%s/legion/v1/state's body names no repositories field (null or absent): not a shape a conforming daemon ever serves", daemonURL)
 	}
-	for _, mapped := range state.Repositories.Mapped {
+	for i, mapped := range state.Repositories.Mapped {
 		if _, err := ghrepo.Parse("repositories.mapped", mapped.Repo); err != nil {
-			return fmt.Errorf("%s/legion/v1/state names an invalid mapped repository %q: %w", daemonURL, mapped.Repo, err)
+			return fmt.Errorf("%s/legion/v1/state names an invalid mapped repository (repositories.mapped[%d].repo): not owner/name as GitHub names one", daemonURL, i)
 		}
 	}
 	return nil

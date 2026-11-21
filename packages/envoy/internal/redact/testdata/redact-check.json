@@ -5127,6 +5127,97 @@
       "production": "legion CLI: the controller secret's and credential's refusals decided on the body as it came (Answer.Decode, oauth2call.CodedRefusal)"
     },
     {
+      "id": "legion-cli-credential-expiry-parse-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAControllerCredentialThatDoesNotParsePrintsNoSecretItEchoes/expiresAt",
+      "production": "legion CLI fetchControllerCredential: an expiry that is not RFC 3339 is named (expiresAt), and time.Parse's error, which quotes it, is not printed"
+    },
+    {
+      "id": "legion-cli-credential-rename-from-parse-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAControllerCredentialThatDoesNotParsePrintsNoSecretItEchoes/renames-from",
+      "production": "legion CLI fetchControllerCredential: a rename's from that names no repository is named by its place, and ghrepo.Parse's error, which quotes it, is not printed"
+    },
+    {
+      "id": "legion-cli-credential-rename-to-parse-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAControllerCredentialThatDoesNotParsePrintsNoSecretItEchoes/renames-to",
+      "production": "legion CLI fetchControllerCredential: a rename's to that names no repository is named by its place, and ghrepo.Parse's error, which quotes it, is not printed"
+    },
+    {
+      "id": "legion-cli-credential-default-validate-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAControllerCredentialThatDoesNotParsePrintsNoSecretItEchoes/default",
+      "production": "legion CLI fetchControllerCredential: a default owner that is no GitHub login is named (default, owners), and ghconfig.Bundle.Validate's error, which quotes it, is not printed"
+    },
+    {
+      "id": "legion-cli-credential-owner-validate-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAControllerCredentialThatDoesNotParsePrintsNoSecretItEchoes/owners",
+      "production": "legion CLI fetchControllerCredential: an owner's name that is no GitHub login is named (default, owners), and ghconfig.Bundle.Validate's error, which quotes it, is not printed"
+    },
+    {
+      "id": "legion-cli-state-repositories-decode-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonStateThatDoesNotDecodePrintsNoValueItEchoes/repositories-time",
+      "production": "legion CLI checkControllerRepositories: the state decodes through oauth2call.Answer.Decode, whose error quotes no value"
+    },
+    {
+      "id": "legion-cli-state-mapped-parse-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonStateThatDoesNotDecodePrintsNoValueItEchoes/repositories-mapped",
+      "production": "legion CLI checkControllerRepositories: a mapped repository that is not owner/name is named by its place, and neither it nor ghrepo.Parse's error, which quotes it, is printed"
+    },
+    {
+      "id": "legion-cli-state-decode-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonStateThatDoesNotDecodePrintsNoValueItEchoes/legion-state",
+      "production": "legion state (runState, get): the state is the Answer get answers, decoded through oauth2call.Answer.Decode, whose error quotes no value"
+    },
+    {
+      "id": "legion-cli-claims-list-member-decode-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAClaimsAnswerPrintsNoBearerItEchoes/list-member",
+      "production": "legion claims decodeAnswer, through printAnswer: a member the answer names that the type does not have is named as one, never by its name"
+    },
+    {
+      "id": "legion-cli-claims-list-time-decode-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAClaimsAnswerPrintsNoBearerItEchoes/list-time",
+      "production": "legion claims decodeAnswer, through printAnswer: a value that does not decode is named by the type, and the decoder's error, which quotes it, is not printed"
+    },
+    {
+      "id": "legion-cli-claims-retry-list-decode-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAClaimsAnswerPrintsNoBearerItEchoes/retry-failed-member",
+      "production": "legion claims retry --failed: the claims list decodes through decodeAnswer, whose error names no member or value of the answer"
+    },
+    {
+      "id": "legion-cli-grant-echoed-authorization",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAGrantAnswerThatDoesNotDecodePrintsNoBearerItEchoes/echoed-authorization",
+      "production": "legion issue status (runIssueStatus): an answer that names no grant is named by its member (grantId), never printed"
+    },
+    {
+      "id": "legion-cli-grant-decode-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAGrantAnswerThatDoesNotDecodePrintsNoBearerItEchoes/grant-id-no-string",
+      "production": "legion issue status (runIssueStatus): an answer that does not decode as a grant is named by its member (grantId), never printed"
+    },
+    {
       "id": "redact-scheme-is-no-credential",
       "requirement": "r4-unchanged",
       "package": "./internal/redact",
@@ -6468,6 +6559,71 @@
       "site": "loadtest replay-fetch: an artifact listing that did not decode printed the decoder's error, which quoted the bearer an answer echoed into a time",
       "source": "the search for the class of the review of #4368 round 4, finding 1, at the merge of main",
       "guard": "loadtest-listing-decode-echo"
+    },
+    {
+      "site": "legion CLI fetchControllerCredential: an expiry the answer echoed a credential into printed time.Parse's error, which quoted it",
+      "source": "the review of #4368 round 5: the code-quality lead fetchControllerCredential, and the reviewer's finding 3",
+      "guard": "legion-cli-credential-expiry-parse-echo"
+    },
+    {
+      "site": "legion CLI fetchControllerCredential: a rename's from the answer echoed a credential into printed ghrepo.Parse's error, which quoted it",
+      "source": "the search for the class of the round-5 lead fetchControllerCredential in cmd/legion",
+      "guard": "legion-cli-credential-rename-from-parse-echo"
+    },
+    {
+      "site": "legion CLI fetchControllerCredential: a rename's to the answer echoed a credential into printed ghrepo.Parse's error, which quoted it",
+      "source": "the search for the class of the round-5 lead fetchControllerCredential in cmd/legion",
+      "guard": "legion-cli-credential-rename-to-parse-echo"
+    },
+    {
+      "site": "legion CLI fetchControllerCredential: a default owner the answer echoed a credential into printed ghconfig.Bundle.Validate's error, which quoted it",
+      "source": "the search for the class of the round-5 lead fetchControllerCredential in cmd/legion",
+      "guard": "legion-cli-credential-default-validate-echo"
+    },
+    {
+      "site": "legion CLI fetchControllerCredential: an owner's name the answer echoed a credential into printed ghconfig.Bundle.Validate's error, which quoted it",
+      "source": "the search for the class of the round-5 lead fetchControllerCredential in cmd/legion",
+      "guard": "legion-cli-credential-owner-validate-echo"
+    },
+    {
+      "site": "legion CLI checkControllerRepositories: a state that did not decode printed the decoder's error, which quoted the value",
+      "source": "the search for the class of the round-5 lead fetchControllerCredential in cmd/legion",
+      "guard": "legion-cli-state-repositories-decode-echo"
+    },
+    {
+      "site": "legion CLI checkControllerRepositories: a mapped repository printed raw beside ghrepo.Parse's error, which quoted it again",
+      "source": "the review of #4368 round 5, finding 3 (controller.go:528, same shape, not probed)",
+      "guard": "legion-cli-state-mapped-parse-echo"
+    },
+    {
+      "site": "legion state: get handed back the 2xx bytes (StreamTo), and a state that did not decode printed the decoder's error, which quoted the value",
+      "source": "the review of #4368 round 5, finding 3 (the StreamTo handback at cmd/legion/main.go:1679)",
+      "guard": "legion-cli-state-decode-echo"
+    },
+    {
+      "site": "legion claims decodeAnswer through printAnswer: a member the claims type does not have printed by the name the answer wrote",
+      "source": "the search for the class of the round-5 lead fetchControllerCredential in cmd/legion",
+      "guard": "legion-cli-claims-list-member-decode-echo"
+    },
+    {
+      "site": "legion claims decodeAnswer through printAnswer: a value that did not decode printed the decoder's error, which quoted it",
+      "source": "the search for the class of the round-5 lead fetchControllerCredential in cmd/legion",
+      "guard": "legion-cli-claims-list-time-decode-echo"
+    },
+    {
+      "site": "legion claims retry --failed: the claims list's decode error printed the member name or value the answer wrote",
+      "source": "the search for the class of the round-5 lead fetchControllerCredential in cmd/legion",
+      "guard": "legion-cli-claims-retry-list-decode-echo"
+    },
+    {
+      "site": "legion issue status (status.go:47): an answer that named no grant printed whole, the Authorization it echoed included",
+      "source": "the review of #4368 round 5, finding 3 (TestZZProbeIssueStatusEchoedGrant)",
+      "guard": "legion-cli-grant-echoed-authorization"
+    },
+    {
+      "site": "legion issue status (status.go:47): an answer that did not decode as a grant printed whole",
+      "source": "the review of #4368 round 5, finding 3",
+      "guard": "legion-cli-grant-decode-echo"
     },
     {
       "site": "gcpBackend.signInWithGcloud, runGcloud",

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -567,22 +566,24 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 		return 1
 	}
 	address := op.base
-	body, err := get(ctx, address+"/legion/v1/state")
+	answer, err := get(ctx, address+"/legion/v1/state")
 	if err != nil {
 		fmt.Fprintf(stderr, "legion state: %v\n", err)
 		return 1
 	}
 
 	if asJSON {
-		if _, err := stdout.Write(body); err != nil {
+		if _, err := answer.StreamTo(stdout); err != nil {
 			fmt.Fprintf(stderr, "legion state: %v\n", err)
 			return 1
 		}
 		return 0
 	}
 
+	// The state decodes through the answer (Answer.Decode), whose error names the member that did
+	// not decode and never its value, which encoding/json's errors and time.Time's quote.
 	var state api.State
-	if err := json.Unmarshal(body, &state); err != nil {
+	if err := answer.Decode(&state); err != nil {
 		fmt.Fprintf(stderr, "legion state: read the state %s served: %v\n", address, err)
 		return 1
 	}
@@ -1643,12 +1644,13 @@ func findLegion(team string) (registry.Entry, bool, error) {
 }
 
 // get reads one route of a daemon's API, under the one budget every CLI read of it takes
-// (requestTimeout). A read the budget ends says so in the words a reader needs — the route, how
-// long it took and the budget it passed — rather than in the transport's own
+// (requestTimeout), and answers a 200's answer, which a caller streams as data (Answer.StreamTo)
+// or decodes (Answer.Decode). A read the budget ends says so in the words a reader needs — the
+// route, how long it took and the budget it passed — rather than in the transport's own
 // `context deadline exceeded`, which names none of the three and leaves the reader to guess
 // whether the daemon is slow, the body is large or the command gave up early. The caller's own
 // cancellation is not that case and keeps the error it has.
-func get(ctx context.Context, url string) ([]byte, error) {
+func get(ctx context.Context, url string) (oauth2call.Answer, error) {
 	timed, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	began := time.Now()
@@ -1661,23 +1663,21 @@ func get(ctx context.Context, url string) ([]byte, error) {
 	}
 	request, err := http.NewRequestWithContext(timed, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, refuse(err)
+		return oauth2call.Answer{}, refuse(err)
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return nil, refuse(err)
+		return oauth2call.Answer{}, refuse(err)
 	}
 	defer response.Body.Close()
 	answer, err := oauth2call.ReadAnswer(response, 64<<20)
 	if err != nil {
-		return nil, refuse(err)
+		return oauth2call.Answer{}, refuse(err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s answered %d: %s", url, response.StatusCode, answer.Words())
+		return oauth2call.Answer{}, fmt.Errorf("%s answered %d: %s", url, response.StatusCode, answer.Words())
 	}
-	var body bytes.Buffer
-	_, _ = answer.StreamTo(&body)
-	return body.Bytes(), nil
+	return answer, nil
 }
 
 // processEnvironment is this process's environment by name, the last entry for a name winning as
