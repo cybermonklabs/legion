@@ -1133,6 +1133,33 @@ test("the focus stays in the view while a retried read is out, and goes on to a 
   });
 });
 
+// A failed line says its failure in an alert, which a screen reader reads each time the alert is
+// drawn anew. A refused read running again that stops with no new refusal - its run paused,
+// waiting for the network - keeps the line's alert as it was, so nothing is said again; a new
+// refusal draws the alert anew, so the new failure is said. The line counts by the read's own
+// failures (`failure`), not by the runs it saw end.
+test("a failed line says its failure again only on a new refusal, not when a run stops without one", () => {
+  setViewport(1440);
+  const root = issue([task("t1")]);
+  const view = renderBody(root, {
+    reads: failedAs([], [{ failure: 1, read: "plan", retrying: true }], true),
+  });
+  try {
+    const alert = () =>
+      view.container.querySelector('[data-plan-unreadable="plan"] [role="alert"]');
+    const running = alert();
+    if (running === null) throw new Error("the plan's failed line draws no alert");
+    view.redraw(root, failedAs([], [{ failure: 1, read: "plan", retrying: false }], false));
+    expect(alert(), "a run that stopped with no new refusal says the failure again").toBe(running);
+    view.redraw(root, failedAs([], [{ failure: 2, read: "plan", retrying: false }], false));
+    const refused = alert();
+    expect(refused, "a new refusal leaves the plan's failed line").not.toBeNull();
+    expect(refused, "a new refusal says nothing again").not.toBe(running);
+  } finally {
+    view.unmount();
+  }
+});
+
 /** The Retry of the line that says `read` failed. */
 function retryOf(view: RenderResult, read: PlanRead): HTMLElement {
   const retry = view.container.querySelector<HTMLElement>(
