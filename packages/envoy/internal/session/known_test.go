@@ -108,17 +108,60 @@ func TestKnownSessionsTouchKeepsTheRecordAndMovesLastSeen(t *testing.T) {
 	}
 }
 
+// observedKnown is openKnown with the store's watcher feeding its cache through a holdingCache, so
+// a test can wait for the watcher to deliver back a record the store wrote through (holdApply on
+// the record's key, opened at once). It replaces the watcher once the first read has completed,
+// as holdingRegistry replaces the session registry's, under openMu, which every read of the field
+// takes, and waits until the replacement's own first read has completed: a delivery the gate meets
+// after that is of a write the test makes.
+func observedKnown(t *testing.T, now func() time.Time) (*KnownSessions, *holdingCache) {
+	t.Helper()
+	known := openKnown(t, now)
+	previous := known.watch()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	previous.End(ctx)
+	held := &holdingCache{Cache: knownCache{known}}
+	replacement := kvwatch.New("known session store", previous.KV(), held)
+	known.openMu.Lock()
+	known.watcher = replacement
+	known.openMu.Unlock()
+	replacement.Start()
+	if err := known.WaitForCacheReady(context.Background()); err != nil {
+		t.Fatalf("the replaced watcher's first read did not complete: %v", err)
+	}
+	return known, held
+}
+
 // A record whose last_seen is past the 30-day retention answers as no record, by id and by topic,
 // before the sweep has run; the sweep then gives its memory back.
+//
+// The write puts the record in the copy at once (write-through), and the watcher delivers the same
+// revision back a moment later. The sweep's removal keeps that revision in the copy's fence, which
+// drops only older ones (kvwatch.Copy.Remove), so a delivery applied after the sweep puts the
+// record back: a sweep run before the watcher has delivered the write proves nothing about the
+// sweep. So the row sweeps once that delivery has been applied. In production the delivery comes
+// within milliseconds of the write and a record is past the retention only 30 days after it, when
+// the bucket's own TTL, the retention, has removed it, so no delivery of it follows a sweep.
 func TestKnownSessionsAnswerNoRecordPastTheRetention(t *testing.T) {
 	clock := time.Now()
-	known := openKnown(t, func() time.Time { return clock })
+	known, cache := observedKnown(t, func() time.Time { return clock })
+	delivered := cache.holdApply(t, "ses_old")
+	delivered.open()
 	if err := known.RecordWithin(context.Background(), KnownSession{
 		SessionID: "ses_old",
 		Topics:    []string{"notifications.team.deploy-squad"},
 	}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
+	testwait.Eventually(t, "the watcher to deliver ses_old's write back to the copy", func() bool {
+		select {
+		case <-delivered.done:
+			return true
+		default:
+			return false
+		}
+	})
 	clock = clock.Add(KnownSessionRetention + time.Hour)
 	if _, ok := known.Get("ses_old"); ok {
 		t.Error("Get answered a record older than the retention")
