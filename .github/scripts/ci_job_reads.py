@@ -1173,6 +1173,51 @@ def ceiling_reads(job):
     return reads((CEILING, f"{at(job, CEILING_STEP)} runs it"))
 
 
+# The forced-order steps run packages/envoy/scripts/forced-order.sh, whose go test builds each
+# package's TestForcedOrder tests under -tags odatrace and -race against a copy of nats-server
+# that the script hooks with internal/testnats/testdata/hooked/v<version>, and replaces through a
+# copy of the workspace file or of the module's go.mod: a replacement outside the repository, of a
+# third-party module, so the first-party closure is the plain one under those tags. The check reads the step's run: line,
+# not what the script runs, so each such gate declares the script and the hooks it applies, and
+# the go test on the script's line FORCED_ORDER_GO_TEST, pinned as a Run per step.
+FORCED_ORDER = f"{ENVOY}/scripts/forced-order.sh"
+FORCED_ORDER_HOOKS = f"{ENVOY}/internal/testnats/testdata/hooked/**"
+FORCED_ORDER_GO_TEST = ('"${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" '
+                        "-run '^TestForcedOrder' \"$@\"")
+# The envoy steps: one on the nats-server the workspace links (no -server, so a go.mod that moves
+# to a version with no hooks fails the step), and one on 2.10.29.
+ENVOY_FORCED_ORDER_SERVERS = ("", "2.10.29")
+ENVOY_FORCED_ORDER_PKGS = ["./internal/testnats/hooktest/"]
+DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
+DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
+# The script's own test, envoy-go-race's step before the two above: packages/envoy/scripts/
+# forced-order.test.sh runs forced-order.sh in five cases, and the one run that gets as far as a
+# go test is over its fixture package, hooktest/skiponly, on the linked version; the other four
+# are refused before anything is built.
+FORCED_ORDER_TEST = f"{ENVOY}/scripts/forced-order.test.sh"
+ENVOY_FORCED_ORDER_TEST_STEP = "Test forced-order.sh's refusals"
+ENVOY_FORCED_ORDER_TEST_PKGS = ["./internal/testnats/hooktest/skiponly/"]
+
+
+def envoy_forced_order_step(server):
+    """The envoy-go-race step that runs the forced-order tests on nats-server `server`, or, for "",
+    on the version the workspace links."""
+    return f"Forced-order tests on the hooked nats-server v{server}" if server else \
+        "Forced-order tests on the hooked nats-server the module links"
+
+
+def forced_order_run(job, step, workdir, pkgs):
+    """The go test forced-order.sh starts in `job`'s `step`, over `pkgs` of the module at `workdir`."""
+    return script_run(FORCED_ORDER, FORCED_ORDER_GO_TEST, f"run by {at(job, step)}", workdir, pkgs,
+                      tags="odatrace", race=True)
+
+
+def forced_order_reads(job, step):
+    """forced-order.sh itself and the hooks it applies, which `job`'s `step` reads."""
+    return reads((FORCED_ORDER, f"{at(job, step)} runs it"),
+                 (FORCED_ORDER_HOOKS, f"{FORCED_ORDER}, run by {at(job, step)}, patches nats-server with them"))
+
+
 def two_builds_go_step():
     """The two-build job's Go step, pinned whole, since its -run is outside the simple form. Both
     of that job's gates carry it: dispatch_two_builds_go, the step's own gate, and
@@ -2557,6 +2602,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
+        (FORCED_ORDER, "check-ci-filters.test.sh reads its go flags, which must pass -tags odatrace, the one name "
+                       "beyond the toolchain's that go_build_tags.py leaves out of every vet"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh's fixture function)"),
@@ -2633,6 +2680,7 @@ GATES = [
     gate("daemon_go_tests", "daemon-go", runs=[
         script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
                    at("daemon-go", "Stage 1 live proof"), DAEMON, ["./cmd/legion"], mode="build"),
+        forced_order_run("daemon-go", DAEMON_FORCED_ORDER_STEP, DAEMON, DAEMON_FORCED_ORDER_PKGS),
     ], exact=[
         # check-ci-filters.sh reduces only a one-line go test, so the step's whole script is
         # pinned, as the envoy-go unit step's is - and it carries a -skip besides, which is no
@@ -2684,7 +2732,8 @@ GATES = [
         (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
         (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} consts Image, SkippingImage"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
-    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
+    ) + forced_order_reads("daemon-go", DAEMON_FORCED_ORDER_STEP)
+      + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
 
     # The plugin-pack job: the three tests of internal/daemon in PLUGIN_PACK_TESTS, which the
     # daemon-go race step skips by name - the one that packs the two plugin releases and loads
@@ -3481,8 +3530,17 @@ GATES = [
     # runs the package under .github/scripts/race_memory.py
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
-    gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
-         reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
+    gate("envoy_go_race", "envoy-go-race",
+         runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")]
+         + [forced_order_run("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP, ENVOY, ENVOY_FORCED_ORDER_TEST_PKGS)]
+         + [forced_order_run("envoy-go-race", envoy_forced_order_step(server), ENVOY, ENVOY_FORCED_ORDER_PKGS)
+            for server in ENVOY_FORCED_ORDER_SERVERS],
+         reads=ceiling_reads("envoy-go-race")
+         + reads((FORCED_ORDER_TEST, f"{at('envoy-go-race', ENVOY_FORCED_ORDER_TEST_STEP)} runs it"))
+         + forced_order_reads("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP)
+         + [read for server in ENVOY_FORCED_ORDER_SERVERS
+            for read in forced_order_reads("envoy-go-race", envoy_forced_order_step(server))]
+         + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
 
     gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run("envoy-go-race-api")], exact=[
         pinned_step("envoy-go-race-api", RACE_API.step, ENVOY, RACE_API_SCRIPT, [

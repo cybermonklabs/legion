@@ -564,6 +564,63 @@ package spelled other than canonically is counted;
 one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip. It needs
 a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
 
+## forced-order.sh
+
+Runs the forced-order tests of each package named, every `TestForcedOrder…` test, on a
+nats-server whose own code carries hold points: places where a test parks the server's goroutine
+(`internal/testnats/hooks.go`, `testnats.Hook`) to force an order its scheduling would only
+sometimes produce — a consumer's state write held while a consumer of the same name is deleted
+and created again, a JetStream API request held while its server shuts down, released before
+`Stop` returns, a committed stream entry held before one server stores it.
+
+```bash
+packages/envoy/scripts/forced-order.sh ./internal/testnats/hooktest/
+packages/envoy/scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
+packages/envoy/scripts/forced-order.sh -C packages/daemon ./internal/testnats/
+packages/envoy/scripts/forced-order.sh -drop write.preIO ./internal/testnats/hooktest/
+```
+
+It copies nats-server's module at the version it runs out of the module cache, applies
+`internal/testnats/testdata/hooked/v<version>/server.patch` to the copy, and adds the shared
+`testdata/hooked/zz_measure.go` (the event, the hook and the reporting helpers) and that version's
+`zz_measure_write.go` (its consumer state writer). It then runs
+`go test -tags odatrace -race -v -run '^TestForcedOrder'` with
+nats-server replaced by the copy: for a module of the workspace, in a copy of `go.work` with
+absolute `use` paths, so every other module version is the one CI's own build links; for a module
+with no workspace, on a copy of the module's `go.mod`. A workspace that does not use the module,
+or that holds a replace, is refused, and so is a module whose `go.mod` replaces nats-server, since
+the hooked copy would take the replacement's place. It reads go's JSON with `jq`. Nothing else of nats-server
+changes, the repository's own files are never written, and no other build sees a hook.
+The hold points are `write.preIO`, `write.preRename` (2.15.1 alone: 2.10.29 writes `o.dat` in
+place), `flush.encoded`, `store.create`, `api.worker`, `client.publish`, `meta.apply` and `stream.apply`;
+`hooks.go` says where each one is. A server's shutdown, and its lame duck, report `server.shutdown`
+before they stop anything and `server.down` once the shutdown has waited for its goroutines: the
+hook releases every hold on that server at the first and parks none of its goroutines until the
+second, so a `Stop` or a `LameDuck` with an operation held returns, and the held operation lands
+or fails.
+
+`-C` names the module, relative to the caller's directory, as `go -C` does (`packages/envoy` by
+default), and the packages are relative to it; an empty `-C` is refused. `-server` is the
+nats-server version, by default the one the build links; 2.15.1 and 2.10.29 are hooked, and any
+other version is refused, so a module that moves to a new nats-server fails here until its hooks
+are ported; an empty value is refused too. `-drop <point>` removes the hook calls that pass that
+point, exactly, before the build, which is each test's control: a test holding at a dropped point
+fails waiting for its hold, and with `-drop server.shutdown` the test that stops a held server
+fails at its own deadline, since the stop then waits for the parked goroutine. A name no hook of
+that version reports is refused before anything is built, so a mistyped point cannot fail a test
+on a compile error. It fails, naming the package, when a package declares no `TestForcedOrder`
+test, or runs none because every one skipped (that package's `ok` line is printed as a `FAIL`
+line).
+`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` holds it to five of
+those refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
+an empty `-C`, a module that replaces nats-server), with the fixture package
+`internal/testnats/hooktest/skiponly`.
+`ci.yaml`'s `envoy-go-race` job runs that test, then the script on `./internal/testnats/hooktest/`
+twice: with no `-server`, so on the version the workspace links, and with `-server 2.10.29`. Its
+`daemon-go` job runs it with `-C packages/daemon` and no `-server`. So when `go.mod` moves to a
+nats-server with no hooks, both unversioned steps fail until the hooks are ported. Each job counts
+the 10 minutes in its time budget.
+
 ## aws-moto-check.sh
 
 Runs the built `agent-secrets` against moto's AWS, with no AWS account:

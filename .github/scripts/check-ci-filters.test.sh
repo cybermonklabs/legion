@@ -2653,12 +2653,14 @@ check "and reports what it judged" \
 echo "case: a darwin vet whose tag set leaves out a tag a file of its module is built under"
 root=$(fixture vet-tags-missing)
 darwin_vet "$root" ""
+# A file under odatrace, which only forced-order.sh's build against its patched nats-server sets.
+printf '//go:build odatrace\n\npackage lib\n\nconst Hooked = true\n' > "$root/mod/lib/hooked.go"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file and the tags that would compile it" \
   "$(contains "$out" '::error file=mod/lib/probe.go::job app step "Vet the library for darwin" vets mod for darwin/arm64 under -tags (none), and none of them compiles mod/lib/probe.go, which go builds for darwin/arm64 with -tags probe')"
-check "and passes over the platform's, the toolchain's and the feature's files" \
-  "$(is "$(contains "$out" 'compiles mod/lib/linux_only.go\|compiles mod/lib/race_on.go\|compiles mod/lib/feature.go')" false)"
+check "and passes over the platform's, the toolchain's, the feature's and the patched build's files" \
+  "$(is "$(contains "$out" 'compiles mod/lib/linux_only.go\|compiles mod/lib/race_on.go\|compiles mod/lib/feature.go\|compiles mod/lib/hooked.go')" false)"
 
 echo "case: one tag set beside a file under the negated tag"
 root=$(fixture vet-tags-negated)
@@ -2706,7 +2708,8 @@ check "names the file whose constraint follows a byte-order mark" \
 # go_build_tags.py, the script the vet steps take their sets from, over a module holding each
 # shape above: the first set is every tag, and the file under the negated tag adds a set
 # without it, which also builds the file whose +build line wants legacy and not probe. No set
-# names the platform's, the toolchain's or the feature's names. go list decides every answer,
+# names the platform's, the toolchain's or the feature's names, or odatrace, which only
+# forced-order.sh's build sets, against a nats-server it patches. go list decides every answer,
 # so a go command that fails fails the script, and the step that takes its sets stops there.
 echo "case: go_build_tags.py's sets for a module with a negated tag, a tag-only package and +build lines"
 root=$(fixture vet-tags-sets)
@@ -2716,6 +2719,7 @@ printf '//go:build hidden\n\npackage only\n' > "$root/mod/only/only.go"
 printf '//go:build probe_\xce\xb2\n\npackage lib\n\nfunc Beta() {}\n' > "$root/mod/lib/beta.go"
 printf '// +build legacy,!probe\n\npackage lib\n\nfunc Legacy() {}\n' > "$root/mod/lib/legacy.go"
 printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/lib/noprobe.go"
+printf '//go:build odatrace\n\npackage lib\n\nconst Hooked = true\n' > "$root/mod/lib/hooked.go"
 sets=$(cd "$root" && python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1)
 check "prints every tag, then the set without probe, each as a whole -tags= flag" \
   "$(is "$sets" $'-tags=hidden,legacy,probe,probe_\xce\xb2\n-tags=hidden,legacy,probe_\xce\xb2')"
@@ -2723,6 +2727,24 @@ status=0
 sets=$(cd "$root" && GOFLAGS=-no-such-flag python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1) || status=$?
 check "and fails when go list fails" "$(is "$status" 1)"
 check "naming the go command" "$(contains "$sets" 'go_build_tags.py: in mod, go tool dist list ... failed')"
+
+# odatrace is the one name go_build_tags.py leaves out of every vet that the toolchain does not
+# set or that marks a file no build compiles: only forced-order.sh's build passes it, against a
+# nats-server it patches, so its files compile nowhere else. A name added beside it, or a
+# forced-order.sh that stops passing it, fails here, so the exclusion cannot come to hide a tag a
+# plain build compiles.
+echo "case: go_build_tags.py leaves out only the toolchain's names and forced-order.sh's odatrace"
+patched=$(PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from go_build_tags import NOT_TAGS
+toolchain = {"unix", "cgo", "gc", "gccgo", "race", "msan", "asan", "ignore", "boringcrypto"}
+print(",".join(sorted(NOT_TAGS - toolchain)))
+PY
+)
+check "the one name beyond the toolchain's is odatrace" "$(is "$patched" odatrace)"
+check "and forced-order.sh passes -tags odatrace to go" \
+  "$(contains "$(<"$script_dir/../../packages/envoy/scripts/forced-order.sh")" '^flags=(.* -tags odatrace .*)$')"
 
 # The typecheck step's own run text, taken from its workflow, over a module with one tag and a
 # file under its negation that does not compile: the script's last set is the one with no tag,
