@@ -55,7 +55,7 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 			if tc.open {
 				engine := stepEngine(nil)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.recordPass(ctx, tx, "LEGION-208", phase.Testing, phase.Implementing, nil)
+					return engine.recordPass(ctx, tx, "LEGION-208", phase.Testing, phase.Implementing, nil, false)
 				})
 			}
 			execSQL(t, pool, `update issues set phase = 'testing' where key = 'LEGION-208'`)

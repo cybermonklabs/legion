@@ -669,6 +669,49 @@ func TestTheOperatorsRetryOfAHeldPhaseThatStaysHeldIsRefused(t *testing.T) {
 	}
 }
 
+// childrenWaiter stands in for the workflow's retry_or_escalate of a parent with an open Dispatch
+// child: a retry decision on a held issue moves it to awaiting_children, holding the phase it
+// was held from (workflow's awaitChildren). Every fact is recorded first.
+type childrenWaiter struct {
+	factRecorder
+}
+
+func (r *childrenWaiter) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+	result, err := r.factRecorder.Apply(ctx, tx, fact)
+	retry, ok := fact.(intake.RetryOrEscalate)
+	if err != nil || result.Refusal != nil || !ok || retry.Decision != intake.RetryDecision {
+		return result, err
+	}
+	records := record.NewStore()
+	issue, err := records.Issue(ctx, tx, retry.Issue)
+	if err != nil || issue == nil || issue.Phase != phase.Held || issue.Hold == nil {
+		return result, err
+	}
+	waited := time.Date(2026, 11, 15, 1, 0, 0, 0, time.UTC)
+	issue.ChildrenWait = &record.ChildrenWait{Start: issue.Hold.From, Task: "Continue LEGION-209. Phase: implementing.",
+		Reason: "retry held phase, while these Dispatch children of LEGION-209 were open: LEGION-301 (todo)", Since: waited}
+	issue.Phase, issue.Hold, issue.ChildrenWaitedAt = phase.AwaitingChildren, nil, &waited
+	return result, records.PutIssue(ctx, tx, *issue)
+}
+
+// A retry the workflow applies that moves the issue to awaiting_children started no phase: a
+// Dispatch child of the issue is open, so the workflow holds the start instead. The operator is
+// answered 409 that the issue waits on its open children, naming them and the start it holds,
+// rather than told that a retry restarted a phase.
+func TestTheOperatorsRetryThatMovesTheIssueToAwaitingChildrenSaysItWaits(t *testing.T) {
+	facts := &childrenWaiter{}
+	h, workerToken := failedImplementer(t, facts)
+	heldIssue(t, h, phase.Implementing)
+
+	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(workerToken)+"/retry", nil), http.StatusConflict,
+		"LEGION-209 waits on its open children after the retry of its phase implementing, so no phase of it was started for "+string(workerToken)+
+			": the retry moved it to awaiting_children, holding the start of implementing (retry held phase, while these Dispatch children of LEGION-209 were open: LEGION-301 (todo)),"+
+			" and the daemon goes back to that start by itself once no Dispatch child of LEGION-209 is open")
+	if applied := facts.recorded(); len(applied) != 1 {
+		t.Errorf("the retry applied %#v, want the held phase's retry alone", applied)
+	}
+}
+
 // A failed phase worker whose issue is held for another role's phase is not the held phase's
 // worker: starting that phase would relaunch the other role under this claim's name. The route
 // applies nothing, and the claim is relaunched on its own, with whatever task it still holds.

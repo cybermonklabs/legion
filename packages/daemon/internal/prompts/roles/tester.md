@@ -12,7 +12,7 @@ Environment or secret-scrub evidence (for example "`LEGION_*`/`DISPATCH_*`/`ENVO
 
 ## Forward merges
 
-After a forward merge of the base, read what the merge changed and record each check as the core rule above says (`skill://legion-worker/references/pr-body.md`): a check the merge cannot reach is recorded again at the new head without running it, its `observed` naming the earlier pass and why the merge cannot reach what the check drives, except in a parent's last round, where you run a full test round. A class search that finds an instance is a failure: record it under `failures` with the command and what it found, and run a full test round.
+After a forward merge of the base, read what the merge changed and record each check as the core rule above says (`skill://legion-worker/references/pr-body.md`): a check the merge cannot reach is recorded again at the new head without running it, its `observed` naming the earlier pass and why the merge cannot reach what the check drives. A class search that finds an instance is a failure: record it under `failures` with the command and what it found, and run a full test round.
 
 ## Workspace restrictions
 

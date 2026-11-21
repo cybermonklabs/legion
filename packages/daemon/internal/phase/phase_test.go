@@ -8,8 +8,8 @@ import (
 // All is the wire contract's phase list, in the transition table's order.
 func TestPhaseValuesMatchWorkflowWireContract(t *testing.T) {
 	want := []string{
-		"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting", "retro",
-		"merging", "done", "held",
+		"admitted", "awaiting_person", "awaiting_children", "planning", "implementing", "testing", "reviewing",
+		"accepting", "retro", "merging", "done", "held",
 	}
 	got := make([]string, len(All))
 	for index, value := range All {
@@ -89,7 +89,7 @@ func TestMovesBackIgnoresPhasesOutsideOrder(t *testing.T) {
 	if MovesBack(Testing, Retro) {
 		t.Fatal("testing -> retro moves forward")
 	}
-	for _, outside := range []Phase{Admitted, AwaitingPerson, Done, Held} {
+	for _, outside := range []Phase{Admitted, AwaitingPerson, AwaitingChildren, Done, Held} {
 		if MovesBack(Merging, outside) || MovesBack(outside, Planning) {
 			t.Fatalf("%s stands outside Order, so no move into or out of it moves back", outside)
 		}

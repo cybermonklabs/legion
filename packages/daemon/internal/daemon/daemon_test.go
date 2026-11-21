@@ -1493,12 +1493,18 @@ func (s *shim) closed() {
 	}
 }
 
-// prompt answers the negotiation a connection opens with, when the daemon sends one, and returns
-// the prompt frame that follows.
+// prompt answers each negotiation the daemon sends before the prompt, as the real shim answers
+// every one it reads, and returns the prompt frame that follows. A connection can be negotiated
+// more than once: a negotiation that ends unanswered or refused is tried again by the next call
+// (stream.Conn.Negotiate).
 func (s *shim) prompt() shimwire.Prompt {
 	s.t.Helper()
 	frame := s.next()
-	if negotiate, ok := frame.(shimwire.NegotiateProtocol); ok {
+	for {
+		negotiate, ok := frame.(shimwire.NegotiateProtocol)
+		if !ok {
+			break
+		}
 		s.send(shimwire.Response{ID: negotiate.ID, Command: shimwire.TypeNegotiateProtocol, Success: true})
 		frame = s.next()
 	}

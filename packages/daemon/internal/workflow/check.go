@@ -139,6 +139,8 @@ const checkTaskLead = "Production check of "
 // is a fail too, whether or not production carries the merge. The last look's task gives pending
 // only for an issue with none of those requirements, a pending that closes the check as not run.
 // The fail clause says so once, the same on every look, in terms of the look that follows.
+// For an issue whose spec is a view on an ancestor's requirements, the line after the first says
+// so (viewSentence), as every phase task of the issue does.
 func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail string, last bool) string {
 	merge := check.MergeSHA
 	if merge == "" {
@@ -146,6 +148,9 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 	}
 	var text strings.Builder
 	fmt.Fprintf(&text, "%s%s: %s.\n", checkTaskLead, issue.Key, issue.Title)
+	if view := viewSentence(issue); view != "" {
+		text.WriteString(view + "\n")
+	}
 	fmt.Fprintf(&text, "Repository %s, pull request #%d, merge commit %s. Look %d, woken by %s.", check.Repo, check.Number, merge, check.Looks, wokenBy(cause, detail))
 	if last {
 		text.WriteString(" This is the last look: no look follows.")

@@ -199,6 +199,17 @@ func (s *Postgres) DispatchChildren(ctx context.Context, tx pgx.Tx, project stri
 	return children, nil
 }
 
+// HasDispatchChildren answers whether the mirror holds a child of parent, with the project term
+// DispatchChildren keeps, in one exists query.
+func (s *Postgres) HasDispatchChildren(ctx context.Context, tx pgx.Tx, project, parent string) (bool, error) {
+	var has bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from dispatch_issues where project = $1 and parent = $2)`,
+		project, parent).Scan(&has); err != nil {
+		return false, fmt.Errorf("read whether %s has a Dispatch child in %s: %w", parent, project, err)
+	}
+	return has, nil
+}
+
 // queryDispatchIssues is every row of the copy query selects with args, in its order; an empty
 // list of blockers or labels reads as an empty list.
 func queryDispatchIssues(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]DispatchIssueRow, error) {

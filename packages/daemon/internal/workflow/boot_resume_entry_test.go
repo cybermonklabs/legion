@@ -33,7 +33,7 @@ func TestTheBootsResumeOfAWorkerBehindItsEntrySendsThatEntrysWork(t *testing.T) 
 		entry int64
 	}{
 		{name: "behind the entry its row names", given: seededEntry - 1, want: seededEntryTask, entry: seededEntry},
-		{name: "level with the entry its row names", given: seededEntry, want: ResumePhaseTask(issue), entry: 0},
+		{name: "level with the entry its row names", given: seededEntry, want: ResumePhaseTask(issue, false), entry: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

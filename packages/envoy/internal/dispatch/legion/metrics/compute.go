@@ -27,8 +27,11 @@ const (
 // for the phases no role works. "A seventh bar, 'no role', holds the phases no role works:
 // `awaiting_person` and `held`", and the spec's "Phase boundaries before observations" holds it
 // to those two alone — a handoff starts the next phase, so no hour falls between two phases for
-// it to hold. Time in the queue is on no bar, and neither is an hour the work time leaves out,
-// so the seven bars of an issue add up to its work time (phaseTime).
+// it to hold. `awaiting_children`, which dispatch://INFRA-3320 added after that spec, is a third
+// phase no role works (RoleFor in packages/daemon/internal/phase gives it none), a parent
+// waiting on its open children, so it is on that bar too. Time in the queue is on no bar, and
+// neither is an hour the work time leaves out, so the seven bars of an issue add up to its work
+// time (phaseTime).
 const barNoRole = "no_role"
 
 // mergerPhases are the two phases of the merger's bar, "merging and awaiting merge", and the two a
@@ -48,7 +51,7 @@ var bars = []struct {
 	{"tester", []string{legion.PhaseTesting}},
 	{"reviewer", []string{legion.PhaseReviewing}},
 	{"merger", mergerPhases},
-	{barNoRole, []string{legion.PhaseAwaitingPerson, legion.PhaseHeld}},
+	{barNoRole, []string{legion.PhaseAwaitingPerson, legion.PhaseAwaitingChildren, legion.PhaseHeld}},
 }
 
 // The four classes of issue a Legion session filed (metric 4).
@@ -189,10 +192,10 @@ type FiledIssue struct {
 	// FilerPhase is the phase the filer's issue was in when it filed, named by the word a table
 	// names it by (tablePhase): the eight words of the spec's "Phase words in tables" — `design`,
 	// `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro` and `merging` —,
-	// `queued` for the waiting line, `awaiting_person` and `held` for the "no role" bar, `done`
-	// for an hour the issue was out of the workflow before its close (outOfWorkflowSpans), with
-	// observations or before them, and the empty string for a moment the issue's timeline does
-	// not cover, which is what every filing by the controller carries.
+	// `queued` for the waiting line, `awaiting_person`, `awaiting_children` and `held` for the
+	// "no role" bar, `done` for an hour the issue was out of the workflow before its close
+	// (outOfWorkflowSpans), with observations or before them, and the empty string for a moment
+	// the issue's timeline does not cover, which is what every filing by the controller carries.
 	FilerPhase string `json:"filer_phase"`
 }
 
@@ -773,12 +776,12 @@ func phaseAt(timeline []PhaseSpan, at time.Time) string {
 // (mergerPhases) are named merging, and every other phase is named as the timeline names it:
 // retro is on the implementer's bar and keeps its own word.
 //
-// The whole of what it answers: those eight words; the four words a timeline holds that are on
+// The whole of what it answers: those eight words; the five words a timeline holds that are on
 // no role's bar — `queued` and `done`, which are on no bar at all, being the waiting line and an
 // hour out of the workflow before the close (queuedSpans, outOfWorkflowSpans), with observations
-// or before them, and `awaiting_person` and `held`, which are the "no role" bar's; and "" for a
-// moment no span of the timeline covers, which is what a filing by the controller carries, since
-// the controller works no issue.
+// or before them, and `awaiting_person`, `awaiting_children` and `held`, which are the "no role"
+// bar's; and "" for a moment no span of the timeline covers, which is what a filing by the
+// controller carries, since the controller works no issue.
 func tablePhase(phase string) string {
 	if slices.Contains(mergerPhases, phase) {
 		return legion.PhaseMerging

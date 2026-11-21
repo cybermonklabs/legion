@@ -435,11 +435,11 @@ func TestARelaunchSentenceDeliveryLeavesAPhaseWorkerItsResumeTask(t *testing.T) 
 	rig.dueNow()
 	rig.run()
 	held := rig.claim().Pending
-	if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || held.Phase != phase.Testing {
+	if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue, false) || held.Phase != phase.Testing {
 		t.Fatalf("after the sentence's turn the tester holds %+v, want the testing phase's resume task", held)
 	}
 	prompts = rig.conn.Prompts()
-	if sent := prompts[len(prompts)-1]; sent.DeliveryID != held.ID || sent.Message != workflow.ResumePhaseTask(rig.issue) {
+	if sent := prompts[len(prompts)-1]; sent.DeliveryID != held.ID || sent.Message != workflow.ResumePhaseTask(rig.issue, false) {
 		t.Fatalf("the resume task was sent as %+v, want it as it was queued: the record was told", sent)
 	}
 }
@@ -468,7 +468,7 @@ func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T
 	sentBefore := len(rig.conn.Prompts())
 	rig.run()
 	held := rig.claim().Pending
-	if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || held.Relaunch() {
+	if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue, false) || held.Relaunch() {
 		t.Fatalf("after the resume task's row the tester holds %+v, want the resume task in the place of the sentence's delivery", held)
 	}
 	if sent := rig.conn.Prompts(); len(sent) != sentBefore {
@@ -484,7 +484,7 @@ func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T
 	sent := prompts[sentBefore]
 	if sent.DeliveryID != held.ID || !strings.HasPrefix(sent.Message, "Your previous process ended because the process died") ||
 		!strings.Contains(sent.Message, "Each subagent that you started stopped with that process.") ||
-		!strings.HasSuffix(sent.Message, "\n\n"+workflow.ResumePhaseTask(rig.issue)) {
+		!strings.HasSuffix(sent.Message, "\n\n"+workflow.ResumePhaseTask(rig.issue, false)) {
 		t.Fatalf("the resume task was sent as %+v, want it under %s behind the relaunch's sentence", sent, held.ID)
 	}
 }

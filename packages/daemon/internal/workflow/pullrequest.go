@@ -382,6 +382,10 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // head the merge names is final and no push from it is code on its way (classify.CodeOnItsWay). A
 // merge that names no head leaves the recorded head and its pushes.
 //
+// A merge during a parent's wait on its children leaves the held start where it stands: the
+// return from that wait reads the merge and keeps the path of a merged pull request, back to the
+// very start it held (ReturnFromChildren, dispatch://INFRA-3320 R12).
+//
 // In reviewing, after the architect's notice, the merge settles the review round (settleRound):
 // an approval that stands on the head the pull request merged at ends the round and moves the
 // issue to accepting, since a merged pull request leaves the round nothing to wait on

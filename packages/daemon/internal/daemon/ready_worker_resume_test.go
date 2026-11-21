@@ -248,7 +248,7 @@ func TestEveryComeBackToReadyGivesAPhaseHolderItsTaskWithinTwoMinutes(t *testing
 			}
 			rig.run()
 			held, last := rig.claim().Pending, rig.claim().LastReady
-			if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || held.Phase != phase.Testing {
+			if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue, false) || held.Phase != phase.Testing {
 				t.Fatalf("after the come-back the tester holds %+v, want the testing phase's resume task", held)
 			}
 			if held.DeliveredAt.IsZero() || held.DeliveredAt.Before(last) || held.DeliveredAt.Sub(last) > taskWithinOfReady {

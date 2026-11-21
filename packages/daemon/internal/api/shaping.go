@@ -18,6 +18,8 @@ import (
 	"strconv"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -495,12 +497,15 @@ type stateNarrowing struct {
 // and describes it. TestANarrowedBodySaysSo reads the log of the very request it reads the body
 // of.
 //
-// The order is the history of the route and nothing a band depends on. One pair does touch one
-// key: waitingLineContract's band drops the issues' `waitingLine` whole, and
-// whyAndLineFieldsContract's takes the fields the record added from inside that same view. They
-// still do not depend on their order, because a caller below both is served no `waitingLine` at
-// all whichever runs first, and a caller below only the higher one keeps the field with its
-// `place` and its `length`, which is what the lower band's own contract describes.
+// The order is the history of the route and nothing a band depends on. Two pairs do touch one
+// key each. waitingLineContract's band drops the issues' `waitingLine` whole, and
+// whyAndLineFieldsContract's takes the fields the record added from inside that same view; and
+// gatedStepsContract's band drops the issues' `gatedSteps` whole, and gateBasisContract's takes it
+// off the issues a step of which stands on an ancestor's basis. Neither pair depends on its order,
+// because a caller below both rows of a pair is served no such key at all whichever runs first,
+// and a caller below only the higher one keeps what the lower band's own contract describes: the
+// line with its `place` and its `length`, and the gated steps of every issue no step of which
+// carries a basis.
 //
 // A second pair touches one block, and one band of it writes that block in an older shape
 // rather than taking a key out: repositoriesLiveContract's band writes `repositories` as
@@ -558,6 +563,8 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: gateBasisContract, issue: withoutGateBasis,
+		dropped: "the issues' treeRuns and the gatedSteps of every issue a step of which stands on an ancestor's basis"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -586,6 +593,9 @@ var valueStrips = []valueStrip{
 	{state: withoutUnadmittedStrandedStates, dropped: droppedStrandedState},
 	{issue: withoutUnadmittedWaitAnswer, dropped: droppedWaitAnswer},
 	{issue: withoutWaitingOnIssue, dropped: droppedLineKind},
+	{issue: withoutUnadmittedStepStatuses, dropped: droppedStepStatus},
+	{issue: withoutUnadmittedPhases, dropped: droppedPhase},
+	{state: withoutUnadmittedHeldReasons, dropped: droppedHeldReason},
 }
 
 // recordShaping writes the daemon's own record of what it left out of the state it answered: one
@@ -643,15 +653,19 @@ func (s *server) recordShaping(r *http.Request, id AnswerID, at placement, took 
 // carries it too, since that decision follows restore as a value strip does (refusedAfterTheStop).
 const followsRestore = "the contract the caller states, else its pod's lowest, which a value follows where a key follows the stated contract, else the pod's highest"
 
-// droppedStrandedState, droppedWaitAnswer and droppedLineKind are what the rows of valueStrips
-// name as dropped. They are named rather than written in the rows because the tests that read
-// the daemon's log and the mixed pod's body name a row by them (narrowing_test.go,
-// shaped_answers_test.go). Each names what its row takes by the table's rule rather than by
-// today's value, so the line stays true of a value the table declares later.
+// droppedStrandedState, droppedWaitAnswer, droppedLineKind, droppedStepStatus, droppedPhase and
+// droppedHeldReason are what the rows of valueStrips name as dropped. They are named rather than
+// written in the rows because the tests that read the daemon's log and the mixed pod's body name a
+// row by them (narrowing_test.go, shaped_answers_test.go). Each names what its row takes by the
+// table's rule rather than by today's value, so the line stays true of a value the table declares
+// later.
 const (
 	droppedStrandedState = "the entries of strandedClaims in a state this caller does not admit"
 	droppedWaitAnswer    = "the answeredAt and answeredBy of each wait answered by a value this caller does not admit"
 	droppedLineKind      = "the waiting line's kind of every member of a kind this caller does not admit"
+	droppedStepStatus    = "the gatedSteps of every issue a step of which reads a status this caller does not admit"
+	droppedPhase         = "every phase this caller does not admit: an issue's phase served as admitted, and its heldFrom and its claim views' pendingTask phase left off"
+	droppedHeldReason    = "the reason of every held row of a word this caller does not admit, served as the word it stands in for"
 )
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -816,9 +830,10 @@ const phaseEntriesContract = 94
 // sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body for a
 // key it does not name, and refuses `held` emptied as surely as filled. The contract removed no
 // key and added no value to an existing enumeration. The row's `reason` is an enumeration of its
-// own, and every value of it arrived with the key at this contract (answers.go's heldReasons), so
-// the band that takes the key off takes every value of it off too, and no value strip is needed.
-// It changed no request a plugin sends.
+// own, and every value of it this contract named arrived with the key (answers.go's heldReasons),
+// so the band that takes the key off takes those values off too and no value strip is owed for
+// them; `awaiting_children`, which gateBasisContract added later, rides a value strip of its own
+// (withoutUnadmittedHeldReasons). It changed no request a plugin sends.
 const heldContract = 98
 
 // processReadContract is the daemon contract at which the two claim recoveries read the claim's
@@ -971,9 +986,165 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with this change's own number, and it is the last number of answers.go's SupportedContracts,
-// which names the constant rather than its number for that reason.
+// with this change's own number, and it is a number of answers.go's SupportedContracts, which
+// names the constant rather than its number for that reason.
 const repositoriesLiveContract = 202
+
+// gateBasisContract is the daemon contract that let a root's gated step stand open on an
+// ancestor's approval or wait on an ancestor's approval request (version.go's 212,
+// dispatch://INFRA-3320, R1 and R2), served each root whether its tree runs, and added the phase
+// awaiting_children and the held word of that name (R11 to R13). It added two keys to an issue:
+// the gated step's `basis`, which rides only on a step of the two status words it added, and each
+// root's `treeRuns`. A plugin before it is served the state without `treeRuns`, which one built
+// before sjawhar/legion#2788 would refuse the whole body for and one built after strips, and
+// without the `gatedSteps` of every issue a step of which carries `basis` (withoutGateBasis, its
+// row of stateNarrowings). The issue keeps every other key, its `designGate` among them.
+//
+// It added four values to enumerated fields as well, each newer than its field, so each rides a
+// value strip and not this band (fieldArrivals.heldBack says why). `open_on_basis` and
+// `pending_on_basis` joined `gatedSteps[].status` (answers.go's gatedStepStatuses), which a reader
+// from gatedStepsContract on parses with an enum of the four words before them, refusing the whole
+// body for a fifth, and no word of the four is true of such a step: `waiting` would send its
+// architect to ask a person for an approval of its own, and `approved` names a person's approval
+// no person gave. So an issue with such a step is served no `gatedSteps`
+// (withoutUnadmittedStepStatuses). `awaiting_children` joined an issue's `phase` and the two
+// fields that read the workflow's phases, `heldFrom` and `pendingTask.phase` (phases,
+// workflowPhases): the phase is served as `admitted`, the value the wait replaced and the status
+// that names no worker's phase, and the other two are left off where they name it
+// (withoutUnadmittedPhases). And `awaiting_children` joined `admission.held[].reason`
+// (heldReasons), served as `children_first`, the word a started parent's wait took over
+// (withoutUnadmittedHeldReasons).
+//
+// repositoriesLiveContract stands right below it, and shapedAnswersContract below that, and this
+// band touches no key of either's: shapedAnswersContract's takes `lowestPluginContract` and the
+// claim views' `updateState` and `wake`, repositoriesLiveContract's writes the `repositories` block
+// in contract 152's shape, and this one takes `treeRuns` and some `gatedSteps`. So a caller from
+// 202 up to the number below this contract is served the keys 193 added and the block 202 writes
+// and none of this contract's keys and words, one that states a number between 202 and this
+// contract being served 202's, the nearest recorded contract below it
+// (recordedContractAtOrBelow); and a caller from 193 to 201 is served the keys 193 added, the
+// block in contract 152's shape and none of this contract's: one that states a number from 194 to
+// 198 is served 193's shape, and one that states 199, 200 or 201 is served 199's, which is 193's,
+// since 199 moves no shape of an answer a plugin parses. Every such caller states its contract:
+// podContracts leaves out a claim at shapedAnswersContract or above, so a pod reading places no
+// caller there.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract these keys and values arrived at stays where it is.
+const gateBasisContract = 212
+
+// withoutGateBasis is the issue with no `treeRuns`, and with no `gatedSteps` where a step of them
+// carries `basis`: the two keys gateBasisContract added to an issue. `basis` rides only on a step
+// of that contract's two status words, so the gated steps of every other issue are kept whole.
+// `treeRuns` is an `omitempty` pointer, on every root the projection records and on no other
+// issue, and `basis` one too, so the band reports a move only for an issue that carries either.
+// The issue is a value of its own, so the state the source answered is left as it was.
+func withoutGateBasis(issue Issue) (Issue, bool) {
+	onBasis := slices.ContainsFunc(issue.GatedSteps, func(step GatedStepView) bool { return step.Basis != nil })
+	moved := issue.TreeRuns != nil || onBasis
+	issue.TreeRuns = nil
+	if onBasis {
+		issue.GatedSteps = nil
+	}
+	return issue, moved
+}
+
+// withoutUnadmittedStepStatuses is the issue with no `gatedSteps` where a step of them reads a
+// status restore's reader does not admit: one the declared table holds back from restore
+// (answers.go's gatedStepStatuses; fieldArrivals.heldBack says which values and why). Today those
+// are the `open_on_basis` and `pending_on_basis` of gateBasisContract, and tomorrow any word the
+// table gives a later arrival. The list goes whole, as the band of gateBasisContract takes it, so
+// the band and the strip cannot part company over what such a reader is served of an issue; every
+// other issue keeps its gated steps. A caller whose strip is below gateBasisContract has lost such
+// a list with that band already (shapeIssue runs the bands first), so this finds nothing to take
+// there. The list is the issue's own value, so the state the source answered is left as it was.
+// It reports whether it took the list, which is what the log line of this strip is written from
+// (tookOff).
+func withoutUnadmittedStepStatuses(issue Issue, restore int) (Issue, bool) {
+	unadmitted := func(step GatedStepView) bool {
+		return step.Status != "" && gatedStepStatusArrivals.heldBack(string(step.Status), restore)
+	}
+	if !slices.ContainsFunc(issue.GatedSteps, unadmitted) {
+		return issue, false
+	}
+	issue.GatedSteps = nil
+	return issue, true
+}
+
+// withoutUnadmittedPhases is the issue with every phase word restore's reader does not admit
+// served down: a word the declared table holds back from restore (answers.go's phases and
+// workflowPhases; fieldArrivals.heldBack says which values and why). Today that is the
+// `awaiting_children` of gateBasisContract, and tomorrow any phase the table gives a later
+// arrival. The issue's own `phase` is a key every reader requires, so it is served as `admitted`,
+// the status that names no worker's phase, which is what dispatch://INFRA-3320 R13 gives a reader
+// that knows no awaiting_children. `heldFrom` and each claim view's `pendingTask.phase` are
+// `omitempty` and optional to every reader that has them, so a held-back word there is left off.
+// The daemon writes the word in neither today, since `heldFrom` is empty in the phase and no task
+// is queued for a phase no role works, and the strip holds them to the table all the same.
+//
+// The issue is a value of its own, and a claim view's task and the worker map are copied before
+// one is written (withEachClaimView), so the state the source answered is left as it was. It
+// reports whether it took a word, which is what the log line of this strip is written from
+// (tookOff).
+func withoutUnadmittedPhases(issue Issue, restore int) (Issue, bool) {
+	moved := false
+	if issue.Phase != "" && phaseArrivals.heldBack(string(issue.Phase), restore) {
+		issue.Phase, moved = phase.Admitted, true
+	}
+	if issue.HeldFrom != "" && workflowPhaseArrivals.heldBack(issue.HeldFrom, restore) {
+		issue.HeldFrom, moved = "", true
+	}
+	issue, tasks := withEachClaimView(issue, func(view ClaimView) ClaimView {
+		if task := view.PendingTask; task != nil && task.Phase != "" && workflowPhaseArrivals.heldBack(string(task.Phase), restore) {
+			left := *task
+			left.Phase = ""
+			view.PendingTask = &left
+		}
+		return view
+	})
+	return issue, moved || tasks
+}
+
+// withoutUnadmittedHeldReasons is state whose held rows name no word restore's reader does not
+// admit: a word the declared table holds back from restore (answers.go's heldReasons;
+// fieldArrivals.heldBack says which values and why). Today that is the `awaiting_children` of
+// gateBasisContract, and tomorrow any word the table gives a later arrival. The row stays, since
+// the held list is one partition of the issues the record holds in the workflow and a row left
+// out would drop its issue from that partition, and its `reason`, which every row writes, is
+// served as the word heldReasonStandIn names. A caller whose strip is below heldContract has lost
+// the list with its band already, so this finds nothing to take there. The list is copied before
+// a row of it is written, so the state the source answered is left as it was. It reports whether
+// it took a word, which is what the log line of this strip is written from (tookOff).
+func withoutUnadmittedHeldReasons(state State, restore int) (State, bool) {
+	unadmitted := func(row HeldIssue) bool {
+		return row.Reason != "" && heldReasonArrivals.heldBack(string(row.Reason), restore)
+	}
+	if !slices.ContainsFunc(state.Admission.Held, unadmitted) {
+		return state, false
+	}
+	held := make([]HeldIssue, len(state.Admission.Held))
+	for i, row := range state.Admission.Held {
+		if unadmitted(row) {
+			row.Reason = heldReasonStandIn(row.Reason)
+		}
+		held[i] = row
+	}
+	state.Admission.Held = held
+	return state, true
+}
+
+// heldReasonStandIn is the word a held row of reason is served as to a reader that does not admit
+// reason. `awaiting_children` is served as `children_first`: a started parent waiting on its open
+// children is the wait that word named before gateBasisContract gave it its own
+// (dispatch://INFRA-3320 R13). Any other such word is served as `unclassified`, the word of an
+// issue none of the reader's other words is true of. Both arrived with the field at heldContract,
+// so no reader that knows `admission.held` refuses either (fieldArrivals.heldBack).
+func heldReasonStandIn(reason record.HeldReason) record.HeldReason {
+	if reason == record.HeldAwaitingChildren {
+		return record.HeldChildrenFirst
+	}
+	return record.HeldUnclassified
+}
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1442,16 +1613,23 @@ func (f fieldArrivals) heldBack(value string, restore int) bool {
 	return arrival > f.field && restore < arrival
 }
 
-// strandedStateArrivals, waitAnswerArrivals and lineKindArrivals are the arrivals of
-// `strandedClaims[].state`, of `answeredBy` and of the waiting line's `kind`, read once from the
-// list the table itself is written from (answers.go's strandedStates, waitAnswers and
-// lineKinds). The state's row answers for the record's too: an issue's field is one field at
-// two key paths (answers.go's enumeratedFields), both rows take the one list, and shapeIssue
-// shapes the issue behind both answers.
+// strandedStateArrivals, waitAnswerArrivals, lineKindArrivals, gatedStepStatusArrivals,
+// phaseArrivals, workflowPhaseArrivals and heldReasonArrivals are the arrivals of
+// `strandedClaims[].state`, of `answeredBy`, of the waiting line's `kind`, of a gated step's
+// `status`, of an issue's `phase`, of the two fields that read the workflow's phases (`heldFrom`
+// and `pendingTask.phase`) and of a held row's `reason`, read once from the list the table itself
+// is written from (answers.go's strandedStates, waitAnswers, lineKinds, gatedStepStatuses, phases,
+// workflowPhases and heldReasons). The state's row answers for the record's too: an issue's field
+// is one field at two key paths (answers.go's enumeratedFields), both rows take the one list, and
+// shapeIssue shapes the issue behind both answers.
 var (
-	strandedStateArrivals = arrivalsOf(strandedStates)
-	waitAnswerArrivals    = arrivalsOf(waitAnswers)
-	lineKindArrivals      = arrivalsOf(lineKinds)
+	strandedStateArrivals   = arrivalsOf(strandedStates)
+	waitAnswerArrivals      = arrivalsOf(waitAnswers)
+	lineKindArrivals        = arrivalsOf(lineKinds)
+	gatedStepStatusArrivals = arrivalsOf(gatedStepStatuses)
+	phaseArrivals           = arrivalsOf(phases)
+	workflowPhaseArrivals   = arrivalsOf(workflowPhases)
+	heldReasonArrivals      = arrivalsOf(heldReasons)
 )
 
 // arrivalsOf is one list of the declared table as the arrivals of its field: each value under

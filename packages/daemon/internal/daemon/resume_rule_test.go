@@ -131,7 +131,7 @@ func TestABootRuleResumeThatSpendsTheLaunchBudgetFinishes(t *testing.T) {
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion",
 		now: func() time.Time { return clock }}
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleTester,
-		Generation: 1, Phase: phase.Testing, Task: workflow.ResumePhaseTask(issue), ResumeTask: true, RuleResume: true}, clock))
+		Generation: 1, Phase: phase.Testing, Task: workflow.ResumePhaseTask(issue, false), ResumeTask: true, RuleResume: true}, clock))
 
 	for tick := range 6 {
 		if err := runner.RunOnce(context.Background()); err != nil {

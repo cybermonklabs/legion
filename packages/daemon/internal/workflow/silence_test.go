@@ -153,7 +153,7 @@ func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Iss
 		seedRecord(t, pool, func(tx pgx.Tx) error {
 			return StartOrOwe(t.Context(), tx, record.NewStore(), silenceIssue, record.SuperviseRequest{Op: "start",
 				Tree: silenceIssue, Role: claim.RoleTester, Generation: rec.generation, Phase: rec.phase,
-				Task: ResumePhaseTask(issue), ResumeTask: true}, silenceClock())
+				Task: ResumePhaseTask(issue, false), ResumeTask: true}, silenceClock())
 		})
 	}
 	return issue
@@ -287,7 +287,7 @@ func TestASilentWorkerIsSentItsPhasesTaskAgainOnTheEntryItsRowNames(t *testing.T
 		t.Fatalf("apply the silence: %v", err)
 	}
 
-	want := []silenceSuperviseRow{{op: "start", role: claim.RoleTester, task: ResumePhaseTask(issue),
+	want := []silenceSuperviseRow{{op: "start", role: claim.RoleTester, task: ResumePhaseTask(issue, false),
 		stands: phase.Testing, entry: 0, resumeTask: true}}
 	if got := silenceSuperviseRows(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the supervise rows of %s = %+v, want %+v: the worker comes back on one start row carrying the phase's resume task at no entry, the claim being on the entry its row names already",

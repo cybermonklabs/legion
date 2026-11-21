@@ -18,17 +18,18 @@ import (
 // decided here as well.
 func TestEachPhaseShowsItsOwnDispatchStatus(t *testing.T) {
 	want := map[phase.Phase]string{
-		phase.Admitted:       "",
-		phase.AwaitingPerson: "",
-		phase.Planning:       "in_progress",
-		phase.Implementing:   "in_progress",
-		phase.Testing:        "testing",
-		phase.Reviewing:      "needs_review",
-		phase.Accepting:      "needs_review",
-		phase.Retro:          "retro",
-		phase.Merging:        "retro",
-		phase.Done:           "done",
-		phase.Held:           "",
+		phase.Admitted:         "",
+		phase.AwaitingPerson:   "",
+		phase.AwaitingChildren: "in_progress",
+		phase.Planning:         "in_progress",
+		phase.Implementing:     "in_progress",
+		phase.Testing:          "testing",
+		phase.Reviewing:        "needs_review",
+		phase.Accepting:        "needs_review",
+		phase.Retro:            "retro",
+		phase.Merging:          "retro",
+		phase.Done:             "done",
+		phase.Held:             "",
 	}
 	for at, status := range want {
 		if got := PhaseStatus(at); got != status {

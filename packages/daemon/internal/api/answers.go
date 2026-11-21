@@ -46,13 +46,14 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193 is the constant rather than its number, because the entry that added the shaped answers
-// names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares. The last is
-// repositoriesLiveContract rather than its number for the same reason: it is this daemon's own
-// contract, dispatch://INFRA-4401's, and a renumber of that change moves the constant and this
-// list with it.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract}
+// shapedAnswersContract (193), repositoriesLiveContract (202) and gateBasisContract are constants
+// rather than numbers, because the entries that added their shapes name them:
+// shapedAnswersContract is the number dispatch://INFRA-2694's entry took, repositoriesLiveContract
+// the number dispatch://INFRA-4401's took, and gateBasisContract the number of the last entry,
+// dispatch://INFRA-3320's. A renumber of any of the three entries moves its constant and this list
+// with it, and moving one of them alone would describe a shape at a contract no entry declares.
+// 199 moves no shape of an answer a plugin parses, so its records are 193's under its own number.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, gateBasisContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -253,10 +254,13 @@ type EnumeratedValue struct {
 // The first reading is measured rather than guessed: `legion-api.ts` and `legion-roles.ts` were
 // read at the commit that declared each contract of SupportedContracts, and the members of
 // every `z.enum` diffed. The lists below that ever grew are `answeredBy`, which gained
-// `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56, and
-// `waitingLine.kind`, which gained `waiting_on_issue` at 132, so every other list is recorded
-// whole at its own field's arrival. (`suspendedBy` gained `released` at 48 and is no row here:
-// the operator claim answers carry it and no plugin parses them.)
+// `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56,
+// `waitingLine.kind`, which gained `waiting_on_issue` at 132, and four that grew at
+// gateBasisContract: an issue's `phase`, `heldFrom` and `pendingTask.phase`, which gained
+// `awaiting_children`, `gatedSteps[].status`, which gained `open_on_basis` and
+// `pending_on_basis`, and `admission.held[].reason`, which gained `awaiting_children`. Every
+// other list is recorded whole at its own field's arrival. (`suspendedBy` gained `released` at 48
+// and is no row here: the operator claim answers carry it and no plugin parses them.)
 var EnumeratedFields = enumeratedFields()
 
 // enumeratedFields is every row the table holds: the state's own, the record's taken from them,
@@ -290,7 +294,9 @@ const issueKeyPath = "issues.*."
 // stateEnumeratedFields is every enumerated field of the state, the answer that carries all but
 // one of them. Each row under issueKeyPath is a row of the record answer too (enumeratedFields).
 var stateEnumeratedFields = []EnumeratedField{
-	// `phase` of an issue, where the workflow holds it (api.Issue.Phase, LEGION_PHASES).
+	// `phase` of an issue, where the workflow holds it (api.Issue.Phase, LEGION_PHASES). Its list
+	// grew: `awaiting_children` arrived at gateBasisContract, and an issue in it is served as
+	// `admitted` below that contract (shaping.go's withoutUnadmittedPhases).
 	{Answer: AnswerState, KeyPath: "issues.*.phase", Values: phases},
 	// `state` of a claim view, where a claim is in its life (api.ClaimView.State,
 	// LEGION_CLAIM_STATES). The architect's view and each worker's carry the one field.
@@ -318,7 +324,10 @@ var stateEnumeratedFields = []EnumeratedField{
 	{Answer: AnswerState, KeyPath: "issues.*.mergeWait.toldState", Values: mergeWaitStates},
 	// `step` and `status` of one row of the deployment's design gate as the issue stands in it
 	// (api.GatedStepView, record.DesignStep). Both arrived with `gatedSteps`, which is served
-	// down below that contract whole (shaping.go's withoutGatedSteps).
+	// down below that contract whole (shaping.go's withoutGatedSteps). `status`'s list grew:
+	// `open_on_basis` and `pending_on_basis` arrived at gateBasisContract, and an issue a step of
+	// which reads one is served without its `gatedSteps` below that contract (shaping.go's
+	// withoutUnadmittedStepStatuses).
 	{Answer: AnswerState, KeyPath: "issues.*.gatedSteps.*.step", Values: designSteps},
 	{Answer: AnswerState, KeyPath: "issues.*.gatedSteps.*.status", Values: gatedStepStatuses},
 	// `answeredBy` of an `awaiting_person` root's wait, how the wait was answered
@@ -367,7 +376,8 @@ var stateEnumeratedFields = []EnumeratedField{
 	// with the decided record and is served down below that contract with the rest of it
 	// (shaping.go's withoutRecordFields). Its domain is the workflow's own phases and never
 	// `unrecorded`, which is what an issue the workflow does not record reads `phase` as and is
-	// no phase a hold can take an issue out of.
+	// no phase a hold can take an issue out of. Its list grew with `phases`'s, and a held-back
+	// word is left off below the word's contract (shaping.go's withoutUnadmittedPhases).
 	{Answer: AnswerState, KeyPath: "issues.*.heldFrom", Values: workflowPhases},
 	// `cause` of a claim's failure record and `pendingCause` beside it, the word the site that
 	// failed the claim chose (api.ClaimFailureView.Cause, supervise.FailureCause). Both arrived
@@ -380,7 +390,7 @@ var stateEnumeratedFields = []EnumeratedField{
 	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.pendingCause", Values: failureCauses},
 	// `phase` of the task a claim holds, the issue phase it was queued for
 	// (api.PendingTaskView.Phase). It arrived with the decided record, is served down with it,
-	// and takes the workflow's phases as `heldFrom` does.
+	// and takes the workflow's phases as `heldFrom` does, served down by the same strip.
 	{Answer: AnswerState, KeyPath: "issues.*.architect.pendingTask.phase", Values: workflowPhases},
 	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.pendingTask.phase", Values: workflowPhases},
 	// `part` and `kind` of a waiting line member, which part of the line the issue waits in and
@@ -401,7 +411,9 @@ var stateEnumeratedFields = []EnumeratedField{
 	// `reason` of one row of the admission's held list, the one word for why nothing of that
 	// issue runs (api.HeldIssue, record.HeldReason). It arrived with `admission.held`, which is
 	// served down below that contract whole (shaping.go's withoutHeld), so no body below 98
-	// carries a value of it.
+	// carries a value of it. Its list grew: `awaiting_children` arrived at gateBasisContract, and a
+	// row of it is served as `children_first` below that contract (shaping.go's
+	// withoutUnadmittedHeldReasons).
 	{Answer: AnswerState, KeyPath: "admission.held.*.reason", Values: heldReasons},
 }
 
@@ -453,7 +465,10 @@ var strandedStates = []EnumeratedValue{
 // the list is the reader's: `integrating` is a member of that enumeration and no phase this
 // daemon writes, since phase.All has never held it. The field is older than the floor, and the
 // list has lost one value since: `awaiting_merge`, which contract 86 took out of the workflow and
-// out of that enumeration (version.go's 86).
+// out of that enumeration (version.go's 86). It has gained one too: `awaiting_children`, a parent
+// that an open Dispatch child of it holds, arrived at gateBasisContract (version.go's entry of
+// dispatch://INFRA-3320), so the list is written out value by value, sorted by value, as
+// waitAnswers is.
 //
 // A removed value needs no serving-down, which is why no row below records `awaiting_merge` at
 // any contract. This table records each value's arrival (`Since`) and nothing else, and the one
@@ -463,20 +478,47 @@ var strandedStates = []EnumeratedValue{
 // an `omitempty` key no issue carries. So a value leaves this list the day the enumeration of
 // this daemon's own contract drops it, and every other value's row stays where it is. The list
 // stays literal for that reason: `integrating` and `unrecorded` are no phase.Phase constant.
-var phases = valuesFrom(ServingFloor,
-	"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting",
-	"retro", "merging", "integrating", "done", "held", "unrecorded")
+var phases = []EnumeratedValue{
+	{Value: "accepting", Since: ServingFloor},
+	{Value: "admitted", Since: ServingFloor},
+	{Value: "awaiting_children", Since: gateBasisContract},
+	{Value: "awaiting_person", Since: ServingFloor},
+	{Value: "done", Since: ServingFloor},
+	{Value: "held", Since: ServingFloor},
+	{Value: "implementing", Since: ServingFloor},
+	{Value: "integrating", Since: ServingFloor},
+	{Value: "merging", Since: ServingFloor},
+	{Value: "planning", Since: ServingFloor},
+	{Value: "retro", Since: ServingFloor},
+	{Value: "reviewing", Since: ServingFloor},
+	{Value: "testing", Since: ServingFloor},
+	{Value: "unrecorded", Since: ServingFloor},
+}
 
 // workflowPhases is every phase of the workflow, which two fields of the decided record share:
 // an issue's `heldFrom` and the phase a claim's held task was queued for. It is the list of
 // `phases` without `unrecorded`, since `unrecorded` is what an issue the workflow holds no row
 // for reads its own `phase` as and is no phase a hold or a task names. Both fields arrived at
 // recordFieldsContract, so the list is recorded there, and it lost `awaiting_merge` with
-// `phases` for the reason that roster gives. It stays literal for the reason `phases` does:
-// `integrating` is no phase.Phase constant.
-var workflowPhases = valuesFrom(recordFieldsContract,
-	"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting",
-	"retro", "merging", "integrating", "done", "held")
+// `phases` for the reason that roster gives. It gained `awaiting_children` with `phases` too,
+// at gateBasisContract: both fields read `LEGION_WORKFLOW_PHASES`, which names the word, though
+// the daemon writes it in neither (shaping.go's withoutUnadmittedPhases says why). It stays
+// literal for the reason `phases` does: `integrating` is no phase.Phase constant.
+var workflowPhases = []EnumeratedValue{
+	{Value: "accepting", Since: recordFieldsContract},
+	{Value: "admitted", Since: recordFieldsContract},
+	{Value: "awaiting_children", Since: gateBasisContract},
+	{Value: "awaiting_person", Since: recordFieldsContract},
+	{Value: "done", Since: recordFieldsContract},
+	{Value: "held", Since: recordFieldsContract},
+	{Value: "implementing", Since: recordFieldsContract},
+	{Value: "integrating", Since: recordFieldsContract},
+	{Value: "merging", Since: recordFieldsContract},
+	{Value: "planning", Since: recordFieldsContract},
+	{Value: "retro", Since: recordFieldsContract},
+	{Value: "reviewing", Since: recordFieldsContract},
+	{Value: "testing", Since: recordFieldsContract},
+}
 
 // failureCauses is every word the site that failed a claim can choose
 // (supervise.FailureCause), which the failure record's `cause` and the `pendingCause` beside it
@@ -510,13 +552,26 @@ var lineKinds = []EnumeratedValue{
 	{Value: "waiting_on_issue", Since: waitingOnIssueContract},
 }
 
-// heldReasons is every word of a held row's `reason`, recorded at heldContract, the contract
-// `admission.held` arrived at. It names each constant rather than reading record.HeldReasons,
-// because a word added to the ladder later arrives at its own contract and not at this one.
-var heldReasons = valuesFrom(heldContract,
-	record.HeldTreeClosed, record.HeldTreeParked, record.HeldLabelOff, record.HeldAncestry,
-	record.HeldRootAwaitingPerson, record.HeldDesignGate, record.HeldDispatchBlocker,
-	record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldAtWork, record.HeldUnclassified)
+// heldReasons is every word of a held row's `reason`. It names each constant rather than reading
+// record.HeldReasons, because a word added to the ladder later arrives at its own contract and
+// not at the field's. Eleven words arrived with `admission.held` at heldContract, and the list
+// grew once: `awaiting_children`, a parent waiting on its open children, arrived at
+// gateBasisContract (version.go's entry of dispatch://INFRA-3320, record.HeldAwaitingChildren). So
+// it is written out value by value, sorted by value, as waitAnswers is.
+var heldReasons = []EnumeratedValue{
+	{Value: string(record.HeldAcceptedAncestor), Since: heldContract},
+	{Value: string(record.HeldAncestry), Since: heldContract},
+	{Value: string(record.HeldAtWork), Since: heldContract},
+	{Value: string(record.HeldAwaitingChildren), Since: gateBasisContract},
+	{Value: string(record.HeldChildrenFirst), Since: heldContract},
+	{Value: string(record.HeldDesignGate), Since: heldContract},
+	{Value: string(record.HeldDispatchBlocker), Since: heldContract},
+	{Value: string(record.HeldLabelOff), Since: heldContract},
+	{Value: string(record.HeldRootAwaitingPerson), Since: heldContract},
+	{Value: string(record.HeldTreeClosed), Since: heldContract},
+	{Value: string(record.HeldTreeParked), Since: heldContract},
+	{Value: string(record.HeldUnclassified), Since: heldContract},
+}
 
 // claimViewStates is every value of a claim view's `state`, in the order a launch reaches them.
 // The field is older than the floor and the list has not moved since.
@@ -578,13 +633,22 @@ var mergeWaitStates = valuesFrom(mergeWaitContract,
 	record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
 	record.MergeStateUnknown)
 
-// designSteps is every step of a deployment's design gate, and gatedStepStatuses every place an
-// issue can stand in one. Both are recorded at gatedStepsContract, the contract `gatedSteps`
-// arrived at.
+// designSteps is every step of a deployment's design gate, recorded at gatedStepsContract, the
+// contract `gatedSteps` arrived at, and gatedStepStatuses every place an issue can stand in one.
+// Four statuses arrived with `gatedSteps`, and the list grew once: `open_on_basis` and
+// `pending_on_basis`, a step on an ancestor's basis, arrived at gateBasisContract (version.go's
+// entry of dispatch://INFRA-3320). So it is written out value by value, sorted by value, as
+// waitAnswers is.
 var designSteps = valuesFrom(gatedStepsContract,
 	record.DesignStepDecisions, record.DesignStepCriteria, record.DesignStepSpec)
-var gatedStepStatuses = valuesFrom(gatedStepsContract,
-	GatedStepUnregistered, GatedStepWaiting, GatedStepApproved, GatedStepChangesRequested)
+var gatedStepStatuses = []EnumeratedValue{
+	{Value: string(GatedStepApproved), Since: gatedStepsContract},
+	{Value: string(GatedStepChangesRequested), Since: gatedStepsContract},
+	{Value: string(GatedStepOpenOnBasis), Since: gateBasisContract},
+	{Value: string(GatedStepPendingOnBasis), Since: gateBasisContract},
+	{Value: string(GatedStepUnregistered), Since: gatedStepsContract},
+	{Value: string(GatedStepWaiting), Since: gatedStepsContract},
+}
 
 // memoryGroups is every group a tree's memory draw can give it, and memoryDrawModes every mode
 // it can be drawn under. Both are recorded at memoryContract, the contract the draw arrived at.

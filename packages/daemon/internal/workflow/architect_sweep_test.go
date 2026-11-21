@@ -318,7 +318,7 @@ func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
 				return engine.SendArchitectStart(t.Context(), tx, root, row)
 			})
 
-			start := architectStartOf(t, pool)
+			start := architectStartOf(t, pool, entryIssue)
 			want := ArchitectStartTask(ArchitectStart{Root: root, Gate: record.TreeGate{Steps: engine.GatedSteps()}})
 			if tc.verbatim {
 				want = tc.stored

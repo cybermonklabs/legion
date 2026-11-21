@@ -635,7 +635,7 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 		t.Fatalf("the sweep after the roll-forward sent %s %+v, want the one start of entry 1: a role whose task that daemon lost is what the re-arm exists to send again",
 			key, starts)
 	}
-	want := sweptStart{id: starts[0].id, role: claim.RoleTester, task: workflow.ResumePhaseTask(issue), entry: 1}
+	want := sweptStart{id: starts[0].id, role: claim.RoleTester, task: workflow.ResumePhaseTask(issue, false), entry: 1}
 	if starts[0] != want {
 		t.Fatalf("the start the sweep sent %s = %+v, want %+v: the record holds no task of that entry, so what is sent is the line the daemon composes for a worker already in its phase",
 			key, starts[0], want)

@@ -2978,4 +2978,197 @@ package api
 // merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 202
+//
+// 212: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
+// approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
+// move.
+// `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
+// come together or not at all: `basisArtifactId`, the same step's document of an ancestor on the
+// issue's Dispatch `child_of` chain; `basisVersion`, the version of it a person approved or an
+// open approval request asks a person to approve; and `reason`, 1 to 1,000 characters with no
+// decision block, which the daemon posts on the root's issue. A call with a basis is refused
+// with a code that names what Dispatch shows (`BASIS_INCOMPLETE`, `BASIS_NOT_ON_CHAIN`,
+// `BASIS_NOT_NEAREST`, `BASIS_NOT_IN_LEGION`, `BASIS_ACCEPTED`, `BASIS_NOT_APPROVED`,
+// `BASIS_VERSION_MISMATCH`, `BASIS_NOT_BY_PERSON`, `BASIS_REQUEST_NOT_OPEN`,
+// `BASIS_NO_REQUIREMENTS`, `ROOT_VERSION_NOT_LATEST`, `ROOT_CHANGES_REQUESTED`, the six
+// `VIEW_` codes, `REASON_INVALID` and `REASON_HOLDS_DECISION_BLOCK`) and records nothing. The
+// answer is unchanged, and a call that names none of the three fields is the call it was.
+// Every root issue record of `GET /legion/v1/state` — the record `read_record` reads — gains
+// two things. Its `gatedSteps` entries take two status words beside the four of 55:
+// `open_on_basis`, a step its architect registered on a person's approval of the ancestor's
+// document, whose `approvedVersion` is the root's version registered, which no person approved;
+// and `pending_on_basis`, a step that waits, closed, on the ancestor's open approval request.
+// Each such entry carries `basis`: the ancestor `issue`, its document's `artifactId`, the
+// `version` approved or asked for, and `approver` and `approvedAt` for an approval or `askId`
+// for a request. `designGate.approvedVersion` of a step open on a basis is that same version
+// registered, so a reader that names a person's approval reads `gatedSteps`. And every root of
+// the daemon's project carries `treeRuns`, whether its tree runs under the workflow by the
+// daemon's own rule (`record.TreeRuns`): its lifecycle stands open under the workflow, the root
+// does not linger, and it does not wait in the line for its tree to be opened. The record held
+// no field that decided it in every case: a root a re-admission left at `todo` runs nothing
+// whatever its architect's claim reads.
+// The architect's `catch-up` notice states a step on a basis too: each entry of its `gates` may
+// carry `pending` and `basis` (`issue`, `artifact`, `version`, `approver`, `approved_at`, `ask`),
+// and a step open on a basis reads `open` with no `approved`, since no person approved the
+// version its root registered. No plugin decodes the notice: it reaches the architect's session
+// as the daemon writes it, so it needs no narrowing.
+// `POST /legion/v1/signoff` and `POST /legion/v1/roots/close` answer two more refusals, after
+// `SIGNOFF_CHILD_IN_WORKFLOW` and in this order: `SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, while a root
+// whose step rests on the issue's approval is still in the workflow, and `SIGNOFF_CHILD_OPEN`,
+// while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
+// hold it; the refusal's shape is the one every refusal has.
+// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` serve a caller below 212 — one
+// that states a contract below it in `Legion-Plugin-Contract`, or else one from a pod whose
+// claims record one — the shape its own contract describes, by 193's serving rule, and this
+// entry adds one band and three value strips to that serving. The band is the row of
+// `gateBasisContract` in shaping.go's `stateNarrowings` (`withoutGateBasis`): it follows the
+// contract the caller states, else its pod's highest, and serves every issue without `treeRuns`,
+// and without `gatedSteps` on an issue a step of which carries `basis`. The bands compose, as
+// 193's entry says of them: a caller below 178 is served the state without `paused` and
+// `lastPause` as well, the entry of 178 above (`withoutPause`), a caller below 146 the issues
+// without both entry times and `architectStalls`, the entry of 146 (`withoutEntryTimes`), and so
+// on down `stateNarrowings`. 178's band and this one touch no key of each other's, and the bands
+// of 193 and 202 stand between them, so a caller at 202 through 211 is served the pause, the keys
+// 193 added and the repositories block 202 writes, and none of this entry's keys and words (a
+// caller that states 203 to 211 is served 202's shape, the nearest recorded contract below it), a
+// caller at 193 through 201 the pause, 193's keys and the block in 152's shape (one that states
+// 194 to 198 is served 193's shape and one that states 199 to 201 199's, and 199's is 193's, since
+// 199 moves no shape of an answer a plugin parses), a caller at 178 through 192 the pause and the
+// block in 152's shape and neither 193's keys nor this entry's, and a caller at 146 through 177
+// the entry times and none of the pause, 193's keys and this entry's.
+// The strip of `gatedSteps` is not for the key's sake alone: every plugin from 55 on reads
+// `status` with a strict enum of the four words and refuses the whole body for a fifth, and no
+// word of the four is true of such a step — `waiting` would send its architect to ask a person
+// for an approval of its own, and `approved` names a person's approval no person gave — so such a
+// caller is served no entry of that issue at all rather than a wrong one. The two words are values
+// of an enumerated field, which answers.go's `EnumeratedFields` declares at this contract
+// (`gatedStepStatuses`), so a value strip holds them back too, following the contract the caller
+// states, else its pod's lowest: `withoutUnadmittedStepStatuses`, a row of shaping.go's
+// `valueStrips`, serves an issue any step of which reads a word the caller does not admit with no
+// `gatedSteps`. Every reader from 212 on takes `treeRuns` and `basis` as optional and reads the
+// six words (`packages/contracts/src/legion-api.ts`).
+// The change ships store migrations `20261114064234_design_gate_basis` and
+// `20261119185013_outbox_kinds_with_the_basis_seeds`, which keep the basis on the gate row and
+// admit the two outbox kinds that read it; they move the daemon's own record and are no part of
+// this number. Nor are the new notice kinds `basis-ended`, `basis-changes-requested` and
+// `resting-root`, which reach an architect's session as text, as every notice kind does.
+// The same contract carries a parent's wait on its open children, a new phase value
+// `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
+// it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
+// `admission.held` entry for such a parent with `reason: awaiting_children`, which
+// `LEGION_HELD_REASONS` names. A caller below 212 knows neither word — its phase enum and its held
+// words are the ones before this change — so the daemon serves it that issue's `phase` as
+// `admitted`, the status that names no worker's phase, and that held entry's `reason` as
+// `children_first`, the word a started parent's wait took over. Both are value strips, rows of
+// shaping.go's `valueStrips` that read each word's arrival from answers.go's `EnumeratedFields`
+// (`phases`, `heldReasons`) and follow the contract the caller states, else its pod's lowest:
+// `withoutUnadmittedPhases` and `withoutUnadmittedHeldReasons`. `heldFrom` and
+// `pendingTask.phase` read `LEGION_WORKFLOW_PHASES` too, so the table declares the word for them
+// as well (`workflowPhases`), and `withoutUnadmittedPhases` leaves either key off where it names
+// the word for a caller below 212; the daemon writes the word in neither, since `heldFrom` is null
+// in the phase and a hold never comes from it, and no task is queued for a phase no role works.
+// The change ships store migration `20261114232555_awaiting_children`, which adds the phase value
+// and the parent's held start to the issues table; it moves the daemon's own record and is no part
+// of this number.
+// `POST /legion/v1/phase/backward` and `POST /legion/v1/signoff` on a parent in that phase answer
+// one more refusal, `WAITING_ON_CHILDREN`, naming its open children and the start it holds: each
+// acts on a phase, and the parent stands in none (dispatch://INFRA-3320 R11). The refusal's shape
+// is the one every refusal has. The new notice kind `awaiting-children`, which tells the parent's
+// architect of the wait in place of the phase-finished notice of the start it holds, is no part
+// of this number either: it reaches an architect's session as text, as every notice kind does.
+// (This change took 126 against the base 50bfbb0dec73, which carried 111, when the open pull
+// requests held 112 to 125 as read on 2026-11-14: 126 was the lowest number above the base's
+// that none of them declared. It kept 126 at the forward merge of 2026-11-14 that brought main
+// in at d24093cef77a, which landed #3793's INFRA-3146 at 123. It was renumbered 126 → 134 at the
+// forward merge of 2026-11-15 that brought main in at ff69e078a4ab, which carries #3715's
+// INFRA-3036 at 132, the entry above 133's; the open pull requests held 133 (#3937) and nothing
+// above it, so 134 was the lowest number above main's and above every number another open head
+// declared. That read was a GraphQL read of each open head's file, and it missed most heads: the
+// blob text it gives of this file is cut before the const line. A REST raw read of each open
+// head's file at 2026-11-15T02:46Z gave, above main's 132, 133 (#3711 and #3937), 134 (#4021,
+// which declares 134 too), 135 (#3659), 136 (#3575 and #3730) and 137 (#3712), and no open head
+// declares above 137, so this change moved 134 → 138, the lowest free number: the lowest above
+// main's and above every number another open head declares. At the forward merge of 2026-11-15
+// that brought main in at d7dce7302e31, main carried #3937's 133, and 138 stayed above it. At the
+// forward merge of 2026-11-15 that brought main in at b504408737a9, main carried 137 (#4046's
+// INFRA-3621), and the open heads held 138 (#4049) and 139 to 146, read with a
+// REST raw read of each open head's file at 2026-11-15T15:43Z, so this change moved 138 → 147, the
+// lowest number above main's and above every number another open head declares. At the forward
+// merge of 2026-11-15 that brought main in at 7ed023731622, main carried #3575's 141
+// (INFRA-2566), and 147 stayed above every open head. At the forward merge of 2026-11-15 that
+// brought main in at b2e427423163, main carried #4021's 144 (INFRA-3557), and 147 stayed above
+// every open head. At the forward merge of 2026-11-16 that brought main in at a97cd5939748, main
+// carried #3711's 146 (INFRA-2614, the entry above), and 147 stayed above it. At the forward merge
+// of 2026-11-17 that brought main in at a2b379d13f42, main carried #4106's 151 (INFRA-3729, the
+// entry above), and the open heads held 152 (#3730), 153 (#4115), 154 (#3659), 155 (#4273), 156
+// (#4065) and 157 (#4049, #3993, #3519 and #2230), read with a REST raw read of each open head's
+// file between 2026-11-17T14:01:15Z and 14:08:12Z, so this change moved 147 → 158, the lowest
+// number above main's and above every number another open head declares. At the forward merge of
+// 2026-11-18 that brought main in at 6ef60ff0ceeb, main carried #3730's 152 (INFRA-2543, the entry
+// above), and the open heads held 153 (#4115), 154 (#3659), 155 (#4273), 156 (#4065), 157 (#2230
+// and #3993), 158 (#4173, #4180 and #4193, beside this change), 159 (#4175), 160 (#3519) and 161
+// (#4049), read with a REST raw read of each of the 233 open heads' file between
+// 2026-11-18T07:00:38Z and 07:05:43Z, so this change moved 158 → 162, the lowest number above
+// main's and above every number another open head declares. At the forward merge of 2026-11-18
+// that brought main in at 0e6b1f456bfa, main still carried 152, and the open heads held 153 to 161
+// and 162 (#2230 and #3712, beside this change) and 163 (#4049), read with a REST raw read of each
+// of the 232 open heads' file between 2026-11-18T09:42:26Z and 09:46:59Z, so this change moved
+// 162 → 164, the lowest number above main's and above every number another open head declares.
+// At the forward merge of 2026-11-19 that brought main in at fd1efd0418c4, main carried 160
+// (INFRA-2009's entry, above), and a REST raw read of each of the 234 open heads' file between
+// 2026-11-19T08:39:43Z and 08:43:32Z found 164 declared by this change alone (161 by four heads,
+// 162 by two, 163, 165 and 166 by one each, 167 by four and 168 by one), so it holds. Read the
+// base's own number and every open head again, by a REST raw read of each head's file, at the
+// next forward merge rather than from this line. At the forward merge of 2026-11-19 that brought
+// main in at 724196efdd83, main carried 168 (cybermonklabs/legion#4488's plan ratings, above), and
+// a REST raw read of each of the 242 open heads' file between 2026-11-19T18:56:47Z and 19:02:16Z
+// found 169 (#4065), 170 (#2230, #4173, #4180 and #4193), 172 (#3659), 173 (#4493), 174 (#3993
+// and #4273), 175 (#3712, #4115, #4392, #4432, #4485 and #4495) and 176 (#3831 and #4030)
+// declared, and nothing above 176, so this change moved 164 → 177, the lowest number above main's
+// and above every number another open head declares. At the forward merge of 2026-11-20 that
+// brought main in at c7e1cbd53237, main carried 178 (cybermonklabs/legion#4115's project pause,
+// INFRA-3759, the entry above), and a read of each open head's file at 2026-11-20T01:17Z found 178
+// (#3831, #4552 and #4554), 179 (#4392 and #4540), 180 (#4049 and #4175) and 181 (#4553)
+// declared, so this change moved 177 → 182, the lowest number above main's that no other open head
+// then declared. At 2026-11-20T07:08Z, main still carrying 178, a read of each open head's file
+// between 2026-11-20T07:04Z and 07:08Z found every number from 179 to 188 declared, so this
+// change moved 182 → 189, the lowest number above main's 178 that no open head declared
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-20-md). At the forward merge of
+// 2026-11-20 that brought main in at 1c7c82536786, main carried 188 (cybermonklabs/legion#4543,
+// the entry above), and a REST raw read of each of the 263 open heads' file between
+// 2026-11-20T10:13Z and 10:25Z found 189 (#3831, and #4596, which stacks on this change) and 190
+// (#4493 and #4578) declared, and nothing above 190, so this change moved 189 → 191, the lowest
+// number above main's that no other open head declares
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-20b-md). At the forward merge of
+// 2026-11-20 that brought main in at b1b4e281ec0a, main still carried 188, and a REST raw read of
+// each of the 267 open heads' file between 2026-11-20T12:19Z and 12:24Z found 190 (#4578), 191
+// (#4049, #4493, #4495 and #4573, and #4596, which stacks on this change), 192, 193 and 194
+// declared, and no head declaring 189, so this change moved 191 → 189, the lowest number above
+// main's that no other open head declares
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-20c-md). At the forward merge of
+// 2026-11-20 that brought main in at a4cd4949fce7, main carried 189, which its #4581
+// (dispatch://INFRA-4108) took at the same time as this change, and a REST raw read of each of the
+// 283 open heads' file between 2026-11-20T16:16Z and 16:20Z found 189 (#4611 and #4634), 190
+// (#4578), 191, 192, 193, 194 and 195 (#4493 and #4590) declared by other heads, so this change
+// moved 189 → 196, the lowest number above main's that no other open head declares
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-20d-md). At the forward merges of
+// 2026-11-20 and 2026-11-21 that brought main in at 8a9540682d8a and then at 0d3786da5367, main
+// carried 193, which its #3659 took, and then 199, which its #4495 took, and a REST raw read of
+// each of the 321 open heads' file between 2026-11-21T00:28Z and 00:30Z found 200 (#4049 and
+// #4065), 201 (#4553 and #4611) and 202 (#4432, #4493, #4580 and #4590) declared by other heads,
+// so this change moved 196 → 203, the lowest number above main's that no other open head declares
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-21a-md). At the forward merge of
+// 2026-11-21 that brought main in at 1cdf5b9ceba6, main carried 202, which its #4493 took, and a
+// REST raw read of each of the 341 open heads' file between 2026-11-21T03:27Z and 03:30Z found
+// 203 (six heads), 204 (#3831 and #4030), 205 (#4573) and 206 (#4540) declared by other heads, so
+// this change moved 203 → 207, the lowest number above main's that no other open head declares
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-21b-md). At the forward merge of
+// 2026-11-21 that brought main in at 0f26570963c5, main carried 202, and a REST raw read of each
+// of the 396 open heads' file between 2026-11-21T11:29Z and 11:32Z found 203 (#4175), 204 (#4173
+// and #4193), 205 (#4539 and #4573), 206 (#3712), 207 (twelve heads beside this change), 208
+// (#2230), 209 (#4049, #4540, #4553 and #4580), 210 (#4661) and 211 (#4611) declared by other
+// heads, so this change moved 207 → 212, the lowest number above main's that no other open head
+// declares (dispatch://INFRA-4728/artifact/contract-census-2026-11-21c-md). Read the base's own
+// number and every open head again, by a REST raw read of each head's file, at the next forward
+// merge rather than from this line.)
+const DaemonAPIVersion = 212

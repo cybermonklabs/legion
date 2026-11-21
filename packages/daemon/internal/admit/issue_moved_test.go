@@ -644,7 +644,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 			switch payload := row.payload.(type) {
 			case record.SuperviseRequest:
 				resend = resend || (row.issue == issueKey && payload.Op == "start" && payload.Role == claim.RoleImplementer &&
-					payload.Phase == phase.Implementing && payload.Task == workflow.ResumePhaseTask(stands))
+					payload.Phase == phase.Implementing && payload.Task == workflow.ResumePhaseTask(stands, false))
 			case record.Notice:
 				told = told || (row.issue == issueKey && payload.Kind == "worker-silent")
 			}
@@ -927,7 +927,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 			if payload, ok := row.payload.(record.SuperviseRequest); ok {
 				resumed = resumed || (row.issue == issueKey && payload.Op == "start" && payload.RuleResume &&
 					payload.ResumeTask && payload.Entry == 0 && payload.Role == claim.RoleImplementer &&
-					payload.Phase == phase.Implementing && payload.Task == workflow.ResumePhaseTask(stands))
+					payload.Phase == phase.Implementing && payload.Task == workflow.ResumePhaseTask(stands, false))
 			}
 		}
 		if !resumed {

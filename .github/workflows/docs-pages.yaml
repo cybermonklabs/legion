@@ -131,6 +131,7 @@ on:
       - 'packages/daemon/internal/workspace/*'
       - 'packages/envoy/cipheraddr/*'
       - 'packages/envoy/cipherclient/*'
+      - 'packages/envoy/dispatchblocks/*'
       - 'packages/envoy/dispatchbody/*'
       - 'packages/envoy/internal/cipherclient/*'
       - 'packages/envoy/internal/contracts/*'

@@ -1045,7 +1045,7 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		// planner is the one such role here: the claim row it kept through the close is the
 		// durable record that it ran, and the tester, the reviewer, the merger and the member's
 		// own sub-architect hold none, so the re-admission starts no session for them at all.
-		resume := workflow.ResumePhaseTask(*carried)
+		resume := workflow.ResumePhaseTask(*carried, false)
 		taskless := map[claim.Role]bool{}
 		var owed *record.SuperviseRequest
 		for _, row := range startRequestsOf(t, pool, member.Key) {

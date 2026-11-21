@@ -16,7 +16,7 @@ import (
 // whichever hold it noticed first.
 type HeldReason string
 
-// The eleven words of C1. The order they are read in is the order of the ladder's own body and
+// The twelve words of C1. The order they are read in is the order of the ladder's own body and
 // is written there alone; this block is the vocabulary, one constant per word.
 const (
 	// HeldTreeClosed is an issue of a tree whose root has finished or lingers after its close:
@@ -35,6 +35,10 @@ const (
 	// (Issue.AwaitingPerson, answered or not): the daemon starts no issue of that tree before
 	// that root resumes.
 	HeldRootAwaitingPerson HeldReason = "root_awaiting_person"
+	// HeldAwaitingChildren is a parent that holds a phase start because a Dispatch child of it is
+	// still open (Issue.Phase awaiting_children): the daemon runs no phase of the parent's own
+	// work and holds the start it had while a child of it is open.
+	HeldAwaitingChildren HeldReason = "awaiting_children"
 	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step the
 	// deployment gates (TreeGate.Open).
 	HeldDesignGate HeldReason = "design_gate"
@@ -59,13 +63,13 @@ const (
 	// serves this word's sentence only to a member past its review of a tree that runs nothing.
 	// This is the one statement of that; every other reader points here.
 	HeldAtWork HeldReason = "at_work"
-	// HeldUnclassified is an issue none of the ten words above is true of (C2). The record holds
+	// HeldUnclassified is an issue none of the eleven words above is true of (C2). The record holds
 	// it in the workflow and no rule here says what it waits for, which is a gap in the words
 	// and not in the list: the issue has a place, and a reader can see that it needs one.
 	HeldUnclassified HeldReason = "unclassified"
 )
 
-// HeldReasons is the eleven words in the order HeldReasonOf reads them, named once for a reader
+// HeldReasons is the twelve words in the order HeldReasonOf reads them, named once for a reader
 // that must print or walk them in that order rather than keep an order of its own. Two read it:
 // the operator's `admission.held` line (`legion state`), which counts each word and prints the
 // counts in this order, so two readings of one state print one line; and HeldBefore, which the
@@ -80,6 +84,7 @@ var HeldReasons = []HeldReason{
 	HeldLabelOff,
 	HeldAncestry,
 	HeldRootAwaitingPerson,
+	HeldAwaitingChildren,
 	HeldDesignGate,
 	HeldDispatchBlocker,
 	HeldChildrenFirst,
@@ -89,7 +94,7 @@ var HeldReasons = []HeldReason{
 }
 
 // HeldBefore reports whether the ladder reads word before other (HeldReasons, HeldReasonOf). It
-// is false where either is not one of the eleven words, so the zero row's empty word stands
+// is false where either is not one of the twelve words, so the zero row's empty word stands
 // before nothing. The test of `why`'s sentence table (the projection's heldSentences) requires
 // the table to serve under `blocked` exactly the words HeldBefore reads before dispatch_blocker;
 // the table states the rule that serves them.
@@ -165,8 +170,9 @@ func liveAncestry(issue Issue, live map[string]struct{}) []string {
 	return under
 }
 
-// openChildren is the keys of the open Dispatch children of one children-first wait, in the order
-// that judgement lists them (ChildWait.Open, Dispatch key order).
+// openChildren is the keys of the open Dispatch children of one wait on them — a children-first
+// wait (ChildWaits) or a started parent's (LineFacts.StartedParentWaits) — in the order that
+// judgement lists them (ChildWait.Open, Dispatch key order).
 func openChildren(wait ChildWait) []string {
 	children := make([]string, len(wait.Open))
 	for i, child := range wait.Open {
@@ -175,7 +181,7 @@ func openChildren(wait ChildWait) []string {
 	return children
 }
 
-// HeldReasonOf is the ladder of C1: the eleven words read in one order, the first that is true of
+// HeldReasonOf is the ladder of C1: the twelve words read in one order, the first that is true of
 // the issue being its word, with the issues that clause names beside it and nothing where the
 // clause names none. The order is the whole of the rule — a member of a closed tree is
 // tree_closed and not design_gate, though its gate is shut too — and this body is the one
@@ -225,6 +231,14 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	switch {
 	case recorded && root.AwaitingPerson():
 		return HeldRootAwaitingPerson, []string{issue.Tree}
+	// A parent that held a phase start because a child of it is still open stands here on its own
+	// phase (awaiting_children), not on its tree's: it reads before design_gate, since its wait is
+	// its open children and not its gate. The children that hold it are the started parents'
+	// judgement (LineFacts.StartedParentWaits), the one the admission pass moves it and brings it
+	// back by; a parent whose last open child has gone since stands with no issue beside it until
+	// the pass takes it back to the start it held.
+	case issue.Phase == phase.AwaitingChildren:
+		return HeldAwaitingChildren, openChildren(facts.Facts.StartedParentWaits[issue.Key])
 	case recorded && !facts.Facts.Gates[issue.Tree].Open():
 		return HeldDesignGate, []string{issue.Tree}
 	}

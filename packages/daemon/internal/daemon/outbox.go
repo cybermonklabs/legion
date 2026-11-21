@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/dispatchblocks"
 	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -168,6 +169,10 @@ type outbox struct {
 	// limitsMu guards it (deferral, noteLimit).
 	limitsMu sync.Mutex
 	limits   map[githubrest.Budget]rateLimit
+	// hold answers whether a claimed row is put back unrun for now, due again outboxHoldRecheck
+	// later (runRow): a test's seam alone (overrides.holdOutbox), nil in production and in every
+	// outbox a test builds by hand, which holds nothing.
+	hold func(record.OutboxRow) bool
 	// refreshPause reads the project's open pause into the daemon's flag
 	// (internal/pause's Service.Refresh) at each sweep (decision 18 of dispatch://INFRA-3759), so a
 	// pause made or ended through another daemon of a rolling restart holds this daemon's launches
@@ -289,9 +294,9 @@ func (r *outbox) publish(ctx context.Context, topic, message string, payload any
 	return r.notices.Publish(ctx, topic, message, payload, dedupeKey)
 }
 
-// publishKept is publish with keep (notify.Publisher.PublishKept), hookPrompt's publish through
-// publishKeptToRole, held as publish is: a topic heldBack refuses is not published, kept or not,
-// and answers the gate's notify.ErrNoHolder.
+// publishKept is publish with keep (notify.Publisher.PublishKept), the publish phaseEnded and
+// hookPrompt share through publishKeptToRole, held as publish is: a topic heldBack refuses is not
+// published, kept or not, and answers the gate's notify.ErrNoHolder.
 func (r *outbox) publishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (bool, error) {
 	if err := r.heldBack(ctx, topic, dedupeKey); err != nil {
 		return false, err
@@ -921,6 +926,10 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.settleKept(ctx, row, value, false)
 	case record.GateSeed:
 		return r.seedGate(ctx, row, value)
+	case record.PendingBasisSeed:
+		return r.seedPendingBasis(ctx, row, value)
+	case record.ReparentSeed:
+		return r.seedReparent(ctx, row, value)
 	case record.LingerClose:
 		return r.linger(ctx, row, value)
 	case record.IssueSuspend:
@@ -956,6 +965,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.checkLook(ctx, row, value)
 	case record.CheckBound:
 		return r.checkBound(ctx, row)
+	case record.PhaseEnded:
+		return r.phaseEnded(ctx, row, value)
 	case record.HookPrompt:
 		return r.hookPrompt(ctx, row, value)
 	case record.UpdateAsk:
@@ -1704,8 +1715,8 @@ func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload reco
 // run, and the row runs again. So does an upload Dispatch filed under a slug other than the
 // name, since the link names the document by that name.
 func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, artifact record.MessageArtifact) (*dispatch.Error, error) {
-	slugs, err := r.dispatch.ArtifactSlugs(ctx, row.Issue)
-	if err == nil && slices.Contains(slugs, artifact.Name) {
+	held, err := r.dispatch.Artifacts(ctx, row.Issue)
+	if err == nil && slices.ContainsFunc(held, func(document dispatch.Artifact) bool { return document.Slug == artifact.Name }) {
 		return nil, nil
 	}
 	slug := ""
@@ -2066,6 +2077,105 @@ func (r *outbox) heldMessageOwed(ctx context.Context, row record.OutboxRow, view
 	return pause, nil
 }
 
+// phaseEnded publishes the message of a phase-ended row (record.PhaseEnded) to the Envoy topic of
+// the worker whose phase the admission pass ended when it moved a parent into awaiting_children
+// (workflow's StopForChildren), the claim of that role on the row's issue, and to nothing else. It
+// is no architect notice: it carries one sentence of the daemon's own rather than a Notice, waits
+// behind no other row of its issue (its own lane, record.LaneRoleMessage), and its recipient is the
+// role the workflow named rather than whichever architect owns the issue. The message stops nothing
+// it reaches: pi-envoy hands it to an Oh My Pi session at its next model turn and ends a running
+// wait, the Claude Code bridge puts it in that session's inbox, and the role's turn, jobs and
+// process run on.
+//
+// The row publishes with keep (publishKeptToRole, notify.Publisher.PublishKept), so a topic with no
+// live holder is answered kept: the listener holds the message on the role's kept lane for one
+// hour and hands it to the next session that holds the role live in that hour, and the row ends
+// with one log line, since the listener is then the message's keeper and the row holds nothing.
+// That is what reaches a released role: the row's first attempt wakes the role's pod
+// (wakeForDelivery) and waits on its backoff, an attempt that finds the wake pacing holding that
+// resume waits for its turn, reading the claim again at most parkedWakeBound apart (parkedWait),
+// and the first attempt after the resume has launched meets a woken session that has not claimed
+// the role yet, so the listener keeps the message and hands it over when that session claims the
+// role or registers again. A listener before #4079 keeps nothing for a claim whose holder is not
+// live; publishKeptToRole says what each answer does to the row.
+//
+// The row is not held for a holder as an architect's notice is held, since the role's next task
+// from the daemon names its phase anyway, so the kept copy is the message's one keeper:
+// publishKeptToRole says why that copy can reach a later round's session and what bounds it, and
+// the phases the message names tell its reader which round it was for.
+//
+// The three answers of the confirmed publish route are different failures and keep the ordinary
+// retry: a holder that did not confirm in time (notify.ErrNotDelivered) can take it on the next
+// attempt, a holder that does not advertise the delivery mode (notify.ErrRefusedByHolder) can be
+// replaced by another session on the role, and a forward the listener's own NATS grant denies
+// (notify.ErrPublishDenied) goes through once an operator changes that grant.
+func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload record.PhaseEnded) error {
+	if r.notices == nil {
+		return errors.New("phase-ended executor has no Envoy publisher")
+	}
+	token, err := roleToken(r.project, row, payload.Role)
+	if err != nil {
+		return err
+	}
+	// A role whose pod was released is not "no live session holds the role": its session is
+	// intact and its pod is one wake away, so the row wakes it and waits on its backoff, and the
+	// row's first attempt after that resume has launched publishes (wakeForDelivery). A launch the
+	// wake pacing holds is waited for until it runs, the claim read again at its turn or
+	// parkedWakeBound on, whichever comes first (parkedWait). The kept publish raises the
+	// listener's own wake report too, but this wake is the daemon's and does not rest on what the
+	// listener does with the publish, so it brings the pod back against a listener before #4079 as
+	// well. The listener's report then meets the role's open resume, and the pod starts once.
+	if waits, turn, err := r.wakeForDelivery(ctx, token, "the end of "+row.Issue+"'s "+string(payload.From)+" phase", row.HeldByPause); err != nil {
+		return err
+	} else if !turn.IsZero() {
+		return r.parkedWait(turn, fmt.Sprintf("the end of %s's %s phase waits for its %s's launch, which the wake pacing holds until %s",
+			row.Issue, payload.From, payload.Role, turn.UTC().Format(time.RFC3339)))
+	} else if waits {
+		return wait.Errorf("the end of %s's %s phase waits for its %s's released pod to come back", row.Issue, payload.From, payload.Role)
+	}
+	if err := r.publishKeptToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
+		"outbox phase-ended message finished: the listener keeps it for the role's next holder",
+		"outbox phase-ended message finished undelivered: no live session holds the role",
+		"row", row.ID, "issue", row.Issue, "role", payload.Role, "from", payload.From, "to", payload.To); err != nil {
+		return fmt.Errorf("publish the end of %s's %s phase to its %s: %w", row.Issue, payload.From, payload.Role, err)
+	}
+	return nil
+}
+
+// retireStoppedTask runs a `retire_task` row (record.SuperviseRequest): the admission pass's move
+// of a parent into awaiting_children stopped the phase its worker was in (workflow's
+// StopForChildren), and the task that worker's claim holds for that phase goes
+// (supervise.Machine.RetireStoppedTask), so no relaunch, fresh session or wake during the wait,
+// and no send after the return to that same phase, carries the stopped phase's work. It stops
+// nothing and starts no phase. The one prompt it can lead to is the claim's untold record of what
+// its last let-go ended, sent alone in place of the retired task that would have carried it
+// (supervise's relaunchAfterDrop).
+//
+// A row of an earlier run finishes without acting, as every supervise row of one does, at the
+// generation check supervise makes before it hands the row here. The phase is not fenced: the
+// row names the phase the issue has left, and the machine retires only a task of that phase, that
+// run and an entry no later than the row's, so the task of the return's own start is never one it
+// takes. A claim this daemon does not supervise holds no task to retire. A task on its way to the
+// agent keeps the row (supervise.ErrTaskSending, a wait), which runs again once the send has
+// settled.
+func (r *outbox) retireStoppedTask(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) error {
+	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
+	if err != nil {
+		return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
+	}
+	machine, found := r.supervisor.Machine(token)
+	if !found {
+		return nil
+	}
+	retired, err := machine.RetireStoppedTask(ctx, payload.Phase, payload.Generation, payload.Entry)
+	if err != nil {
+		return fmt.Errorf("retire the %s task of %s's %s: %w", payload.Phase, row.Issue, payload.Role, err)
+	}
+	r.log.Info("outbox retired the task of a stopped phase", "row", row.ID, "issue", issue.Key, "role", payload.Role,
+		"phase", payload.Phase, "entry", payload.Entry, "held", retired)
+	return nil
+}
+
 // hookPrompt publishes the words of a hook-prompt row (record.HookPrompt) to the Envoy topic of
 // the role the deployment's hook named, the claim of that role on the row's issue, and to nothing
 // else. The row is the daemon's own facts of the firing — the hook, the move back and the counts —
@@ -2123,6 +2233,8 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
 	}
 	if err := r.publishKeptToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
+		"outbox hook prompt finished: the listener keeps it for the role's next holder",
+		"outbox hook prompt finished undelivered: no live session holds the role",
 		"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count); err != nil {
 		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)
 	}
@@ -2136,7 +2248,7 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // the round replaces the pod. It rides the role-message lane (record.LaneRoleMessage), so it
 // waits behind no architect notice of its issue.
 //
-// It wakes nothing, where hookPrompt, mergeQueueRemoval and mergeForwardMessage call
+// It wakes nothing, where phaseEnded, hookPrompt, mergeQueueRemoval and mergeForwardMessage call
 // wakeForDelivery first. The round does not ask a claim the daemon suspended (its own rule, a
 // root's exit, an idle release, or an unknown source), and does not wait for it
 // (dispatch://INFRA-4109 R1, the sweep's roundAsks). A claim a project's pause stopped is the one
@@ -2241,10 +2353,10 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 }
 
 // publishToRole publishes message to topic, the Envoy topic of one role's claim
-// (notify.RoleTopicPrefix and the claim's token), under the row's own key, so a retried row is
-// one delivery. It is updateAsk's publish, with keep: false; hookPrompt publishes with keep
-// through publishKeptToRole, which also says how each executor that publishes to a role's topic
-// answers the publisher.
+// (notify.RoleTopicPrefix and the claim's token), under the row's own key, so a retried row is one
+// delivery. It is updateAsk's publish, with keep: false; phaseEnded and hookPrompt publish with
+// keep through publishKeptToRole, which also says how each executor that publishes to a role's
+// topic answers the publisher.
 //
 // A topic with no live holder (notify.ErrNoHolder) ends the row: noHolder is logged at Info with
 // fields, and the answer is false with no error. Every other failure is returned as the
@@ -2264,17 +2376,16 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // to keep it for the role's next live holder, through the gate every publish of the outbox goes
 // through (publishKept). A retry of the row while its copy is still on the role's kept lane
 // stores nothing new; notify.HTTPPublisher.PublishKept gives the listener's answers and what a
-// repeat after the copy's hand-over does. It is hookPrompt's publish; hookPrompt decides what
-// comes before it, and wraps the error it returns. What each answer does to the row:
+// repeat after the copy's hand-over does. It is the publish phaseEnded and hookPrompt share; each
+// decides what comes before it, and each wraps the error it returns. What each answer does to the
+// row:
 //
 //   - a live holder took the message: the row ends, with nothing logged;
-//   - the listener kept the message on the role's kept lane for one hour: the row ends, logging
-//     "outbox hook prompt finished: the listener keeps it for the role's next holder" at Info with
-//     fields, the listener being the message's keeper from there;
+//   - the listener kept the message on the role's kept lane for one hour: the row ends with kept
+//     logged at Info with fields, the listener being the message's keeper from there;
 //   - no live session holds the role and the listener kept nothing (notify.ErrNoHolder), or the
 //     role's claim records a session it does not hold and nothing was published (the gate's
-//     notify.ErrNoHolder): the row ends undelivered, logging at Info with fields
-//     "outbox hook prompt finished undelivered: no live session holds the role";
+//     notify.ErrNoHolder): the row ends undelivered with noHolder logged at Info with fields;
 //   - a holder the listener calls unresponsive (notify.ErrHolderUnresponsive), and every other
 //     failure: the error is returned as the publisher gave it, and the row keeps its retry.
 //
@@ -2306,16 +2417,16 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // deliverNotice, mergeQueueRemoval and mergeForwardMessage hold their own row, and a kept copy
 // beside it would be a second keeper of one message; roleMessage's message is stale by the time a
 // role nobody holds is claimed; and updateAsk's round ends at its bound whether or not the role
-// answers. So whoever changes the rule for a topic with no holder must read all six executors, not
-// this function alone.
-func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message string, fields ...any) error {
+// answers. So whoever changes the rule for a topic with no holder must read all seven executors,
+// not this function alone.
+func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message, kept, noHolder string, fields ...any) error {
 	keeps, err := r.publishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
 	switch {
 	case errors.Is(err, notify.ErrNoHolder):
-		r.log.Info("outbox hook prompt finished undelivered: no live session holds the role", fields...)
+		r.log.Info(noHolder, fields...)
 		return nil
 	case err == nil && keeps:
-		r.log.Info("outbox hook prompt finished: the listener keeps it for the role's next holder", fields...)
+		r.log.Info(kept, fields...)
 	}
 	return err
 }
@@ -2379,6 +2490,15 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			r.log.Info("outbox supervise row serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
 				"generation", payload.Generation, "current", issue.Generation, "op", payload.Op, "role", payload.Role)
 			return nil
+		}
+		// A task's retirement names the phase that was stopped, which the issue has left by
+		// design — it waits in awaiting_children, or has come back to that phase on an entry of
+		// its own — so it is decided here, after the generation check and before the phase and
+		// entry fences below, which would finish it unrun. Its own bounds are the run and the
+		// entry it names (retireStoppedTask). It carries no check look (record's validation
+		// refuses one on any operation but a start), so it always reaches this branch.
+		if payload.Op == "retire_task" {
+			return r.retireStoppedTask(ctx, row, payload, issue)
 		}
 		if payload.Phase != "" && payload.Phase != issue.Phase {
 			r.log.Info("outbox start serves a phase the issue has left; finished without acting", "row", row.ID, "issue", issue.Key,
@@ -3659,10 +3779,27 @@ func (r *outbox) provisionIn(ctx context.Context, key string, repo ghrepo.Reposi
 	return nil
 }
 
+// seedGate reads the document a gate was registered on and applies what Dispatch shows there
+// (seedGateDocument), then, for a step an ancestor's approval opened, the ancestor's reviews of the
+// version that approval is of (seedGateBasis). The root's own document is read first: a newer
+// version of it closes the step and ends its basis, and a step that no longer stands on a basis
+// reads no ancestor. Neither read moves a step that stands open on an ancestor's approval except
+// as the root's own document moves it (dispatch://INFRA-3320, R3): the read of the registered
+// version returns at it, and a person's changes request on the ancestor's version, made after the
+// approval, is passed on with the step left open.
 func (r *outbox) seedGate(ctx context.Context, row record.OutboxRow, payload record.GateSeed) error {
 	if r.dispatch == nil {
 		return errors.New("gate seed executor has no Dispatch client")
 	}
+	if err := r.seedGateDocument(ctx, row, payload); err != nil {
+		return err
+	}
+	return r.seedGateBasis(ctx, row, payload)
+}
+
+// seedGateDocument reads the approval of the document the gate seed names and applies what it
+// finds as the event that would have carried it.
+func (r *outbox) seedGateDocument(ctx context.Context, row record.OutboxRow, payload record.GateSeed) error {
 	approval, err := r.dispatch.Approval(ctx, payload.ArtifactID)
 	if err != nil {
 		return fmt.Errorf("read Dispatch approval %s: %w", payload.ArtifactID, err)
@@ -3712,6 +3849,201 @@ func (r *outbox) seedGate(ctx context.Context, row record.OutboxRow, payload rec
 		return fmt.Errorf("apply approved gate seed for %s: %w", row.Issue, err)
 	}
 	return nil
+}
+
+// seedGateBasis reads, for the step of the row's issue the seed names when it stands open on an
+// ancestor's approval (record.DesignGate.OnBasis) on the document the seed names, the ancestor's
+// reviews of the version the basis names, and applies each person's changes request on it that
+// Dispatch recorded after the approval the step opened on (workflow.BasisChangesRequest, the test
+// the live event passes too), oldest first, with the reason the person gave, as a fact of its own
+// (intake.BasisChangesRead): a changes request whose event came between register_gate's read and
+// the registration's commit, or never came, still reaches the root's architect and the
+// ancestor's, naming that reason. The workflow tells each review once, whatever else carried it,
+// and leaves the step open. A step on no basis, or on a basis no such review stands on, reads
+// nothing more. The document's approval is read as well, for the sequence of the newest review,
+// which the review list does not carry.
+func (r *outbox) seedGateBasis(ctx context.Context, row record.OutboxRow, payload record.GateSeed) error {
+	step := payload.Step.OrSpec()
+	var gate *record.DesignGate
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		gates, err := r.records.GatesOf(ctx, tx, row.Issue)
+		if held, ok := gates[step]; ok {
+			gate = &held
+		}
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the design gate of %s: %w", row.Issue, err)
+	}
+	if gate == nil || !gate.OnBasis() || gate.ArtifactID != payload.ArtifactID {
+		return nil
+	}
+	basis := *gate.Basis
+	reviews, err := r.dispatch.Reviews(ctx, basis.ArtifactID)
+	if err != nil {
+		return fmt.Errorf("read Dispatch reviews of %s, the basis of %s: %w", basis.ArtifactID, row.Issue, err)
+	}
+	var asked []dispatch.Review
+	for _, review := range slices.Backward(reviews) {
+		if workflow.BasisChangesRequest(*gate, review.State == "changes_requested", review.Version, review.Actor, record.EventMark{At: review.At}) {
+			asked = append(asked, review)
+		}
+	}
+	if len(asked) == 0 {
+		return nil
+	}
+	approval, err := r.dispatch.Approval(ctx, basis.ArtifactID)
+	if err != nil {
+		return fmt.Errorf("read Dispatch approval %s, the basis of %s: %w", basis.ArtifactID, row.Issue, err)
+	}
+	for _, review := range asked {
+		read := basisReview(review, approval)
+		id := fmt.Sprintf("basis-changes:%s:%d:%s:%s:%d:%d", row.Issue, payload.Generation, step, basis.ArtifactID, basis.Version, read.Mark.ID())
+		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, intake.BasisChangesRead{Issue: row.Issue, Step: step, Generation: payload.Generation,
+			BasisArtifactID: basis.ArtifactID, BasisVersion: basis.Version, Changes: read}, r.handlers...); err != nil {
+			return fmt.Errorf("apply the gate seed's read of the basis of %s: %w", row.Issue, err)
+		}
+	}
+	return nil
+}
+
+// basisReview is review as a seed's fact carries it (intake.BasisReview): its time, who gave it
+// and the reason it gave, and, where it is the review the document's approval shows, that
+// approval's sequence, which the review list does not carry.
+func basisReview(review dispatch.Review, approval dispatch.Approval) intake.BasisReview {
+	read := intake.BasisReview{Mark: record.EventMark{At: review.At}, Actor: review.Actor, Reason: review.Reason}
+	if approval.Version != nil && *approval.Version == review.Version && approval.State == review.State && approval.At.Equal(review.At) {
+		read.Mark.Seq = approval.Seq
+	}
+	return read
+}
+
+// seedPendingBasis reads, for the row's issue, a root whose step waits, closed, on an ancestor's
+// approval request (record.PendingBasisSeed), the ancestor's document's approval and its reviews,
+// and applies what it finds at the version the step waits on as a fact of its own
+// (intake.PendingBasisRead), never the gate seed's, so the read reaches the root's step alone and
+// not the ancestor's own gate. The reviews of that version are taken in the order they were given:
+// a first one that is a person's approval opens the step, and a changes request after it is passed
+// on as well, as the two events in order give live; with no such approval, a changes request on
+// that version, a newer version of the document, or the request no longer open ends the wait. A
+// request still open on that version with no review changes nothing, and applies no fact. Where
+// it finds the person's approval, it reads the ancestor's issue as well, the issue Dispatch names
+// the document on, as register_gate reads it: the approval opens the step only on an ancestor
+// that is neither done nor retro and carries the legion label (R1's first condition). The
+// workflow applies the fact only while the step still waits on that request in that generation,
+// so a read of a wait that has opened or ended since changes nothing. The fact's id is the step,
+// the request and what the read found, so the same read again is a duplicate, and a later read
+// that finds more is a fact of its own.
+func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, payload record.PendingBasisSeed) error {
+	if r.dispatch == nil {
+		return errors.New("pending-basis seed executor has no Dispatch client")
+	}
+	approval, err := r.dispatch.Approval(ctx, payload.BasisArtifactID)
+	if err != nil {
+		return fmt.Errorf("read Dispatch approval %s: %w", payload.BasisArtifactID, err)
+	}
+	reviews, err := r.dispatch.Reviews(ctx, payload.BasisArtifactID)
+	if err != nil {
+		return fmt.Errorf("read Dispatch reviews of %s: %w", payload.BasisArtifactID, err)
+	}
+	fact := intake.PendingBasisRead{Issue: row.Issue, Step: payload.Step, Generation: payload.Generation, ArtifactID: payload.ArtifactID,
+		BasisArtifactID: payload.BasisArtifactID, BasisVersion: payload.BasisVersion, Ask: payload.Ask, LatestVersion: approval.LatestVersion,
+		RequestOpen: approval.State == "awaiting" && approval.AskID == payload.Ask}
+	// Dispatch lists the reviews newest first.
+	for _, review := range slices.Backward(reviews) {
+		if review.Version != payload.BasisVersion {
+			continue
+		}
+		read := basisReview(review, approval)
+		switch {
+		case review.State == "approved" && review.Actor.Person() && fact.Approval == nil && fact.Changes == nil:
+			fact.Approval = &read
+		case review.State == "changes_requested" && (fact.Approval != nil || fact.Changes == nil):
+			fact.Changes = &read
+		}
+	}
+	if fact.Approval != nil {
+		ancestor, err := r.dispatch.GetIssue(ctx, approval.IssueKey)
+		if err != nil {
+			return fmt.Errorf("read Dispatch issue %s, the ancestor whose document %s is: %w", approval.IssueKey, payload.BasisArtifactID, err)
+		}
+		fact.AncestorStatus, fact.AncestorHandedOver = ancestor.Status, ancestor.HandedOver
+	}
+	var found string
+	switch {
+	case fact.Approval != nil && fact.Changes != nil:
+		found = fmt.Sprintf("approved:%d:changes:%d", fact.Approval.Mark.ID(), fact.Changes.Mark.ID())
+	case fact.Approval != nil:
+		found = fmt.Sprintf("approved:%d", fact.Approval.Mark.ID())
+	case fact.Changes != nil:
+		found = fmt.Sprintf("changes:%d", fact.Changes.Mark.ID())
+	case fact.LatestVersion > fact.BasisVersion:
+		found = fmt.Sprintf("newer:%d", fact.LatestVersion)
+	case !fact.RequestOpen:
+		found = "closed"
+	default:
+		r.log.Info("pending-basis seed: the ancestor's request still waits on the person", "issue", row.Issue, "basis", payload.BasisArtifactID,
+			"basis_version", payload.BasisVersion, "ask", payload.Ask)
+		return nil
+	}
+	id := fmt.Sprintf("pending-basis:%s:%d:%s:%s:%s:%d:%s", row.Issue, payload.Generation, payload.Step, payload.Ask, payload.BasisArtifactID, payload.BasisVersion, found)
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, fact, r.handlers...); err != nil {
+		return fmt.Errorf("apply the pending-basis seed of %s: %w", row.Issue, err)
+	}
+	return nil
+}
+
+// seedReparent reads, for the row's issue, a root that ran as a tree of its own and that a person
+// made a child of a live tree (record.ReparentSeed), whether R1's path is open on its new parent
+// (dispatch://INFRA-3320, R1 and R2; reparentBasisVersion), and applies what it read as a fact
+// (intake.ReparentRead), whose workflow handler posts the message on the root and tells the
+// architect of the parent's tree. The read decides only the words: a parent R1's path is closed
+// on gets today's words. The fact's id is the row's, so a run of the same row again is a
+// duplicate, and the seed of a later move is a fact of its own.
+func (r *outbox) seedReparent(ctx context.Context, row record.OutboxRow, payload record.ReparentSeed) error {
+	if r.dispatch == nil {
+		return errors.New("re-parent seed executor has no Dispatch client")
+	}
+	version, err := r.reparentBasisVersion(ctx, payload.Parent)
+	if err != nil {
+		return err
+	}
+	id := fmt.Sprintf("reparent-seed:%s:%d", row.Issue, row.ID)
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, intake.ReparentRead{Issue: row.Issue, Parent: payload.Parent, Tree: payload.Tree,
+		Ran: payload.Ran, BasisVersion: version}, r.handlers...); err != nil {
+		return fmt.Errorf("apply the re-parent seed of %s: %w", row.Issue, err)
+	}
+	return nil
+}
+
+// reparentBasisVersion is the version of parent's primary document that R1's path can rest a
+// child root on, 0 where the path is closed: parent carries the legion label, Dispatch shows it
+// not accepted (record.AcceptedStatus), a person approved the latest version of its primary
+// document, and that version marks a requirement block that names an id, as register_gate reads
+// one (dispatchblocks.RequirementIDs).
+func (r *outbox) reparentBasisVersion(ctx context.Context, parent string) (int, error) {
+	issue, err := r.dispatch.GetIssue(ctx, parent)
+	if err != nil {
+		return 0, fmt.Errorf("read Dispatch issue %s, a new parent: %w", parent, err)
+	}
+	if !dispatch.CarriesLegionLabel(issue.Labels) || record.AcceptedStatus(issue.Status) || issue.PrimaryArtifactID == "" {
+		return 0, nil
+	}
+	approval, err := r.dispatch.Approval(ctx, issue.PrimaryArtifactID)
+	if err != nil {
+		return 0, fmt.Errorf("read Dispatch approval %s, the primary document of %s: %w", issue.PrimaryArtifactID, parent, err)
+	}
+	version := approval.ApprovedLatest()
+	if version == 0 || !approval.By.Person() {
+		return 0, nil
+	}
+	markdown, err := r.dispatch.DocumentVersion(ctx, issue.PrimaryArtifactID, version)
+	if err != nil {
+		return 0, fmt.Errorf("read version %d of %s, the primary document of %s: %w", version, issue.PrimaryArtifactID, parent, err)
+	}
+	if len(dispatchblocks.RequirementIDs(markdown)) == 0 {
+		return 0, nil
+	}
+	return version, nil
 }
 
 func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload record.LingerClose) error {

@@ -614,7 +614,7 @@ func TestPromotionStartsAChildUnlessItsWorkerIsStartedForTheRun(t *testing.T) {
 					payload := record.SuperviseRequest{Op: op, Tree: root.Key, Role: claim.RoleTester, Generation: generation}
 					switch op {
 					case "start":
-						payload.Phase, payload.Task = child.Phase, workflow.ResumePhaseTask(child)
+						payload.Phase, payload.Task = child.Phase, workflow.ResumePhaseTask(child, false)
 					case "tree_close":
 						// The close of the linger the re-admission ended: the root's generation 1.
 						payload.Linger = 1

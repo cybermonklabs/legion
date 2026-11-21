@@ -40,6 +40,8 @@ type heldFixture struct {
 // holds the issue, or, for a root whose label is off and for the root of an ancestry hold, an
 // open Dispatch child under it, which the children-first rule holds it for (the ancestry root's
 // gate opened as well, since that rule reads only the children of a root under an open gate).
+// A parent in awaiting_children stands in `admission.blocked` with its open children
+// (blockers.ChildRows), and outside it once its last open child has gone.
 //
 // The walk is read off a projected state, never from the renderer alone, so the row the pass
 // publishes and the sentence it serves are proved of one state. An entry no fixture walks fails
@@ -129,6 +131,24 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)},
 		gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
 	}
+	// A sub-parent that held a phase start because a child of it is still open, in a running tree
+	// under an open gate. It stands in awaiting_children, so it holds no slot and reads held; its
+	// held-by is its open children, as the started parents' judgement reads them
+	// (record.LineFacts.StartedParentWaits): here LEGION-102, which Dispatch shows open at todo
+	// under it. The state places such a parent in admission.blocked with those children
+	// (blockers.ChildRows), so it is walked under blocked. The unlisted fixture is the same parent
+	// once its last open child has gone, here done, which no row of blocked names: it stands there
+	// until the admission pass takes it back to the start it held, and its held row names nothing.
+	awaitingChildren := projectionStore{
+		issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted),
+			treeMember("LEGION-101", "LEGION-100", "LEGION-100", "in_progress", phase.AwaitingChildren)},
+		slots:      []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
+		lifecycles: []string{"LEGION-100"},
+		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
+		mirror:     []record.DispatchIssueRow{{Key: "LEGION-102", Project: "LEGION", Status: "todo", Parent: "LEGION-101"}},
+	}
+	childrenFinished := awaitingChildren
+	childrenFinished.mirror = []record.DispatchIssueRow{{Key: "LEGION-102", Project: "LEGION", Status: "done", Parent: "LEGION-101"}}
 
 	byRoot := []string{"LEGION-100"}
 	fixtures := map[heldEntry]heldFixture{
@@ -171,6 +191,12 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 		{record.HeldAcceptedAncestor, api.WhyUnlisted}: {acceptedAncestor,
 			api.HeldIssue{Issue: "LEGION-102", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-101"}},
 			"The daemon has accepted the reviewed head of LEGION-101, which stands above it, and nothing of its own work starts before that issue closes."},
+		{record.HeldAwaitingChildren, api.WhyBlocked}: {awaitingChildren,
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAwaitingChildren, HeldBy: []string{"LEGION-102"}},
+			"It waits on its open children: the daemon runs no phase of its own work, and holds the start it had, while a child of it is open."},
+		{record.HeldAwaitingChildren, api.WhyUnlisted}: {childrenFinished,
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAwaitingChildren},
+			"It waits on its open children: the daemon runs no phase of its own work, and holds the start it had, while a child of it is open."},
 		{record.HeldUnclassified, api.WhyUnlisted}: {unclassified,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldUnclassified},
 			"The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, so no slot has been offered to it. No rule of the held list says what it waits for."},

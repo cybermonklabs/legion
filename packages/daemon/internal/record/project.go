@@ -2,6 +2,7 @@ package record
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
 	"sort"
@@ -28,6 +29,14 @@ func RankLess(a, b Issue) bool {
 // (blockers.Unfinished). It lives here because the rules that read a record's own status for
 // the same question are here too (cycleAncestor).
 const DoneStatus = "done"
+
+// AcceptedStatus says whether Dispatch shows an issue accepted: retro, its reviewed head accepted,
+// or done (DoneStatus). It is the Dispatch half of R1's first condition for a basis
+// (dispatch://INFRA-3320): register_gate refuses an ancestor Dispatch shows so, and the daemon
+// ends a step's wait on such an ancestor's request, wherever it reads the status.
+func AcceptedStatus(status string) bool {
+	return status == DoneStatus || status == "retro"
+}
 
 // OutOfWorkflowStatuses are the four Dispatch statuses that take an issue out of the workflow,
 // and the one list of them: OutOfWorkflow is this list read as a predicate, so a status added
@@ -84,8 +93,9 @@ func Stopped(issue Issue) bool { return !InWorkflow(issue) || issue.Lingers() }
 //
 // It is the one reading of where an issue stands, and the rules that must never read a held
 // issue differently all take it: the phase half of the slot rule (PhaseKeepsSlot, through
-// KeepsSlot) and the acceptance rules (StandsIn, and Accepted over it). A hold the record names
-// no phase for answers phase.Held itself, which is all the daemon knows of it.
+// KeepsSlot) and the acceptance rules (StandsIn, and Accepted, which reads AcceptedPhase of it).
+// A hold the record names no phase for answers phase.Held itself, which is all the daemon knows
+// of it.
 func StandsAt(issue Issue) phase.Phase {
 	if issue.Phase == phase.Held && issue.Hold != nil {
 		return issue.Hold.From
@@ -94,31 +104,90 @@ func StandsAt(issue Issue) phase.Phase {
 }
 
 // StandsIn says whether issue stands in one of phases (StandsAt), counting a hold from one of
-// them as standing there. It is the one shape every question about where an issue stands is
-// written over — Accepted here, and the workflow's own awaitsMerge, its close of a merged issue
-// and its open review round — so no two of those questions read a held issue differently.
+// them as standing there. It is the one shape every question about where an issue stands in a
+// list of phases is written over — PastReview here, and the workflow's own awaitsMerge, its close
+// of a merged issue and its open review round — so no two of those questions read a held issue
+// differently; Accepted reads StandsAt as they do, through AcceptedPhase.
 func StandsIn(issue Issue, phases ...phase.Phase) bool {
 	return slices.Contains(phases, StandsAt(issue))
 }
 
+// AcceptedPhase says whether p is one of the phases past the daemon's acceptance of an issue's
+// reviewed head: its retro and its merge. The two phases are named here and nowhere else, so that
+// no rule of the acceptance order can read a list of its own: one that did is what let a child
+// held from retro through. Accepted reads it of where an issue stands, and the workflow reads it
+// of the phase a move left (workflow's acceptedEntry) and of the phase a move enters.
+func AcceptedPhase(p phase.Phase) bool {
+	return p == phase.Retro || p == phase.Merging
+}
+
 // Accepted says whether the daemon has already accepted issue's own reviewed head and the issue
 // has not closed: it stands in its retro or in its merge, or is held from one of them
-// (StandsIn). Work entering the workflow beneath an issue in one of those phases
+// (StandsAt, AcceptedPhase). Work entering the workflow beneath an issue in one of those phases
 // would let that issue merge first, which is the one thing a parent must not do
 // (dispatch://INFRA-980, "Children first"). The reviewed head of a root whose worker died in
 // retro or merging is accepted still, so the hold must not let work in beneath
 // it: the line held no issue under such a root, the two doors let one in, and the close of a
 // root held from retro handed over nobody.
 //
-// The two phases are named here and nowhere else, so that no rule of the acceptance order can
-// read a list of its own: one that did is what let a child held from retro through. Every one
-// of those rules asks this predicate instead, through the nearest accepted ancestor
+// Every rule of the acceptance order asks this predicate, through the nearest accepted ancestor
 // (AcceptedAncestor): the waiting line's hold (HeldUnderAccepted), the doors' refusal (api's
 // CHILD_UNDER_ACCEPTED_PARENT, AcceptedAncestorIn) and the wait a merged issue's close keeps
 // (OpenBeneath, which leaves out what that hold stopped) — so none of them can count a root as
 // accepted that another counts as still at work.
 func Accepted(issue Issue) bool {
-	return StandsIn(issue, phase.Retro, phase.Merging)
+	return AcceptedPhase(StandsAt(issue))
+}
+
+// BasisAcceptance says why ancestor no longer meets the daemon's half of R1's first condition for
+// a basis (dispatch://INFRA-3320), as the daemon's own store shows it now, or "" where it still
+// does: what the daemon last read of Dispatch shows it done or retro (AcceptedStatus), in its
+// mirror of Dispatch's issues or in its record of the ancestor; the record's own status is done
+// (DoneStatus); or the daemon records it in its retro or its merge (Accepted). Where neither the
+// mirror nor the record knows the ancestor, nothing the daemon holds says that it is accepted. A
+// root a person moved to the backlog or to icebox stands at phase done while its tree lingers
+// (workflow's beginLinger), and R1 counts backlog and icebox as not accepted, so the phase alone
+// says nothing: a real close is the status Dispatch shows, or the record's own status, which the
+// daemon's own close of a root (workflow's closeRoot) writes done in the transaction that queues
+// the status write to Dispatch, so a reader inside a later transaction sees the close before
+// Dispatch's event of it comes back to the mirror. The answer is a sentence's subject and verb,
+// naming the ancestor and what holds it ("Dispatch shows LEGION-100 done").
+//
+// It answers the daemon's record of the ancestor too, nil where it records none, and nil where the
+// mirror alone answered, which reads no record: a caller that reads more of the record where the
+// ancestor is not accepted reads it here, in the same read.
+//
+// It is the one reading of that half of the condition inside a transaction of the daemon's own: a
+// registration on a basis reads it again under the lock every fact applies under (workflow's
+// gateRegistered), so it and an ancestor's sign-off or close, whose hold reads the roots that rest
+// on the ancestor (workflow's RestingRoots), apply in one order; the pending-basis seed's read and
+// the person's approval as its live event read it before either opens a step; and a step carried
+// onto a child keeps a basis or a rest only on an ancestor it passes (admit's carriedGate).
+func BasisAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor string) (string, *Issue, error) {
+	mirrored, err := store.DispatchIssuesOf(ctx, tx, []string{ancestor})
+	if err != nil {
+		return "", nil, fmt.Errorf("read the Dispatch mirror of ancestor %s: %w", ancestor, err)
+	}
+	for _, row := range mirrored {
+		if row.Key == ancestor && AcceptedStatus(row.Status) {
+			return fmt.Sprintf("Dispatch shows %s %s", ancestor, row.Status), nil, nil
+		}
+	}
+	recorded, err := store.Issue(ctx, tx, ancestor)
+	if err != nil {
+		return "", nil, fmt.Errorf("read the record of ancestor %s: %w", ancestor, err)
+	}
+	switch {
+	case recorded == nil:
+		return "", nil, nil
+	case AcceptedStatus(recorded.DispatchStatus):
+		return fmt.Sprintf("Dispatch shows %s %s", ancestor, recorded.DispatchStatus), recorded, nil
+	case recorded.Status == DoneStatus:
+		return fmt.Sprintf("The daemon records %s %s", ancestor, recorded.Status), recorded, nil
+	case Accepted(*recorded):
+		return fmt.Sprintf("The daemon records %s in %s", ancestor, StandsAt(*recorded)), recorded, nil
+	}
+	return "", recorded, nil
 }
 
 // Ancestors is every issue above issue inside its own tree, nearest first and the tree's own
@@ -431,11 +500,10 @@ type LineFacts struct {
 	Held map[string][]string
 	// ChildWaits is the children-first judgement of this pass, by parent key: the issues whose
 	// own first phase the line must not offer a slot to because Dispatch still shows an open
-	// child under them. Only the caller can fill it — the judgement reads the Dispatch mirror's
-	// parent column against the daemon's own records, which takes the transaction the line itself
-	// is never given (ChildWaitsOf) — and a caller that fills it with nothing says that nothing
-	// waits for its children. It is never stored: each admission pass computes it again, so a
-	// mirror row that has gone stale costs one pass and no more.
+	// child under them. Only the caller can fill it — from the judgement ReadLineFacts made in
+	// the transaction the line itself is never given (ChildWaitsOf) — and a caller that fills it
+	// with nothing says that nothing waits for its children. It is never stored: each admission
+	// pass computes it again, so a mirror row that has gone stale costs one pass and no more.
 	ChildWaits map[string]ChildWait
 	// Waits is what each issue the daemon has started waits on, by issue key, for the started
 	// issues that wait on another issue and for no other: the two waits are the unfinished
@@ -446,6 +514,22 @@ type LineFacts struct {
 	// LineWaitingOnIssue until the wait ends. Only the caller can fill it, for the reason Held
 	// gives, and it is read again on every pass as ChildWaits is (blockers.startedWaits).
 	Waits map[string][]string
+	// StartedParentWaits is the open Dispatch children of each issue whose phases have started,
+	// by parent key (readChildWaits over StartedParents): an issue in planning through
+	// accepting, held from one of them, owing a start, or waiting in awaiting_children, with no
+	// entry for one no open child holds. It is what the admission pass moves a started parent into
+	// awaiting_children by and takes one back to the start it held by (admit's childrenWaits), and
+	// the children the held word awaiting_children names (HeldReasonOf). It is apart from
+	// ChildWaits, the wait of an issue whose first phase has not started: a started parent's
+	// children hold no first phase, so no children-first notice, no children_first word and no
+	// wait of a started issue on another issue (Waits) reads them. ReadLineFacts fills it, since
+	// the judgement reads the mirror against the daemon's records in the transaction the line is
+	// never given; it is never stored, and each read of the facts judges it again.
+	StartedParentWaits map[string]ChildWait
+	// childrenFirst is the children-first judgement ReadLineFacts made from the read of the
+	// children it judged StartedParentWaits from (readChildWaits), which ChildWaitsOf hands the
+	// caller to fill ChildWaits with; nil in facts ReadLineFacts did not read.
+	childrenFirst map[string]ChildWait
 }
 
 // ChildWait is why one parent's own first phase waits: the open Dispatch children under it, in
@@ -602,8 +686,11 @@ func gatesOf(ctx context.Context, tx pgx.Tx, store Store, roots []string, steps 
 
 // ReadLineFacts reads the facts of one admission pass for issues: one tree-lifecycle read
 // (ReadLifecycles), one read of the records above the pass's own (ReadParents), one read of the
-// tree roots it leaves out (ReadTreeRoots), one gate read (gatesOf) and one read of the starts
-// the project owes, whatever the number of trees, gates and issues involved. project is the
+// tree roots it leaves out (ReadTreeRoots), one gate read (gatesOf), one read of the starts the
+// project owes, and both judgements of a parent's open children — the started parents'
+// (LineFacts.StartedParentWaits) and the children-first waits ChildWaitsOf hands on — from one
+// read of the children (readChildWaits: no read where no issue can wait on its children, and two
+// where any can), whatever the number of trees, gates and issues involved. project is the
 // Dispatch project key and steps the design-gate steps the deployment gates.
 //
 // The roots are read before the gates because the gates cover both sets of roots: the roots
@@ -644,12 +731,21 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 			owed[row.Issue] = row
 		}
 	}
-	return LineFacts{Lifecycles: lifecycles, Gates: gates, Parents: parents, Roots: roots, Owed: owed, OwedRows: rows}, nil
+	facts := LineFacts{Lifecycles: lifecycles, Gates: gates, Parents: parents, Roots: roots, Owed: owed, OwedRows: rows}
+	// The children are read last, since the gates say which issues are children-first
+	// candidates, an issue owing a start is a started parent (StartedParents), and the cycle walk
+	// crosses the records above the pass's own.
+	if facts.childrenFirst, facts.StartedParentWaits, err = readChildWaits(ctx, tx, store, project, issues, facts); err != nil {
+		return LineFacts{}, err
+	}
+	return facts, nil
 }
 
-// GateOpen is whether a person's approval stands on the gate's current document version: the one
-// statement of it, which classify.DesignGateOpen and Store.PutGate's own write both call.
-// internal/classify reads this package, so the rule lives here, where every reader can reach it.
+// GateOpen is whether an approval stands on the gate's current document version: a person's, or
+// the ancestor's approval a basis opened the step on, which sets ApprovedVersion to the version the
+// root registered (OpenOnBasis), so this one rule reads both. It is the one statement of it, which
+// classify.DesignGateOpen and Store.PutGate's own write both call. internal/classify reads this
+// package, so the rule lives here, where every reader can reach it.
 func GateOpen(gate DesignGate) bool {
 	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
 }
@@ -685,10 +781,11 @@ type TreeGate struct {
 	Rows  map[DesignStep]DesignGate
 }
 
-// Open is whether the gate lets the tree's work run: a person's approval stands on the current
-// document version of every required step (GateOpen). A required step with no row holds the
-// work, as an unregistered gate always has, so a root with no row at all is held too. It is the
-// one rule for the question, which classify.DesignGatesOpen reads it through.
+// Open is whether the gate lets the tree's work run: an approval stands on the current document
+// version of every required step (GateOpen), a person's or the one a basis opened the step on. A
+// required step with no row holds the work, as an unregistered gate always has, so a root with no
+// row at all is held too. It is the one rule for the question, which classify.DesignGatesOpen
+// reads it through.
 func (g TreeGate) Open() bool {
 	for _, step := range RequiredSteps(g.Steps) {
 		if row, registered := g.Rows[step]; !registered || !GateOpen(row) {
@@ -713,20 +810,23 @@ func (g TreeGate) EverOpened() bool {
 }
 
 // OpenedAt is when a root's work came back to it through its design gate: the moment the last of
-// its required steps was approved (DesignGate.ApprovedMark), zero for a gate that is not open.
-// It is the waiting line's ordering key for a root whose own first phase can start, merged on
-// the same time axis as an owed start row's creation and an answered root's answer. A step whose
-// approval carries no moment — one a registration read from Dispatch rather than from an event —
-// gives the zero time, which puts that root at the head of its part when it is the only step:
-// the line knows its work came back and not when, and the alternative, dropping it to the back
-// by rank, loses what it does know.
+// its required steps opened, zero for a gate that is not open. A step a person's approval opened
+// gives where Dispatch recorded that approval (DesignGate.ApprovedMark); a step a basis opened
+// gives the daemon's own time of the registration (GateBasis.RegisteredAt), never a zero time,
+// since the ancestor's approval is a place in another issue's event log. It is the waiting line's
+// ordering key for a root whose own first phase can start, merged on the same time axis as an
+// owed start row's creation and an answered root's answer. A step whose approval carries no
+// moment — one a registration read from Dispatch rather than from an event — gives the zero
+// time, which puts that root at the head of its part when it is the only step: the line knows
+// its work came back and not when, and the alternative, dropping it to the back by rank, loses
+// what it does know.
 func (g TreeGate) OpenedAt() time.Time {
 	if !g.Open() {
 		return time.Time{}
 	}
 	var at time.Time
 	for _, step := range RequiredSteps(g.Steps) {
-		at = later(at, g.Rows[step].ApprovedMark.At)
+		at = later(at, g.Rows[step].openedAt())
 	}
 	return at
 }
@@ -760,7 +860,7 @@ func later(a, b time.Time) time.Time {
 // a root whose design gate has never opened at every step the deployment gates, where its
 // architect is writing the design; after that opening the root's own turns start no phase
 // worker, and its children do the work. Every other phase is a wait: a child at admitted,
-// accepting, held, awaiting_person, done.
+// accepting, held, awaiting_person, awaiting_children, done.
 func AtWork(issue Issue, gate TreeGate) bool {
 	switch issue.Phase {
 	case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Retro:
@@ -781,14 +881,15 @@ func AtWork(issue Issue, gate TreeGate) bool {
 // awaiting_person; the four phases a worker works up to the review — planning, implementing,
 // testing and reviewing; and held, which is reached here only where the record names no earlier
 // phase for the hold (StandsAt). Every other phase holds none: accepting, retro and merging each
-// stand past the issue's review, and done has finished.
+// stand past the issue's review, done has finished, and awaiting_children is a parent waiting on
+// its open children, which work under slots of their own (dispatch://INFRA-3320 R11).
 //
 // It is written as one list so that a later change adds or removes one entry and every reader of
 // the rule moves with it. Two read it, and a phase in one and not the other would be a deadlock:
 // the cap's own half (KeepsSlot) and the mark a start of a phase worker carries for the slot it
 // waits for (workflow.StartOrOwe), whose row the outbox holds unclaimable while the issue holds
-// no slot. PastReview is the complement of the three phases this refuses, for the repair that
-// must reach an issue holding no row.
+// no slot. PastReview is the complement of the three phases past the review that this refuses,
+// for the repair that must reach an issue holding no row.
 func PhaseKeepsSlot(at phase.Phase) bool {
 	switch at {
 	case phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing, phase.Testing,

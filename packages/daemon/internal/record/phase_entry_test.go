@@ -16,17 +16,26 @@ import (
 // promotion hands it, not the task of a run that ended. The number stays because it counts the
 // entries the role has been handed on this issue and nothing of a re-admission unhands one: the
 // promotion raises it again (workflow's StartPromotedWorker), so the entry the new work is sent
-// under is above every entry a completion still in flight could name.
+// under is above every entry a completion still in flight could name. The task of the entry's
+// last retry (PhaseRow.EntryRetryTask) is read back as it was written, and goes with the entry's
+// task: it was the old run's.
 func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
 	issue := issueFixture("LEGION-287")
 	raised := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	const retried = "Continue the change. Issue: LEGION-287. Phase: implementing. Reason: the runner is back."
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issue))
 		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "implementer",
-			Entry: 3, EntryTask: "Continue the change. Issue: LEGION-287. Phase: implementing.", EntryRaisedAt: raised}))
+			Entry: 3, EntryTask: "Continue the change. Issue: LEGION-287. Phase: implementing.", EntryRaisedAt: raised,
+			EntryRetryTask: retried}))
+		rows, err := records.Phases(ctx, tx, issue.Key)
+		must(t, err)
+		if len(rows) != 1 || rows[0].EntryRetryTask != retried {
+			t.Fatalf("phases before ClearGeneration = %#v, want the one row carrying the retry's task %q as it was put", rows, retried)
+		}
 		must(t, records.ClearGeneration(ctx, tx, issue.Key, time.Now().UTC()))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
@@ -39,6 +48,9 @@ func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
 		if row.EntryTask != "" {
 			t.Fatalf("the implementer's row still names the work %q of the generation that ended, want none: its promotion writes the task it is given",
 				row.EntryTask)
+		}
+		if row.EntryRetryTask != "" {
+			t.Fatalf("the implementer's row still names the retry's task %q of the generation that ended, want none", row.EntryRetryTask)
 		}
 		if row.Entry != 3 || !row.EntryRaisedAt.Equal(raised) {
 			t.Fatalf("the implementer's row after ClearGeneration = entry %d raised at %s, want the entry 3 raised at %s it stood on",

@@ -417,22 +417,22 @@ const testerVerdictLabel = "Tester's verdict"
 // worker is sent. Its start carries one mark, that what it sends is the task enter stored
 // (startMarks.stored), and no other, a fresh session among them: the operator's `legion claims
 // retry --fresh-session` reaches a retry of a held phase (restart) and never a transition's start.
-// movedBack is whether the move into that phase was a move back to an
-// earlier one, which is written on the row beside the entry and is the transition's to read, not
-// this function's: the issue record already names the phase it moved into by the time a start
-// is made. A phase with no worker starts nobody. Accepting starts no worker either: its role is
-// the architect, which is already started — admission starts a root's with its tree and a child's
-// own starts with the child's first phase (StartFirstPhase).
+// from is the phase the move into that phase left, which enter writes on the row beside the entry
+// with whether that move was a move back: the issue record already names the phase it moved into
+// by the time a start is made. A phase with no worker starts nobody. Accepting starts no worker
+// either: its role is the architect, which is already started — admission starts a root's with its
+// tree and a child's own starts with the child's first phase (StartFirstPhase).
 //
 // Every phase start of a child, the move into accepting among them, first starts the child's own
 // architect again when its claim has failed (reviveArchitect). The phase starts are the one place
-// in the workflow that does this, since the transitions are the only phase starts. Outside the
+// in the workflow that does this, since the transitions and the return out of awaiting_children
+// (ReturnFromChildren) are the only phase starts. Outside the
 // workflow, a re-admission brings a mid-phase child's failed architect back with the member's
 // other roles (admit's startMidPhaseMembers), and so does an operator's retry. A restart of a held
 // phase (restart), a promoted start (StartPromotedWorker), an owed entry (SendOwedEntry) and a
 // resume task each hand a role the work of a phase the issue already stands in, and the owed-entry
 // sweep runs every minute, so none of them revives the architect.
-func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool) error {
+func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, from phase.Phase) error {
 	if role == "" {
 		return nil
 	}
@@ -442,11 +442,39 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	if role == claim.RoleArchitect {
 		return nil
 	}
-	entry, sent, err := e.enter(ctx, tx, issue, role, task, movedBack, false)
+	entry, sent, err := e.enter(ctx, tx, issue, role, task, from, false)
 	if err != nil {
 		return err
 	}
 	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true})
+}
+
+// startEntered starts what a move of issue into the phase it now stands in starts, from being the
+// phase the move left: that phase's worker, role, on task (start), and for accepting, where start
+// starts no worker and only a child's failed architect again (reviveArchitect), the accepting
+// step, which no worker's start begins (startStandingStep). Its two callers are the transition and
+// the return out of awaiting_children (ReturnFromChildren), so a move into accepting starts the
+// same things whichever makes it: a held accepting whose pull request merged during the wait goes
+// back on today's path into accepting (dispatch://INFRA-3320 R12).
+func (e *Engine) startEntered(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, from phase.Phase) error {
+	if err := e.start(ctx, tx, issue, role, task, from); err != nil {
+		return err
+	}
+	if issue.Phase != phase.Accepting {
+		return nil
+	}
+	return e.startStandingStep(ctx, tx, issue)
+}
+
+// startStandingStep starts the step issue stands in (standingStep) under the agent that step names
+// (startNamedStep), and nothing where it stands in no step: the start of a step no phase worker's
+// start begins, accepting's (startEntered) and a merge GitHub has already made (transition).
+func (e *Engine) startStandingStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	step, ok := standingStep(issue)
+	if !ok {
+		return nil
+	}
+	return e.startNamedStep(ctx, tx, issue, step)
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
@@ -546,12 +574,26 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // whose turn then ended holds that entry as its given one and no pending delivery, so the entry
 // test alone would decline the retry's task and relaunch the worker with no prompt
 // (supervise.Machine.queue).
+//
+// The retry's task is written on that row first (record.PhaseRow.EntryRetryTask), beside the
+// entry's own work, which it leaves as the transition wrote it (record.PhaseRow.EntryTask): that
+// work is what a claim behind the entry is sent again (sendOwedEntry), and the reviewer's round
+// reads it (namingTheReviewRound, reviewedCommitStays). The column keeps the retry's task on the
+// record once the outbox row and the claim's pending delivery that carried it are gone, so the
+// admission pass's stop of a parent in the middle of its phase holds it after the turn that took
+// it has ended (entryWork, StopForChildren). It holds the text restart is given, before the queue
+// adds the reviewer's round sentences to a reviewer's task (queuedRow), so a held reviewing that
+// goes back to reviewing is given those sentences once, by the raise of its entry (enter).
 func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, freshSession bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
+		return err
+	}
+	row.EntryRetryTask = task
+	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return err
 	}
 	return e.started(ctx, tx, issue, role, task, row.Entry, startMarks{resend: true, freshSession: freshSession})
@@ -600,18 +642,40 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // rather than by each door, so no door can send an owed entry as news.
 func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow,
 	marks startMarks) error {
-	task := row.EntryTask
-	marks.stored = task != ""
-	if task == "" {
-		task = ResumePhaseTask(issue)
-	}
+	marks.stored = row.EntryTask != ""
 	marks.reasserts = true
-	return e.started(ctx, tx, issue, role, task, row.Entry, marks)
+	work := row.EntryTask
+	if work == "" {
+		var err error
+		if work, err = e.resumePhaseTask(ctx, tx, issue); err != nil {
+			return err
+		}
+	}
+	return e.started(ctx, tx, issue, role, work, row.Entry, marks)
+}
+
+// entryWork is the task the worker of row's entry was given for it: the task of that entry's last
+// retry (record.PhaseRow.EntryRetryTask, which restart writes), else the work the entry was
+// raised with (record.PhaseRow.EntryTask), and the phase's resume task where the row carries
+// neither (ResumePhaseTask), as a claim behind its entry is sent it (sendOwedEntry, whose doc says
+// which rows carry none). It is what the admission pass holds for a phase it stops in the middle
+// (StopForChildren, queuedTask), read from the row alone, so it holds the same task whether or
+// not the turn that took it has ended. The resume task is built with no base-merge sentence,
+// which a held task keeps none of (withoutBaseMergeRun).
+func entryWork(issue record.Issue, row record.PhaseRow) string {
+	if row.EntryRetryTask != "" {
+		return row.EntryRetryTask
+	}
+	if row.EntryTask != "" {
+		return row.EntryTask
+	}
+	return ResumePhaseTask(issue, false)
 }
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
 // promotion brings back (admit's startMidPhaseMembers), on the resume task of the phase it stands
-// in (ResumePhaseTask).
+// in (ResumePhaseTask), which tells the tester of a parent to test the head merged with its
+// base's tip.
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
@@ -622,8 +686,11 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // The entry it raises is of no move back: the promotion hands the role the phase it already
 // stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
-	task := ResumePhaseTask(issue)
-	entry, sent, err := e.enter(ctx, tx, issue, role, task, false, false)
+	task, err := e.resumePhaseTask(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	entry, sent, err := e.enter(ctx, tx, issue, role, task, "", false)
 	if err != nil {
 		return err
 	}
@@ -907,7 +974,8 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // entry its role's phases row already names — the send of an owed entry (SendOwedEntry), the
 // sweep's start of a root architect behind its entry (SendArchitectStart), the held phase's retry
 // (restart) — or is a start of no entry (record.SuperviseRequest.Entry), so none of them moves
-// the row and a worker's in-flight completion is never refused for an entry it was never given.
+// the row's entry and a worker's in-flight completion is never refused for an entry it was never
+// given.
 //
 // The number counts the entries this role has been handed on this issue, which is why it is raised
 // here: this is the one place a role is handed work it was not on. It needs to be unique among
@@ -925,23 +993,38 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // the stored task (startMarks.stored) so the queue writes the sentences no second time, never
 // their own task: the number is known only once it is raised, here.
 //
-// movedBack is written with them: whether the start raising this entry was a move back to an
-// earlier phase. Its one reader is the completion route's entry fence, which takes a completion
-// of an earlier entry at the head the record holds and refuses it whatever head it names when
-// the entry standing now was raised by a move back, since such an entry asks for the phase's
-// work to be done again (record.PhaseRow.EntryMovedBack, api/handoff.go). It is written here
-// rather than counted anywhere (record.PhaseRow.EntryMovedBack says why no count answers it).
+// The move back is written with them: whether the move that raised this entry, out of from into
+// the phase issue stands in now, went back to an earlier phase (phase.MovesBack), or is the
+// return out of awaiting_children (ReturnFromChildren), which asks for the phase's work to be done
+// again now that the children's work is in, so a completion from before the wait is refused at
+// the same head. Its one reader is the completion route's entry fence, which takes a completion
+// of an earlier entry at the head the record holds and refuses it whatever head it names when the
+// entry standing now was raised by a move back, since such an entry asks for the phase's work to
+// be done again (record.PhaseRow.EntryMovedBack, api/handoff.go). It is written here rather than
+// counted anywhere (record.PhaseRow.EntryMovedBack says why no count answers it).
+//
+// from is written with them too: the phase the move that raises this entry left, "" where no
+// move raises it (StartPromotedWorker, EnterArchitect), which is no move back. The admission pass
+// reads it to leave a parent whose entry a role's move back raised out of retro or merging where
+// it stands (record.PhaseRow.EntryFrom, StopForChildren).
+//
+// The task of the last retry of the entry before is cleared (record.PhaseRow.EntryRetryTask):
+// restart writes a retry's task for the entry it hands again, and the entry raised here is handed
+// the task written above.
 //
 // verbatim is whether the sweep's send of a root architect's entry again sends that task as
 // written (record.PhaseRow.EntryVerbatim), which only the resume of an answered root says. Every
 // raise writes it, so a raise that does not say it clears the mark an earlier entry's resume left.
-func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack, verbatim bool) (int64, string, error) {
+func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, from phase.Phase,
+	verbatim bool,
+) (int64, string, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
 		return 0, "", err
 	}
+	movedBack := from == phase.AwaitingChildren || phase.MovesBack(from, issue.Phase)
 	row.Entry++
-	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = verbatim, e.now(), movedBack
+	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack, row.EntryFrom, row.EntryRetryTask = verbatim, e.now(), movedBack, from, ""
 	// The entry's sentence is named only while the row holds the task of that entry, as the row
 	// written here does: raised is that row, read for the sentences alone, and the row is given its
 	// task once, the text the worker is sent.
@@ -985,7 +1068,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // that start. The entry is raised by no move back (record.PhaseRow.EntryMovedBack): that mark's
 // one reader is the completion route's entry fence, and the architect completes nothing there.
 func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, task string, verbatim bool) (int64, error) {
-	entry, _, err := e.enter(ctx, tx, root, claim.RoleArchitect, task, false, verbatim)
+	entry, _, err := e.enter(ctx, tx, root, claim.RoleArchitect, task, "", verbatim)
 	return entry, err
 }
 
@@ -1009,7 +1092,12 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 // merger's task is built at retro's completion, the one move into merging, and at the retry of a
 // held merging (retryPhase); each reads the pull request in its own transaction, so pr says what
 // the record holds.
-func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
+//
+// A testing task of a parent ends with the sentence that asks for the round on the head merged
+// with the tip of the pull request's base branch (withBaseMergeRun). parent says whether issue is
+// a parent, an issue with a Dispatch child of any status in the daemon's copy of Dispatch
+// (Engine.testingParent, which reads it for a testing task alone).
+func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string, parent bool) string {
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
 		word := handoffWord(handoff.Role)
@@ -1031,11 +1119,32 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	if reason != "" {
 		text += " Reason: " + reason + "."
 	}
+	return withBaseMergeRun(text, issue.Phase, parent)
+}
+
+// continueLine opens every phase task: the issue, its key and the phase the worker starts, and,
+// for an issue whose spec is a view on an ancestor's requirements, the sentence that says so
+// (viewSentence).
+func continueLine(issue record.Issue) string {
+	text := fmt.Sprintf("Continue %s. Issue: %s. Phase: %s.", issue.Title, issue.Key, issue.Phase)
+	if view := viewSentence(issue); view != "" {
+		text += " " + view
+	}
 	return text
 }
 
-func continueLine(issue record.Issue) string {
-	return fmt.Sprintf("Continue %s. Issue: %s. Phase: %s.", issue.Title, issue.Key, issue.Phase)
+// viewSentence is the one sentence each task of a phase worker of issue carries when its spec is
+// a view on an ancestor's requirements (record.Issue.ViewOf, dispatch://INFRA-3320, R4), and ""
+// for any other issue: the issue's requirements are the parts of the ancestor's requirements that
+// the Delivers: line of the issue's spec names. The task is built from the record alone, inside
+// the transition, so the view fact the last registration of the spec step recorded is what it
+// reads, whether a basis or a person's approval opened that step, and no document is read.
+func viewSentence(issue record.Issue) string {
+	if issue.ViewOf == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s is a view on %s: the requirements of %s are the parts of the requirements of %s that the Delivers: line in the spec of %s names.",
+		issue.Key, issue.ViewOf, issue.Key, issue.ViewOf, issue.Key)
 }
 
 // handoffWord is the word of the Dispatch handoff record role writes (phase.Handoff's writer), ""
@@ -1052,8 +1161,59 @@ func handoffWord(role claim.Role) string {
 // ResumePhaseTask is what a worker started for a phase already under way is told. No handoff
 // begins that phase — the run that did is over — so the task names the phase and says to carry
 // the work on, which is what a resumed session needs to tell this phase from its last.
-func ResumePhaseTask(issue record.Issue) string {
-	return continueLine(issue) + " Resume the existing phase work."
+//
+// Every testing task of a parent asks for the round on the head merged with its base's tip, and
+// the resume task is no exception (withBaseMergeRun): the silence repair, the boot's resume, the
+// catch-up, a re-admitted tree's promotion (StartPromotedWorker) and the send of an entry that
+// names no task (sendOwedEntry) each hand it to a session that may have read none of the task that
+// first asked. parent says whether issue is a parent, as task's does. The admission pass's stop of
+// a phase under way holds it with parent false (entryWork), since a held task keeps no base-merge
+// sentence and the return adds its own.
+func ResumePhaseTask(issue record.Issue, parent bool) string {
+	return withBaseMergeRun(continueLine(issue)+" Resume the existing phase work.", issue.Phase, parent)
+}
+
+// resumePhaseTask is the phase's resume task of issue (ResumePhaseTask), its parent flag read for
+// the phase issue stands in (testingParent): what every start the engine writes on that task
+// alone hands the role — the silence repair, the boot's resume, the catch-up, a re-admitted
+// tree's promotion and the send of an entry that names no task.
+func (e *Engine) resumePhaseTask(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
+	parent, err := e.testingParent(ctx, tx, issue)
+	if err != nil {
+		return "", err
+	}
+	return ResumePhaseTask(issue, parent), nil
+}
+
+// baseMergeRun is the tester's rule for every round of a parent (dispatch://INFRA-3320 R12 and
+// R14): the head is tested merged with the tip of the pull request's base branch once that tip
+// carries each needed child's merge, in a checkout of the tester's own that it never pushes, and
+// each result is recorded at the head with the base commit it ran on, which the architect accepts
+// the parent on.
+const baseMergeRun = "Test the head merged with the tip of the pull request's base branch, read at the round's start once that tip carries each needed child's merge, in a checkout of your own outside the issue's workspace that you never push; record each result at the head with an `--observed` line naming that base commit, a carried pass too; size the round over the whole tested tree's difference."
+
+// withBaseMergeRun is text, the task of a worker in at, as it stands where at is not testing or
+// its issue is no parent, and otherwise with the base-merge sentence (baseMergeRun) added at its
+// end. text carries no copy of it: every writer of a task ends it here once — task, which builds
+// a transition's, a retry's and the return's testing task over the implementer's row;
+// ResumePhaseTask; and returnTask, for the held task the return gives back, which every held start
+// keeps without the sentence (heldTask, withoutBaseMergeRun).
+func withBaseMergeRun(text string, at phase.Phase, parent bool) string {
+	if at != phase.Testing || !parent {
+		return text
+	}
+	return text + " " + baseMergeRun
+}
+
+// withoutBaseMergeRun is text, a task already built for a worker, with the base-merge sentence
+// withBaseMergeRun ended it with taken off, and text as it stands where it ends with none: the
+// task a held start keeps (record.ChildrenWait.Task), to which the return adds the sentence once
+// (returnTask). The admission pass's stop of a phase takes such a task as the hold — the task of
+// a start written and not yet delivered, the task its worker was given, or the work of its entry
+// (StopForChildren) — and every other held start is built with no sentence (heldTask). So a
+// release that changes the sentence finds no copy of an earlier one in a held task.
+func withoutBaseMergeRun(text string) string {
+	return strings.TrimSuffix(text, " "+baseMergeRun)
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an

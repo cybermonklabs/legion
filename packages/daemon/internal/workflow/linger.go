@@ -50,6 +50,14 @@ import (
 // close, so its start row follows the linger's suspends and resumes the checking role as a
 // root's own check does, rather than being stopped by them.
 //
+// Whatever the departure, the held start goes with the phase it was held in: an issue that leaves
+// from awaiting_children stands at done holding nothing (record.Issue.ChildrenWait, the children
+// of the wait among it, which the record's shape ties to that phase), as a held issue's hold goes
+// with its leave, while the fact of its run that outlives the phase, the moment it last waited,
+// stays on the record. A root a person moves to the backlog while it waits on its children leaves
+// like any root moved to the backlog, and a person's todo re-admits it as a new generation
+// (admit's readmit).
+//
 // Whatever the departure, the issue carries no mark of a slot released for a wait afterwards.
 // The mark is the daemon's answer to "this issue was started and its row is gone because it
 // waits on another issue" (record.Issue.ReleasedForWaitAt), and this write is the third of the
@@ -75,12 +83,19 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err := e.untellUnresumedChanges(ctx, tx, issue); err != nil {
 		return err
 	}
-	if err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
+	if _, err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
 		return err
 	}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		if issue.Lingers() {
 			return nil
+		}
+		// A root whose step rests on an ancestor's approval ends here the wait that ancestor's
+		// sign-off and close hold for it (dispatch://INFRA-3320, R8), whichever way it leaves, so
+		// that ancestor's architect is told, and a step of it that waits on an ancestor's approval
+		// request ends that wait with nobody told, so no approval opens it later (leaveBases).
+		if err := e.leaveBases(ctx, tx, issue, status); err != nil {
+			return err
 		}
 		if held, err := record.OperatorHoldsTree(ctx, e.store, tx, issue); err != nil || held {
 			if err != nil {
@@ -100,7 +115,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		return e.openCheckIfMerged(ctx, tx, issue, false)
 	}
 	if issue.Phase != phase.Done {
-		issue.Phase, issue.Hold = phase.Done, nil
+		issue.Phase, issue.Hold, issue.ChildrenWait = phase.Done, nil, nil
 		if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -199,7 +214,7 @@ func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record
 func (e *Engine) leaveUnderOperator(ctx context.Context, tx pgx.Tx, root record.Issue, status string) error {
 	e.logOnCommit(ctx, "workflow: a waiting root left the workflow while the operator runs a tree under its key; the operator's tree is left alone",
 		"issue", root.Key, "tree", root.Tree, "status", status)
-	root.Phase, root.Hold, root.Awaiting = phase.Done, nil, nil
+	root.Phase, root.Hold, root.Awaiting, root.ChildrenWait = phase.Done, nil, nil, nil
 	return e.store.PutIssue(ctx, tx, root)
 }
 
@@ -311,7 +326,7 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue) 
 		return err
 	}
 	root.LingerUntil = &until
-	root.Phase, root.Hold, root.Awaiting = phase.Done, nil, nil
+	root.Phase, root.Hold, root.Awaiting, root.ChildrenWait = phase.Done, nil, nil, nil
 	if err := e.store.PutIssue(ctx, tx, root); err != nil {
 		return err
 	}

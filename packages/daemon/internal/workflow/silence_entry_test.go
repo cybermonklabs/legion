@@ -39,7 +39,7 @@ func TestASilentWorkerIsSentTheWorkOfTheEntryItIsBehind(t *testing.T) {
 			did: fmt.Sprintf("sends the work of phase entry %d its phase row names, which its claim, last given entry %d, never had",
 				silenceEntry, silenceEntry-1)},
 		{name: "level with the entry its row names", given: silenceEntry,
-			want: ResumePhaseTask, entry: 0, resume: true,
+			want: func(issue record.Issue) string { return ResumePhaseTask(issue, false) }, entry: 0, resume: true,
 			did: fmt.Sprintf("sends the phase's task again, on phase entry %d its phase row names", silenceEntry)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

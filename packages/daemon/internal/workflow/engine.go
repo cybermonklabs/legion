@@ -225,6 +225,12 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.dispatchArtifact(ctx, tx, fact)
 	case intake.GateAboveDispatch:
 		return e.gateAboveDispatch(ctx, tx, fact)
+	case intake.PendingBasisRead:
+		return e.pendingBasisRead(ctx, tx, fact)
+	case intake.BasisChangesRead:
+		return e.basisChangesRead(ctx, tx, fact)
+	case intake.ReparentRead:
+		return e.reparentRead(ctx, tx, fact)
 	case intake.GateRequestFound:
 		return e.gateRequestFound(ctx, tx, fact)
 	case intake.CatchUpApplied:
@@ -330,6 +336,12 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.DispatchIssue) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Key)
 	if err != nil {
+		return intake.Result{}, err
+	}
+	// The issue may be an ancestor that steps of other roots wait on, closed, whatever tree it is
+	// in or none (dispatch://INFRA-3320, R1), so this runs before the record's own fences and
+	// before an unrecorded issue's return.
+	if err := e.endPendingOnAncestorIssue(ctx, tx, issue, fact); err != nil {
 		return intake.Result{}, err
 	}
 	if fact, err = SettleRetainedRepository(fact, issue); err != nil {
@@ -815,14 +827,17 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // completion names (record.Store.RoleRun), and role reported no completion of the phase it was in
 // (record.PhaseRow.Completed). That is this completion arriving after the daemon moved the issue
 // on without it - the review event taking reviewing on - and its handoff is the findings the next
-// phase reads, which a refusal would lose. Four completions are not: one from a role whose handoff
+// phase reads, which a refusal would lose. Five completions are not: one from a role whose handoff
 // already stands, which is reporting a phase it finished a second time; one from a role the daemon
 // never started on this issue, which has held no phase of it to report; any while the issue stands
-// where no role works - parked, closed or held - which is past recording work at all; and any
-// while it stands at admitted. Admitted is the architect's own phase (phase.RoleFor), which
-// completes nothing (handoff), and it comes before every phase a worker works, so no worker's phase
-// there is one the issue moved on from: the guard keeps the refusal a completion at admitted had
-// while no role was named for that phase.
+// where no role works - on the backlog, closed, held or waiting on its children - which is past
+// recording work at all; any while it stands at admitted; and one of a phase whose entry was raised
+// before the issue last moved into awaiting_children (record.Issue.ChildrenWaitedAt), which
+// outlives the wait: the wait stopped that phase, and the return starts the work again on an entry
+// of its own (dispatch://INFRA-3320 R10). Admitted is the architect's own phase (phase.RoleFor),
+// which completes nothing (handoff), and it comes before every phase a worker works, so no worker's
+// phase there is one the issue moved on from: the guard keeps the refusal a completion at admitted
+// had while no role was named for that phase.
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
 	if token == "" || issue.Phase == phase.Admitted || RoleFor(issue.Phase) == "" || phase.LeftBy(role, issue.Phase) == "" {
 		return false, nil
@@ -830,6 +845,9 @@ func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil || row.Completed() {
 		return false, err
+	}
+	if issue.ChildrenWaitedAt != nil && row.EntryRaisedAt.Before(*issue.ChildrenWaitedAt) {
+		return false, nil
 	}
 	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
 	if err != nil {
@@ -1890,29 +1908,55 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // The release is logged as it commits: the issue, the phase it comes back to and the reason,
 // which is the architect's own words where its retry named any.
 //
+// A release is a phase start like any other (dispatch://INFRA-3320 R9): a release into planning
+// through accepting of a parent whose Dispatch child is open moves it to awaiting_children instead,
+// holding the retried phase with the task the retry would have given its worker (heldTask) and the
+// retry's reason (awaitChildren), and starts nobody. The round of a reviewing release is not read
+// then: the held reviewing goes back as testing, whatever that round came to. A retry of testing
+// tells the tester of a parent to test the head merged with its base's tip (task,
+// withBaseMergeRun), as every testing task of a parent does.
+// The release restarts the held phase on the entry it was raised on (restart raises none), so a
+// phase whose role stands on an entry a role's move back raised out of retro or merging is
+// restarted whatever its children are, as the admission pass leaves it (acceptedEntry,
+// StopForChildren): R9 holds only the starts each from a phase before retro.
+//
 // Its callers have established that the tree does not linger, which is what holds every member
 // where it stood.
 //
 // It answers the phase the issue ends in, which the caller that must write a status of its own
-// reads (releaseHeldRoot): from, where nothing moved, and otherwise the phase the move took the
-// issue to, read back from the record because the move's own row chose that target
-// (transition).
+// reads (releaseHeldRoot): from, where nothing moved, awaiting_children where a child holds the
+// start, and otherwise the phase the move took the issue to, read back from the record because the
+// move's own row chose that target (transition).
 func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string, freshSession bool) (phase.Phase, error) {
 	issue.Phase, issue.Hold = from, nil
-	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
-		return "", err
-	}
-	// The retry puts the issue back in the phase its worker failed in, which is a phase write
-	// like any other, so it is a movement (the rule in dispatchIssue).
-	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
-		return "", err
-	}
 	// The daemon's own line for the release (R11), written whether or not a worker is started
 	// below: the hold is gone either way, and the reason is the one the restarted role's task
 	// carries.
 	e.logOnCommit(ctx, "workflow: a held phase is released", "issue", issue.Key, "phase", from, "reason", reason)
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
+		return "", err
+	}
+	open, err := e.childrenHolding(ctx, tx, issue, from, pr)
+	if err != nil {
+		return "", err
+	}
+	if len(open) > 0 {
+		entry, err := e.phaseRow(ctx, tx, issue.Key, phase.RoleFor(from))
+		if err != nil {
+			return "", err
+		}
+		if !acceptedEntry(entry) {
+			return phase.AwaitingChildren, e.awaitChildren(ctx, tx, issue, childrenHold{Start: from,
+				Task: heldTask(issue, from, record.PhaseRow{}, pr, reason), Cause: reason, Open: open})
+		}
+	}
+	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+		return "", err
+	}
+	// The retry puts the issue back in the phase its worker failed in, which is a phase write
+	// like any other, so it is a movement (the rule in dispatchIssue).
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return "", err
 	}
 	if from == phase.Reviewing {
@@ -1933,7 +1977,11 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession)
+	parent, err := e.testingParent(ctx, tx, issue)
+	if err != nil {
+		return "", err
+	}
+	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason, parent), freshSession)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
@@ -1970,6 +2018,12 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
+	}
+	// A parent waiting on its children stands in no phase a move back acts on, so the move is
+	// refused with the wait's own code before the table is read, which would only say that no
+	// backward row serves the phase (dispatch://INFRA-3320 R11).
+	if issue.Phase == phase.AwaitingChildren {
+		return e.waitingRefusal(ctx, tx, *issue, actBackwardMove)
 	}
 	// The table is the guard, and it reads three things: the move names a target, a backward row
 	// of the issue's phase serves that target - anything but an earlier phase has none - and the
@@ -2013,34 +2067,194 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 // so that an architect reads one rule wherever it reads of a park.
 const parkRule = "only when a person asked for that move, or when the work is done, folded into another issue or no longer needed"
 
+// The three holds on an issue's acceptance (signOff) and on a root's close (closeRoot) after the
+// work under it, by their refusal codes, in the order the daemon answers them when more than one
+// holds (dispatch://INFRA-3320, R8).
+const (
+	signOffChildInWorkflow = "SIGNOFF_CHILD_IN_WORKFLOW"
+	signOffRestingRoot     = "SIGNOFF_RESTING_ROOT_IN_WORKFLOW"
+	signOffChildOpen       = "SIGNOFF_CHILD_OPEN"
+)
+
+// acceptanceHold is the first of the three holds that holds an issue's acceptance or its close
+// (acceptanceHeld): its refusal code, "" for none, and the issues it names, each as the refusal
+// names it.
+type acceptanceHold struct {
+	code  string
+	names string
+}
+
+// architectAct is an act a hold on an issue refuses, named as the request that makes it names it:
+// the sign-off (signOff) and the close of a root (closeRoot), which an acceptance hold refuses
+// (acceptanceHold.refusal), and the move back (backward, an architect's or a worker's), which a
+// parent's wait on its children refuses with the sign-off (waitingRefusal).
+type architectAct string
+
+const (
+	actSignOff      architectAct = "sign_off"
+	actCloseRoot    architectAct = "close_root"
+	actBackwardMove architectAct = "request_backward_move"
+)
+
+// acceptanceRefusals is the refusal text of each hold acceptanceHeld answers, by its code and by
+// the act it refuses. Each text is a format of the issue's key (%[1]s) and the names the hold
+// carries (%[2]s). It is the one place a hold's refusal is written for both acts, so a hold added
+// to acceptanceHeld is read here for each of them, and one the table misses for an act still
+// refuses that act (acceptanceHold.refusal).
+var acceptanceRefusals = map[string]map[architectAct]string{
+	signOffChildInWorkflow: {
+		actSignOff:   "%[1]s is not accepted while these issues beneath it are still in the workflow: %[2]s. A parent is accepted after them, on a head that need not carry its children's merges, once each check a role runs has a pass at that head whose observed line names a base commit that carries every needed child's merge. Run each one to done: unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. Park one with park_child " + parkRule + ", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
+		actCloseRoot: "%[1]s is not closed while these issues beneath it are still in the workflow: %[2]s. Closing it would linger the tree and stop them mid-turn; run each one to done, and close the tree again. Park one with park_child " + parkRule + ", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the close until they answer",
+	},
+	signOffRestingRoot: {
+		actSignOff:   "%[1]s is not accepted while these roots that rest on its approval are still in the workflow: %[2]s. The design-gate step of each rests on an approval of %[1]s, so %[1]s is accepted after them. Each is a tree of its own: its own architect, or a person, moves it. Sign off again once each one is done or out of the workflow",
+		actCloseRoot: "%[1]s is not closed while these roots that rest on its approval are still in the workflow: %[2]s. The design-gate step of each rests on an approval of %[1]s, so %[1]s closes after them. Each is a tree of its own: its own architect, or a person, moves it. Close the tree again once each one is done or out of the workflow",
+	},
+	signOffChildOpen: {
+		actSignOff:   "%[1]s is not accepted while these Dispatch children of it are open: %[2]s. A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released. Unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. A child that runs as a tree of its own is moved by its own architect or a person. Close or icebox a child " + parkRule + ", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor icebox under that rule, and hold the acceptance until they answer",
+		actCloseRoot: "%[1]s is not closed while these Dispatch children of it are open: %[2]s. A parent closes after its children. Close or icebox each child that was never released " + parkRule + ", say in a comment which of those it is, and close the tree again. A child that runs as a tree of its own is moved by its own architect or a person. Ask the person about a child that can reach neither done nor icebox under that rule, and hold the close until they answer",
+	},
+}
+
+// refusal is the refusal of act on the issue key that h makes, and false where h holds nothing:
+// the hold's own code with that act's text (acceptanceRefusals). A hold the table names no text of
+// for act refuses it all the same, with its code and the issues it names, so no hold lets a
+// sign-off or a close through for want of its words.
+func (h acceptanceHold) refusal(act architectAct, key string) (intake.Result, bool) {
+	if h.code == "" {
+		return intake.Result{}, false
+	}
+	text, ok := acceptanceRefusals[h.code][act]
+	if !ok {
+		return refused(h.code, fmt.Sprintf("%s is held by %s, which names %s, so this %s changed nothing", key, h.code, h.names, act)), true
+	}
+	return refused(h.code, fmt.Sprintf(text, key, h.names)), true
+}
+
+// acceptanceHeld reads the three holds on issue's acceptance and on its close, in R8's order, and
+// answers the first that holds; each later one is read only when the one before it holds nothing.
+// First, an issue beneath it in its own tree that is still in the workflow (record.OpenBeneath,
+// SIGNOFF_CHILD_IN_WORKFLOW). Then a root of any tree whose design-gate step rests on its approval
+// and is still in the workflow (RestingRoots, SIGNOFF_RESTING_ROOT_IN_WORKFLOW): the checks of the
+// issues under an ancestor prove its requirements together, so it is accepted only after them. Then
+// a Dispatch child of it that is still open, one that runs as a tree of its own included
+// (childrenOpen, SIGNOFF_CHILD_OPEN). A root that rests on the issue's approval and is a Dispatch
+// child of it is named by the second, as it holds there first.
+func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Issue) (acceptanceHold, error) {
+	members, err := e.treeMembers(ctx, tx, issue)
+	if err != nil {
+		return acceptanceHold{}, err
+	}
+	if open := record.OpenBeneath(issue, members); len(open) > 0 {
+		return acceptanceHold{code: signOffChildInWorkflow, names: strings.Join(open, ", ")}, nil
+	}
+	resting, err := RestingRoots(ctx, tx, e.store, issue.Key)
+	if err != nil {
+		return acceptanceHold{}, err
+	}
+	if len(resting) > 0 {
+		return acceptanceHold{code: signOffRestingRoot, names: restingNames(resting)}, nil
+	}
+	children, err := e.childrenOpen(ctx, tx, issue, members)
+	if err != nil || len(children) == 0 {
+		return acceptanceHold{}, err
+	}
+	return acceptanceHold{code: signOffChildOpen, names: openChildNames(children)}, nil
+}
+
+// childrenOpen is each Dispatch child of issue that is still open (record.ChildOpen), with the
+// status Dispatch shows it in, whether the daemon released it, and the issue above it its own
+// blocked_by link names, in key order: what the daemon's mirror of Dispatch's issues shows under
+// issue (Store.DispatchChildren), judged with the daemon's own record of each child, so a child
+// that runs as a tree of its own is open while it is in the workflow there, and a child filed and
+// never released is open until it is closed or in icebox. The judgement is the admission pass's
+// own of every started parent (record.OpenChildWaits), which leaves out a child of issue's own
+// tree that the daemon itself holds at admitted under an accepted ancestor, as OpenBeneath leaves
+// it out: otherwise the sign-off's hold and that ancestor's merge, which waits for issue, would
+// wait on each other for ever. members is issue's tree where the caller has read it already
+// (acceptanceHeld), and nil for one to read it only when Dispatch shows a child under issue at
+// all, which is what the guard on every phase start reads (childrenHolding).
+func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue, members []record.Issue) ([]record.OpenChild, error) {
+	mirrored, err := e.store.DispatchChildren(ctx, tx, e.cfg.Project, []string{issue.Key})
+	if err != nil {
+		return nil, err
+	}
+	rows := mirrored[issue.Key]
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	if members == nil {
+		if members, err = e.treeMembers(ctx, tx, issue); err != nil {
+			return nil, err
+		}
+	}
+	waits, err := record.OpenChildWaits(ctx, tx, e.store, e.cfg.Project, members, map[string][]record.DispatchIssueRow{issue.Key: rows}, nil)
+	return waits[issue.Key].Open, err
+}
+
+// isParent says whether issue is a parent: an issue with a Dispatch child of any status in the
+// daemon's copy of Dispatch (Store.HasDispatchChildren, one exists query), whether or not it ever
+// waited on one. Every testing task of a parent asks for the round on the head merged with the tip
+// of the pull request's base branch (withBaseMergeRun), so the answer is read for a testing task
+// alone (testingParent).
+func (e *Engine) isParent(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+	return e.store.HasDispatchChildren(ctx, tx, e.cfg.Project, issue.Key)
+}
+
+// testingParent is the parent flag of a task of the phase issue stands in (task,
+// ResumePhaseTask): whether issue is a parent (isParent) where that phase is testing, the one
+// phase whose task reads the flag, and false with no read of the copy for any other, so a start
+// of another phase, the admission pass's send of each owed entry among them, reads nothing more.
+func (e *Engine) testingParent(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+	if issue.Phase != phase.Testing {
+		return false, nil
+	}
+	return e.isParent(ctx, tx, issue)
+}
+
 // signOff is the architect's acceptance of a reviewed head: it moves the issue from accepting to
 // retro and starts the implementer there, told the review's handoff and the pull request as the
 // approval told it before acceptance existed. Outside accepting it changes nothing and says so.
 //
 // It is refused while any issue beneath the one being accepted is still in the workflow
-// (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them. A parent's work is proved by a head
-// that carries its children's merges: accepted first, it would reach retro and the merge
-// with their work not in it, which is what dispatch://INFRA-980 forbids. The acceptance
-// was held this way once before (dispatch://INFRA-229) and the hold was taken off because a
-// parent's approved pull request then waited outside the merge queue and went stale against its
-// base; under children-first a parent starts its own phases only after its children have left,
-// so by the time it is accepted there is nothing left to wait for, and the refusal is the
-// backstop for a child filed after the parent started.
+// (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them. A parent is accepted on a head that
+// need not carry its children's merges, once each check a role runs has a pass at that head whose
+// observed line names a base commit that carries every needed child's merge, and no base carries
+// that merge before the child merges: accepted first, the parent would reach retro and the merge
+// with no check of it run on its children's work, which is what dispatch://INFRA-980 forbids. The
+// acceptance was held this way once before (dispatch://INFRA-229) and the hold was taken off
+// because a parent's approved pull request then waited outside the merge queue and went stale
+// against its base. Now no phase of a parent starts while an open child stands under it, and the
+// admission pass that sees one moves a parent in accepting to awaiting_children, where it holds no
+// slot and from which it comes back as testing, whose round runs on its head merged with the base's
+// tip once that tip carries the children's merges (dispatch://INFRA-3320 R9, R12). So the refusal
+// is the backstop for a sign-off that comes before that pass, and the hold itself for a parent
+// whose pull request has merged, which the wait leaves where it stands.
+//
+// Past that, it is refused while a root whose step rests on the issue's approval is still in the
+// workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW), and then while a Dispatch child of the issue is open
+// (SIGNOFF_CHILD_OPEN), each naming what holds it, in that order (acceptanceHeld,
+// dispatch://INFRA-3320 R8): the issue's requirements are proved by the checks of the issues under
+// it together, so it is accepted after them, before the admission pass that would move it. A
+// parent that the wait has already moved stands in awaiting_children, no phase that sign_off acts
+// on, and is refused with the wait's own code, naming its open children (waitingRefusal, R11).
 func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
+	if issue.Phase == phase.AwaitingChildren {
+		return e.waitingRefusal(ctx, tx, *issue, actSignOff)
+	}
 	if issue.Phase != phase.Accepting {
 		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)), nil
 	}
-	open, err := e.openBeneath(ctx, tx, *issue)
+	held, err := e.acceptanceHeld(ctx, tx, *issue)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if len(open) > 0 {
-		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: run each one to done, and sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
-			issue.Key, strings.Join(open, ", "))), nil
+	if refusal, refuses := held.refusal(actSignOff, issue.Key); refuses {
+		return refusal, nil
 	}
 	review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
@@ -2080,32 +2294,59 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// it is the one thing the entry fence cannot read from anywhere else: a phase re-entered by a
 	// move back asks for its work to be done again, and the completion of the entry before it
 	// does not answer for that however its commit reads (record.PhaseRow.EntryMovedBack,
-	// api/handoff.go). It is read here and not below because issue.Phase is moved onto row.To a
-	// few lines down, which would leave the start comparing a phase with itself.
+	// api/handoff.go). The start reads it again of the phase the move left, which it is handed,
+	// and the phase the issue then stands in (enter).
+	//
+	// A parent with an open Dispatch child starts no phase of planning through accepting
+	// (dispatch://INFRA-3320 R9): the guard reads its open children after the row is chosen
+	// (childrenHolding), and where one holds the start the parent moves to awaiting_children in
+	// its place (holdForChildren), whatever its tree's design gate reads. It is read before the
+	// counts because the counts run as they run today and say that the parent waits (R10): a move
+	// back still counts its pass and its pair, but no hook of the deployment fires while no role
+	// of the parent has a phase (recordPass), and a request for changes still counts its round,
+	// whose cap message says the parent waits on its children rather than that its worker
+	// started (recordRound).
+	open, err := e.childrenHolding(ctx, tx, issue, row.To, pr)
+	if err != nil {
+		return err
+	}
 	movedBack := phase.MovesBack(issue.Phase, row.To)
 	if movedBack {
-		if err := e.recordPass(ctx, tx, issue.Key, issue.Phase, row.To, pr); err != nil {
+		if err := e.recordPass(ctx, tx, issue.Key, issue.Phase, row.To, pr, len(open) > 0); err != nil {
 			return err
 		}
 	}
 	if trigger == TriggerReviewRejected {
-		if err := e.recordRound(ctx, tx, issue.Key, pr); err != nil {
+		if err := e.recordRound(ctx, tx, issue.Key, pr, open); err != nil {
 			return err
 		}
+	}
+	// The move names the end of the step the issue stood in, on the issue as it stood, before the
+	// phase write: the result and the return the record does not hold (nameMoveEnd). The start
+	// below ends that run before it begins its own (startStep), and a move that starts nothing
+	// leaves it to the fact's settle (SettleFact). A move the guard holds ends the step as the
+	// move would have, a tester's pass as passed and a fail as failed: the parent's wait in
+	// awaiting_children is what follows the step, not how it ended.
+	if err := e.nameMoveEnd(ctx, issue, trigger, row.To, handoff); err != nil {
+		return err
+	}
+	if len(open) > 0 {
+		return e.holdForChildren(ctx, tx, issue, trigger, row.To, handoff, pr, reason, open)
 	}
 	status := PhaseStatus(row.To)
 	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, reason)); err != nil {
 		return err
 	}
-	// The move names the end of the step the issue stood in, on the issue as it stood, before the
-	// phase write: the result and the return the record does not hold (nameMoveEnd). The start
-	// below ends that run before it begins its own (startStep), and a move that starts nothing
-	// leaves it to the fact's settle (SettleFact).
-	if err := e.nameMoveEnd(ctx, issue, trigger, row.To, handoff); err != nil {
-		return err
-	}
 	from := issue.Phase
 	issue.Phase, issue.Hold = row.To, nil
+	// The task the start below hands the worker. A testing task of a parent asks for the round on
+	// the head merged with its base's tip (withBaseMergeRun), whether or not the parent waited, so
+	// the mirror is read for a move into testing alone (testingParent).
+	parent, err := e.testingParent(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	work := task(issue, handoff, pr, reason, parent)
 	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
 	// run earns record.Issue.TakenBack: it has stood in a phase. The mark is a fact about that run,
 	// not about the issue's history. It lasts as long as the run's record does — through the phase's
@@ -2130,6 +2371,14 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", row.To, "trigger", trigger, "status", issue.Status)
+	// An issue the daemon moves into retro or merging is accepted (record.Accepted), so it leaves
+	// R1's first condition, and every step of another root that waits on it as an ancestor ends
+	// its wait (dispatch://INFRA-3320). A step that stands open on it stays open (R3).
+	if record.Accepted(issue) {
+		if err := e.endPendingOn(ctx, tx, issue.Key, fmt.Sprintf("The daemon moved %s into %s, so %s is accepted.", issue.Key, row.To, issue.Key)); err != nil {
+			return err
+		}
+	}
 	if err := e.clearHandoff(ctx, tx, issue.Key, phase.RoleFor(row.To)); err != nil {
 		return err
 	}
@@ -2162,22 +2411,17 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// issue that arrives there and waits must be told why: the notice its architect got at the
 	// merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
-	if !mergedAlready {
-		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
+	// A merge GitHub has already made is one of two moves that start a step no phase worker's
+	// start begins: no merger runs it, so it starts here under the agent its step names
+	// (startStandingStep), and its close ends it. Every other move starts what a move into its
+	// phase starts (startEntered): the phase's worker, and for accepting, whose role is the
+	// architect, a child's failed architect started again and the accepting step.
+	if mergedAlready {
+		if err := e.startStandingStep(ctx, tx, issue); err != nil {
 			return err
 		}
-	}
-	// Two moves start a step no phase worker's start begins, so it starts here, under the agent it
-	// names (startNamedStep): a merge GitHub has already made, which no merger runs and whose close
-	// ends it, and accepting, whose role is the architect, for which start above starts no worker
-	// and only starts a child's failed architect again (reviveArchitect), as every phase start of a
-	// child does.
-	if mergedAlready || row.To == phase.Accepting {
-		if step, ok := standingStep(issue); ok {
-			if err := e.startNamedStep(ctx, tx, issue, step); err != nil {
-				return err
-			}
-		}
+	} else if err := e.startEntered(ctx, tx, issue, starting, work, from); err != nil {
+		return err
 	}
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
 		return err
