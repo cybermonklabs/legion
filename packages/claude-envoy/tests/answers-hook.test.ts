@@ -1,4 +1,6 @@
 import { afterAll, afterEach, beforeAll, test as bunTest, expect } from "bun:test"
+import { AsyncLocalStorage } from "node:async_hooks"
+import { spawnSync } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -48,22 +50,49 @@ const COMMAND_TOKEN = fixtureSecret("dsp")
 /** The Dispatch token the command envoy.json names first prints, before it names another. */
 const BEFORE_TOKEN = fixtureSecret("dsp")
 
-// Each row's `60_000`, its hang guard and its afterEach's, is the package test script's own
-// `--timeout` (`bun test --timeout=60000`, package.json), given to each row so a run of this file
-// alone has it too. It is a number at each row, not a named constant, because Biome formats a
-// `test(…)` call whose last argument is a number as a test call and any other as a plain call.
-// Each row waits for the event it needs (a refresher's outcome written and its lock gone, a
-// process ended, a file another process writes) and decides on what that event shows. A row's
-// body waits for at most one refresher's start-up, and its afterEach for at most one more (the
-// refreshers its last hooks started, which run side by side), so the guard decides a row only
-// when one refresher's start-up alone takes most of that minute: with the start of each refresher
-// held 30 s, every row passes. Fixed bounds of 15 s and 20 s decided rows before: on a box at a
-// load of 766, one row's first refresher wrote no outcome within the 15 s that row waited for it.
+// Each row's `60_000` is its hang guard, and the afterEach's own `60_000` is the afterEach's: Bun
+// times an afterEach by the `--timeout` the run names, 5 s when it names none, and not by its
+// row's. It is the package test script's own `--timeout` (`bun test --timeout=60000`,
+// package.json), given here so a run of this file alone has it too. It is a number at each row,
+// not a named constant, because Biome formats a `test(…)` call whose last argument is a number as
+// a test call and any other as a plain call. Each row waits for the event it needs (a
+// refresher's outcome written and its lock gone, a process ended, a file another process writes)
+// and decides on what that event shows. A row's body waits for at most one refresher's start-up,
+// and its afterEach for at most one more (the refreshers its last hooks started, which run side
+// by side), so the guard decides a row only when one refresher's start-up alone takes most of
+// that minute: with the start of each refresher held 30 s, every row passes. Fixed bounds of 15 s
+// and 20 s decided rows before: on a box at a load of 766, one row's first refresher wrote no
+// outcome within the 15 s that row waited for it.
 
-const cleanup: (() => Promise<void>)[] = []
+/** One row: whether it ended (its afterEach began), the end of its body, each hook it started
+ *  with the end of its run, each hook's timing file, and its cleanup steps. Each belongs to its
+ *  row alone, so an afterEach still running when the next row starts touches nothing of it. */
+interface Row {
+  ended: boolean
+  settled: Promise<void>
+  readonly hooks: { readonly process: Subprocess; readonly settled: Promise<void> }[]
+  readonly timings: string[]
+  readonly steps: (() => Promise<void>)[]
+}
 
-/** The row running now: whether it ended (its afterEach began), and the end of its body. */
-let row: { ended: boolean; settled: Promise<void> } | undefined
+/** The row whose body the code running now belongs to: a body that goes on after its row ended
+ *  still finds its own row, not the one running then. */
+const rowContext = new AsyncLocalStorage<Row>()
+/** The row that started last, for its afterEach. */
+let lastRow: Row | undefined
+
+function currentRow(): Row {
+  const current = rowContext.getStore()
+  if (current === undefined) throw new Error("this step runs only in a row's body")
+  return current
+}
+
+/** The current row's cleanup, run by its afterEach in the reverse order of its steps. */
+const cleanup = {
+  push(step: () => Promise<void>): void {
+    currentRow().steps.push(step)
+  },
+}
 
 /** Each row of this file: `bun:test`'s `test`, keeping the row's body for its afterEach. A body
  *  whose row timed out goes on until what it awaits settles, and then stops at its next hook or
@@ -73,9 +102,15 @@ function test(name: string, body: () => Promise<void>, timeout: number): void {
   bunTest(
     name,
     () => {
-      const current = { ended: false, settled: Promise.resolve() }
-      row = current
-      const run = body().catch((error: unknown) => {
+      const current: Row = {
+        ended: false,
+        settled: Promise.resolve(),
+        hooks: [],
+        timings: [],
+        steps: [],
+      }
+      lastRow = current
+      const run = rowContext.run(current, body).catch((error: unknown) => {
         if (!current.ended) throw error
       })
       current.settled = run.catch(() => {})
@@ -85,28 +120,24 @@ function test(name: string, body: () => Promise<void>, timeout: number): void {
   )
 }
 
-/** Throws once the row running now ended, so a body that timed out starts and waits for nothing
- *  more. */
+/** Throws once the row whose body runs this ended, so a body that timed out starts and waits for
+ *  nothing more. The afterEach's cleanup, which is no row's body, goes on. */
 function rowGoesOn(): void {
-  if (row?.ended === true) throw new Error("the row ended before this step")
+  if (rowContext.getStore()?.ended === true) throw new Error("the row ended before this step")
 }
 
-/** Each hook the row running now started, and the end of its run. */
-const startedHooks: { readonly process: Subprocess; readonly settled: Promise<void> }[] = []
-
 afterEach(async () => {
-  if (row !== undefined) {
-    row.ended = true
-    // A hook still running when its row ended is the row's to end; once each has, the body
-    // settles too.
-    for (const hook of startedHooks) hook.process.kill("SIGKILL")
-    await Promise.all(startedHooks.map((hook) => hook.settled))
-    await row.settled
-    row = undefined
-  }
-  startedHooks.length = 0
-  for (const step of cleanup.splice(0).reverse()) await step()
-})
+  const current = lastRow
+  lastRow = undefined
+  if (current === undefined) return
+  current.ended = true
+  // A hook still running when its row ended is the row's to end; once each has, the body
+  // settles too.
+  for (const hook of current.hooks) hook.process.kill("SIGKILL")
+  await Promise.all(current.hooks.map((hook) => hook.settled))
+  await current.settled
+  for (const step of current.steps.splice(0).reverse()) await step()
+}, 60_000)
 
 type Route =
   | { readonly kind: "list"; readonly items: readonly SessionAnswer[] }
@@ -200,8 +231,9 @@ async function scratch(): Promise<{
   readonly tmp: string
 }> {
   const root = await mkdtemp(join(tmpdir(), "claude-envoy-answers-"))
+  const owner = currentRow()
   cleanup.push(async () => {
-    await refreshersEnded()
+    await refreshersEnded(owner)
     await rm(root, { recursive: true, force: true })
   })
   const home = join(root, "home")
@@ -254,74 +286,83 @@ async function textOf(file: string): Promise<string | undefined> {
   })
 }
 
-/** A process a case knows of: its pid, and when it started (the 22nd field of
- *  `/proc/<pid>/stat`, clock ticks since boot), which a later process given the same pid does
- *  not share. */
+/** A process a case knows of: its pid, and when it started (`processState`), which a later
+ *  process given the same pid does not share. */
 interface StartedProcess {
   readonly pid: number
   readonly started: string | null
 }
 
-/** `PF_EXITING` in a process's flags, the 9th field of `/proc/<pid>/stat`: it is in its exit. */
-const PF_EXITING = 0x4
-/** SIGKILL's bit in the signals pending for a process, the 31st field of `/proc/<pid>/stat`. */
-const SIGKILL_PENDING = 1 << 8
+/** Whether this host has /proc, which every read of a process here prefers. */
+const PROC = existsSync("/proc/self/stat")
 
-/** What `/proc/<pid>/stat` holds for `pid` now, each field counted after the command in
- *  parentheses, which may itself hold spaces; undefined once no process has that pid. */
-function procStat(
-  pid: number,
-): { state: string; flags: number; started: string; pending: number } | undefined {
-  let stat: string
-  try {
-    stat = readFileSync(`/proc/${pid}/stat`, "utf8")
-  } catch (error) {
-    if (!existsSync("/proc/self/stat")) {
-      throw new Error(
-        "this host has no /proc, which this file reads to tell whether a process ended",
-      )
+/** Process `pid`'s state and when it started, as the hook's `processStarted` reads the start:
+ *  the 3rd and 22nd fields of `/proc/<pid>/stat` (each counted after the command in parentheses,
+ *  which may itself hold spaces), or where there is no /proc, `ps -o stat=,lstart= -p <pid>` in
+ *  the hook's fixed environment, the start prefixed `ps:`. Undefined once no process has that
+ *  pid; a `ps` that does not answer fails the row rather than read as a process gone. One
+ *  process's file, or `ps` for one pid, never a scan (docs/testing.md, "A test that looks for a
+ *  process it started"). */
+function processState(pid: number): { state: string; started: string } | undefined {
+  if (PROC) {
+    let stat: string
+    try {
+      stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === "ENOENT" || code === "ESRCH") return undefined
+      throw error
     }
-    const code = (error as NodeJS.ErrnoException).code
-    if (code === "ENOENT" || code === "ESRCH") return undefined
-    throw error
+    // Field 3, the state, onwards: field n is at n - 3.
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
+    return { state: fields[0] as string, started: fields[19] as string }
   }
-  // Field 3, the state, onwards: field n is at n - 3.
-  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
-  return {
-    state: fields[0] as string,
-    flags: Number(fields[6]),
-    started: fields[19] as string,
-    pending: Number(fields[28]),
+  const ps = spawnSync("ps", ["-o", "stat=,lstart=", "-p", String(pid)], {
+    encoding: "utf8",
+    env: { LC_ALL: "C", PATH: process.env["PATH"] ?? "/usr/bin:/bin", TZ: "UTC" },
+    timeout: 10_000,
+  })
+  if (ps.error !== undefined || ps.signal !== null) {
+    throw new Error(`ps did not answer for process ${pid}: ${ps.error?.message ?? ps.signal}`)
   }
+  // `ps` prints nothing, and exits 1, for a pid no process has.
+  const line = /^(\S+)\s+(.+)$/.exec(ps.stdout.trim())
+  if (line === null) return undefined
+  return { state: line[1] as string, started: `ps:${line[2]}` }
 }
 
-/** Whether `known` has ended: no process has its pid, or that process is a zombie, is in its
- *  exit, holds a SIGKILL it has not yet run to take, or is another process given the pid since
- *  (another start). Read from /proc rather than by `kill(pid, 0)`, which answers for a zombie
- *  and for that other process. A process a group kill reached reads as ended from the kill on,
- *  whether or not the kernel has run it since. */
+/** Whether `known` has ended: no process has its pid, or that process is a zombie, or it is
+ *  another process given the pid since (another start). Read this way rather than by
+ *  `kill(pid, 0)`, which answers for a zombie and for that other process. A process a kill reached
+ *  still reads as running until the kernel has run its exit: in a gVisor sandbox a SIGKILLed
+ *  subshell read S, R or D for 1 to 29 ms after the kill, and gVisor shows neither the exit flag
+ *  nor the pending signal in /proc. So each read here is a wait (`processEnded`), never one look. */
 function ended(known: StartedProcess): boolean {
   if (known.started === null) throw new Error(`no start was read for process ${known.pid}`)
-  const stat = procStat(known.pid)
+  const now = processState(known.pid)
   return (
-    stat === undefined ||
-    stat.state === "Z" ||
-    stat.state === "X" ||
-    stat.started !== known.started ||
-    (stat.flags & PF_EXITING) !== 0 ||
-    (stat.pending & SIGKILL_PENDING) !== 0
+    now === undefined ||
+    now.state.startsWith("Z") ||
+    now.state.startsWith("X") ||
+    now.started !== known.started
   )
 }
 
-/** The timing file of each hook a case started since the last wait for its refreshers ended. */
-const hookTimings: string[] = []
+/** Waits until `known` has ended. It tells nobody it ended, so the wait polls it on the real
+ *  clock; one that ended answers at once. The row's hang guard is the only bound. */
+async function processEnded(known: StartedProcess): Promise<void> {
+  while (!ended(known)) {
+    rowGoesOn()
+    await Bun.sleep(20)
+  }
+}
 
-/** The refreshers the hooks of `hookTimings` named in their timing files. A hook names its
- *  refresher as soon as it started it, so one ended before it exited still told; one with no
- *  file was ended before it started any. */
-async function namedRefreshers(): Promise<StartedProcess[]> {
+/** The refreshers the hooks of `owner` named in their timing files. A hook names its refresher as
+ *  soon as it started it, so one ended before it exited still told; one with no file was ended
+ *  before it started any. */
+async function namedRefreshers(owner: Row = currentRow()): Promise<StartedProcess[]> {
   const named: StartedProcess[] = []
-  for (const file of hookTimings) {
+  for (const file of owner.timings) {
     const text = await textOf(file)
     if (text === undefined) continue
     const { refresher }: Pick<HookTiming, "refresher"> = JSON.parse(text)
@@ -330,16 +371,9 @@ async function namedRefreshers(): Promise<StartedProcess[]> {
   return named
 }
 
-/** Waits until every refresher the case's hooks named has ended, then forgets them. A refresher
- *  tells nobody it ended, so the wait polls each one's /proc entry on the real clock; one that
- *  ended answers at once. The row's hang guard is the only bound. */
-async function refreshersEnded(): Promise<void> {
-  const named = await namedRefreshers()
-  while (named.some((refresher) => !ended(refresher))) {
-    rowGoesOn()
-    await Bun.sleep(20)
-  }
-  hookTimings.length = 0
+/** Waits until every refresher the hooks of `owner` named has ended. */
+async function refreshersEnded(owner: Row = currentRow()): Promise<void> {
+  for (const refresher of await namedRefreshers(owner)) await processEnded(refresher)
 }
 
 /** Waits until one refresher the case's hooks named holds the session's lock (its pid in
@@ -365,7 +399,8 @@ async function refresherHoldsLock(state: string): Promise<void> {
  *  background, that runs while `home` exists (the case's scratch removes it), and whose pid the
  *  command writes to `file`, whole (through a rename). envoy-config runs the command as the leader
  *  of a process group of its own, which the subshell is in, and kills that group once the command
- *  exits; with no such kill the subshell outlives the command. */
+ *  exits; with no such kill the subshell outlives the command, and a wait for its end
+ *  (`processEnded`) holds until the row's hang guard fails the row. */
 function leftBehind(file: string, home: string): string {
   return `(while [ -d '${home}' ]; do sleep 0.02; done) >/dev/null 2>&1 & echo $! > '${file}.part' && mv '${file}.part' '${file}'; `
 }
@@ -376,7 +411,7 @@ function leftBehind(file: string, home: string): string {
 async function leftBehindStarted(file: string): Promise<StartedProcess> {
   await fileWritten(file)
   const pid = Number(await readFile(file, "utf8"))
-  return { pid, started: procStat(pid)?.started ?? null }
+  return { pid, started: processState(pid)?.started ?? null }
 }
 
 /** A `--preload` for a hook that writes `signal` once its process has started, then holds the
@@ -435,9 +470,10 @@ function runHook(
   options: { readonly preload?: string } = {},
 ): Promise<HookRun> {
   rowGoesOn()
+  const owner = currentRow()
   hookCount += 1
   const timingFile = join(timingDirectory, `hook-${hookCount}.json`)
-  hookTimings.push(timingFile)
+  owner.timings.push(timingFile)
   const preload = options.preload === undefined ? [] : ["--preload", options.preload]
   const run = Bun.spawn(["bun", ...preload, bundle, "answers"], {
     env: {
@@ -460,7 +496,7 @@ function runHook(
     return { exitCode, stdout, stderr, timing }
   })()
   // A handler of its own, so a run whose row ended before it did fails nothing after that row.
-  startedHooks.push({
+  owner.hooks.push({
     process: run,
     settled: finished.then(
       () => {},
@@ -933,12 +969,13 @@ test("a slow `!` token command cannot hold the hook, and its refresher still rea
   expect(dispatch.requests).toEqual([])
 
   // The slow command still ends, its refresher reads with the token it printed, and envoy-config
-  // killed the command's process group, the process it left behind with it.
+  // killed the command's process group, the process it left behind with it: that process ends,
+  // where with no group kill it runs until the case's cleanup.
   const behind = await leftBehindStarted(left)
   await writeFile(gate, "")
   await refresherFinished(state, slowSince)
   expect(dispatch.requests).toEqual([`Bearer late /api/v1/agents/${SESSION}/answers`])
-  expect(ended(behind)).toBe(true)
+  await processEnded(behind)
   expect(await readdir(tmp)).toEqual([])
 }, 60_000)
 
@@ -973,8 +1010,9 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   await writeFile(gate, "")
   await refresherFinished(state, firstSince)
   expect(await readdir(tmp)).toEqual([])
-  // envoy-config killed the command's process group, the process it left behind with it.
-  expect(ended(behind)).toBe(true)
+  // envoy-config killed the command's process group, the process it left behind with it: that
+  // process ends, where with no group kill it runs until the case's cleanup.
+  await processEnded(behind)
   expect(dispatch.requests).toEqual([`Bearer ${DISPATCH_TOKEN} /api/v1/agents/${SESSION}/answers`])
 
   // The next hook carries the list that refresher read. Its own refresher runs the command again,
@@ -1070,11 +1108,20 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
 
   // envoy.json now names another Dispatch. A hook starts while the refresher runs; it opens the
   // gate once its process has started and holds its code until the refresher has read `before`
-  // and finished, so the hook finds that outcome, from after it started, at its first look.
+  // and finished, so the hook finds that outcome, from after it started, at its first look. The
+  // refresher this hook then starts runs a command that waits on a gate of its own, which the
+  // case's cleanup opens, so it writes no outcome over that one before the hook has looked.
+  const nowGate = join(home, "now-gate")
   await writeFile(
     envoyJson,
-    JSON.stringify({ dispatch: { serverUrl: now.base, token: "!printf now-token" } }),
+    JSON.stringify({
+      dispatch: {
+        serverUrl: now.base,
+        token: `!while [ ! -e '${nowGate}' ]; do sleep 0.02; done; printf now-token`,
+      },
+    }),
   )
+  cleanup.push(() => writeFile(nowGate, ""))
   const preload = await preloadAfterRefresher(home, state, gate)
   const context = contextOf(
     await runHook(env, sessionStart("resume", home), { preload }),
@@ -1113,10 +1160,19 @@ test("a refresher started after one read the Dispatch envoy.json named before re
     before.base,
     renderSessionAnswers(beforeItems, { now: Date.now(), total: 1 }) as string,
   )
+  // The command waits until the test opens the gate, so the refresher the hook below starts
+  // writes no outcome over the planted one before the hook has looked.
+  const gate = join(home, "gate")
   await writeFile(
     join(config, "envoy.json"),
-    JSON.stringify({ dispatch: { serverUrl: now.base, token: "!printf now-token" } }),
+    JSON.stringify({
+      dispatch: {
+        serverUrl: now.base,
+        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf now-token`,
+      },
+    }),
   )
+  cleanup.push(() => writeFile(gate, ""))
 
   const context = contextOf(await runHook(env, sessionStart("resume", home)), "SessionStart")
   expect(context).toBe(
@@ -1126,6 +1182,7 @@ test("a refresher started after one read the Dispatch envoy.json named before re
   )
   // The refresher that hook started reads the Dispatch named now, never `before`. The wait is the
   // refresher's own end: the outcome planted above is dated a minute ahead.
+  await writeFile(gate, "")
   await refreshersEnded()
   expect(now.requests).toEqual([`Bearer now-token /api/v1/agents/${SESSION}/answers`])
   expect(before.requests).toEqual([])
