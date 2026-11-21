@@ -64,9 +64,11 @@ The hub refuses these before it registers anything. Each refusal of an input is 
 `core.InputError` naming it: an entry of a list of strings by the list's own name, with its index
 in the message (`tags` for `tags[1] "…" must match …`); a user of `users` as `users`, or by the
 field's own path for its machine id (`users[0].machineId`); and the authorization's refusals of
-the listener's user as `listener`, with an empty `listener.nkey` as `listener.nkey`, and of the
-session user as `sessionUser`. A seed in the hub's own name and a missing provider refuse no
-input, so neither is one:
+the listener's user as `listener`, with an empty `listener.nkey` as `listener.nkey` and a user of
+`users` named after `hostname` as `users`, and of the session user as `sessionUser`. A seed in the
+hub's own name and a missing provider refuse no input, so neither is one.
+
+It refuses:
 
 - an nkey seed, found as `envoy-infra seed` finds one (`bus.HoldsSeed`: any type, either case,
   whole, inside a longer value, split by `.`, `-`, `_` or whitespace, or percent-encoded), in the
@@ -261,7 +263,8 @@ user's name or a rule entry before any of those, naming the path and not the val
 user and the session user are named by their inputs in the same refusals, as
 `listener "<h>": nkey repeats users[0] "example-host-a"` or
 `sessionUser "<name>": nkey is not a user public key …`; a user of `users` named `<h>` is refused
-as the listener's user repeating it, as `listener "<h>": name repeats users[<index>]`.
+as the listener's user repeating it, as `listener "<h>": name repeats users[<index>]`, naming
+`users`, since that entry is the one to rename.
 
 ### The auth service
 

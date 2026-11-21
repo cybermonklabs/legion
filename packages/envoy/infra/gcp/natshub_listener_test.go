@@ -141,9 +141,12 @@ func TestNatsHubResolverRefusesInvalidListenerAndSessionUserInputs(t *testing.T)
 			edit:  func(a *gcp.NatsHubArgs) { a.Listener.NKey = keyA },
 			err:   []string{`listener "example-hub"`, `nkey repeats users[0] "example-host-a"`},
 		},
+		// The hub names its listener's user after hostname, an input the listener does not hold, so
+		// a user of users that takes that name is the input to change: core names the listener, as
+		// the later of the two, and the hub names users.
 		{
 			name:  "a user named after the hub, which the listener's user is",
-			input: "listener",
+			input: "users",
 			edit:  func(a *gcp.NatsHubArgs) { a.Users[1].Name = "example-hub" },
 			err:   []string{`listener "example-hub"`, "name repeats users[1]"},
 		},

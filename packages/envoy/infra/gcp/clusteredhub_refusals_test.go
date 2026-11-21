@@ -299,6 +299,10 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 		{"a user's machine id with a slash", func(a *A) { a.Users[0].MachineID = str("a/b") }, "users[0].machineId", []string{"users[0].machineId contains '/'"}},
 		{"a session user with no nkey", func(a *A) { a.SessionUser.NKey = "" }, "sessionUser", []string{"sessionUser.nkey is required"}},
 		{"a session user named as a user", func(a *A) { a.SessionUser.Name = "example-host-a" }, "sessionUser", []string{"name repeats users[0]"}},
+		// The clustered hub names its listener's user after the listener's machineId, an input the
+		// listener holds, so a user of users taking that name names the listener, as core does.
+		{"a user named after the listener's machine id", func(a *A) { a.Users[1].Name = "envoy-hub" }, "tailnet.listener",
+			[]string{`listener "envoy-hub": name repeats users[1]`}},
 	})
 }
 

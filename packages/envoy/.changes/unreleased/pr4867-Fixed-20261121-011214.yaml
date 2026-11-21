@@ -5,12 +5,12 @@ body: |-
   `envoy-infra:gcp:ClusteredNatsHub`: an entry of a list of strings by the list's own name, its
   index in the message (`tags`, `listener.allowedHosts`); a user of `users` as `users`; the
   authorization's refusals of the listener's user as `listener`, with an empty `listener.nkey` as
-  `listener.nkey`, and of the session user as `sessionUser`; and a seed in `network`,
-  `subnetwork` or `tailnetAuthKey`, refused once it resolves, by that input. A seed in an entry of
-  one of `gcp:ClusteredNatsHub`'s lists of strings is now named by the list too
-  (`clientNamespaces`, not `clientNamespaces[1]`), as both hubs and `gcp:Dispatch` name every other
-  refusal of such an entry. Every message is unchanged. A seed in the component's own name and a
-  missing `gcp` provider refuse no input, and stay plain errors.
+  `listener.nkey` and a user of `users` named after `hostname` as `users`, and of the session user
+  as `sessionUser`; and a seed in `network`, `subnetwork` or `tailnetAuthKey`, refused once it
+  resolves, by that input. A seed in an entry of one of `gcp:ClusteredNatsHub`'s lists of strings
+  is now named by the list too (`clientNamespaces`, not `clientNamespaces[1]`), as both hubs and
+  `gcp:Dispatch` name every other refusal of such an entry. Every message is unchanged. A seed in
+  the component's own name and a missing `gcp` provider refuse no input, and stay plain errors.
 time: 2026-11-21T01:12:14Z
 custom:
     Issue: pr4867

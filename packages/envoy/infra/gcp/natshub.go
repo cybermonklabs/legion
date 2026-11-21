@@ -326,7 +326,7 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 	}
 	conf, err := auth.Render([]string{confHeader})
 	if err != nil {
-		return settings{}, authorizationRefusal(err, "listener")
+		return settings{}, authorizationRefusal(err, "listener", true)
 	}
 	s.vm = vm{
 		hostname:       args.Hostname,
@@ -520,7 +520,13 @@ func calloutRefusal(err error) error {
 // other names the input its message starts with, as core labels a user: users[<i>] names users,
 // listener names listenerPath, where the listener is declared (listener or tailnet.listener), and
 // sessionUser or noAuthUser names sessionUser.
-func authorizationRefusal(err error, listenerPath string) error {
+//
+// hostnameNamesListener is true where the listener's user takes its name from no input of the
+// listener's (gcp:NatsHub names it after hostname): there core's refusal of the listener's name as
+// one a user of users already has, which core always reports on the listener since it follows
+// users, names users, whose entry is the one to rename. gcp:ClusteredNatsHub names the user after
+// the listener's machineId, so there it names the listener.
+func authorizationRefusal(err error, listenerPath string, hostnameNamesListener bool) error {
 	err = calloutRefusal(err)
 	var input *core.InputError
 	if errors.As(err, &input) {
@@ -529,6 +535,8 @@ func authorizationRefusal(err error, listenerPath string) error {
 	switch message := err.Error(); {
 	case strings.HasPrefix(message, "sessionUser"), strings.HasPrefix(message, "noAuthUser"):
 		return &core.InputError{Input: "sessionUser", Err: err}
+	case strings.HasPrefix(message, "listener") && hostnameNamesListener && strings.Contains(message, ": name repeats users["):
+		return &core.InputError{Input: "users", Err: err}
 	case strings.HasPrefix(message, "listener") && listenerPath != "":
 		return &core.InputError{Input: listenerPath, Err: err}
 	}

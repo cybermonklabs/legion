@@ -491,7 +491,7 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 		return clusteredHubSettings{}, err
 	}
 	if s.authConf, err = auth.Render([]string{confHeader}); err != nil {
-		return clusteredHubSettings{}, authorizationRefusal(err, listenerPath)
+		return clusteredHubSettings{}, authorizationRefusal(err, listenerPath, false)
 	}
 	if args.SessionUser != nil {
 		s.sessionNKey = args.SessionUser.NKey
