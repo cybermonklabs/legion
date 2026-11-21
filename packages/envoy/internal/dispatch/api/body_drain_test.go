@@ -95,11 +95,12 @@ func (b *heldBackBody) answer() (*http.Response, []byte) {
 	return response, answer
 }
 
-// closedByServer reports whether the server closed the connection within wait of the call: the
-// next read meets the connection's end.
-func (b *heldBackBody) closedByServer(wait time.Duration) bool {
+// closedByServer reports whether the server closed the connection: the next read meets the
+// connection's end, rather than a byte or the shared wait's bound.
+func (b *heldBackBody) closedByServer() bool {
 	b.t.Helper()
-	if err := b.connection.SetReadDeadline(time.Now().Add(wait)); err != nil {
+	bound, _ := testwait.Context(b.t).Deadline()
+	if err := b.connection.SetReadDeadline(bound); err != nil {
 		b.t.Fatal(err)
 	}
 	_, err := b.reader.ReadByte()
@@ -436,8 +437,11 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 			release := sync.OnceFunc(func() { close(first.release) })
 			t.Cleanup(release)
 			firstAnswer := make(chan keyedAnswered, 1)
+			// The client gives up at the shared wait's bound: net/http sets no deadline for a
+			// Timeout that is not positive, so under -timeout 0 the client has none.
+			bound, _ := testwait.Context(t).Deadline()
 			go func() {
-				status, body, _, err := keyedPost(server, path, `{"n":1}`, judged.key, 30*time.Second)
+				status, body, _, err := keyedPost(server, path, `{"n":1}`, judged.key, time.Until(bound))
 				firstAnswer <- keyedAnswered{status: status, body: body, err: err}
 			}()
 			testwait.Receive(t, "the first request to run", first.running)
@@ -483,7 +487,7 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 				if firstGot.status != http.StatusServiceUnavailable {
 					t.Fatalf("the first request answered %d %s, want its 503", firstGot.status, firstGot.body)
 				}
-				status, again, header, err := keyedPost(server, path, judged.repeat, judged.key, 10*time.Second)
+				status, again, header, err := keyedPost(server, path, judged.repeat, judged.key, time.Until(bound))
 				if err != nil || status != http.StatusCreated || header.Get(contracts.IdempotencyReplayedHeader) != "" {
 					t.Fatalf("the ask after the 409: %d %s replayed=%q (%v), want the request run",
 						status, again, header.Get(contracts.IdempotencyReplayedHeader), err)
@@ -584,8 +588,8 @@ func TestADrainStopsWaitingForABodyThatStalls(t *testing.T) {
 			if !response.Close {
 				t.Fatal("the answer to a stalled body did not say Connection: close")
 			}
-			if !body.closedByServer(drainLimit) {
-				t.Fatalf("the connection was still open %v after the answer to a stalled %d-byte body", drainLimit, stalled.size)
+			if !body.closedByServer() {
+				t.Fatalf("the connection stayed open after the answer to a stalled %d-byte body", stalled.size)
 			}
 		})
 	}
@@ -640,7 +644,7 @@ func TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody(t *testing.T) {
 			if response.StatusCode != http.StatusConflict || refusalCode(answer) != early.code {
 				t.Fatalf("status=%d body=%s, want 409 %s", response.StatusCode, answer, early.code)
 			}
-			if !response.Close || !body.closedByServer(5*time.Second) {
+			if !response.Close || !body.closedByServer() {
 				t.Fatalf("the refusal left open a connection whose body was never sent (Connection: %q)", response.Header.Get("Connection"))
 			}
 		})

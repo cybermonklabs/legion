@@ -46,13 +46,13 @@ func Eventually(t *testing.T, what string, condition func() bool) {
 	WithinPolling(t, Bounded(t, time.Minute, time.Second), Poll, what, condition)
 }
 
-// Bounded is bound, or what is left of the test binary's own deadline less margin when that is
+// Bounded is bound, or what is left of the test binary's own deadline less spare when that is
 // sooner, so a -timeout smaller than bound still reports the wait rather than the binary's panic.
-// Eventually is Bounded of a minute and a second; a wait with a span or a margin of its own takes
-// those.
-func Bounded(t *testing.T, bound, margin time.Duration) time.Duration {
+// Eventually is Bounded of a minute and a second; a wait with a span or a spare of its own takes
+// those. spare is the caller's, not this package's margin.
+func Bounded(t *testing.T, bound, spare time.Duration) time.Duration {
 	if testDeadline, ok := t.Deadline(); ok {
-		if left := time.Until(testDeadline) - margin; left < bound {
+		if left := time.Until(testDeadline) - spare; left < bound {
 			bound = left
 		}
 	}
@@ -147,7 +147,9 @@ func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 
 // Context gives a context whose deadline is the test binary's deadline less margin, cancelled
 // when t ends: Receive's end, for a call that takes a context, or a socket whose deadline is the
-// context's. Under -timeout 0 it has no deadline.
+// context's. Under -timeout 0 it has no deadline; under a -timeout of 30 s or less its deadline
+// has already passed when the test starts, so a call under it fails at once, as every wait here
+// does.
 func Context(t *testing.T) context.Context {
 	end, bounded := giveUpAt(t)
 	if !bounded {
