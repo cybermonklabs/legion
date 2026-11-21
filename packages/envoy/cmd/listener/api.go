@@ -849,7 +849,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusConflict, outcomeSessionStopped, "the session is stopped")
 			return
 		}
-		ack, err := d.client.PublishAckWithin(ctx, item)
+		ack, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) { return d.client.PublishAckWithin(ctx, item) })
 		charge.published(ack, err)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
@@ -1234,7 +1234,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
-		ack, err := d.client.PublishAckWithin(ctx, item)
+		ack, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) { return d.client.PublishAckWithin(ctx, item) })
 		charge.published(ack, err)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)

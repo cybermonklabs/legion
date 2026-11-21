@@ -318,7 +318,7 @@ func TestAPublishWithKeepFalseToAnUnheldRoleIsRefusedAndKeepsNothing(t *testing.
 
 // A clustered stream refuses a publish whose message id another publish still has in process
 // (bus.ErrDuplicateInProcess, nats-server's 10158), with no sequence to read a copy at. The keep
-// publishes again under the same id roleKeepInProcessPause later, until an answer names the copy,
+// publishes again under the same id inProcessPause later, until an answer names the copy,
 // all inside its one window (storeKeptRoleCopy): a stream that refuses twice and then stores the
 // copy is a keep that kept it, under KeptMsgID each time, with its hour counted from the copy's
 // store time. A stream that refuses until the window has run out is a keep that failed, and the
@@ -352,8 +352,8 @@ func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
 		if !slices.Equal(ids, []string{msgID, msgID, msgID}) {
 			t.Fatalf("the keep published under %v, want %s three times: the in-process refusal is retried under the id it refused", ids, msgID)
 		}
-		if elapsed < 2*roleKeepInProcessPause {
-			t.Fatalf("the keep took %s over two refusals, want at least two pauses of %s between its publishes", elapsed, roleKeepInProcessPause)
+		if elapsed < 2*inProcessPause {
+			t.Fatalf("the keep took %s over two refusals, want at least two pauses of %s between its publishes", elapsed, inProcessPause)
 		}
 		stored, at, ok := readKeptRoleCopy(t, harness.client, role)
 		if !ok || stored.EventID != item.EventID || kept.item.EventID != item.EventID {
@@ -370,7 +370,7 @@ func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
 		publish := func(context.Context, string, contracts.Envelope, string) (bus.StoredAck, error) {
 			return bus.StoredAck{}, inProcess
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 4*roleKeepInProcessPause)
+		ctx, cancel := context.WithTimeout(context.Background(), 4*inProcessPause)
 		defer cancel()
 		if _, err := storeKeptRoleCopy(ctx, harness.config, role, item, publish); !errors.Is(err, bus.ErrDuplicateInProcess) || !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("a keep refused as in process until its window ended = %v, want a failed keep naming the refusal and the window", err)
