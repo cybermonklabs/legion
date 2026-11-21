@@ -179,7 +179,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 
 				first := grantWorkflow(t, logs)
 				store := consumernames.NewPGStore(first.pool)
-				if _, err := store.WriteSentinel(t.Context(), consumernames.StoreState{Cutover: consumernames.CutoverDone}, 0); err != nil {
+				if _, err := store.WriteSentinel(t.Context(), consumernames.StoreState{Cutover: consumernames.CutoverDone, StreamID: "notifications-as-convert-recorded-it"}, 0); err != nil {
 					t.Fatalf("write the sentinel as the operator's convert does: %v", err)
 				}
 				if err := first.connect(t.Context(), cfg, natsConnection{seed: daemonSeed}); err != nil {
@@ -256,7 +256,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				cfg.ConsumerNames = consumernames.ModeFresh
 				logs := &syncBuffer{}
 				w := grantWorkflow(t, logs)
-				if _, err := consumernames.NewPGStore(w.pool).WriteSentinel(t.Context(), consumernames.StoreState{Cutover: consumernames.CutoverDone}, 0); err != nil {
+				if _, err := consumernames.NewPGStore(w.pool).WriteSentinel(t.Context(), consumernames.StoreState{Cutover: consumernames.CutoverDone, StreamID: "notifications-as-convert-recorded-it"}, 0); err != nil {
 					t.Fatalf("write the sentinel as the operator's convert does: %v", err)
 				}
 				attempt, cancel := context.WithTimeout(t.Context(), 5*time.Second)
