@@ -59,6 +59,56 @@ import { PlanRatingCases } from "./plan-rating-cases";
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 
+// `legionRepositories` exactly as contract 152 holds it (`legion-api.ts` before INFRA-4401, with
+// its cache view and its two primitives beside it): the block a plugin of 152 parses, which
+// requires `owners`, `mapped`, `refused` and `withoutWebhookApp` beside `caches` and strips any
+// other key. Every plugin parses the state with the schema of the contract it was built at, and a
+// Kubernetes deployment relaunches no stale session (INFRA-945 spec R10), so this reader is live in
+// every pod still on the previous image. The route serves a caller below 202 the block in this
+// shape, written from the entries of this contract's own (`api`'s `withoutRepositoriesLive`), and
+// `state-narrowed-repositories.json` is that body: this is a copy and not an import, so a later
+// edit of the current schema cannot move the reader it is held to.
+const nonEmptyAt152 = z.string().min(1);
+const timestampAt152 = z.iso.datetime({ offset: true });
+const cacheViewAt152 = z.object({
+  repo: nonEmptyAt152,
+  sandbox: nonEmptyAt152,
+  state: z.enum(["starting", "cloning", "ready", "failing", "refused"]),
+  reason: nonEmptyAt152.optional(),
+  ready: z.boolean(),
+  address: nonEmptyAt152.optional(),
+  head: nonEmptyAt152.optional(),
+  lastFetchAt: timestampAt152.optional(),
+  bytes: z.number().int().positive().optional(),
+  healthError: nonEmptyAt152.optional(),
+  retainedUntil: timestampAt152.optional(),
+});
+const appInstallationsAt152 = z.object({ implement: z.boolean(), review: z.boolean() });
+const repositoriesAt152 = z.object({
+  owners: z.array(nonEmptyAt152),
+  mapped: z.array(
+    z.object({
+      repo: nonEmptyAt152,
+      default: z.boolean(),
+      apps: appInstallationsAt152.optional(),
+      cache: cacheViewAt152.optional(),
+    })
+  ),
+  refused: z.array(
+    z.object({
+      repo: nonEmptyAt152,
+      reason: nonEmptyAt152,
+      apps: appInstallationsAt152.optional(),
+    })
+  ),
+  withoutWebhookApp: z.array(z.object({ repo: nonEmptyAt152, reason: nonEmptyAt152 })),
+  caches: z.array(cacheViewAt152),
+});
+
+/** The state body a caller below 202 is served: this contract's state, every other key as
+ * this schema reads it, with the repositories block in contract 152's shape. */
+const stateWithRepositoriesAt152 = LegionStateResponse.extend({ repositories: repositoriesAt152 });
+
 /** A claim's secret, as the requests below carry it. */
 const CLAIM_SECRET = fixtureSecret("claim");
 
@@ -71,6 +121,10 @@ const schemas: Record<string, z.ZodType> = {
   // Written by internal/projection's own golden test: what the state route projects while the
   // daemon's own controller (`controller: daemon`) holds its claim on no issue.
   "state-controller-claim.json": LegionStateResponse,
+  // Written by internal/api's TestStateNarrowedRepositoriesGolden: the state route's body for a
+  // caller whose plugin is at the contract before 202, its repositories block in contract 152's
+  // shape.
+  "state-narrowed-repositories.json": stateWithRepositoriesAt152,
   // One issue's record (`GET /legion/v1/issues/{key}/record`), which answers the very value the
   // state holds under `issues.<key>`: the issue schema the state response already carries.
   "issue-record.json": LegionIssueRecordResponse,
@@ -536,6 +590,15 @@ function enumeratedFields(roots: Record<string, z.ZodType>): {
 // kept by hand beside the schemas: a field the daemon adds to its table is compared without a
 // line being added here, and a `z.enum` this module reads at a path the daemon declares nothing
 // for fails the last assertion rather than passing unheld.
+//
+// One kind of row has no field of this module to meet: a field the daemon serves only below its
+// own contract, in a block an older reader parses with its own schema, which this build no longer
+// holds. `repositories.mapped.*.cache.state` is one: contract 202 replaced that block with
+// `live`, and the daemon writes it, in contract 152's shape, for a caller below 202 alone. Such a
+// row is told apart by the records (`contract-shapes.json`): the record of the daemon's own
+// contract carries no such key path and the record of an earlier contract does. That earlier
+// reader's own enumeration holds it, so the row is passed over here; a row no record carries at
+// all is compared as any other, and fails.
 test("every enumerated field the daemon declares holds this build's own values", () => {
   const rows = fixture("enumerated-fields.json") as EnumeratedFieldRow[];
   expect(rows.length).toBeGreaterThan(0);
@@ -543,13 +606,33 @@ test("every enumerated field the daemon declares holds this build's own values",
   expect(problems).toEqual([]);
   // A walk that read no enumeration would leave both directions below holding vacuously.
   expect(members.size).toBeGreaterThan(0);
+  const { daemonApiVersion } = z
+    .object({ daemonApiVersion: z.number() })
+    .parse(fixture("version.json"));
+  // Each answer's key paths, as `<answer> <keyPath>`, in the record of the daemon's own contract
+  // and in the record of any earlier one.
+  const ownPaths = new Set<string>();
+  const earlierPaths = new Set<string>();
+  const records = z
+    .array(z.object({ contract: z.number(), answer: z.string(), keyPaths: z.array(z.string()) }))
+    .parse(fixture("contract-shapes.json"));
+  for (const record of records) {
+    const paths = record.contract === daemonApiVersion ? ownPaths : earlierPaths;
+    for (const keyPath of record.keyPaths) {
+      paths.add(`${record.answer} ${keyPath}`);
+    }
+  }
 
   for (const row of rows) {
+    const field = `${row.answer} ${row.keyPath}`;
+    if (!ownPaths.has(field) && earlierPaths.has(field)) {
+      continue;
+    }
     expect(
       ANSWER_SCHEMAS[row.answer],
       `the daemon declares \`${row.keyPath}\` of the ${row.answer} answer enumerated and ANSWER_SCHEMAS names no schema for that answer`
     ).toBeDefined();
-    const read = members.get(`${row.answer} ${row.keyPath}`);
+    const read = members.get(field);
     expect(
       read,
       `the daemon declares \`${row.keyPath}\` of the ${row.answer} answer enumerated and this module reads it with no z.enum`
@@ -699,7 +782,7 @@ function objectMark(node: z.ZodObject): ObjectMark {
 /** Every object node of the given schemas, by mark and by path, read off `walkSchema`. A path is
  * written as `censusPath` writes it. A node two paths reach is one node, counted at the first
  * path that reaches it: the claim view under `architect`, the cache view under
- * `repositories.mapped[].cache`. */
+ * `repositories.live[].cache`. */
 function objectCensus(roots: Record<string, z.ZodType>): Record<ObjectMark, string[]> {
   const found: Record<ObjectMark, string[]> = { strips: [], refuses: [], loose: [] };
   const seen = new Set<z.core.$ZodType>();
@@ -1935,66 +2018,110 @@ test("a Stage 3 issue without its Dispatch status is read, and one without a pha
   expect(LegionStateResponse.safeParse(phaseless).success).toBeFalse();
 });
 
-// Contract 31: every recorded issue carries the repository it targets and its default branch, its
-// pull request the repository it is in, and the state the project's repository mapping as the
-// daemon serves it, each left-out repository named with the App it lacks. Contract 32: each served
-// repository carries its cache under the Kubernetes runtime, Ready with its last health read or
-// the read's failure, and the caches of repositories no longer served are listed with when they go.
-// Contract 152: the block is every repository the daemon serves, the mapping's and the records'
-// alike, and each entry says which role App is installed on it (`apps`), which is what decides
-// whether the project can work there. A refused entry says what GitHub answered of each App on it
-// wherever GitHub answered both reads, and nothing where a read failed, its reason saying so. A
-// state without the block, or without its caches, is read: no plugin code reads either
-// (`LEGION_ANSWER_READS`). An entry without `apps` is read all the same, with that one answer
-// absent: a daemon of an earlier contract writes none.
-test("the state golden carries each issue's repository and the repositories it serves", () => {
+/** The keys a `live` entry of the repositories block may carry at contract 202, sorted: `repo`,
+ * and each other only where it holds something. Dispatch's webhook App is not among them: the
+ * block's `withoutWebhookApp` is its one report. */
+const LIVE_ENTRY_KEYS = ["apps", "cache", "readError", "repo", "servedAs"];
+
+/** Each raw `live` entry of a written repositories block, as the file holds it. */
+function liveEntries(block: unknown): unknown[] {
+  const live = isJsonObject(block) ? block.live : undefined;
+  return Array.isArray(live) ? live : [];
+}
+
+/** The keys of each raw `live` entry of a written repositories block that are not entry keys
+ * (LIVE_ENTRY_KEYS), one list per entry in `live`'s order: a list is empty where its entry's keys
+ * are a subset of the entry keys, and an entry that is no JSON object lists itself. */
+function keysOutsideTheEntryKeys(block: unknown): string[][] {
+  return liveEntries(block).map((entry) =>
+    isJsonObject(entry)
+      ? Object.keys(entry).filter((key) => !LIVE_ENTRY_KEYS.includes(key))
+      : [JSON.stringify(entry)]
+  );
+}
+
+/** Every key the raw `live` entries of a written repositories block carry, the union over the
+ * entries, once each and sorted. */
+function liveEntryKeys(block: unknown): string[] {
+  const keys = liveEntries(block).flatMap((entry) =>
+    isJsonObject(entry) ? Object.keys(entry) : []
+  );
+  return [...new Set(keys)].sort();
+}
+
+// Contract 31: every recorded issue carries the repository it targets and its default branch, and
+// its pull request the repository it is in. Contract 32: a repository's cache under the Kubernetes
+// runtime, Ready with its last health read or the read's failure, and the caches of repositories no
+// live record names, listed with when they go. Contract 202: the block is `live`, `caches` and
+// `withoutWebhookApp` and nothing else. `live` is one entry for each repository a live record
+// names, sorted, with the name its pair serves it as where the rename rule serves it under the
+// other name, each role App's installation once GitHub answered both reads, why GitHub's last read
+// did not name it, and its cache, each absent until it holds something, and nothing else: each
+// raw entry's keys are a subset of those keys, the union over the fixture's entries is all of them,
+// so its entries carry each optional key between them, and an entry carrying a copy of the
+// webhook App state, `webhookApp`, fails both. `withoutWebhookApp` is the block's one report of that
+// state and keeps contract 152's shape for every caller, since a `legion state` of 152 reads its
+// webhook App lines from it. A state without the block, without `live`, without
+// `withoutWebhookApp` or without its caches is read: no plugin code reads any of them
+// (`LEGION_ANSWER_READS`). An entry whose read error is empty is refused.
+test("the state golden carries each issue's repository and the repositories its live records name", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
   expect(state.issues["LEGION-208"]?.repo).toBe("acme/widgets");
   expect(state.issues["LEGION-208"]?.pullRequest?.repo).toBe("acme/widgets");
   expect(state.issues["LEGION-210"]?.defaultBranch).toBe("release/v7.1");
-  expect(state.repositories?.owners).toEqual(["acme", "zeta"]);
-  expect(
-    state.repositories?.mapped?.map(({ repo, default: isDefault, apps }) => ({
-      repo,
-      default: isDefault,
-      apps,
-    }))
-  ).toEqual([
-    { repo: "acme/widgets", default: true, apps: { implement: true, review: true } },
-    { repo: "zeta/tools", default: false, apps: { implement: true, review: true } },
+  // The file's own keys, not the parse's: the parse rebuilds the block from the schema's shape,
+  // so its keys say nothing of what Go wrote.
+  const written = fixtureBody("state.json").repositories;
+  expect(isJsonObject(written) ? Object.keys(written).sort() : written).toEqual([
+    "caches",
+    "live",
+    "withoutWebhookApp",
   ]);
-  expect(state.repositories?.mapped?.[0]?.cache).toEqual({
-    repo: "acme/widgets",
-    sandbox: "legion-legion-cache-acme-widgets-d782c874",
-    state: "ready",
-    ready: true,
-    address: "http://legion-legion-cache-acme-widgets-d782c874.legion.svc:8418",
-    head: "34a7ac80e9c3389ffbc1bbeece371ccacc043992",
-    lastFetchAt: "2026-10-16T19:20:30Z",
-    bytes: 6612345678,
-  });
-  expect(state.repositories?.mapped?.[1]?.cache).toEqual({
-    repo: "zeta/tools",
-    sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e",
-    state: "failing",
-    ready: false,
-    reason:
-      "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
-  });
-  expect(state.repositories?.refused).toEqual([
+  expect(keysOutsideTheEntryKeys(written)).toEqual(liveEntries(written).map(() => []));
+  expect(liveEntryKeys(written)).toEqual(LIVE_ENTRY_KEYS);
+  // What the comparisons refuse: one entry carrying `webhookApp` beside the block's list.
+  const copied = fixture("state.json") as { repositories: { live: Record<string, unknown>[] } };
+  Object.assign(copied.repositories.live[0] ?? {}, { webhookApp: "the webhook App check failed" });
+  expect(keysOutsideTheEntryKeys(copied.repositories)[0]).toEqual(["webhookApp"]);
+  expect(liveEntryKeys(copied.repositories)).not.toEqual(LIVE_ENTRY_KEYS);
+  const both = { implement: true, review: true };
+  expect(state.repositories?.live).toEqual([
+    { repo: "acme/gadgets", apps: { implement: true, review: false } },
     {
-      repo: "acme/gadgets",
-      reason: "the review App is not installed on acme/gadgets",
-      apps: { implement: true, review: false },
+      repo: "acme/widgets",
+      apps: both,
+      cache: {
+        repo: "acme/widgets",
+        sandbox: "legion-legion-cache-acme-widgets-d782c874",
+        state: "ready",
+        ready: true,
+        address: "http://legion-legion-cache-acme-widgets-d782c874.legion.svc:8418",
+        head: "34a7ac80e9c3389ffbc1bbeece371ccacc043992",
+        lastFetchAt: "2026-10-16T19:20:30Z",
+        bytes: 6612345678,
+      },
     },
+    { repo: "sjawhar/legion", servedAs: "cybermonklabs/legion", apps: both },
     {
       repo: "zeta/archive",
-      reason:
+      readError:
         "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again",
     },
+    {
+      repo: "zeta/tools",
+      apps: both,
+      cache: {
+        repo: "zeta/tools",
+        sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e",
+        state: "failing",
+        ready: false,
+        reason:
+          "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
+      },
+    },
   ]);
-  expect(state.repositories?.refused?.[1]?.apps).toBeUndefined();
+  expect(state.repositories?.live?.[3]?.apps).toBeUndefined();
   expect(state.repositories?.caches).toEqual([
     {
       repo: "acme/legacy",
@@ -2008,9 +2135,15 @@ test("the state golden carries each issue's repository and the repositories it s
   const dropped = fixture("state.json") as Record<string, unknown>;
   delete dropped.repositories;
   expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
+  const noLive = fixture("state.json") as { repositories: Record<string, unknown> };
+  delete noLive.repositories.live;
+  expect(LegionStateResponse.safeParse(noLive).success).toBeTrue();
   const noCaches = fixture("state.json") as { repositories: Record<string, unknown> };
   delete noCaches.repositories.caches;
   expect(LegionStateResponse.safeParse(noCaches).success).toBeTrue();
+  const noWebhookGaps = fixture("state.json") as { repositories: Record<string, unknown> };
+  delete noWebhookGaps.repositories.withoutWebhookApp;
+  expect(LegionStateResponse.safeParse(noWebhookGaps).success).toBeTrue();
   const refused = fixture("state.json") as {
     repositories: { caches: Array<Record<string, unknown>> };
   };
@@ -2021,16 +2154,11 @@ test("the state golden carries each issue's repository and the repositories it s
   expect(LegionStateResponse.parse(refused).repositories?.caches?.[0]?.state).toBe("refused");
   Object.assign(refused.repositories.caches[0] ?? {}, { state: "gone" });
   expect(LegionStateResponse.safeParse(refused).success).toBeFalse();
-  // An entry a daemon of an earlier contract wrote carries no `apps`, and the window a roll of
-  // the daemon and the worker image opens is exactly that pairing, so the reader loses that one
-  // answer and keeps the state rather than refusing the whole body.
-  const halfRead = fixture("state.json") as {
-    repositories: { mapped: Array<Record<string, unknown>> };
+  const emptyError = fixture("state.json") as {
+    repositories: { live: Array<Record<string, unknown>> };
   };
-  delete halfRead.repositories.mapped[0]?.apps;
-  const withoutApps = LegionStateResponse.parse(halfRead);
-  expect(withoutApps.repositories?.mapped?.[0]?.apps).toBeUndefined();
-  expect(withoutApps.repositories?.mapped?.[0]?.repo).toBe(state.repositories?.mapped?.[0]?.repo);
+  Object.assign(emptyError.repositories.live[3] ?? {}, { readError: "" });
+  expect(LegionStateResponse.safeParse(emptyError).success).toBeFalse();
 });
 
 // The state's capability report (contract 16): the golden carries a decided row with the operator's
@@ -2382,6 +2510,103 @@ test("a reader at the previous contract parses the state body this daemon serves
   }
   stranded.suspendedBy = "released";
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
+});
+
+// A plugin below 202 reads the repositories block with contract 152's schema
+// (`repositoriesAt152`), which requires `owners`, `mapped`, `refused` and `withoutWebhookApp`: the
+// block this contract writes refuses there, and with it the whole state, so the route serves that
+// caller the block in 152's shape, written from the same entries, and leaves every other key as
+// the contract it serves the caller at writes it. `state-narrowed-repositories.json` is the body
+// served to a caller that states 201 (`internal/api`'s TestStateNarrowedRepositoriesGolden), and
+// the drift gate above holds every key of it to that copy. The entries land where 152 put them:
+// `owners` and `mapped` are the ones both role Apps are installed on, under the name each is
+// served under, every `default` false; `refused` is each other entry with why; `withoutWebhookApp`
+// is this contract's own list.
+test("a reader at contract 152 parses the repositories block served below 202", () => {
+  const served = fixtureBody("state-narrowed-repositories.json");
+  const written = served.repositories;
+  expect(isJsonObject(written) ? Object.keys(written).sort() : written).toEqual([
+    "caches",
+    "mapped",
+    "owners",
+    "refused",
+    "withoutWebhookApp",
+  ]);
+  const block = repositoriesAt152.safeParse(written);
+  expect(block.error?.issues ?? []).toEqual([]);
+  // The entries the narrowed block is written from, read from the state golden with the cache
+  // view of 152 itself: the current schema takes every key of a cache as optional, which no reader
+  // of 152 does, so an entry that lost a key would pass that schema and fail this one.
+  const live = z
+    .object({
+      live: z.array(z.object({ repo: nonEmptyAt152, cache: cacheViewAt152.optional() })),
+      caches: z.array(cacheViewAt152),
+    })
+    .parse(fixtureBody("state.json").repositories);
+  const caches = new Map(live.live.map((entry) => [entry.repo, entry.cache]));
+  const both = { implement: true, review: true };
+  expect(block.data?.owners).toEqual(["acme", "cybermonklabs", "zeta"]);
+  expect(block.data?.mapped).toEqual([
+    { repo: "acme/widgets", default: false, apps: both, cache: caches.get("acme/widgets") },
+    { repo: "cybermonklabs/legion", default: false, apps: both },
+    { repo: "zeta/tools", default: false, apps: both, cache: caches.get("zeta/tools") },
+  ]);
+  expect(block.data?.refused).toEqual([
+    {
+      repo: "acme/gadgets",
+      reason: "the review App is not installed on acme/gadgets",
+      apps: { implement: true, review: false },
+    },
+    {
+      repo: "zeta/archive",
+      reason:
+        "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again",
+    },
+  ]);
+  expect(block.data?.withoutWebhookApp).toEqual([
+    {
+      repo: "zeta/tools",
+      reason:
+        "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
+    },
+  ]);
+  expect(block.data?.caches).toEqual(live.caches);
+
+  // Every other key is the state golden's own, the `contract` mark and `lowestPluginContract`
+  // aside: the mark names the contract the caller is served at, 199, the recorded contract below
+  // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
+  // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
+  // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
+  // nothing beside it.
+  const { daemonApiVersion } = z
+    .object({ daemonApiVersion: z.number() })
+    .parse(fixture("version.json"));
+  expect(served.contract).toEqual({ daemon: daemonApiVersion, caller: 199 });
+  const {
+    repositories: _narrowedBlock,
+    contract: _narrowedMark,
+    lowestPluginContract: _narrowedLowest,
+    ...narrowedRest
+  } = served;
+  const {
+    repositories: _block,
+    contract: _mark,
+    lowestPluginContract: _lowest,
+    ...rest
+  } = fixtureBody("state.json");
+  expect(narrowedRest).toEqual(rest);
+
+  // What serving the current block would do, and why it is not served: the reader of 152 refuses
+  // it for the three keys it requires beside the `withoutWebhookApp` and `caches` the block keeps,
+  // so a caller below 202 would lose its whole state.
+  const current = repositoriesAt152.safeParse(fixtureBody("state.json").repositories);
+  expect(current.success).toBeFalse();
+  expect(current.error?.issues.map((issue) => issue.path[0]).sort()).toEqual([
+    "mapped",
+    "owners",
+    "refused",
+  ]);
 });
 
 /** The responses an operator's bearer opens, the only ones that may name a suspension. */
@@ -2862,27 +3087,43 @@ test("the state golden carries each durable consumer's lag", () => {
   expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
 });
 
-// Each served repository Dispatch's GitHub App is not known to be installed on (contract 43):
-// the golden carries one with its reason, and a state with none carries an empty list. No
-// plugin code reads the list, so an entry without its reason and a body without the list are
-// both read rather than refused.
-test("the state golden names each served repository without the webhook App", () => {
+// Each repository a live record names that Dispatch's GitHub App is not known to be installed on
+// is listed with why in `withoutWebhookApp` (contracts 43, 202), in `live`'s order and in contract
+// 152's shape, which a `legion state` of 152 reads its webhook App lines from, and the list is the
+// block's one report of it: the golden lists one, the same list a reader of 152 is served below
+// 202; no live entry carries a copy of it (the golden test above holds the entry keys); a state
+// whose live records name nothing carries an empty `live` and an empty `withoutWebhookApp`; and an
+// empty reason is refused. No plugin code reads the list (`LEGION_ANSWER_READS`), so an entry
+// without its reason and a body without the list are both read rather than refused.
+test("the state golden names each live repository without the webhook App", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
-  expect(state.repositories?.withoutWebhookApp).toEqual([
+  const gaps = [
     {
       repo: "zeta/tools",
       reason:
         "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
     },
-  ]);
-  expect(
-    LegionStateResponse.parse(fixture("state-stage3.json")).repositories?.withoutWebhookApp
-  ).toEqual([]);
+  ];
+  expect(state.repositories?.withoutWebhookApp).toEqual(gaps);
+  expect(state.repositories?.live?.map((entry) => entry.repo)).toContain("zeta/tools");
+  const narrowed = repositoriesAt152.parse(
+    fixtureBody("state-narrowed-repositories.json").repositories
+  );
+  expect(narrowed.withoutWebhookApp).toEqual(gaps);
+  const empty = LegionStateResponse.parse(fixture("state-stage3.json")).repositories;
+  expect(empty?.live).toEqual([]);
+  expect(empty?.withoutWebhookApp).toEqual([]);
 
   const reasonless = fixture("state.json") as {
     repositories: { withoutWebhookApp: Record<string, unknown>[] };
   };
-  delete reasonless.repositories.withoutWebhookApp[0]?.reason;
+  const gap = reasonless.repositories.withoutWebhookApp[0];
+  if (gap === undefined) {
+    throw new Error("state fixture lacks a repository without the webhook App");
+  }
+  gap.reason = "";
+  expect(LegionStateResponse.safeParse(reasonless).success).toBeFalse();
+  delete gap.reason;
   expect(LegionStateResponse.safeParse(reasonless).success).toBeTrue();
 
   const dropped = fixture("state.json") as { repositories: Record<string, unknown> };

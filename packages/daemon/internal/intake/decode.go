@@ -138,11 +138,6 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
 		}
 		fact, unread, legacy, err = decodeDispatchFact(subject, project, envelope.Payload)
-	case strings.HasPrefix(subject, dispatchProjectPrefix):
-		if envelope.Source != "dispatch" {
-			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
-		}
-		fact, err = decodeDispatchProjectFact(subject, project, envelope.Payload)
 	case strings.HasPrefix(subject, "notifications.github."):
 		if envelope.Source != "github" {
 			return decodedMessage{}, fmt.Errorf("GitHub subject has envelope source %q", envelope.Source)
@@ -642,44 +637,6 @@ func askKind(kind string, unread *[]string) string {
 	return ""
 }
 
-// dispatchProjectPrefix begins every Dispatch event of a project rather than an issue
-// (packages/envoy/internal/dispatch/outbox/publisher.go envelope): notifications.dispatch.project.
-// <KEY>.<type>.
-const dispatchProjectPrefix = "notifications.dispatch.project."
-
-// repoMappingType is the project event Dispatch emits when a repository's mapping to a project
-// changes, on the project it changed for (a move emits on the project left and the one joined).
-const repoMappingType = "settings.repo_project.updated"
-
-// mappingSubject is the subject Dispatch publishes project's mapping changes on, which the
-// Dispatch consumer hears beside every issue event.
-func mappingSubject(project string) string {
-	return dispatchProjectPrefix + project + "." + repoMappingType
-}
-
-// decodeDispatchProjectFact decodes one Dispatch project event: the mapping change of project is a
-// RepoMappingChanged, and any other project's event, or another type, is no fact.
-func decodeDispatchProjectFact(subject, project, payload string) (Fact, error) {
-	subjectProject, eventType, ok := strings.Cut(strings.TrimPrefix(subject, dispatchProjectPrefix), ".")
-	if !ok || subjectProject == "" {
-		return nil, fmt.Errorf("Dispatch project subject has no project key: %s", subject)
-	}
-	if subjectProject != project || eventType != repoMappingType {
-		return nil, nil
-	}
-	var event struct {
-		Project string `json:"project"`
-		Type    string `json:"type"`
-	}
-	if err := json.Unmarshal([]byte(payload), &event); err != nil {
-		return nil, fmt.Errorf("decode Dispatch project event: %w", err)
-	}
-	if event.Project != subjectProject || event.Type != eventType {
-		return nil, fmt.Errorf("Dispatch project event %s of %s disagrees with its subject %s", event.Type, event.Project, subject)
-	}
-	return RepoMappingChanged{Project: project}, nil
-}
-
 func deref(value *string) string {
 	if value == nil {
 		return ""
@@ -739,9 +696,9 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 // (claim.BranchIssue). One on any other branch is no fact, read before anything else of the
 // event, so it is acknowledged without a transaction: the workflow records a pull request only on
 // an issue's branch (PullRequestOpened), and every later event applies only to a recorded one. A
-// mapped repository whose other pull requests open and move many times a minute would otherwise
-// cost the daemon one transaction under the fact lock (ApplyFact) for every one, all of them
-// changing nothing. Every action carries head_ref.
+// repository the daemon hears whose other pull requests open and move many times a minute would
+// otherwise cost the daemon one transaction under the fact lock (ApplyFact) for every one, all of
+// them changing nothing. Every action carries head_ref.
 func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
 	branch, _ := rawString(raw, "head_ref")
 	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
@@ -833,7 +790,7 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 // whether each head on a base still merges into it when the base moves and sends no event for the
 // pull request itself, so a head the record holds as clean goes behind or dirty unheard.
 //
-// A base push costs the daemon one transaction under the fact lock (ApplyFact), which a mapped
+// A base push costs the daemon one transaction under the fact lock (ApplyFact), which a heard
 // repository that other automation pushes to many times a minute pays per push; the cost is paid
 // because the alternative is a mergeability the record cannot know is stale. The handler's first
 // read is one indexed lookup of the open pull requests recorded on that base

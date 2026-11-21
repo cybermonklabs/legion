@@ -153,9 +153,7 @@ const STALL_STATE = {
   wakesWaiting: [],
   capabilities: [],
   repositories: {
-    owners: ["acme"],
-    mapped: [{ repo: "acme/widgets", default: true }],
-    refused: [],
+    live: [{ repo: "acme/widgets", apps: { implement: true, review: true } }],
     withoutWebhookApp: [],
     caches: [],
   },
