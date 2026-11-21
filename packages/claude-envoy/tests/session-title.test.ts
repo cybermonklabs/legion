@@ -3,7 +3,9 @@ import { execFileSync } from "node:child_process"
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { skipWithout } from "@legion/test-fixtures/host-tools"
+import { settled } from "@legion/test-fixtures/wait"
 import { queryTmux, sessionTitle, type TmuxQuery, tmuxPaneTitle } from "../src/session-title"
 
 const SESSION_ID = "3084299d-32a7-41a3-ba9b-f61675b03b8d"
@@ -409,7 +411,7 @@ test.skipIf(withoutTmux)(
           "-e",
           `import { queryTmux } from ${JSON.stringify(source)}; process.stdout.write(JSON.stringify(await queryTmux(${JSON.stringify(socket)}, ${JSON.stringify(pane)}, "#{session_name}\\t#{pid}")))`,
         ],
-        { env: { PATH: process.env["PATH"] ?? "", HOME: directory } },
+        { env: { ...bunCacheOff, PATH: process.env["PATH"] ?? "", HOME: directory } },
       )
       expect(child.stdout.toString()).toBe(JSON.stringify(`probe\t${pid}\n`))
     } finally {
@@ -419,38 +421,53 @@ test.skipIf(withoutTmux)(
   },
 )
 
-test("queryTmux is bounded even by a tmux that ignores SIGTERM", () => {
+test("queryTmux is bounded even by a tmux that ignores SIGTERM", async () => {
   const directory = mkdtempSync(join(tmpdir(), "title-tmux-"))
   const marker = join(directory, "ran")
-  writeFileSync(join(directory, "tmux"), `#!/bin/sh\ntrap "" TERM\ntouch ${marker}\nsleep 5\n`, {
-    mode: 0o755,
-  })
+  // The stub ignores TERM, and a child of its own, which ignores it too, holds the pipe open for
+  // as long as this directory stands: the test removes it only once the call has answered, so a
+  // call that waited for the stub, or for the pipe it left behind, never answers at all.
+  writeFileSync(
+    join(directory, "tmux"),
+    `#!/bin/sh\ntrap "" TERM\ntouch ${marker}\n(while [ -d ${directory} ]; do sleep 0.02; done)\n`,
+    { mode: 0o755 },
+  )
   // A child of its own, so the stub is first on the PATH it starts with, wherever the spawn looks
-  // `tmux` up. The child times its own call and prints the milliseconds beside the answer, because
-  // what is bounded is `queryTmux`, not Bun's start-up and this import, which on a loaded machine
-  // take longer than the bound itself.
+  // `tmux` up. The child reports the order of what it saw on its one event loop: a timer of its
+  // own armed just before the call for a millisecond short of the call's one-second timeout, the
+  // call's answer, and a second timer armed just after the call for a millisecond past it. The
+  // loop fires timers in the order they are due however loaded the machine, and runs the
+  // microtasks one queues before the next (measured on Bun 1.4.4), so the call's own timer, armed
+  // inside the call, lands between the two: a call killed before its timeout answers ahead of the
+  // first, and one whose timeout grew answers after the second (R4: the order of the events, not
+  // a clock). The child then ends on its own: a read the call left pending would keep it alive.
   const source = join(import.meta.dir, "../src/session-title.ts")
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "-e",
+      `import { queryTmux } from ${JSON.stringify(source)}; const order = []; setTimeout(() => order.push("999 ms"), 999); const call = queryTmux("/nonexistent/tmux.sock", "%0", "x"); const late = Promise.withResolvers(); setTimeout(() => { order.push("1001 ms"); late.resolve(); }, 1001); const answer = await call; order.push(\`answer \${String(answer)}\`); await late.promise; process.stdout.write(JSON.stringify(order))`,
+    ],
+    {
+      env: {
+        ...bunCacheOff,
+        PATH: `${directory}:${process.env["PATH"] ?? ""}`,
+        HOME: directory,
+      },
+      stdout: "pipe",
+    },
+  )
   try {
-    const started = Date.now()
-    const child = Bun.spawnSync(
-      [
-        process.execPath,
-        "-e",
-        `import { queryTmux } from ${JSON.stringify(source)}; const started = Date.now(); const answer = await queryTmux("/nonexistent/tmux.sock", "%0", "x"); process.stdout.write(\`\${String(answer)} \${Date.now() - started}\`)`,
-      ],
-      { env: { PATH: `${directory}:${process.env["PATH"] ?? ""}`, HOME: directory } },
+    const [exitCode, reported] = await settled(
+      "the child's call to answer while the stub and its pipe still stand",
+      Promise.all([child.exited, new Response(child.stdout).text()]),
     )
-    const ran = Date.now() - started
-    const [answer, elapsed] = child.stdout.toString().split(" ")
-    expect(answer).toBe("undefined")
+    expect(exitCode).toBe(0)
     expect(existsSync(marker)).toBe(true)
-    // The stub ignores TERM and would sleep five seconds: the call waits out the one-second
-    // timeout, then is killed rather than waited for.
-    expect(Number(elapsed)).toBeGreaterThanOrEqual(1_000)
-    expect(Number(elapsed)).toBeLessThan(3_000)
-    // The killed stub's `sleep` still holds the pipe open; the child exits without waiting for it.
-    expect(ran).toBeLessThan(5_000)
+    // The call waited out its timeout, and no longer, then was killed rather than waited for.
+    expect(JSON.parse(reported)).toEqual(["999 ms", "answer undefined", "1001 ms"])
   } finally {
+    child.kill("SIGKILL")
     rmSync(directory, { recursive: true, force: true })
   }
 })

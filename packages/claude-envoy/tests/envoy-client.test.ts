@@ -1,13 +1,22 @@
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, afterEach, expect, mock, test } from "bun:test"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { signedIn, stubIssuer, writeSignIn } from "@legion/cipher-client/test/sign-ins"
 import { SignInEndedError } from "@legion/cipher-client/token-errors"
+import { LISTENER_CALL_TIMEOUT_MS } from "@legion/contracts"
 import type { RequestCredential } from "@legion/envoy-client/bearer"
 import { EnvoySendUnconfirmedError } from "@legion/envoy-client/transport"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { holdDeadlines } from "@legion/test-fixtures/held-deadlines"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
+import { settled, until } from "@legion/test-fixtures/wait"
 import { sendEnvoyMessage } from "../src/envoy-client"
+
+// A spy a row left, a failed one's included, wraps nothing of the next row.
+afterEach(() => {
+  mock.restore()
+})
 
 /** What one send reached the stand-in listener with. */
 interface Sent {
@@ -135,6 +144,28 @@ function waitingCredential(words: string, ready: () => string | undefined = () =
   }
 }
 
+/** The credential's share of an attempt (`credentialDeadline`): the listener call's 5 s
+ *  (`LISTENER_CALL_TIMEOUT_MS`) less the request's reserve, 1 s or half the deadline. */
+const CREDENTIAL_SHARE_MS = LISTENER_CALL_TIMEOUT_MS - Math.min(1_000, LISTENER_CALL_TIMEOUT_MS / 2)
+
+/** Runs `send` with the credential's share held (`holdDeadlines`: the row ends it, and no verdict
+ *  reads a clock), and ends the share once the credential holds its signal: until then the send
+ *  has sent nothing, which the row reads at that point. The spy goes with the row (`afterEach`). */
+async function sentPastTheShare<T>(
+  given: readonly (AbortSignal | undefined)[],
+  send: () => Promise<T>,
+): Promise<T> {
+  const share = holdDeadlines(CREDENTIAL_SHARE_MS)
+  const sending = send()
+  await until(
+    "the credential handed the share of the attempt",
+    () => given.length > 0 && share.held.length > 0,
+  )
+  expect(requests, "the send went before the credential's share ended").toEqual([])
+  share.end()
+  return await settled("the send once the credential's share ended", sending)
+}
+
 test("a send whose credential waits on a pod's missing registration goes without it after its share, and carries the token once the registration lands", async () => {
   requests.length = 0
   let registered = false
@@ -147,31 +178,33 @@ test("a send whose credential waits on a pod's missing registration goes without
     targetSession: "ses_receiver",
     message: "sent while the registration is pending",
   }
-  const started = Date.now()
-  await sendEnvoyMessage(options)
-  // The credential waited the attempt less the request's reserve, not the send's whole time.
+  // The credential waits the attempt less the request's reserve, not the send's whole time: the
+  // send goes once that share ends.
+  await sentPastTheShare(given, () => sendEnvoyMessage(options))
   expect(given[0], "the send handed its credential no deadline").toBeInstanceOf(AbortSignal)
-  expect(Date.now() - started).toBeLessThan(5_000)
   expect(requests.map((one) => one.authorization)).toEqual([null])
   registered = true
   await sendEnvoyMessage(options)
   expect(requests.map((one) => one.authorization)).toEqual([null, "DPoP registered-token"])
-}, 20_000)
+})
 
 test("a send whose credential's trade never answers goes without it, and a listener that asks for none takes it", async () => {
   // The credential waits the attempt's 5 s less the request's 1 s reserve (`credentialDeadline`),
   // then the send goes without it, as envoy-client's transport does.
   requests.length = 0
-  const started = Date.now()
-  await sendEnvoyMessage({
-    baseUrl: `http://127.0.0.1:${server.port}`,
-    credential: waitingCredential("the secrets broker has not yet answered the trade").credential,
-    targetSession: "ses_receiver",
-    message: "sent without a credential",
-  })
-  expect(Date.now() - started).toBeLessThan(5_000)
+  const { credential, given } = waitingCredential(
+    "the secrets broker has not yet answered the trade",
+  )
+  await sentPastTheShare(given, () =>
+    sendEnvoyMessage({
+      baseUrl: `http://127.0.0.1:${server.port}`,
+      credential,
+      targetSession: "ses_receiver",
+      message: "sent without a credential",
+    }),
+  )
   expect(requests.map((one) => one.authorization)).toEqual([null])
-}, 20_000)
+})
 
 // A listener that wants a credential refuses a request without one at its auth gate, before any
 // route runs (`apiauth.go`), so nothing was stored: the error names the 401 and why the
@@ -182,12 +215,31 @@ test("a listener that wants a credential answers 401, and the send's error names
     fetch: () => Response.json({ error: "this listener wants a credential" }, { status: 401 }),
   })
   try {
-    const refused = await sendEnvoyMessage({
+    // Each attempt's credential waits its share (`credentialDeadline`): the first goes without the
+    // credential and is answered 401, and the call asks the credential again for the second. The
+    // row holds each share (`holdDeadlines`) and ends it once that attempt's credential holds it,
+    // so no real time passes between them and no verdict reads a clock.
+    const share = holdDeadlines(CREDENTIAL_SHARE_MS)
+    const { credential, given } = waitingCredential(
+      "the secrets broker has not yet answered the trade",
+    )
+    const sending = sendEnvoyMessage({
       baseUrl: `http://127.0.0.1:${wanting.port}`,
-      credential: waitingCredential("the secrets broker has not yet answered the trade").credential,
+      credential,
       targetSession: "ses_receiver",
       message: "refused",
     }).catch((error: unknown) => error)
+    await until(
+      "the first attempt's credential handed its share",
+      () => given.length > 0 && share.held.length > 0,
+    )
+    share.end()
+    await until(
+      "the attempt after the 401's credential handed its share",
+      () => given.length > 1 && share.held.length > 1,
+    )
+    share.end()
+    const refused = await settled("the send to a listener that wants a credential", sending)
     expect(refused).not.toBeInstanceOf(EnvoySendUnconfirmedError)
     expect((refused as Error).message).toBe(
       `POST http://127.0.0.1:${wanting.port}/v1/messages/send answered 401, and this machine's Envoy credential could not be minted: the secrets broker has not yet answered the trade`,
@@ -195,7 +247,7 @@ test("a listener that wants a credential answers 401, and the send's error names
   } finally {
     wanting.stop(true)
   }
-}, 30_000)
+})
 
 test("envoy-send sends to the listener and with the bearer its envoy.json names", async () => {
   requests.length = 0
@@ -211,7 +263,12 @@ test("envoy-send sends to the listener and with the bearer its envoy.json names"
     ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), "ses_receiver", "file", "send"],
     {
       cwd: scratch,
-      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: file },
+      env: {
+        ...bunCacheOff,
+        PATH: process.env["PATH"] ?? "",
+        HOME: scratch,
+        ENVOY_CONFIG_FILE: file,
+      },
       stdout: "pipe",
       stderr: "pipe",
     },
@@ -240,7 +297,8 @@ function envoyConfig(token: string, port = server.port): string {
 /**
  * Runs `envoy-send` as a person does, against the stand-in listener, with a bearer file: with
  * `args`, or as `command` through bash. `env` replaces the environment it runs in, which is
- * otherwise PATH, HOME and the ENVOY_CONFIG_FILE naming `token`'s envoy.json.
+ * otherwise PATH, HOME and the ENVOY_CONFIG_FILE naming `token`'s envoy.json; either way the Bun
+ * cache key that turns the child's transpiler cache off (`bunCacheOff`) comes first.
  */
 async function runEnvoySend(
   args: readonly string[],
@@ -257,10 +315,13 @@ async function runEnvoySend(
       : ["bash", "-c", options.command],
     {
       cwd: scratch,
-      env: options.env ?? {
-        PATH: process.env["PATH"] ?? "",
-        HOME: scratch,
-        ENVOY_CONFIG_FILE: file,
+      env: {
+        ...bunCacheOff,
+        ...(options.env ?? {
+          PATH: process.env["PATH"] ?? "",
+          HOME: scratch,
+          ENVOY_CONFIG_FILE: file,
+        }),
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -422,7 +483,7 @@ test("envoy-send whose sign-in the issuer ended says it sent, and on one stderr 
     issuer.stop()
     broker.stop(true)
   }
-}, 30_000)
+})
 
 // A credential a later trade may still mint (the broker answers 503) is named as one that could
 // not be minted, and not as refused for good. The token client's retry loop logs its own line of
@@ -453,7 +514,7 @@ test("envoy-send whose broker is down says it sent, and on one stderr line that 
   } finally {
     broker.stop(true)
   }
-}, 30_000)
+})
 
 // The control of the two rows above: a send that carried its credential prints only that it sent.
 test("envoy-send whose credential works prints only that it sent", async () => {
@@ -464,7 +525,7 @@ test("envoy-send whose credential works prints only that it sent", async () => {
   expect(sent.stdout).toBe("Sent Envoy message to ses_receiver.\n")
   expect(sent.stderr).toBe("")
   expect(requests.map((one) => one.authorization)).toEqual([`Bearer ${token}`])
-}, 30_000)
+})
 
 // An unconfirmed send may have stored the message, so `envoy-send` neither calls it failed nor
 // exits with a refusal's 1: it exits 75, names the key, and prints the command that sends it again
@@ -492,7 +553,7 @@ test("an unconfirmed envoy-send exits 75 and prints the command that resends it 
   expect(requests).toHaveLength(3)
   expect(requests.map((one) => one.body["idempotency_key"])).toEqual([key, key, key])
   expect(requests[2]?.body["message"]).toBe("it may have landed")
-}, 30_000)
+})
 
 // F9 (the review of 215510405b): the printed resend carries what chose the listener. Run in a
 // shell whose own settings name another listener (no ENVOY_CONFIG_FILE, an XDG_CONFIG_HOME whose
@@ -542,7 +603,7 @@ test("the printed resend goes to the send's listener from a shell whose settings
   } finally {
     elsewhere.stop(true)
   }
-}, 30_000)
+})
 
 // F8 (the review of 215510405b): a resend under a key the send before it named is a resend of a
 // message that may have arrived, so its refusal says nothing of that earlier copy: not confirmed,
@@ -559,7 +620,7 @@ test("a keyed resend the listener refuses is not confirmed, never failed", async
   expect(resend.stderr).not.toContain("Claude Envoy send failed")
   expect(printedResend(resend.stderr)).toContain("--idempotency-key k-resend-1 ses_receiver hello")
   expect(requests.map((one) => one.body["idempotency_key"])).toEqual(["k-resend-1"])
-}, 30_000)
+})
 
 // F6 (the review of 215510405b): where the message holds a secret this process withholds, the
 // printed line would read `<withheld>` in its place, and run as printed it would send a different
@@ -580,7 +641,7 @@ test("an unconfirmed send whose message holds a held secret prints the key and n
   )
   expect(first.stderr).toContain("a printed copy could not reproduce the message")
   expect(first.stderr).not.toContain(token)
-}, 30_000)
+})
 
 // h2 (the review of 2fa6fbf7cf): an ENVOY_URL whose user info is shorter than a held secret's 10
 // characters passed the scrub, and the printed resend carried it whole. Now a URL setting with
@@ -608,7 +669,7 @@ test("an unconfirmed send whose ENVOY_URL has short user info prints none of it"
   )
   expect(first.stderr).not.toContain("x7q")
   expect(first.stderr).not.toContain("ab:")
-}, 30_000)
+})
 
 test("a send whose only attempt was answered with an unreadable 2xx names that one attempt", async () => {
   requests.length = 0

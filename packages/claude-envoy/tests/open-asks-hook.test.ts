@@ -2,13 +2,16 @@ import { expect, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 /** The Dispatch token the hook is handed, in its environment or in envoy.json. */
 const DISPATCH_TOKEN = fixtureSecret("dsp")
 
-/** Runs the hook as Claude Code does, with `env` as its whole environment. The session's cwd is
+/** Runs the hook as Claude Code does, with `env` as its whole environment beside `PATH` and Bun's
+ * transpiler cache turned off: that cache lives under HOME (`~/.bun` on Linux,
+ * `~/Library/Caches/bun` on macOS), and HOME is the test's scratch directory. The session's cwd is
  * the test's scratch HOME unless the input names one: the hook reads `<cwd>/.envoy/envoy.json`, so a
  * shared directory's file would become every test's checkout. */
 async function runHook(
@@ -16,7 +19,7 @@ async function runHook(
   env: Record<string, string> & { readonly HOME: string },
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
   const run = Bun.spawn(["bun", hookEntry, "open-asks"], {
-    env: { PATH: process.env["PATH"] ?? "", ...env },
+    env: { ...bunCacheOff, PATH: process.env["PATH"] ?? "", ...env },
     stdin: new TextEncoder().encode(JSON.stringify({ cwd: env.HOME, ...input })),
     stdout: "pipe",
     stderr: "pipe",
@@ -146,7 +149,7 @@ test("names an unreachable Dispatch whose password holds an '@' by no part of th
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-}, 30_000)
+})
 
 test("a SessionStart carrying a session title records it, and one carrying none removes it", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-title-"))
@@ -539,10 +542,8 @@ test("writes no environment line anywhere when Claude Code names no env file", a
     expect(result.stdout).not.toContain("DISPATCH_HOST")
     expect(result.stdout).not.toContain("ENVOY_CONFIG_FILE")
     expect(await readFile(envFile, "utf8")).toBe("export FROM_ANOTHER_HOOK=1\n")
-    // Only the session record the hook keeps for its Claude process is written (beside the cache
-    // Bun itself keeps under HOME).
-    const written = (await readdir(scratch)).filter((entry) => entry !== ".bun").sort()
-    expect(written).toEqual(["plugin-data", "session-env.sh"])
+    // Only the session record the hook keeps for its Claude process is written.
+    expect((await readdir(scratch)).sort()).toEqual(["plugin-data", "session-env.sh"])
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
@@ -779,9 +780,8 @@ test("writes no overlay and no JJ_CONFIG for a session that is no Legion pane", 
       ].join("\n"),
     )
     // No overlay was written anywhere: the only directory one could reach is the state directory
-    // the session has none of (beside the cache Bun itself keeps under HOME).
-    const written = (await readdir(scratch)).filter((entry) => entry !== ".bun").sort()
-    expect(written).toEqual(["bin", "plugin-data", "session-env.sh"])
+    // the session has none of.
+    expect((await readdir(scratch)).sort()).toEqual(["bin", "plugin-data", "session-env.sh"])
   } finally {
     server.stop(true)
     await rm(scratch, { recursive: true, force: true })
@@ -866,10 +866,15 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-hangs-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
-  const bin = await jjDirectory(scratch, "exec sleep 30")
+  // The stand-in's own record of what it reached: a hook that waited for it to answer would let
+  // it reach its end, 30 s on, before the hook exits.
+  const jjRecord = join(scratch, "jj-record")
+  const bin = await jjDirectory(
+    scratch,
+    `printf 'started\\n' >> ${JSON.stringify(jjRecord)}; sleep 30; printf 'ended\\n' >> ${JSON.stringify(jjRecord)}`,
+  )
   const envFile = join(scratch, "session-env.sh")
   const server = openAsksServer()
-  const started = Date.now()
   try {
     const result = await runHook(hookInput, {
       HOME: scratch,
@@ -883,7 +888,8 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
     })
 
     expect(result.exitCode).toBe(0)
-    expect(Date.now() - started).toBeLessThan(15_000)
+    // The hook exited with the jj it started still short of its end: it gave that jj up.
+    expect(await readFile(jjRecord, "utf8")).toBe("started\n")
     expect(result.stdout).toStartWith("Dispatch authored-ask summary:\n")
     expect(await readFile(envFile, "utf8")).toBe(
       [
@@ -948,4 +954,4 @@ test("keeps the session's own export when a later run of the same id has no jj t
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-}, 20_000)
+})

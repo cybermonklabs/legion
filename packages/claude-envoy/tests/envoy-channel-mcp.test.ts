@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
@@ -12,7 +13,6 @@ import { waitFor } from "./channel-session-harness"
 import { startFakeMod } from "./fake-mod"
 import { FakeNatsServer } from "./fake-nats-server"
 import { natsGate } from "./nats-gate"
-import { PROCESS_WAIT_MS, ROW_TIMEOUT_MS } from "./reopen-server"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
@@ -96,6 +96,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     args: [entry],
     cwd: stateDirectory,
     env: {
+      ...bunCacheOff,
       PATH: process.env["PATH"] ?? "",
       HOME: stateDirectory,
       ENVOY_NATS_URL: broker.url,
@@ -161,7 +162,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     await broker.stop()
     await rm(stateDirectory, { recursive: true, force: true })
   }
-}, 20_000)
+})
 
 // A mod says hello once per Claude Code process, so a server Claude Code starts again inside
 // that process hears none, and neither does a listener added after the hello landed: the session
@@ -200,6 +201,7 @@ test("the session advertises its delivery modes for a mod that polls and never s
     args: [entry],
     cwd: stateDirectory,
     env: {
+      ...bunCacheOff,
       PATH: process.env["PATH"] ?? "",
       HOME: stateDirectory,
       ENVOY_NATS_URL: broker.url,
@@ -253,7 +255,7 @@ test("the session advertises its delivery modes for a mod that polls and never s
     await broker.stop()
     await rm(stateDirectory, { recursive: true, force: true })
   }
-}, 20_000)
+})
 
 // Under NATS_AUTH=broker the start waits for the session's token for as long as the server lives,
 // since Claude Code does not start a channel server again: a tool call meanwhile says what the start
@@ -276,6 +278,7 @@ test("a tool call while the start waits for its broker token says what the start
     args: [entry],
     cwd: stateDirectory,
     env: {
+      ...bunCacheOff,
       PATH: process.env["PATH"] ?? "",
       HOME: stateDirectory,
       ENVOY_NATS_URL: "nats://127.0.0.1:1",
@@ -290,31 +293,20 @@ test("a tool call while the start waits for its broker token says what the start
     },
     stderr: "pipe",
   })
-  // The start has reached its wait for the token once its stderr says what the first trade came
-  // to: the token client writes that line at the wait after the trade, and the start names its
-  // wait before it trades. A start that never gets there in 45 s, a minute's row on a loaded
-  // machine, is named with what its stderr said.
   let stderr = ""
-  const waiting = Promise.withResolvers<void>()
   transport.stderr?.on("data", (chunk: Buffer | string) => {
     stderr += String(chunk)
-    if (stderr.includes("trading again")) waiting.resolve()
   })
-  const bound = setTimeout(
-    () =>
-      waiting.reject(
-        new Error(
-          `the start did not reach its wait for the token within 45 s; its stderr said: ${stderr.slice(-2_000)}`,
-        ),
-      ),
-    45_000,
-  )
-  // Settled here too, so a bound that fires while the connect is still out is no unhandled
-  // rejection; the row reads it where it awaits the wait.
-  waiting.promise.catch(() => undefined)
   try {
     await client.connect(transport)
-    await waiting.promise
+    // The start has reached its wait for the token once its stderr says what the first trade came
+    // to: the token client writes that line at the wait after the trade, and the start names its
+    // wait before it trades. A start that never gets there is named with what its stderr said.
+    await waitFor(
+      async () => stderr.includes("trading again"),
+      "the start's wait for its broker token, which its stderr names after the first trade",
+      () => `its stderr said: ${stderr.slice(-2_000)}`,
+    )
     const said = await client.callTool({ name: "envoy_whoami", arguments: {} }).then(
       () => {
         throw new Error("the session started though its broker answers every trade 503")
@@ -325,107 +317,99 @@ test("a tool call while the start waits for its broker token says what the start
       "Envoy channel server is still starting: it waits for this session's broker token, and its stderr says what each trade came to",
     )
   } finally {
-    clearTimeout(bound)
     await client.close().catch(() => undefined)
     broker.stop(true)
     await rm(stateDirectory, { recursive: true, force: true })
   }
-}, 60_000)
+})
 
 // The channel server dials NATS again for its life, and an Envoy tool called meanwhile is told
 // why the start is still waiting, which until then only reached stderr. Once the connection is up
 // that reason is gone: what the start waits on next (here, the listener) is not the dial.
-test(
-  "an Envoy tool called while the start dials NATS again is told the dial's last failure, and not once the connection is up",
-  async () => {
-    const broker = new FakeNatsServer()
-    const gate = natsGate(Number(new URL(broker.url).port))
-    const held = Promise.withResolvers<void>()
-    const listener = Bun.serve({
-      port: 0,
-      fetch: async (request) => {
-        const url = new URL(request.url)
-        if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
-          const body = (await request.json()) as { session_id: string; topics: string[] }
-          await held.promise
-          return Response.json({
-            session_id: body.session_id,
-            machine_id: "test",
-            dir: "/tmp",
-            topics: body.topics,
-            delivery: consumerDelivery(body.session_id),
-          })
-        }
-        if (request.method === "DELETE") return new Response(null, { status: 200 })
-        return Response.json({ error: "not found" }, { status: 404 })
+test("an Envoy tool called while the start dials NATS again is told the dial's last failure, and not once the connection is up", async () => {
+  const broker = new FakeNatsServer()
+  const gate = natsGate(Number(new URL(broker.url).port))
+  const held = Promise.withResolvers<void>()
+  const listener = Bun.serve({
+    port: 0,
+    fetch: async (request) => {
+      const url = new URL(request.url)
+      if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
+        const body = (await request.json()) as { session_id: string; topics: string[] }
+        await held.promise
+        return Response.json({
+          session_id: body.session_id,
+          machine_id: "test",
+          dir: "/tmp",
+          topics: body.topics,
+          delivery: consumerDelivery(body.session_id),
+        })
+      }
+      if (request.method === "DELETE") return new Response(null, { status: 200 })
+      return Response.json({ error: "not found" }, { status: 404 })
+    },
+  })
+  const stateDirectory = await sessionHome("claude-envoy-dial-")
+  const client = new Client({ name: "test", version: "0" })
+  const transport = new StdioClientTransport({
+    command: "bun",
+    args: [entry],
+    cwd: stateDirectory,
+    env: {
+      PATH: process.env["PATH"] ?? "",
+      HOME: stateDirectory,
+      ENVOY_NATS_URL: gate.url,
+      ENVOY_URL: `http://127.0.0.1:${listener.port}`,
+      CLAUDE_CODE_SESSION_ID: "ses_dialing",
+      CLAUDE_PLUGIN_DATA: stateDirectory,
+      XDG_RUNTIME_DIR: stateDirectory,
+    },
+    stderr: "pipe",
+  })
+  const whoami = () =>
+    client.callTool({ name: "envoy_whoami", arguments: {} }).then(
+      () => "answered",
+      (error: unknown) => String(error),
+    )
+
+  try {
+    await client.connect(transport)
+    let answer = ""
+    await waitFor(
+      async () => {
+        answer = await whoami()
+        return answer.includes("dialing again in")
       },
-    })
-    const stateDirectory = await sessionHome("claude-envoy-dial-")
-    const client = new Client({ name: "test", version: "0" })
-    const transport = new StdioClientTransport({
-      command: "bun",
-      args: [entry],
-      cwd: stateDirectory,
-      env: {
-        PATH: process.env["PATH"] ?? "",
-        HOME: stateDirectory,
-        ENVOY_NATS_URL: gate.url,
-        ENVOY_URL: `http://127.0.0.1:${listener.port}`,
-        CLAUDE_CODE_SESSION_ID: "ses_dialing",
-        CLAUDE_PLUGIN_DATA: stateDirectory,
-        XDG_RUNTIME_DIR: stateDirectory,
-      },
-      stderr: "pipe",
-    })
-    const whoami = () =>
-      client.callTool({ name: "envoy_whoami", arguments: {} }).then(
-        () => "answered",
-        (error: unknown) => String(error),
-      )
+      "the tool to name the dial's last failure",
+      () => answer,
+    )
+    expect(answer).toContain("Envoy channel server is still starting: could not connect to NATS")
 
-    try {
-      await client.connect(transport)
-      let answer = ""
-      await waitFor(
-        async () => {
-          answer = await whoami()
-          return answer.includes("dialing again in")
-        },
-        "the tool to name the dial's last failure",
-        () => answer,
-        PROCESS_WAIT_MS,
-      )
-      expect(answer).toContain("Envoy channel server is still starting: could not connect to NATS")
+    gate.open()
+    await waitFor(
+      async () => broker.subscribed.length > 0,
+      "the session's subscriptions to reach NATS",
+      () => answer,
+    )
+    // Connected, and still starting: the listener holds the registration.
+    expect(await whoami()).toContain("Envoy channel server is still starting")
+    expect(await whoami()).not.toContain("could not connect")
 
-      gate.open()
-      await waitFor(
-        async () => broker.subscribed.length > 0,
-        "the session's subscriptions to reach NATS",
-        () => answer,
-        PROCESS_WAIT_MS,
-      )
-      // Connected, and still starting: the listener holds the registration.
-      expect(await whoami()).toContain("Envoy channel server is still starting")
-      expect(await whoami()).not.toContain("could not connect")
-
-      held.resolve()
-      await waitFor(
-        async () => (await whoami()) === "answered",
-        "the channel session to start",
-        () => answer,
-        PROCESS_WAIT_MS,
-      )
-    } finally {
-      held.resolve()
-      await client.close().catch(() => undefined)
-      listener.stop(true)
-      gate.stop()
-      await broker.stop()
-      await rm(stateDirectory, { recursive: true, force: true })
-    }
-  },
-  ROW_TIMEOUT_MS,
-)
+    held.resolve()
+    await waitFor(
+      async () => (await whoami()) === "answered",
+      "the channel session to start",
+      () => answer,
+    )
+  } finally {
+    held.resolve()
+    await client.close().catch(() => undefined)
+    listener.stop(true)
+    gate.stop()
+    await broker.stop()
+    await rm(stateDirectory, { recursive: true, force: true })
+  }
+})
 
 // The dial's warnings name what the start waits on while it dials; the broker token's keeper warns
 // through the same channel once the connection is up, and a keeper warning is no reason the start
@@ -510,13 +494,11 @@ test("a broker token keeper's warning while the start registers leaves the tool 
       async () => broker.subscribed.length > 0,
       "the session's subscriptions to reach NATS",
       () => stderr,
-      30_000,
     )
     await waitFor(
       async () => stderr.includes("envoy-channel: the NATS connection's broker token"),
       "the keeper's warning",
       () => stderr,
-      15_000,
     )
     const answer = await whoami()
     expect(answer).toContain(
@@ -531,4 +513,4 @@ test("a broker token keeper's warning while the start registers leaves the tool 
     await broker.stop()
     await rm(stateDirectory, { recursive: true, force: true })
   }
-}, 90_000)
+})

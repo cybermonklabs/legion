@@ -1,6 +1,7 @@
-// exitProcess (`../process-exit`) is the way out of a Bun command whose last output must reach its
-// reader: its answer, its usage or refusal line. What it already wrote to stdout and stderr must
-// reach the reader all the same, even when the reader is slow and the pipe is full.
+// exitProcess (`../process-exit`) is the way out of every Bun program here whose last output must
+// reach its reader: the channel server's MCP reply and failure line, a hook's answer, a command's
+// usage or refusal line. What it already wrote to stdout and stderr must reach the reader all the
+// same, even when the reader is slow and the pipe is full.
 import { expect, test } from "bun:test";
 import { closeSync, constants, createReadStream, existsSync, openSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -47,9 +48,10 @@ test("a process ended by exitProcess first writes out everything queued on stdou
   expect(err.length).toBe(MIB);
 });
 
-// An exit with a flush bound (a command's exit inside the grace of whatever stops it): the line
-// that says why must reach a reader that takes it, and a reader that takes nothing must not keep
-// the process past the bound, since what stops the process is close behind.
+// An exit with a flush bound (the channel server's exit on its own bound, every hook's and
+// command's exit): the line that says why must reach a reader that takes it, and a reader that
+// takes nothing must not keep the process past the bound, since what stops the process is close
+// behind.
 
 /**
  * A named pipe for a child's stderr, with a reader held open that reads nothing: a pipe nobody

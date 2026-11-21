@@ -6,15 +6,23 @@
 // to Codex as the hook's `additionalContext`, which reaches the model in its very next request,
 // inside the running turn (measured on Codex CLI 0.154.0). A message that does not fit, and every
 // one behind it, waits for `codex queue` at the turn's end. With nothing waiting it prints nothing. It runs after every tool call, so it is a bundle of its own and imports only the
-// inbox, which needs nothing but the filesystem; and it exits 0 whatever happens, because a
-// failure here must never fail the tool call it follows.
+// inbox, which needs nothing but the filesystem, and the exit flush; and it exits 0 whatever
+// happens, because a failure here must never fail the tool call it follows.
 
+import { exitProcess } from "@legion/envoy-client/process-exit"
 import {
   codexInboxDirectory,
   HOOK_CONTEXT_MAX_BYTES,
   inboxContext,
   takeInbox,
 } from "../src/codex/codex-inbox"
+
+/** How long the exit gives stdout to take the messages the hook took out of the inbox before it
+ *  exits whatever is still queued (`exitProcess`): Codex reads a hook's output as it comes, so
+ *  only a reader that takes nothing keeps the hook this long. Codex kills the hook at 10 s
+ *  (`codex/hooks/hooks.json`'s PostToolUse `timeout`); the take before the exit is file renames,
+ *  and half of those 10 s is left to it. */
+const EXIT_FLUSH_MS = 5_000
 
 async function postToolUse(text: string): Promise<void> {
   const input: unknown = JSON.parse(text)
@@ -48,4 +56,6 @@ try {
     `envoy: codex-tool-hook: ${error instanceof Error ? error.message : String(error)}\n`,
   )
 }
-process.exit(0)
+// Exits rather than returns, once stdout has taken the messages taken out of the inbox: they are
+// no longer waiting, so an exit that dropped them would lose them with nothing said.
+await exitProcess(0, EXIT_FLUSH_MS)

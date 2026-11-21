@@ -92,7 +92,7 @@ beforeAll(async () => {
   const packed = (await readdir(packageCopy)).filter((entry) => entry.endsWith(".tgz"))
   expect(packed).toHaveLength(1)
   tarball = join(packageCopy, packed[0] as string)
-}, 60_000)
+})
 
 afterAll(async () => {
   await rm(scratch, { recursive: true, force: true })
@@ -194,7 +194,7 @@ test("the check passes a listing longer than a pipe holds, whose skill comes fir
   const result = await run(["bash", checkScript, tar], scratch)
   expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" })
   expect(result.stdout.trim()).toBe(`check-packed-skills.sh: ${tar} carries 1 skills as real files`)
-}, 60_000)
+})
 
 // release.yaml's claude_envoy_build step runs .github/scripts/release-claude-envoy-check-packed.sh
 // over the tarball it hands the publish job, and that script looks two members up in the listing
@@ -241,7 +241,7 @@ test("the release's check of the packed tarball passes a listing longer than a p
     stderr: "",
     stdout: false,
   })
-}, 60_000)
+})
 
 // The two ways a pack can stop with the links already swapped. The links are tracked files, so
 // what the prepack leaves behind is what the working copy holds: jj's next command would record

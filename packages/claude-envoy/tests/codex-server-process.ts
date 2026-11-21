@@ -13,6 +13,7 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
+import { settled, until as sharedUntil } from "@legion/test-fixtures/wait"
 import type { Subprocess } from "bun"
 import {
   codexSessionRecordFile,
@@ -26,7 +27,8 @@ export interface CodexServer {
   readonly process: Subprocess<"pipe", "pipe", "pipe">
   /** Everything the server has written to stderr so far. */
   stderr(): string
-  /** Stops the server: SIGTERM, then SIGKILL after 5 s. */
+  /** Stops the server: SIGTERM, then the shared wait for its exit, which ends at the deadline of
+   *  the row or hook that stops it, naming the exit; a server still running then is killed. */
   stop(): Promise<void>
 }
 
@@ -93,9 +95,14 @@ export function startCodexServer(env: Record<string, string>, pluginRoot: string
     stderr: () => stderr,
     stop: async () => {
       child.kill("SIGTERM")
-      const exited = await Promise.race([child.exited.then(() => true), Bun.sleep(5_000)])
-      if (exited !== true) child.kill("SIGKILL")
-      await child.exited
+      try {
+        await settled("the Codex server's exit on SIGTERM", child.exited)
+      } finally {
+        // A server still running when the deadline passed goes too, rather than outliving the
+        // run (a no-op for one that exited).
+        child.kill("SIGKILL")
+        await child.exited
+      }
     },
   }
 }
@@ -120,16 +127,17 @@ export async function recordFor(
   })
 }
 
-/** Polls `condition` every 50 ms until it holds; throws naming `what` after `ms`. */
+/** Waits until `condition` holds, through @legion/test-fixtures/wait's `until`, which takes no
+ *  bound and ends at the row's deadline naming `what`; the failure adds what `state` says then. */
 export async function until(
   condition: () => boolean,
   what: string,
-  ms: number,
   state: () => string,
 ): Promise<void> {
-  const deadline = performance.now() + ms
-  while (!condition()) {
-    if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}: ${state()}`)
-    await Bun.sleep(50)
+  try {
+    await sharedUntil(what, condition)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new Error(`${reason}: ${state()}`, { cause: error })
   }
 }

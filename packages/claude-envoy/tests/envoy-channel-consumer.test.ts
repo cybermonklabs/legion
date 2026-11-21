@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { createServer, type Socket } from "node:net"
 import { join } from "node:path"
 import { legacyAgentSubject } from "@legion/contracts"
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import {
   type DeliveryRequest,
@@ -493,11 +494,19 @@ test("a connection probe on the relay subject is answered, follows a session-id 
     expect(delivery(registrations.at(-1))?.resume).toBeUndefined()
 
     // A `/clear` hands the session a new id, and the relay subject moves to it: a probe of the
-    // id left behind meets no subscriber, and the new id is answered.
+    // id left behind meets no subscriber, and the new id is answered. Each absence is read once
+    // the stand-in has taken that subject's unsubscribe (its `calls`, in order), counted from the
+    // event that asks for it, so the read waits for the drop rather than racing it.
+    const handedOff = nats.calls.length
     await writeSessionHandoff(handoff, next)
     await waitFor(
       async () => identity.id === next && registrations.some((input) => input.sessionID === next),
       "the registration under the new id",
+    )
+    await waitFor(
+      async () =>
+        nats.calls.slice(handedOff).includes(`nats.unsubscribe ${deliverSubject(SESSION)}`),
+      "the unsubscribe of the old id's relay subject",
     )
     expect(nats.emitProbe(SESSION, "_INBOX.probe.2")).toBe(false)
     expect(nats.emitProbe(next, "_INBOX.probe.3")).toBe(true)
@@ -505,7 +514,12 @@ test("a connection probe on the relay subject is answered, follows a session-id 
     expect(nats.repliesOn("_INBOX.probe.3")).toEqual(["done"])
 
     // The session shuts down: its relay subject closes before its connection does.
+    const closing = nats.calls.length
     await session.shutdown()
+    await waitFor(
+      async () => nats.calls.slice(closing).includes(`nats.unsubscribe ${deliverSubject(next)}`),
+      "the unsubscribe of the closed session's relay subject",
+    )
     expect(nats.emitProbe(next, "_INBOX.probe.4")).toBe(false)
     expect(notifier.written).toEqual([])
   } finally {

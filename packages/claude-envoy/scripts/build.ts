@@ -21,8 +21,16 @@
 // scripts it runs) is listed by hand.
 import { cp, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
+import { exitProcess } from "@legion/envoy-client/process-exit"
 import { thirdPartyNotices } from "../../../scripts/third-party-notices"
 import { PHASE_HOOK_TOOL_NAME } from "../src/legion-phase-hook"
+
+/** How long a refusing build gives stderr to take the line that says why before it exits whatever
+ *  is still queued (`exitProcess`). What stops this process is CI's `timeout-minutes: 13` on the
+ *  claude-envoy job that runs it (`.github/workflows/ci-job-claude-envoy.yaml`), the release
+ *  job's own, or a person's ^C: a refusal comes before any build work, so 5 s is far inside
+ *  each. */
+const EXIT_FLUSH_MS = 5_000
 
 const packageRoot = resolve(import.meta.dir, "..")
 const repoRoot = resolve(packageRoot, "..", "..")
@@ -41,7 +49,8 @@ export const BUNDLE_ENTRYPOINTS = {
   "session-hook": "hooks/session-hook.ts",
   "session-title-hook": "hooks/session-title-hook.ts",
   // The Codex CLI's hooks: `codex-tool-hook` runs after every tool call, so it is a
-  // bundle of its own that imports the inbox alone, as `session-title-hook` is for each prompt.
+  // bundle of its own that imports the inbox and the exit flush alone, as `session-title-hook` is
+  // for each prompt.
   "codex-hook": "hooks/codex-hook.ts",
   "codex-tool-hook": "hooks/codex-tool-hook.ts",
   dispatch: "../envoy-client/bin/dispatch.ts",
@@ -514,19 +523,21 @@ export function parseMode(args: readonly string[]): Mode | null {
   return null
 }
 
-if (import.meta.main) {
+/** The build `bun scripts/build.ts` runs, answering its exit status: 2 for arguments it cannot
+ *  read and 1 for a directory it refuses, each with the line saying why on stderr. */
+async function main(args: readonly string[]): Promise<number> {
   // Checked before anything else touches the filesystem: --out's copy costs real work for a
   // build this process was always going to refuse.
   assertPinnedBun(Bun.version, pinnedBunVersion)
-  const mode = parseMode(process.argv.slice(2))
+  const mode = parseMode(args)
   if (mode === null) {
     process.stderr.write(`${USAGE}\n`)
-    process.exit(2)
+    return 2
   }
   const refusal = await outRefusal(mode.dir)
   if (refusal !== null) {
     process.stderr.write(`refusing --${mode.kind}: ${refusal}\n`)
-    process.exit(1)
+    return 1
   }
   if (mode.kind === "out") {
     await buildOut(mode.dir)
@@ -535,4 +546,12 @@ if (import.meta.main) {
     await buildCodexPlugin(mode.dir, mode.dist)
     process.stdout.write(`built the Codex Envoy plugin into ${resolve(mode.dir)}\n`)
   }
+  return 0
+}
+
+if (import.meta.main) {
+  const code = await main(process.argv.slice(2))
+  // A build that ends well ends when its work does; one that refused ends here, once stderr has
+  // taken the line that says why.
+  if (code !== 0) await exitProcess(code, EXIT_FLUSH_MS)
 }

@@ -7,7 +7,11 @@ import { readSecretFile } from "@legion/envoy-client/secret-file"
 import type { EnvoyClient } from "@legion/envoy-client/transport"
 import { claimFirstTurnBoundMs } from "@legion/pi-shared/claim-first-turn-bound"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
-import { bootLegionClaim, type LegionClaimBoot } from "@legion/pi-shared/legion-claim-core"
+import {
+  bootLegionClaim,
+  claimStepRecord,
+  type LegionClaimBoot,
+} from "@legion/pi-shared/legion-claim-core"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { legion } from "../package.json" with { type: "json" }
 import { configuredValue } from "./claude-session"
@@ -248,8 +252,8 @@ export function startLegionClaim(deps: {
   /** How long between those attempts: {@link ROLE_CLAIM_RETRY_MS}. */
   readonly roleRetryMs?: number
   /** The pane's own environment, which the first-turn bound is read from
-   * (`claimFirstTurnBoundMs`): `process.env` for the server, and a case's own map in a test that
-   * will not wait 30 seconds. */
+   * (`claimFirstTurnBoundMs`), and the file of the boot's claim record (`claimStepRecord`):
+   * `process.env` for the server, and a case's own map in a test that will not wait 30 seconds. */
   readonly env?: NodeJS.ProcessEnv
   readonly pollMs?: number
 }): LegionClaim {
@@ -327,6 +331,9 @@ export function startLegionClaim(deps: {
       // The pane's own bound, read from its environment as the reminder's four numbers are
       // (`stallLimits` in `./legion-phase-hook`), and warned about on the pane's own log line.
       firstTurnBoundMs: claimFirstTurnBoundMs(deps.env ?? process.env, paneReminderLog(deps.log)),
+      // The tests' record of when the bound was armed and which path took the name, written only
+      // where LEGION_CLAIM_RECORD_FILE in that same environment names a file.
+      recordClaimStep: claimStepRecord(deps.env ?? process.env),
       onRoleRegained: (listener) => deps.session.onRoleRegained(listener),
       log: deps.log,
       // The server's shutdown: a claim answered 503 is not made again once it aborts.

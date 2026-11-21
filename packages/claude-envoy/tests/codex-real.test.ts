@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
+import { settled, until } from "@legion/test-fixtures/wait"
 import type { Server } from "bun"
 import { askSideQuestion } from "../src/codex/codex-cli"
 import { codexInboxDirectory, putInbox, takenBy } from "../src/codex/codex-inbox"
@@ -21,7 +22,6 @@ import { codexSessionRecordFile, readCodexSessionRecord } from "../src/codex/cod
 const codex = process.env["LEGION_TEST_CODEX"]
 const packageRoot = resolve(import.meta.dir, "..")
 const root = temporaryDirectory("codex-real")
-const WAIT_MS = 60_000
 
 interface ModelRequest {
   readonly input: readonly Record<string, unknown>[]
@@ -145,7 +145,7 @@ describe.skipIf(codex === undefined)("the Codex plugin on the real Codex binary"
       if (ran.exitCode !== 0) throw new Error(`codex ${argv.join(" ")}: ${ran.stderr.toString()}`)
     }
     pluginData = join(codexHome, "plugins", "data", "codex-envoy-legion-test")
-  }, 300_000)
+  })
 
   afterAll(() => {
     model?.stop(true)
@@ -163,73 +163,65 @@ describe.skipIf(codex === undefined)("the Codex plugin on the real Codex binary"
     }
   }
 
-  test(
-    "SessionStart records the session; a waiting message reaches the running turn at its next tool call",
-    async () => {
-      const before = requests.length
-      const exec = Bun.spawn(
-        [
-          codex as string,
-          "exec",
-          "--skip-git-repo-check",
-          "--dangerously-bypass-hook-trust",
-          "RUN: sleep 4; echo slept",
-        ],
-        { cwd: work, env: environment(), stderr: "pipe", stdout: "pipe" },
-      )
-      // The record lands under the codex process, the hook's parent.
-      const recordFile = codexSessionRecordFile(pluginData, exec.pid)
-      const deadline = Date.now() + WAIT_MS
-      let record = await readCodexSessionRecord(recordFile)
-      while (record === undefined && Date.now() < deadline) {
-        await Bun.sleep(100)
-        record = await readCodexSessionRecord(recordFile)
-      }
-      expect(record).toMatchObject({ codex_home: codexHome, cwd: work, source: "startup" })
-      if (record === undefined) return
-      expect(record.transcript_path).toContain(record.session_id)
-      const inbox = codexInboxDirectory(pluginData, record.session_id)
-      const name = await putInbox(inbox, { content: "INBOX LINE FOR THE RUNNING TURN" })
-      expect(await exec.exited).toBe(0)
-      expect(await takenBy(inbox, name)).toBe("hook")
-      const turn = requests.slice(before)
-      const carried = turn.findIndex((request) =>
-        JSON.stringify(request.input).includes("INBOX LINE FOR THE RUNNING TURN"),
-      )
-      // The request after the tool call, not a later turn: it also carries the call's output,
-      // which is the command's own and not the prompt's text.
-      expect(carried).toBeGreaterThan(0)
-      const outputs = (turn[carried]?.input ?? []).filter(
-        (item) => item["type"] === "function_call_output",
-      )
-      expect(JSON.stringify(outputs)).toMatch(/exited with code 0[\s\S]*slept/)
-      // The dispatch-first skill and the session note reach the model only with Dispatch on; this
-      // home has none, so the record is all the session-start hook was asked for.
-      expect(readFileSync(record.transcript_path ?? "", "utf8")).toContain("task_complete")
-    },
-    WAIT_MS * 2,
-  )
+  test("SessionStart records the session; a waiting message reaches the running turn at its next tool call", async () => {
+    const before = requests.length
+    const exec = Bun.spawn(
+      [
+        codex as string,
+        "exec",
+        "--skip-git-repo-check",
+        "--dangerously-bypass-hook-trust",
+        "RUN: sleep 4; echo slept",
+      ],
+      { cwd: work, env: environment(), stderr: "pipe", stdout: "pipe" },
+    )
+    // The record lands under the codex process, the hook's parent.
+    const recordFile = codexSessionRecordFile(pluginData, exec.pid)
+    const record = await until("the session record SessionStart writes", () =>
+      readCodexSessionRecord(recordFile),
+    )
+    expect(record).toMatchObject({ codex_home: codexHome, cwd: work, source: "startup" })
+    expect(record.transcript_path).toContain(record.session_id)
+    const inbox = codexInboxDirectory(pluginData, record.session_id)
+    const name = await putInbox(inbox, { content: "INBOX LINE FOR THE RUNNING TURN" })
+    expect(await exec.exited).toBe(0)
+    expect(await takenBy(inbox, name)).toBe("hook")
+    const turn = requests.slice(before)
+    const carried = turn.findIndex((request) =>
+      JSON.stringify(request.input).includes("INBOX LINE FOR THE RUNNING TURN"),
+    )
+    // The request after the tool call, not a later turn: it also carries the call's output,
+    // which is the command's own and not the prompt's text.
+    expect(carried).toBeGreaterThan(0)
+    const outputs = (turn[carried]?.input ?? []).filter(
+      (item) => item["type"] === "function_call_output",
+    )
+    expect(JSON.stringify(outputs)).toMatch(/exited with code 0[\s\S]*slept/)
+    // The dispatch-first skill and the session note reach the model only with Dispatch on; this
+    // home has none, so the record is all the session-start hook was asked for.
+    expect(readFileSync(record.transcript_path ?? "", "utf8")).toContain("task_complete")
+  })
 
-  test(
-    "a side question runs in an ephemeral fork with the plugin off and leaves the session's transcript alone",
-    async () => {
-      const files = [...new Bun.Glob("**/*.jsonl").scanSync(join(codexHome, "sessions"))]
-      const recordFiles = [...new Bun.Glob("codex-sessions/*.json").scanSync(pluginData)]
-      const record = await readCodexSessionRecord(join(pluginData, recordFiles[0] ?? ""))
-      expect(record).toBeDefined()
-      if (record === undefined) return
-      const transcript = readFileSync(record.transcript_path ?? "", "utf8")
-      const answerText = await askSideQuestion(
+  test("a side question runs in an ephemeral fork with the plugin off and leaves the session's transcript alone", async () => {
+    const files = [...new Bun.Glob("**/*.jsonl").scanSync(join(codexHome, "sessions"))]
+    const recordFiles = [...new Bun.Glob("codex-sessions/*.json").scanSync(pluginData)]
+    const record = await readCodexSessionRecord(join(pluginData, recordFiles[0] ?? ""))
+    expect(record).toBeDefined()
+    if (record === undefined) return
+    const transcript = readFileSync(record.transcript_path ?? "", "utf8")
+    // The side question's own bound is the one the server gives it (`SIDE_QUESTION_TIMEOUT_MS`);
+    // the row's deadline ends this wait first.
+    const answerText = await settled(
+      "the side question's answer",
+      askSideQuestion(
         { codexHome, env: environment(), executable: codex as string },
         record.session_id,
         "BTW what is this?",
-        WAIT_MS,
-      )
-      expect(answerText).toMatch(/^ECHO \d+$/)
-      expect(readFileSync(record.transcript_path ?? "", "utf8")).toBe(transcript)
-      expect([...new Bun.Glob("**/*.jsonl").scanSync(join(codexHome, "sessions"))]).toEqual(files)
-      expect([...new Bun.Glob("codex-sessions/*.json").scanSync(pluginData)]).toEqual(recordFiles)
-    },
-    WAIT_MS * 2,
-  )
+      ),
+    )
+    expect(answerText).toMatch(/^ECHO \d+$/)
+    expect(readFileSync(record.transcript_path ?? "", "utf8")).toBe(transcript)
+    expect([...new Bun.Glob("**/*.jsonl").scanSync(join(codexHome, "sessions"))]).toEqual(files)
+    expect([...new Bun.Glob("codex-sessions/*.json").scanSync(pluginData)]).toEqual(recordFiles)
+  })
 })

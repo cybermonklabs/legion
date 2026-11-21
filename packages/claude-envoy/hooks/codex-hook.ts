@@ -17,6 +17,7 @@ import { rm } from "node:fs/promises"
 import { formatOpenAsksSummary } from "@legion/envoy-client/dispatch-execute"
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { messageFor } from "@legion/envoy-client/errors"
+import { exitProcess } from "@legion/envoy-client/process-exit"
 import { sessionConfigFile, sessionDispatchSettings } from "@legion/envoy-client/session-settings"
 import { z } from "zod"
 import { configuredValue } from "../src/claude-session"
@@ -39,6 +40,14 @@ import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity
 
 /** How long the open-asks read may take before the summary says it is unavailable. */
 const OPEN_ASKS_TIMEOUT_MS = 3_000
+
+/** How long the exit gives stdout and stderr to take what the hook wrote (the open-asks summary,
+ *  a line saying why a session was not recorded) before it exits whatever is still queued
+ *  (`exitProcess`): Codex reads a hook's output as it comes, so only a reader that takes nothing
+ *  keeps the hook this long. Codex kills `session-end` at 3 s and `session-start` at 20 s
+ *  (`codex/hooks/hooks.json`'s `timeout`s); `session-end` reads one record and writes one marker,
+ *  so a second of the shorter grace is the flush's. */
+const EXIT_FLUSH_MS = 1_000
 
 const SessionStartInput = z.object({
   session_id: z.string().min(1),
@@ -164,5 +173,5 @@ if (import.meta.main) {
   } catch (error) {
     process.stderr.write(`envoy: codex-hook: ${messageFor(error)}\n`)
   }
-  process.exit(0)
+  await exitProcess(0, EXIT_FLUSH_MS)
 }

@@ -437,7 +437,7 @@ filter names scripts/sessions for.
 
 src/skills-guard.test.ts spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER) and
 asserts an exact file list over the tree it writes, so this job reads that whole
-package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:39-44) that
+package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:47-57) that
 lives outside it. A spawn carries no import, so no derivation of this repository
 sees the reach: both patterns are hand-kept, with their declared reads in
 ci_job_reads.py.

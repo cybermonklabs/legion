@@ -1,9 +1,10 @@
 // The NATS stall rows of claude-envoy, which run only with LEGION_E2E_ENVOY_STACK=1 (CI's
-// envoy-session-stall job), whose step's --timeout bounds every wait. The real channel server
-// registers against a listener built from packages/envoy, and the proxy freezes its NATS path;
-// the freeze and what it checks are `runFreezeScenario`, which pi-envoy's stall row runs too, and
-// the settings that keep that recovery inside the spec's minute are held by envoy-client's
-// src/__tests__/nats-stall.test.ts. A session whose first redial hung still exits on SIGTERM.
+// envoy-session-stall job), in the package script's second command, whose --timeout bounds every
+// wait. The real channel server registers against a listener built from packages/envoy, and the
+// proxy freezes its NATS path; the freeze and what it checks are `runFreezeScenario`, which
+// pi-envoy's stall row runs too, and the settings that keep that recovery inside the spec's minute
+// are held by envoy-client's src/__tests__/nats-stall.test.ts. A session whose first redial hung
+// still exits on SIGTERM through its own shutdown: status 0, and its registry entry gone.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
@@ -28,12 +29,14 @@ import {
   TIMER_RECORD_FILE,
   TIMER_RECORD_ROOTS,
   type TimerStep,
+  timersBetween,
 } from "@legion/test-fixtures/timer-record"
 import { completeLines } from "@legion/test-fixtures/transcript-lines"
 import { settled, until } from "@legion/test-fixtures/wait"
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
 import { CHANNEL_RECORD_FILE, type ChannelRecordLine } from "../src/channel-record"
+import { SHUTDOWN_BOUNDS } from "../src/way-out"
 import { startFakeMod } from "./fake-mod"
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
@@ -49,6 +52,10 @@ const serverRoots = [
   resolve(import.meta.dir, "..", "..", "envoy-client", "src"),
   resolve(import.meta.dir, "..", "..", "pi-shared", "src"),
 ]
+
+/** The exit this file held a server to on SIGTERM before its waits ended at the row's deadline:
+ *  the bounded waits a shutdown arms on its way out must sum to less. */
+const EXIT_BOUND_MS = 15_000
 
 /** Where the socket homes are made. A mod socket is `<home>/claude-envoy/ce-<hash>.sock`, and that
  *  whole path has 100 bytes to fit in (`MOD_SOCKET_PATH_MAX_BYTES`): under `tmpdir()` a deep
@@ -326,7 +333,7 @@ describe.skipIf(!envoyStackEnabled)(
       if (stack === undefined) throw new Error("the Envoy stack did not start")
       const { envoyUrl } = stack
       await withChannelServer(stack, "ses_stall_exit", async (channelServer) => {
-        const { server, proxy, sessionID, waitFor, natsDial } = channelServer
+        const { server, proxy, sessionID, waitFor, record, natsDial, stderr } = channelServer
         await waitFor(
           async () =>
             (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok &&
@@ -352,19 +359,77 @@ describe.skipIf(!envoyStackEnabled)(
         if (dial === undefined) throw new Error("the server recorded no NATS dial")
         expect(recoveryBoundMs(dial.options, 1)).toBeLessThan(RECOVERY_BOUND_MS)
         expectRecoveredByPingOut(dial, 1)
-        // Main's own check of the exit on SIGTERM, on the real clock: this server writes no record
-        // of its way out to read the exit bound from, so the check stays until the claude-envoy
-        // pull request's bounded way out replaces it with that record.
-        const signalledAt = Date.now()
+        // The hung redial must not hold the process: it exits on SIGTERM, which the shared wait
+        // reads through its exit, failing at the row's deadline while the server still runs. How
+        // long the way out may take is what the server chose for it, read from its own record
+        // (R4: the bounds it armed and the order it took its steps, not a clock): every step of
+        // the way is recorded, in the order the shutdown takes them; only a step of the server's
+        // own bounds (`SHUTDOWN_BOUNDS`) armed one, so each other step waited for its fact - a
+        // last write still running, the DELETE, a close - however long it took; and those bounds,
+        // with any other timer its own code ran on the way, stay under the exit bound it holds the
+        // whole way to, which is no more than the 15 s this row holds its exit to. That the way
+        // ended on its own, not on that bound, is the record's `completed` before the process's
+        // exit; a step that never ends - a write, a sleep, a handle left open - ends it on the
+        // exit bound instead, which exits 1 naming the steps it dropped. That it ran the shutdown
+        // to its end is its exit, 0 and not the signal's, and the deregistration the shutdown
+        // sends reaching the listener.
+        const beforeStop = record().length
+        // Read for `SHUTDOWN_EXIT_MS`'s sizing beside it, never asserted: the way out's time.
+        const stoppedAt = Date.now()
         server.kill("SIGTERM")
-        const outcome = await Promise.race([
-          server.exited.then(() => "exited"),
-          Bun.sleep(15_000).then(() => "running"),
-        ])
+        const exitCode = await settled("the channel server's exit on SIGTERM", server.exited)
         console.log(
-          `claude-envoy stall exit: SIGTERM -> ${outcome} after ${((Date.now() - signalledAt) / 1000).toFixed(1)} s`,
+          `claude-envoy stall exit: the way out took ${Date.now() - stoppedAt} ms from SIGTERM to the process's exit`,
         )
-        expect(outcome).toBe("exited")
+        expect(
+          { exitCode, signal: server.signalCode },
+          `the channel server's exit on SIGTERM; its stderr: ${stderr()}`,
+        ).toEqual({ exitCode: 0, signal: null })
+        expect((await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok).toBe(false)
+        const steps = record()
+        const wayOut = steps.slice(beforeStop)
+        expect(wayOut.flatMap((line) => ("shutdown" in line ? [line.shutdown] : []))).toEqual([
+          "began",
+          "completed",
+          "exited",
+        ])
+        const began = wayOut.find((line) => "shutdown" in line && line.shutdown === "began")
+        const exitBoundMs = began !== undefined && "exitBoundMs" in began ? began.exitBoundMs : NaN
+        expect(exitBoundMs).toBeLessThanOrEqual(EXIT_BOUND_MS)
+        const waits = wayOut.flatMap((line) => ("wait" in line ? [line] : []))
+        const names = waits.map((wait) => wait.wait)
+        // The drained connection's close is waited for only where the drain left it open.
+        expect(names.filter((name) => name !== "close")).toEqual([
+          "drain",
+          "settle",
+          "deregister",
+          "state",
+          "turns",
+          "bind",
+          "mod",
+          "server",
+        ])
+        expect([-1, 1]).toContain(names.indexOf("close"))
+        // A bound is armed only by a step the server bounds itself; every other step ended on
+        // what it waited for.
+        const ownBounds: readonly string[] = Object.keys(SHUTDOWN_BOUNDS)
+        expect(
+          waits.filter((wait) => wait.armedMs !== undefined || wait.endedBy !== "fact"),
+          `the steps that armed a bound or ended on one, of ${JSON.stringify(waits)}`,
+        ).toEqual(waits.filter((wait) => ownBounds.includes(wait.wait)))
+        const completed = steps.findIndex(
+          (line) => "shutdown" in line && line.shutdown === "completed",
+        )
+        const otherTimers = timersBetween(steps, beforeStop - 1, completed).filter(
+          (timer) => !timer.from.includes("/way-out.ts:"),
+        )
+        const armedMs =
+          waits.reduce((armed, wait) => armed + (wait.armedMs ?? 0), 0) +
+          otherTimers.reduce((armed, timer) => armed + timer.delayMs, 0)
+        expect(
+          armedMs,
+          `the way out's bounds, ${JSON.stringify(waits)}, and its other timers, ${JSON.stringify(otherTimers)}`,
+        ).toBeLessThan(exitBoundMs)
       })
     })
   },

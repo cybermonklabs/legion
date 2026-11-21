@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
+import { settled, until } from "@legion/test-fixtures/wait"
 import {
   currentOwner,
   type ProcessProbe,
@@ -93,7 +94,22 @@ describe("the owner of a codex process's Envoy session", () => {
     const directory = join(root, "c")
     await registerServer(directory, 101, "s101")
     const abort = new AbortController()
-    const probe = probeOf({ 101: "s101", [process.pid]: "me" })
+    const table = probeOf({ 101: "s101", [process.pid]: "me" })
+    // Each look asks the probe about the server that published first once it has decided whether
+    // to publish, so the count of those asks is the count of looks decided.
+    let looks = 0
+    const probe: ProcessProbe = {
+      ...table,
+      signal: (pid) => {
+        if (pid === 101) looks += 1
+        table.signal(pid)
+      },
+    }
+    /** Waits until two more looks have asked the probe, the second a whole look after now. */
+    const twoLooksOn = async (what: string): Promise<void> => {
+      const from = looks
+      await until(what, () => looks >= from + 2)
+    }
     const published: number[] = []
     const waited = waitForOwnership(
       directory,
@@ -104,10 +120,15 @@ describe("the owner of a codex process's Envoy session", () => {
       10,
       probe,
     )
-    await Bun.sleep(30)
+    await until("the server's first entry", () => published.length > 0)
+    await twoLooksOn("a look after the first entry")
+    // One entry while it stands: a look publishes again only once the entry it had is gone, and
+    // it is there.
     expect(published).toHaveLength(1)
+    expect(readdirSync(directory)).toContain(`${published[0]}.json`)
     rmSync(join(directory, `${published[0]}.json`))
-    await Bun.sleep(50)
+    await until("the entry published again", () => published.length > 1)
+    await twoLooksOn("a look after the entry published again")
     // Published again, behind the live server that published first, and reported, so the server
     // can remove it when it stops.
     expect(published).toHaveLength(2)
@@ -122,27 +143,53 @@ describe("the owner of a codex process's Envoy session", () => {
       const directory = join(root, `race-${run}`)
       // A dead owner, published before both racers.
       await registerServer(directory, 2 ** 22 + 17, "dead")
-      const racer = () =>
-        Bun.spawn(
+      // Each racer publishes, then waits at a gate this test opens once both have, so each reads
+      // the owner with both entries there; it says what it read, and stays alive until this test
+      // closes its stdin once both have said, so neither reads the other as gone.
+      const racer = () => {
+        const child = Bun.spawn(
           [
             process.execPath,
             "-e",
             `const m = await import(${JSON.stringify(ownerModule)});
-             const self = await m.registerServer(${JSON.stringify(directory)}, process.pid, null);
-             await Bun.sleep(50);
+             const gate = console[Symbol.asyncIterator]();
+             await m.registerServer(${JSON.stringify(directory)}, process.pid, null);
+             process.stdout.write("registered\\n");
+             await gate.next();
              const owner = await m.currentOwner(${JSON.stringify(directory)});
-             process.stdout.write(owner?.pid === process.pid ? "owner" : "standby");
-             await Bun.sleep(300);`,
+             process.stdout.write(owner?.pid === process.pid ? "owner\\n" : "standby\\n");
+             await gate.next();`,
           ],
-          { stdout: "pipe" },
+          { stdin: "pipe", stdout: "pipe" },
         )
-      const a = racer()
-      const b = racer()
-      const said = [await new Response(a.stdout).text(), await new Response(b.stdout).text()]
-      await Promise.all([a.exited, b.exited])
+        let said = ""
+        void (async () => {
+          for await (const chunk of child.stdout.pipeThrough(new TextDecoderStream())) said += chunk
+        })()
+        return {
+          child,
+          lines: () => said.split("\n").filter((line) => line !== ""),
+          open: () => {
+            child.stdin.write("go\n")
+            child.stdin.flush()
+          },
+          release: () => child.stdin.end(),
+        }
+      }
+      const racers = [racer(), racer()]
+      await until("both racers to publish", () =>
+        racers.every((each) => each.lines().includes("registered")),
+      )
+      for (const each of racers) each.open()
+      await until("both racers to say what they read", () =>
+        racers.every((each) => each.lines().length > 1),
+      )
+      const said = racers.map((each) => each.lines()[1])
+      for (const each of racers) each.release()
+      await settled("both racers to exit", Promise.all(racers.map((each) => each.child.exited)))
       expect(said.sort()).toEqual(["owner", "standby"])
     }
-  }, 60_000)
+  })
 })
 
 describe("a session's end", () => {
@@ -159,11 +206,14 @@ describe("a session's end", () => {
       source: null,
       transcript_path: "/t",
     })
-    const before = statSync(record).mtimeMs
-    await Bun.sleep(20)
+    // The touch is what a server watching the record reads (`watchFile` compares its stat), so
+    // the record's stamp is set back first and must move.
+    const longAgo = new Date(Date.now() - 60_000)
+    utimesSync(record, longAgo, longAgo)
+    const stale = statSync(record).mtimeMs
     await markSessionEnded(root, 7, "s-1")
     expect(await sessionEnded(codexEndedFile(root, 7, "s-1"))).toBe(true)
-    expect(statSync(record).mtimeMs).toBeGreaterThan(before)
+    expect(statSync(record).mtimeMs).not.toBe(stale)
     expect(await sessionEnded(codexEndedFile(root, 7, "s-2"))).toBe(false)
   })
 })
@@ -191,7 +241,7 @@ describe("watching the record", () => {
       (next, ended) => seen.push([next.session_id, ended]),
       50,
     )
-    await Bun.sleep(100)
+    await until("the watch's first look", () => seen.length > 0)
     stop()
     expect(seen[0]).toEqual(["s-1", true])
   })

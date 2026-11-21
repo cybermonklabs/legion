@@ -128,7 +128,7 @@ async function sameWordsUnder(shell: string, argv: (command: string) => string[]
 // command's path (`=ls` becomes `/usr/bin/ls`), so it is quoted.
 test("the resend command gives the same words under bash", async () => {
   await sameWordsUnder("bash", (command) => ["bash", "-c", command])
-}, 20_000)
+})
 
 // Skipped, and reported as skipped, where no zsh is found, except on GitHub Actions
 // (`GITHUB_ACTIONS`), whose job installs one, so there a missing zsh fails the row. `CI` is no
@@ -138,5 +138,4 @@ test.skipIf(zsh === null && process.env["GITHUB_ACTIONS"] !== "true")(
   async () => {
     await sameWordsUnder("zsh", (command) => [zsh ?? "zsh", "-f", "-c", command])
   },
-  20_000,
 )

@@ -16,6 +16,7 @@ import {
   type TemporaryDirectoryMaker,
   temporaryDirectories,
 } from "@legion/test-fixtures/temporary-directories"
+import { until } from "@legion/test-fixtures/wait"
 import type {
   ChannelBrokerMessage,
   ChannelConnection,
@@ -65,6 +66,12 @@ export class FakeNats implements ChannelConnection {
   private statusWaiter: PromiseWithResolvers<void> | undefined
   private readonly ended = Promise.withResolvers<Error | undefined>()
 
+  /**
+   * `calls` records each subscribe and unsubscribe as it is taken, `nats.subscribe <subject>` and
+   * `nats.unsubscribe <subject>`, in order: what a test waits on to know a subject was dropped
+   * after a given moment. A test that shares the array with its client's record reads that order
+   * among the client's calls too.
+   */
   constructor(readonly calls: string[] = []) {}
 
   /** Every subscribe asked for, those a closed connection refused included. */
@@ -375,41 +382,26 @@ export function settled(): Promise<void> {
 }
 
 /**
- * How long a test waits for a channel-server process it spawned to start: its first stderr line,
- * or its first dial. Most of a start is Bun loading and compiling this package, which a loaded
- * machine slows most: a server once wrote nothing for 15 s at a load of 700 on 288 cores, and
- * another had not dialed after 8 s at a load of 450, so a start gets 30 s.
- */
-export const SERVER_START_MS = 30_000
-
-/**
- * Polls `condition` every 5 ms until it holds; fails after `deadlineMs` (5 s by default) naming
- * `what`, followed by what `state` reports at that moment (an `observedClient`'s `describe`, the
- * test's own fakes). Real time on purpose: the awaited conditions are filesystem writes the
- * server's own heartbeat performs, which no fake clock can advance. The
- * deadline is read from the monotonic clock, which `setSystemTime` leaves alone.
- *
- * The package's `test` script gives each test 60 s (`--timeout=60000`), above the longest chain of
- * waits one test makes: a wait that succeeds can take up to its 5 s, so a stuck wait names its step
- * only once every wait before it has had its time. The longest is eleven, counting the waits of
- * `boot` and `reconnect` (envoy-channel-replay.test.ts, "a stored frame the channel never takes is
- * named in one notice…"): 11 × 5 s, and 5 s more covers startup and shutdown. A test that chains
- * more raises it, and so does one that gives a wait a longer deadline (a whole server process,
- * which a loaded machine starts slowly). Under bun's default of 5 s its own timeout fired first,
- * and a stuck wait never said which step it was.
+ * Waits through the shared wait (`until`, `@legion/test-fixtures/wait`) until `condition` holds;
+ * past the row's deadline it fails naming `what`, followed by what `state` reports at that moment
+ * (an `observedClient`'s `describe`, the test's own fakes). Real time on purpose: the awaited
+ * conditions are filesystem writes the server's own heartbeat performs, which no fake clock can
+ * advance. The wait takes no bound of its own: each ends at its row's deadline, which the package
+ * script's one `--timeout` sets, so a stuck wait names its step whichever wait of the row it is,
+ * the start of a channel-server process a test spawned among them.
  */
 export async function waitFor(
   condition: () => Promise<boolean>,
   what: string,
   state?: () => string,
-  deadlineMs = 5_000,
 ): Promise<void> {
-  const deadline = performance.now() + deadlineMs
-  while (!(await condition())) {
-    if (performance.now() > deadline) {
-      throw new Error(`timed out waiting for ${what}${state === undefined ? "" : ` (${state()})`}`)
-    }
-    await Bun.sleep(5)
+  try {
+    await until(what, condition)
+  } catch (error) {
+    if (state === undefined) throw error
+    throw new Error(`${error instanceof Error ? error.message : String(error)} (${state()})`, {
+      cause: error,
+    })
   }
 }
 

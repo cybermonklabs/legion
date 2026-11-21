@@ -12,13 +12,7 @@ import { modSocketPath } from "../hooks/mod-protocol"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { waitFor } from "./channel-session-harness"
 import { startFakeMod } from "./fake-mod"
-import {
-  PROCESS_WAIT_MS,
-  ROW_TIMEOUT_MS,
-  type SessionBroker,
-  sessionBroker,
-  startReopenServer,
-} from "./reopen-server"
+import { type SessionBroker, sessionBroker, startReopenServer } from "./reopen-server"
 
 const BEFORE = "ses_view_before_clear"
 const AFTER = "ses_view_after_clear"
@@ -53,7 +47,6 @@ async function startWithEarlyClear(broker?: SessionBroker) {
       async () => run.broker.subscribed.includes(agentStreamControlSubject(BEFORE)),
       "the live view started on the id the server had",
       run.state,
-      PROCESS_WAIT_MS,
     )
     return { run, mod }
   } catch (error) {
@@ -63,72 +56,61 @@ async function startWithEarlyClear(broker?: SessionBroker) {
   }
 }
 
-test(
-  "a /clear the mod reported before the live view listened moves the view once the server adopts it",
-  async () => {
-    const { run, mod } = await startWithEarlyClear()
-    try {
-      await writeSessionHandoff(sessionHandoffFile(run.stateDirectory, process.pid), AFTER)
-      await waitFor(
-        async () => run.sessions.includes(AFTER),
-        "the server to adopt the /clear and register the new id",
-        run.state,
-        PROCESS_WAIT_MS,
-      )
-      await waitFor(
-        async () => run.broker.subscribed.includes(agentStreamControlSubject(AFTER)),
-        "the live view's control subject under the new id",
-        () => `${run.state()}\nsubscribed: ${JSON.stringify(run.broker.subscribed)}`,
-        PROCESS_WAIT_MS,
-      )
-      // It left the old id's subject, and took the new one's once.
-      expect(run.broker.unsubscribed).toContain(agentStreamControlSubject(BEFORE))
-      expect(
-        run.broker.subscribed.filter((subject) => subject === agentStreamControlSubject(AFTER)),
-      ).toHaveLength(1)
-    } finally {
-      await mod.stop()
-      await run.stop()
-    }
-  },
-  ROW_TIMEOUT_MS,
-)
+test("a /clear the mod reported before the live view listened moves the view once the server adopts it", async () => {
+  const { run, mod } = await startWithEarlyClear()
+  try {
+    await writeSessionHandoff(sessionHandoffFile(run.stateDirectory, process.pid), AFTER)
+    await waitFor(
+      async () => run.sessions.includes(AFTER),
+      "the server to adopt the /clear and register the new id",
+      run.state,
+    )
+    await waitFor(
+      async () => run.broker.subscribed.includes(agentStreamControlSubject(AFTER)),
+      "the live view's control subject under the new id",
+      () => `${run.state()}\nsubscribed: ${JSON.stringify(run.broker.subscribed)}`,
+    )
+    // It left the old id's subject, and took the new one's once.
+    expect(run.broker.unsubscribed).toContain(agentStreamControlSubject(BEFORE))
+    expect(
+      run.broker.subscribed.filter((subject) => subject === agentStreamControlSubject(AFTER)),
+    ).toHaveLength(1)
+  } finally {
+    await mod.stop()
+    await run.stop()
+  }
+})
 
-test(
-  "under the session's broker token, that view takes the new id's control subject once the connection presents the new id's token",
-  async () => {
-    const tokens = await sessionBroker()
-    const started = await startWithEarlyClear(tokens).catch(async (error: unknown) => {
-      await tokens.stop()
-      throw error
-    })
-    const { run, mod } = started
-    const control = agentStreamControlSubject(AFTER)
-    try {
-      const tradedAt = tokens.minted.length
-      await writeSessionHandoff(sessionHandoffFile(run.stateDirectory, process.pid), AFTER)
-      await waitFor(
-        async () => run.broker.subscribed.includes(control),
-        "the live view's control subject under the new id",
-        () => `${run.state()}\nsubscribed: ${JSON.stringify(run.broker.subscribed)}`,
-        PROCESS_WAIT_MS,
-      )
-      // Taken once, on a connection whose CONNECT presented a token traded for the new id: not on
-      // the old id's credential, which the auth service would refuse it.
-      const taken = run.broker.subscribed.flatMap((subject, index) =>
-        subject === control ? [index] : [],
-      )
-      expect(taken).toHaveLength(1)
-      const presented = run.broker.connects[(run.broker.subscribedAfter[taken[0] ?? 0] ?? 0) - 1]
-      await run.checkConnects(
-        tokens.minted.slice(tradedAt).includes(String(presented?.["auth_token"])),
-        "the new id's control subject was taken on a connection presenting no token traded for it",
-      )
-    } finally {
-      await mod.stop()
-      await run.stop()
-      await tokens.stop()
-    }
-  },
-  ROW_TIMEOUT_MS,
-)
+test("under the session's broker token, that view takes the new id's control subject once the connection presents the new id's token", async () => {
+  const tokens = await sessionBroker()
+  const started = await startWithEarlyClear(tokens).catch(async (error: unknown) => {
+    await tokens.stop()
+    throw error
+  })
+  const { run, mod } = started
+  const control = agentStreamControlSubject(AFTER)
+  try {
+    const tradedAt = tokens.minted.length
+    await writeSessionHandoff(sessionHandoffFile(run.stateDirectory, process.pid), AFTER)
+    await waitFor(
+      async () => run.broker.subscribed.includes(control),
+      "the live view's control subject under the new id",
+      () => `${run.state()}\nsubscribed: ${JSON.stringify(run.broker.subscribed)}`,
+    )
+    // Taken once, on a connection whose CONNECT presented a token traded for the new id: not on
+    // the old id's credential, which the auth service would refuse it.
+    const taken = run.broker.subscribed.flatMap((subject, index) =>
+      subject === control ? [index] : [],
+    )
+    expect(taken).toHaveLength(1)
+    const presented = run.broker.connects[(run.broker.subscribedAfter[taken[0] ?? 0] ?? 0) - 1]
+    await run.checkConnects(
+      tokens.minted.slice(tradedAt).includes(String(presented?.["auth_token"])),
+      "the new id's control subject was taken on a connection presenting no token traded for it",
+    )
+  } finally {
+    await mod.stop()
+    await run.stop()
+    await tokens.stop()
+  }
+})

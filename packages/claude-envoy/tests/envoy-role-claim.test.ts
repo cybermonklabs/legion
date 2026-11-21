@@ -1,4 +1,4 @@
-import { expect, jest, test } from "bun:test"
+import { afterEach, expect, jest, test } from "bun:test"
 import { mkdir, readdir, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
@@ -98,6 +98,12 @@ function registered(): SubscribeResult {
 /** The client instance of the channel server under test: one `claude` process's. */
 const INSTANCE = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
 
+// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+// `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers()
+})
+
 test("reasserts a role claimed after channel startup on the next heartbeat", async () => {
   jest.useFakeTimers()
   const stateDirectory = scratchState()
@@ -140,8 +146,9 @@ test("reasserts a role claimed after channel startup on the next heartbeat", asy
       { sessionID: "ses_current", role: "reviewer", soft: true, clientInstanceID: INSTANCE },
     ])
   } finally {
-    await session?.shutdown()
+    // The shutdown's settle bound is a timer, which a held clock would never fire.
     jest.useRealTimers()
+    await session?.shutdown()
   }
 })
 

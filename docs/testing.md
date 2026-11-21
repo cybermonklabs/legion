@@ -298,9 +298,8 @@ A Bun test waits and is guarded as R2 and R5 above say:
 - A row that reads a file a live process appends to, such as the transcript of a pane it drives, reads it through `@legion/test-fixtures/transcript-lines`.
   `completeLines` and `writtenLines` leave out a last line the writer has not finished, and `endsWhole` says whether a read ends on a finished line, so a poll answers "not yet" rather than parsing half a line.
 
-- Every `bun test` command but packages/claude-envoy's `test` script loads the row-deadline preload, `--preload @legion/test-fixtures/row-deadline`.
-  That script stays main's `bun test --timeout=60000` until #4655, which carries that package's own commands.
-  The preload marks the start of each row, the end of each row's body, the end of each row and the start of a run, so each wait of a row ends before the row's guard, and so does a wait in a `beforeAll` or in a row's first `afterEach`.
+- Every `bun test` command loads the row-deadline preload, `--preload @legion/test-fixtures/row-deadline`.
+  It marks the start of each row, the end of each row's body, the end of each row and the start of a run, so each wait of a row ends before the row's guard, and so does a wait in a `beforeAll` or in a row's first `afterEach`.
   A hook that no mark directly precedes counts from an earlier mark, so its waits end earlier than its own clock would allow, never later (`packages/test-fixtures/src/row-deadline.ts`).
   So a row's second `afterEach` counts from the mark before its first, and the time the first took is gone from it.
 
@@ -409,8 +408,10 @@ A test, and each script library that a test runs, reads one process by its pid, 
 It reads that process's command line from `/proc/<pid>/cmdline`, its state, parent, process group and session from `/proc/<pid>/stat`, and its children from `/proc/<pid>/task/*/children`.
 A command name may hold spaces and parentheses, so the fields of `/proc/<pid>/stat` are read after its last `) `.
 `box_login_pid_args` in `scripts/e2e/lib/box-login.sh` prints one process's command line from that process's own `/proc/<pid>/cmdline`.
+`runsWith` in `packages/claude-envoy/tests/answers-hook.test.ts` asks whether one refresher still runs.
 `scripts/e2e/lib/process-tree.sh`, which `scripts/e2e/lib/rig.sh` sources, has `proc_parent`, `proc_group`, `proc_children` and `proc_describe`.
 Each of them asks `ps` or `pgrep` only on a host with no `/proc`, but for `proc_children`, which also asks `pgrep -P` where a process's `task/<tid>/children` file is missing (a kernel built without `CONFIG_PROC_CHILDREN`).
+`commandRuns` in the same answers-hook test asks the kernel about a token command's whole process group with one `kill(-pid, 0)`, so it also sees a child that the command left running.
 The test of `psCommandLine` in `packages/test-fixtures/src/deadline.ts`, the reading of a host with no `/proc`, hands it a stand-in for `ps`.
 
 `pgrep` reads every process on the machine, and so does procps-ng's `ps` with `-p`, even for one pid.

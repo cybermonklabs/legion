@@ -330,7 +330,8 @@ Neither is an ephemeral session (`codex exec --ephemeral`), which no message cou
   `codex` from `CODEX_THREAD_ID`, for a shell that can reach Dispatch.
 
 `tests/codex-real.test.ts` runs the real binary (`LEGION_TEST_CODEX=<path to codex>`) against a
-stand-in model; it skips without one, and nothing in CI installs Codex.
+stand-in model; it skips without one, and nothing in CI installs Codex. The package's `test` script
+runs it in a `bun test` command of its own, whose `--timeout` covers its setup's build and install.
 
 ## Skills
 
@@ -678,7 +679,7 @@ bash packages/claude-envoy/scripts/smoke-session-title.sh
 bun run --cwd packages/claude-envoy lint
 bun run --cwd packages/claude-envoy typecheck
 bun run --cwd packages/claude-envoy test
-(cd packages/claude-envoy && bun test --timeout=60000 tests/mod.test.ts)   # one file
+(cd packages/claude-envoy && bun test --timeout=17000 --preload @legion/test-fixtures/row-deadline tests/mod.test.ts)   # one file, under its command's guard
 bun packages/claude-envoy/scripts/build.ts --out "$(mktemp -d)"
 ```
 

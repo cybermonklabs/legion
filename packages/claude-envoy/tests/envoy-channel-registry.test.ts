@@ -1,15 +1,21 @@
-import { expect, test } from "bun:test"
+import { expect, jest, test } from "bun:test"
+import { closeSync, constants, mkdirSync, openSync, writeSync } from "node:fs"
+import { dirname } from "node:path"
 import {
   canonicalTopic,
   legacyDispatchIssueSubject,
   uncapturedTopicRefusal,
 } from "@legion/contracts"
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
+import { SHUTDOWN_SETTLE_MS } from "@legion/envoy-client/envoy-settings"
 import { EnvoyApiError } from "@legion/envoy-client/transport"
+import { span, until } from "@legion/test-fixtures/wait"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import {
   directSubject,
   FakeNats,
+  FakeNotifier,
   noInterest,
   recordingClient,
   sessionOptions,
@@ -307,11 +313,13 @@ test("a persistent reconciliation failure retries once after a delay of its own,
     expect(scheduled[0]?.delayMs).toBeLessThanOrEqual(40_000)
     scheduled[0]?.run()
     await waitFor(async () => getInterestAttempts >= 3, "the extra call itself")
-    // A real wait, not a guessed one: proving the guard holds needs to observe a
-    // window in which nothing further happens, and nothing else here produces an
-    // event to wait for instead — a hot loop would have run thousands of times
-    // over 150 ms (measured: ~9,000 in 300 ms without this fix).
-    await Bun.sleep(150)
+    // Proving the guard holds needs a window in which nothing further happens: a hot loop would
+    // have run thousands of times over 150 ms (measured: ~9,000 in 300 ms without this fix).
+    await span(
+      150,
+      "a hot loop's calls bypass scheduleRetry, the session's only retry hook, and leave no " +
+        "state to read and no later effect to wait for",
+    )
     expect(getInterestAttempts).toBe(3)
     // The extra call failed too: the session waits for the next heartbeat rather than asking
     // for a second one.
@@ -624,6 +632,69 @@ test("a shutdown landing inside the heartbeat's registry read leaves the registr
   }
 })
 
+/**
+ * A writer of the FIFO at `path` once something holds it open to read, else undefined: opened
+ * for writing without blocking, a FIFO is refused ENXIO while nothing reads it.
+ */
+function fifoWriter(path: string): number | undefined {
+  try {
+    return openSync(path, constants.O_WRONLY | constants.O_NONBLOCK)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENXIO") return undefined
+    throw error
+  }
+}
+
+// Shutdown's "no registration starts from here", for a heartbeat already on its way: its step
+// reads the handoff file (`adoptHandoff`) and registers next, and a registration once shutdown has
+// closed the relay would be refused for want of one and told into the conversation as an outage.
+// The handoff file is a FIFO, so the heartbeat's read of it holds the step until the row writes
+// the id: the gate opens only once shutdown has begun, and the step goes on to `register()`.
+test("a heartbeat that reaches its registration once shutdown has begun registers nothing and writes no notice into the conversation", async () => {
+  const stateDirectory = scratchState()
+  const nats = new FakeNats()
+  const notifier = new FakeNotifier()
+  const registered: string[] = []
+  const client = recordingClient([], {
+    subscribe: async (input) => {
+      registered.push(input.sessionID)
+      return noInterest(input.sessionID)
+    },
+  })
+  // This process's own pid, so the startup sweep of dead pids' handoff directories keeps it.
+  const handoff = sessionHandoffFile(stateDirectory, process.pid)
+  mkdirSync(dirname(handoff), { recursive: true })
+  const made = Bun.spawnSync(["mkfifo", handoff])
+  if (made.exitCode !== 0) throw new Error(`mkfifo ${handoff}: ${made.stderr.toString()}`)
+  // The default heartbeat interval (a minute) never ticks here: the one heartbeat is the one the
+  // session requests as it starts, to pick up a handoff written before it polled.
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
+      connection: nats,
+      notifier,
+      client,
+      handoffPid: process.pid,
+    }),
+  )
+  let gate: number | undefined
+  try {
+    gate = await until("the heartbeat's read of the handoff file", () => fifoWriter(handoff))
+    const before = registered.length
+    const stopping = session.shutdown()
+    // Shutdown has begun: it closes the relay before its first wait.
+    expect(nats.calls).toContain(`nats.unsubscribe ${deliverSubject("ses_claude")}`)
+    writeSync(gate, "ses_claude\n")
+    closeSync(gate)
+    gate = undefined
+    await stopping
+    expect(registered.slice(before)).toEqual([])
+    expect(notifier.notifications).toEqual([])
+  } finally {
+    if (gate !== undefined) closeSync(gate)
+    await session.shutdown()
+  }
+})
+
 test("a Dispatch subscription removal that names no topics removes nothing", async () => {
   const stateDirectory = scratchState()
   const calls: string[] = []
@@ -771,15 +842,27 @@ test("the shutdown deregistration spends a quarter second settling, not the whol
   try {
     await waitFor(async () => registrations > 1, "a registration the listener never answers")
 
-    // Real time: the bound is a real timer, and the failure is that the DELETE waits out two
-    // five-second settles the process is never given.
-    const startedAt = Date.now()
-    await session.shutdown()
-    const elapsed = Date.now() - startedAt
-
+    // The bound is a timer of the server's own, armed once shutdown begins, so from here it runs
+    // on the fake clock the test moves: the DELETE goes out once that clock has passed the
+    // whole budget, `SHUTDOWN_SETTLE_MS`, and not a millisecond before; two waits of their own
+    // would hold it past that.
+    jest.useFakeTimers()
+    const shutdown = session.shutdown()
+    await settled()
+    jest.advanceTimersByTime(SHUTDOWN_SETTLE_MS - 1)
+    await settled()
+    expect(calls).not.toContain("unregister ses_claude")
+    jest.advanceTimersByTime(1)
+    await settled()
+    // The wait for the wedged registration is left none of the budget: it ends where the clock
+    // stands.
+    jest.advanceTimersByTime(0)
+    await settled()
     expect(calls).toContain("unregister ses_claude")
-    expect(elapsed).toBeLessThan(2_000)
+    jest.useRealTimers()
+    await shutdown
   } finally {
+    jest.useRealTimers()
     wedged.resolve()
   }
 })

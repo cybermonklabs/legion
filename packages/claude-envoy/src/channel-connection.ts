@@ -21,6 +21,7 @@ import {
 import { type ConnectionOptions, connect, type NatsConnection } from "nats"
 import type { ChannelConnection } from "./channel-topics"
 import type { SessionIdentity } from "./session-identity"
+import { SHUTDOWN_BOUNDS, type WayOut, wayOut } from "./way-out"
 
 /** Why a dial or a start a stop ended did not come up: the process is stopping (`dialChannelNats`,
  *  and the start's own flush, `startChannelSession`). */
@@ -219,19 +220,20 @@ export async function dialChannelNats(
   }
 }
 
-/** How long a start that failed waits for its connection to drain before closing it. */
-const START_DRAIN_BOUND_MS = 2_000
-
 /**
  * Ends the connection of a session that never started: its start failed, or a stop ended it.
- * Both servers' teardowns call it (`runEnvoyChannelServer`, `./codex/codex-server`). The drain is
- * bounded: a connection still redialing, or one whose path stopped carrying the hub's answers, as
- * one whose start a stop ended can be, may never finish a drain, and the close after it is what
- * ends the connection for good.
+ * Both servers' teardowns call it (`runEnvoyChannelServer`, `./codex/codex-server`), each step
+ * through `way`, the server's way out (`./way-out`), which records it where the tests' record is
+ * set. The drain is bounded (`SHUTDOWN_BOUNDS["start-drain"]`): a connection still redialing, or
+ * one whose path stopped carrying the hub's answers, as one whose start a stop ended can be, may
+ * never finish a drain, and the close after it is what ends the connection for good.
  */
-export async function closeUnstartedConnection(connection: ChannelConnection): Promise<void> {
-  await Promise.race([connection.drain().catch(() => undefined), Bun.sleep(START_DRAIN_BOUND_MS)])
-  await connection.close().catch(() => undefined)
+export async function closeUnstartedConnection(
+  connection: ChannelConnection,
+  way: WayOut = wayOut(undefined),
+): Promise<void> {
+  await way.step("start-drain", connection.drain(), SHUTDOWN_BOUNDS["start-drain"])
+  await way.step("start-close", connection.close())
 }
 
 /** A connection `ChannelSessionOptions.reopen` opened in place of one closed for good. */

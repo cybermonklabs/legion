@@ -6,7 +6,7 @@
  * The mod is a fake here: the events it sends and the answers its `$` calls give are the two
  * things this exercises, and the real one is driven over a socket by `./mod-link.test.ts`.
  */
-import { expect, test } from "bun:test"
+import { afterEach, expect, jest, test } from "bun:test"
 import {
   AGENT_STREAM_PROTOCOL,
   type AgentStreamFrame,
@@ -14,14 +14,21 @@ import {
   agentStreamControlSubject,
   agentStreamFramesSubject,
 } from "@legion/contracts"
+import { turnsUntil } from "@legion/test-fixtures/fake-clock"
 import type { ModCallArguments, ModCallName, ModCallResults, ModEvent } from "../hooks/mod-protocol"
 import { type AgentStreamRunner, startAgentStream } from "../src/agent-stream-runner"
 import { sessionAdmission } from "../src/channel-connection"
 import type { ModLink } from "../src/mod-link"
-import { FakeNats, waitFor } from "./channel-session-harness"
+import { FakeNats } from "./channel-session-harness"
 
 const SESSION = "0c3b6f6e-0000-4000-8000-000000000001"
 const CLEARED = "0c3b6f6e-0000-4000-8000-000000000002"
+
+// The retake row holds Bun's fake clock. A row that fails, or that the command's guard ends, never
+// reaches the rest of its body, so the real clock comes back here, before the next row.
+afterEach(() => {
+  jest.useRealTimers()
+})
 
 const MODEL_ROW = {
   isLocked: false,
@@ -523,28 +530,39 @@ test("a control subscription that ends on a live connection is taken again a sec
   await settle()
   expect(takes(subject)).toBe(1)
 
-  // Ended on a live connection: taken again about a second later.
-  const endedAt = performance.now()
+  // The retake is a timer of the view's own (`RESUBSCRIBE_MS`, a second), so from here the row
+  // runs on Bun's fake clock and moves it itself. The file's `afterEach` gives the real clock back.
+  jest.useFakeTimers()
+
+  // Ended on a live connection: taken again at the second, and not a millisecond before.
   live.nats.failSubscription(subject, refusal)
-  await waitFor(async () => takes(subject) === 2, "the control subject taken again")
-  expect(performance.now() - endedAt).toBeGreaterThanOrEqual(900)
+  await settle()
+  jest.advanceTimersByTime(999)
+  await settle()
+  expect(takes(subject)).toBe(1)
+  jest.advanceTimersByTime(1)
+  await turnsUntil("the control subject taken again", () => takes(subject) === 2)
   expect(live.nats.liveSubscriptions(subject)).toBe(1)
 
   // Ended again, and a `/clear` lands while the retake waits: the old id is not taken again.
   live.nats.failSubscription(subject, refusal)
-  await Bun.sleep(100)
+  await settle()
+  jest.advanceTimersByTime(100)
   live.mod.moveSession(CLEARED)
   await settle()
   expect(takes(cleared)).toBe(1)
-  await Bun.sleep(1_500)
+  jest.advanceTimersByTime(1_400)
+  await settle()
   expect(takes(subject)).toBe(2)
   expect(takes(cleared)).toBe(1)
 
   // Ended again, and the view stops while the retake waits: nothing is taken again.
   live.nats.failSubscription(cleared, refusal)
-  await Bun.sleep(100)
+  await settle()
+  jest.advanceTimersByTime(100)
   live.runner.stop()
-  await Bun.sleep(1_500)
+  jest.advanceTimersByTime(1_400)
+  await settle()
   expect(takes(cleared)).toBe(1)
   expect(live.nats.liveSubscriptions(cleared)).toBe(0)
-}, 15_000)
+})

@@ -63,7 +63,7 @@ describe("envoy-send's failure line names no part of the listener URL's user inf
     expect(stderr).toContain("Claude Envoy send failed")
     expect(stderr).not.toContain(user)
     expect(stderr).not.toContain(password)
-  }, 20_000)
+  })
 
   test("a password with an `@` in it", async () => {
     const secret = `s${randomBytes(8).toString("hex")}`
@@ -71,5 +71,5 @@ describe("envoy-send's failure line names no part of the listener URL's user inf
     expect(exitCode).toBe(1)
     expect(stderr).toContain("Claude Envoy send failed")
     expect(stderr).not.toContain(secret)
-  }, 20_000)
+  })
 })

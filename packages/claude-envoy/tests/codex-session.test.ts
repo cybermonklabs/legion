@@ -1,10 +1,12 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, jest, test } from "bun:test"
 import { chmodSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { agentStreamControlSubject } from "@legion/contracts"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
 import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
+import { span, until } from "@legion/test-fixtures/wait"
 import { sessionAdmission } from "../src/channel-connection"
 import type { ChannelConnection, ChannelTopicSubscription } from "../src/channel-topics"
 import { startCodexAgentStream } from "../src/codex/codex-agent-stream"
@@ -26,9 +28,15 @@ import {
 } from "../src/codex/codex-session-record"
 import { CODEX_COMMAND_REFUSAL, createCodexUserTurnRouter } from "../src/codex/codex-user-turns"
 import { readUserTurnState, userTurnState, userTurnStateFile } from "../src/user-turn-state"
-import { FakeNats, waitFor } from "./channel-session-harness"
+import { FakeNats } from "./channel-session-harness"
 
 const directory = temporaryDirectory("codex-session")
+
+// The live view's retake row holds Bun's fake clock. A row that fails, or that the command's guard
+// ends, never reaches the rest of its body, so the real clock comes back here, before the next row.
+afterEach(() => {
+  jest.useRealTimers()
+})
 
 describe("the Codex session record", () => {
   test("is written whole and read back; a missing or foreign file reads as none", async () => {
@@ -135,8 +143,10 @@ describe("the Codex session record", () => {
   })
 
   test("the codex process is the nearest ancestor named codex, else the parent", () => {
+    // The walk starts at a parent this row names, so the runner's own parent (pid 1 under a
+    // container's init) decides nothing.
     const parents = new Map([
-      [process.ppid, 500],
+      [600, 500],
       [500, 400],
     ])
     const names = new Map([[500, "codex"]])
@@ -144,8 +154,17 @@ describe("the Codex session record", () => {
       codexProcessId(
         (pid) => names.get(pid),
         (pid) => parents.get(pid),
+        600,
       ),
     ).toBe(500)
+    expect(
+      codexProcessId(
+        () => "bash",
+        () => undefined,
+        600,
+      ),
+    ).toBe(600)
+    // Named none, it starts at this process's own parent.
     expect(
       codexProcessId(
         () => "bash",
@@ -233,11 +252,14 @@ describe("the Codex live view", () => {
     })
     stream.event({ at: 14, callId: "c1", kind: "tool-result", output: "README.md" })
     stream.delivered("mid-turn words", "message-2")
+    // The stream takes its control messages one behind another, so the replay is answered after
+    // the watch armed it.
     control("watch")
-    await Bun.sleep(10)
     control("replay", "_INBOX.1")
-    await Bun.sleep(10)
-    const reply = published.find((entry) => entry.subject === "_INBOX.1")?.payload as {
+    const reply = (await until(
+      "the replay's answer",
+      () => published.find((entry) => entry.subject === "_INBOX.1")?.payload,
+    )) as {
       frames: {
         kind: string
         message?: Record<string, unknown>
@@ -282,16 +304,28 @@ describe("the Codex live view", () => {
     const stream = startCodexAgentStream({ connection, sessionId: "s2" })
     stream.event({ at: 1, id: "u1", kind: "user", text: "hello" })
     control("replay", "_INBOX.2")
-    await Bun.sleep(10)
-    expect(published.find((entry) => entry.subject === "_INBOX.2")?.payload).toMatchObject({
-      frames: [],
-    })
+    expect(
+      await until(
+        "the replay's answer",
+        () => published.find((entry) => entry.subject === "_INBOX.2")?.payload,
+      ),
+    ).toMatchObject({ frames: [] })
     stream.stop()
   })
 
   // Under a broker token the connection is admitted as one session at a time, and the server
   // refuses and closes a subscribe to a subject the session it is admitted as may not take. These
   // run the channel server's own `sessionAdmission`, which `admit`s each id when its move lands.
+  // That a subject is not taken while its id waits is held for a span: the stream subscribes on
+  // its own once a wait settles, no state shows a wait it did not take, and no later action's
+  // effect is ordered after a subscribe made too early.
+  const NOT_TAKEN =
+    "the stream subscribes on its own once an admission wait settles, and nothing shows a wait it skipped"
+  const taken = (subscribed: ReadonlySet<string>, session: string) =>
+    until(`the control subject of ${session} taken`, () =>
+      subscribed.has(agentStreamControlSubject(session)),
+    )
+
   // The live view starts after the session does, which can be after a `/new` whose move has not
   // landed: its first control subject waits for the admission as every later one does.
   test("a live view started for an id the connection is not admitted as yet takes its control subject once it is", async () => {
@@ -302,10 +336,10 @@ describe("the Codex live view", () => {
       connection,
       sessionId: "s2",
     })
-    await Bun.sleep(10)
+    await span(10, NOT_TAKEN)
     expect([...subscribed]).toEqual([])
     admission.admit("s2")
-    await Bun.sleep(10)
+    await taken(subscribed, "s2")
     expect([...subscribed]).toEqual([agentStreamControlSubject("s2")])
     stream.stop()
   })
@@ -319,13 +353,13 @@ describe("the Codex live view", () => {
       sessionId: "s3",
     })
     // The first subject goes through the gate too, which answers an id already admitted at once.
-    await Bun.sleep(10)
+    await taken(subscribed, "s3")
     expect([...subscribed]).toEqual([agentStreamControlSubject("s3")])
     stream.rebind("s4")
-    await Bun.sleep(10)
+    await span(10, NOT_TAKEN)
     expect([...subscribed]).toEqual([])
     admission.admit("s4")
-    await Bun.sleep(10)
+    await taken(subscribed, "s4")
     expect([...subscribed]).toEqual([agentStreamControlSubject("s4")])
     stream.stop()
   })
@@ -341,10 +375,10 @@ describe("the Codex live view", () => {
     stream.rebind("s6")
     stream.rebind("s7")
     admission.admit("s6")
-    await Bun.sleep(10)
+    await span(10, NOT_TAKEN)
     expect([...subscribed]).toEqual([])
     admission.admit("s7")
-    await Bun.sleep(10)
+    await taken(subscribed, "s7")
     expect([...subscribed]).toEqual([agentStreamControlSubject("s7")])
     stream.stop()
   })
@@ -366,10 +400,10 @@ describe("the Codex live view", () => {
     stream.rebind("s9")
     stream.rebind("s10")
     waits.get("s9")?.resolve()
-    await Bun.sleep(10)
+    await span(10, NOT_TAKEN)
     expect([...subscribed]).toEqual([])
     waits.get("s10")?.resolve()
-    await Bun.sleep(10)
+    await taken(subscribed, "s10")
     expect([...subscribed]).toEqual([agentStreamControlSubject("s10")])
     stream.stop()
   })
@@ -388,10 +422,10 @@ describe("the Codex live view", () => {
     first.closeForGood()
     const swapped = fakeConnection()
     stream.useConnection(swapped.connection)
-    await Bun.sleep(10)
+    await span(10, NOT_TAKEN)
     expect([...swapped.subscribed]).toEqual([])
     admission.admit("s12")
-    await Bun.sleep(10)
+    await taken(swapped.subscribed, "s12")
     expect([...swapped.subscribed]).toEqual([agentStreamControlSubject("s12")])
     expect([...first.subscribed]).toEqual([])
     stream.stop()
@@ -407,12 +441,18 @@ describe("the Codex live view", () => {
     first.closeForGood()
     const swapped = fakeConnection()
     stream.useConnection(swapped.connection)
-    await Bun.sleep(10)
+    await taken(swapped.subscribed, "s13")
     expect([...swapped.subscribed]).toEqual([agentStreamControlSubject("s13")])
+    // The stream takes its control messages one behind another, so a replay's answer comes after
+    // the watch armed the view.
     swapped.control("watch")
-    await Bun.sleep(10)
+    swapped.control("replay", "_INBOX.swap")
+    await until("the replay's answer on the swapped connection", () =>
+      swapped.published.some((entry) => entry.subject === "_INBOX.swap"),
+    )
+    const answered = swapped.published.length
     stream.event({ at: 1, id: "u1", kind: "user", text: "after the swap" })
-    expect(swapped.published.length).toBeGreaterThan(0)
+    expect(swapped.published.length).toBeGreaterThan(answered)
     stream.stop()
   })
 
@@ -432,30 +472,41 @@ describe("the Codex live view", () => {
     })
     expect(takes(subject)).toBe(1)
 
-    // Ended on a live connection: taken again about a second later.
-    const endedAt = performance.now()
+    // The retake is a timer of the view's own (`RESUBSCRIBE_MS`, a second), so from here the row
+    // runs on Bun's fake clock and moves it itself. The file's `afterEach` gives the real clock back.
+    jest.useFakeTimers()
+
+    // Ended on a live connection: taken again at the second, and not a millisecond before.
     nats.failSubscription(subject, refusal)
-    await waitFor(async () => takes(subject) === 2, "the control subject taken again")
-    expect(performance.now() - endedAt).toBeGreaterThanOrEqual(900)
+    await turn()
+    jest.advanceTimersByTime(999)
+    await turn()
+    expect(takes(subject)).toBe(1)
+    jest.advanceTimersByTime(1)
+    await turnsUntil("the control subject taken again", () => takes(subject) === 2)
     expect(nats.liveSubscriptions(subject)).toBe(1)
 
     // Ended again, and a `/new` lands while the retake waits: the old id is not taken again.
     nats.failSubscription(subject, refusal)
-    await Bun.sleep(100)
+    await turn()
+    jest.advanceTimersByTime(100)
     stream.rebind("s16")
     expect(takes(renewed)).toBe(1)
-    await Bun.sleep(1_500)
+    jest.advanceTimersByTime(1_400)
+    await turn()
     expect(takes(subject)).toBe(2)
     expect(takes(renewed)).toBe(1)
 
     // Ended again, and the view stops while the retake waits: nothing is taken again.
     nats.failSubscription(renewed, refusal)
-    await Bun.sleep(100)
+    await turn()
+    jest.advanceTimersByTime(100)
     stream.stop()
-    await Bun.sleep(1_500)
+    jest.advanceTimersByTime(1_400)
+    await turn()
     expect(takes(renewed)).toBe(1)
     expect(nats.liveSubscriptions(renewed)).toBe(0)
-  }, 15_000)
+  })
 })
 
 function frame(mode: "steer" | "btw", body: string): RenderInboundResult {
@@ -526,7 +577,7 @@ describe("the Codex router of a person's messages", () => {
   test("a BTW is answered in a side question and posted back, writing nothing into the session", async () => {
     const { asked, delivered, replies, router } = await harness("unused")
     expect(await router.route(frame("btw", "which file?"))).toBe(true)
-    await Bun.sleep(10)
+    await until("the side question's reply", () => replies.length > 0)
     expect(asked).toEqual(["which file?"])
     expect(replies).toEqual([{ body: "answer to which file?" }])
     expect(delivered).toEqual([])
@@ -535,7 +586,7 @@ describe("the Codex router of a person's messages", () => {
   test("a / message is answered that it was not run", async () => {
     const { delivered, replies, router } = await harness("/model gpt-y")
     expect(await router.route(frame("steer", "/model gpt-y"))).toBe(true)
-    await Bun.sleep(10)
+    await until("the reply that it was not run", () => replies.length > 0)
     expect(replies).toEqual([{ body: `/model was not run: ${CODEX_COMMAND_REFUSAL}` }])
     expect(delivered).toEqual([])
   })
@@ -567,8 +618,14 @@ describe("the environment a side question and codex queue run in", () => {
     if (process.platform !== "linux") return
     const child = Bun.spawn(["sh", "-c", "sleep 5; :"], { env: { NAME: "José", PATH: "/bin" } })
     try {
-      await Bun.sleep(50)
-      expect(codexProcessEnv(child.pid, {})["NAME"]).toBe("José")
+      // The child holds its own environment once it has run `sh`, and the spawn may return
+      // before it has.
+      expect(
+        await until(
+          "the child's environment in /proc",
+          () => codexProcessEnv(child.pid, {})["NAME"],
+        ),
+      ).toBe("José")
     } finally {
       child.kill()
     }

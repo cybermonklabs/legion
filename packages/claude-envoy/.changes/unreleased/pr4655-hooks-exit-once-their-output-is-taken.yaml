@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The Codex session-start and session-end hook, the Codex tool hook, the answers hook and the
+  plugin build no longer exit with output still queued for a full pipe. Each exits once stdout and
+  stderr have taken what it wrote, or once its bound has passed for a reader that takes nothing:
+  5 s for the tool hook, inside the 10 s Codex gives it, so the messages it took out of the inbox
+  reach the turn; 1 s for the Codex session hook and the answers hook, inside the 3 s and 5 s
+  their hosts give them; 5 s for a build that refuses. Before, a busy machine's small pipe could
+  cut the tool hook's messages, the open-asks summary or the line saying why answers were not
+  added, with exit 0 and nothing said.

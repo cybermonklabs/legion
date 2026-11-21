@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
 import { mkdirSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
+import { span, until } from "@legion/test-fixtures/wait"
 import { type CodexDelivery, createCodexDelivery } from "../src/codex/codex-delivery"
 import * as codexInbox from "../src/codex/codex-inbox"
 import {
@@ -38,18 +39,9 @@ function waitingLines(directory: string): number {
   }
 }
 
-/**
- * Waits until a line waits in `directory`'s inbox, the point a write made during a turn reaches
- * once its file is in place. A fixed sleep stood here, and under load the file was not in place by
- * its end. Polled on the real clock: the file is the write's own filesystem work, which no fake
- * clock advances. Fails after 10 s, well inside the test's own timeout, naming what it waited for.
- */
-async function untilWaiting(directory: string): Promise<void> {
-  const deadline = performance.now() + 10_000
-  while (waitingLines(directory) === 0) {
-    if (performance.now() > deadline) throw new Error(`no line waited in ${directory} within 10 s`)
-    await Bun.sleep(5)
-  }
+/** Waits until `directory`'s inbox holds a waiting line: the write in flight has put it there. */
+async function lineWaiting(directory: string): Promise<void> {
+  await until("the line waiting in the inbox", () => waitingLines(directory) > 0)
 }
 
 describe("the Codex inbox", () => {
@@ -180,16 +172,19 @@ describe("createCodexDelivery", () => {
     const directory = inbox()
     const { delivery, queued, taken } = harness(directory)
     delivery.turnStarted()
-    let done = false
+    // What the delivery had told of the hook's take when the write resolved: a write resolves
+    // only once the hook took its line, and the take is told before it, so a write that resolved
+    // while the line still waited, or through `codex queue`, finds nothing told.
+    let takenWhenWritten: CodexInboxItem[] | undefined
     const written = delivery.deliver({ content: "mid-turn", dispatchMessageId: "m1" }).then(() => {
-      done = true
+      takenWhenWritten = [...taken]
     })
-    await untilWaiting(directory)
-    expect(done).toBe(false)
+    await lineWaiting(directory)
     expect((await takeInbox(directory, "hook")).map(({ item }) => item.content)).toEqual([
       "mid-turn",
     ])
     await written
+    expect(takenWhenWritten).toEqual([{ content: "mid-turn", dispatchMessageId: "m1" }])
     expect(taken).toEqual([{ content: "mid-turn", dispatchMessageId: "m1" }])
     await delivery.turnEnded()
     expect(queued).toEqual([])
@@ -201,7 +196,16 @@ describe("createCodexDelivery", () => {
     const { delivery, queued, taken } = harness(directory)
     delivery.turnStarted()
     const written = delivery.deliver({ content: "late" })
-    await untilWaiting(directory)
+    await lineWaiting(directory)
+    // No poll queues it while the turn runs. The poll is the delivery's own timer: the gate it
+    // reads, `turnRunning()`, says what it should do and not what it did, a poll that leaves the
+    // line waiting tells this test nothing, and no later action's effect is ordered after a poll's
+    // sweep, which starts only once its check is done.
+    await span(
+      30,
+      "a poll that leaves the line waiting tells nothing, and its sweep starts after its check " +
+        "with no effect a later action could be ordered behind: three polls of 10 ms run in it",
+    )
     expect(queued).toEqual([])
     await delivery.turnEnded()
     await written
@@ -225,7 +229,7 @@ describe("createCodexDelivery", () => {
       () => new Error("the write resolved"),
       (error: unknown) => error,
     )
-    await untilWaiting(directory)
+    await lineWaiting(directory)
     await busy.delivery.turnEnded()
     expect(String(await outcome)).toContain("codex queue exited 1")
     await busy.delivery.stop()
@@ -246,7 +250,7 @@ describe("createCodexDelivery", () => {
     })
     delivery.turnStarted()
     const written = delivery.deliver({ content: "waiting" })
-    await untilWaiting(codexInboxDirectory(base, "old"))
+    await lineWaiting(codexInboxDirectory(base, "old"))
     session = "new"
     await delivery.rebind()
     await written
@@ -270,7 +274,7 @@ describe("createCodexDelivery", () => {
     })
     delivery.turnStarted()
     const written = delivery.deliver({ content: "late" })
-    await untilWaiting(directory)
+    await lineWaiting(directory)
     // The first sweep finds a file where the server's directory should be and fails.
     const blocker = join(directory, "queued")
     await Bun.write(blocker, "not a directory")
@@ -307,13 +311,12 @@ describe("createCodexDelivery", () => {
     const { delivery } = harness(directory)
     delivery.turnStarted()
     const written = delivery.deliver({ content: "never" })
-    await untilWaiting(directory)
+    await lineWaiting(directory)
     expect(readdirSync(join(directory, "waiting"))).toHaveLength(1)
-    delivery.stop()
+    const stopped = delivery.stop()
     await expect(written).rejects.toThrow("stopped before the message was taken")
-    for (let i = 0; i < 50 && readdirSync(join(directory, "waiting")).length > 0; i++) {
-      await Bun.sleep(10)
-    }
+    // `stop` resolves once every waiting line is withdrawn or found taken.
+    await stopped
     expect(readdirSync(join(directory, "waiting"))).toEqual([])
     expect(await takeInbox(directory, "hook")).toEqual([])
   })
@@ -400,7 +403,7 @@ describe("createCodexDelivery", () => {
     })
     const outcomes: string[] = []
     const frames = twoFrames(delivery, outcomes)
-    await untilWaiting(directory)
+    await lineWaiting(directory)
     await delivery.turnEnded()
     await stopping
     await settled()
@@ -510,7 +513,7 @@ describe("createCodexDelivery", () => {
       return realTakenBy(...args)
     })
     const written = delivery.deliver({ content: "kept" })
-    await untilWaiting(directory)
+    await lineWaiting(directory)
     const [line] = await realTakeInbox(directory, "hook")
     if (line === undefined) throw new Error("the hook found no line to take")
     await written

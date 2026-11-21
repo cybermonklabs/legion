@@ -2,9 +2,8 @@ import { afterEach, beforeAll, beforeEach, jest } from "bun:test";
 import { markRow } from "./deadline";
 
 // The row-deadline preload. Every `bun test` command in this repository loads it
-// (`--preload @legion/test-fixtures/row-deadline`) but packages/claude-envoy's `test` script, and
-// each wait of `@legion/test-fixtures/wait` ends at the newest mark it took plus the command's
-// `--timeout`, less a margin.
+// (`--preload @legion/test-fixtures/row-deadline`), and each wait of `@legion/test-fixtures/wait`
+// ends at the newest mark it took plus the command's `--timeout`, less a margin.
 //
 // Bun's `--timeout` arms a clock of its own for each row and for each hook. Measured on Bun 1.4.4,
 // a preload's hooks run where a mark is wanted: its `beforeEach` before each row's own

@@ -1,8 +1,12 @@
 import { expect, test } from "bun:test"
+import { appendFileSync, existsSync, readFileSync } from "node:fs"
 import { mkdir, stat, utimes, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { EnvoyApiError, type Interest, type SubscribeResult } from "@legion/envoy-client/transport"
+import { completeLines } from "@legion/test-fixtures/transcript-lines"
+import { settled } from "@legion/test-fixtures/wait"
+import { CHANNEL_RECORD_FILE, type ChannelRecordLine } from "../src/channel-record"
 import type {
   ChannelBrokerMessage,
   ChannelConnection,
@@ -530,9 +534,14 @@ test("the age sweep does not reach the record of a process still pressing its re
 // then learns another session holds the old role and removes the record, so the new role's record
 // must be written after that removal, not before it, or it is removed with the old one and the
 // session no longer holds the role it just took. `rememberRole` writes it in the registry chain,
-// behind the heartbeat, so the order holds however the two calls interleave.
+// behind the heartbeat, so the order holds however the two calls interleave. The order is read
+// from the server's own record (`../src/channel-record`): when the write was queued on the chain,
+// and when the chain made it.
 test("a role taken while a heartbeat's refused claim of the old role is still out keeps its record", async () => {
   const stateDirectory = scratchState()
+  const recordFile = join(stateDirectory, "channel-record.jsonl")
+  const previousRecord = process.env[CHANNEL_RECORD_FILE]
+  process.env[CHANNEL_RECORD_FILE] = recordFile
   const OLD = "reviewer"
   const NEW = "legion-claim"
   // The heartbeat's soft claim of the old role, held until the test answers it.
@@ -565,56 +574,89 @@ test("a role taken while a heartbeat's refused claim of the old role is still ou
             state: "live" as const,
           },
   }
-  const session = await startChannelSession({
-    identity: new SessionIdentity("ses_current", "/tmp"),
-    connection: new IdleNats(),
-    notifier,
-    capabilities: testCapabilities,
-    client,
-    heartbeatMs: 25,
-    configFile: { path: join(stateDirectory, "envoy.json"), error: null },
-    stateDirectory,
-    clientInstanceID: INSTANCE,
-    pluginName: "@sjawhar/claude-envoy",
-    pluginVersion: "source",
-  })
-  const roleFile = roleStateFile(stateDirectory, "ses_current")
-
-  try {
-    // 1. The session holds the old role, and a heartbeat's claim of it is out, unanswered.
-    await session.rememberRole(OLD)
-    await oldClaimAsked.promise
-
-    // 2. The session takes the new role meanwhile. A write made at once lands now; one made in
-    //    order waits behind the heartbeat. Either way the claim is answered next: at once once
-    //    the write has landed, else after a second, which only bounds how long the test waits
-    //    for a write that is not coming before the claim is answered.
-    const remembering = session.rememberRole(NEW)
-    const window = Promise.withResolvers<void>()
-    const timer = setTimeout(window.resolve, 1_000)
-    await Promise.race([remembering, window.promise])
-    clearTimeout(timer)
-
-    // 3. The old claim is refused: another live session holds that role.
-    const readsBeforeRefusal = interestReads
-    oldClaim.resolve({ claimed: false, holder: "ses_newer" })
-
-    // 4. The heartbeat reads the interests after its role claim, so a read after the refusal
-    //    means its removal of the old role's record has finished.
-    await waitFor(
-      async () => interestReads > readsBeforeRefusal,
-      "the heartbeat's next interest read",
+  /** The new role's write as the record has it, with the row's own mark, in the record's order. */
+  const newRoleWrite = (): string[] =>
+    (existsSync(recordFile) ? completeLines(readFileSync(recordFile, "utf8")) : []).flatMap(
+      (text) => {
+        const line = JSON.parse(text) as ChannelRecordLine | { readonly row: string }
+        if ("row" in line) return [line.row]
+        return "roleWrite" in line && line.role === NEW ? [line.roleWrite] : []
+      },
     )
-
-    // 5. The new role's record is on disk.
-    await remembering
-    expect(await readPersistedRole(roleFile)).toEqual({
-      session_id: "ses_current",
-      role: NEW,
-      client_instance_id: INSTANCE,
+  try {
+    const session = await startChannelSession({
+      identity: new SessionIdentity("ses_current", "/tmp"),
+      connection: new IdleNats(),
+      notifier,
+      capabilities: testCapabilities,
+      client,
+      heartbeatMs: 25,
+      configFile: { path: join(stateDirectory, "envoy.json"), error: null },
+      stateDirectory,
+      clientInstanceID: INSTANCE,
+      pluginName: "@sjawhar/claude-envoy",
+      pluginVersion: "source",
     })
+    const roleFile = roleStateFile(stateDirectory, "ses_current")
+
+    try {
+      // 1. The session holds the old role, and a heartbeat's claim of it is out, unanswered.
+      await session.rememberRole(OLD)
+      await oldClaimAsked.promise
+
+      // 2. The session takes the new role meanwhile: its write is queued on the registry chain,
+      //    behind the heartbeat, whose claim nothing answers before step 3, so the chain has not
+      //    made it, and cannot until then.
+      const remembering = session.rememberRole(NEW)
+      await waitFor(
+        async () => newRoleWrite().includes("queued"),
+        "the new role's write queued on the registry chain",
+      )
+      expect(newRoleWrite(), "the new role's write while the heartbeat's claim is out").toEqual([
+        "queued",
+      ])
+
+      // 3. The old claim is refused: another live session holds that role.
+      const readsBeforeRefusal = interestReads
+      appendFileSync(recordFile, `${JSON.stringify({ row: "refused" })}\n`)
+      oldClaim.resolve({ claimed: false, holder: "ses_newer" })
+
+      // 4. The heartbeat reads the interests after its role claim, so a read after the refusal
+      //    means its removal of the old role's record has finished.
+      await waitFor(
+        async () => interestReads > readsBeforeRefusal,
+        "the heartbeat's next interest read",
+      )
+
+      // 5. The chain makes the queued write once the heartbeat has let go, after the refusal; the
+      //    new role's record is on disk, as the write left it, and the write has settled. Each is
+      //    read through the shared wait, so a write that never comes fails the row here, naming
+      //    what it waited for.
+      await waitFor(
+        async () => newRoleWrite().includes("made"),
+        "the chain to make the new role's write",
+      )
+      await waitFor(
+        async () => (await readPersistedRole(roleFile))?.role === NEW,
+        "the new role's record, written behind the heartbeat's removal of the old one",
+      )
+      await settled("the new role's write", remembering)
+      expect(newRoleWrite(), "the new role's write, queued, then made after the refusal").toEqual([
+        "queued",
+        "refused",
+        "made",
+      ])
+      expect(await readPersistedRole(roleFile)).toEqual({
+        session_id: "ses_current",
+        role: NEW,
+        client_instance_id: INSTANCE,
+      })
+    } finally {
+      oldClaim.resolve({ claimed: false, holder: "ses_newer" })
+      await session.shutdown()
+    }
   } finally {
-    oldClaim.resolve({ claimed: false, holder: "ses_newer" })
-    await session.shutdown()
+    if (previousRecord === undefined) delete process.env[CHANNEL_RECORD_FILE]
+    else process.env[CHANNEL_RECORD_FILE] = previousRecord
   }
 })

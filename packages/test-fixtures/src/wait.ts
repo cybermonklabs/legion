@@ -7,8 +7,7 @@ import { type Deadline, deadlineFor } from "./deadline";
 //
 // The deadline (`./deadline`) is the newest mark of the row-deadline preload plus the command's
 // `--timeout`, less a margin of `max(1000 ms, guard / 20)`. Every `bun test` command in this
-// repository but packages/claude-envoy's `test` script loads that preload
-// (`--preload @legion/test-fixtures/row-deadline`), which marks
+// repository loads that preload (`--preload @legion/test-fixtures/row-deadline`), which marks
 // the start of each row, the end of each row's body, the end of each row and the start of a run:
 // so every wait of a row, the second included, ends before the row's guard, and so does a wait in
 // a `beforeAll` or in a row's first `afterEach`. Outside `bun test` (a proof's Bun driver) the

@@ -19,14 +19,14 @@ import {
   startCodexServer,
   until,
 } from "./codex-server-process"
+import { runTeardown } from "./teardown"
 
 const stops: (() => Promise<void> | void)[] = []
 // Registered before the directories' removal below, which bun runs after it: a server still alive
-// in its directory slows that removal past the removal hook's 5 s. Twenty seconds here, since a
-// server's stop alone may take 5 s, SIGTERM to its SIGKILL (`CodexServer.stop`).
-afterEach(async () => {
-  for (const stop of stops.splice(0).reverse()) await stop()
-}, 20_000)
+// in its directory slows that removal. A server's stop waits for its exit on SIGTERM
+// (`CodexServer.stop`), and a server that has not exited by this hook's deadline fails it, naming
+// that exit, and is killed. Every stop runs, the stand-ins' too, whichever of them throws.
+afterEach(() => runTeardown(stops))
 const makeDirectory = temporaryDirectories("codex-connection-proof")
 
 /** One part of a compact JWS as JSON. */
@@ -106,70 +106,66 @@ describe("the Codex server's NATS CONNECT", () => {
   test.each([
     ["NATS_AUTH=broker in the environment", "env"],
     ["natsAuth: broker in its envoy.json", "file"],
-  ] as const)(
-    "carries the session's broker token and its key's proof over the server's nonce, told %s",
-    async (_told, way) => {
-      const root = makeDirectory()
-      const trades = broker()
-      const nats = hub()
-      const session = crypto.randomUUID()
-      const homes = codexHomes(root, {
-        enabled: true,
-        // No listener answers: the CONNECT is made before the session registers.
-        url: "http://127.0.0.1:9",
-        natsUrls: [nats.url],
-        ...(way === "file" ? { natsAuth: "broker" } : {}),
-      })
-      const tokenFile = join(root, "pod-token")
-      writeFileSync(tokenFile, `${fixtureSecret("pod")}\n`)
-      await recordFor(homes.pluginData, session, homes)
-      const server: CodexServer = startCodexServer(
-        {
-          HOME: homes.home,
-          PLUGIN_DATA: homes.pluginData,
-          AGENT_SECRETS_URL: trades.url,
-          AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
-          AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
-          ...(way === "env" ? { NATS_AUTH: "broker" } : {}),
-        },
-        root,
-      )
-      stops.push(server.stop)
-      await until(() => nats.connects.length > 0, "the server's CONNECT", 30_000, server.stderr)
+  ] as const)("carries the session's broker token and its key's proof over the server's nonce, told %s", async (_told, way) => {
+    const root = makeDirectory()
+    const trades = broker()
+    const nats = hub()
+    const session = crypto.randomUUID()
+    const homes = codexHomes(root, {
+      enabled: true,
+      // No listener answers: the CONNECT is made before the session registers.
+      url: "http://127.0.0.1:9",
+      natsUrls: [nats.url],
+      ...(way === "file" ? { natsAuth: "broker" } : {}),
+    })
+    const tokenFile = join(root, "pod-token")
+    writeFileSync(tokenFile, `${fixtureSecret("pod")}\n`)
+    await recordFor(homes.pluginData, session, homes)
+    const server: CodexServer = startCodexServer(
+      {
+        HOME: homes.home,
+        PLUGIN_DATA: homes.pluginData,
+        AGENT_SECRETS_URL: trades.url,
+        AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+        AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
+        ...(way === "env" ? { NATS_AUTH: "broker" } : {}),
+      },
+      root,
+    )
+    stops.push(server.stop)
+    await until(() => nats.connects.length > 0, "the server's CONNECT", server.stderr)
 
-      const { nonce, connect } = nats.connects[0] ?? { nonce: "", connect: {} }
-      const token = connect["auth_token"]
-      expect(typeof token).toBe("string")
-      // The token the broker minted for this session's trade, and no other.
-      const minted = trades.minted.find((entry) => entry.token === token)
-      expect(minted).toBeDefined()
-      // Traded for the session the Codex session's record names, and no other.
-      expect(minted?.session).toBe(session)
-      expect(typeof connect["sig"]).toBe("string")
-      const proof = Buffer.from(String(connect["sig"]), "base64url").toString("utf8")
-      const [header, claims, signature] = proof.split(".")
-      expect(part(proof, 0)["typ"]).toBe("dpop+jwt")
-      expect(part(proof, 0)["alg"]).toBe("ES256")
-      const said = part(proof, 1)
-      expect(said["htm"]).toBe("CONNECT")
-      expect(said["htu"]).toBe("nats:connect")
-      expect(said["nonce"]).toBe(nonce)
-      expect(said["ath"]).toBe(createHash("sha256").update(String(token)).digest("base64url"))
-      // Signed by the key the proof embeds, and that key is the one the token was bound to.
-      // The proof's header names it as a JWK, which the key object reads.
-      const jwk = part(proof, 0)["jwk"] as JsonWebKeyInput["key"] & Record<string, unknown>
-      const signed = verify(
-        "sha256",
-        Buffer.from(`${header}.${claims}`),
-        {
-          key: createPublicKey({ key: jwk, format: "jwk" }),
-          dsaEncoding: "ieee-p1363",
-        },
-        Buffer.from(signature ?? "", "base64url"),
-      )
-      expect(signed).toBe(true)
-      expect(thumbprint(jwk)).toBe(minted?.jkt ?? "")
-    },
-    60_000,
-  )
+    const { nonce, connect } = nats.connects[0] ?? { nonce: "", connect: {} }
+    const token = connect["auth_token"]
+    expect(typeof token).toBe("string")
+    // The token the broker minted for this session's trade, and no other.
+    const minted = trades.minted.find((entry) => entry.token === token)
+    expect(minted).toBeDefined()
+    // Traded for the session the Codex session's record names, and no other.
+    expect(minted?.session).toBe(session)
+    expect(typeof connect["sig"]).toBe("string")
+    const proof = Buffer.from(String(connect["sig"]), "base64url").toString("utf8")
+    const [header, claims, signature] = proof.split(".")
+    expect(part(proof, 0)["typ"]).toBe("dpop+jwt")
+    expect(part(proof, 0)["alg"]).toBe("ES256")
+    const said = part(proof, 1)
+    expect(said["htm"]).toBe("CONNECT")
+    expect(said["htu"]).toBe("nats:connect")
+    expect(said["nonce"]).toBe(nonce)
+    expect(said["ath"]).toBe(createHash("sha256").update(String(token)).digest("base64url"))
+    // Signed by the key the proof embeds, and that key is the one the token was bound to.
+    // The proof's header names it as a JWK, which the key object reads.
+    const jwk = part(proof, 0)["jwk"] as JsonWebKeyInput["key"] & Record<string, unknown>
+    const signed = verify(
+      "sha256",
+      Buffer.from(`${header}.${claims}`),
+      {
+        key: createPublicKey({ key: jwk, format: "jwk" }),
+        dsaEncoding: "ieee-p1363",
+      },
+      Buffer.from(signature ?? "", "base64url"),
+    )
+    expect(signed).toBe(true)
+    expect(thumbprint(jwk)).toBe(minted?.jkt ?? "")
+  })
 })

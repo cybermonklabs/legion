@@ -2821,7 +2821,7 @@ READS = (
     ("dispatch_ui", "packages/envoy/internal/dispatch/pmdoc/schema/block-node-types.json",
      "packages/proof-editor/tests/ask-concurrent-edit.test.ts:276-281"),
     ("claude_envoy", "packages/envoy-client/test/stall-proxy.ts",
-     "packages/claude-envoy/tests/envoy-channel-stall.test.ts:17"),
+     "packages/claude-envoy/tests/envoy-channel-stall.test.ts:18"),
     ("pi_legion", "packages/dispatch/e2e/harness-processes.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-broker.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-real-broker.ts", "packages/pi-legion's tsc program"),
@@ -2830,7 +2830,7 @@ READS = (
      "packages/pi-legion/src/skills-guard.test.ts:29,318, which spawns that builder and asserts an "
      "exact file list over what it writes"),
     ("pi_legion", "packages/claude-envoy/bin/envoy-channel.ts",
-     "that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:39-44), bundled into "
+     "that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:47-57), bundled into "
      "the tree the same test asserts over"),
     ("pi_legion", "packages/envoy-client/bin/dispatch.ts",
      "the same BUNDLE_ENTRYPOINTS entry, reached from another package again"),

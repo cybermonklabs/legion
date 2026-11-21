@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The channel server's way out, from the end of its stdin or a stop signal to its exit, waits for
+  each of its steps to end: the last state and turn writes, the deregistration, the connection's
+  close, the mod link and the MCP server. Three waits keep their own bounds, as before: the NATS
+  drain (1 s), the registration writes still in flight (250 ms), and the drain of a connection
+  whose session never started (2 s). A way out still running 3 s after it began is ended by the
+  exit: the server writes on stderr which steps it drops, gives stdout and stderr up to 0.5 s to
+  take what was written, and exits 1. A way out that ends before then exits once stdout and stderr
+  have taken all that was written. An MCP client kills a stdio server 4 s after it ends its stdin,
+  so a deregistration and the last writes that finish in time are never dropped, and one that does
+  not is named.

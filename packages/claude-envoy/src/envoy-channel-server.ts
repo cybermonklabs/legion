@@ -40,13 +40,10 @@ import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory"
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state"
-import {
-  heartbeatRetryDelayMs,
-  REGISTRATION_SETTLE_MS,
-  SHUTDOWN_SETTLE_MS,
-} from "@legion/envoy-client/envoy-settings"
+import { heartbeatRetryDelayMs, REGISTRATION_SETTLE_MS } from "@legion/envoy-client/envoy-settings"
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors"
 import { machineID } from "@legion/envoy-client/machine"
+import { exitProcess } from "@legion/envoy-client/process-exit"
 import {
   type SessionConfigFile,
   sessionConfigFile,
@@ -177,6 +174,14 @@ import {
   userTurnState,
   userTurnStateFile,
 } from "./user-turn-state"
+import {
+  EXIT_FLUSH_MS,
+  SHUTDOWN_BOUNDS,
+  SHUTDOWN_EXIT_MS,
+  settledOrGivenUp,
+  type WayOut,
+  wayOut,
+} from "./way-out"
 
 const CHANNEL_INSTRUCTIONS =
   "Envoy delivers trusted, internal session and Dispatch events into this conversation. Use the Envoy tools for Envoy actions, and reach Dispatch through the `dispatch` command in Bash (`dispatch --help` lists its commands; the `dispatch` skill teaches them). Dispatch asks stay on Dispatch."
@@ -395,8 +400,13 @@ export interface ChannelSessionOptions {
   readonly startSignal?: AbortSignal
   /** How long a deregistration waits for a registration already on the wire (default
    *  `REGISTRATION_SETTLE_MS`), past which the DELETE goes out anyway. The shutdown path spends
-   *  at most `SHUTDOWN_SETTLE_MS` of it, over both of its waits. */
+   *  at most its settle bound of it (`SHUTDOWN_BOUNDS.settle`, `./way-out`), over both of its
+   *  waits. */
   readonly registrationSettleMs?: number
+  /** The server's way out (`./way-out`), whose steps the shutdown's are, so the exit bound names
+   *  the step it drops; one of the session's own, recording to the tests' record, where none is
+   *  given. */
+  readonly wayOut?: WayOut
   /**
    * Schedules the one extra registration a failed heartbeat makes, at the delay it is handed
    * (the shared draw, `heartbeatRetryDelayMs`), and answers how to drop it; `setTimeout` on this
@@ -787,6 +797,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   const { identity } = options
   /** The tests' record of this server's steps (`./channel-record`); unset in production. */
   const record = channelRecord(process.env)
+  /** The way out the shutdown's steps run through (`./way-out`). */
+  const way = options.wayOut ?? wayOut(record)
   let directSubject = legacyAgentSubject(identity.id)
   /** The NATS connection the session holds now, and the credential move that goes with it: the
    *  start's, until it closes for good and `options.reopen` opens another (`connectionClosed`). */
@@ -857,20 +869,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    *  record behind where one that races a slow registration only may. */
   const settleMs = options.registrationSettleMs ?? REGISTRATION_SETTLE_MS
 
-  /** The shutdown path's whole settling budget, over both its waits (`SHUTDOWN_SETTLE_MS`). A
-   *  test that shortens `settleMs` shortens this with it. */
-  const shutdownSettleMs = Math.min(settleMs, SHUTDOWN_SETTLE_MS)
-
-  /** Resolves when `settling` settles, or when `ms` have passed. */
-  const settledOrGivenUp = async (settling: Promise<unknown>, ms = settleMs): Promise<void> => {
-    const { promise, resolve } = Promise.withResolvers<void>()
-    const timer = setTimeout(resolve, ms)
-    try {
-      await Promise.race([settling.catch(() => undefined), promise])
-    } finally {
-      clearTimeout(timer)
-    }
-  }
+  /** The shutdown path's whole settling budget, over both its waits (`SHUTDOWN_BOUNDS.settle`).
+   *  A test that shortens `settleMs` shortens this with it. */
+  const shutdownSettleMs = Math.min(settleMs, SHUTDOWN_BOUNDS.settle)
 
   /** Deregisters a session this server has stopped heartbeating: its own at shutdown, and the
    *  pre-`/clear` id a handoff leaves behind, once that session's registration has settled or
@@ -1267,7 +1268,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
 
   // Nothing is subscribed per topic: this holds the followed set a registration carries, and
   // the one NATS subscription this process makes is the relay's (`openRelay`).
-  const followedTopics: ChannelTopics = createChannelTopics(() => connection)
+  const followedTopics: ChannelTopics = createChannelTopics(() => connection, { wayOut: way })
 
   /**
    * Drops removed topics from the followed set and the registry entry, its failure reported
@@ -2244,7 +2245,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       return turns?.messageOf(row)
     },
     async rememberRole(role) {
+      record?.({ roleWrite: "queued", role })
       await serialized(async () => {
+        record?.({ roleWrite: "made", role })
         heldRole = role
         await writeRoleRecord(roleStateFile(options.stateDirectory, identity.id), role)
       })
@@ -2265,19 +2268,24 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // the DELETE would write the record back — and so is one already on the wire, both bounded,
       // and on this path bounded together by `shutdownSettleMs`: a write this listener has
       // stalled on must not keep the deregistration off the wire entirely, since a record left
-      // behind outlives this process by the whole gone horizon, and the process is not given the
-      // two full waits before it is killed.
+      // behind outlives this process by the whole gone horizon.
       const settleBy = Date.now() + shutdownSettleMs
-      await settledOrGivenUp(registryWrites, shutdownSettleMs)
-      await deregister(identity.id, Math.max(0, settleBy - Date.now())).catch((error: unknown) => {
-        process.stderr.write(
-          `envoy-channel: session deregistration failed — ${messageFor(error)}\n`,
-        )
-      })
+      await way.step("settle", registryWrites, shutdownSettleMs)
+      // The DELETE waits for a registration still on the wire with what is left of the settle
+      // budget, then for the listener's answer: a record it removes is one no peer sends to.
+      await way.step(
+        "deregister",
+        deregister(identity.id, Math.max(0, settleBy - Date.now())).catch((error: unknown) => {
+          process.stderr.write(
+            `envoy-channel: session deregistration failed — ${messageFor(error)}\n`,
+          )
+        }),
+      )
       // What was written meanwhile (a resume point, a ledger record, a message taken) lands
-      // before the process goes.
-      await stateWriter?.idle()
-      await turns?.idle()
+      // before the process goes: each waits for its write, and only the exit bound ends one that
+      // never lands (`./way-out`).
+      await way.step("state", stateWriter?.idle() ?? Promise.resolve())
+      await way.step("turns", turns?.idle() ?? Promise.resolve())
       // The handoff directory stays: Claude Code restarts this server inside the
       // same `claude` process (plugin reload, changed config), and the hook does
       // not rewrite the file until the next SessionStart. Startup pruning removes
@@ -2678,8 +2686,12 @@ export async function runEnvoyChannelServer(): Promise<void> {
     },
   }
   // The tests' record (`./channel-record`), unset in production: each Envoy event the session was
-  // shown, once its write was made, in the order the server took them.
+  // shown, once its write was made, and the way out: its start, each step, and how it ended, in
+  // the order the server took them.
   const serverRecord = channelRecord(process.env)
+  /** The way out (`./way-out`): the session's shutdown and the teardown below run their steps
+   *  through it, and the exit bound names the steps it drops. */
+  const way = wayOut(serverRecord)
   const notifier: ChannelNotifier = {
     notification: async (notification) => {
       phaseHook?.deliveryWritten(notification.content)
@@ -2694,12 +2706,31 @@ export async function runEnvoyChannelServer(): Promise<void> {
   const stopped = Promise.withResolvers<void>()
   let stopping = false
   let session: ChannelSession | undefined
+  if (serverRecord !== undefined) {
+    process.once("exit", () => serverRecord({ shutdown: "exited" }))
+  }
   // Stops the keeper of the connection's broker token, where it presents one. Declared before
   // `stop`, which may run on a signal before the connection is dialled.
   let stopNatsKeeper = (): void => {}
+  /** The exit bound, armed when the way out starts and cleared when it ends. */
+  let exitBound: ReturnType<typeof setTimeout> | undefined
   const stop = (): void => {
     if (stopping) return
     stopping = true
+    serverRecord?.({ shutdown: "began", exitBoundMs: SHUTDOWN_EXIT_MS })
+    // The one bound of the whole way out (`./way-out`): a step still running at it is ended by
+    // the exit, which says so with the steps it drops and exits 1. It holds nothing open itself.
+    exitBound = setTimeout(() => {
+      const dropped = way.running()
+      serverRecord?.({ shutdown: "bound", dropped })
+      process.stderr.write(
+        `envoy-channel: the shutdown was still running ${SHUTDOWN_EXIT_MS} ms after it began; exiting 1 and dropping what it still waited for: ${dropped.length === 0 ? "no step (a handle or timer outside the steps)" : dropped.join(", ")}\n`,
+      )
+      // The line reaches the pipe before the exit, unless the reader takes nothing for the
+      // flush's bound: the client's kill is close behind.
+      void exitProcess(1, EXIT_FLUSH_MS)
+    }, SHUTDOWN_EXIT_MS)
+    exitBound.unref()
     booting.abort()
     // The token keeper stops before the session drains its connection: a renewal it ran on a
     // draining connection would be refused and warned about as a failure, at an ordinary stop.
@@ -2881,6 +2912,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         adopted: (previous, next) => agentStream?.sessionAdopted(previous, next),
         reopen,
         startSignal: booting.signal,
+        wayOut: way,
       }).catch((error: unknown) => {
         // A stop asked for while the session was still starting (its connection waiting on the
         // hub) ends the start, and is no failure: the process ends as an asked-for stop does.
@@ -2975,13 +3007,19 @@ export async function runEnvoyChannelServer(): Promise<void> {
     // under way makes `stop` a no-op.
     stop()
     await stopped.promise
-    await linking
-    await modLink?.close().catch(() => undefined)
+    // A bind still running is waited for, and named while it runs: a link it binds now is closed
+    // by the step after it.
+    await way.step("bind", linking)
+    await way.step("mod", modLink?.close() ?? Promise.resolve())
     if (session === undefined && connection !== undefined) {
-      await closeUnstartedConnection(connection)
+      await closeUnstartedConnection(connection, way)
     }
     // Release stdin so the process can exit once the session is deregistered,
     // even when the parent has not closed its end yet.
-    await server.close().catch(() => undefined)
+    await way.step("server", server.close())
+    // Nothing of the way out is left: the exit that follows (`../bin/envoy-channel.ts`) is the
+    // flush of what was written, which the bound no longer holds.
+    clearTimeout(exitBound)
+    serverRecord?.({ shutdown: "completed" })
   }
 }

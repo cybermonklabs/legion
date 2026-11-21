@@ -30,7 +30,14 @@ on:
 jobs:
   claude-envoy:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-20T20:05Z
+    # (runs 44671705255 to 44808211259) and this branch's three green runs of it (44808321938 at
+    # #4437's head e61fe76646, 44809021824 and 44814473173 at this pull request's heads): its other
+    # steps at their longest, 106 s (the zsh install's 54 s among them), 4 s of its clock over
+    # them, and its test step's longest, 181 s (run 44808321938; 132 s at d75ea661f5), plus the
+    # package script's three guards, 17 s, 120 s and 300 s (the third runs codex-real alone, which
+    # skips here): 728 s in all. Thirteen minutes, 780 s, leaves 52 s past that sum.
+    timeout-minutes: 13
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -103,6 +110,8 @@ jobs:
   private-names:
     needs: claude-envoy
     runs-on: ubuntu-24.04
+    # At least the job's longest over its 5 green merge-group runs up to 2026-11-19T20:18Z (runs
+    # 44575625234 to 44598057379), setup included, 9 s; it runs no test step and no guarded command.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -1,6 +1,6 @@
 // dialChannelNats: the channel server's NATS connection, opened with the session's credential and,
 // where that is the broker token, kept renewed for the connection's life and stopped on request.
-import { afterEach, expect, jest, spyOn, test } from "bun:test"
+import { afterEach, expect, jest, mock, spyOn, test } from "bun:test"
 import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
@@ -10,6 +10,7 @@ import {
 } from "@legion/envoy-client/nats-credential"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
+import { span } from "@legion/test-fixtures/wait"
 import {
   type Authenticator,
   type ConnectionOptions,
@@ -33,6 +34,11 @@ const unresolved = (host: string): Error =>
 
 const servers: { stop: (closeActive?: boolean) => void }[] = []
 afterEach(() => {
+  // A fake clock left behind stops the timers of every row after this one; a row the command's
+  // guard ended never reached its own `finally`, so the real clock comes back here too.
+  jest.useRealTimers()
+  // A spy a row left, a failed one's included, wraps nothing of the next row.
+  mock.restore()
   forgetBrokerClients()
   for (const server of servers.splice(0)) server.stop(true)
 })
@@ -144,13 +150,17 @@ test("dialChannelNats keeps the broker token renewed until it is stopped", async
   expect(fake.presented.at(-1)).not.toBe(first)
   expect(warnings).toEqual([])
   const minted = broker.minted.length
-  // A real 2.5 s, two renewals at this token's life: the row reads that nothing renews after the
-  // stop, and a renewal is a trade over a real socket, which a fake clock moved past it would not
-  // let land before the row looks.
-  await Bun.sleep(2_500)
+  // Two renewals at this token's life: the row reads that nothing renews after the stop. The
+  // keeper's timer is its own and its clearing leaves no state to read, a renewal is a trade over
+  // a real socket, which a fake clock moved past it would not let land before the row looks, and
+  // no later action's effect is ordered after its next tick: a span it is.
+  await span(
+    2_500,
+    "the keeper's renewal timer is its own, and its trade runs over a real socket: two renewals of a 2 s token run in it",
+  )
   expect(fake.reconnects()).toBe(1)
   expect(broker.minted).toHaveLength(minted)
-}, 15_000)
+})
 
 test("a pod session registered past the trade deadline still comes up, admitted", async () => {
   // #4153's rule: a trade made before the pod's registration is retried for as long as the session
@@ -159,10 +169,17 @@ test("a pod session registered past the trade deadline still comes up, admitted"
   const SESSION = "ses_channel_pending"
   // The broker refuses the first trade, and the registration lands with that refusal: the trade
   // it grants is the retry loop's next, at least 1 s on (half its 2 s first wait), well past the
-  // 300 ms deadline.
-  const started = Date.now()
+  // 300 ms deadline. That is read, not timed: the start waits for its token on its life alone
+  // (`ready({ life })`), so no 300 ms deadline is armed before the grant, and the grant is the
+  // second trade. A start that waited within the trade's deadline would arm one and fail at it.
+  const real = AbortSignal.timeout.bind(AbortSignal)
+  let granted = false
+  let deadlinesBeforeGrant = 0
+  spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+    if (ms === 300 && !granted) deadlinesBeforeGrant += 1
+    return real(ms)
+  })
   let refusals = 0
-  let grantedAfter: number | undefined
   const minted: string[] = []
   const server = Bun.serve({
     port: 0,
@@ -178,7 +195,7 @@ test("a pod session registered past the trade deadline still comes up, admitted"
           { status: 400 },
         )
       }
-      grantedAfter ??= Date.now() - started
+      granted = true
       const token = fixtureSecret("channel")
       minted.push(token)
       return Response.json({
@@ -224,9 +241,11 @@ test("a pod session registered past the trade deadline still comes up, admitted"
   if (first === undefined) throw new Error("the broker minted no token before the dial")
   expect(fake.presented).toEqual([first])
   expect(refusals).toBe(1)
-  expect(grantedAfter).toBeGreaterThan(300)
+  expect(deadlinesBeforeGrant, "the start armed the trade's 300 ms deadline before the grant").toBe(
+    0,
+  )
   opened.stop()
-}, 90_000)
+})
 
 test("a channel server's start waits through a broker that refuses connections, and comes up when it answers", async () => {
   // The channel server's start is the one caller that waits for ready (`ready(life)`): Claude
@@ -299,7 +318,7 @@ test("a channel server's start waits through a broker that refuses connections, 
   } finally {
     warn.mockRestore()
   }
-}, 90_000)
+})
 
 test("dialChannelNats runs no keeper and no follow for a connection with no broker token", async () => {
   // The clock is the row's: moved an hour on, every timer the start left behind has fired.
@@ -323,7 +342,6 @@ test("dialChannelNats runs no keeper and no follow for a connection with no brok
     expect(fake.reconnects()).toBe(0)
     opened.stop()
   } finally {
-    // A fake clock left behind stops the timers of every row after this one.
     jest.useRealTimers()
   }
 })
@@ -546,8 +564,9 @@ test("dialChannelNats dials again until it stops: a stop during a wait ends the 
   )
   expect(await failure).toBe(STOPPING)
   // The wait the stop cut short has run out by now, and it started nothing.
-  const after = Promise.withResolvers<void>()
-  setTimeout(after.resolve, 400)
-  await after.promise
+  await span(
+    400,
+    "the redial would follow the 200 ms wait the stop cut short, a timer of the dial's own that no state shows, and a stopped dial orders no later effect after it",
+  )
   expect(dials).toBe(1)
 })
