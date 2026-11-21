@@ -128,10 +128,18 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 	}()
 	t.Cleanup(func() {
 		cancel()
+		// Run waits for the work it started before it returns, and a loaded machine can be slow
+		// over that, so the wait has no fixed span; a Run that has already returned is read
+		// first, so a cleanup whose bound is spent never reports a launcher that left.
 		select {
 		case <-g.result:
-		case <-time.After(5 * time.Second):
-			t.Error("the launcher did not leave after its context ended")
+			return
+		default:
+		}
+		select {
+		case <-g.result:
+		case <-time.After(cleanupBeforeDeadline(t)):
+			t.Error("the launcher did not leave after its context ended, to 10 s before the test binary's deadline")
 		}
 	})
 	g.accept()
@@ -704,10 +712,16 @@ func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	}()
 	t.Cleanup(func() {
 		cancel()
+		// Bounded as newSessionRig's cleanup is, for the reason it gives.
 		select {
 		case <-f.result:
-		case <-time.After(30 * time.Second):
-			t.Errorf("the launcher did not leave after its context ended; its log: %s", f.stderr.String())
+			return
+		default:
+		}
+		select {
+		case <-f.result:
+		case <-time.After(cleanupBeforeDeadline(t)):
+			t.Errorf("the launcher did not leave after its context ended, to 10 s before the test binary's deadline; its log: %s", f.stderr.String())
 		}
 	})
 	for range roles {
@@ -730,8 +744,8 @@ func (f *fleet) stop() error {
 	case err := <-f.result:
 		f.result <- err
 		return err
-	case <-time.After(testwait.Bounded(f.t, 30*time.Second, time.Second)):
-		f.t.Fatalf("the launcher did not leave after its context ended; its log: %s", f.stderr.String())
+	case <-time.After(beforeDeadline(f.t)):
+		f.t.Fatalf("the launcher did not leave after its context ended, to 30 s before the test binary's deadline; its log: %s", f.stderr.String())
 		return nil
 	}
 }
