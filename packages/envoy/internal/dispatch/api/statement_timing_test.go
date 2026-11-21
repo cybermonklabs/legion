@@ -74,7 +74,7 @@ func TestStatementTimings(t *testing.T) {
 	// both sides read the same rows; the listing's status is a list where main's was one value,
 	// so each side is passed its own empty status.
 	filters := []any{subjects.Project, "", "", nil, []string{}, false, []int16{}, false}
-	listArguments := slices.Concat(filters, []any{nil, nil, []string{}, false, false, false})
+	listArguments := slices.Concat(filters, []any{nil, nil, []string{}, false, false, false, false})
 	listArguments[1] = []string{}
 	runner.Pair(t, "the issue list, unpaged",
 		benchtime.Statement{SQL: mainListIssuesQuery, Args: filters},

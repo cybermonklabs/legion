@@ -2,8 +2,9 @@ import { expect, jest, test } from "bun:test";
 import { act, screen, waitFor } from "@testing-library/react";
 
 import { onRealTurns, realClock, tick } from "./__tests__/fake-clock";
+import { keptWrites } from "./__tests__/kept-sends-harness";
 import { ApiError } from "./api/client";
-import { aliceWrite, keptWrites, otherTab, renderApp } from "./app-sign-out-fixture";
+import { aliceWrite, otherTab, renderApp } from "./app-sign-out-fixture";
 import { SIGN_OUT_SETTLE_MS } from "./features/shell/sign-in-channel";
 import { writesOf } from "./features/writes/write-store";
 

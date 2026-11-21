@@ -392,10 +392,11 @@ type WorkUnderNoPriority struct {
 	Issues    []PriorityIssue `json:"issues"`
 }
 
-// PriorityWorkParked is the second fault: an issue that advances a live priority and stands in
-// `backlog` or `icebox`. Count is every such issue; ByPriority counts them by priority id, an
-// issue advancing two priorities counted under each, so the counts may add to more than Count;
-// Issues carries the 50 moved there most recently.
+// PriorityWorkParked is the second fault: an open issue in `backlog` or `icebox` whose own row
+// names a live priority that no issue above it carries; a child that only inherits a priority, or
+// restates one an issue above it carries, is none. Count is every such issue; ByPriority counts
+// them by each priority so named, an issue naming two counted under each, so the counts may add
+// to more than Count; Issues carries the 50 moved there most recently.
 type PriorityWorkParked struct {
 	Count      int             `json:"count"`
 	ByPriority map[string]int  `json:"by_priority"`

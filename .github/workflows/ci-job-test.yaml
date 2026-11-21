@@ -8,9 +8,9 @@ name: CI job test
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
 # What runs here is what reads this repository's own tooling: the Claude Code plugin build, the
-# changelog fold, the `*.test.sh` harness of each script under .github/scripts (and of
-# scripts/priorities-seed-check.sh), and the Bun suites of scripts/. The daemon's Go tests, which
-# this job used to carry, are .github/workflows/ci-job-daemon-go.yaml's; the session
+# changelog fold, the `*.test.sh` harness of each script under .github/scripts, and the Bun
+# suites of scripts/. The daemon's Go tests, which this job used to carry, are
+# .github/workflows/ci-job-daemon-go.yaml's; the session
 # message-wait suite, the one step here that needed a database, is
 # .github/workflows/ci-job-sessions-script.yaml's, and no step of this job needs one now; and
 # check-private-names-port.test.sh, the one harness here that built a binary of this head - so
@@ -236,12 +236,6 @@ on:
         description: "ci.yaml's needs.changes.outputs.disk_watch_test: disk_watch.test.sh and what it tests."
         type: string
         required: true
-      priorities_seed_check_test:
-        description: >-
-          ci.yaml's needs.changes.outputs.priorities_seed_check_test:
-          scripts/priorities-seed-check.test.sh and what it tests.
-        type: string
-        required: true
       check_ci_filters_test:
         description: "ci.yaml's needs.changes.outputs.check_ci_filters_test: check-ci-filters.test.sh and what it tests."
         type: string
@@ -271,7 +265,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # No step here carries a -timeout of its own any more: the two go test steps that did, and
     # the Stage 1 proof beside them, are .github/workflows/ci-job-daemon-go.yaml's now. What is
-    # left is the Bun install, the Claude Code plugin build, the thirty-two shell-script harnesses
+    # left is the Bun install, the Claude Code plugin build, the forty-three shell-script harnesses
     # and a handful of Bun suites — the 325 s of setup dispatch://INFRA-1052 measured before the
     # plain Go step started, less the tool installs that went with those steps. Thirty minutes is
     # about six times that, which leaves a slow runner room and still fails a hung harness inside
@@ -331,11 +325,6 @@ jobs:
 
       - name: Test the semantic line-break checker
         run: bun test scripts/semantic-line-breaks.test.ts
-
-      # The seed that writes the first priorities from the table kept by hand, driven against a
-      # fake Dispatch of the test's own: it reaches no network and no deployment.
-      - name: Test the priorities seed
-        run: bun test scripts/priorities-seed.test.ts
 
       # The guides' own layout, in this job because it installs Bun's dependencies, which the
       # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:6-8). The
@@ -517,10 +506,6 @@ jobs:
       - name: Test the machine watch
         if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
         run: .github/scripts/disk_watch.test.sh
-
-      - name: Test the priorities seed check (a stand-in Dispatch)
-        if: inputs.changes-result != 'success' || inputs.priorities_seed_check_test == 'true'
-        run: bash scripts/priorities-seed-check.test.sh
 
       - name: Lint the Dispatch census script
         run: bunx biome check --error-on-warnings scripts/dispatch

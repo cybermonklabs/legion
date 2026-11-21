@@ -12,8 +12,8 @@
 // under it advances none.
 //
 // The listing also draws the two fault lists of GET /api/v1/priorities, which the page's one
-// Issues table renders: `advances=any` beside `none`, a repeated `status`, and the move into
-// `backlog` or `icebox` under `?moved=true`. Each is read here on its own, and then the two
+// Issues table renders: `advances=any` beside `none`, `own`, a repeated `status`, and the move
+// into `backlog` or `icebox` under `?moved=true`. Each is read here on its own, and then the two
 // listings that ask for the faults are held to the issues that route's own two lists answer.
 package api
 
@@ -96,6 +96,42 @@ func TestAdvancesInheritance(t *testing.T) {
 	assertAdvancesRead(t, handler, "/api/v1/issues?advances="+cutTheQueue, map[string][]string{
 		served.Key:      {cutTheQueue + " own", shipTheDaemon + " inherited"},
 		servedChild.Key: {cutTheQueue + " inherited", shipTheDaemon + " inherited"},
+	})
+
+	// `own=true` keeps, of what an `advances` value answers, the issues that state a matched
+	// priority with no issue above them carrying it. A parent that states a priority, with one
+	// child that inherits it and one that restates it: the listing answers all three, and with
+	// `own=true` the parent alone. The roots that state the first priority are kept, and so is the
+	// child that states the second while it inherits the first. A row still carries every
+	// relation the issue advances, own and inherited.
+	keepTheLights := createTestPriority(t, handler, map[string]any{
+		"id": "keep-the-lights-on", "title": "Keep the lights on", "owner": "bob",
+	}, "alice").ID
+	lightsParent := createAdvancingIssue(t, handler, map[string]any{
+		"project": "ALPHA", "title": "Lights parent", "force": true, "advances": []string{keepTheLights},
+	}, "alice")
+	lightsInherited := createAdvancingIssue(t, handler, map[string]any{
+		"project": "ALPHA", "title": "Lights child that inherits", "force": true, "parent": lightsParent.Key,
+	}, "alice")
+	lightsRestated := createAdvancingIssue(t, handler, map[string]any{
+		"project": "ALPHA", "title": "Lights child that restates", "force": true, "parent": lightsParent.Key,
+		"advances": []string{keepTheLights},
+	}, "alice")
+	assertAdvancesRead(t, handler, "/api/v1/issues?advances="+keepTheLights, map[string][]string{
+		lightsParent.Key:    {keepTheLights + " own"},
+		lightsInherited.Key: {keepTheLights + " inherited"},
+		lightsRestated.Key:  {keepTheLights + " own"},
+	})
+	assertAdvancesRead(t, handler, "/api/v1/issues?advances="+keepTheLights+"&own=true", map[string][]string{
+		lightsParent.Key: {keepTheLights + " own"},
+	})
+	ownShip := map[string][]string{}
+	for _, project := range []string{"ALPHA", "BETA", "GAMMA"} {
+		ownShip[trees[project+" root"]] = []string{shipTheDaemon + " own"}
+	}
+	assertAdvancesRead(t, handler, "/api/v1/issues?advances="+shipTheDaemon+"&own=true", ownShip)
+	assertAdvancesRead(t, handler, "/api/v1/issues?advances="+cutTheQueue+"&own=true", map[string][]string{
+		served.Key: {cutTheQueue + " own", shipTheDaemon + " inherited"},
 	})
 
 	// A tree as deep as the parent-depth cap: refs.IssueDepthCap links below its root, which is
@@ -609,20 +645,26 @@ func faultListingStatuses(statuses []string) string {
 	return query.String()
 }
 
+// backlogTabListing is the exact listing the priorities page's backlog-or-icebox tab sends: the
+// issues that state a live priority with no issue above them carrying it (`advances=any&own=true`),
+// standing in `backlog` or `icebox`, each with its move into either.
+const backlogTabListing = "/api/v1/issues?advances=any&own=true&status=backlog&status=icebox&moved=true"
+
 // TestTheListingAnswersTheFaultLists holds the two listings the priorities page draws its fault
 // lists with to the two lists GET /api/v1/priorities answers for the same deployment, which is
 // seeded under the fifty rows each list there is cut at: work in flight under no priority is
-// `advances=none` over the four statuses work runs in, and priority work parked is
-// `advances=any` over `backlog` and `icebox` with `?moved=true`, whose rows carry the same time
-// and actor of the move as the parked list's. The seed holds each case either list turns on: own
-// and inherited relations, a relation on a child that places nothing above it, a priority that
-// is gone, work parked under no priority, work parked with no recorded move, and finished work.
+// `advances=none` over the four statuses work runs in, and priority work in backlog or icebox is
+// that tab's own listing (backlogTabListing), whose rows carry the same time and actor of the move
+// as the read's list. The seed holds each case either list turns on: own and inherited relations,
+// a relation on a child that places nothing above it, a priority that is gone, work in backlog or
+// icebox under no priority, work there under a priority it only inherits or restates from the
+// issue above it, work there with no recorded move, and finished work.
 func TestTheListingAnswersTheFaultLists(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	for _, project := range []string{"CORE", "OPS"} {
 		createTestProject(t, handler, project)
 	}
-	for _, id := range []string{"ship-the-daemon", "park-the-bus", "gone-goal"} {
+	for _, id := range []string{"ship-the-daemon", "pace-the-work", "gone-goal"} {
 		createTestPriority(t, handler, map[string]any{"id": id, "title": id}, "alice")
 	}
 
@@ -637,18 +679,24 @@ func TestTheListingAnswersTheFaultLists(t *testing.T) {
 	seedPriorityIssue(t, handler, "CORE", "Placed by inheritance in testing", "testing", placed, nil)
 	seedPriorityIssue(t, handler, "OPS", "In review under the gone goal", "needs_review", "", []string{"gone-goal"})
 
-	// Parked under a priority, through a parent, on its own, and with no recorded move; parked
-	// under none and under the gone goal; and finished work under a priority.
-	parkedParent := seedPriorityIssue(t, handler, "CORE", "Parked work's parent", "todo", "", []string{"park-the-bus"})
-	parkedChild := seedPriorityIssue(t, handler, "CORE", "Parked work", "todo", parkedParent, nil)
-	moveTestIssue(t, handler, parkedChild, "backlog", "bob")
+	// In backlog or icebox under a priority, on its own beside one it inherits from its parent, on
+	// its own alone, and with no recorded move; in backlog under a priority it only inherits, or
+	// restates, from its parent, under none and under the gone goal; and finished work under a
+	// priority.
+	backlogParent := seedPriorityIssue(t, handler, "CORE", "Backlog work's parent", "todo", "", []string{"pace-the-work"})
+	backlogChild := seedPriorityIssue(t, handler, "CORE", "Backlog work", "todo", backlogParent, []string{"ship-the-daemon"})
+	moveTestIssue(t, handler, backlogChild, "backlog", "bob")
+	inheritedOnly := seedPriorityIssue(t, handler, "CORE", "In backlog under its parent's priority alone", "todo", backlogParent, nil)
+	moveTestIssue(t, handler, inheritedOnly, "backlog", "bob")
+	restated := seedPriorityIssue(t, handler, "CORE", "In backlog restating its parent's priority", "todo", backlogParent, []string{"pace-the-work"})
+	moveTestIssue(t, handler, restated, "backlog", "bob")
 	seedPriorityIssue(t, handler, "OPS", "Iced on its own", "icebox", "", []string{"ship-the-daemon"})
-	unrecorded := seedPriorityIssue(t, handler, "OPS", "Parked with no recorded move", "todo", "", []string{"park-the-bus"})
+	unrecorded := seedPriorityIssue(t, handler, "OPS", "In backlog with no recorded move", "todo", "", []string{"pace-the-work"})
 	if _, err := database.Pool.Exec(context.Background(), `update issues set status = 'backlog' where key = $1`, unrecorded); err != nil {
-		t.Fatalf("park %s with no event: %v", unrecorded, err)
+		t.Fatalf("move %s to backlog with no event: %v", unrecorded, err)
 	}
-	seedPriorityIssue(t, handler, "OPS", "Parked under nothing", "backlog", "", nil)
-	seedPriorityIssue(t, handler, "OPS", "Parked under the gone goal", "icebox", "", []string{"gone-goal"})
+	seedPriorityIssue(t, handler, "OPS", "In backlog under nothing", "backlog", "", nil)
+	seedPriorityIssue(t, handler, "OPS", "Iced under the gone goal", "icebox", "", []string{"gone-goal"})
 	seedPriorityIssue(t, handler, "CORE", "Finished under a priority", "done", "", []string{"ship-the-daemon"})
 	if deleted := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/priorities/gone-goal",
 		nil, "alice"); deleted.Code != http.StatusNoContent {
@@ -656,14 +704,26 @@ func TestTheListingAnswersTheFaultLists(t *testing.T) {
 	}
 
 	body := readPriorities(t, handler, "")
-	unplaced, parked := body.WorkUnderNoPriority, body.PriorityWorkParked
+	unplaced, inBacklog := body.WorkUnderNoPriority, body.PriorityWorkParked
+	// An issue that names no priority itself is no fault of priority work in backlog or icebox,
+	// whatever it inherits, and neither is one that names only a priority an issue above it
+	// carries.
+	notFaulted := map[string]string{
+		inheritedOnly: "it names no priority itself",
+		restated:      "the issue above it carries the priority it names",
+	}
+	for key, why := range notFaulted {
+		if slices.Contains(faultKeys(inBacklog.Issues), key) {
+			t.Fatalf("the priorities read lists %s as priority work in backlog or icebox, want it left out: %s", key, why)
+		}
+	}
 	if unplaced.Count != 5 || len(unplaced.Issues) != unplaced.Count {
 		t.Fatalf("the priorities read counts %d issues in flight under no priority and draws %d, want all 5 drawn",
 			unplaced.Count, len(unplaced.Issues))
 	}
-	if parked.Count != 3 || len(parked.Issues) != parked.Count {
-		t.Fatalf("the priorities read counts %d parked priority issues and draws %d, want all 3 drawn",
-			parked.Count, len(parked.Issues))
+	if inBacklog.Count != 3 || len(inBacklog.Issues) != inBacklog.Count {
+		t.Fatalf("the priorities read counts %d priority issues in backlog or icebox and draws %d, want all 3 drawn",
+			inBacklog.Count, len(inBacklog.Issues))
 	}
 
 	unplacedListing := "/api/v1/issues?advances=none" + faultListingStatuses(model.IssueStatusesInFlight)
@@ -672,37 +732,50 @@ func TestTheListingAnswersTheFaultLists(t *testing.T) {
 		t.Fatalf("%s answers %v, want the work in flight under no priority %v", unplacedListing, got, want)
 	}
 
-	parkedListing := "/api/v1/issues?advances=any&moved=true" + faultListingStatuses(model.IssueStatusesParked)
-	response := dispatchRequest(t, handler, http.MethodGet, parkedListing, nil, "alice")
+	response := dispatchRequest(t, handler, http.MethodGet, backlogTabListing, nil, "alice")
 	if response.Code != http.StatusOK {
-		t.Fatalf("list %s: status=%d body=%s", parkedListing, response.Code, response.Body.String())
+		t.Fatalf("list %s: status=%d body=%s", backlogTabListing, response.Code, response.Body.String())
 	}
 	rows := map[string]model.IssueSummary{}
 	for _, row := range decodeBody[[]model.IssueSummary](t, response) {
 		rows[row.Key] = row
 	}
-	if got, want := slices.Sorted(maps.Keys(rows)), slices.Sorted(slices.Values(faultKeys(parked.Issues))); !slices.Equal(got, want) {
-		t.Fatalf("%s answers %v, want the parked priority work %v", parkedListing, got, want)
+	for key, why := range notFaulted {
+		if _, listed := rows[key]; listed {
+			t.Fatalf("%s answers %s, want it left out: %s", backlogTabListing, key, why)
+		}
 	}
-	for _, fault := range parked.Issues {
+	if got, want := slices.Sorted(maps.Keys(rows)), slices.Sorted(slices.Values(faultKeys(inBacklog.Issues))); !slices.Equal(got, want) {
+		t.Fatalf("%s answers %v, want the priority work in backlog or icebox %v", backlogTabListing, got, want)
+	}
+	for _, fault := range inBacklog.Issues {
 		row := rows[fault.Key]
 		sameAt := (row.MovedAt == nil) == (fault.MovedAt == nil) && (row.MovedAt == nil || row.MovedAt.Equal(*fault.MovedAt))
 		sameBy := (row.MovedBy == nil) == (fault.MovedBy == nil) && (row.MovedBy == nil || *row.MovedBy == *fault.MovedBy)
 		if !sameAt || !sameBy {
-			t.Fatalf("%s says %s was moved at %v by %v, where the parked list says %v by %v",
-				parkedListing, fault.Key, row.MovedAt, row.MovedBy, fault.MovedAt, fault.MovedBy)
+			t.Fatalf("%s says %s was moved at %v by %v, where the read's list says %v by %v",
+				backlogTabListing, fault.Key, row.MovedAt, row.MovedBy, fault.MovedAt, fault.MovedBy)
 		}
 		if got, want := advanceEntries(fault.Advances), advanceEntries(row.Advances); !slices.Equal(got, want) {
-			t.Fatalf("the parked list says %s advances %v, where %s answers %v", fault.Key, got, parkedListing, want)
+			t.Fatalf("the read's list says %s advances %v, where %s answers %v", fault.Key, got, backlogTabListing, want)
 		}
 	}
-	if got := advanceEntries(parkedRow(t, body, parkedChild).Advances); !slices.Equal(got, []string{"park-the-bus inherited"}) {
-		t.Fatalf("the parked list says %s advances %v, want park-the-bus inherited from its parent", parkedChild, got)
+	if got := advanceEntries(backlogRow(t, body, backlogChild).Advances); !slices.Equal(got, []string{"pace-the-work inherited", "ship-the-daemon own"}) {
+		t.Fatalf("the read's list says %s advances %v, want ship-the-daemon its own and pace-the-work inherited from its parent",
+			backlogChild, got)
 	}
-	if row := rows[parkedChild]; row.MovedBy == nil || *row.MovedBy != (model.Actor{Kind: "user", ID: "bob", Proven: true}) {
-		t.Fatalf("%s says %s was moved by %v, want bob, so the comparison above is of a recorded move", parkedListing, parkedChild, row.MovedBy)
+	// The priority's own page still lists the work in backlog that inherits or restates it.
+	scoped := "/api/v1/issues?advances=pace-the-work&open=true"
+	scopedKeys := listedIssueKeys(t, handler, scoped)
+	for key := range notFaulted {
+		if !slices.Contains(scopedKeys, key) {
+			t.Fatalf("%s answers %v, want %s among them: it advances pace-the-work", scoped, scopedKeys, key)
+		}
+	}
+	if row := rows[backlogChild]; row.MovedBy == nil || *row.MovedBy != (model.Actor{Kind: "user", ID: "bob", Proven: true}) {
+		t.Fatalf("%s says %s was moved by %v, want bob, so the comparison above is of a recorded move", backlogTabListing, backlogChild, row.MovedBy)
 	}
 	if row := rows[unrecorded]; row.MovedAt != nil || row.MovedBy != nil {
-		t.Fatalf("%s says %s was moved at %v by %v, want neither: no event records its move", parkedListing, unrecorded, row.MovedAt, row.MovedBy)
+		t.Fatalf("%s says %s was moved at %v by %v, want neither: no event records its move", backlogTabListing, unrecorded, row.MovedAt, row.MovedBy)
 	}
 }

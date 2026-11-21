@@ -99,8 +99,8 @@ const recorded: Priorities = {
     ],
   },
   priority_work_parked: {
-    count: 1,
-    by_priority: { "ship-the-daemon": 1, "legion-first": 1 },
+    count: 2,
+    by_priority: { "ship-the-daemon": 2, "legion-first": 1 },
     issues: [
       {
         key: "DSP-9",
@@ -115,6 +115,20 @@ const recorded: Priorities = {
           { id: "ship-the-daemon", inherited: false },
         ],
         moved_at: "2026-10-01T00:00:00Z",
+        moved_by: ana,
+      },
+      // In the icebox, so the row names the status it was moved to rather than one word for
+      // both (INFRA-2947, Verification v73).
+      {
+        key: "DSP-10",
+        title: "Retire the old ledger",
+        project: "DSP",
+        status: "icebox",
+        assignee: null,
+        claim: null,
+        changed_at: "2026-10-04T00:00:00Z",
+        advances: [{ id: "ship-the-daemon", inherited: false }],
+        moved_at: "2026-10-03T00:00:00Z",
         moved_by: ana,
       },
     ],
@@ -378,10 +392,15 @@ describe("dispatch priorities", () => {
         "Work under no priority (2: CORE 1, DSP 1; showing the newest 1):",
         "- CORE-7 [in_progress] Rotate the broker keys · CORE · ana@example.com · changed 2026-11-10T08:00:00Z",
         "",
-        "Priority work parked (1: legion-first 1, ship-the-daemon 1):",
-        "- DSP-9 [backlog] Backfill the index · DSP · advances legion-first (inherited), ship-the-daemon (own) · parked 2026-10-01T00:00:00Z by ana@example.com · changed 2026-10-02T00:00:00Z",
+        "Priority work in backlog or icebox (2: ship-the-daemon 2, legion-first 1):",
+        "- DSP-9 [backlog] Backfill the index · DSP · advances legion-first (inherited), ship-the-daemon (own) · moved to backlog 2026-10-01T00:00:00Z by ana@example.com · changed 2026-10-02T00:00:00Z",
+        "- DSP-10 [icebox] Retire the old ledger · DSP · advances ship-the-daemon (own) · moved to icebox 2026-10-03T00:00:00Z by ana@example.com · changed 2026-10-04T00:00:00Z",
       ].join("\n")
     );
+    // INFRA-2947 check e911206c (Verification v73): no line printed holds the word the person
+    // refused for work in backlog or icebox, in any case. The bracket keeps the word itself out
+    // of this file, as check 1a3e1452 reads it.
+    expect(stdout.split("\n").filter((line) => /(?<![sS])p[a]rk/i.test(line))).toEqual([]);
   });
 
   test("--project is repeated on the query, once per key", async () => {

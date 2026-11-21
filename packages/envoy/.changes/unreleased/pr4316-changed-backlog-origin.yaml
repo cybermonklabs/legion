@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  `GET /api/v1/priorities` counts an issue in `backlog` or `icebox` as priority work there only
+  when its own row names a live priority and no issue above it on its parent chain carries that
+  priority. A child that only inherits a priority, or restates one an issue above it carries, is
+  no longer in `priority_work_parked`, and `by_priority` counts each issue that list holds under
+  the priorities it so names. The priority's own work still counts every issue under it.
+  `GET /api/v1/issues` takes `own=true`, which keeps, of the issues the `advances` values answer,
+  those whose own row names a matched priority no issue above them carries, so
+  `advances=any&own=true&status=backlog&status=icebox&moved=true` lists the priority work in
+  backlog or icebox the read counts.

@@ -177,13 +177,13 @@ func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
 		{name: "the pinned listing", oracle: mainListPinnedIssuesQuery, paged: listPinnedIssuesPageQuery, unpaged: listPinnedIssuesQuery, pinnedBy: "alice"},
 	} {
 		t.Run(listing.name, func(t *testing.T) {
-			// Main's statement carries the eight filters it had, where the listing carries six
-			// more behind them — the closed window's two, the `advances` keys' three and the
-			// move read's gate — named here as the request that asks for none of them: the rows
-			// the two read are then the same rows. Main's status filter is one value and the
+			// Main's statement carries the eight filters it had, where the listing carries seven
+			// more behind them — the closed window's two, the `advances` keys' three, the move
+			// read's gate and `own` — named here as the request that asks for none of them: the
+			// rows the two read are then the same rows. Main's status filter is one value and the
 			// listing's a list, so the request naming no status passes each its own empty one.
 			oracleArguments := slices.Clone(filters)
-			arguments := append(slices.Clone(filters), nil, nil, []string{}, false, false, false)
+			arguments := append(slices.Clone(filters), nil, nil, []string{}, false, false, false, false)
 			arguments[1] = []string{}
 			if listing.pinnedBy != "" {
 				oracleArguments = append(oracleArguments, listing.pinnedBy)

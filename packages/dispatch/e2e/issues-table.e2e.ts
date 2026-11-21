@@ -1275,7 +1275,16 @@ test("picker keeps a pick on screen: the priority on the table of an item of the
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, listRead("advances", item.id));
     await page.goto(`/priorities/${item.id}`);
-    const picker = page.getByRole("combobox", { name: `Priority of ${issue.key}` });
+    const table = page.getByRole("region", { name: "Work advancing this priority" });
+    // The work table opens with the issue, its title, its status and its project; the reader
+    // shows the issue's own priority from the column control, as anyone who picks one there does.
+    await table.getByRole("button", { exact: true, name: "Columns" }).click();
+    await page
+      .getByRole("dialog", { name: "Columns" })
+      .getByRole("checkbox", { name: "Priority" })
+      .check();
+    await page.keyboard.press("Escape");
+    const picker = table.getByRole("combobox", { name: `Priority of ${issue.key}` });
     await expect(picker).toHaveValue("3");
 
     await picker.selectOption("1");
@@ -1322,8 +1331,16 @@ test("picker keeps a pick on screen: the priority on a table of the Priorities v
     const shown = await watchShown(page, `Priority of ${issue.key}`);
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, listRead("advances", "none"));
-    await page.goto("/priorities");
-    const table = page.getByRole("region", { name: "In flight under no priority" });
+    await page.goto("/priorities?tab=none");
+    const table = page.getByRole("region", { name: "Active under no priority" });
+    // The fault list opens with R6's columns alone; the reader shows the issue's own priority
+    // from the column control, as anyone who picks one there does.
+    await table.getByRole("button", { exact: true, name: "Columns" }).click();
+    await page
+      .getByRole("dialog", { name: "Columns" })
+      .getByRole("checkbox", { name: "Priority" })
+      .check();
+    await page.keyboard.press("Escape");
     const picker = table.getByRole("combobox", { name: `Priority of ${issue.key}` });
     await expect(picker).toHaveValue("3");
 
@@ -1368,8 +1385,22 @@ test("picker keeps a pick on screen: the assignee in the table of an item of the
   ]);
   const context = await asUser(browser, "alice");
   try {
+    // The table draws the assignee as plain text in its Assignee column. The work table of a
+    // priority's page opens without it, so this reader is one who showed it there before, from
+    // the column control, in a tab they then closed: the table's stored layout holds it shown, and
+    // the column is drawn from the table's first paint.
+    const before = await context.newPage();
+    await before.goto(`/priorities/${item.id}`);
+    const work = before.getByRole("region", { name: "Work advancing this priority" });
+    await work.getByRole("button", { exact: true, name: "Columns" }).click();
+    await before
+      .getByRole("dialog", { name: "Columns" })
+      .getByRole("checkbox", { name: "Assignee" })
+      .check();
+    await before.keyboard.press("Escape");
+    await expect(work.getByRole("columnheader", { name: /^Assignee/ })).toBeVisible();
+    await before.close();
     const page = await context.newPage();
-    // The table draws the assignee as plain text in its Assignee column, which it opens shown.
     const shownInTable = await watchCell(page, issue.key, "Assignee");
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, listRead("advances", item.id));

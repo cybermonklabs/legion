@@ -78,6 +78,28 @@ export interface UploadProgress {
 const maxKeepaliveBodyBytes = 30 * 1024;
 const utf8 = new TextEncoder();
 
+/** Whether the page is going: from its `pagehide` until the browser shows it again (`pageshow`,
+ *  a page it kept and brings back). A write sent then is let finish as the page goes
+ *  (`keepalive`), under its key or not: the write a field makes as the tab closes
+ *  (`InPlaceField`, `PriorityDescription`) has no reload after it to make it again. This module
+ *  listens as it loads, before any field adds its own `pagehide` listener, so a field's write
+ *  finds the page going. */
+let pageGoing = false;
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", () => {
+    pageGoing = true;
+  });
+  window.addEventListener("pageshow", () => {
+    pageGoing = false;
+  });
+}
+
+/** Forgets that the page went: the unit-test preload, between tests, whose `pagehide` ends no
+ *  page. */
+export function resetPageGoing(): void {
+  pageGoing = false;
+}
+
 /** One item a refusal lists for the caller to choose between: the items an ambiguous id prefix
  *  names (`ID_AMBIGUOUS`), the issues a duplicate check found, or the positions an anchored
  *  quote resolved at. Each refusal's own `code` says which of the three its list holds. */
@@ -532,6 +554,15 @@ export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}
   return writeRequest("patch", "/api/v1/issues/{key}", { key }, input);
 }
 
+/** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place in
+ *  the one order (`rank: {before, after}`, the priorities it lands between, as the issue board's
+ *  own drag names them). Each field left out is left alone. `expected` names the title or
+ *  description the writer's edit started from; one the priority no longer stores refuses the
+ *  write `409 PRIORITY_CHANGED`, and nothing is written. */
+export function priorityPatchRequest(id: string, input: Body<"/api/v1/priorities/{id}", "patch">) {
+  return writeRequest("patch", "/api/v1/priorities/{id}", { id }, input);
+}
+
 /** `POST /api/v1/agents/{session_id}/messages`: a person's message to one session
  *  (`createAgentMessage`). */
 export function agentMessageRequest(
@@ -909,15 +940,17 @@ export class DispatchApiClient {
    * The one path every write to Dispatch takes. A `POST` or a `PATCH` goes under `bounds.key`, the
    * `Idempotency-Key` that names the person's action, so a repeat of it - a retry after a dropped
    * answer, a reload resuming it - is answered with what the first did rather than done twice; a
-   * `PUT` or a `DELETE` is the same however often it is made, so it carries none, and one with a
-   * small body is let finish as the page goes (`keepalive`). The key is the caller's, minted when
-   * the person acts (`Writes.run`), never here; so is `bounds.login` (`Dispatch-Login`), the
-   * person who pressed it. A JSON body goes as JSON and a multipart form as itself, through the
-   * upload transport; `bounds.sent` is told the request as it goes out. Answers what Dispatch
-   * answered (nothing for an empty body), as the request's builder names it (`WriteRequest`), or
-   * rejects with its refusal; a 2xx whose body is not JSON rejects with `UnreadableAnswerError`, a
-   * 2xx whose body stops part way with `NetworkError`, and a replay of an answer Dispatch did not
-   * keep with `AnswerNotKeptError`.
+   * `PUT` or a `DELETE` is the same however often it is made, so it carries none. One with a
+   * small body is let finish as the page goes (`keepalive`): a `PUT` or a `DELETE` always, and a
+   * `POST` or a `PATCH`, key and all, when it is sent as the page goes (`pageGoing`), as a field's
+   * write is as the tab closes; sent at any other time, a reload makes it again under its key. The
+   * key is the caller's, minted when the person acts (`Writes.run`), never here; so is
+   * `bounds.login` (`Dispatch-Login`), the person who pressed it. A JSON body goes as JSON and a
+   * multipart form as itself, through the upload transport; `bounds.sent` is told the request as
+   * it goes out. Answers what Dispatch answered (nothing for an empty body), as the request's
+   * builder names it (`WriteRequest`), or rejects with its refusal; a 2xx whose body is not JSON
+   * rejects with `UnreadableAnswerError`, a 2xx whose body stops part way with `NetworkError`, and
+   * a replay of an answer Dispatch did not keep with `AnswerNotKeptError`.
    */
   send<T>(
     request: WriteRequest<T>,
@@ -928,7 +961,8 @@ export class DispatchApiClient {
     const form = body instanceof FormData ? body : undefined;
     const json = body === undefined || form !== undefined ? undefined : JSON.stringify(body);
     const keepalive =
-      !keyed && (json === undefined || utf8.encode(json).byteLength < maxKeepaliveBodyBytes);
+      (!keyed || pageGoing) &&
+      (json === undefined || utf8.encode(json).byteLength < maxKeepaliveBodyBytes);
     const init: RequestInit = {
       ...(form !== undefined ? { body: form } : json !== undefined ? { body: json } : {}),
       headers: {
@@ -1268,16 +1302,14 @@ export class DispatchApiClient {
   }
 
   /** `POST /api/v1/priorities`: one new priority, which takes the last place of the order. Its
-   *  id defaults to its title as a slug. */
+   *  id defaults to its title as a slug, cut to `PRIORITY_ID_MAX` (200) characters at the end of
+   *  a word when it is longer, so a long title is written whole under a cut id. A title the slug
+   *  cannot name - one with no ASCII letter or digit, or one whose cut is `none` or `any`, which
+   *  the issue listing reads as the work under no priority and under any - takes `priority-` and
+   *  the first 12 hex characters of the title's SHA-256 instead (`priority-<12 hex>`), so every
+   *  title gives an id. */
   createPriority(input: Body<"/api/v1/priorities", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/priorities", {}, input, bounds);
-  }
-
-  /** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place
-   *  in the one order (`rank: {before, after}`, the priorities it lands between, as the issue
-   *  board's own drag names them). Each field left out is left alone. */
-  patchPriority(id: string, input: Body<"/api/v1/priorities/{id}", "patch">, bounds: WriteBounds) {
-    return this.patch("/api/v1/priorities/{id}", { id }, input, bounds);
   }
 
   /** `GET /api/v1/priorities/{id}/history`: the priority's own history, newest first - each

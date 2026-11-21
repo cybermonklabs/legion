@@ -31,6 +31,18 @@ export const MAX_ISSUE_ADVANCES = 20;
 export const ISSUE_TITLE_MAX = 1000;
 
 /**
+ * The longest priority id, in characters: an id is ASCII, so in bytes too. Two readers take it,
+ * so they hold one number. `POST /api/v1/priorities` refuses an `id` the caller names that is
+ * longer, as `400 PRIORITY_INPUT` naming this bound. The same route cuts the id it derives from
+ * the title, when the body names none, to fit it. The cut keeps a slug of at most this many
+ * characters whole; it cuts a longer one to its longest start that fits and ends at the end of a
+ * word, or to its first this many characters when its first word is longer.
+ * `fixtures/priority-ids.json` holds the cases of that rule, and its `description` names the
+ * tests that read them. Generated into Go as `contracts.PriorityIDMax`.
+ */
+export const PRIORITY_ID_MAX = 200;
+
+/**
  * The longest project name, in UTF-16 units, counted after the trim `POST /api/v1/projects`
  * applies; a longer one is `400 CAP_EXCEEDED`. A name shows beside its key in the sidebar's
  * 20rem rail and in every project picker's `KEY · Name` option, any bearer may write one, and no

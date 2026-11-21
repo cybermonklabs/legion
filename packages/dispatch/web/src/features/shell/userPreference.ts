@@ -15,7 +15,6 @@ export type UserPreference =
   | "inbox.pane-width"
   | "inbox.thread-order"
   | "issue.page"
-  | "priorities.margin"
   | "project.board-edges"
   | "project.board-lanes"
   | "project.issue-filters"

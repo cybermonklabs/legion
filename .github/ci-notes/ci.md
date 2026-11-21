@@ -358,11 +358,6 @@ Before these the job's filter carried one pattern, '.github/scripts/*', for all 
 them: a change to any one script ran every harness, and 28 of the 66 commits that
 touched that directory since 2026-10-01 changed no Go file (dispatch://INFRA-1413).
 
-## priorities_seed_check_test: The one harness of the job outside .github/scripts
-
-The one harness of the job outside .github/scripts: it carries its own helpers
-and sources no test-lib.sh.
-
 ## test: The test job: the Claude Code plugin build, the changelog
 
 The test job: the Claude Code plugin build, the changelog fold, the script
@@ -1286,7 +1281,7 @@ filter (dispatch://INFRA-1413).
 
 The session message-wait suite, in a job of its own: it is the one test of the test job
 that needs a database, and a Postgres service there would start one for every change
-that selects any of that job's thirty-two harness steps.
+that selects any of that job's forty-three harness steps.
 
 ## One output per test.sh step of the test job
 

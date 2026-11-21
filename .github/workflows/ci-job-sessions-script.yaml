@@ -16,7 +16,7 @@ name: CI job sessions-script
 #
 # A job rather than the service put back on `test`: this was the one step of those thirty-odd
 # that needs a database, and a service on `test` starts Postgres for every change that selects
-# any of its thirty-two harness steps — the cost this issue exists to stop. The `test` job keeps
+# any of its forty-three harness steps — the cost this issue exists to stop. The `test` job keeps
 # the lint and the typecheck of scripts/sessions, which need no database and share its Bun.
 #
 # No install: the suite and the script it spawns import node: builtins and bun alone, so the Bun
