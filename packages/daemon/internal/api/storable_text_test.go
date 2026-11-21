@@ -192,6 +192,8 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/roots/close":                            reads("reason"),
 		"POST /legion/v1/children/park":                          reads("issue"),
 		"POST /legion/v1/children/rerun":                         reads("issue"),
+		"POST /legion/v1/intake/replay":                          reads("consumer"),
+		"POST /legion/v1/intake/discard":                         reads("reason"),
 		"POST /legion/v1/operator/claims":                        reads("tree"),
 		"GET /legion/v1/operator/claims":                         noBody,
 		"POST /legion/v1/operator/claims/{token}/deliver":        reads("task"),
@@ -203,6 +205,8 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/operator/claims/{token}/forget-session": reads("session"),
 		"POST /legion/v1/operator/claims/{token}/release-names":  noBody,
 		"POST /legion/v1/operator/claims/{token}/close":          noBody,
+		"POST /legion/v1/operator/intake/replay":                 reads("consumer"),
+		"POST /legion/v1/operator/intake/discard":                reads("reason"),
 		"POST /legion/v1/operator/project/pause":                 reads("reason"),
 		"POST /legion/v1/operator/project/resume":                noString,
 	}

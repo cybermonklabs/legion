@@ -16,6 +16,10 @@ import {
   LegionHandoffCompleteResponse,
   type LegionHealth,
   LegionHealthResponse,
+  LegionIntakeDiscardRequest,
+  LegionIntakeDiscardResponse,
+  LegionIntakeReplayRequest,
+  LegionIntakeReplayResponse,
   type LegionIssue,
   LegionIssueRecordResponse,
   LegionIssueStatusRequest,
@@ -188,6 +192,21 @@ export interface LegionDaemonClient {
   readonly projectResume: (
     input: z.input<typeof LegionProjectResumeRequest>
   ) => Promise<z.output<typeof LegionProjectResumeResponse>>;
+  /** The controller's `replay_give_up`: the daemon applies again the messages its intake gave up
+   * on that the selection names, `giveUp`, one record by its id, or `consumer` with `throughSeq`,
+   * every open record of that consumer at or below that stream sequence, through the handling a
+   * live delivery takes, the effect `legion intake replay` runs for an operator. The answer is
+   * each record it took with how its replay ended, and how many open records of the selection
+   * are left. */
+  readonly intakeReplay: (
+    input: z.input<typeof LegionIntakeReplayRequest>
+  ) => Promise<z.output<typeof LegionIntakeReplayResponse>>;
+  /** The controller's `discard_give_up`: the daemon closes the give-ups the selection names, for
+   * `reason`, and applies nothing, the effect `legion intake discard` runs for an operator. The
+   * answer is the id of each record it closed. */
+  readonly intakeDiscard: (
+    input: z.input<typeof LegionIntakeDiscardRequest>
+  ) => Promise<z.output<typeof LegionIntakeDiscardResponse>>;
   readonly waveRelease: (
     input: z.input<typeof LegionWaveReleaseRequest>
   ) => Promise<z.output<typeof LegionWaveReleaseResponse>>;
@@ -695,6 +714,20 @@ export function createLegionDaemonClient(
         "/legion/v1/project/resume",
         LegionProjectResumeRequest,
         LegionProjectResumeResponse,
+        input
+      ),
+    intakeReplay: (input) =>
+      post(
+        "/legion/v1/intake/replay",
+        LegionIntakeReplayRequest,
+        LegionIntakeReplayResponse,
+        input
+      ),
+    intakeDiscard: (input) =>
+      post(
+        "/legion/v1/intake/discard",
+        LegionIntakeDiscardRequest,
+        LegionIntakeDiscardResponse,
         input
       ),
     gateRegister: (input) =>

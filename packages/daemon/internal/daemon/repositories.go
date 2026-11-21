@@ -2434,9 +2434,10 @@ func (w *workflowRuntime) recordOf(ctx context.Context, key string) (*record.Iss
 // its start, for who set the label (labelSetter, intake.DispatchIssue.LabelSetter): a person's
 // label queues the root through the outbox, a session's wakes the controller as today, and the
 // event that reaches the daemon says the label is there, not who put it there. It is one paged
-// read per such event, outside the fact lock as the rest of the preparation reads, and a failed
-// read leaves the event to be retried. A recorded root a person moved back to triage is never
-// queued again, so its log is not read.
+// read per such event, outside the fact lock as the rest of the preparation reads. A failed read
+// fails the preparation, so the event is delivered again; a log that does not decode fails it at
+// every delivery, so the intake gives the event up at its bound. A recorded root a person moved
+// back to triage is never queued again, so its log is not read.
 func (w *workflowRuntime) prepareRepository(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
 	return w.prepareIssue(ctx, issue, true)
 }
@@ -2488,13 +2489,14 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 	return w.withAncestry(ctx, prepared, nil, observe)
 }
 
-// labelSetter is the kind of the Dispatch actor that added the label to key, read from the issue's
-// whole Dispatch event log, from sequence 0, by intake.LabelSetter's rule: one paged read per call,
-// outside the fact lock as the rest of a preparation reads, for an event's preparation
-// (prepareIssue) and the boot listing's (reconcileListing) alike. A read that fails, or a log the
-// daemon cannot decode, is an error naming the key, for the caller to fail the preparation on, so
-// the event or the listing is read again rather than applied with a setter nobody read: a setter
-// of "" would keep today's triage wake for a label a person set.
+// labelSetter is the kind of the Dispatch actor that added the label to key, by
+// intake.LabelSetter's rule. It reads the issue's whole Dispatch event log from sequence 0, in one
+// paged read, outside the fact lock. A read that fails is an error that wraps the client's error,
+// which can be a *dispatch.EventLogError, for a page of the log the client cannot read, or a
+// Dispatch refusal (*dispatch.Error). A log that does not decode is an error that wraps a
+// *dispatch.EventLogError too. Each error names the key. No error comes with a setter, since a
+// caller must not apply a setter nobody read: a setter of "" would keep today's triage wake for a
+// label a person set.
 func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, error) {
 	events, err := w.dispatch.EventsAfter(ctx, key, 0)
 	if err != nil {
@@ -2516,6 +2518,18 @@ func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, 
 // event to be retried. Every other review or version event — a session's or Dispatch's own review,
 // a changes request, a carried approval, a version — asks Dispatch nothing and is applied as
 // decoded, with no view, which queues nothing.
+//
+// The view is the issue as it is now, so it cannot say whether the status changed after the
+// approval. For an approval that needs the issue's whole Dispatch event log
+// (intake.DispatchArtifact.NeedsEventLog: one that can queue its root by that view and carries a
+// sequence to place it by), a second read takes that log, and the first change of the issue's
+// status after the approval is set on the fact (StatusChangedSeq, by
+// intake.DispatchArtifact.WithStatusChange), so the workflow refuses an approval after which the
+// person parked the root again, however late it is applied or replayed. That read is one paged
+// read of the issue's whole log, the same read labelSetter makes for an unrecorded issue's
+// admission event, made under the same AckWait bound the intake puts on the whole preparation, the
+// issue read's included. A failed read, or a log the daemon cannot decode, fails the preparation
+// with an error naming the key, so the event is delivered again, as a failed issue read is.
 func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.DispatchArtifact) (intake.DispatchArtifact, error) {
 	if !fact.PersonApproval() {
 		return fact, nil
@@ -2525,6 +2539,16 @@ func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.Dispa
 		return fact, fmt.Errorf("read %s from Dispatch before applying a person's approval of its document %s: %w", fact.Key, fact.ArtifactID, err)
 	}
 	fact.Issue = &issue
+	if !fact.NeedsEventLog() {
+		return fact, nil
+	}
+	events, err := w.dispatch.EventsAfter(ctx, fact.Key, 0)
+	if err != nil {
+		return fact, fmt.Errorf("read the event log of %s from Dispatch for a change of its status after the approval at %d: %w", fact.Key, fact.Mark.Seq, err)
+	}
+	if fact, err = fact.WithStatusChange(events); err != nil {
+		return fact, fmt.Errorf("read a change of the status of %s after the approval at %d from its event log: %w", fact.Key, fact.Mark.Seq, err)
+	}
 	return fact, nil
 }
 

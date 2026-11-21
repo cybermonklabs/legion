@@ -975,7 +975,8 @@ type completionPosition struct {
 
 // handoffPosition reads key's position (completionPosition) for the completing role, whose phases
 // row names the entry it was last raised to; an issue the workflow does not record is a position
-// with no issue and no error.
+// with no issue and no error. The pull request is its row alone (record.Store.PullRequestRow): the
+// route reads its head and its state and writes nothing of it.
 func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role) (completionPosition, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
 	if err != nil {
@@ -1002,7 +1003,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	implementer := record.PhaseRowOf(rows, claim.RoleImplementer)
 	completing := record.PhaseRowOf(rows, role)
 	pass, lastHandoff := implementer.Pass, implementer.LastHandoff
-	pr, err := s.records.PullRequest(ctx, tx, key)
+	pr, err := s.records.PullRequestRow(ctx, tx, key)
 	if err != nil {
 		return completionPosition{}, err
 	}

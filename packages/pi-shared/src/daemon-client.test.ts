@@ -376,6 +376,8 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly compact: (body: object) => Promise<unknown>;
     readonly projectPause: (body: object) => Promise<unknown>;
     readonly projectResume: (body: object) => Promise<unknown>;
+    readonly intakeReplay: (body: object) => Promise<unknown>;
+    readonly intakeDiscard: (body: object) => Promise<unknown>;
     readonly gateRegister: (body: object) => Promise<unknown>;
     readonly waveRelease: (body: object) => Promise<unknown>;
     readonly phaseBackward: (body: object) => Promise<unknown>;
@@ -436,6 +438,26 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "project-pause.json",
     ],
     ["projectResume", "/legion/v1/project/resume", { grantId: "grant-208" }, "project-resume.json"],
+    // The controller's replay and discard of the intake's give-ups: one record by its id, or a
+    // consumer's open records through a stream sequence. Each answers as the daemon's golden
+    // wrote it, the replay with each record's outcome and the discard with the ids it closed.
+    [
+      "intakeReplay",
+      "/legion/v1/intake/replay",
+      { grantId: "grant-208", giveUp: 41 },
+      "intake-replay.json",
+    ],
+    [
+      "intakeDiscard",
+      "/legion/v1/intake/discard",
+      {
+        grantId: "grant-208",
+        consumer: "legion-go-LEGION-dispatch",
+        throughSeq: 6044896,
+        reason: "the listener published a non-JSON body",
+      },
+      "intake-discard.json",
+    ],
     [
       "gateRegister",
       "/legion/v1/gates/register",
@@ -567,6 +589,27 @@ test("a refused pause and a refused resume surface the daemon's code and sentenc
     fetch,
   });
   expect(() => client.projectPause({ grantId: "grant-208", reason: "" })).toThrow();
+  expect(requests).toEqual([]);
+});
+
+// A replay or a discard that names both forms of selection, or neither, and a discard with no
+// reason, are refused before they leave the pane, as every request the schema does not describe
+// is; the daemon would refuse each (`GIVE_UP_REQUEST_INVALID`).
+test("a give-up selection of both forms or neither, and a discard with no reason, are refused before any request", () => {
+  const { fetch, requests } = daemon(() => Response.json(daemonFixture("intake-replay.json")));
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
+  const both = {
+    grantId: "grant-208",
+    giveUp: 41,
+    consumer: "legion-go-LEGION-dispatch",
+    throughSeq: 6044896,
+  };
+  expect(() => client.intakeReplay(both as never)).toThrow();
+  expect(() => client.intakeReplay({ grantId: "grant-208" } as never)).toThrow();
+  expect(() => client.intakeDiscard({ grantId: "grant-208", giveUp: 41, reason: "" })).toThrow();
   expect(requests).toEqual([]);
 });
 

@@ -2833,10 +2833,9 @@ package api
 // merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. A renumber moves `shapedAnswersContract` in shaping.go with it, and that one constant
-// alone: it is the number the three keys of this entry are served down below, it is what
-// answers.go gives the two answers this change adds as their arrival, and it is the last number
-// of answers.go's SupportedContracts, which names the constant rather than its number for that
-// reason.)
+// alone: it is the number the three keys of this entry are served down below, and it is what
+// answers.go gives the two answers this change adds as their arrival; answers.go's
+// SupportedContracts names the constant rather than its number, so the list moves with it.)
 //
 // 199: INFRA-4605 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
 // `--session-writer-audience <audience>`, a fifth session flag after
@@ -2978,4 +2977,95 @@ package api
 // merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 202
+//
+// 207: INFRA-1575 -- the intake gives up on a message whose handling keeps failing, keeps it
+// whole, tells the controller, and lets the operator or the controller replay it or discard it.
+// `GET /legion/v1/state` gains `intakeGiveUps` (`api.IntakeGiveUpsView`), written on every body:
+// `consumers`, each durable consumer with an open give-up as `{name, open, newestSeq}`, the newest
+// stream sequence being the `throughSeq` of a bulk replay or discard of all of them, and `newest`,
+// the newest open give-ups, latest given up first, at most 50, each `{id, consumer, subject,
+// streamSeq, storedAt, eventId, deliveries, gaveUpAt, reason, lastError}`, where `eventId` is null
+// for a message that did not decode and `lastError` is the first 300 characters of the record's
+// error; both lists are empty rather than null. The controller's two routes, `POST
+// /legion/v1/intake/replay` and `POST /legion/v1/intake/discard` (`api.IntakeReplayRequest`,
+// `api.IntakeDiscardRequest`), take `grantId` and a selection: `giveUp`, one record's id, or
+// `consumer` with `throughSeq`, every open record of that consumer at or below that sequence; the
+// discard takes `reason` too. They answer `api.IntakeReplayResponse` (`replayed`, each record's
+// `{id, consumer, streamSeq, outcome, error}`, the outcome `applied`, `already applied`, `no fact`
+// or `failed`, and `remaining`) and `api.IntakeDiscardResponse` (`discarded`, the ids it closed),
+// and refuse 400 `GIVE_UP_REQUEST_INVALID` for a selection of neither form or both and a discard
+// with no reason or one longer than 2,048 characters, 403 `CONTROLLER_REQUIRED` for a grant that
+// is not the controller's, 404 `GIVE_UP_NOT_FOUND` for an id of no give-up of the project, 409
+// `GIVE_UP_CLOSED`, naming how and when, for an id the action may not take, 409
+// `GIVE_UP_BEING_REPLAYED` for an id a running replay holds, and 503 `NO_INTAKE` on a daemon
+// with no intake. A controller grant records who minted it (`credential.Grant`'s Session and
+// Operator, 178), so the record keeps `controller session <id>` as who closed a record, and
+// `operator` for a controller grant the operator's bearer minted. The operator's two
+// routes, `POST /legion/v1/operator/intake/replay` and `POST /legion/v1/operator/intake/discard`,
+// take the same bodies without `grantId` and answer the same; `legion intake replay` and `legion
+// intake discard` post them. The controller notice kind `intake-gave-up`
+// (`record.IntakeGaveUpNotice`), with `record.Notice`'s `count` and `giveUps`, reaches the
+// controller's topic, a minute after the give-up that opens it, with every give-up of that minute
+// joined to it. An older daemon refuses a controller whose plugin holds this contract with 409, at
+// `legion controller start` and at its registration, so the controller never calls the two routes
+// there; only this release's operator command `legion intake` reaches an older daemon, which
+// answers it 404.
+//
+// The change is served down by the tables 193 put in place, one row each:
+//
+//   - The state's one new key is one band, the row of `intakeGiveUpsContract` in shaping.go's
+//     `stateNarrowings` (`withoutIntakeGiveUps`): a caller that states a contract below 207, or
+//     that states none from a pod whose claims record one below 193 (`podContracts` counts no
+//     claim at `shapedAnswersContract` or above), is served the state without the key,
+//     with every band below it, which is why `packages/contracts/src/legion-api.ts` declares it
+//     optional, as it declares `wakesWaiting`. The key is left off by a flag rather than emptied
+//     (`State.intakeGiveUpsHidden`), as `wakesWaiting` and `claimsToRefresh` are, since a strict
+//     reader refuses it empty as surely as filled.
+//   - The controller's two answers are two rows of answers.go's `Answers`, `AnswerIntakeReplay`
+//     and `AnswerIntakeDiscard`, each arrived with its route at 207, so no contract below records
+//     either, and each is the identity in `shapeAnswer`. The operator's two routes answer the
+//     `legion` command, which is built from the daemon's own commit, so they are no rows and
+//     write their answers as `answerUnparsed`, as the operator's pause and resume do. Every
+//     refusal of the four routes is the refusal answer.
+//   - Two fields of those bodies are read with a `z.enum`, so each is a row of answers.go's
+//     `EnumeratedFields`: a give-up's `reason` on the state (`intakeGiveUps.newest.*.reason`, the
+//     five words of `record.IntakeGiveUpReason`) and a replayed record's `outcome` on the
+//     replay's answer (`replayed.*.outcome`, the four words of `intake.ReplayOutcome`). Every
+//     value arrived with its field at 207, so the band and the answer's own arrival keep each
+//     from an older caller, and no value strip is owed (shaping.go's `fieldArrivals.heldBack`).
+//   - The controller's two request bodies are two rows of the request gate's table
+//     (`pluginRequests` in request_shapes_test.go), recorded from 207 on. The operator's two are
+//     the `legion` command's, which no older build sends.
+//
+// So `contract-shapes.json` gains the records of 207, which are 202's with the key paths of
+// `intakeGiveUps` and the five values of its `reason`'s domain on the state's record and with the
+// records of the two new answers beside them, and `request-shapes.json` gains the records of 207,
+// which are 202's with the two controller routes beside them. Every record below 207 is as it was
+// but for the state's, 202's among them, which gains the domain `intakeGiveUps.newest.*.reason`
+// admitting no value, since every record holds a domain for each enumerated field of its answer
+// (`TestTheRecordSetIsOneRecordPerAnswerPerContract`) and no value of this one arrived below 207.
+//
+// The change carries store migration `20261120144241_intake_failures`, which adds the tables
+// `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads`. An older daemon
+// binary put back on this schema decodes an outbox payload strictly (`record.DecodeOutboxPayload`,
+// `DisallowUnknownFields`), so an unsent `intake-gave-up` notice row is refused at every attempt
+// and logged `outbox row failed` each time; and it applies or drops a message with an open failure
+// without telling the table, so after a roll forward the sweep would give up as passed a message
+// that applied. The way back is the migration header's last paragraph (`migrations.WayBack`), the
+// same text `docs/kubernetes.md` carries under "Rolling back the release that gives up on intake
+// messages": with the daemon stopped, delete the project's unsent `intake-gave-up` controller
+// notices and its open failures, each statement naming the project. The given-up records and the
+// three tables stay, which the older binary never reads and a roll forward finds in place.
+// (This entry took 195 when main declared 193, read on 2026-11-20 at 8a9540682d, and the open
+// pull requests read that day declared 194 and 196 to 199. The forward merge of 2026-11-20 that
+// brought in 6a85d7237c brought main's 199 (#4495, INFRA-4605's entry above). A reading of every
+// open pull request at that merge, which ended at 2026-11-20T23:12:47Z, found 200 (#4065, #4493
+// and #4580) and 201 (#4553 and #4611) declared, so this entry moved to 202, the lowest number
+// above main's 199 that no other open pull request declared. The forward merge of 2026-11-21 that
+// brought in a86c31c9fd brought main's 202 (#4493, INFRA-4401's entry above). A reading of every
+// open pull request at that merge, which ended at 2026-11-21T03:14:44Z, found 203 (#4065, #4175,
+// #4553, #4592 and #4661), 204 (#3831 and #4030), 205 (#4573) and 206 (#4540) declared above 202,
+// so this entry moved to 207, the lowest number above main's 202 that no other open pull request
+// declares. Read main's own number and every open pull request again at the next merge rather
+// than from this line.)
+const DaemonAPIVersion = 207

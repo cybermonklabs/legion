@@ -1116,6 +1116,32 @@
     ]
   },
   {
+    "answer": "state",
+    "keyPath": "intakeGiveUps.newest.*.reason",
+    "values": [
+      {
+        "value": "bound",
+        "since": 207
+      },
+      {
+        "value": "consumer moved past",
+        "since": 207
+      },
+      {
+        "value": "did not end",
+        "since": 207
+      },
+      {
+        "value": "retention",
+        "since": 207
+      },
+      {
+        "value": "undecodable",
+        "since": 207
+      }
+    ]
+  },
+  {
     "answer": "issue-record",
     "keyPath": "phase",
     "values": [
@@ -1968,6 +1994,28 @@
       {
         "value": "tester",
         "since": 46
+      }
+    ]
+  },
+  {
+    "answer": "intake-replay",
+    "keyPath": "replayed.*.outcome",
+    "values": [
+      {
+        "value": "already applied",
+        "since": 207
+      },
+      {
+        "value": "applied",
+        "since": 207
+      },
+      {
+        "value": "failed",
+        "since": 207
+      },
+      {
+        "value": "no fact",
+        "since": 207
       }
     ]
   }

@@ -90,22 +90,19 @@ func leaveUnnamed(log *slog.Logger, key, repo, why string) {
 // name it moved to reach it before that pass as after it.
 func fillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) (filled []ghrepo.Repository, left bool, err error) {
 	var unfilled []record.Issue
-	pulls := map[string]record.PullRequest{}
+	var pulls map[string]record.PullRequest
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		var err error
 		if unfilled, err = records.UnfilledIssues(ctx, tx, project); err != nil {
 			return err
 		}
-		for _, issue := range unfilled {
-			pull, err := records.PullRequest(ctx, tx, issue.Key)
-			if err != nil {
-				return err
-			}
-			if pull != nil {
-				pulls[issue.Key] = *pull
-			}
+		// Only each pull request's repository and number are read, so the rows alone, in one read.
+		keys := make([]string, len(unfilled))
+		for i, issue := range unfilled {
+			keys[i] = issue.Key
 		}
-		return nil
+		pulls, err = records.PullRequestsOf(ctx, tx, keys)
+		return err
 	}); err != nil {
 		return nil, false, fmt.Errorf("read the records with no repository: %w", err)
 	}

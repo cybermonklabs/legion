@@ -1,0 +1,26 @@
+kind: Added
+body: |-
+  The intake gives up on a message whose handling fails every time, keeps it, and lets it be
+  applied again or closed. After each failed delivery the next one waits twice as long, from one
+  second up to five minutes, and a longer GitHub rate-limit wait still wins; the nak line names the
+  delivery count (`delivered`). The daemon gives a message up once JetStream has delivered it 21
+  times and its first failure is an hour old, at once when the stream would delete it before its
+  next delivery or when it does not decode, and through a sweep when its consumer moved past it.
+  Before it terminates the message it commits a record of the whole message (`intake_failures`),
+  so the consumer's floor and admission's hold move on and nothing is lost. `GET
+  /legion/v1/state` carries `intakeGiveUps`, the open count of each consumer and the 50 newest
+  open records, and `legion state` prints them. While a controller is registered, it gets one
+  `intake-gave-up` notice for each burst of give-ups. `legion intake replay` applies a record
+  again inside the daemon, through the handling a live delivery takes, and `legion intake discard`
+  closes records with a reason; the controller does the same through two new routes. A late or
+  replayed fact moves no record back and wakes no worker for a head the pull request left: eight
+  fences, with the tables `cleared_pull_requests` and `pull_request_settled_heads`. A person's
+  approval of a parked root's spec queues the root only when the issue's Dispatch event log shows
+  no change of its status after the approval, which the daemon reads when it prepares that
+  approval. When the daemon reconciles a Dispatch listing, at boot or for a repository recovery, a
+  labelled triage root it does not record whose Dispatch event log does not decode or holds a page
+  the daemon cannot read is left out of admission's decision with one ERROR line naming it, and the
+  reconcile goes on. Any other failed read of the log, a refusal by Dispatch included, still fails
+  the listing. The daemon API contract is 207. Before a rollback to an earlier release, run the two
+  statements of the migration `20261120144241_intake_failures.up.sql` with the daemon stopped
+  (docs/kubernetes.md, "Rolling back the release that gives up on intake messages").

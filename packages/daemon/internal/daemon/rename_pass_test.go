@@ -98,6 +98,7 @@ func storedRepositoryNames(t *testing.T, pool *store.Pool, key string) map[strin
 		{"pull_requests.repo", "select repo from pull_requests where issue = $1"},
 		{"production_checks.repo", "select repo from production_checks where issue = $1"},
 		{"repo_notes.resolved_repo", "select resolved_repo from repo_notes where issue = $1"},
+		{"cleared_pull_requests.repo", "select repo from cleared_pull_requests where issue = $1"},
 	} {
 		var name string
 		switch err := pool.QueryRow(context.Background(), read.sql, key).Scan(&name); err {
@@ -206,14 +207,15 @@ func transferredRepositories() *repositories {
 // Apps installed on the pair's `to` and neither on its `from` — writes the pair's new name, as
 // GitHub spells it and not as legion.yaml does (CyberMonkLabs/Legion), on every stored column that
 // held the old one, in any spelling: the record's repository and GitHub's spelling, the pull
-// request, the production check and the repository note, the note of an issue the project never
-// recorded among them. Where the new name would give the pull requests' unique key one repository
-// and branch twice, the row under the new name stays and the other issue's is deleted, one line
-// naming both issues. Each table's line counts the rows written, the rows failed and the rows left
-// on the old name, which is none; an issue on another repository is left alone. A second boot
-// writes nothing. Controls: with the pass deleted from the boot (run's renameAtBoot), every row is
-// left on the old name; with the configured spelling written (renameTransfer answering the pair's
-// own `to`), every row written holds CyberMonkLabs/Legion, a spelling nothing publishes under.
+// request, the production check, the repository note and the pull request a new generation
+// cleared, the note of an issue the project never recorded among them. Where the new name would
+// give the pull requests' unique key one repository and branch twice, the row under the new name
+// stays and the other issue's is deleted, one line naming both issues. Each table's line counts
+// the rows written, the rows failed and the rows left on the old name, which is none; an issue on
+// another repository is left alone. A second boot writes nothing. Controls: with the pass deleted
+// from the boot (run's renameAtBoot), every row is left on the old name; with the configured
+// spelling written (renameTransfer answering the pair's own `to`), every row written holds
+// CyberMonkLabs/Legion, a spelling nothing publishes under.
 func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
@@ -231,6 +233,12 @@ func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 		p+"-9", renameFrom); err != nil {
 		t.Fatal(err)
 	}
+	for issue, repo := range map[string]string{p + "-1": "SJAWHAR/Legion", p + "-6": "acme/widgets"} {
+		if _, err := pool.Exec(context.Background(), `insert into cleared_pull_requests (repo, number, issue, head_updated_at, cleared_at)
+			values ($1, 6, $2, now(), now())`, repo, issue); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	var logged syncBuffer
 	d := renameBoot(t, cfg, &logged)
@@ -244,8 +252,8 @@ func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 	if names := stored[p+"-2"]; names["pull_requests.repo"] != "" {
 		t.Errorf("%s's pull request = %v, want it deleted: %s-3's holds release/shared on %s", p+"-2", names, p, renameTo)
 	}
-	if names := storedRepositoryNames(t, pool, p+"-6"); len(names) != 5 || !namedAll(names, "acme/widgets") {
-		t.Errorf("%s's stored names = %v, want all five left on acme/widgets", p+"-6", names)
+	if names := storedRepositoryNames(t, pool, p+"-6"); len(names) != 6 || !namedAll(names, "acme/widgets") {
+		t.Errorf("%s's stored names = %v, want all six left on acme/widgets", p+"-6", names)
 	}
 	deleted := renameLines(t, logged.String(), renameDeletedLine)
 	if len(deleted) != 1 || deleted[0].Issue != p+"-2" || deleted[0].Kept != p+"-3" || deleted[0].Branch != "release/shared" || deleted[0].Level != "WARN" {
@@ -254,7 +262,8 @@ func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 	if left := renameLines(t, logged.String(), renameLeftLine); len(left) != 0 {
 		t.Errorf("lines of a pair left = %+v, want none: GitHub shows the transfer", left)
 	}
-	want := map[string]renameTableTally{"issues": {written: 3}, "pull_requests": {written: 1}, "production_checks": {written: 1}, "repo_notes": {written: 2}}
+	want := map[string]renameTableTally{"issues": {written: 3}, "pull_requests": {written: 1}, "cleared_pull_requests": {written: 1},
+		"production_checks": {written: 1}, "repo_notes": {written: 2}}
 	if got := renameTables(t, logged.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("table lines of the first boot = %+v, want %+v", got, want)
 	}
@@ -263,7 +272,7 @@ func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 	rebindHeldPorts(t, &cfg)
 	var again syncBuffer
 	renameBoot(t, cfg, &again)
-	want = map[string]renameTableTally{"issues": {}, "pull_requests": {}, "production_checks": {}, "repo_notes": {}}
+	want = map[string]renameTableTally{"issues": {}, "pull_requests": {}, "cleared_pull_requests": {}, "production_checks": {}, "repo_notes": {}}
 	if got := renameTables(t, again.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("table lines of the second boot = %+v, want nothing written and nothing left", got)
 	}
@@ -312,7 +321,7 @@ func TestARenameWriteThatFailsIsLoggedAndTheNextBootWritesIt(t *testing.T) {
 		t.Errorf("failure lines = %+v, want one WARN line naming %s and the database's refusal", failed, refused)
 	}
 	want := map[string]renameTableTally{"issues": {written: 1, failed: 1, left: 1}, "pull_requests": {failed: 1, left: 1},
-		"production_checks": {}, "repo_notes": {}}
+		"cleared_pull_requests": {}, "production_checks": {}, "repo_notes": {}}
 	if got := renameTables(t, logged.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("table lines of the first boot = %+v, want %+v", got, want)
 	}
@@ -327,7 +336,8 @@ func TestARenameWriteThatFailsIsLoggedAndTheNextBootWritesIt(t *testing.T) {
 	if names := storedRepositoryNames(t, pool, refused); !namedAll(names, renameTo) {
 		t.Errorf("%s's stored names after the next boot = %v, want each on %s", refused, names, renameTo)
 	}
-	want = map[string]renameTableTally{"issues": {written: 1}, "pull_requests": {written: 1}, "production_checks": {}, "repo_notes": {}}
+	want = map[string]renameTableTally{"issues": {written: 1}, "pull_requests": {written: 1}, "cleared_pull_requests": {}, "production_checks": {},
+		"repo_notes": {}}
 	if got := renameTables(t, again.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("table lines of the next boot = %+v, want %+v", got, want)
 	}
@@ -1057,7 +1067,7 @@ func TestTheRenamePassSendsGitHubNoRequestForAPairNoRowNames(t *testing.T) {
 	if left := renameLines(t, boot.String(), renameLeftLine); len(left) != 0 {
 		t.Errorf("the boot's lines of a pair left = %+v, want none: no row names %s", left, renameFrom)
 	}
-	want := map[string]renameTableTally{"issues": {}, "pull_requests": {}, "production_checks": {}, "repo_notes": {}}
+	want := map[string]renameTableTally{"issues": {}, "pull_requests": {}, "cleared_pull_requests": {}, "production_checks": {}, "repo_notes": {}}
 	if got := renameTables(t, boot.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("the boot's table lines = %+v, want each table's, nothing written and nothing left", got)
 	}

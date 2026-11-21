@@ -29,9 +29,10 @@ const (
 // dispatch://INFRA-714/spec R1). The listener publishes a settlement for every settled commit of
 // a pull request, its current head or not, and the daemon takes one only for the head itself
 // (SettlementFor), since a settlement stands only for the head it names; a settlement of another
-// head than the recorded one starts the fence afresh. A check still running is in no settlement
-// at all - the listener settles a commit only once every check it has seen there is terminal - so
-// it is no verdict rather than a failure. A check_run delivery the listener lost is recovered
+// head than the recorded one is applied to the fence the pull request remembers for that head, or
+// to an empty one. A check still running is in no settlement at all - the listener settles a
+// commit only once every check it has seen there is terminal - so it is no verdict rather than a
+// failure. A check_run delivery the listener lost is recovered
 // only by Dispatch's webhook redelivery sweep
 // (packages/envoy/internal/dispatch/redeliver: it runs only where Dispatch has the App key and
 // NATS, every two minutes, and asks GitHub again for each delivery GitHub recorded as failed until

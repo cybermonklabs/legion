@@ -142,6 +142,9 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 			"its adoption of children recorded in other trees names no one issue (intake.IssueOf), so apply asks RunsAStep, the read TestTheRecordNamesTheAgentOfARunThatIsNotEnded holds, and this table drives no adoption"},
 		"POST /legion/v1/roots/close":    {none: "its root has started no phase: admitted and awaiting a person run no step (workflow's stepOf)"},
 		"POST /legion/v1/children/rerun": {none: "its child is out of the workflow, at phase done, which runs no step"},
+		"POST /legion/v1/intake/replay": {none: controller + "; a replay applies the stored message of a far side's event, " +
+			"which no agent's request made, through the intake's own handling (intake.GiveUps)"},
+		"POST /legion/v1/intake/discard": {none: controller + "; " + noFact},
 		"POST /legion/v1/handoff/complete": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
 			seedIssueAt(t, r.h, "LEGION-208", phase.Testing)
 			tester := newLiveClaim(t, r.h, "LEGION-208", claim.RoleTester)
@@ -222,6 +225,8 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/operator/claims/{token}/forget-session": {none: noRequester},
 		"POST /legion/v1/operator/claims/{token}/release-names":  {none: noRequester},
 		"POST /legion/v1/operator/claims/{token}/close":          {none: noRequester},
+		"POST /legion/v1/operator/intake/replay":                 {none: noRequester},
+		"POST /legion/v1/operator/intake/discard":                {none: noRequester},
 		"POST /legion/v1/operator/project/pause":                 {none: noRequester},
 		"POST /legion/v1/operator/project/resume":                {none: noRequester},
 		"/": {none: "the catch-all answers no route; " + noFact},

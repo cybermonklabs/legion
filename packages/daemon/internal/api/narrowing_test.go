@@ -292,14 +292,16 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
-	// The newest narrowing is a row of the table like every other, so the caller below it is
-	// told what it lost: a caller one contract below the highest row, 201, which states that
-	// contract in its header as every plugin from shapedAnswersContract on does, is served at the
-	// recorded contract below it, 199, so it stands below that row alone and the log holds that
-	// row's line and nothing else. This subtest does not catch a strip applied beside the loop,
-	// because it reads both its expectation and its answer from stateNarrowings; the subtests
-	// below, which name their lines as literals, are what catch that.
-	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
+	// The repositories narrowing is a row of the table like every other, so the caller below it
+	// is told what it lost: a caller one contract below that row, 201, which states that contract
+	// in its header as every plugin from shapedAnswersContract on does, is served at the recorded
+	// contract below it, 199, so it stands below that row and the one row above it, the intake's
+	// give-ups, and the log holds those two rows' lines and nothing else. A caller below the
+	// give-ups' row alone is TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps's. This
+	// subtest does not catch a strip applied beside the loop, because it reads both its
+	// expectation and its answer from stateNarrowings; the subtests below, which name their lines
+	// as literals, are what catch that.
+	t.Run("the two highest narrowings write their own lines", func(t *testing.T) {
 		state := populatedState(t)
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000",
 			podClaims(repositoriesLiveContract-1), repositoriesLiveContract-1)
@@ -476,10 +478,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 // band that changes no byte has taken no key, and the log must say nothing of it. Today the
 // bands of the body's own keys do change the bytes, because every state carries
 // `admission.trees`, `wakesWaiting`, `claimsToRefresh`, the mark, `admission.held`,
-// `lowestPluginContract` for these claims and the repositories block, which the band of
-// repositoriesLiveContract writes in contract 152's shape whatever it names, all but
-// withoutRepositoryApps: this state serves no repository, so that band has no `apps` to take and
-// logs nothing.
+// `lowestPluginContract` for these claims, the repositories block, which the band of
+// repositoriesLiveContract writes in contract 152's shape whatever it names, and `intakeGiveUps`,
+// all but withoutRepositoryApps: this state serves no repository, so that band has no `apps` to
+// take and logs nothing.
 func TestAnEmptyStateLogsNoDropOfAKeyItNeverCarried(t *testing.T) {
 	const below = supervise.PodUpdateContract - 1
 	claims := podClaims(below)

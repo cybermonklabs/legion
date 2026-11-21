@@ -2387,6 +2387,60 @@ So run this once more with the earlier release stopped, before this release star
 delete from outbox where kind = 'phase_ended';
 ```
 
+#### Rolling back the release that gives up on intake messages
+
+The release that gives up on an intake message whose handling keeps failing is the one whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-1575`.
+Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
+That release keeps each failing message whole in the daemon's database, tells the controller of each message it gives up (the controller notice kind `intake-gave-up`), and lets the operator (`legion intake replay` and `legion intake discard`) or the controller (`replay_give_up` and `discard_give_up`) replay or discard it ([A message the intake gave up](https://cybermonklabs.github.io/legion/legion/troubleshooting/#a-message-the-intake-gave-up)).
+Its migration `20261120144241_intake_failures` adds three tables, and it drops nothing:
+
+- `intake_failures` holds each message of a durable consumer whose handling failed, with its subject, its headers and its payload.
+  A row is an open failure until a later delivery succeeds or the intake gives the message up, and from then on a given-up record, which a replay or a discard closes and which stays in the table after that.
+  A row is as large as its message, which the NATS server bounds at its `max_payload` (1 MB unless its configuration raises it): the 27 envelopes captured in `packages/daemon/internal/intake/testdata` are 369 to 1,231 bytes (`wc -c`), and a CI settlement grows with the checks it names.
+  A given-up record is kept for good, with no retention.
+  The growth is an estimate from two measurements: the 30 days to 2026-11-19 gave 7,449 messages that this release would give up, 4,292 of them on one day from one defect since fixed (cybermonklabs/legion#4315), which at the largest captured envelope is about 9 MB.
+
+- `cleared_pull_requests` keeps, for each pull request whose row a new generation's clear deleted, the newest lifecycle clock the record applied (`head_updated_at`), so a late opened or reopened event of that pull request no newer than that clock records nothing, whatever its head.
+  It keeps an issue too (`issue`), the issue of whatever wrote the row last: the issue whose row the latest clear deleted, or, where the one-time rename pass of `repository_renames` has since merged a moved row into this row, the moved row's issue.
+  That pass reads it to write a pair's new name over the old with the issue's other rows.
+
+- `pull_request_settled_heads` keeps, for each of the last 16 heads a CI settlement of a pull request applied on, that head's check fence as the last settlement applied on it left it: the newest run of each check, the newest commit status of each context, the checks that came to failed and to cancelled, and the listener's numbering.
+  Its rows are of two kinds, at most 16 of each for a pull request: the pull request's own memory (`pull_request`), and, while a head run is open, the memory that run was anchored with (`head_run`).
+  A settlement of a head after a reopen, a new generation's clear, or the branch's return to that head is weighed against that entry, so an earlier settlement of the head is stale as it is while the fence stands.
+
+The earlier release never reads the three tables, so the rollback leaves the three tables standing.
+It writes no row of `pull_request_settled_heads`, and a pull request row it deletes, at a new generation's clear, takes that pull request's rows of it along (`on delete cascade`).
+At the roll forward `Migrate` finds the migration's version recorded and applies nothing, and this release reads each table as it stands.
+`pull_request_settled_heads` then holds what this release wrote before the rollback, and nothing of a settlement the earlier release applied.
+Under the earlier daemon, `legion intake` finds no route (404), and the state carries no `intakeGiveUps`.
+The controller's `replay_give_up` and `discard_give_up` never reach the earlier daemon: it refuses this release's pi-legion with 409 at `legion controller start` and at the controller's registration, since the two speak different daemon API contracts, and the earlier release's pi-legion has neither tool.
+
+**Two kinds of the project's rows must go before the earlier image is pinned.**
+The first is each unsent `intake-gave-up` controller notice.
+The earlier release decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`) and knows neither that kind nor the notice's `count` and `giveUps`, so it refuses such a row at every attempt and retries it on its backoff until the roll forward.
+The second is each open failure: a row of `intake_failures` whose message the intake has not given up.
+The earlier release applies or drops that message and does not tell the table, so after the roll forward the failure sweep would find the row below its consumer's ack floor and give up, as `consumer moved past`, a message that applied.
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
+
+```sql
+delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'intake-gave-up'
+  and split_part(issue, '-', 1) = '<PROJECT>';
+delete from intake_failures where project = '<PROJECT>' and given_up_at is null;
+```
+
+The header of `20261120144241_intake_failures.up.sql` carries this same block.
+
+**Each project rolls back on its own.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the outbox and `intake_failures` are one table each for all of them, but each daemon runs only its own project's outbox rows (`DueRows` in `record/store.go`) and reads only its own project's records.
+So one project can roll back while another stays on this release, and each delete names the project: a daemon left on this release still sends its own notices and still counts its own open failures.
+
+**What the rollback costs.**
+Each deleted notice is a notice the controller never gets.
+The given-up records it counted stay, and after the roll forward the state lists each one that is still open (`legion state`, `intakeGiveUps` in `--json`, and the summary of the controller's `read_state`).
+Each deleted open failure takes with it the time of its message's first failure: a message that still fails after the roll forward opens a new row at its next failure, and its hour counts from then.
+While the earlier release runs, it handles a failing message as it did before this release: it puts the message back and takes it again until it applies or the stream deletes it, and it terminates a message that does not decode, with no record of either.
+The given-up records stay as they were, and after the roll forward a replay or a discard takes them as before.
+
 #### Rolling back the release that publishes each issue's role sessions to Dispatch
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
@@ -3206,6 +3260,7 @@ The migrations recorded above this one are these.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
+20261120144241_intake_failures, of dispatch://INFRA-1575, adds the tables `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads`, and touches none of the six, so the block holds over it and leaves the three tables standing, which the earlier release never reads, and a rollback to a release before it takes the steps of its own section first, [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

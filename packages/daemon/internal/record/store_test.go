@@ -380,12 +380,27 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		// the daemon tells a head read a minute ago from one nothing has read for a day by is
 		// carried by the write and the read rather than lost between them.
 		StateReadAt: updatedAt.Add(3 * time.Minute),
+		// What the pull request remembers of each settled head reads back whole, in its order - each
+		// head's runs, failing and cancelled checks, numbering and commit statuses - and so does what
+		// the head run was anchored with, both from pull_request_settled_heads and through each of
+		// the three reads of one pull request.
+		SettledHeads: []Settlement{
+			{Head: "a0b1c2", CheckRuns: []AttemptRun{{Name: "unit", ID: 90, Head: "a0b1c2", Conclusion: RunFailed}}, Failing: []string{"unit"},
+				Generation: 3, Snapshot: "snapshot-3",
+				Statuses: []CommitStatus{{Context: "test", State: CommitStatusFailure, CreatedAt: updatedAt.Add(-3 * time.Minute), Head: "a0b1c2"}}},
+			{Head: "b1c2d3", CheckRuns: []AttemptRun{{Name: "lint", ID: 92, Head: "b1c2d3", Conclusion: RunSucceeded},
+				{Name: "unit", ID: 91, Head: "b1c2d3", Conclusion: RunFailed}}, Failing: []string{"unit"}, Cancelled: []string{"e2e"},
+				Generation: 4, Snapshot: "snapshot-4"},
+		},
 		// A run's anchor keeps a settlement never made apart from an empty one, and so do its steps.
 		Run: &HeadRun{
 			Anchor: Judgement{HeadSHA: "a0b1c2", CheckedHead: "a0b1c2", Failing: []string{"unit"},
 				CheckRuns: []AttemptRun{{Name: "unit", ID: 90}}, Generation: 3, Snapshot: "snapshot-3",
 				Statuses: []CommitStatus{{Context: "test", State: CommitStatusFailure, CreatedAt: updatedAt.Add(-3 * time.Minute), Head: "a0b1c2"}}},
 			Pushes: pushes[:1],
+			Settled: []Settlement{{Head: "a0b1c2", CheckRuns: []AttemptRun{{Name: "unit", ID: 90, Head: "a0b1c2", Conclusion: RunFailed}},
+				Failing: []string{"unit"}, Generation: 3, Snapshot: "snapshot-3",
+				Statuses: []CommitStatus{{Context: "test", State: CommitStatusFailure, CreatedAt: updatedAt.Add(-3 * time.Minute), Head: "a0b1c2"}}}},
 			Steps: []RunStep{{Head: "b1c2d3", Before: "a0b1c2"}, {Settlement: &Settlement{Head: "b1c2d3", CheckRuns: []AttemptRun{{Name: "unit", ID: 91}}, Generation: 4,
 				Snapshot: "snapshot-4", Failing: []string{"unit"}, Cancelled: []string{"e2e"},
 				Statuses: []CommitStatus{{Context: "ci/license", State: CommitStatusError, CreatedAt: updatedAt.Add(-time.Minute)},
@@ -435,6 +450,11 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		must(t, err)
 		if !samePullRequest(*byBranch, pr) {
 			t.Fatalf("pull request by branch = %#v, want %#v", byBranch, pr)
+		}
+		byNumber, err := records.PullRequestByNumber(ctx, tx, pr.Repo, pr.Number)
+		must(t, err)
+		if !samePullRequest(*byNumber, pr) {
+			t.Fatalf("pull request by number = %#v, want %#v", byNumber, pr)
 		}
 		gotGate, err := records.GatesOf(ctx, tx, issue.Key)
 		must(t, err)
@@ -833,12 +853,13 @@ func TestAWriteThatEndsAHoldEndsItsReasonWhateverWritesIt(t *testing.T) {
 	})
 }
 
-// samePullRequest compares every field pullRequestColumns selects, and nothing else: a field the
-// store writes and reads that this passes over is a field TestStoreRoundTripsEveryRecord cannot
-// fail for, however the store treats it. The fields of record.PullRequest that no column of that
-// list holds - the attempt counts, the required sets and the head's own counted mark, which
-// PutPullRequest writes its own literals for - are left out for that same reason: the store
-// round-trips none of them.
+// samePullRequest compares every field pullRequestColumns selects, and what the pull request
+// remembers of its settled heads, its own and its head run's, which pull_request_settled_heads
+// holds, and nothing else: a field the store writes and reads that this passes over is a field
+// TestStoreRoundTripsEveryRecord cannot fail for, however the store treats it. The fields of
+// record.PullRequest that no column of that list holds - the attempt counts, the required sets
+// and the head's own counted mark, which PutPullRequest writes its own literals for - are left out
+// for that same reason: the store round-trips none of them.
 func samePullRequest(got, want PullRequest) bool {
 	return got.Issue == want.Issue && got.Repo == want.Repo && got.Number == want.Number &&
 		got.Branch == want.Branch && got.HeadSHA == want.HeadSHA && got.HeadUpdatedAt.Equal(want.HeadUpdatedAt) &&
@@ -855,7 +876,8 @@ func samePullRequest(got, want PullRequest) bool {
 		got.Mergeability == want.Mergeability && got.MergeState == want.MergeState &&
 		got.ConflictingHead == want.ConflictingHead &&
 		got.StateReadAt.Equal(want.StateReadAt) &&
-		reflect.DeepEqual(got.ConflictRead, want.ConflictRead) && reflect.DeepEqual(got.MergeForward, want.MergeForward)
+		reflect.DeepEqual(got.ConflictRead, want.ConflictRead) && reflect.DeepEqual(got.MergeForward, want.MergeForward) &&
+		reflect.DeepEqual(got.SettledHeads, want.SettledHeads)
 }
 
 // A production check is one record per closed issue, every field read back as written — the role
@@ -2350,6 +2372,11 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"slots":                  {"issue", "index", "admitted_at"},
 		"processed_events":       {"source", "event_id", "processed_at"},
 		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
+		"intake_failures": {"id", "project", "consumer", "subject", "stream_seq", "stored_at", "headers", "payload", "event_source", "event_id",
+			"first_failed_at", "updated_at", "deliveries", "ended_delivery", "last_error", "given_up_at", "give_up_reason", "notice_id",
+			"replay_claimed_at", "closed_at", "closed_how", "closed_by", "discarded_at", "discarded_by", "discard_reason"},
+		"cleared_pull_requests":      {"repo", "number", "issue", "head_updated_at", "cleared_at"},
+		"pull_request_settled_heads": {"issue", "kind", "position", "head", "fence"},
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		for table, expected := range want {

@@ -228,6 +228,15 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // Only the worker of the pod's open phase is woken: the settlement is that worker's business and
 // no one else's, and an architect reads it from its own notices. A head that settles again as each
 // of its checks finishes wakes the pod no second time, because the role's resume is still open.
+//
+// Asking the apply step also keeps a settlement delivered late, or replayed from a message the
+// intake gave up on, however late, from waking anyone where the record will not take it for the
+// pull request's head now (dispatch://INFRA-1575 R1): one of a head the pull request has left, or
+// one of its head older than what the record already took. The apply step weighs it against the
+// fence the record would apply it to (classify.SettlementFor), which is the one the record
+// remembers for the head when its fence was reset, so it is stale exactly where it is with the
+// fence standing, and the woken worker's task would otherwise name a verdict that is no longer
+// the head's.
 func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) (claim.Role, error) {
 	if e.cfg.Pods == nil || fact.HeadSHA == "" {
 		return "", nil

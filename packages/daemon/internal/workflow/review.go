@@ -598,7 +598,8 @@ func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 // two costs: a GitHub clock more than answerSkew ahead makes a review submitted before the
 // completion read as the reviewer's answer, and tell again; an answer submitted within answerSkew
 // of the completion reads as delivered late, and tells only when the round's stuck cause or head
-// changes (stuckAs).
+// changes (stuckAs). The same two clocks meet where a review is placed against the raise of the
+// reviewer's entry (earlierRound), which takes a review submitted within answerSkew of it.
 const answerSkew = 10 * time.Second
 
 // byReviewer says whether review is the reviewer's own review-App session, not merely a review the
@@ -794,7 +795,8 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// a review the review App submitted: no other author's review ever reaches the compare.
 	var reviewerClaim claim.Token
 	var reviewerSession string
-	if e.byReviewApp(fact.Author) {
+	byApp := e.byReviewApp(fact.Author)
+	if byApp {
 		reviewerClaim, reviewerSession, err = e.reviewersClaim(ctx, tx, *issue)
 		if err != nil {
 			return intake.Result{}, err
@@ -812,6 +814,16 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// delivered before it, or an outsider's review, cannot make the decision look old.
 	state := strings.ToLower(fact.State)
 	decides := fact.Decides()
+	// A deciding review of an earlier round than the one the reviewer's row stands at decides
+	// nothing, and nothing of it is written: no refusal, no order (earlierRound).
+	if decides {
+		if why := earlierRound(fact, reviewer, byApp); why != "" {
+			e.logOnCommit(ctx, "workflow: a review of an earlier round decides nothing: "+why, "issue", issue.Key, "pull_request", pr.Number,
+				"author", fact.Author, "state", state, "submitted_at", fact.SubmittedAt, "footer_entry", fact.LegionEntry(),
+				"entry", reviewer.Entry, "entry_raised_at", reviewer.EntryRaisedAt)
+			return intake.Result{}, nil
+		}
+	}
 	// refused is why a review the round's rules otherwise count was refused the round at the head
 	// the record holds now (RefusedAtThisHead). It is kept on the reviewer's row below, since nothing
 	// else would say why the round has no decision. A refusal that stands at every head
@@ -924,11 +936,13 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 // review of an earlier entry - submitted before a re-admission and applied after it, however
 // late, or before a carried hand-over's promotion and applied after it - names a number the row
 // has left and moves nothing, and the first review of a new generation reads the whole change. No
-// time is compared: a review's submission time is GitHub's clock and an entry's is the daemon's,
-// and nothing orders the two. A row that the entry upgrade filled (20261111225552_phase_entry) can
-// hold no task, and a review of that round moves nothing. Where the commit stays, the cost is a
-// next round that reads more: from an older commit, or the whole change. Who decides the round is
-// not changed by any of this.
+// time is compared here: a review's submission time is GitHub's clock and an entry's is the
+// daemon's, so the entry the footer names is what says whether the review read the round that
+// stands. A row that the entry upgrade filled (20261111225552_phase_entry) can hold no task, and a
+// review of that round moves nothing. Where the commit stays, the cost is a next round that reads
+// more: from an older commit, or the whole change. Who decides the round is not changed by any of
+// this; a review of an earlier round decides nothing by a rule of its own (earlierRound), which
+// compares those two clocks within answerSkew, and which review applies before this.
 func reviewedCommitStays(review intake.PullRequestReview, reviewer record.PhaseRow) string {
 	switch named := review.LegionEntry(); {
 	case reviewer.EntryTask == "":
@@ -937,6 +951,38 @@ func reviewedCommitStays(review intake.PullRequestReview, reviewer record.PhaseR
 		return "its footer names no entry"
 	case named != reviewer.Entry:
 		return fmt.Sprintf("its footer names entry %d and the reviewer's row stands at entry %d", named, reviewer.Entry)
+	}
+	return ""
+}
+
+// earlierRound is why review, a deciding review, is of an earlier round than the one reviewer's
+// row stands at, and "" when it is not: it was submitted more than answerSkew before the row's
+// entry was raised (record.PhaseRow.EntryRaisedAt) - by a person, on that time alone; by the review
+// App (byApp), only when its footer also names an entry, and not the row's (LegionEntry). Such a
+// review reaches the daemon after the round it decided ended - delivered late, or replayed from a
+// message the intake gave up on, however late - and taking it would decide, or record a refusal
+// in, a round nobody reviewed it for. review drops it before it writes anything.
+//
+// The times are GitHub's clock (the submission) and the daemon's (the raise), which answerSkew
+// already bounds for the reviewer's answer to its completion (reviewersAnswer), so a review
+// submitted within answerSkew of the raise is taken. A review with no submission time, and a row
+// with no raise time, are never of an earlier round by this rule. A review-App review whose footer
+// names no entry, or names the row's, decides as before whatever its time; and one that names an
+// earlier entry but was submitted after the raise decides too: that is the reviewer's review of
+// the round that stands after a carried hand-over's promotion raised the entry in the middle of
+// it. A late review of an earlier round whose GitHub time runs ahead of the daemon's clock is
+// taken by the same rule, and decides only when its footer names the pull request's current head
+// (refusesRound).
+func earlierRound(review intake.PullRequestReview, reviewer record.PhaseRow, byApp bool) string {
+	if review.SubmittedAt.IsZero() || reviewer.EntryRaisedAt.IsZero() || !review.SubmittedAt.Before(reviewer.EntryRaisedAt.Add(-answerSkew)) {
+		return ""
+	}
+	if !byApp {
+		return fmt.Sprintf("it was submitted at %s, before entry %d was raised at %s", review.SubmittedAt, reviewer.Entry, reviewer.EntryRaisedAt)
+	}
+	if named := review.LegionEntry(); named != 0 && named != reviewer.Entry {
+		return fmt.Sprintf("its footer names entry %d and it was submitted at %s, before entry %d was raised at %s",
+			named, review.SubmittedAt, reviewer.Entry, reviewer.EntryRaisedAt)
 	}
 	return ""
 }
@@ -1340,6 +1386,9 @@ func told(row record.PhaseRow, r round) bool {
 // walks the open pull requests recorded on the base once, and asks for each read inside that
 // walk (basePush), since the record it overwrites as it goes is what tells a redelivered push
 // from a first delivery.
+//
+// It reads the pull request's row alone (pullRequestRow, pullRequestRowByBranch): it writes
+// nothing of the record and reads none of what it remembers of its settled heads.
 func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact) error {
 	if e.cfg.ReadMergeState == nil {
 		return nil
@@ -1349,21 +1398,21 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	kind := classify.MergeStateFactOther
 	switch fact := fact.(type) {
 	case intake.PullRequestOpened:
-		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
+		pr, err = e.pullRequestRowByBranch(ctx, tx, fact.Repo, fact.Branch)
 		kind = classify.MergeStateFactHeadMove
 	case intake.PullRequestSynchronized:
-		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
+		pr, err = e.pullRequestRowByBranch(ctx, tx, fact.Repo, fact.Branch)
 		kind = classify.MergeStateFactHeadMove
 	case intake.Push:
 		// The push moves no head of the record: its synchronize, from GitHub or from the per-issue
 		// read (daemon's followHead), is the fact that moves the head, and the one a head move is
 		// read for. So the push asks only as a review or a settlement does, for a round it leaves
 		// waiting on GitHub, and one push to a branch asks for no ladder beside its synchronize's.
-		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
+		pr, err = e.pullRequestRowByBranch(ctx, tx, fact.Repo, fact.Branch)
 	case intake.PullRequestChecks:
-		pr, err = e.pullRequest(ctx, tx, fact.Repo, fact.Number)
+		pr, err = e.pullRequestRow(ctx, tx, fact.Repo, fact.Number)
 	case intake.PullRequestReview:
-		pr, err = e.pullRequest(ctx, tx, fact.Repo, fact.Number)
+		pr, err = e.pullRequestRow(ctx, tx, fact.Repo, fact.Number)
 	case intake.BasePush:
 		// Asked for inside the walk that records the push, which is the last reader of what
 		// tells a redelivery from a first delivery (basePush).

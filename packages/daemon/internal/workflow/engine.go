@@ -603,6 +603,12 @@ func (e *Engine) keepStatus(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // transaction, not before the outbox PATCH: otherwise the reopen and this event could both act on
 // the child. Keep the child in its live tree, reassert its workflow status, and fence admission
 // from seeing this todo by recording the event sequence.
+//
+// It runs before dispatchIssue's sequence fence, so the todo can reach it after a newer event of
+// the child was applied: delivered late, or replayed from a message the intake gave up on, however
+// late. Such a todo is still consumed, its fence row deleted and the status reasserted, but it
+// records nothing on the child: the newer event's title, sequence and Dispatch status stand, and
+// the sequence they hold already fences admission from it.
 func (e *Engine) rejectStaleHandover(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
 	if !fact.DaemonActor || !fact.HandedOver || fact.Status != "todo" {
 		return false, nil
@@ -621,8 +627,10 @@ func (e *Engine) rejectStaleHandover(ctx context.Context, tx pgx.Tx, issue recor
 	if err := e.store.DeleteHandover(ctx, tx, issue.Key); err != nil {
 		return false, err
 	}
-	if err := e.keepStatus(ctx, tx, issue, fact); err != nil {
-		return false, err
+	if fact.Seq == 0 || fact.Seq > issue.LastDispatchSeq {
+		if err := e.keepStatus(ctx, tx, issue, fact); err != nil {
+			return false, err
+		}
 	}
 	if issue.Status != fact.Status {
 		if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status)); err != nil {
@@ -888,7 +896,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if err != nil {
 		return intake.Result{}, err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, fact.Issue)
+	pr, err := e.store.PullRequestRow(ctx, tx, fact.Issue)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -1911,7 +1919,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// below: the hold is gone either way, and the reason is the one the restarted role's task
 	// carries.
 	e.logOnCommit(ctx, "workflow: a held phase is released", "issue", issue.Key, "phase", from, "reason", reason)
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return "", err
 	}
@@ -2000,7 +2008,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil {
 		return intake.Result{}, err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2046,7 +2054,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2372,7 +2380,7 @@ func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch str
 
 // pullRequest is the recorded pull request number of repo, when its issue is recorded on repo.
 // The read is made under the name the fact carries and then, when it finds nothing, under the
-// other name of the pair that names it (ghrepo.Under): a record keeps the repository it was
+// other name of the pair that names it (pullRequestUnder): a record keeps the repository it was
 // written under until the daemon's one-time rename pass writes the pair's `to` over it, so a pull
 // request already open when its repository was transferred is recorded under the name it moved
 // from while every event after names the one it moved to. A deployment that configures no rename
@@ -2380,22 +2388,42 @@ func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch str
 // first finds nothing, which is the common case — an event of a pull request this daemon does not
 // record at all.
 func (e *Engine) pullRequest(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.PullRequest, error) {
-	pr, err := ghrepo.Under(e.cfg.RepositoryRenames, repo, func(name string) (*record.PullRequest, error) {
+	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
 		return e.store.PullRequestByNumber(ctx, tx, name, number)
 	})
-	if err != nil || pr == nil {
-		return nil, err
-	}
-	return e.ownPullRequest(ctx, tx, pr, repo)
 }
 
 // pullRequestByBranch is the recorded pull request of repo on branch, when its issue is recorded
 // on repo. It reads under the same names as pullRequest, in the same order and for the same
 // reason.
 func (e *Engine) pullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.PullRequest, error) {
-	pr, err := ghrepo.Under(e.cfg.RepositoryRenames, repo, func(name string) (*record.PullRequest, error) {
+	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
 		return e.store.PullRequestByBranch(ctx, tx, name, branch)
 	})
+}
+
+// pullRequestRow and pullRequestRowByBranch are what pullRequest and pullRequestByBranch answer,
+// read under the same names and owned by the same rule, as the pull request's row alone
+// (record.Store.PullRequestRowByNumber, PullRequestRowByBranch): with none of what it remembers of
+// its settled heads, for a fact's handling that never writes the record back and reads neither
+// its SettledHeads nor its head run's Settled.
+func (e *Engine) pullRequestRow(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.PullRequest, error) {
+	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
+		return e.store.PullRequestRowByNumber(ctx, tx, name, number)
+	})
+}
+
+func (e *Engine) pullRequestRowByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.PullRequest, error) {
+	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
+		return e.store.PullRequestRowByBranch(ctx, tx, name, branch)
+	})
+}
+
+// pullRequestUnder is the pull request read finds under repo and then, when it finds nothing,
+// under the other name of the pair that names repo (ghrepo.Under), when its issue is recorded on
+// repo (ownPullRequest).
+func (e *Engine) pullRequestUnder(ctx context.Context, tx pgx.Tx, repo string, read func(name string) (*record.PullRequest, error)) (*record.PullRequest, error) {
+	pr, err := ghrepo.Under(e.cfg.RepositoryRenames, repo, read)
 	if err != nil || pr == nil {
 		return nil, err
 	}

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -381,6 +382,13 @@ func TestAnOlderCheckRunSetChangesItsNewerStatusesAlone(t *testing.T) {
 			applyRefusingNothing(t, pool, mergingEngineAt(base.Add(time.Minute)), older)
 			want := settled
 			want.Statuses = []record.CommitStatus{keptStatus("ci", "failure", 2, "head")}
+			// The head's remembered fence takes the same change (record.PullRequest.SettledHeads).
+			want.SettledHeads = slices.Clone(settled.SettledHeads)
+			for i := range want.SettledHeads {
+				if want.SettledHeads[i].Head == "head" {
+					want.SettledHeads[i].Statuses = want.Statuses
+				}
+			}
 			if got := recordedPR(t, pool, "LEGION-208"); !reflect.DeepEqual(got, want) {
 				t.Fatalf("after the older settlement the pull request is\n  %+v\nwant the newer settlement's record with ci's failure its one change:\n  %+v", got, want)
 			}
