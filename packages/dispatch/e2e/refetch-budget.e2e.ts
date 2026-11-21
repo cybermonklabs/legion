@@ -246,13 +246,15 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
     await page.clock.install();
     await page.goto(`/issues/${source.key}/conversation`);
     const turns = page.getByRole("list", { name: "Conversation turns" });
-    // INFRA-869's R4: "A `dispatch://` reference reads as its target's title ... an issue as
-    // its key and title", so each of the 50 links reads `CORE-<n> Budget reference <nn>` where
-    // it read the title alone before.
-    await expect(turns.getByRole("link", { name: /^CORE-\d+ Budget reference \d\d$/ })).toHaveCount(
-      50,
-      { timeout: 60_000 }
-    );
+    // INFRA-4009's R1 and R3: each of the 50 links draws its status mark and its key, with no
+    // title, and is named by its key, its status's words and its title, `CORE-<n>, Triage,
+    // Budget reference <nn>`. A body of two or more references draws no card, so no title is
+    // drawn anywhere in the turns.
+    await expect(
+      turns.getByRole("link", { name: /^CORE-\d+, Triage, Budget reference \d\d$/ })
+    ).toHaveCount(50, { timeout: 60_000 });
+    await expect(turns.locator('a[data-dispatch-ref] svg[data-status-glyph="○"]')).toHaveCount(50);
+    await expect(turns).not.toContainText("Budget reference");
     for (const session of ended) {
       await expect(
         turns.getByRole("link", { exact: true, name: `dispatch://agent/${session}` })
@@ -291,11 +293,12 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
     expect(window.length, `GETs in the window, by path:\n${byPath(window)}`).toBeLessThanOrEqual(5);
     expect(untouched, "reads of an issue no write touched").toEqual([]);
 
-    // A change the page shows still lands: a referenced issue's new title in its reference ...
+    // A change the page shows still lands: a referenced issue's new title in its reference's
+    // name ...
     const renamed = `${targets[0]?.title ?? ""} renamed`;
     await patchIssue(targets[0]?.key ?? "", { title: renamed }, bob);
     await expect(
-      turns.getByRole("link", { exact: true, name: `${targets[0]?.key ?? ""} ${renamed}` })
+      turns.getByRole("link", { exact: true, name: `${targets[0]?.key ?? ""}, Triage, ${renamed}` })
     ).toBeVisible({ timeout: 2_000 });
 
     // ... and a child's new status in the open parent's Children tab, which reads the parent's
@@ -308,6 +311,174 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
     await expect(childRow).toContainText("Todo");
     await patchIssue(child.key, { status: "in_progress" }, bob);
     await expect(childRow).toContainText("In progress", { timeout: 2_000 });
+  } finally {
+    await alice.close();
+  }
+});
+
+/** The page the two rows below read: the Conversation of an issue whose one message, bob's,
+ *  cites 50 issues of CORE by their bare addresses after a line of words, so it draws no card
+ *  before INFRA-4009 or since, and what it reads is what its references read. */
+async function seedCitations() {
+  await createProject({ key: "CORE", name: "Core" });
+  const pad = (index: number) => String(index + 1).padStart(2, "0");
+  const targets = await createIssues(50, (index) => ({
+    project: "CORE",
+    title: `Cited issue ${pad(index)}`,
+  }));
+  const source = await createIssue({ project: "CORE", title: "Citing source" });
+  const addresses = targets.map((target) => `dispatch://${target.key}`);
+  await createMessage(
+    source.key,
+    { body: ["The issues this one waits on:", ...addresses].join("\n") },
+    bob
+  );
+  return { source, targets };
+}
+
+/** The reads of each of `issues`' summaries among `gets`, sorted. */
+function summaryReads(gets: readonly string[], issues: readonly { key: string }[]): string[] {
+  const paths = new Set(issues.map(({ key }) => `/api/v1/issues/${key}/summary`));
+  return gets.filter((get) => paths.has(get)).sort();
+}
+
+/** GETs under `/api/` the first load of the citing page sends: 70 on chromium at the commit
+ *  before INFRA-4009 (32a7e64521e7) and 70 at INFRA-4009's head, one run each - the 50 summaries
+ *  and the 20 reads the page and its shell send whatever the message cites. */
+const FIRST_LOAD_GETS = 70;
+
+// INFRA-4009's R8: the status mark adds no read to a page's first load, since each cited issue's
+// mark comes with the summary its name is read from. The row passes unchanged at the commit
+// before the change, so its count is that commit's as well.
+// SLOW(>=2s): seeding 51 issues, then a page drawing 50 references that each read their target,
+// waited out to half a second of quiet traffic.
+test("first load: a page citing 50 issues sends as many reads as it did before the status mark, one summary of each issue", async ({
+  browser,
+}, testInfo) => {
+  test.setTimeout(120_000);
+  const { source, targets } = await seedCitations();
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const traffic = watchTraffic(page);
+    await page.goto(`/issues/${source.key}/conversation`);
+    const turns = page.getByRole("list", { name: "Conversation turns" });
+    // Each reference is named by its issue's title once its summary is read, at either commit:
+    // after its key in its words before the mark, and in its accessible name, after its key and
+    // its status's words, since.
+    await expect(
+      turns.getByRole("link", { name: /^CORE-\d+(, Triage,)? Cited issue \d\d$/ })
+    ).toHaveCount(50, { timeout: 60_000 });
+    await settled(traffic);
+    const firstLoad = [...traffic.gets];
+    await writeFile(testInfo.outputPath("first-load-gets.txt"), `${firstLoad.join("\n")}\n`);
+    console.log(
+      `REFETCH-BUDGET [${testInfo.project.name}] GETs under /api/ at the first load: ${firstLoad.length}`
+    );
+    expect(summaryReads(firstLoad, targets), "summary reads of the cited issues").toEqual(
+      targets.map(({ key }) => `/api/v1/issues/${key}/summary`).sort()
+    );
+    expect(firstLoad.length, `GETs at the first load, by path:\n${byPath(firstLoad)}`).toBe(
+      FIRST_LOAD_GETS
+    );
+  } finally {
+    await alice.close();
+  }
+});
+
+// INFRA-4009's R8: a status change of a cited issue costs no more reads than a title change of
+// it, since the summary that names a cited issue is read again on either. A status write also
+// refreshes what counts work by its status whatever the page cites - the rail's priority counts
+// (`["priorities"]`, `web/src/api/event-refresh.ts`) - so the title change it is held to is
+// measured beside the same status write to an issue the page does not cite. Its negative
+// control: an issue the page comes to cite after its first load has its summary read once.
+// SLOW(>=2s): seeding 52 issues, an event barrier, and seven writes in five windows, each drained
+// to half a second of quiet traffic.
+test("status writes: moving and closing a cited issue each send no more reads than renaming it, and a newly cited issue's summary is read once", async ({
+  browser,
+}, testInfo) => {
+  test.setTimeout(120_000);
+  const { source, targets } = await seedCitations();
+  const cited = targets[0];
+  if (cited === undefined) throw new Error("setup: no cited issue");
+  const uncited = await createIssue({ project: "CORE", title: "Uncited issue" });
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const traffic = watchTraffic(page);
+    // The scheduler's trailing window is fired on this clock rather than waited out.
+    await page.clock.install();
+    await page.goto(`/issues/${source.key}/conversation`);
+    const turns = page.getByRole("list", { name: "Conversation turns" });
+    await expect(
+      turns.getByRole("link", { name: /^CORE-\d+, Triage, Cited issue \d\d$/ })
+    ).toHaveCount(50, { timeout: 60_000 });
+    await eventBarrier(page, traffic, source.key, source.title);
+    await settled(traffic);
+    const named = (words: string, title: string) =>
+      turns.getByRole("link", { exact: true, name: `${cited.key}, ${words}, ${title}` });
+    /** The GETs `write` sends, from its first write until the window it leaves is drained.
+     *  `write` waits for what it changes to show, which only its last event can bring. */
+    const windowOf = async (write: () => Promise<void>): Promise<string[]> => {
+      traffic.reset();
+      await write();
+      await drainRefreshWindow(page, traffic);
+      return [...traffic.gets];
+    };
+    const issueReads = (gets: readonly string[]) =>
+      gets.filter((get) => get.startsWith("/api/v1/issues/"));
+
+    const renaming = await windowOf(async () => {
+      await patchIssue(cited.key, { title: `${cited.title} renamed` }, bob);
+      await expect(named("Triage", `${cited.title} renamed`)).toHaveCount(1);
+    });
+    console.log(
+      `REFETCH-BUDGET [${testInfo.project.name}] GETs under /api/ after a rename: ${renaming.length}`
+    );
+
+    for (const { before, glyph, status, words } of [
+      { before: "Triage", glyph: "◐", status: "in_progress", words: "In progress" },
+      { before: "In progress", glyph: "✓", status: "done", words: "Done" },
+    ] as const) {
+      const title = `${cited.title} renamed before ${status}`;
+      // The same status write to the uncited issue, then a rename of the cited one, which shows
+      // only once the event before it was handled too.
+      const owed = await windowOf(async () => {
+        await patchIssue(uncited.key, { status }, bob);
+        await patchIssue(cited.key, { title }, bob);
+        await expect(named(before, title)).toHaveCount(1);
+      });
+      const moving = await windowOf(async () => {
+        await patchIssue(cited.key, { status }, bob);
+        const reference = named(words, title);
+        await expect(reference).toHaveCount(1);
+        await expect(reference.locator("svg[data-status-glyph]")).toHaveAttribute(
+          "data-status-glyph",
+          glyph
+        );
+      });
+      console.log(
+        `REFETCH-BUDGET [${testInfo.project.name}] GETs under /api/ after the move to ${status}: ${moving.length}; after a rename beside the uncited issue's move: ${owed.length}`
+      );
+      expect(
+        moving.length,
+        `GETs after the move to ${status}, by path:\n${byPath(moving)}\nafter a rename beside the uncited issue's move:\n${byPath(owed)}`
+      ).toBeLessThanOrEqual(owed.length);
+      // Of an issue, the move reads what the rename read: the cited issue's summary.
+      expect(issueReads(moving), `issue reads after the move to ${status}`).toEqual(
+        issueReads(renaming)
+      );
+    }
+
+    const fresh = await createIssue({ project: "CORE", title: "Newly cited issue" });
+    await createMessage(source.key, { body: `Next, dispatch://${fresh.key} goes out.` }, bob);
+    await expect(
+      turns.getByRole("link", { exact: true, name: `${fresh.key}, Triage, ${fresh.title}` })
+    ).toHaveCount(1);
+    await drainRefreshWindow(page, traffic);
+    expect(summaryReads(traffic.gets, [fresh]), "summary reads of the newly cited issue").toEqual([
+      `/api/v1/issues/${fresh.key}/summary`,
+    ]);
   } finally {
     await alice.close();
   }

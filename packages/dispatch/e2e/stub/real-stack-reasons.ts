@@ -286,6 +286,8 @@ export const realStackReasons: Record<string, string> = {
     "a bare address reads as its target's current name, which is the server's own resolution of the reference, re-read after the write that names it",
   "reference-picker.e2e.ts":
     "the picker's rows come from the server's search and its registry read, and the row that reaches another project's node is that search answering across projects",
+  "reference-status.e2e.ts":
+    "a reference's mark is the status the server's issue summary and batched names read answer, and a status or title written after load must reach the open comment, the live editor and the new issue page's rows through the server's event feed",
   "reference-titles.e2e.ts": "asserts drawn titles inside the live editor",
   "references.e2e.ts": "the backlink index the server rebuilds after each write",
   "refetch-budget.e2e.ts": "writes after load, counted reads and the server's event feed",
