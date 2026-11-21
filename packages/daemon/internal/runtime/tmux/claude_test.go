@@ -156,23 +156,17 @@ func TestWriteClaudeMCPConfigReplacesAFifoOrALinkAtItsPath(t *testing.T) {
 			select {
 			case got = <-answered:
 			case <-time.After(time.Second):
-				// The write waits in an open of the fifo for a reader. An open of it for reading
-				// and writing waits on nothing and is that reader, so the goroutine ends before
-				// the test does. It is opened again until the write answers, since the write may
-				// not yet have reached its open when the first is closed.
-				released := time.After(10 * time.Second)
-				for {
-					if fifo, err := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0); err == nil {
-						_ = fifo.Close()
-					}
-					select {
-					case late := <-answered:
-						t.Fatalf("writeClaudeMCPConfig over %s waited more than a second, and answered %v only once the open it waited in was released", path, late.err)
-					case <-released:
-						t.Fatalf("writeClaudeMCPConfig over %s has not answered in 11 seconds", path)
-					case <-time.After(10 * time.Millisecond):
-					}
-				}
+				// A second is long for a write and a rename, but a loaded machine can take longer
+				// without the write ever touching the fifo, so a late answer alone says nothing. A
+				// write that waits in an open of the fifo waits for a reader: an end opened here for
+				// reading releases it, and what it writes then comes through that end, while a
+				// write by rename puts nothing in the fifo. The end stays open until the write
+				// answers, so a writer's bytes are still in the fifo when it is read; the end opened
+				// is read only while it is the fifo, never the regular file a rename put at the
+				// path.
+				got = readFifoUntilAnswered(t, path, answered, func(through []byte) {
+					t.Fatalf("writeClaudeMCPConfig over %s wrote %q into the fifo, after waiting in its open for a reader", path, through)
+				})
 			}
 			if got.err != nil || got.path != path {
 				t.Fatalf("writeClaudeMCPConfig over %s = %s, %v, want it replaced", path, got.path, got.err)
@@ -195,6 +189,53 @@ func TestWriteClaudeMCPConfigReplacesAFifoOrALinkAtItsPath(t *testing.T) {
 				t.Fatalf("%s holds %q (%v) after writeClaudeMCPConfig, want %q", path, body, err, want)
 			}
 		})
+	}
+}
+
+// readFifoUntilAnswered holds the fifo at path open for reading until answered gives the answer it
+// returns, reading what any writer puts in it, and calls wrote with those bytes when there are
+// any. It gives up after 10 seconds. A path that is no longer a fifo is not read.
+func readFifoUntilAnswered[A any](t *testing.T, path string, answered <-chan A, wrote func(through []byte)) A {
+	t.Helper()
+	var end *os.File
+	if opened, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0); err == nil {
+		if info, err := opened.Stat(); err == nil && info.Mode()&os.ModeNamedPipe != 0 {
+			end = opened
+		} else {
+			_ = opened.Close()
+		}
+	}
+	var through []byte
+	read := func() {
+		if end == nil {
+			return
+		}
+		buf := make([]byte, 4096)
+		for {
+			n, err := end.Read(buf)
+			through = append(through, buf[:n]...)
+			if n == 0 || err != nil {
+				return
+			}
+		}
+	}
+	give := time.After(10 * time.Second)
+	for {
+		read()
+		select {
+		case got := <-answered:
+			read()
+			if end != nil {
+				_ = end.Close()
+			}
+			if len(through) > 0 {
+				wrote(through)
+			}
+			return got
+		case <-give:
+			t.Fatalf("no answer for %s in 11 seconds", path)
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 
