@@ -27,12 +27,13 @@
 #                                and the change that refuses a restricted member an issue's
 #                                repository.
 #   OUTSIDE_TAILNET_BROKER_URL   the broker's origin on the private network.
-#   OUTSIDE_TAILNET_DISPATCH_URL  Dispatch's origin on the private network, where T5 reads the
-#                                project's access list with this box's own credential, and the
-#                                full member's browser session reads the positive controls.
+#   OUTSIDE_TAILNET_DISPATCH_URL  Dispatch's origin on the private network, where the full member's
+#                                browser session reads T5's access list and the positive controls.
 #   OUTSIDE_LISTENER_URL         the edge listener, where the peer session registers.
 #   OUTSIDE_INTERNAL_LISTENER_URL  a listener on the private network, where a session outside the
 #                                project (<peer>-foreign) registers for P6's control.
+#   OUTSIDE_FOREIGN_PROJECT      a project of this box's person other than the scratch project,
+#                                which <peer>-foreign's token names alone (INFRA in production).
 #   OUTSIDE_PERSON               the test person's address.
 #   OUTSIDE_CANARY               the name of the canary secret T2 and T3 ask for.
 #   OUTSIDE_REPOSITORY           owner/name of the repository the scratch project's issue names.
@@ -58,8 +59,8 @@
 #                                and writes outside-agent-public.tsv and
 #                                outside-edge-revocations.tsv there.
 # Optional: OUTSIDE_PEER, P4's peer: `omp` (the default), an Oh My Pi session of this box whose
-# model answers, run with the box's own model profile and only the envoy plugin
-# OUTSIDE_PEER_PLUGIN_DIR names (default this checkout's packages/pi-envoy, built); or `probe`, a
+# model answers, run with the box's own model profile and only the envoy extension (dist/envoy.js)
+# of the plugin OUTSIDE_PEER_PLUGIN_DIR names (default this checkout's packages/pi-envoy, built); or `probe`, a
 # scripted peer for a local stack, only with OUTSIDE_ALLOW_HTTP=1, named OUTSIDE_PEER_SESSION
 # (default outside-e2e-peer-<random>). OUTSIDE_OWNER_REMOVE_COMMAND, a command line that removes
 # the test person from the project's access list as its owner, run with the person and the
@@ -478,6 +479,8 @@ start_login() {
     login_problem="the scratch helper made no socket within 30 s: $(text_of "$1/helper.log")"
     return
   fi
+  # The log exists before the login starts, so the read below never meets a missing file.
+  : >"$1/login.log"
   (
     env -i "${helper_vars[@]}" agent-secrets machine login >"$1/login.log" 2>&1 </dev/null
     echo "$?" >"$1/login.exit"
@@ -517,9 +520,11 @@ $(compgen -e)
 EOF
 probe_env+=("PATH=$tools:$PATH")
 # The peer of P4 is an Oh My Pi session of this box, OUTSIDE_PEER=omp (the default): the box's own
-# model profile, with only the envoy plugin OUTSIDE_PEER_PLUGIN_DIR names (default this checkout's
-# packages/pi-envoy, built) and no other extension, skill, rule or context file, its sessions kept
-# in the scratch directory. It registers at the edge listener with this box's identity and a token
+# model profile, with only the envoy extension of the plugin OUTSIDE_PEER_PLUGIN_DIR names (default
+# this checkout's packages/pi-envoy, built), loaded by its path (-e dist/envoy.js), since
+# --no-extensions also stops a --plugin-dir plugin from loading; no other extension, skill, rule or
+# context file, its sessions kept in the scratch directory. It registers at the edge listener with
+# this box's identity and a token
 # naming the project, and its model answers the public leg's messages. OUTSIDE_PEER=probe is
 # outside-agent-probe.ts's scripted peer instead, for a local stack with no model, and only with
 # OUTSIDE_ALLOW_HTTP=1. Either way `peer_seen` gets one line per ping and reply the peer was shown:
@@ -534,8 +539,8 @@ case $peer_kind in
   omp)
     plugin_dir=${OUTSIDE_PEER_PLUGIN_DIR:-$here/../../../pi-envoy}
     [ -n "$peer_problem" ] || peer_problem=$(tool_problem omp tmux)
-    [ -n "$peer_problem" ] || [ -d "$plugin_dir/dist" ] ||
-      peer_problem="OUTSIDE_PEER_PLUGIN_DIR names $plugin_dir, which holds no built plugin (dist/)"
+    [ -n "$peer_problem" ] || [ -f "$plugin_dir/dist/envoy.js" ] ||
+      peer_problem="OUTSIDE_PEER_PLUGIN_DIR names $plugin_dir, which holds no built envoy extension (dist/envoy.js)"
     ;;
   # The scripted peer is P4's control: it answers with no model in the loop, so a model peer's
   # failure where it passes is the model's. Its own PASS proves no model turn, so the gate reads it
@@ -566,6 +571,9 @@ watch_peer() {
         stamped=${rest#"$n at "}
         [ "$stamped" != "$rest" ] || continue
         stamped=${stamped%%[!0-9]*}
+        # A stamp is Unix ms (13 digits); the model peer may write ns (date +%s%N), whose first 13
+        # digits are the same ms.
+        [ "${#stamped}" -le 13 ] || stamped=${stamped:0:13}
         [ -n "$stamped" ] || continue
         case $(cat "$peer_seen") in *"$word $n "*) ;; *)
           printf '%s %s %s %s000\n' "$word" "$n" "$stamped" "$(now)" >>"$peer_seen"
@@ -586,7 +594,7 @@ if [ -z "$peer_problem" ] && [ "$peer_kind" = omp ]; then
     PATH="$tools:$PATH" OMP_SKIP_SETUP=1 \
     ENVOY_URL="$OUTSIDE_LISTENER_URL" ENVOY_INBOUND=listener AGENT_SECRETS_PROJECTS="$project" \
     tmux -S "$peer_tmux" new-session -d -s outside-e2e-peer -x 220 -y 50 -c "$peer_dir" \
-    omp --no-extensions --plugin-dir "$plugin_dir" --no-skills --no-rules --no-context-files \
+    omp --no-extensions -e "$plugin_dir/dist/envoy.js" --no-skills --no-rules --no-context-files \
     --session-dir "$work/peer-sessions" </dev/null
   ready=''
   deadline=$(($(now) + 60))
@@ -633,14 +641,26 @@ if [ -z "$peer_problem" ]; then
   watch_peer &
   background="$background $!"
 fi
-# The session outside the project, `<peer>-foreign`, which P6 must not find on the edge's list.
-foreign_problem=$(lacking OUTSIDE_INTERNAL_LISTENER_URL)
+# The session outside the project, `<peer>-foreign`, which P6 must not find on the edge's list. Its
+# token names OUTSIDE_FOREIGN_PROJECT alone, a project of this box's person other than the edge's:
+# a token naming none carries every project of the person, the edge's among them. That holds only
+# where this box's clients trade as its person (a sign-in or a device login); a machine trading for
+# itself names the projects its entry decides. So the probe also presents that token to the edge,
+# whose admission (E1) is a check apart from the session list P6 reads: an edge that admits it
+# holds that session in the project, and then P6's absence cannot be asked (foreign_in_project).
+foreign_in_project=''
+foreign_problem=$(lacking OUTSIDE_INTERNAL_LISTENER_URL OUTSIDE_FOREIGN_PROJECT OUTSIDE_LISTENER_URL)
+[ -n "$foreign_problem" ] || [ "${OUTSIDE_FOREIGN_PROJECT:-}" != "$project" ] ||
+  foreign_problem="OUTSIDE_FOREIGN_PROJECT names $project, the edge's own project"
 [ -n "$foreign_problem" ] || foreign_problem=$(tool_problem bun)
 [ -n "$foreign_problem" ] || [ -n "$peer" ] || foreign_problem="no peer session id, which it is named after"
 if [ -z "$foreign_problem" ]; then
+  # The log exists before the probe starts, so the read below never meets a missing file.
+  : >"$work/foreign.log"
   env -i "${probe_env[@]}" OUTSIDE_PROBE_SESSION="$peer" \
     OUTSIDE_LISTENER_URL="http://127.0.0.1:1" OUTSIDE_DISPATCH_URL="http://127.0.0.1:1" \
     OUTSIDE_FOREIGN_LISTENER_URL="$OUTSIDE_INTERNAL_LISTENER_URL" \
+    OUTSIDE_FOREIGN_EDGE_URL="$OUTSIDE_LISTENER_URL" OUTSIDE_FOREIGN_PROJECT="$OUTSIDE_FOREIGN_PROJECT" \
     bun "$here/outside-agent-probe.ts" foreign >"$work/foreign.log" 2>&1 </dev/null &
   background="$background $!"
   deadline=$(($(now) + 60))
@@ -649,8 +669,12 @@ if [ -z "$foreign_problem" ]; then
     sleep 1
   done
   case $(cat "$work/foreign.log") in
-    *'"foreign":"'*'"registered":2'*'"listed":true'*) ;;
-    *) foreign_problem="the session $peer-foreign was not registered and listed at $OUTSIDE_INTERNAL_LISTENER_URL: $(text_of "$work/foreign.log")" ;;
+    *'"foreign":"'*'"registered":2'*'"listed":true'*'"edge_admits":false'*) ;;
+    *'"foreign":"'*'"registered":2'*'"listed":true'*'"edge_admits":true'*)
+      foreign_in_project="the edge admits the token of $peer-foreign ($(text_of "$work/foreign.log")), so that session is in $project, and its absence from the list cannot be asked: its token names ${OUTSIDE_FOREIGN_PROJECT:-} only where this box trades as its person, not as a machine whose entry decides its projects"
+      foreign_problem=$foreign_in_project
+      ;;
+    *) foreign_problem="the session $peer-foreign was not registered and listed at $OUTSIDE_INTERNAL_LISTENER_URL, with the edge's answer to its token read: $(text_of "$work/foreign.log")" ;;
   esac
 fi
 
@@ -1021,17 +1045,28 @@ fi
 # open (`outside-e2e t5-open <nonce> at <ms>`), this leg has the owner remove the test person from
 # the project's access list, on this terminal or with OUTSIDE_OWNER_REMOVE_COMMAND (a harness that
 # acts as the owner's browser), and keeps the time; T5 is judged after the run, below. The list is
-# read with this box's own credential at OUTSIDE_TAILNET_DISPATCH_URL, before (the control: the
-# person is on it) and after (the removal was made). ---
+# read with the full member's browser session at OUTSIDE_TAILNET_DISPATCH_URL (the route takes the
+# person scope, which a box's broker token need not hold), before (the control: the person is on
+# it) and after (the removal was made). ---
 # listed_now: whether the person is on the project's access list: true, false, or what was read.
 listed_now() {
-  local answer
-  answer=$(env -i "${probe_env[@]}" OUTSIDE_PROBE_SESSION="outside-e2e-access-$nonce" \
-    OUTSIDE_LISTENER_URL="http://127.0.0.1:1" OUTSIDE_DISPATCH_URL="${OUTSIDE_TAILNET_DISPATCH_URL:-}" \
-    bun "$here/outside-agent-probe.ts" access "$project" "$person" 2>>"$work/probe.log" </dev/null)
-  case $(json_field listed "$answer") in
-    true | false) json_field listed "$answer" ;;
-    *) printf '%s' "${answer:0:200}" ;;
+  local status answer people
+  if [ -n "$browser_problem" ]; then
+    printf 'the full member'"'"'s browser session was not read: %s' "$browser_problem"
+    return
+  fi
+  status=$(browser GET "/api/v1/projects/$project/access" "$work/access.json")
+  answer=$(tr -d ' \n' <"$work/access.json" 2>/dev/null)
+  case $status:$answer in
+    200:*'"people":['*)
+      people=${answer#*\"people\":[}
+      people=${people%%]*}
+      case ",$(printf '%s' "$people" | tr '[:upper:]' '[:lower:]')," in
+        *",\"$(printf '%s' "$person" | tr '[:upper:]' '[:lower:]')\","*) printf true ;;
+        *) printf false ;;
+      esac
+      ;;
+    *) printf 'GET /api/v1/projects/%s/access answered %s: %s' "$project" "$status" "${answer:0:200}" ;;
   esac
 }
 # public_running: the public leg has not ended yet.
@@ -1216,12 +1251,15 @@ EOF
   # control this leg made: P5's admission on the issue naming the repository, P6's absences on
   # the peer and on a session outside the project that a private listener lists, P7's refusals on
   # the full member's browser being answered 201 and 200 on the same routes. A FAIL of any of them
-  # is evidence by itself (a refusal missing, a foreign session listed) and stands.
+  # is evidence by itself (a refusal missing, a foreign session listed) and stands, but for one: a
+  # P6 FAIL that the list holds <peer>-foreign is no evidence where the edge admits that session's
+  # token (foreign_in_project), since that session is then in the project and rightly listed.
   held_by=''
   case $name:$verdict in
     P4:*) held_by=$peer_problem ;;
     P5:PASS) passed issue || held_by="the issue row did not pass, so no repository is known to resolve to $project" ;;
     P6:PASS) held_by=$peer_problem${foreign_problem:+${peer_problem:+; }$foreign_problem} ;;
+    P6:FAIL) case $got in *"$peer-foreign"*) held_by=$foreign_in_project ;; esac ;;
     P7:PASS) held_by=${p7_control_problem:+no positive control: $p7_control_problem} ;;
   esac
   if [ -n "$held_by" ] && [ "$verdict" != UNKNOWN ]; then

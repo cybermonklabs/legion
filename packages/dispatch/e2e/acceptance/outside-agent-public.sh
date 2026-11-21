@@ -165,6 +165,7 @@ repository=${OUTSIDE_REPOSITORY:-}
 other_project=${OUTSIDE_OTHER_PROJECT:-EXAMPLE}
 [ "$other_project" != "$project" ] || other_project="${project}X"
 other_repository=${OUTSIDE_OTHER_REPOSITORY:-example-owner/example-repo}
+[ "$other_repository" != "$repository" ] || other_repository="${repository}-other"
 event_seconds=${OUTSIDE_GITHUB_EVENT_SECONDS:-900}
 
 # --- The scratch directory, its HOME and its cleanup. ---
@@ -411,23 +412,46 @@ fi
 # The session receives through its own relay socket, and its pane shows what the peer sends it.
 # Its two sends are scripted: outside-agent-probe.ts sends them as the session's own session id,
 # through the same device login and the same edge, since this runner holds no model credential.
-# The peer, a session of ours on a developer box that the tailnet leg runs, answers with its
-# model: a ping with a pong and then a hello, and the reply to the hello with a done. Each message
-# carries its sender's clock, `at <Unix ms>`, and a lag here is this runner's clock when the pane
-# shows a message, less that stamp; the tailnet leg reads the peer's side the same way.
+# The session still needs a model, since an Envoy card is handed to it as a turn and a session
+# with no model refuses the card ("Extension sendMessage failed: No model configured"), showing
+# nothing; so it runs on the probe's keyless scripted model (`outside-agent-probe.ts model`) at
+# 127.0.0.1, which answers every turn with one fixed line. The peer, a session of ours on a
+# developer box that the tailnet leg runs, answers with its model: a ping with a pong and then a
+# hello, and the reply to the hello with a done. Each message carries its sender's clock,
+# `at <Unix ms>`, and a lag here is this runner's clock when the pane shows a message, less that
+# stamp; the tailnet leg reads the peer's side the same way.
 want4="the session at ${listener:-<OUTSIDE_LISTENER_URL>} pings ${peer:-<OUTSIDE_PEER_SESSION>}, and shows its pong and its hello within 10 s of the peer's sends; it replies to the hello, and shows the peer's done within 10 s"
 problem=$(lacking OUTSIDE_LISTENER_URL OUTSIDE_PEER_SESSION OUTSIDE_PROJECT)
 [ -n "$problem" ] || problem=$(tool_problem tmux omp)
 [ -n "$problem" ] || problem=$(probe_problem)
 session_id=''
 p4_started=''
+model_port=''
+if [ -z "$problem" ]; then
+  env -i "${session_env[@]}" bun "$here/outside-agent-probe.ts" model >"$work/model.log" 2>&1 </dev/null &
+  background="$background $!"
+  deadline=$(($(now) + 30))
+  while [ -z "$model_port" ] && [ "$(now)" -lt "$deadline" ]; do
+    model_port=$(json_field port "$(cat "$work/model.log")")
+    [ -n "$model_port" ] || sleep 1
+  done
+  if [ -n "$model_port" ]; then
+    mkdir -p "$home/.omp/agent"
+    printf '%s\n' 'providers:' '  outside-e2e:' "    baseUrl: http://127.0.0.1:$model_port/v1" \
+      '    auth: none' '    api: openai-completions' '    models:' '      - id: scripted' \
+      '        name: outside-e2e scripted reply' '        reasoning: false' '        input: [text]' \
+      '        contextWindow: 128000' '        maxTokens: 1024' >"$home/.omp/agent/models.yml"
+  else
+    problem="the scripted model did not listen within 30 s: $(text_of "$work/model.log")"
+  fi
+fi
 if [ -n "$problem" ]; then
   row P4 "$want4" "$problem" UNKNOWN
 else
   tmux_socket="$work/tmux.sock"
   say "P4: starting omp in tmux (tmux -S $tmux_socket attach -t outside-e2e)"
   env -i "${session_env[@]}" tmux -S "$tmux_socket" new-session -d -s outside-e2e -x 220 -y 50 \
-    -c "$session_dir" omp </dev/null
+    -c "$session_dir" omp --model outside-e2e/scripted --session-dir "$work/omp-sessions" </dev/null
   p4_started=$(now)
   # p4_send TEXT: the session sends TEXT to the peer. False when it was not sent, with
   # `send_problem` saying why and `send_verdict` FAIL for an edge that refused the send, UNKNOWN
@@ -446,16 +470,38 @@ else
     send_problem="the send of '$1' as $session_id: ${answer:0:200}"
     return 1
   }
-  # seen WORD: the peer's stamp on `outside-e2e WORD <nonce> at <ms>` once the pane shows it.
+  # shown_text: every message the session holds, read from its transcript (its session directory
+  # is $work/omp-sessions), since the TUI folds an Envoy card to its header and the pane never
+  # shows the card's text. A card is in the transcript once the host takes it into the session.
+  shown_text() { cat "$work"/omp-sessions/*.jsonl "$work"/omp-sessions/*/*.jsonl 2>/dev/null; }
+  # seen WORD: once the session holds `outside-e2e WORD <nonce> at <ms>`, the time in Unix ms the
+  # peer sent it: the card's own envelope `at` (whole seconds), which the sender's Envoy client
+  # sets as it sends. The `at <ms>` the peer's model wrote in its text is its clock when it composed
+  # the message, before its send: in the edge-on run of 2026-11-21 the model peer's pong carried a
+  # stamp 10.6 s older than the edge's accept of that send (02:57:53.9Z and 02:58:04.5Z), and the
+  # edge's accept to this session's holding it took 3.5 s. Where the transcript holds no envelope
+  # `at`, the text's stamp stands, which can only make a lag longer.
   seen() {
-    local text stamped
-    text=$(pane)
+    local text line stamped sent
+    text=$(shown_text)
     case $text in *"outside-e2e $1 $nonce at "*) ;; *) return 1 ;; esac
-    stamped=${text#*"outside-e2e $1 $nonce at "}
+    while IFS= read -r line; do
+      case $line in *"outside-e2e $1 $nonce at "*) break ;; esac
+    done <<EOF
+$text
+EOF
+    stamped=${line#*"outside-e2e $1 $nonce at "}
     stamped=${stamped%%[!0-9]*}
+    # A stamp is Unix ms (13 digits); a peer that wrote more digits (date +%s%N) wrote ns, whose
+    # first 13 digits are the same ms.
+    [ "${#stamped}" -le 13 ] || stamped=${stamped:0:13}
+    if [[ $line =~ at:\ \\?\"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) ]] &&
+      sent=$(date -u -d "${BASH_REMATCH[1]}" +%s 2>/dev/null) && [ -n "$sent" ]; then
+      stamped=$((sent * 1000))
+    fi
     printf '%s' "$stamped"
   }
-  # wait_seen WORD SECONDS: the lag in whole seconds from the peer's stamp to this pane showing it.
+  # wait_seen WORD SECONDS: the lag in whole seconds from the peer's send to the session holding it.
   wait_seen() {
     local deadline stamped
     deadline=$(($(now) + $2))
@@ -566,13 +612,16 @@ else
   wrong=''
   unread=''
   # refused KIND TOPIC CODE: the probe's answer to KIND (interest or publish) of TOPIC is 403 and,
-  # where CODE is given, names it.
+  # where CODE is given, names it. A 5xx is the edge not deciding (repositories_unknown), which is
+  # neither a refusal nor an admission, so it is unread.
   refused() {
     local answer status
     answer=$(probe "$1" "$2")
     status=$(json_field status "$answer")
     if [ -n "$(unknown_of "$answer")" ] || [ -z "$status" ]; then
       unread="${unread:+$unread; }$1 $2: ${answer:0:200}"
+    elif [ "${status#5}" != "$status" ]; then
+      unread="${unread:+$unread; }$1 $2 answered $status, so the edge could not decide it: ${answer:0:200}"
     elif [ "$status" != 403 ]; then
       wrong="${wrong:+$wrong; }$1 $2 answered $status"
     elif [ -n "$3" ]; then
@@ -593,6 +642,8 @@ else
   delivered=$(json_field event "$event")
   if [ -n "$(unknown_of "$event")" ] || [ -z "$status" ]; then
     unread="${unread:+$unread; }the admitted interest: ${event:0:200}"
+  elif [ "${status#5}" != "$status" ]; then
+    unread="${unread:+$unread; }$admitted_topic answered $status, so the edge could not decide it: ${event:0:200}"
   elif [ "${status#2}" = "$status" ]; then
     wrong="${wrong:+$wrong; }$admitted_topic answered $status"
   elif [ "$delivered" = null ] || [ -z "$delivered" ]; then
@@ -709,7 +760,7 @@ else
   sent_at=$(now)
   shown=''
   while [ -z "$shown" ] && [ "$(now)" -le $((sent_at + 10)) ]; do
-    case $(pane) in *"outside-e2e after-reopen $nonce"*) shown=$(($(now) - sent_at)) ;; *) sleep 1 ;; esac
+    case $(shown_text) in *"outside-e2e after-reopen $nonce"*) shown=$(($(now) - sent_at)) ;; *) sleep 1 ;; esac
   done
   sent_status=$(json_field status "$sent")
   if [ -n "$(unknown_of "$sent")" ] || [ -z "$sent_status" ]; then

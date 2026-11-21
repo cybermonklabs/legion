@@ -40,6 +40,7 @@ OUTSIDE_TAILNET_BROKER_URL=https://secrets.internal.example \
 OUTSIDE_TAILNET_DISPATCH_URL=https://dispatch.internal.example \
 OUTSIDE_LISTENER_URL=https://envoy.edge.example \
 OUTSIDE_INTERNAL_LISTENER_URL=https://envoy.internal.example \
+OUTSIDE_FOREIGN_PROJECT=<a project of the box's person other than the scratch project> \
 OUTSIDE_FULL_COOKIE_FILE=full-member-cookie.txt \
 OUTSIDE_PERSON=outside-e2e@example.com \
 OUTSIDE_CANARY=<the canary secret's name> \
@@ -80,11 +81,14 @@ The tailnet leg does these steps, in this order:
    reads the code.
 4. It starts the peer at the edge listener, with the box's own identity and a token that names the
    project. By default (`OUTSIDE_PEER=omp`) the peer is an Oh My Pi session in tmux, run with the
-   box's own model profile and only the envoy plugin `OUTSIDE_PEER_PLUGIN_DIR` names (default this
-   checkout's `packages/pi-envoy`, built), its sessions kept in the scratch directory; its model
+   box's own model profile and only the envoy extension (`dist/envoy.js`, loaded by its path) of the
+   plugin `OUTSIDE_PEER_PLUGIN_DIR` names (default this checkout's `packages/pi-envoy`, built), its
+   sessions kept in the scratch directory; its model
    answers the public side. On a local stack with no model, `OUTSIDE_PEER=probe` runs the scripted
    peer (`outside-agent-probe.ts peer`) instead; only with `OUTSIDE_ALLOW_HTTP=1`. It also keeps
    a session outside the project, `<peer>-foreign`, registered at the private listener, for row P6.
+   Its token names `OUTSIDE_FOREIGN_PROJECT` alone: a token naming no project carries every project
+   of the box's person, the scratch project among them, and the edge would rightly list it.
 5. It runs the read sweep's full-member half: `restricted-sweep.sh` (beside this file) in
    its fills mode with the box's full member (`OUTSIDE_SWEEP_PROJECT`,
    `OUTSIDE_SWEEP_FULL_TOKEN_FILE`, `OUTSIDE_SWEEP_CONVERSATION_FILE`, the test person as
@@ -140,7 +144,10 @@ The workflow runs `outside-agent-public.sh` after its own sign-in, with:
 | `OUTSIDE_REVOKE_COMMAND` | The workflow's revoke step, a command line the leg runs after P9 and before the T5 window, while the person's cookie still reads their own list. It gets `OUTSIDE_EDGE_REVOKE_KEEP`, P2's user code, and revokes every other device login the run approved, the scratch helper's included, writing the `revoke-<credential id>` rows of `outside-edge-revocations`. Exit 0, 1 or 2 is the leg's `revocations` row. P2's login stays live into the window, where the removal stops it; its key lives only in the leg's scratch HOME, which the leg removes. |
 
 No model credential goes on the runner: the leg's two sends in P4 are scripted, and the model turn
-is the peer's, on the developer box.
+is the peer's, on the developer box. The public Oh My Pi session still runs on a model, because an
+Envoy card is handed to it as a turn and a session with no model refuses the card and shows
+nothing: the leg runs it on `outside-agent-probe.ts model`, a keyless OpenAI-compatible endpoint
+on 127.0.0.1 that answers every turn with one fixed line (`--model outside-e2e/scripted`).
 
 Programs on PATH: bash, curl, tmux, bun and `omp`. The step needs about 40 minutes: P5 waits up to
 15 minutes for a GitHub event, beside P4 and P8, P8 waits for a token to expire (300 s), and the T5
@@ -171,11 +178,11 @@ shim finds its program through the caller's HOME.
 | P1 | `omp plugin install @sjawhar/pi-envoy@<version>` installs that version. |
 | P2 | `dispatch login --device --person <person>` prints a code, the approve command approves it, the login exits 0, and `~/.config/legion/device-login.json` has mode 0600. |
 | P3 | Dispatch's `GET /api/v1/whoami` with the agent's token answers `kind` agent, `owner` the test person, `project` the scratch project and `scopes` `[]`. |
-| P4 | An Oh My Pi session in tmux registers at the edge listener, and the edge serves a relay socket. The probe, as that session's own session id, sends the peer `outside-e2e ping <nonce> at <ms>`. The session shows the peer's `pong` and then its `hello` within 10 s of the peer's sends. The probe sends `outside-e2e reply <nonce> at <ms>`, and the session shows the peer's `done` within 10 s. Each message carries its sender's clock. |
+| P4 | An Oh My Pi session in tmux registers at the edge listener, and the edge serves a relay socket. The probe, as that session's own session id, sends the peer `outside-e2e ping <nonce> at <ms>`. The session holds the peer's `pong` and then its `hello` within 10 s of the peer's sends. The probe sends `outside-e2e reply <nonce> at <ms>`, and the session holds the peer's `done` within 10 s. Each message carries its sender's clock. What the session holds is read from its transcript, since the TUI folds an Envoy card to its header, and a card's lag is timed from its envelope `at`, the time its sender sent it, since the model peer's own stamp is its clock when it composed the text, before the send. |
 | P5 | Interests in another project's Dispatch topic (403), in `notifications.slack.>`, `notifications.whatsapp.>` and `notifications.team.>` (403 `topic_not_in_project`), in another repository and in `notifications.github.>` (403 `repository_not_in_project`), and a publish of the project's own Dispatch event (403 `topic_not_published`) are refused. An interest in `OUTSIDE_REPOSITORY`'s events is admitted, and one of its events arrives within 15 minutes. |
 | P6 | `GET /v1/sessions` lists the peer, which is the control, and not `<peer>-foreign`. A relay-socket `sub` to the peer's subject is refused `subject_not_granted`. |
 | P7 | `POST /api/v1/me/agent-tokens` and a credential-request approve with the agent's token answer 403. |
-| P8 | A relay socket closes with 4401 within 25 s after its token's expiry, and the token lasts at most 300 s. A message sent to the Oh My Pi session after its own token has expired is shown within 10 s, so the session opened its socket again. |
+| P8 | A relay socket closes with 4401 within 25 s after its token's expiry, and the token lasts at most 300 s. A message sent to the Oh My Pi session after its own token has expired is in its transcript within 10 s, so the session opened its socket again. |
 | P9 | `outside-path-reach.sh` from the Dispatch edge origin passes. |
 
 ## The tailnet leg's rows
@@ -188,7 +195,7 @@ shim finds its program through the caller's HOME.
 | T2 | `agent-secrets register` through the scratch helper is refused `403 RESTRICTED_MEMBER_ENROLLS_NOTHING`, by that code and no other, and the canary asked for through it gets no value, its session refused by that same code. A canary that gets no value for another reason, such as a requesters list on the secret that names someone else, reads FAIL: it says nothing of the member kind. |
 | T3 | A fresh session enrolled through the box's own helper is granted the canary at once, and its value is 64 characters long. This is T2's positive control: the same broker build and the same route grant the canary, so a refusal in T2 is the member kind's. |
 | T4 | The public leg's revoke step, before the T5 window, revokes the scratch login (its `revoke-<credential id>` row passes), and `agent-secrets machine list` through the scratch helper is then refused `LAUNCHER_INVALID`. |
-| T5 | The owner's removal, made during the public run's T5 window; before it, the test person is on the project's access list (the control, read with this box's own credential at `OUTSIDE_TAILNET_DISPATCH_URL`), and after the run the list no longer names them (else UNKNOWN). From the public leg's rows: the cookie got 401 within 30 s of the removal, and the passkey sign-in, a fresh trade of the person's device login, and the relay socket open then each stopped within 325 s of it, none before it. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. No terminal, no peer to open the window to, or a part not read, reads UNKNOWN. |
+| T5 | The owner's removal, made during the public run's T5 window; before it, the test person is on the project's access list (the control, read with the full member's browser session at `OUTSIDE_TAILNET_DISPATCH_URL`), and after the run the list no longer names them (else UNKNOWN). From the public leg's rows: the cookie got 401 within 30 s of the removal, and the passkey sign-in, a fresh trade of the person's device login, and the relay socket open then each stopped within 325 s of it, none before it. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. No terminal, no peer to open the window to, or a part not read, reads UNKNOWN. |
 | sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and two controls of this box hold: at least one of the writer's comments was delivered to the full member's own feed strictly inside the sweep's `live window`, so its finding that nothing reached the test person's feed means something; and the proxy control held (a `can_fail` line in the fills for each of the five proxy reads, and the full member's browser answered 200 by the proxy), so the runner's finding that the GitHub proxy answers the test person as for a repository the App is not installed on means something. Without either, or without `OUTSIDE_FULL_COOKIE_FILE`, it reads UNKNOWN; a FAIL of the sweep stands. |
 | gate | Every row above and P1-P9 pass, and the pins read at the end are the pins read at the start. |
 
@@ -196,11 +203,13 @@ The tailnet leg holds a public row to what it saw beside it. P4 reads UNKNOWN wh
 start. A PASS of P4 also needs the peer's own side: the peer was shown the ping and the reply within
 10 s of their stamps, read from its pane (or the scripted peer's log); not seen there, it reads
 UNKNOWN. A PASS of P5 reads UNKNOWN when the issue row did not pass. A PASS of P6 reads UNKNOWN when
-the peer did not start or the private listener did not list `<peer>-foreign`. A PASS of P7 reads
-UNKNOWN when P7's control was not answered 201 and 200: no broker token approves, so the 403 the
-agent's token gets says something about that token only where a browser session is answered on the
-same routes. A FAIL of P5, P6 or P7 stands, because a missing refusal or a listed foreign session is
-evidence by itself.
+the peer did not start, the private listener did not list `<peer>-foreign`, or the edge admits that
+session's token, which puts it in the project. A PASS of P7 reads UNKNOWN when P7's control was not
+answered 201 and 200: no broker token approves, so the 403 the agent's token gets says something
+about that token only where a browser session is answered on the same routes. A FAIL of P5, P6 or
+P7 stands, because a missing refusal or a listed foreign session is evidence by itself, except a
+FAIL of P6 that the list holds `<peer>-foreign` where the edge admits that session's token: that
+session is then in the project, and the FAIL reads UNKNOWN.
 
 ## The controls, run first and recorded
 

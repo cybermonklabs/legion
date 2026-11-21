@@ -33,7 +33,7 @@ import {
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import { rowLimit, runBounded } from "./bounded-subprocess";
 
@@ -77,7 +77,14 @@ const textTools = [
 ];
 
 const withoutTools = skipWithout("bash", "curl");
-const scratch = temporaryDirectories("outside-agent-acceptance");
+// On tmpfs: the afterEach that removes a row's directories has Bun's 5 s for a hook, and on the
+// shared disk one removal of a row's ~30 entries was measured at up to 17.5 s (median 2 ms, 30
+// trials, load ~1500), against at most 16 ms on /dev/shm. The suite holds at most 233 entries at
+// once (measured with the legs' own scratch under the same root), under 1 MiB at one 4 KiB page a
+// file, so 8 MiB leaves room for 8 runs sharing the host.
+const scratch = temporaryDirectories("outside-agent-acceptance", {
+  root: memoryRoot({ need: 8 * 2 ** 20 }),
+});
 
 /** A loopback port that nothing listens on: one the kernel gave a listener this row then closed. */
 function closedPort(): number {

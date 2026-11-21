@@ -44,9 +44,6 @@
  *                            status, detail} when the broker refused it (row T5).
  *    hold <seconds>          opens the session's relay socket and prints {opened_at}, then
  *                            {closed_at, code} when it closes, or code null after <seconds>.
- *    access <project> <person>
- *                            GET /api/v1/projects/<project>/access at Dispatch: `listed`, whether
- *                            <person> is on its access list, or null when no list was read.
  *    peer                    a scripted peer of row P4, for a local stack with no model: registers
  *                            the session, opens its relay socket and answers each message from
  *                            then on, until it is stopped. To `outside-e2e ping <nonce> at <ms>`
@@ -57,9 +54,9 @@
  *                            time it read it, and per answer it sends. With
  *                            OUTSIDE_FOREIGN_LISTENER_URL set it first does what `foreign` does.
  *    foreign                 registers `<session>-foreign` at OUTSIDE_FOREIGN_LISTENER_URL, under
- *                            a token that names no project, prints whether that listener lists
- *                            it, and keeps it registered until it is stopped: the session outside
- *                            the project that row P6 must not find.
+ *                            a token that names OUTSIDE_FOREIGN_PROJECT alone, prints whether
+ *                            that listener lists it, and keeps it registered until it is stopped:
+ *                            the session outside the project that row P6 must not find.
  */
 import { randomUUID } from "node:crypto";
 import { type Envelope, EnvelopeSchema } from "@legion/contracts";
@@ -163,12 +160,13 @@ async function call(
 
 /** An answer as the leg reads it: its status, the refusal's code where the body names one, and
  *  the body's words, cut short. Dispatch and the listener spell a refusal differently: a `code`
- *  beside an `error` text, an `error` object holding both, or an `error` text alone. */
+ *  beside an `error` text, an `error` object holding both, an `error` text alone, or, for an
+ *  edge listener's refusal (listenerwire.EdgeRefusal), a `reason` beside the `error` text. */
 function flat(answer: Answer): { status: number; code: string | null; detail: string | null } {
   const at = (value: unknown, name: string): unknown =>
     typeof value === "object" && value !== null ? Reflect.get(value, name) : undefined;
   const error = at(answer.body, "error");
-  const code = at(answer.body, "code") ?? at(error, "code");
+  const code = at(answer.body, "code") ?? at(error, "code") ?? at(answer.body, "reason");
   const words = at(error, "message") ?? error ?? at(answer.body, "message") ?? answer.body;
   return {
     status: answer.status,
@@ -366,14 +364,26 @@ function print(value: unknown): void {
 }
 
 /** Keeps `<session>-foreign` registered at OUTSIDE_FOREIGN_LISTENER_URL with this machine's
- *  identity and no project, every 30 s: the session outside the project that row P6 must not
- *  find on the edge's list. It prints, once, whether that listener took the registration and
- *  lists the session, which is what makes P6's absence mean something. */
+ *  identity, every 30 s: the session outside the project that row P6 must not find on the edge's
+ *  list. Its token names OUTSIDE_FOREIGN_PROJECT alone, a project of this machine's person other
+ *  than the edge's. A token naming none would carry every project of the person (the broker fills
+ *  a person's token with them), the edge's among them, and the edge would rightly list it; and a
+ *  machine trading for itself names the projects its entry decides, whatever it asks. It prints,
+ *  once, whether that listener took the registration and lists the session, which is what makes
+ *  P6's absence mean something, and, with OUTSIDE_FOREIGN_EDGE_URL set, whether that edge admits
+ *  the session's token (`edge_admits`: false for a 403 token_not_admitted, true for a 2xx, null for
+ *  any other answer): an edge that admits it holds the session in its project. */
 async function foreignSession(): Promise<void> {
   const listenerUrl = (env.OUTSIDE_FOREIGN_LISTENER_URL ?? "").trim().replace(/\/+$/, "");
   if (listenerUrl === "") return;
+  const project = (env.OUTSIDE_FOREIGN_PROJECT ?? "").trim();
+  if (project === "") {
+    throw new Unreadable(
+      "OUTSIDE_FOREIGN_PROJECT is unset: the session outside the project needs a project of its own"
+    );
+  }
   const foreign = `${session()}-foreign`;
-  const trade = brokerTokenFor({ ...env, AGENT_SECRETS_PROJECTS: undefined }, foreign);
+  const trade = brokerTokenFor({ ...env, AGENT_SECRETS_PROJECTS: project }, foreign);
   const signed = async (method: string, url: string, body?: unknown): Promise<Answer> => {
     const traded = await trade(AbortSignal.timeout(callMs));
     return call(method, url, body, traded);
@@ -400,7 +410,32 @@ async function foreignSession(): Promise<void> {
       (entry: unknown) =>
         typeof entry === "object" && entry !== null && Reflect.get(entry, "session_id") === foreign
     );
-  print({ foreign, registered: registered.status, listed: named });
+  const edgeUrl = (env.OUTSIDE_FOREIGN_EDGE_URL ?? "").trim().replace(/\/+$/, "");
+  const atEdge =
+    edgeUrl === ""
+      ? undefined
+      : flat(
+          await signed("GET", `${edgeUrl}/v1/sessions`).catch((error: unknown) => ({
+            status: 0,
+            body: String(error),
+          }))
+        );
+  const edgeAdmits =
+    atEdge === undefined
+      ? undefined
+      : atEdge.status === 403 && atEdge.code === "token_not_admitted"
+        ? false
+        : atEdge.status >= 200 && atEdge.status < 300
+          ? true
+          : null;
+  print({
+    foreign,
+    registered: registered.status,
+    listed: named,
+    ...(atEdge === undefined
+      ? {}
+      : { edge_admits: edgeAdmits, edge_status: atEdge.status, edge_detail: atEdge.detail }),
+  });
   setInterval(() => void register().catch(() => undefined), 30_000);
 }
 
@@ -445,6 +480,55 @@ async function peer(): Promise<void> {
   }
   clearInterval(heartbeat);
   throw new Unreadable("the peer's relay socket closed");
+}
+
+/** A keyless stand-in for the outside person's own model on the public leg's runner: an
+ *  OpenAI-compatible chat-completions endpoint on 127.0.0.1 that answers every turn with one fixed
+ *  line and no tool call. An Envoy card is handed to the Oh My Pi session as a turn, which a session
+ *  with no model refuses and so never shows, and no model key goes on the runner. It prints {port}
+ *  once it listens and serves until it is stopped. */
+async function scriptedModel(): Promise<never> {
+  const reply = "outside-e2e: the scripted model answers no message of its own.";
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      const url = new URL(request.url);
+      if (request.method === "GET" && url.pathname === "/v1/models") {
+        return Response.json({ object: "list", data: [{ id: "scripted", object: "model" }] });
+      }
+      if (request.method !== "POST" || url.pathname !== "/v1/chat/completions") {
+        return Response.json({ error: { message: `no route ${url.pathname}` } }, { status: 404 });
+      }
+      const body: unknown = await request.json().catch(() => ({}));
+      const id = `chatcmpl-${randomUUID()}`;
+      const created = Math.floor(Date.now() / 1000);
+      const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+      const base = { id, created, model: "scripted" };
+      if (typeof body !== "object" || body === null || Reflect.get(body, "stream") !== true) {
+        return Response.json({
+          ...base,
+          object: "chat.completion",
+          choices: [
+            { index: 0, message: { role: "assistant", content: reply }, finish_reason: "stop" },
+          ],
+          usage,
+        });
+      }
+      const chunks = [
+        { index: 0, delta: { role: "assistant", content: reply }, finish_reason: null },
+        { index: 0, delta: {}, finish_reason: "stop" },
+      ].map((choice) => ({ ...base, object: "chat.completion.chunk", choices: [choice] }));
+      const events = [...chunks, { ...base, object: "chat.completion.chunk", choices: [], usage }]
+        .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+        .join("");
+      return new Response(`${events}data: [DONE]\n\n`, {
+        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+      });
+    },
+  });
+  print({ port: server.port });
+  return Promise.withResolvers<never>().promise;
 }
 
 async function main(): Promise<void> {
@@ -664,25 +748,6 @@ async function main(): Promise<void> {
       relay.socket.close(1000, "the probe is done");
       return;
     }
-    case "access": {
-      // Whether <person> is on <project>'s access list, read at Dispatch with this machine's
-      // own credential: `listed` true or false, null when the answer names no list.
-      const [key = "", person = ""] = args;
-      if (key === "" || person === "") throw new Unreadable("access needs a project and a person");
-      const answer = await call(
-        "GET",
-        dispatch(`/api/v1/projects/${encodeURIComponent(key)}/access`)
-      );
-      const people: unknown =
-        typeof answer.body === "object" && answer.body !== null
-          ? Reflect.get(answer.body, "people")
-          : undefined;
-      const listed = Array.isArray(people)
-        ? people.some((each: unknown) => String(each).toLowerCase() === person.toLowerCase())
-        : null;
-      print({ ...flat(answer), listed });
-      return;
-    }
     case "approve":
       print(
         flat(
@@ -710,6 +775,9 @@ async function main(): Promise<void> {
         print({ unknown: error instanceof Error ? error.message : String(error) });
         await Promise.withResolvers<never>().promise;
       }
+      return;
+    case "model":
+      await scriptedModel();
       return;
     default:
       throw new Unreadable(`unknown command ${JSON.stringify(command ?? "")}`);
