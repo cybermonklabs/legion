@@ -248,7 +248,7 @@ type decideFunc func(ctx context.Context, deps Deps, services []ServiceEntry, re
 // is sent, in the replicas' queue group, until Close. It reads the three seeds first, refusing a
 // file that is unreadable or holds a seed of the wrong kind (a user, an account, a curve key) by
 // the setting's own name and never the seed. The hub need not answer yet: the connection is made
-// in the background and retried on a backoff capped at 20 s, so a hub that is down or restarting
+// in the background and retried on a backoff capped at 2 s, so a hub that is down or restarting
 // when the broker starts, or refuses the service's user, is answered once it is up and admits it.
 func Start(ctx context.Context, settings Settings, deps Deps) (*Service, error) {
 	return start(ctx, settings, deps, Decide)
@@ -281,7 +281,7 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 	// WithPromptReconnect: every other client of the hub waits on this one. A restart drops the
 	// service's own connection with theirs, and a client that comes back before the service has
 	// resubscribed is refused until it does, so the service redials at once where they wait a
-	// second, and then backs off, capped at 20 s, while the hub stays away or refuses it, as a hub
+	// second, and then backs off, capped at 2 s, while the hub stays away or refuses it, as a hub
 	// does whose auth_callout does not list it yet (internal/bus).
 	conn, err := bus.Dial(connectionName, settings.URLs, lookup,
 		bus.WithConnectInBackground(), bus.WithSilentCutDetection(), bus.WithPromptReconnect())

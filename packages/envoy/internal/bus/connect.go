@@ -84,7 +84,7 @@ func detectSilentCuts(o *nats.Options) error {
 const (
 	promptRedialJitter = 50 * time.Millisecond
 	promptRedialBase   = 250 * time.Millisecond
-	promptRedialCap    = 20 * time.Second
+	promptRedialCap    = 2 * time.Second
 )
 
 // promptRedialWait is a connection's wait, made WithPromptReconnect, in the pass'th round of an
@@ -139,9 +139,10 @@ func allOf(options ...nats.Option) nats.Option {
 //
 // A refusal of the credential (authorizationRefusal) is logged at ERROR, at most once per
 // reconnectErrEvery of refusals: a refusal that lasts is a grant someone has to fix, and nats.go
-// retries it about once a second. Once the connection has connected, nats.go reports each refusal
-// to the async error callback, which takes the line here in place of its own; before then it
-// reports none, and reportRefusalsUntilConnected logs them on the same throttle.
+// retries it about once a second (every 1 to 2 s at WithPromptReconnect's cap, promptRedialWait).
+// Once the connection has connected, nats.go reports each refusal to the async error callback,
+// which takes the line here in place of its own; before then it reports none, and
+// reportRefusalsUntilConnected logs them on the same throttle.
 func connectInBackground(name string, urls []string, refusals *reconnectErrThrottle, connected func(*nats.Conn)) nats.Option {
 	return func(o *nats.Options) error {
 		o.RetryOnFailedConnect = true

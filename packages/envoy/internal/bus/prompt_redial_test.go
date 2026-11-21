@@ -10,7 +10,7 @@ import (
 
 // The waits of WithPromptReconnect, pass by pass of an outage's redials: the first within the
 // 50 ms jitter, at once; then each drawn across the whole of [b/2, b), where b starts at 250 ms and
-// doubles each pass up to the 20 s cap, which every later pass keeps, however many there are. Each
+// doubles each pass up to the 2 s cap, which every later pass keeps, however many there are. Each
 // row reads the wait at the lowest and the highest draw, and the width the draw was asked for.
 func TestPromptRedialWaitsDoubleFromAQuarterSecondToTheCap(t *testing.T) {
 	for _, row := range []struct {
@@ -22,13 +22,10 @@ func TestPromptRedialWaitsDoubleFromAQuarterSecondToTheCap(t *testing.T) {
 		{3, 250 * time.Millisecond, 500 * time.Millisecond},
 		{4, 500 * time.Millisecond, time.Second},
 		{5, time.Second, 2 * time.Second},
-		{6, 2 * time.Second, 4 * time.Second},
-		{7, 4 * time.Second, 8 * time.Second},
-		{8, 8 * time.Second, 16 * time.Second},
-		{9, 10 * time.Second, 20 * time.Second},
-		{10, 10 * time.Second, 20 * time.Second},
-		{64, 10 * time.Second, 20 * time.Second},
-		{math.MaxInt, 10 * time.Second, 20 * time.Second},
+		{6, time.Second, 2 * time.Second},
+		{7, time.Second, 2 * time.Second},
+		{64, time.Second, 2 * time.Second},
+		{math.MaxInt, time.Second, 2 * time.Second},
 	} {
 		var width int64
 		lowest := promptRedialWait(row.pass, func(n int64) int64 { width = n; return 0 })

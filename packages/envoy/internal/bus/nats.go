@@ -204,17 +204,20 @@ func WithSilentCutDetection() DialOption {
 // WithPromptReconnect has every connection the client makes redial at once after a cut, within a
 // jitter of 50 ms where every other client waits a second, and back off while the hub stays away
 // or refuses it: each later wait is drawn anew between half and all of a bound that starts at
-// 250 ms and doubles with each redial up to 20 s, and the next outage starts at once again
+// 250 ms and doubles with each redial up to 2 s, and the next outage starts at once again
 // (promptRedialWait). It is for the one client a hub's other clients wait on: the NATS auth
 // service (internal/cipher/natscallout), which is itself a client of the hub it admits
 // connections to, so a restart drops its connection too and every client that comes back before
-// it is refused until it returns. So the waits start at a quarter of a second: the service is
-// back within a second of a hub that was away for less, and at most 20 s after one away longer.
-// The backoff is for a hub that refuses the service's own user, as one whose auth_callout does
-// not list it yet does: redialling within 50 ms each time, a replica connected to it 35 times a
-// second for as long as it refused (1,055 times in 30 s against an in-process nats-server
-// 2.15.1); with the backoff it connects 9 times in its first 30 s, and at the cap once in 15 s on
-// average. The jitter keeps two replicas from dialling in the same instant.
+// it is refused until it returns. So the cap is short: however long the hub was away, the
+// service's next dial starts at most 2 s after the hub is back, and after a sub-second outage
+// about 2 s at worst too (waits of 0, 125, 250 and 500 ms, then one of up to 2 s); a dial in
+// flight when the hub returns adds what is left of it, up to its 5 s timeout when it hangs
+// (connectTimeout). The backoff is for a hub that refuses the service's own user, as one whose
+// auth_callout does not list it yet does: redialling within 50 ms each time, a replica connected
+// to it 35 times a second for as long as it refused (1,055 times in 30 s against an in-process
+// nats-server 2.15.1); with the backoff it connects 24 times in its first 30 s and at most once
+// in any second after its first, which for two replicas is nothing to the hub. The jitter keeps
+// two replicas from dialling in the same instant.
 func WithPromptReconnect() DialOption {
 	return func(o *connectOpts) { o.promptReconnect = true }
 }
