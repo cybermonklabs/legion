@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  `POST /auth/passkey/register/begin` answers, beside the options `navigator.credentials.create`
+  takes, `invitation`: `{project, made_by}`, the key of the project the link is for and the login
+  of the owner who made it, which the enrollment page names before the person makes a passkey.
+  At `DISPATCH_OUTSIDE_ORIGIN` every dashboard answer carries `Content-Security-Policy:
+  frame-ancestors 'none'` and `X-Frame-Options: DENY`, so no page of another site frames the
+  enrollment page or the passkey sign-in.
+time: 2026-11-21T03:02:32Z
+custom:
+    Issue: passkeys-web

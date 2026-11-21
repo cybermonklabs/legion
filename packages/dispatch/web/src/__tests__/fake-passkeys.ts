@@ -1,5 +1,5 @@
 import { type Mock, mock } from "bun:test";
-import type { PasskeyCreationOptions, PasskeyRequestOptions } from "@legion/contracts";
+import type { PasskeyEnrollmentOptions, PasskeyRequestOptions } from "@legion/contracts";
 
 /** A browser that can make and use a passkey, for a page test: `navigator.credentials` and
  *  `window.PublicKeyCredential`, which happy-dom has neither of, with `create` and `get` the
@@ -90,9 +90,10 @@ export const passkeySignatureJSON = {
   type: "public-key",
 } as const;
 
-/** `/auth/passkey/register/begin`'s answer for a link made for `email`. */
-export function enrollmentOptions(email: string): PasskeyCreationOptions {
+/** `/auth/passkey/register/begin`'s answer for a link alice made for `email` on PRIV. */
+export function enrollmentOptions(email: string): PasskeyEnrollmentOptions {
   return {
+    invitation: { made_by: "alice@example.com", project: "PRIV" },
     publicKey: {
       attestation: "none",
       authenticatorSelection: { residentKey: "required", userVerification: "required" },

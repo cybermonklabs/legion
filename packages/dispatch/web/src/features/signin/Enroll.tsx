@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -18,20 +18,32 @@ export const ENROLL_PATH = "/enroll";
 
 /**
  * The page the owner's link opens: it checks the link (`/auth/passkey/register/begin`, which
- * leaves it unused) and names the address it was made for, and its one button makes the passkey
- * on the person's device and enrolls it, which uses the link and signs the person in, and then
- * opens Dispatch. A link Dispatch refuses - used, expired, ended by a newer one, a Reset or a
- * delisting - says why and offers nothing to press, since only a new link gets past it.
+ * leaves it unused) and names who made it, the project it is for and the address it was made for,
+ * and its one button makes the passkey on the person's device and enrolls it, which uses the link
+ * and signs the person in, and then opens Dispatch. A link Dispatch refuses - used, expired, ended
+ * by a newer one, a Reset or a delisting - says why and offers nothing to press, since only a new
+ * link gets past it; a used one links to the sign-in, where a passkey it made signs the person in.
  *
- * The press opens a ceremony of its own rather than reusing the check's: the check's is five
- * minutes old at most, and a person can read the page for longer than that.
+ * The page reads the link's token once and then replaces this tab's history entry with one
+ * without it, so the address bar, a copy of the address and a return to the entry hold no link
+ * that still enrolls. The press opens a ceremony of its own rather than reusing the check's: the
+ * check's is five minutes old at most, and a person can read the page for longer than that.
  */
 export function Enroll(): ReactNode {
   useDocumentTitle("Enroll a passkey · Dispatch");
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const token = location.hash.replace(/^#/, "");
+  const [token, setToken] = useState(() => location.hash.replace(/^#/, ""));
+  const [enrolling, setEnrolling] = useState(false);
+  const [refused, setRefused] = useState<CeremonyRefusal | undefined>(undefined);
+  useEffect(() => {
+    if (location.hash === "") return;
+    // A link opened while this page is open is read the same way, in place of the one before it.
+    setToken(location.hash.replace(/^#/, ""));
+    setRefused(undefined);
+    navigate({ hash: "", pathname: location.pathname, search: location.search }, { replace: true });
+  }, [location.hash, location.pathname, location.search, navigate]);
   const supported = passkeysSupported();
   const check = useQuery({
     enabled: supported && token !== "",
@@ -41,8 +53,6 @@ export function Enroll(): ReactNode {
     retry: false,
     staleTime: Number.POSITIVE_INFINITY,
   });
-  const [enrolling, setEnrolling] = useState(false);
-  const [refused, setRefused] = useState<CeremonyRefusal | undefined>(undefined);
 
   const enroll = async () => {
     setEnrolling(true);
@@ -102,9 +112,14 @@ export function Enroll(): ReactNode {
         />
       );
     }
+    const { invitation } = check.data;
     const email = check.data.publicKey.user.name;
     return (
       <>
+        <p className={`mt-3 break-words ${textSecondaryOnSurface}`}>
+          <strong>{invitation.made_by}</strong> invited you to the project{" "}
+          <strong>{invitation.project}</strong>.
+        </p>
         <p className={`mt-3 break-words ${textSecondaryOnSurface}`}>
           The passkey signs you in to Dispatch as <strong>{email}</strong>.
         </p>

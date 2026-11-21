@@ -156,12 +156,14 @@ async function invite(page: Page, email: string): Promise<string> {
   return link.inputValue();
 }
 
-/** Opens `link` in a new signed-out context and returns the alert its enrollment page shows. */
+/** Opens `link` in a new signed-out context and returns the alert its enrollment page shows. The
+ *  page has taken the link's code out of its address by then, refused or not. */
 async function refusedLink(context: BrowserContext, link: string): Promise<Locator> {
   const page = await context.newPage();
   await open(page, link);
   await expect(page.getByRole("heading", { name: "Enroll a passkey" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Create a passkey" })).toHaveCount(0);
+  await expect(page).toHaveURL(`${outside}/enroll`);
   return page.getByRole("alert");
 }
 
@@ -236,12 +238,17 @@ test.describe("outside passkey sign-in", () => {
         }
       });
 
-      await test.step("the outsider opens the link at the outside origin, enrolls a passkey, and is signed in, seeing PRIV alone", async () => {
+      await test.step("the outsider opens the link at the outside origin, reads who invited them to which project, enrolls a passkey, and is signed in, seeing PRIV alone", async () => {
         await open(outsiderPage, link);
         await expect(outsiderPage.getByRole("heading", { name: "Enroll a passkey" })).toBeVisible();
         await expect(
+          outsiderPage.getByText(`${alice} invited you to the project PRIV.`)
+        ).toBeVisible();
+        await expect(
           outsiderPage.getByText(`The passkey signs you in to Dispatch as ${outsider}.`)
         ).toBeVisible();
+        // The page read the link's code and took it out of the address and the history entry.
+        await expect(outsiderPage).toHaveURL(`${outside}/enroll`);
         await outsiderPage.getByRole("button", { name: "Create a passkey" }).click();
         await expect(outsiderPage).toHaveURL(`${outside}/`);
         await expect(outsiderPage.getByText(`Signed in as ${outsider}`)).toBeVisible();
@@ -252,11 +259,17 @@ test.describe("outside passkey sign-in", () => {
         await expect.poll(() => sidebarProjects(outsiderPage)).toEqual(["PRIV"]);
       });
 
-      await test.step("the same link a second time is refused on the page", async () => {
+      await test.step("the same link a second time is refused on the page, which links to the passkey sign-in", async () => {
         const alert = await refusedLink(strangerContext, link);
         await expect(alert).toHaveText(
-          "This link has been used already. Ask the project's owner for a new one."
+          "This link has been used already. If you made a passkey with it, sign in with that passkey. If not, ask the project's owner for a new one."
         );
+        const signIn = alert.page().getByRole("link", { name: "Sign in with your passkey" });
+        await signIn.click();
+        await expect(alert.page()).toHaveURL(`${outside}/`);
+        await expect(
+          alert.page().getByRole("button", { name: "Sign in with a passkey" })
+        ).toBeVisible();
       });
 
       await test.step("alice's Access tab shows when the outsider's passkey was enrolled", async () => {
@@ -320,14 +333,18 @@ test.describe("outside passkey sign-in", () => {
         );
       });
 
-      await test.step("the owner's Reset ends the outsider's sign-in and deletes the passkey, so it signs in no more", async () => {
+      await test.step("the owner's Reset ends the outsider's sign-in, deletes the passkey so it signs in no more, and takes away the link an Invite showed", async () => {
         await reload(alicePage);
         const row = personRow(alicePage, outsider);
+        await invite(alicePage, outsider);
         alicePage.once("dialog", (dialog) => void dialog.accept());
         await row.getByRole("button", { name: `Reset ${outsider}` }).click();
         await expect(row.getByTestId("access-passkey")).toHaveCount(0);
         await expect(row.getByRole("button", { name: `Reset ${outsider}` })).toHaveCount(0);
-
+        // Reset deleted the link, so the row no longer offers it to send.
+        await expect(
+          row.getByRole("textbox", { name: `Enrollment link for ${outsider}` })
+        ).toHaveCount(0);
         await reload(outsiderPage);
         await outsiderPage.getByRole("button", { name: "Sign in with a passkey" }).click();
         await expect(outsiderPage.getByRole("alert")).toHaveText(
@@ -336,10 +353,21 @@ test.describe("outside passkey sign-in", () => {
         expect((await whoami(outsiderPage)).status, "the outsider's GET /auth/whoami").toBe(401);
       });
 
-      await test.step("each origin serves only its own sign-in", async () => {
+      await test.step("each origin serves only its own sign-in, and no page of another site may frame the outside origin's", async () => {
         for (const path of ["/auth/start", "/auth/callback"]) {
           const answer = await request.get(`${outside}${path}`, { maxRedirects: 0 });
           expect(answer.status(), `GET ${outside}${path}`).toBe(404);
+        }
+        // The outside origin's pages refuse every frame; the canonical origin's same page is the
+        // control, which sends neither header.
+        for (const [origin, policy, frameOptions] of [
+          [outside, "frame-ancestors 'none'", "DENY"],
+          [canonical, undefined, undefined],
+        ] as const) {
+          const page = await request.get(`${origin}/enroll`);
+          expect(page.status(), `GET ${origin}/enroll`).toBe(200);
+          expect(page.headers()["content-security-policy"], `GET ${origin}/enroll`).toBe(policy);
+          expect(page.headers()["x-frame-options"], `GET ${origin}/enroll`).toBe(frameOptions);
         }
         for (const path of [
           "/auth/passkey/register/begin",

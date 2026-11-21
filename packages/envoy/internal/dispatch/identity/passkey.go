@@ -238,21 +238,37 @@ func (p *Passkeys) invitedPerson(ctx context.Context, token string) ([32]byte, s
 	return hash, invitation, account, nil
 }
 
+// EnrollmentOptions is an enrollment's begin as the browser reads it: the options
+// navigator.credentials.create takes (protocol.CredentialCreation, whose fields it writes at the
+// top level) and the invitation, so the page names the project the link is for and the owner who
+// made it before the person makes a passkey.
+type EnrollmentOptions struct {
+	*protocol.CredentialCreation
+	Invitation EnrollmentInvitation `json:"invitation"`
+}
+
+// EnrollmentInvitation is what an enrollment page says of its link: the key of the project whose
+// access list names the person, and the login of the owner who made the link.
+type EnrollmentInvitation struct {
+	Project string `json:"project"`
+	MadeBy  string `json:"made_by"`
+}
+
 // BeginEnrollment begins the enrollment of a passkey with the link token names, refused as
-// invitedPerson refuses it: the options the browser passes to navigator.credentials.create, and the
-// ceremony its finish completes. It uses no link; it records the ceremony as one a finish may take
-// once (store.PgPasskeys.BeginCeremony). The user handle is the
-// person's passkey subject, the one their row records under the outside origin or, at their first
-// enrollment, a new one; the passkeys they hold already are excluded.
-func (p *Passkeys) BeginEnrollment(ctx context.Context, token string) (*protocol.CredentialCreation, PasskeyCeremony, error) {
+// invitedPerson refuses it: the options the browser passes to navigator.credentials.create with
+// the link's project and maker, and the ceremony its finish completes. It uses no link; it records
+// the ceremony as one a finish may take once (store.PgPasskeys.BeginCeremony). The user handle is
+// the person's passkey subject, the one their row records under the outside origin or, at their
+// first enrollment, a new one; the passkeys they hold already are excluded.
+func (p *Passkeys) BeginEnrollment(ctx context.Context, token string) (EnrollmentOptions, PasskeyCeremony, error) {
 	hash, invitation, account, err := p.invitedPerson(ctx, token)
 	if err != nil {
-		return nil, PasskeyCeremony{}, err
+		return EnrollmentOptions{}, PasskeyCeremony{}, err
 	}
 	subject := account.Subject
 	if subject == "" {
 		if subject, err = NewPasskeySubject(); err != nil {
-			return nil, PasskeyCeremony{}, err
+			return EnrollmentOptions{}, PasskeyCeremony{}, err
 		}
 	}
 	excluded := make([]protocol.CredentialDescriptor, 0, len(account.Credentials))
@@ -262,12 +278,16 @@ func (p *Passkeys) BeginEnrollment(ctx context.Context, token string) (*protocol
 	user := passkeyUser{handle: []byte(subject), email: invitation.Email}
 	creation, session, err := p.relyingParty.BeginRegistration(user, webauthn.WithExclusions(excluded))
 	if err != nil {
-		return nil, PasskeyCeremony{}, fmt.Errorf("begin the passkey enrollment: %w", err)
+		return EnrollmentOptions{}, PasskeyCeremony{}, fmt.Errorf("begin the passkey enrollment: %w", err)
 	}
 	if err := p.store.BeginCeremony(ctx, session.Challenge, passkeyCeremonyTimeout); err != nil {
-		return nil, PasskeyCeremony{}, err
+		return EnrollmentOptions{}, PasskeyCeremony{}, err
 	}
-	return creation, PasskeyCeremony{Enrollment: true, Session: *session, TokenHash: hash[:], Email: invitation.Email, Subject: subject}, nil
+	options := EnrollmentOptions{
+		CredentialCreation: creation,
+		Invitation:         EnrollmentInvitation{Project: invitation.Project, MadeBy: invitation.MadeBy},
+	}
+	return options, PasskeyCeremony{Enrollment: true, Session: *session, TokenHash: hash[:], Email: invitation.Email, Subject: subject}, nil
 }
 
 // FinishEnrollment completes ceremony, an enrollment BeginEnrollment began, with body, the browser's

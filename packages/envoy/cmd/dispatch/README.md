@@ -4363,6 +4363,7 @@ Every server process publishes its dashboard build's assets into the database at
 it never reads `index.html` or a non-asset path from there.
 A path no build published remains `404 {"error":"not found"}` and any other read failure is a 502 with no cache header.
 The dashboard's pages (`index.html` and the shell served for a browser route) carry `Cache-Control: no-cache` and an `ETag` of their bytes, no `Last-Modified`, and its hashed `/assets` files `public, max-age=31536000, immutable`, so a browser keeps no page from another build.
+At `DISPATCH_OUTSIDE_ORIGIN` every dashboard answer also carries `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`, so no page of another site frames the enrollment page an owner's link opens or the passkey sign-in; the canonical origin's answers carry neither.
 
 
 In this list, header identity means only the test/local harness mode described above.
@@ -4411,6 +4412,7 @@ Each item below names a path with its method and identity, then its purpose.
   A restricted member's passkey ceremonies (`routes/passkey.go`, `identity.Passkeys`, WebAuthn through `github.com/go-webauthn/webauthn`): the relying party ID is the outside origin's host and the one origin it takes is the outside origin, every credential is discoverable, user verification is required and no attestation is asked for.
   At `DISPATCH_SERVER_URL`, and on a server without the setting, each answers the `404` a path no route serves answers; a request from a page of another origin (an `Origin` that is not the outside origin, or none with `Sec-Fetch-Site` other than `same-origin`) is `403` "invalid request origin".
   `register/begin` takes `{"token"}`, the fragment of the owner's link (`POST /api/v1/projects/{key}/access/people/{email}/invitations`), and answers the options `navigator.credentials.create` takes, naming as the user the invited address and as the user handle the person's passkey subject: 16 random bytes, base64url, made at their first enrollment and kept after.
+  Beside them it answers `invitation`, `{"project", "made_by"}`: the key of the project the link is for and the login of the owner who made it, which the enrollment page names before the person makes a passkey.
   It uses no link.
   `register/finish` takes what `navigator.credentials.create` made and, in one transaction, uses the link, signs the person in as a restricted member through the account binding (`PgPeopleStore.signInAccountTx`, under the issuer `people.sub_issuer` records, the outside origin) and stores the passkey (table `passkeys`), answering `{"login"}` and the host-only session cookie.
   `login/begin` takes `{}` and answers the options `navigator.credentials.get` takes, naming no credential; `login/finish` takes what it made, verifies it against the passkey its credential id names and its user handle, asks the rule again (`AdmitsRestricted`), stores the new signature counter and signs the person in, answering `{"login"}` and the cookie.

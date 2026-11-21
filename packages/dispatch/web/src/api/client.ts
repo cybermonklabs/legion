@@ -16,7 +16,7 @@ import {
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
   type PasskeyAssertion,
-  type PasskeyCreationOptions,
+  type PasskeyEnrollmentOptions,
   type PasskeyEnrollmentStart,
   type PasskeyRegistration,
   type PasskeyRequestOptions,
@@ -2004,8 +2004,8 @@ export class DispatchApiClient {
   }
 
   /** The enrollment's options for the link whose fragment is `token`, which it checks and leaves
-   *  unused. */
-  passkeyEnrollmentOptions(token: string): Promise<PasskeyCreationOptions> {
+   *  unused, with the project the link is for and the owner who made it. */
+  passkeyEnrollmentOptions(token: string): Promise<PasskeyEnrollmentOptions> {
     return this.passkeyStep("/auth/passkey/register/begin", {
       token,
     } satisfies PasskeyEnrollmentStart);

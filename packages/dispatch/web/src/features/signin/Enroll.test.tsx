@@ -55,6 +55,10 @@ test("the link's page names the address, makes the passkey with Dispatch's optio
   const app = renderApp(`/enroll#${token}`);
   try {
     expect(await screen.findByRole("heading", { name: "Enroll a passkey" })).toBeInTheDocument();
+    // Who invited the person, and to what, before anything is made.
+    expect(
+      await screen.findByText(wholeText("alice@example.com invited you to the project PRIV."))
+    ).toBeInTheDocument();
     expect(
       await screen.findByText(wholeText(`The passkey signs you in to Dispatch as ${ana}.`))
     ).toBeInTheDocument();
@@ -89,7 +93,7 @@ test("a link Dispatch refuses says why, and offers nothing to press", async () =
       [
         "INVITATION_USED",
         410,
-        "This link has been used already. Ask the project's owner for a new one.",
+        "This link has been used already. If you made a passkey with it, sign in with that passkey. If not, ask the project's owner for a new one.",
       ],
       ["INVITATION_EXPIRED", 410, "This link has expired. Ask the project's owner for a new one."],
       [
@@ -117,6 +121,12 @@ test("a link Dispatch refuses says why, and offers nothing to press", async () =
         expect(screen.getByRole("heading", { name: "Enroll a passkey" })).toBeInTheDocument();
         expect(screen.queryByRole("button", { name: "Create a passkey" })).not.toBeInTheDocument();
         expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+        // Only a used link can have made the person a passkey, so only it offers the sign-in.
+        expect(screen.queryAllByRole("link", { name: "Sign in with your passkey" })).toHaveLength(
+          code === "INVITATION_USED" ? 1 : 0
+        );
+        // No refused link's code stays in the address either.
+        expect(screen.getByLabelText("address")).toHaveTextContent(/^\/enroll$/);
       } finally {
         app.restore();
         begin.mockRestore();
@@ -194,10 +204,10 @@ test("a link used in another tab between the check and the press says so, and ta
   try {
     await user.click(await screen.findByRole("button", { name: "Create a passkey" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "This link has been used already. Ask the project's owner for a new one."
+      "This link has been used already. If you made a passkey with it, sign in with that passkey. If not, ask the project's owner for a new one."
     );
     expect(screen.queryByRole("button", { name: "Create a passkey" })).not.toBeInTheDocument();
-    expect(screen.getByLabelText("address")).toHaveTextContent(`/enroll#${token}`);
+    expect(screen.getByLabelText("address")).toHaveTextContent(/^\/enroll$/);
   } finally {
     app.restore();
     browser.restore();
@@ -231,5 +241,50 @@ test("an enrollment another one raced says so, and the next press starts over fr
     browser.restore();
     begin.mockRestore();
     finish.mockRestore();
+  }
+});
+
+// The link's code is a live way in until it is used: the page reads it once, then replaces the
+// tab's history entry with one without it, so the address bar and a copy of the address carry
+// none. The page keeps the code it read, and checks and enrolls with it.
+test("the page takes the link's code out of the address once it reads it, and enrolls with the code", async () => {
+  const user = userEvent.setup();
+  const browser = installFakePasskeys();
+  const begin = spyOn(api, "passkeyEnrollmentOptions").mockResolvedValue(enrollmentOptions(ana));
+  const finish = spyOn(api, "passkeyEnroll").mockResolvedValue({ login: ana });
+  const app = renderApp(`/enroll#${token}`);
+  try {
+    await waitFor(() => expect(screen.getByLabelText("address")).toHaveTextContent(/^\/enroll$/));
+    await user.click(await screen.findByRole("button", { name: "Create a passkey" }));
+    await waitFor(() => expect(screen.getByLabelText("address")).toHaveTextContent(/^\/$/));
+    expect(begin.mock.calls).toEqual([[token], [token]]);
+    expect(finish).toHaveBeenCalledWith(createdPasskeyJSON);
+  } finally {
+    app.restore();
+    browser.restore();
+    begin.mockRestore();
+    finish.mockRestore();
+  }
+});
+
+// A used link may be the person's own: they enrolled with it, and opened it again, or their finish
+// went through and its answer was lost. Their passkey signs them in, so the page sends them there.
+test("a used link links to the sign-in, where the passkey it made signs the person in", async () => {
+  const user = userEvent.setup();
+  const browser = installFakePasskeys();
+  const begin = spyOn(api, "passkeyEnrollmentOptions").mockRejectedValue(
+    new ApiError(410, { code: "INVITATION_USED", error: "used" })
+  );
+  const app = renderApp(`/enroll#${token}`);
+  try {
+    await user.click(await screen.findByRole("link", { name: "Sign in with your passkey" }));
+    await waitFor(() => expect(screen.getByLabelText("address")).toHaveTextContent(/^\/$/));
+    expect(
+      await screen.findByRole("button", { name: "Sign in with a passkey" })
+    ).toBeInTheDocument();
+  } finally {
+    app.restore();
+    browser.restore();
+    begin.mockRestore();
   }
 });

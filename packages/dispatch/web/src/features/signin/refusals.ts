@@ -3,11 +3,13 @@ import type { PasskeyRefusal } from "@legion/contracts";
 import { ApiError, NetworkError, RequestTimeoutError } from "../../api/client";
 import { ceremonyFailure } from "./webauthn";
 
-/** What a person reads when a passkey ceremony did not sign them in, and whether pressing the
- *  ceremony's button again can get past it. */
+/** What a person reads when a passkey ceremony did not sign them in, whether pressing the
+ *  ceremony's button again can get past it, and whether a passkey the person made already may
+ *  sign them in instead (`signIn`: the page then links to the sign-in). */
 export interface CeremonyRefusal {
   readonly message: string;
   readonly retry: boolean;
+  readonly signIn?: boolean;
 }
 
 type Ceremony = "create" | "get";
@@ -25,9 +27,13 @@ const refusals: Record<Ceremony, Partial<Record<PasskeyRefusal, CeremonyRefusal>
       message: `Dispatch does not hold this link: the project's owner made a newer one, reset the address, or took it off the access list. ${newLinkFromOwner}`,
       retry: false,
     },
+    // The person may have made a passkey with it: they opened the link again after enrolling, or
+    // their enrollment went through and its answer was lost.
     INVITATION_USED: {
-      message: `This link has been used already. ${newLinkFromOwner}`,
+      message:
+        "This link has been used already. If you made a passkey with it, sign in with that passkey. If not, ask the project's owner for a new one.",
       retry: false,
+      signIn: true,
     },
     INVITATION_EXPIRED: { message: `This link has expired. ${newLinkFromOwner}`, retry: false },
     INVITATION_NOT_LISTED: {

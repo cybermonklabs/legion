@@ -116,8 +116,9 @@ func (r *router) whoamiSignIn(req *http.Request) string {
 }
 
 // passkeyRegisterBegin is POST /auth/passkey/register/begin, body {"token"}: the link's fragment.
-// It answers the creation options (protocol.CredentialCreation) and sets the ceremony cookie; it
-// uses no link, and records only the ceremony a finish takes once (passkey_ceremonies).
+// It answers the creation options (protocol.CredentialCreation) with the link's invitation, the
+// project it is for and the owner who made it (identity.EnrollmentOptions), and sets the ceremony
+// cookie; it uses no link, and records only the ceremony a finish takes once (passkey_ceremonies).
 func (r *router) passkeyRegisterBegin(w http.ResponseWriter, req *http.Request) {
 	var body struct {
 		Token string `json:"token"`
@@ -126,7 +127,7 @@ func (r *router) passkeyRegisterBegin(w http.ResponseWriter, req *http.Request) 
 		writeCodeError(w, http.StatusBadRequest, "the body is {\"token\": the link's fragment}", "PASSKEY_REFUSED")
 		return
 	}
-	creation, ceremony, err := r.ctx.Passkeys.BeginEnrollment(req.Context(), strings.TrimSpace(body.Token))
+	options, ceremony, err := r.ctx.Passkeys.BeginEnrollment(req.Context(), strings.TrimSpace(body.Token))
 	if err != nil {
 		writePasskeyRefusal(w, err, true)
 		return
@@ -134,7 +135,7 @@ func (r *router) passkeyRegisterBegin(w http.ResponseWriter, req *http.Request) 
 	if !r.setPasskeyCeremony(w, ceremony) {
 		return
 	}
-	api.WriteJSON(w, http.StatusOK, creation)
+	api.WriteJSON(w, http.StatusOK, options)
 }
 
 // passkeyRegisterFinish is POST /auth/passkey/register/finish, body the PublicKeyCredential

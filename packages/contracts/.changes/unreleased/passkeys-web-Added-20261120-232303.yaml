@@ -1,10 +1,11 @@
 kind: Added
 body: |-
   The passkey ceremonies at Dispatch's outside origin have shapes of their own:
-  `PasskeyCreationOptions`, `PasskeyRequestOptions`, `PasskeyRegistration`, `PasskeyAssertion`,
-  `PasskeyEnrollmentStart` and `PasskeySignedIn`, with `PASSKEY_REFUSALS` (`PasskeyRefusal`), the
-  codes a ceremony is refused with, and `AUTH_SIGN_IN_PASSKEY`, the `sign_in` of the outside
-  origin's `401 NO_IDENTITY`.
+  `PasskeyEnrollmentOptions` (the enrollment's `PasskeyCreationOptions` and the link's
+  `PasskeyInvitation`, the project it is for and the owner who made it), `PasskeyRequestOptions`,
+  `PasskeyRegistration`, `PasskeyAssertion`, `PasskeyEnrollmentStart` and `PasskeySignedIn`, with
+  `PASSKEY_REFUSALS` (`PasskeyRefusal`), the codes a ceremony is refused with, and
+  `AUTH_SIGN_IN_PASSKEY`, the `sign_in` of the outside origin's `401 NO_IDENTITY`.
 time: 2026-11-20T23:23:03Z
 custom:
     Issue: passkeys-web

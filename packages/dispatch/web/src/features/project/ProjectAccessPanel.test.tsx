@@ -993,9 +993,13 @@ test("Reset takes away the link an earlier Invite showed, since Dispatch deletes
     expect(
       within(personRow(ana)).queryByRole("button", { name: `Copy the link for ${ana}` })
     ).not.toBeInTheDocument();
-    expect(within(personRow(ana)).queryByTestId("access-invitation-expiry")).not.toBeInTheDocument();
+    expect(
+      within(personRow(ana)).queryByTestId("access-invitation-expiry")
+    ).not.toBeInTheDocument();
     // Invite still makes a new link.
-    expect(within(personRow(ana)).getByRole("button", { name: `Invite ${ana}` })).toBeInTheDocument();
+    expect(
+      within(personRow(ana)).getByRole("button", { name: `Invite ${ana}` })
+    ).toBeInTheDocument();
   } finally {
     panel.restore();
     invite.mockRestore();

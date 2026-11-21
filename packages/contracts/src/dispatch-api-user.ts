@@ -47,8 +47,9 @@ export const AUTH_SIGN_IN_PASSKEY = "passkey";
  * cookie beside it.
  *
  * - `/auth/passkey/register/begin` takes `{token}`, the link's fragment (`PasskeyEnrollmentStart`),
- *   checks the link without using it, and answers `PasskeyCreationOptions`, whose `user.name` is
- *   the address the link was made for.
+ *   checks the link without using it, and answers `PasskeyEnrollmentOptions`: the creation
+ *   options, whose `user.name` is the address the link was made for, and the link's `invitation`,
+ *   the project it is for and the owner who made it.
  * - `/auth/passkey/register/finish` takes `PasskeyRegistration`, stores the passkey, uses the
  *   link, and signs the person in (`PasskeySignedIn`).
  * - `/auth/passkey/login/begin` takes `{}` and answers `PasskeyRequestOptions` for any passkey
@@ -69,7 +70,8 @@ export interface PasskeyCredentialDescriptor {
   readonly transports?: readonly string[];
 }
 
-/** `/auth/passkey/register/begin`'s answer: go-webauthn's `protocol.CredentialCreation`. */
+/** The creation options of `/auth/passkey/register/begin`'s answer: go-webauthn's
+ *  `protocol.CredentialCreation`. */
 export interface PasskeyCreationOptions {
   readonly publicKey: {
     readonly rp: { readonly id?: string; readonly name: string };
@@ -88,6 +90,18 @@ export interface PasskeyCreationOptions {
     readonly attestation?: string;
     readonly extensions?: Readonly<Record<string, unknown>>;
   };
+}
+
+/** What the enrollment page says of the link before the person makes a passkey: the key of the
+ *  project whose access list names them, and the login of the owner who made the link. */
+export interface PasskeyInvitation {
+  readonly project: string;
+  readonly made_by: string;
+}
+
+/** `/auth/passkey/register/begin`'s answer: the creation options, and the link's invitation. */
+export interface PasskeyEnrollmentOptions extends PasskeyCreationOptions {
+  readonly invitation: PasskeyInvitation;
 }
 
 /** `/auth/passkey/login/begin`'s answer: go-webauthn's `protocol.CredentialAssertion`. */

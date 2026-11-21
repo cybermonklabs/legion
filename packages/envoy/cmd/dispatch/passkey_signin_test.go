@@ -267,6 +267,38 @@ func TestPasskeyEnrollsOnlyAListedOutsideAddress(t *testing.T) {
 	}
 }
 
+// TestTheEnrollmentBeginNamesTheProjectAndItsOwner (R5): the enrollment's begin answers, beside the
+// options navigator.credentials.create takes, the project the link is for and the owner who made
+// it, so the enrollment page names both before the person makes a passkey.
+//
+// Control: leave MadeBy out of the invitation BeginEnrollment answers, and the begin answers an
+// empty made_by and the row fails naming it.
+func TestTheEnrollmentBeginNamesTheProjectAndItsOwner(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	begun := r.beginEnrollment(r.handler, r.invite(t, outsiderEmail))
+	var answer struct {
+		PublicKey struct {
+			Challenge string `json:"challenge"`
+			User      struct {
+				Name string `json:"name"`
+			} `json:"user"`
+		} `json:"publicKey"`
+		Invitation struct {
+			Project string `json:"project"`
+			MadeBy  string `json:"made_by"`
+		} `json:"invitation"`
+	}
+	if begun.Code != http.StatusOK || json.Unmarshal(begun.Body.Bytes(), &answer) != nil {
+		t.Fatalf("the enrollment's begin answered %d %s, want 200 with the options and the invitation", begun.Code, begun.Body.String())
+	}
+	if answer.PublicKey.Challenge == "" || answer.PublicKey.User.Name != outsiderEmail {
+		t.Fatalf("the begin's options are %+v, want a challenge and the user %s at the top level's publicKey", answer.PublicKey, outsiderEmail)
+	}
+	if answer.Invitation.Project != "PRIV" || answer.Invitation.MadeBy != privOwner {
+		t.Fatalf("the begin's invitation is %+v, want project PRIV made by %s", answer.Invitation, privOwner)
+	}
+}
+
 // TestTheInvitationIsSingleUseAndExpires (R5): a link enrolls once, 410 INVITATION_USED after;
 // it lapses 24 hours after it was made, 410 INVITATION_EXPIRED; and a newer link for the same
 // person ends the earlier one, 404 INVITATION_UNKNOWN, as a token no link holds is.

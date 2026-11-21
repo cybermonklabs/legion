@@ -48,11 +48,12 @@ var (
 const InvitationLifetime = 24 * time.Hour
 
 // Invitation is one link an owner made (outside_invitations), as its token's hash reads it: the
-// email and project it is for, whether it was used, and whether the database's clock is at or past
-// when it lapses.
+// email and project it is for, the login of the owner who made it, whether it was used, and
+// whether the database's clock is at or past when it lapses.
 type Invitation struct {
 	Email   string
 	Project string
+	MadeBy  string
 	Used    bool
 	Expired bool
 }
@@ -297,9 +298,9 @@ func (p *PgPasskeys) Invitation(ctx context.Context, tokenHash [32]byte) (Invita
 // readInvitation reads the link tokenHash names through q, with lock appended to its select.
 func readInvitation(ctx context.Context, q PasskeyReader, tokenHash [32]byte, lock string) (Invitation, error) {
 	var invitation Invitation
-	err := q.QueryRow(ctx, `select email, project_key, used_at is not null, expires_at <= now()
+	err := q.QueryRow(ctx, `select email, project_key, made_by, used_at is not null, expires_at <= now()
 		from outside_invitations where token_sha256 = $1 `+lock, tokenHash[:]).
-		Scan(&invitation.Email, &invitation.Project, &invitation.Used, &invitation.Expired)
+		Scan(&invitation.Email, &invitation.Project, &invitation.MadeBy, &invitation.Used, &invitation.Expired)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Invitation{}, ErrInvitationUnknown
 	}
