@@ -1,11 +1,14 @@
-// Package projectaccesstest is a stand-in for Dispatch's two project-access routes, the ones the
-// broker's projectaccess client asks: whether a person may see a project, and what kind of member
-// a person is. It answers from rows a test gives it, holds every caller to the one bearer it
-// mints, counts the calls it answers, and can be made to fail, so a test can show what the broker
-// does when Dispatch cannot be reached. It is an ordinary package rather than a _test.go file so
-// every broker package's tests, and the real binary's, can serve it.
+// Package projectaccesstest is a stand-in for Dispatch's access routes, the ones the broker's
+// clients of that Dispatch ask: whether a person may see a project and what kind of member a
+// person is (projectaccess), and which repositories a project's issues resolve to (projectrepos).
+// One stand-in serves all three, from the same rows, so a test points both clients at one Dispatch
+// as a deployment does. It holds every caller to the one bearer it mints, counts the calls it
+// answers, and can be made to fail, stall or answer bytes of a test's choosing, so a test can show
+// what the broker does when Dispatch cannot be reached or gives no whole answer. It is an ordinary
+// package rather than a _test.go file so every broker package's tests, and the real binary's, can
+// serve it.
 //
-// It spells the wire on its own, field by field, rather than encoding the client's own type: a
+// It spells the wire on its own, field by field, rather than encoding the clients' own types: a
 // client that read a field under a name Dispatch does not send would then disagree with this
 // stand-in, where one declaration shared by both would agree with itself and prove nothing.
 package projectaccesstest
@@ -20,16 +23,21 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
-// The paths of Dispatch's two project-access routes, as projectaccess asks them.
+// The paths of Dispatch's access routes, as projectaccess and projectrepos ask them.
 const (
-	projectPath = "/api/v1/access/projects/"
-	personPath  = "/api/v1/access/person"
+	projectPath        = "/api/v1/access/projects/"
+	repositoriesSuffix = "/repositories"
+	personPath         = "/api/v1/access/person"
 )
 
-// Row is one project as Dispatch holds it: whether it is public or private, its owner, the people
-// its access list names, and the Slack channels its owner named.
+// Row is one project as Dispatch holds it: whether it is public or private, its owner, the
+// people its access list names, the Slack channels its owner named, and two lists of
+// repositories Dispatch keeps apart: the ones it maps to the project, which no answer carries
+// (Dispatch's membership answer names no repositories), and the ones its repository answer says
+// the project's issues resolve to.
 type Row struct {
 	// Visibility is "public" or "private".
 	Visibility string
@@ -37,6 +45,13 @@ type Row struct {
 	Owner string
 	// Listed are the lowercase logins the project's access list names.
 	Listed []string
+	// Repositories are the "owner/name" repositories Dispatch maps to the project. No answer of
+	// this stand-in carries them, as no answer of Dispatch does; a test sets them to show the
+	// repository answer never answers this list.
+	Repositories []string
+	// Resolved are the "owner/name" repositories the project's issues resolve to, which the
+	// repository answer carries, sorted.
+	Resolved []string
 	// SlackChannels are the Slack channel ids the project's owner named. A real Dispatch always
 	// carries the key, empty when the project names none, so this stand-in does too — unless
 	// OmitSlackChannels, which is a Dispatch from before dispatch://INFRA-3862's #t-a-31 and
@@ -57,12 +72,19 @@ type Server struct {
 	// Account reads Token, as ciphertoken.AccountToken reads a projected token from its file.
 	Account StaticAccount
 
+	mu     sync.Mutex
 	rows   map[string]Row
 	people map[string]string
+	calls  int
+	down   bool
+	answer *rawAnswer
+	stall  time.Duration
+}
 
-	mu    sync.Mutex
-	calls int
-	down  bool
+// rawAnswer is a status and body the stand-in answers every call with in place of its rows.
+type rawAnswer struct {
+	status int
+	body   string
 }
 
 // StaticAccount is a bearer that never rotates: a ciphertoken.Account for a test.
@@ -82,7 +104,8 @@ func NewServer(t testing.TB, rows map[string]Row, people map[string]string) *Ser
 	}
 	s := &Server{Token: "dispatch-access-" + hex.EncodeToString(bearer[:]), rows: map[string]Row{}, people: map[string]string{}}
 	for key, row := range rows {
-		row.Listed, row.SlackChannels = slices.Clone(row.Listed), slices.Clone(row.SlackChannels)
+		row.Listed, row.Repositories, row.Resolved = slices.Clone(row.Listed), slices.Clone(row.Repositories), slices.Clone(row.Resolved)
+		row.SlackChannels = slices.Clone(row.SlackChannels)
 		s.rows[key] = row
 	}
 	for login, kind := range people {
@@ -111,11 +134,38 @@ func (s *Server) SetDown(down bool) {
 	s.down = down
 }
 
+// SetRepositories makes the list project's issues resolve to, which the repository route answers,
+// a copy of list from now on; an empty list is answered as []. The project's mapped list, which
+// the membership answer carries, does not change.
+func (s *Server) SetRepositories(project string, list []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row := s.rows[project]
+	row.Resolved = slices.Clone(list)
+	s.rows[project] = row
+}
+
+// SetAnswer makes every later request with the right bearer be answered status and body as they
+// are, in place of the rows: an answer that is no answer, for a client to refuse.
+func (s *Server) SetAnswer(status int, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.answer = &rawAnswer{status: status, body: body}
+}
+
+// SetStall makes every later request wait d before it is answered, or until its caller gives up.
+func (s *Server) SetStall(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stall = d
+}
+
 // SetRow makes Dispatch hold row for key from the next request on, as an owner's change of a
 // project's visibility or access list does, so a test can change Dispatch under a client whose
 // cache already holds the earlier answer.
 func (s *Server) SetRow(key string, row Row) {
-	row.Listed, row.SlackChannels = slices.Clone(row.Listed), slices.Clone(row.SlackChannels)
+	row.Listed, row.Repositories, row.Resolved = slices.Clone(row.Listed), slices.Clone(row.Repositories), slices.Clone(row.Resolved)
+	row.SlackChannels = slices.Clone(row.SlackChannels)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rows[key] = row
@@ -124,7 +174,7 @@ func (s *Server) SetRow(key string, row Row) {
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.calls++
-	down := s.down
+	down, canned, stall := s.down, s.answer, s.stall
 	s.mu.Unlock()
 	if down {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "UNAVAILABLE", "error": "the stand-in is down"})
@@ -138,7 +188,22 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"code": "ACCESS_ACCOUNT_REQUIRED", "error": "the stand-in takes its own bearer alone"})
 		return
 	}
+	if stall > 0 {
+		select {
+		case <-time.After(stall):
+		case <-r.Context().Done():
+			return
+		}
+	}
+	if canned != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(canned.status)
+		_, _ = w.Write([]byte(canned.body))
+		return
+	}
 	person := r.URL.Query().Get("person")
+	key, project := strings.CutPrefix(r.URL.Path, projectPath)
+	key, repositories := strings.CutSuffix(key, repositoriesSuffix)
 	switch {
 	case r.URL.Path == personPath:
 		if person == "" {
@@ -146,13 +211,18 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"person": person, "member_kind": s.kind(person)})
-	case strings.HasPrefix(r.URL.Path, projectPath):
-		key := strings.TrimPrefix(r.URL.Path, projectPath)
-		s.mu.Lock()
-		row, held := s.rows[key]
-		s.mu.Unlock()
-		if !held || strings.Contains(key, "/") {
+	case project:
+		row, held := s.row(key)
+		if !held || key == "" || strings.Contains(key, "/") {
 			writeJSON(w, http.StatusNotFound, map[string]any{"code": "PROJECT_NOT_FOUND", "error": "no such project"})
+			return
+		}
+		if repositories {
+			// Dispatch's repository answer: the project and the list its issues resolve to,
+			// sorted byte-wise, [] for none. No answer carries the mapped list.
+			resolved := append([]string{}, row.Resolved...)
+			slices.Sort(resolved)
+			writeJSON(w, http.StatusOK, map[string]any{"project": key, "repositories": resolved})
 			return
 		}
 		answer := map[string]any{
@@ -174,6 +244,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"code": "NOT_FOUND", "error": r.URL.Path})
 	}
+}
+
+// row is the project key's row, and whether the stand-in holds it.
+func (s *Server) row(key string) (Row, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row, held := s.rows[key]
+	return row, held
 }
 
 // kind is a login's member kind, "none" for a login the stand-in does not hold or no login at all.

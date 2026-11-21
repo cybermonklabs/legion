@@ -559,13 +559,15 @@ readonly unchanged_sql
 
 # The reads E5 wants zero from, each stated once here and run on both sides of the erases: before
 # them each must find the rows that held the secret (E3), so after them each zero is an erase's
-# work. Each reads the rows of an erased node alone - the comment's own row, and the version,
-# the block texts and the excerpts of the document the block is of - since the planted rows of
-# the other nodes hold the same bytes and stand.
+# work. Each reads the rows of an erased node alone - the comment's own row and its keyword
+# version, and the version, the block texts and the excerpts of the document the block is of -
+# since the planted rows of the other nodes hold the same bytes and stand.
 readonly node_tuples_sql="select count(*) from graph_tuples where (from_kind = 'comment' and from_id = '$comment') or (to_kind = 'comment' and to_id = '$comment')"
 readonly version_sql="select count(*) from artifact_versions where artifact_id = '$document' and number = $version"
+readonly keyword_version_sql="select count(*) from search_text_versions where kind = 'comment' and id = '$comment' and body like '%$secret%'"
 readonly -a store_reads=(
   "comment row|select count(*) from comments where id = '$comment' and body like '%$secret%'"
+  "keyword version|$keyword_version_sql"
   "document version|select count(*) from artifact_versions where artifact_id = '$document' and markdown like '%$secret%'"
   "block text|select count(*) from document_block_texts where artifact_id = '$document' and text like '%$secret%'"
   "block excerpt|select count(*) from document_blocks where artifact_id = '$document' and excerpt like '%$secret%'"
@@ -606,9 +608,13 @@ query E3 "count the comment's own event rows holding the secret" \
 pass E3 "the event log holds $answer row(s) of the comment's own with the secret"
 
 # The rest of what E5 reads gone, read here while it stands: the node's tuples, the version that
-# holds the erased text, and each of the four stores of the erased nodes.
+# holds the erased text, and each of the five stores of the erased nodes. The server's keyword
+# fill writes the comment's keyword version on its own, once the comment's event has committed
+# (textversions.Run), and no request of this driver can ask for it, so the driver waits for it
+# before the stores are read.
 want_held E3 "the comment's node holds tuples before the erase" "$node_tuples_sql"
 want_held E3 "the version holding the secret is stored before the erase" "$version_sql"
+held_soon E3 "the keyword fill wrote the comment's keyword version holding the secret" "$keyword_version_sql"
 for read in "${store_reads[@]}"; do
   want_held E3 "a ${read%%|*} holds the secret before the erase" "${read#*|}"
 done
@@ -1031,7 +1037,12 @@ readonly yes_others_sql="select md5(concat_ws('|',
     (select string_agg(e.id || ':' || e.payload::text, ';' order by e.id) from events e where e.issue_key = '$yes_key')))"
 
 # The listing and its confirmation run under the block-index pass's lease, as the erases above
-# do, so no tick writes a window of the comment between the two.
+# do, so no tick writes a window of the comment between the two. The keyword fill writes on its
+# own as well, the keyword versions of each event in event order, and the listing names the
+# comment's own and leaves those of the person's comment and of the issue that hold Yes, so the
+# driver waits for the comment's, written last of them, before the listing is read.
+held_soon E10 "the keyword fill wrote the keyword version of the comment whose whole body is Yes" \
+  "select count(*) from search_text_versions where kind = 'comment' and id = '$yes_comment'"
 hold_block_index E10
 query E10 "read the rows that hold Yes for other nodes, whole" "$yes_others_sql"
 readonly yes_others_before="$answer"
