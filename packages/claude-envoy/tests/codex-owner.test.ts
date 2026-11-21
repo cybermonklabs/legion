@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
+import { chmodSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import {
@@ -88,6 +88,73 @@ describe("the owner of a codex process's Envoy session", () => {
     utimesSync(join(directory, "0.json"), longAgo, longAgo)
     expect((await currentOwner(directory, probeOf({ 102: "s102" })))?.pid).toBe(102)
   })
+
+  test("no owner is decided above a freed number while a server is between its read of the directory and its link", async () => {
+    const directory = join(root, "held")
+    await registerServer(directory, 2 ** 22 + 17, "dead")
+    const probe = probeOf({ 301: "s301", 302: "s302", 303: "s303" })
+    const reached = Promise.withResolvers<void>()
+    const held = Promise.withResolvers<void>()
+    // Server 301 reads the directory (one dead entry: its number is 2) and is held before its
+    // link, as a server the scheduler stalls there is.
+    const placing = registerServer(directory, 301, "s301", () => {
+      reached.resolve()
+      return held.promise
+    })
+    await reached.promise
+    // Meanwhile 302 publishes (2) and 303 (3), and 302, the owner, stops and frees its number.
+    const first = await registerServer(directory, 302, "s302")
+    const second = await registerServer(directory, 303, "s303")
+    await unregisterServer(directory, first)
+    // 301 can still take the number 302 freed, below 303's, so 303 is not told it owns.
+    expect(await currentOwner(directory, probe)).toBeUndefined()
+    held.resolve()
+    const late = await placing
+    expect(late.seq).toBeLessThan(second.seq)
+    // The order a decision reads is final: 301 owns, and 303, which never owned, stands by.
+    expect((await currentOwner(directory, probe))?.pid).toBe(301)
+  })
+
+  test("a server still publishing holds a decision back while it runs, its file is whole and a number below the owner's is free", async () => {
+    const directory = join(root, "temporary")
+    const first = await registerServer(directory, 101, "s101")
+    await registerServer(directory, 102, "s102")
+    writeFileSync(join(directory, ".401.1.tmp"), JSON.stringify({ pid: 401, started: "s401" }))
+    // 101 is dead and its entry stays, so 401 can only take a number above 102's.
+    expect((await currentOwner(directory, probeOf({ 102: "s102", 401: "s401" })))?.pid).toBe(102)
+    // 101 stopped and freed its number: 401 may take it.
+    await unregisterServer(directory, first)
+    expect(await currentOwner(directory, probeOf({ 102: "s102", 401: "s401" }))).toBeUndefined()
+    // Gone, 401 takes nothing; nor does 402, whose file is still empty: it reads the directory
+    // only once the file is whole, and then takes a number above every entry there.
+    expect((await currentOwner(directory, probeOf({ 102: "s102" })))?.pid).toBe(102)
+    writeFileSync(join(directory, ".402.1.tmp"), "")
+    expect((await currentOwner(directory, probeOf({ 102: "s102", 402: "s402" })))?.pid).toBe(102)
+  })
+
+  // Root reads a directory whatever its mode, so only another user can be refused the listing.
+  test.skipIf(process.getuid?.() === 0)(
+    "a server that cannot list the directory places no entry, so it takes no freed number",
+    async () => {
+      const directory = join(root, "unlisted")
+      await registerServer(directory, 2 ** 22 + 17, "dead")
+      const first = await registerServer(directory, 302, "s302")
+      const second = await registerServer(directory, 303, "s303")
+      await unregisterServer(directory, first)
+      // Write and search, no read: a server can place a file there and cannot list what is there.
+      chmodSync(directory, 0o300)
+      try {
+        await expect(registerServer(directory, 301, "s301")).rejects.toMatchObject({
+          code: "EACCES",
+        })
+      } finally {
+        chmodSync(directory, 0o700)
+      }
+      expect((await currentOwner(directory, probeOf({ 301: "s301", 303: "s303" })))?.pid).toBe(
+        second.pid,
+      )
+    },
+  )
 
   test("a server whose entry vanished publishes it again, at the back", async () => {
     const directory = join(root, "c")
