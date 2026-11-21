@@ -269,7 +269,7 @@ func (r *displayTreeReader) storedTrees(sums [][32]byte) map[[32]byte]json.RawMe
 //
 // It runs on the request's context detached from its cancellation (context.WithoutCancel), since
 // a reader who goes away must not leave the saving to the next one, and bounded by
-// storeTreesTimeout, which is what bounds it once cancellation no longer does. The hold mark is
+// StoreTreesTimeout, which is what bounds it once cancellation no longer does. The hold mark is
 // the goroutine's own (store.ForConcurrentWorker), as the fill's connections are marked and as
 // every other detached run of this server is: the request's mark is still in use when the
 // handler returns - keyedWrites settles the Idempotency-Key on it - and the pool refuses a
@@ -295,7 +295,7 @@ func (r *displayTreeReader) storeOf(missing []int) {
 	}
 	storing := store.ForConcurrentWorker(context.WithoutCancel(r.ctx))
 	r.server.detached.goDetached(func() {
-		ctx, cancel := context.WithTimeout(storing, storeTreesTimeout)
+		ctx, cancel := context.WithTimeout(storing, StoreTreesTimeout)
 		defer cancel()
 		if err := texttrees.For(r.server.deps.Store).StoreTrees(ctx, r.mode, built); err != nil {
 			// Nothing the request carried is named here. The subject a route had at hand was
@@ -308,11 +308,13 @@ func (r *displayTreeReader) storeOf(missing []int) {
 	})
 }
 
-// storeTreesTimeout bounds the store of a read's own trees, which runs detached from the request
+// StoreTreesTimeout bounds the store of a read's own trees, which runs detached from the request
 // that read them and so from every cancellation that would otherwise end it. It is generous
 // because the work is one INSERT of a page's trees and the only cost of losing it is the next
-// reader's reading, and it is bounded at all because shutdown waits for this goroutine.
-const storeTreesTimeout = 30 * time.Second
+// reader's reading, and it is bounded at all because shutdown waits for this goroutine. It is
+// exported for `envoy-dispatch erase`, which waits it out after its commit and then deletes again
+// the trees it deleted, since a read that began before that commit can store one of them back.
+const StoreTreesTimeout = 30 * time.Second
 
 // storeEventDisplayTrees stores the display trees of every stored text the published events carry
 // in their payloads, keyed as every other tree is by the text alone. The event log and a live

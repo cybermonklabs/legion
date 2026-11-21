@@ -543,9 +543,10 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 	targetRef := "dispatch://" + target.Key
 
 	ctx := t.Context()
-	mention := func(tx pgx.Tx, issueKey, commentID string) int64 {
+	mention := func(tx pgx.Tx, issueKey string, comment model.Comment) int64 {
 		t.Helper()
-		found := text.Refs(refs.NewReader(ctx, tx, "comment", commentID, "").Mentions("Now see " + targetRef))
+		commentID := comment.ID
+		found := text.Refs(refs.NewReader(ctx, tx, comment.Author, "comment", commentID, "").Mentions("Now see " + targetRef))
 		replacement, _, err := planFoundReferences(ctx, tx, "comment", commentID, found, nil)
 		if err != nil {
 			t.Fatalf("plan comment %s's references: %v", commentID, err)
@@ -573,13 +574,13 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 		t.Fatalf("begin the lower event's transaction: %v", err)
 	}
 	t.Cleanup(func() { _ = open.Rollback(context.Background()) })
-	low := mention(open, firstIssue.Key, first.ID)
+	low := mention(open, firstIssue.Key, first)
 	committed, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the higher event's transaction: %v", err)
 	}
 	defer func() { _ = committed.Rollback(context.Background()) }()
-	high := mention(committed, secondIssue.Key, second.ID)
+	high := mention(committed, secondIssue.Key, second)
 	if err := committed.Commit(ctx); err != nil {
 		t.Fatalf("commit the higher event: %v", err)
 	}

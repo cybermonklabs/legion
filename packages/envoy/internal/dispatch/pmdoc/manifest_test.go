@@ -98,10 +98,10 @@ func TestTheManifestNamesEveryNodeAndMarkThisPackageKnows(t *testing.T) {
 	if !slices.Equal(marks, wantMarks) {
 		t.Errorf("manifest marks = %v, want %v", marks, wantMarks)
 	}
-	if got := slices.Sorted(maps.Keys(active.nodes)); !slices.Equal(got, wantNodes) {
+	if got := slices.Sorted(maps.Keys(active.Load().nodes)); !slices.Equal(got, wantNodes) {
 		t.Errorf("node types = %v, want %v", got, wantNodes)
 	}
-	if got := slices.Sorted(maps.Keys(active.marks)); !slices.Equal(got, wantMarks) {
+	if got := slices.Sorted(maps.Keys(active.Load().marks)); !slices.Equal(got, wantMarks) {
 		t.Errorf("mark types = %v, want %v", got, wantMarks)
 	}
 }
@@ -362,5 +362,195 @@ func TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree(t *testing.T
 	}
 	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
 		t.Errorf("a build at version %d reading a stored check carrying ci_check = %v, want ErrUnknownElement", before, err)
+	}
+}
+
+// storeManifestAhead is the manifest a store one version ahead of this build holds: the
+// embedded one with its version raised by one and change applied to it. The build installs it
+// through Install, which reads it as asOfVersion leaves it, so each case here is a rollback -
+// the store migrated by a newer release, the pod carrying the one before it.
+func storeManifestAhead(t *testing.T, change func(value *BlockSchema, ahead int)) BlockSchema {
+	t.Helper()
+	var value BlockSchema
+	if err := json.Unmarshal(SchemaJSON(), &value); err != nil {
+		t.Fatalf("decode the embedded manifest: %v", err)
+	}
+	ahead := BuiltSchemaVersion() + 1
+	value.Version = ahead
+	change(&value, ahead)
+	return value
+}
+
+// changeManifestAttribute applies change to the schema of the attribute named attribute of
+// typed block block, and fails the test where value declares no such attribute.
+func changeManifestAttribute(t *testing.T, value *BlockSchema, block, attribute string, change func(*BlockAttributeSchema)) {
+	t.Helper()
+	for typeIndex := range value.Types {
+		if value.Types[typeIndex].Name != block {
+			continue
+		}
+		for attrIndex := range value.Types[typeIndex].Attributes {
+			if value.Types[typeIndex].Attributes[attrIndex].Name == attribute {
+				change(&value.Types[typeIndex].Attributes[attrIndex].BlockAttributeSchema)
+				return
+			}
+		}
+	}
+	t.Fatalf("the manifest declares no attribute %q of typed block %q", attribute, block)
+}
+
+// installStoreManifest installs value as the server installs what it read from the store, and
+// puts this build's own manifest back when the test ends.
+func installStoreManifest(t *testing.T, value BlockSchema) error {
+	t.Helper()
+	previous := active.Load()
+	t.Cleanup(previous.install)
+	return Install(value)
+}
+
+// A store whose enum default a newer release moved to a choice it added installs on the build
+// before it, at that build's own default for the attribute. The default is a value of the
+// attribute like any other, so a default naming a choice this build does not read is one
+// validateBlockSchema refuses; refusing it would fail Install, and a failed install at boot
+// exits the process (cmd/dispatch's main), which is a crash loop on rollback.
+func TestAnEnumDefaultANewerStoreMovedInstallsAsThisBuildsOwn(t *testing.T) {
+	const block, attribute, added = "callout", "kind", "banner"
+	own := embedded.types[block].Attributes.Get(attribute).Default
+	if own == nil {
+		t.Fatalf("this build declares no default for attribute %q of typed block %q, so this proves nothing", attribute, block)
+	}
+	value := storeManifestAhead(t, func(value *BlockSchema, ahead int) {
+		changeManifestAttribute(t, value, block, attribute, func(attr *BlockAttributeSchema) {
+			attr.Choices = append(slices.Clone(attr.Choices), added)
+			attr.ChoiceVersions = maps.Clone(attr.ChoiceVersions)
+			if attr.ChoiceVersions == nil {
+				attr.ChoiceVersions = map[string]BlockElementVersions{}
+			}
+			attr.ChoiceVersions[added] = BlockElementVersions{Since: ahead, CreatableSince: ahead}
+			attr.Default = added
+		})
+	})
+
+	if err := installStoreManifest(t, value); err != nil {
+		t.Fatalf("install a store that moved the %s default of %s to the choice %q it adds: %v", attribute, block, added, err)
+	}
+	if got := SchemaVersion(); got != BuiltSchemaVersion() {
+		t.Fatalf("SchemaVersion() = %d, want this build's own %d", got, BuiltSchemaVersion())
+	}
+	installed := active.Load().types[block].Attributes.Get(attribute)
+	if slices.Contains(installed.Choices, added) {
+		t.Errorf("the installed choices of %s are %v, want the choice %q the newer release adds left out", attribute, installed.Choices, added)
+	}
+	if installed.Default != own {
+		t.Errorf("the installed default of %s is %v, want this build's own %v", attribute, installed.Default, own)
+	}
+	// What the default decides: a block whose markdown writes no value reads it, so a build
+	// that installed a default it cannot name would answer one its own readers refuse.
+	read, err := Parse(":::" + block + "{#b-c1}\nBody.\n:::\n")
+	if err != nil {
+		t.Fatalf("parse a %s that writes no %s: %v", block, attribute, err)
+	}
+	if got := read.Children[0].Attrs[attribute]; got != own {
+		t.Errorf("a %s that writes no %s reads %v, want this build's own default %v", block, attribute, got, own)
+	}
+}
+
+// A `block[]` attribute this build reads, every target of which names a typed block only a
+// newer release declares, is left out of the installed manifest altogether. An empty target set
+// means "any block" to CheckBlockPointers, which skips every pointer of such an attribute, so
+// keeping it would let this build accept at any block the pointers the newer release holds to a
+// type this one cannot even name.
+func TestABlockAttributeWhoseTargetsANewerStoreAllAddsIsNotInstalled(t *testing.T) {
+	const block, attribute, target = "check", "cites", "fact"
+	built := BuiltSchemaVersion()
+	value := storeManifestAhead(t, func(value *BlockSchema, ahead int) {
+		value.Types = append(slices.Clone(value.Types), BlockTypeSchema{
+			Name: target, Content: BlockContentParagraphs, Render: "host",
+			Since: ahead, CreatableSince: ahead,
+		})
+		for index := range value.Types {
+			if value.Types[index].Name != block {
+				continue
+			}
+			value.Types[index].Attributes = append(slices.Clone(value.Types[index].Attributes), BlockAttribute{
+				Name: attribute,
+				BlockAttributeSchema: BlockAttributeSchema{
+					Kind: BlockAttributeBlockList, Targets: []string{target},
+					Since: built, CreatableSince: built,
+				},
+			})
+		}
+	})
+
+	if err := installStoreManifest(t, value); err != nil {
+		t.Fatalf("install a store whose %s attribute of %s points only at the %s block it adds: %v", attribute, block, target, err)
+	}
+	if IsTypedBlock(target) {
+		t.Fatalf("this build declares typed block %q, which only the newer release does, so this proves nothing", target)
+	}
+	if installed, declared := active.Load().types[block].Attributes.Lookup(attribute); declared {
+		t.Errorf("the installed %s block declares %s with targets %v: an attribute whose every target is gone points at any block, and must be dropped instead",
+			block, attribute, installed.Targets)
+	}
+	if kinds := LinkKinds(); slices.Contains(kinds, attribute) {
+		t.Errorf("the installed link kinds are %v, want %q left out with the attribute that makes it", kinds, attribute)
+	}
+	// The tree a newer release stored, built here rather than parsed: markdown holding an
+	// attribute no installed manifest declares is refused before a tree exists.
+	stored := &Node{Type: "doc", Children: []*Node{{
+		Type:     block,
+		Attrs:    Attrs{BlockIDAttr: "b-c1", attribute: "dispatch://CORE-1/spec#b-x"},
+		Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: "Body."}}}},
+	}}}
+	if pointers := BlockPointers(stored); len(pointers) != 0 {
+		t.Errorf("a %s carrying %s holds the pointers %+v, want none: a pointer with no target is one CheckBlockPointers never checks",
+			block, attribute, pointers)
+	}
+	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), attribute) {
+		t.Errorf("reading a stored %s carrying %s = %v, want ErrUnknownElement naming it", block, attribute, err)
+	}
+}
+
+// An enum attribute this build reads, every choice of which only a newer release declares, is
+// left out of the installed manifest altogether, as the block[] attribute above is. Its choices
+// filtered to the ones this build reads are none, and an enum with no choice is one
+// validateAttributeSchema refuses: Install would fail, and a failed install at boot exits the
+// process (cmd/dispatch's main), which is a crash loop on rollback.
+func TestAnEnumAttributeWhoseChoicesANewerStoreAllAddsIsNotInstalled(t *testing.T) {
+	const block, attribute, choice = "check", "tone", "urgent"
+	if _, declared := embedded.types[block].Attributes.Lookup(attribute); declared {
+		t.Fatalf("this build declares attribute %q of typed block %q, which only the newer release does, so this proves nothing", attribute, block)
+	}
+	built := BuiltSchemaVersion()
+	value := storeManifestAhead(t, func(value *BlockSchema, ahead int) {
+		for index := range value.Types {
+			if value.Types[index].Name != block {
+				continue
+			}
+			value.Types[index].Attributes = append(slices.Clone(value.Types[index].Attributes), BlockAttribute{
+				Name: attribute,
+				BlockAttributeSchema: BlockAttributeSchema{
+					Kind: BlockAttributeEnum, Choices: []string{choice},
+					ChoiceVersions: map[string]BlockElementVersions{choice: {Since: ahead, CreatableSince: ahead}},
+					Since:          built, CreatableSince: built,
+				},
+			})
+		}
+	})
+
+	if err := installStoreManifest(t, value); err != nil {
+		t.Fatalf("install a store whose %s attribute of %s holds only the choice %q it adds: %v", attribute, block, choice, err)
+	}
+	if installed, declared := active.Load().types[block].Attributes.Lookup(attribute); declared {
+		t.Errorf("the installed %s block declares %s with the choices %v: an enum whose every choice is gone can hold no value this build reads, and must be dropped instead",
+			block, attribute, installed.Choices)
+	}
+	stored := &Node{Type: "doc", Children: []*Node{{
+		Type:     block,
+		Attrs:    Attrs{BlockIDAttr: "b-c1", attribute: choice},
+		Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: "Body."}}}},
+	}}}
+	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), attribute) {
+		t.Errorf("reading a stored %s carrying %s = %v, want ErrUnknownElement naming it", block, attribute, err)
 	}
 }

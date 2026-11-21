@@ -74,10 +74,11 @@ func ValidID(id string) bool {
 
 // CanonicalLogin trims the name Dispatch signs a person in with, their email (a record created
 // before people were named by email keeps the GitHub login it was decided under), and lowers its
-// ASCII letters (fold.ASCII) and nothing else. Every login comparison in the module goes through
-// this form on both sides.
+// ASCII letters and nothing else: fold.Login, the one spelling of that rule, which Dispatch's
+// model.CanonicalLogin reads too. Every login comparison in the module goes through this form on
+// both sides.
 func CanonicalLogin(login string) string {
-	return fold.ASCII(strings.TrimSpace(login))
+	return fold.Login(login)
 }
 
 // HumanActor is the audit actor of a change a person made: "human:" and their canonical login,

@@ -384,6 +384,64 @@ func TestABrokerTokenWritesAsTheSessionItProves(t *testing.T) {
 	}
 }
 
+// TestABrokerPersonIsStoredCanonicalOnASessionsRow: the broker answers the person of a
+// BROKER_EXCHANGE_ACCOUNTS or BROKER_EXCHANGE_WORKFLOWS entry as the entry writes it, and
+// Dispatch reads that person in its canonical form where it first reads the broker's answer
+// (ciphertoken's introspect, fold.Login), so a row a session writes under the token names its
+// owner as every other row and read of Dispatch names that person. The broker here answers a
+// person in mixed case with white space around it, the session comments under the token with no
+// actor in the body, and the comment's stored author names the canonical login as its owner.
+func TestABrokerPersonIsStoredCanonicalOnASessionsRow(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-token-whose-person-the-broker-spells-as-configured"
+	const want = "dana@example.com"
+	says := liveNamedToken(caller.jkt)
+	says.Person = " Dana@Example.COM "
+	rig.broker.Says(token, says)
+	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
+		"key": brokerTestProject, "name": "Broker",
+	}); created.Code != http.StatusCreated {
+		t.Fatalf("create the project as a person: status=%d body=%s", created.Code, created.Body.String())
+	}
+	issue := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": brokerTestProject, "title": "Commented on under a broker token", "spec": "# Spec",
+	})
+	if issue.Code != http.StatusCreated {
+		t.Fatalf("create the issue as a person: status=%d body=%s", issue.Code, issue.Body.String())
+	}
+	key := decodeBody[struct {
+		Key string `json:"key"`
+	}](t, issue).Key
+
+	commented := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+key+"/comments", token, map[string]any{
+		"body": "Written by the session the broker proved.",
+	}))
+	if commented.Code != http.StatusCreated {
+		t.Fatalf("comment under the broker's token: status=%d body=%s", commented.Code, commented.Body.String())
+	}
+	commentID := decodeBody[struct {
+		ID string `json:"id"`
+	}](t, commented).ID
+
+	var raw []byte
+	if err := rig.database.Pool.QueryRow(t.Context(), `select author from comments where id = $1`, commentID).Scan(&raw); err != nil {
+		t.Fatalf("read the comment's author: %v", err)
+	}
+	var author model.Actor
+	if err := json.Unmarshal(raw, &author); err != nil {
+		t.Fatalf("decode the comment's author %s: %v", raw, err)
+	}
+	requireSessionProven(t, "the comment's author", author, true)
+	stored := "none"
+	if author.Owner != nil {
+		stored = fmt.Sprintf("%q", *author.Owner)
+	}
+	if author.Owner == nil || *author.Owner != want {
+		t.Fatalf("the session-authored row stores owner %s, want the canonical login %q: Dispatch takes the broker's person as it reads it", stored, want)
+	}
+}
+
 // TestAWriteIsProvenOnlyWhereTheCredentialProvedItsSession: each credential below writes an
 // issue with a spec, a comment on it and an edit of the spec as one and the same session, and a
 // reader tells them apart by the stored actor's proven mark alone. A broker-issued token proved
@@ -523,8 +581,11 @@ func TestAWriteIsProvenOnlyWhereTheCredentialProvedItsSession(t *testing.T) {
 }
 
 // requireSessionProven fails t unless actor is the broker's test session, carries the proven
-// mark exactly when want says the credential proved it, and names no act: a session's own write
-// is no person's, so no session_proven a body sent can ride on it.
+// mark exactly when want says the credential proved it, and names an act only where the
+// credential proved the session for its person: the broker-issued token names a person
+// (brokerTestPerson), so bearerSessionActor records the session it proved as the actor's act,
+// proven (R14). A session a body named under any other credential names no act, so no
+// session_proven a body sent can ride on it.
 func requireSessionProven(t *testing.T, what string, actor model.Actor, want bool) {
 	t.Helper()
 	if actor.Kind != "session" || actor.ID != brokerTestSession {
@@ -533,7 +594,11 @@ func requireSessionProven(t *testing.T, what string, actor model.Actor, want boo
 	if actor.Proven != want {
 		t.Fatalf("%s proven = %t, want %t", what, actor.Proven, want)
 	}
-	if actor.Act != nil {
+	switch {
+	case want && (actor.Act == nil || actor.Act.Session != brokerTestSession || !actor.Act.SessionProven ||
+		actor.Act.TokenID != "" || actor.Act.TokenName != ""):
+		t.Fatalf("%s act = %+v, want the session %s alone, proven", what, actor.Act, brokerTestSession)
+	case !want && actor.Act != nil:
 		t.Fatalf("%s act = %+v, want none", what, *actor.Act)
 	}
 }

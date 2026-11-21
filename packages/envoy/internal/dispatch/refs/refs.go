@@ -615,9 +615,10 @@ func mergePending[Key comparable, Target any](
 // of its current blocks, once per source, in the shape the document surfaces read (kind, id
 // order). A citing document, comment, message or ask is listed itself, not by the block holding
 // its link: an ask that cites the document from one of its parts alone — an option, or the
-// answer it was given — is listed as that ask, once.
-func ReferencedBy(ctx context.Context, q Queryer, refKey string) ([]model.ReferencedBy, error) {
-	edges, err := resolveEdges(ctx, q, Query{Direction: "in", Kind: "artifact", ID: refKey, Kinds: []string{"mentions"}, WholeDocuments: true})
+// answer it was given — is listed as that ask, once. A source who may not see is listed to
+// nobody but its author.
+func ReferencedBy(ctx context.Context, q Queryer, who model.Actor, refKey string) ([]model.ReferencedBy, error) {
+	edges, err := resolveEdges(ctx, q, who, Query{Direction: "in", Kind: "artifact", ID: refKey, Kinds: []string{"mentions"}, WholeDocuments: true})
 	if err != nil {
 		return nil, err
 	}
@@ -657,7 +658,13 @@ func ReferencedBy(ctx context.Context, q Queryer, refKey string) ([]model.Refere
 // version holds the block; a block none holds is omitted, as is a target of a node kind this
 // build does not know. A block of an ask, a comment or a message, which this shape has no field
 // for, is listed by the graph read (Edges) alone. Any other unresolved target is listed.
-func Outgoing(ctx context.Context, q Queryer, artifactID string) ([]model.OutgoingReference, error) {
+//
+// It answers for who. A document who may not see writes no mention here, so its mentions say
+// nothing of it, and a target who may not see is no mention at all - for a block, neither the
+// block nor the document it carries (VisibleKind, VisibleEnd). The document is read by its uuid
+// through artifacts' primary key, since the store keys it by ref_key and the registry's own
+// rewrite compares the uuid as text, which no index serves.
+func Outgoing(ctx context.Context, q Queryer, who model.Actor, artifactID string) ([]model.OutgoingReference, error) {
 	rows, err := q.Query(ctx, `
 		select e.to_kind, e.to_id,
 		       a.id::text, a.issue_key, coalesce(a.project_key, ''), a.session_id, coalesce(a.ref_key, ''), coalesce(a.slug, ''), coalesce(a.name, ''), coalesce(a.kind, ''), coalesce(a.is_primary, false),
@@ -670,8 +677,11 @@ func Outgoing(ctx context.Context, q Queryer, artifactID string) ([]model.Outgoi
 		where e.from_kind = 'artifact' and e.from_id = $1 and e.kind = 'mentions' and e.to_kind = any($2)
 		  and e.to_kind not in `+itemBlockKinds+`
 		  and (e.to_kind <> 'block' or d.node_id is not null)
+		  and `+VisibleKind("artifact", `(select s.ref_key from artifacts s where s.id = $1::text::uuid)`, "$3")+`
+		  and `+VisibleEnd("e.to_kind", "e.to_id", true, "$3")+`
+		  and (e.to_kind <> 'block' or `+VisibleKind("artifact", "a.ref_key", "$3")+`)
 		order by e.to_kind, e.to_id, v.number
-	`, artifactID, nodeKinds)
+	`, artifactID, nodeKinds, VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}

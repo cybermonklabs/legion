@@ -137,9 +137,10 @@ type messageRecovery struct {
 }
 
 // recoveredMessage is the message a keyed write committed, read once sendHeldMessageOn has put a
-// targeted one on its way, with its deliveries as they stand and the block it answers. It is read
-// from the database before the listener is, so a repeat never fails because the listener is down.
-func (s *server) recoveredMessage(ctx context.Context, point messageRecovery) (model.Message, error) {
+// targeted one on its way, with its deliveries as they stand and the block it answers, read for
+// who, the writer the repeat answers. It is read from the database before the listener is, so a
+// repeat never fails because the listener is down.
+func (s *server) recoveredMessage(ctx context.Context, who model.Actor, point messageRecovery) (model.Message, error) {
 	message, err := s.loadMessage(ctx, s.deps.Store.Pool, "", point.MessageID)
 	if err != nil {
 		return model.Message{}, err
@@ -147,7 +148,7 @@ func (s *server) recoveredMessage(ctx context.Context, point messageRecovery) (m
 	// loadMessage scans the row alone, so a reply that names a block carries only its node id:
 	// without this the repeat of a keyed reply answers reply_block null where the first answered
 	// the block.
-	if err := hydrateMessageReplyBlocks(ctx, s.deps.Store.Pool, &message); err != nil {
+	if err := hydrateMessageReplyBlocks(ctx, s.deps.Store.Pool, who, &message); err != nil {
 		return model.Message{}, err
 	}
 	if message.Target != nil {
@@ -167,7 +168,11 @@ func (s *server) recoveredMessage(ctx context.Context, point messageRecovery) (m
 // message as GET /api/v1/agents/{session_id}/messages reads it (recoveredMessage), under the send's
 // own 201.
 func (s *server) replayAgentMessage(w http.ResponseWriter, r *http.Request, point messageRecovery, _ []byte) {
-	message, err := s.recoveredMessage(r.Context(), point)
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	message, err := s.recoveredMessage(r.Context(), who, point)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -179,7 +184,11 @@ func (s *server) replayAgentMessage(w http.ResponseWriter, r *http.Request, poin
 // message as it stands (recoveredMessage), a targeted one's owed delivery made first, in the first
 // answer's shape - its advice kept - under the post's own 201.
 func (s *server) replayIssueMessage(w http.ResponseWriter, r *http.Request, point messageRecovery, stored []byte) {
-	message, err := s.recoveredMessage(r.Context(), point)
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	message, err := s.recoveredMessage(r.Context(), who, point)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -288,7 +297,7 @@ func (s *server) createStoredMessage(
 	var block *namedBlock
 	var parentRepair refs.ItemRepair
 	if input.InReplyToBlock != nil {
-		if parentRepair, block, err = s.planReplyBlock(ctx, tx, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
+		if parentRepair, block, err = s.planReplyBlock(ctx, tx, actor, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
 			return model.Message{}, nil, err
 		}
 		parent.ReplyBody = messageReplyPreview(block.excerpt)
@@ -371,7 +380,7 @@ func (s *server) createStoredMessage(
 	// row will name is handed over: it gives the document its `#id`s resolve against, its
 	// issue's spec, which no read of the row can answer yet.
 	referenceChanges, indexWrite, err := s.planPendingItem(
-		ctx, tx, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey}, createdAt, issueKey != nil,
+		ctx, tx, actor, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey}, createdAt, issueKey != nil,
 	)
 	if err != nil {
 		return model.Message{}, nil, err
@@ -779,7 +788,11 @@ func (s *server) getMessage(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "message") {
 		return
 	}
-	read, err := s.readMessage(r.Context(), r.PathValue("key"), r.PathValue("id"), wantsDisplayTrees(r))
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	read, err := s.readMessage(r.Context(), who, r.PathValue("key"), r.PathValue("id"), wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -812,7 +825,7 @@ func (s *server) getMessageThread(w http.ResponseWriter, r *http.Request) {
 // message by its id alone (the conversation, the message's blocks) asks it. ok is false once it
 // has written the refusal.
 func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (messageRead, bool) {
-	_, _, err := s.optionalActor(r)
+	actor, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return messageRead{}, false
@@ -827,14 +840,14 @@ func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (
 		s.writeHandlerError(w, err)
 		return messageRead{}, false
 	}
-	read, err := s.readMessage(r.Context(), "", rootID, wantsDisplayTrees(r))
+	read, err := s.readMessage(r.Context(), actor.Recorded(), "", rootID, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return messageRead{}, false
 	}
 	// A direct conversation is the person's own, so a credential of theirs reads it whole and
 	// names no session in it, as their browser does. The scope is the request's credential's;
-	// this read records no actor, so there is nothing else to resolve.
+	// this rule records no actor, so there is nothing else to resolve.
 	if !s.callerHoldsScope(r, model.ScopePerson) && read.Message.IssueKey == nil {
 		session := strings.TrimSpace(r.URL.Query().Get("session"))
 		if session == "" {
@@ -866,13 +879,13 @@ func (read messageRead) hasSession(session string) bool {
 }
 
 // readMessage is one message, on issueKey when it is not empty, with its deliveries and every
-// message transitively replying to it.
-func (s *server) readMessage(ctx context.Context, issueKey, id string, trees bool) (messageRead, error) {
+// message transitively replying to it, read for who.
+func (s *server) readMessage(ctx context.Context, who model.Actor, issueKey, id string, trees bool) (messageRead, error) {
 	message, err := s.loadMessage(ctx, s.deps.Store.Pool, issueKey, id)
 	if err != nil {
 		return messageRead{}, err
 	}
-	reads, err := s.hydrateMessageThreads(ctx, []model.Message{message}, trees)
+	reads, err := s.hydrateMessageThreads(ctx, who, []model.Message{message}, trees)
 	if err != nil {
 		return messageRead{}, err
 	}
@@ -880,13 +893,13 @@ func (s *server) readMessage(ctx context.Context, issueKey, id string, trees boo
 }
 
 // hydrateMessageThreads is each root as a thread: its own deliveries, every message transitively
-// replying to it, and the block each of those messages answers. Each side table is read once over
-// every root, never once per root, so a list of threads costs the same three queries one does.
-// trees is whether the caller asked for the display trees (wantsDisplayTrees).
+// replying to it, and the block each of those messages answers, read for who. Each side table is
+// read once over every root, never once per root, so a list of threads costs the same three
+// queries one does. trees is whether the caller asked for the display trees (wantsDisplayTrees).
 //
 // Every read of a message passes here, so this is where a message's trees are taken from the
 // table and what the table did not hold is stored back (displayTreeReader).
-func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Message, trees bool) ([]messageRead, error) {
+func (s *server) hydrateMessageThreads(ctx context.Context, who model.Actor, roots []model.Message, trees bool) ([]messageRead, error) {
 	rootIDs := make([]string, len(roots))
 	for index, root := range roots {
 		rootIDs[index] = root.ID
@@ -899,7 +912,7 @@ func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Messag
 	if err != nil {
 		return nil, err
 	}
-	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, roots, replies); err != nil {
+	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, who, roots, replies); err != nil {
 		return nil, err
 	}
 	reader := s.readDisplayTrees(ctx, trees)
@@ -932,7 +945,8 @@ var listIssueRootMessagesQuery = `
 // conversation held there. A targeted message is an ordinary root and is listed like any
 // other.
 func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), listIssueRootMessagesQuery, r.PathValue("key"))
@@ -955,7 +969,7 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	result, err := s.hydrateMessageThreads(r.Context(), roots, wantsDisplayTrees(r))
+	result, err := s.hydrateMessageThreads(r.Context(), who, roots, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1051,7 +1065,7 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	result, err := s.hydrateMessageThreads(r.Context(), roots, wantsDisplayTrees(r))
+	result, err := s.hydrateMessageThreads(r.Context(), actor, roots, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
