@@ -33,12 +33,18 @@ type redactedEvent struct {
 // A document event's payload carries the whole document, so it holds the erased block's text
 // beside every sibling's: it is redacted where the erased text stands as a block of its own
 // (redactBlockQuote) and nowhere else, which leaves a sibling's line in a version's markdown or
-// in a diff as it was written. A comment's own event carries that comment's body and nothing
-// else of anybody's, so every one of those bytes goes wherever it stands in what a person wrote.
+// in a diff as it was written. A comment's own event carries what that comment's author wrote -
+// its body, and a suggestion's replacement - every byte of which goes wherever it stands, and
+// beside it what quotes other nodes: the quote of the document the comment is anchored to, that
+// document's name, the question of the ask it replies to and the text of the block its reply
+// answers (quotedFields). Those are redacted only as a quote of a document is, where the erased
+// text stands as a block of its own, so another node's words around it stay as they were
+// written. A delivery receipt quotes no other node.
 //
-// An event about the node whose payload holds an erased text in its structural values alone
-// (structuralKey) is not redacted, so it is none of these: the run leaves it whole, and the
-// search for the rows it leaves lists it (readLeft), so the listing says what the run does.
+// An event about the node whose payload the redaction leaves holding an erased text - in a
+// structural value (structuralKey), which it never rewrites, or in a value that quotes another
+// node - is searched for by the search for the rows the run leaves, which lists it (readLeft,
+// cleanedEvents), so the listing says what the run does.
 func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	if len(read.texts) == 0 {
 		return nil
@@ -94,7 +100,8 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 // back in.
 //
 // quoted says the payload quotes a document, whose blocks are other nodes': a text is then
-// replaced only where it stands as a block of its own (redactBlockQuote).
+// replaced only where it stands as a block of its own (redactBlockQuote). A value under one of
+// quotedFields quotes another node whatever the payload, and is replaced the same way.
 func redactPayload(payload []byte, texts []string, marker string, quoted bool) ([]byte, []string, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.UseNumber()
@@ -104,16 +111,18 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool) (
 	}
 	var originals []string
 	// key is the key the value stands under, and the key of the array that holds it for an
-	// element of one: an array under a structural key is a list of structural values.
-	var redact func(value any, key string) any
-	redact = func(value any, key string) any {
+	// element of one: an array under a structural key is a list of structural values. parent is
+	// the key the object holding the value stands under, empty at the payload's top level, which
+	// with key names a field of quotedFields.
+	var redact func(value any, parent, key string) any
+	redact = func(value any, parent, key string) any {
 		switch held := value.(type) {
 		case string:
 			if structuralKey(key) {
 				return held
 			}
 			rewritten := held
-			if quoted {
+			if quoted || quotedFields[[2]string{parent, key}] {
 				rewritten = redactBlockQuote(held, texts, marker)
 			} else {
 				for _, text := range texts {
@@ -126,16 +135,16 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool) (
 			return rewritten
 		case []any:
 			for index := range held {
-				held[index] = redact(held[index], key)
+				held[index] = redact(held[index], parent, key)
 			}
 		case map[string]any:
 			for name := range held {
-				held[name] = redact(held[name], name)
+				held[name] = redact(held[name], key, name)
 			}
 		}
 		return value
 	}
-	value = redact(value, "")
+	value = redact(value, "", "")
 	if len(originals) == 0 {
 		return payload, nil, nil
 	}
@@ -146,6 +155,27 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool) (
 		return nil, nil, err
 	}
 	return bytes.TrimSpace(written.Bytes()), originals, nil
+}
+
+// quotedFields are the values of a comment's own event (model.CommentEventPayload) that quote
+// another node rather than say what the comment's author wrote, each by the key of the object it
+// stands in, empty for the payload's top level, and its own key: the quote of the document the
+// comment is anchored to (model.Anchor's quote), that document's name (artifact_name), the
+// question of the ask the comment replies to (ask_question), and the text of the block of the
+// comment or the ask the reply answers (model.ReplyBlock's text). A delivery receipt
+// (model.CommentDeliveryEventPayload) carries none of them: its values are its structure and the
+// error its send answered, which is no node's text.
+//
+// Each is written by the comment's write from the node it quotes, so an erased text inside a
+// longer line of one is that node's words, which the erase of the comment leaves (R5). The
+// redaction reads each as it reads a quote of a document (redactBlockQuote), and replaces an
+// erased text there only where it stands as a block of its own - the whole value, or a whole line
+// of it - where nothing around it says whose words they are.
+var quotedFields = map[[2]string]bool{
+	{"anchor", "quote"}:     true,
+	{"", "artifact_name"}:   true,
+	{"", "ask_question"}:    true,
+	{"reply_block", "text"}: true,
 }
 
 // structuralNames and structuralSuffixes are the keys of an event payload whose values are its

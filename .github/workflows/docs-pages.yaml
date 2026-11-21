@@ -16,13 +16,13 @@ name: Docs (main)
 # waiting in the group below only the newest builds, and the site loses nothing by that: each
 # build covers the whole tree, so the site still ends at the newest docs-selecting commit.
 #
-# The paths below are ci.yaml's docs filter flattened as dorny/paths-filter reads it (each
-# anchor's group in its place and order, the one duplicate kept), so main builds the site on
-# exactly the changes a pull request's docs job builds it on. .github/scripts/check-ci-filters.sh
-# fails when the two lists differ, naming each missing and extra pattern (ci_job_reads.py's
-# PUSH_WORKFLOWS pairs them), so change the filter and this list together. The block at the end
-# is the one part no hand writes: rule 17 of that check computes the `!` patterns that keep the
-# docs job off the Go test files it does not read, and
+# The paths below are the `docs` filter of .github/ci-filters.yaml flattened as
+# dorny/paths-filter reads it (each anchor's group in its place and order, the one duplicate
+# kept), so main builds the site on exactly the changes a pull request's docs job builds it on.
+# .github/scripts/check-ci-filters.sh fails when the two lists differ, naming each missing and
+# extra pattern (ci_job_reads.py's PUSH_WORKFLOWS pairs them), so change the filter and this list
+# together. The block at the end is the one part no hand writes: rule 17 of that check computes
+# the `!` patterns that keep the docs job off the Go test files it does not read, and
 # `.github/scripts/check-ci-filters.sh write` writes them into the filter and into this list at
 # once.
 on:
@@ -30,13 +30,14 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/ci.yaml'
+      - '.github/ci-filters.yaml'
       - '.github/workflows/docs-pages.yaml'
       - '.github/workflows/docs-site.yaml'
-      # ci.yaml's *bun_install:
+      # ci-filters.yaml's *bun_install:
       - 'package.json'
       - 'bun.lock'
       - 'patches/**'
-      - 'packages/broker-client/package.json'
+      - 'packages/cipher-client/package.json'
       - 'packages/contracts/package.json'
       - 'packages/envoy-client/package.json'
       - 'packages/pi-envoy/package.json'
@@ -53,7 +54,7 @@ on:
       - '.github/actions/setup-bun/**'
       - '.github/ci-tools.yaml'
       - '.github/scripts/ci-tools.sh'
-      # ci.yaml's *go_workspace:
+      # ci-filters.yaml's *go_workspace:
       - 'go.work'
       - 'go.work.sum'
       - 'packages/daemon/go.mod'
@@ -62,10 +63,10 @@ on:
       - 'packages/envoy/go.sum'
       # The docs filter's own:
       - 'docs/site/**'
-      # ci.yaml's *legion_command:
+      # ci-filters.yaml's *legion_command:
       - 'packages/daemon/cmd/legion/*'
       - 'packages/daemon/internal/admit/*'
-      - 'packages/daemon/internal/agentsecrets/*'
+      - 'packages/daemon/internal/cipher/*'
       - 'packages/daemon/internal/api/*'
       - 'packages/daemon/internal/appauth/*'
       - 'packages/daemon/internal/backoff/*'
@@ -97,6 +98,7 @@ on:
       - 'packages/daemon/internal/ompdirs/*'
       - 'packages/daemon/internal/omplaunch/*'
       - 'packages/daemon/internal/ompsessions/*'
+      - 'packages/daemon/internal/pause/*'
       - 'packages/daemon/internal/phase/*'
       - 'packages/daemon/internal/pods/**'
       - 'packages/daemon/internal/podsafety/**'
@@ -105,6 +107,7 @@ on:
       - 'packages/daemon/internal/promptrefs/*'
       - 'packages/daemon/internal/prompts/**'
       - 'packages/daemon/internal/record/*'
+      - 'packages/daemon/internal/redact/*'
       - 'packages/daemon/internal/registry/*'
       - 'packages/daemon/internal/repocache/*'
       - 'packages/daemon/internal/reviewround/*'
@@ -120,15 +123,16 @@ on:
       - 'packages/daemon/internal/store/**'
       - 'packages/daemon/internal/stream/*'
       - 'packages/daemon/internal/supervise/*'
+      - 'packages/daemon/internal/tlsalert/*'
       - 'packages/daemon/internal/treelifecycle/*'
       - 'packages/daemon/internal/wait/*'
       - 'packages/daemon/internal/wakepace/*'
       - 'packages/daemon/internal/workflow/*'
       - 'packages/daemon/internal/workspace/*'
-      - 'packages/envoy/brokeraddr/*'
-      - 'packages/envoy/brokerclient/*'
+      - 'packages/envoy/cipheraddr/*'
+      - 'packages/envoy/cipherclient/*'
       - 'packages/envoy/dispatchbody/*'
-      - 'packages/envoy/internal/brokerclient/*'
+      - 'packages/envoy/internal/cipherclient/*'
       - 'packages/envoy/internal/contracts/*'
       - 'packages/envoy/internal/ctxlock/*'
       - 'packages/envoy/internal/dispatch/itemblocks/*'
@@ -144,7 +148,7 @@ on:
       - 'packages/envoy/subjectforms/*'
       - 'packages/envoy/natsversion/*'
       - 'packages/envoy/steprecord/*'
-      # ci.yaml's *dispatch_server:
+      # ci-filters.yaml's *dispatch_server:
       - 'packages/envoy/cmd/dispatch/*'
       - 'packages/envoy/going/*'
       - 'packages/envoy/internal/bus/*'
@@ -152,7 +156,7 @@ on:
       - 'packages/envoy/internal/contracts/*'
       - 'packages/envoy/internal/dispatch/access/*'
       - 'packages/envoy/internal/dispatch/accesslog/*'
-      - 'packages/envoy/internal/dispatch/agentsecrets/*'
+      - 'packages/envoy/internal/dispatch/cipher/*'
       - 'packages/envoy/internal/dispatch/agentstream/*'
       - 'packages/envoy/internal/dispatch/api/*'
       - 'packages/envoy/internal/dispatch/architecture/*'
@@ -214,6 +218,7 @@ on:
       - 'packages/envoy/internal/pglisten/*'
       - 'packages/envoy/internal/pgmigrate/*'
       - 'packages/envoy/internal/redact/*'
+      - 'packages/envoy/internal/tlsalert/*'
       - 'packages/envoy/internal/redirects/*'
       - 'packages/envoy/internal/roles/*'
       - 'packages/envoy/internal/routing/*'
@@ -223,50 +228,50 @@ on:
       - 'packages/envoy/listenerwire/*'
       - 'packages/envoy/listenfd/*'
       # The docs filter's own:
-      # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
+      # agentloop: the model loop cmd/cipherd's judge runs a model and its tools through.
       - 'packages/envoy/agentloop/*'
-      - 'packages/envoy/cmd/agent-secrets/*'
-      - 'packages/envoy/cmd/agent-secrets-helper/*'
-      - 'packages/envoy/cmd/broker/*'
-      - 'packages/envoy/cmd/broker-refgen/*'
-      - 'packages/envoy/internal/broker/airlock/*'
-      - 'packages/envoy/internal/broker/airlockproxy/*'
-      - 'packages/envoy/internal/broker/answer/*'
-      - 'packages/envoy/internal/broker/api/*'
+      - 'packages/envoy/cmd/cipher/*'
+      - 'packages/envoy/cmd/cipher-helper/*'
+      - 'packages/envoy/cmd/cipherd/*'
+      - 'packages/envoy/cmd/cipher-refgen/*'
+      - 'packages/envoy/internal/cipher/proxyrules/*'
+      - 'packages/envoy/internal/cipher/proxy/*'
+      - 'packages/envoy/internal/cipher/answer/*'
+      - 'packages/envoy/internal/cipher/api/*'
       # The approval page's own files, its embedded templates and stylesheet included.
-      - 'packages/envoy/internal/broker/approval/**'
-      - 'packages/envoy/internal/broker/config/*'
-      - 'packages/envoy/internal/broker/enroll/*'
-      - 'packages/envoy/internal/broker/exchange/*'
-      - 'packages/envoy/internal/broker/helper/*'
-      - 'packages/envoy/internal/broker/judge/*'
-      - 'packages/envoy/internal/broker/leasetime/*'
-      - 'packages/envoy/internal/broker/machine/*'
-      - 'packages/envoy/internal/broker/netaddr/*'
-      - 'packages/envoy/internal/broker/oauth/*'
-      - 'packages/envoy/internal/broker/oauthstore/*'
-      - 'packages/envoy/internal/broker/oauthwire/*'
-      - 'packages/envoy/internal/broker/policy/*'
-      - 'packages/envoy/internal/broker/projectaccess/*'
-      - 'packages/envoy/internal/broker/proof/*'
-      - 'packages/envoy/internal/broker/record/*'
-      - 'packages/envoy/internal/broker/requests/*'
-      - 'packages/envoy/internal/broker/reread/*'
-      - 'packages/envoy/internal/broker/secrets/*'
-      - 'packages/envoy/internal/broker/store/*'
-      - 'packages/envoy/internal/broker/store/migrations/**'
-      - 'packages/envoy/internal/broker/wake/*'
-      - 'packages/envoy/internal/broker/natscallout/*'
+      - 'packages/envoy/internal/cipher/approval/**'
+      - 'packages/envoy/internal/cipher/config/*'
+      - 'packages/envoy/internal/cipher/enroll/*'
+      - 'packages/envoy/internal/cipher/exchange/*'
+      - 'packages/envoy/internal/cipher/helper/*'
+      - 'packages/envoy/internal/cipher/judge/*'
+      - 'packages/envoy/internal/cipher/leasetime/*'
+      - 'packages/envoy/internal/cipher/machine/*'
+      - 'packages/envoy/internal/cipher/netaddr/*'
+      - 'packages/envoy/internal/cipher/oauth/*'
+      - 'packages/envoy/internal/cipher/oauthstore/*'
+      - 'packages/envoy/internal/cipher/oauthwire/*'
+      - 'packages/envoy/internal/cipher/policy/*'
+      - 'packages/envoy/internal/cipher/projectaccess/*'
+      - 'packages/envoy/internal/cipher/proof/*'
+      - 'packages/envoy/internal/cipher/record/*'
+      - 'packages/envoy/internal/cipher/requests/*'
+      - 'packages/envoy/internal/cipher/reread/*'
+      - 'packages/envoy/internal/cipher/secrets/*'
+      - 'packages/envoy/internal/cipher/store/*'
+      - 'packages/envoy/internal/cipher/store/migrations/**'
+      - 'packages/envoy/internal/cipher/wake/*'
+      - 'packages/envoy/internal/cipher/natscallout/*'
       - 'packages/envoy/natsgrant/*'
       - 'packages/envoy/natscred/*'
-      - 'packages/envoy/internal/broker/wire/*'
-      - 'packages/envoy/internal/brokertoken/*'
+      - 'packages/envoy/internal/cipher/wire/*'
+      - 'packages/envoy/internal/ciphertoken/*'
       - 'packages/envoy/internal/buildversion/*'
       - 'packages/envoy/internal/fileowner/*'
       - 'packages/envoy/internal/principal/*'
       - 'packages/envoy/internal/ratelimit/*'
-      - 'packages/envoy/internal/broker/rulehost/*'
-      - 'packages/envoy/internal/broker/logmask/*'
+      - 'packages/envoy/internal/cipher/rulehost/*'
+      - 'packages/envoy/internal/cipher/logmask/*'
       - 'packages/envoy/internal/weborigin/*'
       - 'packages/dispatch/**'
       - 'scripts/e2e/lib/held-port.py'

@@ -65,7 +65,10 @@ func TestTheHeldDocumentReadProbesEachMembersNodeOnce(t *testing.T) {
 			})
 	}
 	seed := explaintest.BatchedBy(t, func(tx pgx.Tx) error {
-		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueWrite(b, nodes, tuples) })
+		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nodes, tuples)
+			return nil
+		})
 	})
 	read := heldDocumentStatement(t, ctx, database, seed, refKey)
 	keyed := map[string]string{"graph_nodes": "graph_nodes_pkey", "graph_tuples": explaintest.AnyIndex}

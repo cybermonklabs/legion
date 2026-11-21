@@ -37,8 +37,9 @@ func TestALaterVersionMovesNoUnanchoredItemsVersion(t *testing.T) {
 	}, "alice")))
 
 	later := editSpec(t, handler, issue.Key, []map[string]any{{"op": "insert", "after": "end", "markdown": "Later paragraph."}})
-	created(t, "write version 2 of the project document", dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/artifacts", map[string]string{
+	created(t, "write version 2 of the project document", dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/artifacts", map[string]any{
 		"name": "Design notes", "content": "# Design\n\nRevised.\n",
+		"precondition": uploadBase(t, handler, design.ID),
 	}, "alice"))
 	var followed int
 	if err := database.Pool.QueryRow(ctx, `select (approval->>'version')::int from asks where id = $1`, approval.ID).Scan(&followed); err != nil {

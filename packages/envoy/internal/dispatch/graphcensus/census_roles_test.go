@@ -94,6 +94,16 @@ func newAddressingWrites(t *testing.T) addressingWrites {
 // publish), which wakes an outbox running on it.
 func (w addressingWrites) write(t *testing.T, rows func(ctx context.Context, tx pgx.Tx) (model.Event, error)) model.Event {
 	t.Helper()
+	return w.writeCausing(t, rows, nil)
+}
+
+// writeCausing is write with what the event causes, queued in the same transaction right after
+// the event with that event's id as its cause in hand, as a handler queues what its event caused
+// right after it (graphstore.LatestEvent). A nil caused writes nothing more.
+func (w addressingWrites) writeCausing(
+	t *testing.T, rows func(ctx context.Context, tx pgx.Tx) (model.Event, error), caused func(b *store.WriteBatch, event int64) error,
+) model.Event {
+	t.Helper()
 	ctx := context.Background()
 	tx, err := w.database.Pool.Begin(ctx)
 	if err != nil {
@@ -107,6 +117,11 @@ func (w addressingWrites) write(t *testing.T, rows func(ctx context.Context, tx 
 	appended, err := w.broker.Append(ctx, tx, event)
 	if err != nil {
 		t.Fatalf("append the %s event: %v", event.Type, err)
+	}
+	if caused != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return caused(b, appended.ID) }); err != nil {
+			t.Fatalf("write what the %s event caused: %v", event.Type, err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the %s: %v", event.Type, err)
@@ -234,23 +249,17 @@ func (w addressingWrites) mentionRole(t *testing.T, key, role, reader string, by
 }
 
 // settleMention settles a comment's first attempt at a role sent, as the mention sender's settle
-// does: the row, the session it reached (graphstore.QueueReached) and the comment.delivery
-// receipt.
+// does: the row, the comment.delivery receipt, and the session the attempt reached under that
+// receipt, queued right after it (graphstore.QueueReached).
 func (w addressingWrites) settleMention(t *testing.T, key, commentID, role, reader string, by model.Actor) model.Event {
 	t.Helper()
 	target := "role:" + role
-	return w.write(t, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
-		var attemptedAt time.Time
+	var attemptedAt time.Time
+	return w.writeCausing(t, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
 		if err := tx.QueryRow(ctx, `
 			update comment_deliveries set state = $3 where comment_id = $1 and target = $2 and attempt = 1
 			returning created_at
 		`, commentID, target, model.DeliveryStateSent).Scan(&attemptedAt); err != nil {
-			return model.Event{}, err
-		}
-		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			_, err := graphstore.QueueReached(b, model.DeliveryStateSent, reader, by, attemptedAt, graphstore.NoEvent)
-			return err
-		}); err != nil {
 			return model.Event{}, err
 		}
 		return model.Event{
@@ -260,6 +269,8 @@ func (w addressingWrites) settleMention(t *testing.T, key, commentID, role, read
 				SessionID: new(reader), State: model.DeliveryStateSent,
 			},
 		}, nil
+	}, func(b *store.WriteBatch, receipt int64) error {
+		return graphstore.QueueReached(b, model.DeliveryStateSent, reader, by, attemptedAt, receipt)
 	})
 }
 

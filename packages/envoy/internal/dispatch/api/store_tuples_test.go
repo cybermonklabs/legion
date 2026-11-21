@@ -202,8 +202,8 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 	// The kinds are the registry's own list and not a list written here, so a kind the reader
 	// learns to resolve and the map never learns to count fails this loop the day it is added;
 	// the map's kinds are refstest's copy of its keys, which refs' own test holds to the map.
-	// The reader resolves no node of a supertag or an attribute (refs' unresolvedKind), so the
-	// two are the registry's kinds no count is owed for.
+	// The reader resolves no node of a supertag or an attribute (keys of refs' registry with no
+	// loader), so the two are the registry's kinds no count is owed for.
 	counted := refstest.BacklinkKinds()
 	resolved := 0
 	for _, kind := range refs.VisibilityKinds() {

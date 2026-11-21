@@ -190,7 +190,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 			}
-			reader := refs.NewReader(ctx, tx, "ask", stored.ID, serverURL)
+			reader := refs.NewReader(ctx, tx, stored.Author, "ask", stored.ID, serverURL)
 			parts, err := refs.PlanAskParts(partIndex, reader, stored, ask.CreatedAt)
 			if err != nil {
 				return err

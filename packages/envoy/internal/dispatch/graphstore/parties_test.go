@@ -27,9 +27,10 @@ import (
 // knows, at the end and inside, and the empty party.
 var badParties = []string{"session:a b", "session:a\tb", "session:a\u00a0b", " session:a", ""}
 
-// TestPartiesValueRefusesAPartyThatHoldsWhiteSpace is the join itself and the two callers that
-// bind nothing: QueueWrite, which queues its statements on a batch it has not sent, and the
-// publisher's arms, which build their statement without a database.
+// TestPartiesValueRefusesAPartyThatHoldsWhiteSpace is the join itself and the caller that binds
+// nothing: the publisher's arms, which build their statement without a database. A node write
+// queued on a batch (QueueWrite, QueueNodes) answers nothing when it is queued and refuses such a
+// party when its batch is sent, which TestAWriteBetweenAPartyThatHoldsWhiteSpaceWritesNothing holds.
 func TestPartiesValueRefusesAPartyThatHoldsWhiteSpace(t *testing.T) {
 	at := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}
@@ -38,10 +39,6 @@ func TestPartiesValueRefusesAPartyThatHoldsWhiteSpace(t *testing.T) {
 			t.Errorf("PartiesValue of %q answered %q, %v, want ErrBadParty", party, value, err)
 		}
 		node := MessageNode("m-bad", "", []string{party}, who, at)
-		var batch store.WriteBatch
-		if err := QueueWrite(&batch, []Node{node}, nil); !errors.Is(err, ErrBadParty) {
-			t.Errorf("QueueWrite of a node between %q answered %v, want ErrBadParty", party, err)
-		}
 		if _, _, err := WriteArms(1, []Node{node}, nil, nil); !errors.Is(err, ErrBadParty) {
 			t.Errorf("WriteArms of a node between %q answered %v, want ErrBadParty", party, err)
 		}
@@ -63,7 +60,10 @@ func TestAWriteBetweenAPartyThatHoldsWhiteSpaceWritesNothing(t *testing.T) {
 		"Write": func(tx pgx.Tx) error { return Write(ctx, tx, []Node{bad}, nil) },
 		"QueueNodes": func(tx pgx.Tx) error {
 			write := PlanUncaused([]Node{bad}, nil)
-			return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueNodes(b, write) })
+			return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				QueueNodes(b, write)
+				return nil
+			})
 		},
 		"FillScopes": func(tx pgx.Tx) error {
 			_, err := FillScopes(ctx, tx, []Scope{{Kind: KindMessage, ID: bad.ID, Parties: bad.Parties}})

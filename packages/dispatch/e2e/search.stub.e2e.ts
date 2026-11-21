@@ -3,7 +3,7 @@
  *  writes when it has nothing to list, and the group each owner row names.
  *
  *  Each reads what the browser does, so each runs against a recording rather than against a
- *  harness (packages/dispatch/AGENTS.md, "The stubbed layer"). The rows whose claim is what the
+ *  harness (packages/dispatch/README.md, "The stubbed layer"). The rows whose claim is what the
  *  index found - the grouped hits, their marks, an ask hit's answer, and the two routes a hit
  *  opens - stayed in `search.e2e.ts`, with the keyboard-hints row, which is read in the desktop
  *  and the phone configurations at once.

@@ -53,7 +53,10 @@ func TestADocumentAtAnOrphanedNodesAddressIsNamedGoneWhateverItsTime(t *testing.
 			}
 			if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 				made := graphstore.PlanUncaused([]graphstore.Node{graphstore.ArtifactNode(ref, "IDEN", "", alice, at)}, nil)
-				if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, made) }); err != nil {
+				if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					graphstore.QueueNodes(b, made)
+					return nil
+				}); err != nil {
 					return err
 				}
 				return graphstore.Caused(ctx, tx, made, firstEvent)

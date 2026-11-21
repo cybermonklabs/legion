@@ -1,7 +1,13 @@
 import { test } from "@playwright/test";
 
 import type { RecordResponse } from "../web/src/api/types";
-import type { FakeGrant, FakeMachineLogin, FakePendingRequest, FakeSignIn } from "./fake-broker";
+import type {
+  FakeGrant,
+  FakeLauncherCredential,
+  FakeMachineLogin,
+  FakePendingRequest,
+  FakeSignIn,
+} from "./fake-broker";
 import { usesFakeBroker } from "./harness-broker";
 import { harnessPorts } from "./harness-ports";
 
@@ -46,6 +52,18 @@ export async function setCredentialGrants(grants: readonly FakeGrant[]): Promise
   await fixtureRequest("/__fixture/grants", grants);
 }
 
+/** Replaces the live machine logins the fake broker lists wholesale
+ *  (`GET /v1/launcher-credentials`, which the machine-login page's Machine logins section reads),
+ *  each beside the login whose list holds it. A row is relayed as seeded, its `person` with it,
+ *  which is what marks a person's pod login. Skipped the same way `setPendingCredentialRequests`
+ *  is. */
+export async function setLauncherCredentials(
+  credentials: readonly FakeLauncherCredential[]
+): Promise<void> {
+  test.skip(!usesFakeBroker, "this run's server reads no fake broker (e2e/harness-broker.ts)");
+  await fixtureRequest("/__fixture/launcher-credentials", credentials);
+}
+
 /** Replaces the machine logins a typed code selects on the fake broker, each the code its
  *  machine printed and the record `POST /v1/machine-logins/lookup` answers for it. Deciding one
  *  writes its decision into that record, so a second lookup reads what the broker kept. Skipped
@@ -78,7 +96,7 @@ export async function setSignIns(signIns: readonly FakeSignIn[]): Promise<void> 
 /** Whether the fake broker's RFC 8414 metadata names RFC 8628's device grant, which is what
  *  Dispatch reads to decide whether to serve the machine-code page. It is served until a row
  *  turns it off, and `resetFakeBroker` turns it back on. Dispatch holds its own read of that
- *  document for `deviceGrantTTL` (packages/envoy/internal/dispatch/agentsecrets/client.go), so a
+ *  document for `deviceGrantTTL` (packages/envoy/internal/dispatch/cipher/client.go), so a
  *  row that changes it waits for the page to follow rather than expecting the next load to.
  *  Skipped the same way `setPendingCredentialRequests` is. */
 export async function setBrokerDeviceGrant(served: boolean): Promise<void> {

@@ -472,6 +472,118 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 	requireNoRevisionTestOutsideTheFence(t)
 }
 
+// A mark of a higher marking rule that a writer taking no owner lock commits between a lower-rule
+// pass's read phase and its stand survives the stand, the pass still states its version, and the
+// higher rule's build then states that version itself.
+//
+// Four writers of document_block_versions take no owner lock (R23): the tick's marking
+// (markVersionedDocuments), oweDocumentIndex, the re-index of a scope and refs.RebuildAll. Each may
+// write store_owed_rule while a pass that has read the row is planning, so the stand decides in
+// its own statement, against the row as it stands then, whether it clears the mark
+// (refs.BlockIndexing.queueStand): from what the read phase saw it would clear a mark of a higher
+// rule written meanwhile, and the higher rule's build would then list the document no more. The
+// race is built rather than waited for, with the harness of
+// TestAStaleWriteCannotAssertAParentANewerEditReplaced: a pass of the lower rule on a connection of
+// its own reads the document's index (refs.ReadBlockIndex), the version's row and its render and
+// plans the pass (refs.PlanBlocks), on a document whose row stands at the version it indexes, below
+// it in store_version, with a mark of the pass's own rule; a statement of the higher rule then
+// commits on that row, one statement at a time; and only then does the pass queue its write
+// phase (store.RunWrite of refs.BlockIndexing.Queue) and commit.
+func TestAHigherRulesMarkWrittenDuringALowerRulesPassSurvivesItsStand(t *testing.T) {
+	ctx := context.Background()
+	database, lower := blockIndexService(t)
+	higher := markingRuleBuild(t, database, nextBuildCommit, lower.markingRule+1)
+	v, w := lower.markingRule, higher.markingRule
+	for _, between := range []struct {
+		name  string
+		write func(document string) error
+	}{
+		{"markVersionedDocuments", func(document string) error {
+			_, err := database.Pool.Exec(ctx, markVersionedDocuments, []string{document}, w)
+			return err
+		}},
+		{"oweDocumentIndexStatement", func(document string) error {
+			return oweDocumentIndex(ctx, database.Pool, document, w)
+		}},
+	} {
+		slug := "raced-" + strings.ToLower(between.name)
+		document := createOwedDocument(t, database, lower, "CORE-1", "", slug, nestedSpec(slug), "")
+		settle(t, database, document)
+		drainBlockIndex(t, lower, "seed of "+slug)
+		version := restateAsThePreviousRelease(t, database, lower, document)
+		var marked int64
+		if err := database.Pool.QueryRow(ctx, markVersionedDocuments, []string{document}, v).Scan(&marked); err != nil || marked != 1 {
+			t.Fatalf("the marking of rule %d marked %d document(s) (%v), want %s", v, marked, err, document)
+		}
+		markdown, blocks, err := lower.TextWithBlocks(ctx, document)
+		if err != nil {
+			t.Fatalf("read %s: %v", document, err)
+		}
+
+		// The lower rule's pass, through its read phase.
+		passConn, err := database.Pool.Dedicated(ctx, "block-index-lower-rule-pass")
+		if err != nil {
+			t.Fatalf("open the pass's connection: %v", err)
+		}
+		defer passConn.Close(ctx)
+		pass, err := passConn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the pass: %v", err)
+		}
+		defer pass.Rollback(ctx)
+		index, err := refs.ReadBlockIndex(ctx, pass, document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := refs.ReadIndexedVersion(ctx, pass, document, version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var versionAt, now time.Time
+		if err := pass.QueryRow(ctx, `
+			select created_at, now() from artifact_versions where artifact_id = $1 and number = $2
+		`, document, version).Scan(&versionAt, &now); err != nil {
+			t.Fatalf("read version %d of %s: %v", version, document, err)
+		}
+		indexing, err := refs.PlanBlocks(ctx, pass, index, v, now, refs.VersionBlocks{
+			ArtifactID: document, Record: record, Number: version, At: versionAt, Markdown: markdown, Blocks: blocks,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !indexing.Won() {
+			t.Fatalf("the pass of rule %d at version %d of %s lost the fence in its read phase: this test proves nothing", v, version, document)
+		}
+
+		// The higher rule's statement commits on the row between the read phase and the stand.
+		if err := between.write(document); err != nil {
+			t.Fatalf("commit %s of rule %d: %v", between.name, w, err)
+		}
+		if err := store.RunWrite(ctx, pass, indexing.Queue); err != nil {
+			t.Fatalf("run the pass's write phase: %v", err)
+		}
+		if err := graphstore.Caused(ctx, pass, indexing.Stated(), graphstore.NoEvent); err != nil {
+			t.Fatalf("append what the pass stated: %v", err)
+		}
+		if err := pass.Commit(ctx); err != nil {
+			t.Fatalf("commit the pass: %v", err)
+		}
+
+		raced := fmt.Sprintf("%s of rule %d committed between the read phase and the stand of a pass of rule %d", between.name, w, v)
+		row := blockRowOf(t, database, document)
+		if !row.standsAt(version) {
+			t.Errorf("%s: the pass left %s at version %s and stand %s, want version %d stated",
+				raced, document, standsText(row.version), standsText(row.stand), version)
+		}
+		if !row.marked || row.rule != w {
+			t.Errorf("%s: the stand cleared the mark of rule %d on %s, want it left", raced, w, document)
+		}
+		if _, written := tickWrites(t, higher); !written[document] || !blockRowOf(t, database, document).clearedAt(version) {
+			t.Errorf("%s: a build of rule %d then left the version %d of %s unwritten, want it written", raced, w, version, document)
+		}
+	}
+}
+
 // nextVersionRow writes one more artifact_versions row holding markdown and answers its number,
 // so a pass can be run at a revision above the one the document stands at.
 func nextVersionRow(t *testing.T, database *store.Store, artifactID, markdown string) int {
@@ -737,7 +849,11 @@ func requireTheUploadIsFenced(t *testing.T, database *store.Store, service *Serv
 			if _, _, err := lockArtifactOwner(joined, tx, document); err != nil {
 				return 0, fmt.Errorf("take the document's owner: %w", err)
 			}
-			stored, err := service.ReplaceText(joined, document, "- alpha\n- gamma\n", alice)
+			precondition, err := replacementPrecondition(joined, service, document)
+			if err != nil {
+				return 0, fmt.Errorf("read the document's token: %w", err)
+			}
+			stored, err := service.ReplaceText(joined, document, "- alpha\n- gamma\n", alice, precondition)
 			if err != nil {
 				return 0, fmt.Errorf("replace the document's text: %w", err)
 			}
@@ -946,7 +1062,7 @@ func requireTheBackfillIsFenced(t *testing.T, database *store.Store) {
 // only owes a document an index writes no revision at all, so it is told apart by what it sets
 // rather than by where it is.
 const (
-	fenceWriterFile     = "refs/blocks.go"
+	fenceWriterFile     = "refs/block_stand.go"
 	fenceWriterFunction = "func (b BlockIndexing) queueStand("
 )
 

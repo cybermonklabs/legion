@@ -208,26 +208,65 @@ graph_node_attributes as (
 // place, which is a role read unclaimed. where is the condition its insert reads its rows under,
 // as tupleInsert takes it.
 //
-// A claim is stated whole or not at all. Its rows carry its event, and the repeat key admits one
-// row per (far end, event, asserted) (D5), so a claim whose event the log already holds one of
-// those rows under is that event stated again: the publisher dates a role's holder by the event
-// that resolved it, and an event retried after a later one resolved the role again reads the
-// store as the later event left it. Appended row by row, such a claim would lose its assertion to
-// the repeat key and keep its retraction - event 10 resolves s1, event 11 resolves s2, the retry
-// of event 10 resolves s1 again, and nobody holds the role. So a claim any row of which its event
-// has already stated appends no row at all, and the node keeps the far end the later write left
-// it at until a newer event resolves it again. A claim at the sentinel is outside the repeat key
-// and is always stated.
+// Claims are ordered by when their holder was resolved, which is the order a role's holder
+// changes in (TupleHeldBy: the claim ends when a later resolution reads the role unclaimed or its
+// holder gone), and a claim's At is that time: an older resolution never moves a claim a newer
+// one stated. The read answers the newest row of each far end the node has held under the claim's
+// kind, with the time that row is dated, and a claim dated earlier than any of those rows states
+// nothing, neither a retraction nor an assertion: the node keeps what the newer resolution left
+// it at until a still newer one is recorded. The newest row of a far end counts whether it asserts
+// the far end or retracts it, so a node that holds no far end because a newer resolution ended the
+// relation - a role a newer resolution read unclaimed - keeps holding none, while a node that has
+// never held a far end of that kind takes the claim, as one whose rows are all older does. A claim
+// at the sentinel is no resolution's record, so the rule leaves it out and it is stated however
+// its node's rows are dated.
+//
+// The event a claim is caused by is no such order. The publisher resolves a role's holder when it
+// publishes a batch, not when the event was written; its owners publish independently and out of
+// event order, an event backed off being published after a later event of another owner; and a
+// batch's claim takes the first of its events that routed to the role (outbox.deliveredGraph).
+// Event 11 records s1, the role moves to s2, and event 10, published after its back-off, resolves
+// s2: ordered by event, event 11's row would hold that claim back, and the store would keep s1, a
+// holder the role no longer has, until a batch whose claim takes an event above 11.
+//
+// The times are the publisher's own clock, read as each resolution's read answered (outbox's
+// roleResolution). A resolution is made only under the publisher hold, which one process holds at
+// a time (outbox's lease.go), so one deployment's resolutions are dated by one process's clock at
+// a time; across a handover of the hold, the next holder's claims are ordered after the last
+// holder's as far as the two clocks agree. A backfill's row carries the time of the history it
+// records, which is older than every live resolution after it, so it never holds a live claim
+// back; and the role backfill, the one backfill that states claims, states a page's part_of the
+// role it is the page of, a far end no claim moves, so a row it dates later holds back nothing a
+// live claim would change.
+//
+// A retried record is caught two ways. It carries the resolution it made, dated when that
+// resolution was made, so a record written again after a later resolution was recorded finds that
+// resolution's row dated after its own and states nothing. That closes a retry whose first record
+// wrote no row: event 9 resolves s1; event 10 resolves s1 again and appends nothing, since the
+// role is at s1 already; event 11 resolves s2; and the record of event 10, written again, finds no
+// row of its own event to tell it from a first record, so but for its time it would retract s2
+// and assert s1 under event 10 and hand the role back to the holder event 11 replaced.
+//
+// The other is that a claim is stated whole or not at all. Its rows carry its event, and the
+// repeat key admits one row per (far end, event, asserted) (D5), so a claim whose event the log
+// already holds one of those rows under is that event stated again. Appended row by row, such a
+// claim would lose its assertion to the repeat key and keep its retraction, and nobody would hold
+// the role. The order of resolutions cannot tell every such retry: an event read again after its
+// record resolves the role again, newer than every row - event 10 resolves s1, event 11 moves the
+// role to s2, and event 10, backed off and read again, resolves s1 again, which would retract s2
+// and lose its assertion of s1. So a claim any row of which its event has already stated appends
+// no row at all, and the node keeps the far end it was left at until a resolution recorded under
+// another event moves it. A claim at the sentinel is outside the repeat key and is always stated.
 //
 // No arm joins the claims it was handed to another list of their own rows, and none joins them
 // to graph_tuples. Each claim reads its node's far ends by a probe of its own, and a window over
-// what that probe answered says whether the claim stands at its own far end already; each row a
-// claim states asks the repeat key whether the log holds it by a probe of its own, behind an
-// offset 0 that keeps Postgres from reading the whole key into a hash in its place; and a window
-// over a claim's rows states the claim whole or not at all. Planned without a hash join, a list
-// joined to itself is rescanned whole for each claim, and a list joined to graph_tuples puts a
-// read of the log on the outer side and rescans the list for each tuple it reads
-// (TestTheClaimArmsProbeEachClaimOfTheirBatchOnce).
+// what that probe answered says whether the claim stands at its own far end already and whether
+// a later resolution stated any of those far ends; each row a claim states asks the repeat key
+// whether the log holds it by a probe of its own, behind an offset 0 that keeps Postgres from
+// reading the whole key into a hash in its place; and a window over a claim's rows states the
+// claim whole or not at all. Planned without a hash join, a list joined to itself is rescanned
+// whole for each claim, and a list joined to graph_tuples puts a read of the log on the outer side
+// and rescans the list for each tuple it reads (TestTheClaimArmsProbeEachClaimOfTheirBatchOnce).
 func claimArms(first int, where string) string {
 	if where != "" {
 		where = "\n\t  and " + where
@@ -241,26 +280,31 @@ func claimArms(first int, where string) string {
 graph_claims_held as (
 	select claim.from_kind, claim.from_id, claim.kind, claim.to_kind, claim.to_id, claim.at, claim.who,
 	       claim.source_event, claim.position, held.to_kind as held_kind, held.to_id as held_id,
-	       bool_or(held.to_kind = claim.to_kind and held.to_id = claim.to_id)
+	       held.asserted as held_asserted,
+	       bool_or(held.asserted and held.to_kind = claim.to_kind and held.to_id = claim.to_id)
 	           over (partition by claim.position) as held_at_far_end,
+	       bool_or(claim.source_event <> 0 and held.at > claim.at)
+	           over (partition by claim.position) as stated_by_newer,
 	       row_number() over (partition by claim.position) as nth
 	from graph_claims claim
 	left join lateral (
-		` + CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted`,
+		` + CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted, t.at`,
 		`t.from_kind = claim.from_kind and t.from_id = claim.from_id
 			and t.kind = claim.kind and t.to_kind <> '`+KindValue+`'`) + `
-	) held on held.asserted
+	) held on true
 ),
 graph_claims_stated (` + tupleWriteColumns + `, position, step) as (
 	select from_kind, from_id, kind, held_kind, held_id, at, who,
 	       source_event, null::bigint, false, position, 0
 	from graph_claims_held
-	where (held_kind, held_id) <> (to_kind, to_id)
+	where held_asserted and (held_kind, held_id) <> (to_kind, to_id)
+	  and not coalesce(stated_by_newer, false)
 	union all
 	select from_kind, from_id, kind, to_kind, to_id, at, who,
 	       source_event, null::bigint, true, position, 1
 	from graph_claims_held
 	where nth = 1 and to_id <> '' and not coalesce(held_at_far_end, false)
+	  and not coalesce(stated_by_newer, false)
 ),
 graph_claims_written as (
 	insert into graph_tuples (` + tupleWriteColumns + `)

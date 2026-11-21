@@ -262,7 +262,10 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	askNode := graphstore.PlanUncaused([]graphstore.Node{graphstore.AskNode(rowID, project, parties, actor, ask.CreatedAt)}, nil)
-	if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, askNode) }); err != nil {
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, askNode)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -331,10 +334,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	// The ask's node and the asker's follow learn the ask.opened event the step before appended.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(b, askNode, graphstore.LatestEvent); err != nil {
-			return err
-		}
-		return graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -344,6 +346,20 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
 	ask.WaitingOnPerson = waitingOnPerson
 	appended = append(appended, event)
+	// The review the issue's specification already carries, reported beside the advice above.
+	// It is read here, in the read phase after every write of this ask is queued, so it answers
+	// for the specification as this write leaves it: a version the anchor's snapshot queued of
+	// that document, and a review that version's carry queued, come off the ledger, and the rest
+	// from the table. It is about the document rather than about this session, so it is read for
+	// a person's question as for an agent's, and it rides the advice the write already answers
+	// rather than a read of its own. A question on a project document has no issue and so no
+	// specification, and a write whose advice read failed carries nothing to hang it on; both
+	// report no review.
+	if advice != nil && owner.IssueKey != nil {
+		advice.StandingReview = s.standingReviewAdvice(
+			r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey,
+		)
+	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -584,7 +600,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ask.EditedAt = timestampPtr(&editedAt)
-	askChanges, err := s.queueEditedReferences(documentCtx, tx, ledger, "ask", ask.ID, previous.Question, ask.Question)
+	askChanges, err := s.queueEditedReferences(documentCtx, tx, ledger, ask.Author, "ask", ask.ID, previous.Question, ask.Question)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

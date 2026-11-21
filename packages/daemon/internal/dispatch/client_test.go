@@ -50,6 +50,26 @@ func TestListIssuesFiltersStatusesWithoutChangingDispatchOrder(t *testing.T) {
 	if issues[1].Key != "LEGION-2" || fmt.Sprint(issues[1].Rank) != "c" || issues[1].Parent == nil || *issues[1].Parent != "LEGION-1" || issues[1].HandedOver {
 		t.Fatalf("second filtered issue = %#v, want LEGION-2 with Dispatch rank c under LEGION-1, not handed over (no labels)", issues[1])
 	}
+	for i, want := range [][]string{{"frontend", "Legion"}, {}} {
+		if !reflect.DeepEqual(issues[i].Labels, want) {
+			t.Fatalf("labels of %s = %#v, want %#v as the listing answered them", issues[i].Key, issues[i].Labels, want)
+		}
+	}
+}
+
+// release_children reads a child from the project's listing when Dispatch's detail read of it
+// fails, as the summary made an Issue (api's cachedIssueReader), and the copy of Dispatch's issues
+// takes that Issue as a reading of all five values: the Issue keeps the labels the listing showed,
+// with every other field the listing carries.
+func TestASummaryAsAnIssueKeepsItsLabels(t *testing.T) {
+	parent := "LEGION-1"
+	summary := IssueSummary{Key: "LEGION-2", Title: "child", Status: "todo", Parent: &parent, Rank: "b", Labels: []string{"frontend", "Legion"},
+		HandedOver: true, LastSeq: 7, ResolvedRepo: "acme/widgets", BlockedBy: []string{"LEGION-3"}, ClaimedBy: "session:architect"}
+	want := Issue{Key: "LEGION-2", Title: "child", Status: "todo", Parent: &parent, Rank: "b", Labels: []string{"frontend", "Legion"},
+		HandedOver: true, LastSeq: 7, ResolvedRepo: "acme/widgets", BlockedBy: []string{"LEGION-3"}, Claim: &Claim{Kind: "session", ID: "architect"}}
+	if got := summary.Issue(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the summary as an Issue = %#v, want %#v", got, want)
+	}
 }
 
 func TestGetIssueReturnsWorkflowFields(t *testing.T) {

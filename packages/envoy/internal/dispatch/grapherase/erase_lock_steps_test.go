@@ -2,6 +2,8 @@ package grapherase
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -20,10 +23,12 @@ import (
 // alike: store.LockOwners' advisory lock.
 var ownerLockStatement = lockstep.OwnerLockStatement
 
-// untouchedBeforeTheNode are the tables the erase reads nothing of before it holds the node's row:
-// the tuples, the record of the erase and the event log, which it reads and writes only once it
-// has read the node under its locks. Before then it reads the node's projection rows and its
-// document alone, to learn their owner rows (ownerRows).
+// untouchedBeforeTheNode are the tables the erase's locking transaction reads nothing of before it
+// holds the node's row: the tuples, the record of the erase and the event log, which it reads and
+// writes only once it has read the node under its locks. Before then it reads the node's
+// projection rows and its document alone, to learn their owner rows (ownerRows). The search for
+// the rows the run leaves reads them in a read-only transaction of its own, which ends before the
+// locking transaction begins (searchLeft).
 var untouchedBeforeTheNode = []string{"graph_tuples", "graph_erasures", "events"}
 
 // commentLockStatement is how the statement starts that takes the erased comment's own comments
@@ -434,9 +439,10 @@ func TestTheEraseTakesTheOwnersOfABlockAndAWindowQuotingItBeforeItsNode(t *testi
 // CORE-1's lock go. No route moves a comment today; the statement stands for any write that puts
 // a node under another owner between the run's two reads. Under its locks the run reads the
 // comment under an owner it did not take. A run that went on would write the comment's rows under
-// ACME-1 holding no lock on it. This one rolls back and starts again, so it queues behind
-// ACME-1's owner lock at the start of its next try, having read nothing of the store, and once
-// let go it erases the comment.
+// ACME-1 holding no lock on it. This one rolls back and starts again, so its next try searches
+// for the rows it leaves again, in a transaction of its own that takes no lock, and queues behind
+// ACME-1's owner lock with its locking transaction having read nothing of the store, and once let
+// go it erases the comment.
 func TestTheEraseStartsAgainWhenItsTextMovesUnderAnOwnerItHasNotTaken(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -479,6 +485,110 @@ func TestTheEraseStartsAgainWhenItsTextMovesUnderAnOwnerItHasNotTaken(t *testing
 		t.Fatalf("the erase failed once issue ACME-1's owner lock was let go: %v", answer.err)
 	}
 	requireTheCommentErased(t, database, answer.erasure, seeded.comment)
+}
+
+// searchGate is the table TestAConfirmedEraseSearchesTheRowsItLeavesBeforeItTakesAnOwnerLock holds
+// the erase's search at: the one table of a schema of its own, with one text column, which the
+// search for the rows the run leaves reads as it reads every text column of every base table
+// (readLeft), and which nothing else the erase does and nothing a comment's writer does reads.
+const searchGate = `"erase_search_gate"."held"`
+
+// TestAConfirmedEraseSearchesTheRowsItLeavesBeforeItTakesAnOwnerLock holds a confirmed erase to
+// searching the database for the rows it leaves before it takes its first owner lock
+// (lockInStoreOrder, searchLeft). The search sends one statement per text column of every base
+// table, each a scan of the whole table, and every writer of an issue takes the issue's owner lock
+// first and waits there while another transaction holds it, so a search under that lock holds
+// every such writer for as long as it scans.
+//
+// The run erases the comment seedAgreeingStore writes on a document of issue CORE-1, whose owner
+// lock is the first lock the run takes. Once the run without --confirm has printed its digest, a
+// transaction holds searchGate in access exclusive mode, and the confirmed run is started: the
+// test reads that it waits inside its search, at the statement that reads searchGate. While it
+// waits there a comment create on CORE-1 runs as the API's createComment orders its writes
+// (createACommentUnderItsOwnerLock): its transaction takes CORE-1's owner lock first, then writes
+// the comment's row and its comment.created event, and commits, waiting on no lock longer than its
+// lock_timeout. A run that searched under its locks would hold CORE-1's owner lock there, and the
+// create would wait for it until that timeout ended it. Once searchGate is let go the run takes its
+// locks, reads the rest of its listing, finds the digest it was given and erases the comment.
+func TestAConfirmedEraseSearchesTheRowsItLeavesBeforeItTakesAnOwnerLock(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	listing := dryRun(t, database, commentNodeKind, seeded.comment)
+	if _, err := database.Pool.Exec(ctx, `create schema erase_search_gate; create table `+searchGate+` (body text)`); err != nil {
+		t.Fatalf("create %s, the table the search is held at: %v", searchGate, err)
+	}
+	gate := &lockstep.Hold{Name: "the table the search is held at"}
+	lockstep.Begin(t, database, gate)
+	if _, err := gate.Tx.Exec(ctx, `lock table `+searchGate+` in access exclusive mode`); err != nil {
+		t.Fatalf("hold %s: %v", searchGate, err)
+	}
+
+	pid, answered := startConfirmedErase(t, database, commentNodeKind, seeded.comment, listing)
+	if early, done := storetest.WaitForQueuedBehind(t, gate.Tx, pid, answered, lockstep.Wait); done {
+		t.Fatalf("the confirmed erase answered (err %v) without waiting on %s, which its search for the rows it leaves reads", early.err, searchGate)
+	}
+	waited := strings.ToLower(lockstep.WaitingStatement(t, database, pid))
+	t.Logf("the confirmed erase waits behind %s at %q", searchGate, waited)
+	if !strings.HasPrefix(waited, "with bound as") || !strings.Contains(waited, " from "+searchGate+" held, bound where ") {
+		t.Errorf("the confirmed erase waits behind %s at %q, which is not its search's read of that table", searchGate, waited)
+	}
+
+	if err := createACommentUnderItsOwnerLock(t, database, "A remark written while the erase searched."); err != nil {
+		t.Fatalf("a comment create on issue CORE-1 failed while the confirmed erase of comment %s waited inside its search for the rows it leaves: %v; the erase holds the issue's owner lock through its search, and every writer of the issue waits for it",
+			seeded.comment, err)
+	}
+
+	gate.Release()
+	var answer eraseAnswer
+	select {
+	case answer = <-answered:
+	case <-time.After(lockstep.Wait):
+		t.Fatalf("the confirmed erase did not answer within %s of the release of %s", lockstep.Wait, searchGate)
+	}
+	if answer.err != nil {
+		t.Fatalf("the confirmed erase failed once %s was let go: %v", searchGate, answer.err)
+	}
+	requireTheCommentErased(t, database, answer.erasure, seeded.comment)
+}
+
+// createACommentUnderItsOwnerLock writes a comment by alice on issue CORE-1 in the order the API's
+// createComment takes its locks: its transaction takes the issue's owner lock first
+// (store.LockOwner, which lockCommentOwner's read is guarded by), then writes the comment's row and
+// its comment.created event, and commits. It waits on a lock no longer than its lock_timeout, and
+// answers the error that ended it, or nil once it committed.
+func createACommentUnderItsOwnerLock(t *testing.T, database *store.Store, body string) error {
+	t.Helper()
+	ctx := context.Background()
+	author := model.Actor{Kind: "user", ID: "alice"}
+	stored, err := json.Marshal(author)
+	if err != nil {
+		t.Fatalf("encode the author %+v: %v", author, err)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the comment create: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `set local lock_timeout = '10s'`); err != nil {
+		t.Fatalf("bound the comment create's lock waits: %v", err)
+	}
+	if err := store.LockOwner(ctx, tx, store.IssueOwner("CORE-1")); err != nil {
+		return fmt.Errorf("take issue CORE-1's owner lock: %w", err)
+	}
+	comment := model.Comment{IssueKey: new("CORE-1"), Author: author, Body: body}
+	if err := tx.QueryRow(ctx, `
+		insert into comments (issue_key, author, body) values ($1, $2, $3)
+		returning id::text, created_at
+	`, comment.IssueKey, stored, comment.Body).Scan(&comment.ID, &comment.CreatedAt); err != nil {
+		return fmt.Errorf("write the comment: %w", err)
+	}
+	comment.Mentions, comment.Deliveries = []model.Mention{}, []model.CommentDelivery{}
+	appendEventBy(t, tx, "CORE-1", "comment.created", author, model.CommentEventPayload{Comment: comment})
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit the comment: %w", err)
+	}
+	return nil
 }
 
 // quotingDocument is the one document of an issue of a project of its own, which quotes the
@@ -609,15 +719,21 @@ type eraseAnswer struct {
 
 // startErase runs Erase of node kind:id as an operator does: without --confirm first, on the
 // test's goroutine, which takes no lock and so waits on no hold, and then with the digest that
-// run printed off the test's goroutine, on the connection the erase opens for itself. It answers
-// the confirmed run's backend process id and the channel its answer arrives on. The erase reads
-// each document's live state through docs.ReadErasedLiveText, which takes a document's owner row
-// and then its room's lock; the documents here hold no stored history, so the erase lists no
-// document whose history it replaces. Its sweep of the display trees waits a millisecond, which
-// no lock step here rests on.
+// run printed (startConfirmedErase).
 func startErase(t *testing.T, database *store.Store, kind, id string) (uint32, <-chan eraseAnswer) {
 	t.Helper()
-	listing := dryRun(t, database, kind, id)
+	return startConfirmedErase(t, database, kind, id, dryRun(t, database, kind, id))
+}
+
+// startConfirmedErase runs Erase of node kind:id with the digest of listing, which the run without
+// --confirm before it printed, off the test's goroutine, on the connection the erase opens for
+// itself. It answers the confirmed run's backend process id and the channel its answer arrives on.
+// The erase reads each document's live state through docs.ReadErasedLiveText, which takes a
+// document's owner row and then its room's lock; the documents here hold no stored history, so the
+// erase lists no document whose history it replaces. Its sweep of the display trees waits a
+// millisecond, which no lock step here rests on.
+func startConfirmedErase(t *testing.T, database *store.Store, kind, id string, listing *Erasure) (uint32, <-chan eraseAnswer) {
+	t.Helper()
 	answered := make(chan eraseAnswer, 1)
 	go func() {
 		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), kind, id, listing.Digest, time.Millisecond)

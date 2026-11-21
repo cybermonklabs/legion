@@ -57,7 +57,10 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 		t.Fatalf("read the time of document %s: %v", slug, err)
 	}
 	documentNode := graphstore.PlanUncaused([]graphstore.Node{graphstore.ArtifactNode(refKey, "CORE", "", alice, createdAt)}, nil)
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, documentNode) }); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, documentNode)
+		return nil
+	}); err != nil {
 		t.Fatalf("write the node of document %s: %v", slug, err)
 	}
 	var artifactID string
@@ -117,7 +120,10 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 // would run before the rows it settles exist. A transaction no ledger joins runs it at once
 // (write).
 func causeInWritePhase(ctx context.Context, tx pgx.Tx, written graphstore.Uncaused, event int64) error {
-	return write(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueCaused(b, written, event) })
+	return write(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, written, event)
+		return nil
+	})
 }
 
 // countRows is one count over the document's rows of a table keyed by artifact_id.
@@ -519,12 +525,7 @@ var indexPasses = map[string]string{
 	"api/comment_actions.go#editComment":     "the edit request's own body",
 	"api/comment_actions.go#reopenComment":   "the reopen request",
 	"api/comment_create.go#createCommentFor": "the create request's own body",
-	// The comment path's two halves of one store write, split at its event (commentStoreWrite):
-	// the node and facts of the comment the request stores, then the same facts under the event
-	// that stored it. Neither reads a row of either side.
-	"api/comment_create.go#writeNode":      "the comment the create request stores, as its row is written",
-	"api/comment_create.go#caused":         "the facts writeNode stated and the event that stored the comment",
-	"api/comment_delivery.go#replyComment": "the reply a delivery recorded",
+	"api/comment_delivery.go#replyComment":   "the reply a delivery recorded",
 	// A delivery attempt's settle states the session it reached (graphstore.QueueReached).
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",
@@ -536,45 +537,18 @@ var indexPasses = map[string]string{
 	// statement (graphstore.WriteArms), and each caller that appends an event after the follow
 	// moves the node that follow made onto it (graphstore.QueueCaused). Neither reads a row of
 	// either side: the follow writes the session its caller names, and the cause the node the
-	// follow answered. A follow planned in a write's read phase (asks.PlannedFollow) queues the same
-	// statement on that write's batch.
-	"asks/followers.go#Follow":         "the ask and the session its caller names",
+	// follow answered.
 	"asks/followers.go#queueFollow":    "the ask and the session its caller names",
-	"asks/followers.go#Queue":          "the ask and the author its caller's plan names",
 	"api/server.go#appendCausingEvent": "the event its caller appends and the facts its caller's write stated before it",
 	"api/asks.go#createAskFor":         "the ask the create request opens and the event it appended after the follow",
 	// A renewed approval request follows its ask for the requester and moves the node that
 	// follow made onto the last event the renewal appended, or leaves it at the sentinel when
 	// the renewal appended none.
 	"api/reviews.go#renewApprovalAsk": "the open approval request, the requester and the event the renewal appended",
-	// The one writer of an ask's answer state, queued (asks.Settled.Queue): the answer on the
-	// ask's node, then its row, from the transition its caller names; and each site that appends
-	// what a transition held under the event it appended after it (graphstore.QueueCaused).
-	"api/ask_transitions.go#closeAskTx":                "the transition the answer, resolve or decline request makes and the event it appended",
-	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx": "the asks an issue's close withdraws and the events it appended",
-	"api/issue_ask_lifecycle.go#recordRestoredAsksTx":  "the asks an issue's reopen restores and the events it appended",
-	"docs/approval_carry.go#answerApprovalAsk":         "the approval the carry answers and the event it appended",
-	// A settlement states each copy among a document's ask blocks as a claim on its source, once
-	// its version is indexed: the copies its own reconciliation read off the document, and the
-	// rows of the version it indexed, which name each copy's block node.
-	"docs/ask_blocks.go#claimCopies": "the copies the settlement's reconciliation read and the blocks its version indexed",
-	// Beside those claims, in the same name and under the same event, a settlement states on each
-	// ask node the readability of its block that the reconciliation read (G1): the reason a block
-	// fails the strict read for, as the node's `invalid` value, and that value's retraction once
-	// the block reads again. It reads the value each node holds only to state what moved, never a
-	// side of a projection to mend the other.
-	"docs/ask_blocks.go#stateInvalidReasons": "the readability the settlement's reconciliation read of the document's ask blocks, and the invalid value each of their asks' nodes holds",
-	// The catch-up of a follow a process of the release before recorded: the follower rows that
-	// build wrote, stated on the ask's node where the node does not state them yet.
-	"asks/followers.go#CatchUpFollower": "the follower rows another build recorded and what the ask's node already states of them",
-	// The boot step's backfill of the asks and their followers written before this release.
-	"graphcensus/backfill.go#writeAskBatch":         "each pre-store asks row's own content",
-	"graphcensus/backfill.go#writeAskFollowerBatch": "each pre-store ask_followers row's own content",
 	// A settlement states right after each event it appends what waited for it: its version's
 	// block index after the artifact.version, and each ask it opened, its node and its follow,
-	// after that ask's ask.opened, with those asks' ties and the answer states it wrote
-	// (graphstore.QueueCaused, causedByEvent).
-	"docs/settlement.go#appendEvents": "the facts the settlement's index pass, its asks' nodes, ties and follows and its answer states stated and the events it appended after them",
+	// after that ask's ask.opened (graphstore.QueueCaused).
+	"docs/settlement.go#appendEvents": "the facts the settlement's index pass, its asks' nodes and its follows stated and the events it appended after them",
 	// The node of every ask and message a request or a settlement creates, before its row, in the
 	// project or between the parties it belongs to, and caused by the event the create appends.
 	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",
@@ -583,26 +557,6 @@ var indexPasses = map[string]string{
 	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
 	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
 	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
-	// A document's retirement states its artifact node gone, keeping every other fact of the
-	// node, and appends that fact under the document.retired event it appends (graphstore.Caused).
-	"docs/retire.go#RetireDocument":   "the document the caller retires and the document.retired event it appended",
-	"docs/retire.go#writeRetiredNode": "the retired document's row and the node the store holds of it",
-	// A person's Keep of an agent's decision states its kept_by and kept_text_sum on the decision's
-	// node and writes their projection row, decision_keeps, from the request and the decision the
-	// person read. It reads the kept_by the node holds only to retract one naming another person,
-	// so the node holds the one Keep the row projects: what moved, never a side mended.
-	"api/decisions.go#keepDecisionNode": "the Keep request, the decision the person read, and the kept_by its node holds",
-	// The decisions step's restore and conversion of an issue:
-	// each version it writes appends its index pass's facts under the version's event, and the
-	// moves, the ask nodes' relations and the Keeps it carries onto a decision's node are drawn
-	// from what it read of the issue's documents and asks under their locks, mending nothing.
-	"docs/decision_restore.go#writeVersion": "the facts the version's index pass stated and the event that recorded the version",
-	"docs/decision_restore.go#writeFacts":   "the restore's and the conversion's plan, read off the documents and the asks rows it locked",
-	// A person's own write that takes an answered ask's block out of its document states the
-	// person's node and the removed_by of each such ask, from the asks rows the write lost the
-	// blocks of and the person the write was made for, under the version's event: planned into the
-	// version's index pass (removalsOf), and queued on their own for a version no pass plans.
-	"docs/removed_by.go#queueRemovals": "the answered asks a person's own write took the blocks of out and the person it was made for",
 	// The removal of an untouched document states its node gone before its row goes, caused by
 	// the artifact.removed event it appends.
 	"api/artifact_removal.go#removeArtifact": "the document the request removes and the event it appended",
@@ -635,26 +589,26 @@ var indexPasses = map[string]string{
 	// markStaleDocuments marks each document another release indexed after the store last
 	// stated it, read off the two versions the document's own row records (store_version below
 	// version). That pass writes neither a projected table nor the store, so it is no entry here.
-	"graphcensus/backfill.go#writeBlockBatch":    "each pre-store document_blocks row's own content and the document it is in",
-	"graphcensus/backfill.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
+	"graphcensus/backfill_blocks.go#writeBlockBatch":        "each pre-store document_blocks row's own content and the document it is in",
+	"graphcensus/backfill_block_refs.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
 	// The comment write both of the comment batch's writers share - the backfill's comment batch
 	// and the block-index tick's write of the comments the events after its cursor name whose rows
-	// name no node (graphcensus.CommentsNamingNoNode) - each comment's node and facts, read from the
+	// name no node (refs.CommentsNamingNoNode) - each comment's node and facts, read from the
 	// row's own content with the event that stored it as its cause, named on that comment's own row
-	// (graphcensus.CommentWrite.Queue). It reads no side of a projection to mend the other and
+	// (refs.CommentWrite.Queue). It reads no side of a projection to mend the other and
 	// leaves alone a row that names its node.
-	"graphcensus/backfill.go#Queue": "each comments row whose node the write states, read from the row's own content, and the event that stored it",
+	"refs/comment_nodes.go#Queue": "each comments row whose node the write states, read from the row's own content, and the event that stored it",
 	// The backfill of the roles. A role, its page and the page's part_of it have no projection
 	// row, so there is no projection to read one side of: the batch's input is the roles the
 	// store census holds to a node, which a row addresses now or an event of the log ever
 	// addressed (addressedRoles), and it writes the nodes the store lacks of them, leaving a node
 	// another write made alone rather than mending it.
-	"graphcensus/backfill.go#writeRoleBatch": "the roles a row addresses now or an event ever addressed (addressedRoles)",
+	"graphcensus/backfill_roles.go#writeRoleBatch": "the roles a row addresses now or an event ever addressed (addressedRoles)",
 	// The backfill of the sessions, the same case as the roles': a session has no projection
 	// row, and the batch's input is the sessions the store census holds to a node, which a row
 	// names now or an ask.follower_added event ever named (recordedSessions). It writes the nodes
 	// the store lacks of them, and a node another write made it leaves alone.
-	"graphcensus/backfill.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
+	"graphcensus/backfill_sessions.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
 	// The backfill of the project of every node: the rows of the issues, documents, asks and
 	// messages that their marker does not mark, each read again under its owner lock before its node is
 	// written, and the comment and block nodes that name no project, each with the row its
@@ -693,12 +647,12 @@ var indexPasses = map[string]string{
 	// the store's own row to state what it writes into that row, never a projection to mend the
 	// store or the store to mend a projection.
 	"graphstore/write.go#queueNodes": "the nodes its caller states and the rows of them it moves",
-	// queueAppend is the second half of one write rather than a second look at it: it appends the
-	// tuples its caller states, and states the base attributes of the node rows its node write
-	// marked and moves them onto the write's cause, which it reads off those rows' marks
-	// (nodeMark). It reads the store's own rows its write just wrote, no projection, and mends
-	// nothing.
-	"graphstore/write.go#queueAppend": "the tuples its caller states and the node rows its own node write marked",
+	// queueAppendStatement, one statement of queueAppend's append, is the second half of one write
+	// rather than a second look at it: it appends the tuples its caller states, and states the base
+	// attributes of the node rows its node write marked and moves them onto the write's cause,
+	// which it reads off those rows' marks (graphstore's nodeMarks). It reads the store's own rows
+	// its write just wrote, no projection, and mends nothing.
+	"graphstore/write.go#queueAppendStatement": "the tuples its caller states and the node rows its own node write marked",
 	// FillScopes states the project of a node an earlier build stored with none: it locks and
 	// updates the rows of the nodes its caller names, reading of each only whether it carries a
 	// project already and its own made_at, made_by and cause, which the fact it states takes. The
@@ -711,25 +665,17 @@ var indexPasses = map[string]string{
 	// The record of a fallback pass splices in the same arms for each copy the pass published:
 	// the copy's delivered_to and the session its topic names.
 	"outbox/mentions.go#recordFallbackCopies": "the fallback copies the pass published and the topic each reached",
-	// A version's index pass reads its render (PlanBlocks), and of each decision the author its
-	// node's decided_by tuple holds, which markdown never carries (refs.DecisionFacts): that tuple
-	// is the one record of who decided, read to restate the same tie, never to mend a row; and
-	// BlockIndexing.Queue writes what the plan decided. Where another release indexed the document
-	// after the store last stated its blocks, the rows it compares the render with no longer hold
-	// the blocks and links that release dropped, so the plan also reads what the store still
-	// asserts of the document (heldDocumentBlocks); what it states of those - gone, retracted - is
-	// decided by the render that does not hold them, as the parents' plan reads the parents the
-	// store asserts to state the render's.
-	"refs/blocks.go#Queue":                  "the version's render, each decision's stored decided_by, and where another release indexed the document since the store stated it, what the store still asserts against that render",
+	// A version's index pass reads its render (PlanBlocks), and BlockIndexing.Queue writes what
+	// the plan decided. Where another release indexed the document after the store last stated its
+	// blocks, the rows it compares the render with no longer hold the blocks and links that release
+	// dropped, so the plan also reads what the store still asserts of the document
+	// (heldDocumentBlocks); what it states of those - gone, retracted - is decided by the render
+	// that does not hold them, as the parents' plan reads the parents the store asserts to state the
+	// render's.
+	"refs/blocks.go#Queue":                  "the version's render, and where another release indexed the document since the store stated it, what the store still asserts against that render",
 	"refs/block_nodes.go#queueBlockParents": "the version's render",
-	"refs/blocks.go#queueBlockRefs":         "the version's render, and each decision's stored decided_by",
-	// The typed-node pass: the decision and reading nodes of the version, their values and their
-	// authors, from the version's render and the credential the version's write proved, and above
-	// the deferral bound their part_of and the rows of their own ties, and the shaped ties of the
-	// asks a settlement opened (refs.DecisionIndexing.Queue, refs.OpenedAskTies.Queue). It reads a
-	// node's stored values and authors only to state what moved.
-	"refs/decision_nodes.go#Queue": "the version's render and the credential its write proved",
-	"refs/refs.go#queueStamp":      "the event that recorded the write",
+	"refs/block_nodes.go#queueBlockRefs":    "the version's render",
+	"refs/refs.go#queueStamp":               "the event that recorded the write",
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the

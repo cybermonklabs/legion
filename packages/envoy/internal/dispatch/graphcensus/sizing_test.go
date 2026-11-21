@@ -24,6 +24,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -532,11 +534,11 @@ func compareWritten(a, b writtenKind) int {
 // what it drives that site over where the test drives one site twice.
 const (
 	archiveIndexDrive  = "refs/blocks.go#Queue, over the archive's three versions"
-	blockBatchDrive    = "graphcensus/backfill.go#writeBlockBatch"
-	blockRefBatchDrive = "graphcensus/backfill.go#writeBlockRefBatch"
-	commentBatchDrive  = "graphcensus/backfill.go#Queue, from the backfill's comment pass"
-	roleBatchDrive     = "graphcensus/backfill.go#writeRoleBatch"
-	sessionBatchDrive  = "graphcensus/backfill.go#writeSessionBatch"
+	blockBatchDrive    = "graphcensus/backfill_blocks.go#writeBlockBatch"
+	blockRefBatchDrive = "graphcensus/backfill_block_refs.go#writeBlockRefBatch"
+	commentBatchDrive  = "refs/comment_nodes.go#Queue, from the backfill's comment pass"
+	roleBatchDrive     = "graphcensus/backfill_roles.go#writeRoleBatch"
+	sessionBatchDrive  = "graphcensus/backfill_sessions.go#writeSessionBatch"
 	busDeliveryDrive   = "outbox/publisher.go#recordBatch, the bus's delivery of comment.created"
 	receiptDrive       = "outbox/publisher.go#recordBatch, the receipt of the comment's mention"
 	fallbackDrive      = "outbox/mentions.go#recordFallbackCopies"
@@ -603,8 +605,10 @@ func seededDrives(database *store.Store) []StoreDrive {
 		// and graphstore.QueueAuthored state one (graphstore.CommentFacts,
 		// graphstore.AuthorFacts), so its kinds are the comment path's; the role sizer and its
 		// page; and the sessions the census holds to a node.
-		Name: blockBatchDrive, Sites: []string{"graphcensus/backfill.go#writeBlockBatch", "graphstore/write.go#Write"},
-		Database: database, Drive: backfill(backfillBlocks),
+		Name: blockBatchDrive, Sites: []string{"graphcensus/backfill_blocks.go#writeBlockBatch", "graphstore/write.go#Write"},
+		Database: database, Drive: backfill(func(ctx context.Context, database *store.Store) (KindBackfill, error) {
+			return backfillBlocks(ctx, database, refs.BlockIndexMarkingRule)
+		}),
 		Counts: map[StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
 			{refs.BlockNodeKind, graphstore.AttributeState}:      {"block"},
@@ -612,11 +616,11 @@ func seededDrives(database *store.Store) []StoreDrive {
 			{refs.BlockNodeKind, refs.TupleInDocument}:           {"block"},
 		},
 	}, {
-		Name: blockRefBatchDrive, Sites: []string{"graphcensus/backfill.go#writeBlockRefBatch", "graphstore/write.go#Write"},
+		Name: blockRefBatchDrive, Sites: []string{"graphcensus/backfill_block_refs.go#writeBlockRefBatch", "graphstore/write.go#Write"},
 		Database: database, Drive: backfill(backfillBlockRefs),
 		Counts: map[StoredKind][]string{{refs.BlockNodeKind, "mentions"}: {"block_ref"}},
 	}, {
-		Name: commentBatchDrive, Sites: []string{"graphcensus/backfill.go#Queue"},
+		Name: commentBatchDrive, Sites: []string{"refs/comment_nodes.go#Queue"},
 		Database: database, Drive: backfill(backfillComments),
 		Counts: map[StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
@@ -630,7 +634,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 			{graphstore.KindPerson, graphstore.TupleRecordedAs}:      {"author_alias"},
 		},
 	}, {
-		Name: roleBatchDrive, Sites: []string{"graphcensus/backfill.go#writeRoleBatch"},
+		Name: roleBatchDrive, Sites: []string{"graphcensus/backfill_roles.go#writeRoleBatch"},
 		Database: database, Drive: backfill(backfillRoles),
 		Counts: map[StoredKind][]string{
 			{graphstore.KindRole, graphstore.AttributeVisibility}: {graphstore.KindRole},
@@ -640,7 +644,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 			{graphstore.KindPage, graphstore.TuplePartOf}:         {graphstore.KindPage},
 		},
 	}, {
-		Name: sessionBatchDrive, Sites: []string{"graphcensus/backfill.go#writeSessionBatch"},
+		Name: sessionBatchDrive, Sites: []string{"graphcensus/backfill_sessions.go#writeSessionBatch"},
 		Database: database, Drive: backfill(backfillSessions),
 		Counts: map[StoredKind][]string{
 			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
@@ -1092,7 +1096,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	}
 }
 
-// The sizing reads nothing of the store: R4 takes its readings before the branch's first
+// The sizing needs nothing of the store: R4 takes its readings before the branch's first
 // migration, on a database that holds no graph_nodes, no graph_tuples and no node column on any
 // projection. The test takes the sizing of a seeded history, then takes every object of the store
 // out of the same database and takes it again: the census says the store is absent and reads no
@@ -1128,5 +1132,123 @@ func TestTheSizingRunsOnADatabaseWithNoStore(t *testing.T) {
 	}
 	if was, now := sizedTerms(t, before), sizedTerms(t, after); len(now) == 0 || fmt.Sprint(was) != fmt.Sprint(now) {
 		t.Errorf("with the store taken out the sizing reads %+v, want what it read with the store there, %+v", now, was)
+	}
+}
+
+// The two versions TestTheSizingReadsAVersionOfATypeOnlyTheStoreDeclares writes of its document: a
+// claim, a typed block the store declares and the file this binary embeds does not, holding two
+// paragraphs beside one of the document's own; then the same document with the claim's second
+// paragraph moved out of it.
+const (
+	claimVersion1 = ":::claim{#c1}\nInside.\n\nMoving.\n:::\n\nStays.\n"
+	claimVersion2 = ":::claim{#c1}\nInside.\n:::\n\nMoving.\n\nStays.\n"
+)
+
+// The sizing's replay parses each version against the block schema the store's type nodes build,
+// as the block index that indexed it did, and not against the file this binary embeds: a type the
+// store holds and the file lacks would read as unreadable, and the replay would count none of the
+// moves of a version holding one. The store here declares claim, which blocks.json does not, in a
+// supertag node as a type migration writes one, and the process holds the embedded schema, as the
+// census subcommand does. A document's two versions, both indexed inside the window, hold a claim,
+// and version 2 moves a paragraph out of it: the replay reads both and counts that one move.
+func TestTheSizingReadsAVersionOfATypeOnlyTheStoreDeclares(t *testing.T) {
+	// The installed schema is the process's, and the sizing installs the store's: the hook puts
+	// back the one installed before the test once it is over.
+	var installed pmdoc.BlockSchema
+	if err := json.Unmarshal(pmdoc.SchemaJSON(), &installed); err != nil {
+		t.Fatalf("decode the installed block schema: %v", err)
+	}
+	pmdoctest.UseBlockSchema(t, installed)
+	if pmdoc.IsTypedBlock("claim") {
+		t.Fatalf("the installed block schema declares claim, so the store would declare nothing the file lacks")
+	}
+	database := storetest.Open(t)
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `
+		insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
+		values ($1, 'claim', $1, 'project', 'live',
+			jsonb_build_object('block_type', true, 'content', $2::text, 'render', 'host', 'version', $3::int, 'position', 99),
+			now(), '{"kind": "system", "id": "graphcensus-sizing-test"}', 0)
+	`, schemanodes.KindSupertag, string(pmdoc.BlockContentParagraphs), pmdoc.BuiltSchemaVersion()); err != nil {
+		t.Fatalf("declare the typed block claim in the store: %v", err)
+	}
+
+	// Each version is stored as the block index takes it, the render of its parse, and each of its
+	// blocks' texts as the index sums them, which only a schema declaring claim can give: the test
+	// renders them under one and puts the embedded schema back before the census runs.
+	declaring, err := json.Marshal(pmdoctest.BlockPointerSchema(pmdoc.BlockAttributes{}))
+	if err != nil {
+		t.Fatalf("encode a block schema declaring claim: %v", err)
+	}
+	restore, err := pmdoc.UseManifestForTest(declaring)
+	if err != nil {
+		t.Fatalf("use a block schema declaring claim: %v", err)
+	}
+	var rendered []string
+	var texts []map[string]string
+	for _, markdown := range []string{claimVersion1, claimVersion2} {
+		render, _ := renderedBlocks(t, markdown)
+		rendered = append(rendered, render)
+		texts = append(texts, renderedTexts(t, markdown))
+	}
+	restore()
+
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
+		insert into issues (key, project_key, number, title, created_by, rank) values
+			('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U');
+	`); err != nil {
+		t.Fatalf("seed issue CORE-1: %v", err)
+	}
+	var document string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('CORE-1', 'CORE', 'claims', 'claims.md', 'doc', false, '{"kind":"user","id":"alice"}')
+		returning id::text
+	`).Scan(&document); err != nil {
+		t.Fatalf("create the document: %v", err)
+	}
+	// The block index records each block a version writes, drops or changes the text of, at that
+	// version, and every block of the document's first.
+	held := map[string]string{}
+	for index, markdown := range rendered {
+		number := index + 1
+		if _, err := database.Pool.Exec(ctx, `
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			values ($1, $2, $3, '[{"kind":"user","id":"alice"}]')
+		`, document, number, markdown); err != nil {
+			t.Fatalf("write version %d of the document: %v", number, err)
+		}
+		written := map[string]*string{}
+		for block, text := range texts[index] {
+			if earlier, wrote := held[block]; !wrote || earlier != text {
+				written[block] = new(text)
+			}
+		}
+		for block := range held {
+			if _, kept := texts[index][block]; !kept {
+				written[block] = nil
+			}
+		}
+		for _, block := range slices.Sorted(maps.Keys(written)) {
+			if _, err := database.Pool.Exec(ctx, `
+				insert into document_block_texts (artifact_id, block_id, version, text) values ($1::uuid, $2, $3, $4)
+			`, document, block, number, written[block]); err != nil {
+				t.Fatalf("record block %s at version %d: %v", block, number, err)
+			}
+		}
+		held = texts[index]
+		if _, err := database.Pool.Exec(ctx, `
+			insert into document_indexed_versions (artifact_id, version) values ($1::uuid, $2)
+		`, document, number); err != nil {
+			t.Fatalf("record version %d indexed: %v", number, err)
+		}
+	}
+
+	printed := sizingCensus(t, database)
+	got := sizedTerms(t, printed)[movedParents]
+	if want := (sizedTerm{tuples: 2, writes: 1, read: 2}); got != want {
+		t.Errorf("the sizing counts %d move(s) over the claim document's %d version(s) read, %d of them unreadable; want versions 1 and 2 read, neither unreadable, and the 1 move version 2 makes of a paragraph out of its claim counted, since the store's type nodes declare claim\n%s",
+			got.writes, got.read, got.unreadable, printed)
 	}
 }

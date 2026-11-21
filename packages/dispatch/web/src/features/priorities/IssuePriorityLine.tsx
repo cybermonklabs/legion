@@ -32,7 +32,8 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { focusOnDocument } from "../shell/roving";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { orderLabel } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
 
@@ -226,11 +227,20 @@ export function IssuePriorityLine({
   // `main`'s focus rule, the application's one focus indicator.
   const quiet = page === null ? textMutedOnSurface : pageQuietText;
   const failed = page === null ? dangerText : pageFailedText;
-  // A failed save shows the server's reason, else the page's own line; each carries the mark of
-  // whose words it is.
+  // A failed save shows the server's reason, else the page's own line. A write the reader
+  // stopped may have been saved, and the line offers no Retry of it: each press here is a new
+  // write of the set the line reads, under a key of its own. Each carries the mark of whose
+  // words it is: the stopped note and the page's own line are the page's, a server's reason is
+  // not.
   const notSaved =
     page?.ANSWER_LINES.priorities_not_saved ?? "Could not save what this issue advances.";
-  const saveFailure = apiErrorMessage(write.error, notSaved);
+  const stopped = endedStopped(write);
+  const saveFailure = stopped
+    ? stoppedWriteNote("what this issue advances", "saved", {
+        anew: "It is read again, and adding or removing a priority sends a new write.",
+      })
+    : apiErrorMessage(write.error, notSaved);
+  const failureIsPageWords = stopped || saveFailure === notSaved;
   // A priority the issue already advances is no choice: the line names it, whether the relation
   // is the issue's own or an ancestor's.
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));
@@ -425,7 +435,7 @@ export function IssuePriorityLine({
         <span
           className={`${wraps ? "max-w-full [overflow-wrap:anywhere] " : "shrink-0 "}text-xs ${failed}`}
           role="alert"
-          {...(saveFailure === notSaved ? page?.pageChrome : page?.authorText)}
+          {...(failureIsPageWords ? page?.pageChrome : page?.authorText)}
         >
           {saveFailure}
         </span>

@@ -141,6 +141,10 @@ func insertPrefixBlockText(t *testing.T, tx pgx.Tx, artifactID, blockID string, 
 // for both: somebody who proves no author, who reads every item these fixtures write.
 var prefixReader = model.Actor{}
 
+// prefixAuthor is the author every comment and ask these fixtures write records, and so the
+// writer a Reader of one of them resolves its short ids for (NewReader).
+var prefixAuthor = model.Actor{Kind: "user", ID: "alice"}
+
 // resolvedPrefix is the candidate prefix names, failing the test when it names none or several. It
 // reads as prefixReader. Where ResolvePrefixes is the same function (bothResolve), it asks
 // ResolvePrefixes the same id alone too, as the same reader, and fails the test unless that names

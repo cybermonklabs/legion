@@ -627,13 +627,17 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			// before it. The run's nodes share one cause (the loop above grouped them by it).
 			cause := run[0].SourceEvent
 			made := graphstore.PlanUncaused(run, stated)
-			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, made) }); err != nil {
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				graphstore.QueueNodes(b, made)
+				return nil
+			}); err != nil {
 				return err
 			}
 			var appended int64
 			if err := graphstore.Caused(ctx, tx, graphstore.Counting(made, &appended), cause); err != nil {
 				return err
 			}
+			written.Tuples += appended
 			start = end
 		}
 		return nil

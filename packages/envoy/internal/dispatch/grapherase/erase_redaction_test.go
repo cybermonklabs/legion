@@ -164,3 +164,77 @@ func TestTheEraseRedactsWhatAPersonWroteAndLeavesTheEventsStructure(t *testing.T
 	}
 	requireCensusZero(t, database, "after the erases")
 }
+
+// R5: a comment's own event carries, beside what its author wrote, values that quote other nodes:
+// the quote of the document the comment is anchored to, that document's name, the question of the
+// ask it replies to and the text of the block its reply answers. Those are the other nodes' words.
+// The comment erased reads `ship it on Friday`, and each of those values holds the same words
+// inside a longer sentence. After the erase the event's body holds the marker and every one of
+// those values reads as it was written, and the listing names the event as one the run redacts and
+// as a row it leaves holding the text, so the confirmed run did what its listing said.
+func TestTheEraseLeavesTheTextOfOtherNodesInACommentsEvent(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	const body = "ship it on Friday"
+	quoting := []struct{ object, key, text string }{
+		{"anchor", "quote", "We agreed to ship it on Friday if the tests pass."},
+		{"", "artifact_name", "Why we ship it on Friday.md"},
+		{"", "ask_question", "Should we ship it on Friday or wait a week?"},
+		{"reply_block", "text", "I would ship it on Friday, then watch the error rate."},
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		update comments set body = $2, anchor = anchor || jsonb_build_object('quote', $3::text) where id = $1::uuid`,
+		seeded.comment, body, quoting[0].text); err != nil {
+		t.Fatalf("write the comment's body and its anchor's quote: %v", err)
+	}
+	payload := map[string]any{
+		"id": seeded.comment, "body": body, "author": map[string]any{"kind": "user", "id": "alice"},
+		"anchor":      map[string]any{"artifact_id": seeded.document.artifactID},
+		"reply_block": map[string]any{"node": "comment/00000000-0000-4000-8000-0000000000c1#b2", "block_id": "b2"},
+	}
+	for _, quoted := range quoting {
+		if quoted.object == "" {
+			payload[quoted.key] = quoted.text
+		} else {
+			payload[quoted.object].(map[string]any)[quoted.key] = quoted.text
+		}
+	}
+	written, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode the comment's event: %v", err)
+	}
+	event := appendEvent(t, database, "CORE-1", "comment.created", string(written))
+
+	listing := dryRun(t, database, commentNodeKind, seeded.comment)
+	erasure, err := Erase(ctx, database.Pool.Config().ConnString(), commentNodeKind, seeded.comment, listing.Digest, time.Millisecond)
+	if err != nil {
+		t.Fatalf("erase --confirm %s: %v", listing.Digest, err)
+	}
+	requireTheCommentErased(t, database, erasure, seeded.comment)
+	after, raw := eventPayload(t, database, event)
+	if after["body"] != erasure.marker() {
+		t.Errorf("the comment's event reads the body %q after the erase, want the marker %q: the body is what the comment's author wrote: %s",
+			after["body"], erasure.marker(), raw)
+	}
+	for _, quoted := range quoting {
+		name, value := quoted.key, after[quoted.key]
+		if quoted.object != "" {
+			held, _ := after[quoted.object].(map[string]any)
+			name, value = quoted.object+"."+quoted.key, held[quoted.key]
+		}
+		if value != quoted.text {
+			t.Errorf("the comment's event reads %s %q after the erase, want it as written, %q: it quotes another node, and the erased words inside a longer line of it are that node's: %s",
+				name, value, quoted.text, raw)
+		}
+	}
+	for _, line := range [][]string{
+		{fmt.Sprintf("events %d comment.created", event)},
+		{"leave public.events", fmt.Sprintf("(id)=(%d)", event), "[comment.created]", "payload"},
+	} {
+		if !listed(listing, line...) {
+			t.Errorf("the listing holds no line with %q, so it does not say the run redacts the event and leaves the quotes in it holding the text:\n%s",
+				line, strings.Join(listing.Listing, "\n"))
+		}
+	}
+}

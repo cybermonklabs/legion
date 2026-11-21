@@ -39,35 +39,20 @@ var typeMigrations = []string{
 // pmdoc, so what the store holds is compared with the file itself.
 const blockSchemaFile = "../../internal/dispatch/pmdoc/schema/blocks.json"
 
-// closedSupertags is the root's closed list of types, twenty-seven names
-// (R21 of the parent change's specification and R6 of this change's): `proposed` is a value of a
+// closedSupertags is the root's closed list of types (R21 of the parent change's specification
+// and R6 of this change's): the twenty-seven this change creates. `proposed` is a value of a
 // node's state and no type, and the role is the agent, so neither is a supertag. The store holds
-// one supertag node for each, and beyond them only an entry an approved document of this tree
-// creates (authorisedSupertags), so this list is written here as the test's own copy: a seed that
-// adds or drops a name has to be read by a person before this test agrees with it.
+// one supertag node for each and no other. Each later change that creates a kind adds it to this
+// list in its own pull request: the change that moves lenses and lens kinds adds `lens_kind`, the
+// change that moves issues and their documents adds `query` and `query version`, the change that
+// moves handoffs adds `handoff`, and the root adds `priority`, `step` and `plan`. The list is
+// written here as the test's own copy, so a seed that adds or drops a name has to be read by a
+// person before this test agrees with it.
 var closedSupertags = []string{
 	"issue", "document", "document version", "block", "callout", "ask", "requirement",
 	"plan_task", "check", "result", "decision", "reading", "criterion",
 	"constraint", "lens", "risk", "comment", "message", "person", "session", "role",
 	"page", "interaction", "delivery_attempt", "component", "supertag", "attribute",
-}
-
-// authorisedSupertags is every supertag the closed list does not name that an approved document
-// of this tree creates, each with the reference of the document that creates it. A bare
-// prohibition would refuse a correct store: the root's own c-derived requires the entries below
-// once the child that moves lenses and lens kinds and the child that moves issues and their
-// documents seed them, so a test that allowed the
-// closed list alone would fail the build that requirement asks for. What the check is for is a
-// supertag nobody authorised, so an entry
-// beyond the closed list passes only where this list names its document, and the run prints
-// every one of them with that reference.
-//
-// The reference is written here rather than read: these checks run where no Dispatch is
-// reachable, so a test that called one could not run at all.
-var authorisedSupertags = map[string]string{
-	"lens_kind":     "R7 of the specification of the child that moves lenses and lens kinds",
-	"query":         "the specification of the child that moves issues and their documents",
-	"query version": "the specification of the child that moves issues and their documents",
 }
 
 // TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt proves that a type is data: the seed
@@ -101,11 +86,9 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 	requireAnUnknownKindIsSkipped(t, ctx, pool, file)
 }
 
-// requireClosedSupertagList holds the store to one supertag node per name of the closed list,
-// and beyond them only to an entry authorisedSupertags names with its document, each with the
-// base attributes every node of this store carries, as node columns and as tuples. Every entry
-// beyond the closed list is printed with the document that authorises it, and one with no
-// document fails.
+// requireClosedSupertagList holds the store to one supertag node per name of the closed list and
+// no other, each with the base attributes every node of this store carries, as node columns and
+// as tuples.
 func requireClosedSupertagList(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	nodes, err := graphstore.NodesOfKind(ctx, pool, schemanodes.KindSupertag)
@@ -124,20 +107,11 @@ func requireClosedSupertagList(t *testing.T, ctx context.Context, pool *store.Po
 	slices.Sort(want)
 	got := slices.Clone(names)
 	slices.Sort(got)
-	// Every supertag the closed list does not name, reported with the document that authorises
-	// it, and a failure for one nothing authorises.
 	for _, name := range missing(got, want) {
-		document, authorised := authorisedSupertags[name]
-		if !authorised {
-			t.Errorf("the store holds supertag node %q, which the closed list does not name and no approved document of this tree authorises", name)
-			continue
-		}
-		t.Logf("the store holds supertag %q beyond the closed list, created by %s", name, document)
-		want = append(want, name)
-		slices.Sort(want)
+		t.Errorf("the store holds supertag node %q, which the closed list does not name", name)
 	}
 	if !slices.Equal(got, want) {
-		t.Errorf("the store holds supertag nodes %v, want the closed list and the supertags this tree authorises %v\nonly in the store: %v\nonly in the list: %v",
+		t.Errorf("the store holds supertag nodes %v, want the closed list %v\nonly in the store: %v\nonly in the list: %v",
 			got, want, missing(got, want), missing(want, got))
 	}
 }

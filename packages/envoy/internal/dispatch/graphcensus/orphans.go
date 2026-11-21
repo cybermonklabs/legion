@@ -128,7 +128,10 @@ func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) e
 		gone := graphstore.ArtifactNode(ref, node.Project, sessionParty(node.Parties), sweepActor, removedAt)
 		gone.State = graphstore.StateGone
 		uncaused := graphstore.PlanUncaused([]graphstore.Node{gone}, nil)
-		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, uncaused) }); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, uncaused)
+			return nil
+		}); err != nil {
 			return fmt.Errorf("state the orphaned node of %s gone: %w", ref, err)
 		}
 		return graphstore.Caused(ctx, tx, uncaused, removal)

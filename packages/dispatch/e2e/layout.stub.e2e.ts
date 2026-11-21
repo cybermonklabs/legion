@@ -2,7 +2,7 @@
  *  leaves reachable. Both rows read what the page draws at a width - which controls are shown, how
  *  wide the Conversation is, which turn is current, and whether the sheet's toggle is hit-testable
  *  - and none of it is a claim about the server, so both run on the stubbed layer
- *  (packages/dispatch/AGENTS.md, "The stubbed layer"). */
+ *  (packages/dispatch/README.md, "The stubbed layer"). */
 import { expect } from "@playwright/test";
 
 import { createComment, createIssue, createProject } from "./api";

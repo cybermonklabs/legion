@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -283,7 +283,7 @@ func TestACreateSetsOnlyAnOwnerSetOwnerWouldTake(t *testing.T) {
 	for person, token := range tokens {
 		answer := liveNamedToken(caller.jkt)
 		answer.Person = person
-		answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, nil
+		answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopePerson, nil
 		rig.broker.Says(token, answer)
 	}
 	create := func(token, key string, body map[string]any) *httptest.ResponseRecorder {

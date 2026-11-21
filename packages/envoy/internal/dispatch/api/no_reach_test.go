@@ -557,14 +557,28 @@ func threeBadRequests(t *testing.T) {
 	}
 
 	owned := seedTwoProjects(t, handler, database)
-	probed := 0
+	var probed []string
 	for _, route := range rows {
 		target, addressable := crossProjectPath(t, route, owned)
 		if !addressable {
 			continue
 		}
-		probed++
+		probed = append(probed, route.Method+" "+target)
 		response := crossProjectRequest(t, handler, route, target, owned)
+		// The source's removal and its sync find a source by the key and the repository together
+		// (deleteArchitectureSource, architecture.Importer.loadSourceByRepo), so under another
+		// project's key each finds none and answers 404 SOURCE_NOT_FOUND, and nothing else. One
+		// that matched the repository alone would act on this project's source: the removal
+		// would delete it (204), and the sync would load it and, the test server holding no
+		// GitHub App, answer 409 SOURCE_ACCESS (syncArchitectureSource), which the checks below
+		// would pass as a refusal.
+		if strings.Contains(route.Pattern, "/architecture-sources/{owner}/{repo}") {
+			if code := responseCode(t, response); response.Code != http.StatusNotFound || code != "SOURCE_NOT_FOUND" {
+				t.Errorf("%s answers %d %s for another project's architecture source, want 404 SOURCE_NOT_FOUND: %s",
+					route.Method+" "+target, response.Code, code, firstLine(response.Body.String()))
+			}
+			continue
+		}
 		if response.Code < 400 {
 			t.Errorf("%s answers %d for an identifier of another project: %s",
 				route.Method+" "+target, response.Code, firstLine(response.Body.String()))
@@ -599,9 +613,18 @@ func threeBadRequests(t *testing.T) {
 				route.Method+" "+target, why)
 		}
 	}
-	if probed < 5 {
-		t.Fatalf("only %d route(s) were probed with another project's identifier, which is too few to prove anything", probed)
+	// A removal that answered 404 but deleted the source all the same would pass the check
+	// above, so the source the probe sent under another project's key must still be listed.
+	if sources := listSources(t, handler, "TEST"); !slices.ContainsFunc(sources, func(source architectureSourceResponse) bool {
+		return source.Repo == owned.architectureSource
+	}) {
+		t.Errorf("GET /api/v1/projects/TEST/architecture-sources lists %q after the probe, without the source %s it sent under OTH",
+			sourceStrings(sources), owned.architectureSource)
 	}
+	if len(probed) < 5 {
+		t.Fatalf("only %d route(s) were probed with another project's identifier, which is too few to prove anything", len(probed))
+	}
+	t.Logf("%d routes were probed with another project's identifier: %s", len(probed), strings.Join(probed, ", "))
 
 	// The traversal probe reads each route at the objects seedTwoProjects wrote, with the query
 	// a route requires (routeProbeQueries), so a route with a row to answer answers it, and a
@@ -687,7 +710,6 @@ func threeBadRequests(t *testing.T) {
 // plain read answers, but reads nothing.
 var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/github/app-installation/{owner}/{repo}":                 "a GitHub App private key",
-	"GET /api/v1/projects/{key}/architecture":                            "an architecture source configured for the project",
 	"GET /api/v1/delivery/timeline":                                      "delivery settings",
 	"GET /api/v1/delivery/measures":                                      "delivery settings",
 	"GET /api/v1/delivery/pipeline":                                      "delivery settings",
@@ -867,19 +889,25 @@ type crossProject struct {
 	// priority is the id of a priority. A priority belongs to no project, so no project's key
 	// addresses it, and only the probe that reads each object at its own address reads it.
 	priority string
+	// architectureSource is the repository, owner/repo, of the project's architecture source,
+	// which a route of a source addresses by its project's key and that repository together: the
+	// {owner}/{repo} the cross-project probe sends the source's removal and its sync
+	// (crossProjectPath).
+	architectureSource string
 	// nearCopyCheck is the id of the near-copy gate's record of one of the project's creates.
 	nearCopyCheck string
 }
 
 // seedTwoProjects writes one project with an issue, a document of the issue (design.md), a
 // comment, an ask, a message, a run of a step of the issue and a run of its retro, a project
-// document and a block of each document, and the Legion daemon it names with a read of it; a
-// second project with an issue, which the cross-project probe addresses them under; and one
-// priority, which belongs to neither project and is read at its own id. Under the second
-// project's key the probe sends each route the object of the first its path names
+// document and a block of each document, an architecture source, and the Legion daemon it names
+// with a read of it; a second project with an issue, which the cross-project probe addresses them
+// under; and one priority, which belongs to neither project and is read at its own id. Under the
+// second project's key the probe sends each route the object of the first its path names
 // (crossProjectPath): design.md to a route of an issue document, the project document to a route
-// of a project document, the message to the message read, the run of a step to the step write and
-// the retro's run to the rating write.
+// of a project document, the message to the message read, the run of a step to the step write,
+// the retro's run to the rating write and the architecture source's repository to the source's
+// removal and its sync.
 func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) crossProject {
 	t.Helper()
 	createDuplicateTestProject(t, handler, "OTH")
@@ -933,6 +961,16 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 	document := createProjectDocument(t, handler, "TEST", "Notes", "# Notes\n\nA passage of the project's own document.\n")
 	owned.document, owned.documentSlug = document.ID, document.Slug
 	owned.documentBlock = firstBlockOf(t, handler, document.ID)
+	// An architecture source, written into its table as the other tests of this package seed one
+	// (node_facts_test.go): the route that adds one first proves the GitHub App can read the
+	// repository (putArchitectureSource), and the test server holds no App. Its id is the column's
+	// own identity, so it collides with no row.
+	owned.architectureSource = "acme/arch"
+	if _, err := database.Pool.Exec(t.Context(), `
+		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
+		values ('TEST', $1, 'main', 1, '{"kind":"system","id":"test"}')`, owned.architectureSource); err != nil {
+		t.Fatalf("seed an architecture source: %v", err)
+	}
 	// A priority is written through its own route, as a person writes one, because its history
 	// answers a row only for a priority the store holds: at a placeholder id it answers 404, and
 	// its traversal probe would read nothing.
@@ -986,14 +1024,35 @@ func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string 
 //   - {id} of /issues/{key}/steps/{id}/rating: the run of the issue's retro its project's daemon
 //     wrote, the one kind of run the rating write rates;
 //   - {id} of /issues/{key}/plans/{id}: the plan of a run of the issue its project's daemon
-//     wrote.
+//     wrote;
+//   - {owner}/{repo} of /projects/{key}/architecture-sources/{owner}/{repo}: the repository of
+//     the project's architecture source, which the source's removal and its sync address by the
+//     key and the repository together. The source write (PUT) takes none and answers false: its
+//     {owner}/{repo} names the repository it adds as a source of the key's own project, an
+//     upsert on the key and the repository, and no object of another project.
 //
-// A route under a key whose {slug} or {id} is of a kind no line above names fails the test: an
-// id of another kind is refused under every key alike, and would prove nothing about this one.
+// A route under a key whose {slug}, {id} or {owner}/{repo} is of a kind no line above names fails
+// the test: an identifier of another kind is refused under every key alike, and would prove
+// nothing about this one.
 func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string, bool) {
 	t.Helper()
 	pattern := route.Pattern
-	if !strings.Contains(pattern, "{key}") || !strings.Contains(pattern, "{slug}") && !strings.Contains(pattern, "{id}") {
+	// addressesObject reports whether a path holds a place an object of a project sits in:
+	// {slug}, {id} or {owner}/{repo}. A route under a key whose path holds none addresses no
+	// object of a project, and one whose path still holds one once every place below is filled
+	// addresses an object of a kind this function sends none of.
+	addressesObject := func(path string) bool {
+		return slices.ContainsFunc([]string{"{slug}", "{id}", "{owner}/{repo}"}, func(place string) bool {
+			return strings.Contains(path, place)
+		})
+	}
+	if !strings.Contains(pattern, "{key}") || !addressesObject(pattern) {
+		return "", false
+	}
+	// The source write's {owner}/{repo} is the repository it adds as a source of the key's own
+	// project (putArchitectureSource, an upsert on the key and the repository), so under another
+	// project's key it writes a source of that project and addresses no object of this one.
+	if route.Method+" "+route.Pattern == "PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}" {
 		return "", false
 	}
 	for _, place := range []struct{ named, wildcard, object string }{
@@ -1006,12 +1065,14 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 		{"/issues/{key}/steps/{id}/rating", "{id}", owned.retro},
 		{"/issues/{key}/steps/{id}", "{id}", owned.step},
 		{"/issues/{key}/plans/{id}", "{id}", owned.plan},
+		// The source's removal and its sync, whose path holds the removal's.
+		{"/projects/{key}/architecture-sources/{owner}/{repo}", "{owner}/{repo}", owned.architectureSource},
 	} {
 		if strings.Contains(route.Pattern, place.named) {
 			pattern = strings.ReplaceAll(pattern, place.wildcard, place.object)
 		}
 	}
-	if strings.Contains(pattern, "{slug}") || strings.Contains(pattern, "{id}") {
+	if addressesObject(pattern) {
 		t.Errorf("%s %s addresses an object under a key of a kind crossProjectPath sends none of: seed one (seedTwoProjects) and name its place there",
 			route.Method, route.Pattern)
 		return "", false

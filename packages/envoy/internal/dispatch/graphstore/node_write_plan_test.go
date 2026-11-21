@@ -92,16 +92,18 @@ func TestTheNodeWritesAppendProbesEachNodeOfItsBatchOnce(t *testing.T) {
 		{
 			name: "a write held for its cause, as the block index writes a version",
 			write: func(b *store.WriteBatch) error {
-				if err := QueueNodes(b, held); err != nil {
-					return err
-				}
-				return QueueCaused(b, held, cause)
+				QueueNodes(b, held)
+				QueueCaused(b, held, cause)
+				return nil
 			},
 			controls: []appendControl{markedBefore},
 		},
 		{
-			name:     "a write with its cause in hand, as the backfill and the seed write",
-			write:    func(b *store.WriteBatch) error { return QueueWrite(b, inHand, inHandTuples) },
+			name: "a write with its cause in hand, as the backfill and the seed write",
+			write: func(b *store.WriteBatch) error {
+				QueueWrite(b, inHand, inHandTuples)
+				return nil
+			},
 			controls: []appendControl{markedBefore, settledBefore},
 		},
 	} {
@@ -163,7 +165,10 @@ func TestTheClaimArmsProbeEachClaimOfTheirBatchOnce(t *testing.T) {
 				At: at, Who: who, SourceEvent: cause,
 			})
 	}
-	prior := queuedBy(t, func(b *store.WriteBatch) error { return QueueWrite(b, nil, logged) })
+	prior := queuedBy(t, func(b *store.WriteBatch) error {
+		QueueWrite(b, nil, logged)
+		return nil
+	})
 	const first = 1
 	arms, params, err := WriteArms(first, nil, nil, claims)
 	if err != nil {
