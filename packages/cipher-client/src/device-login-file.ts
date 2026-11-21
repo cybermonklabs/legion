@@ -25,6 +25,7 @@ import {
   lstat,
   mkdir,
   open,
+  readFile,
   readlink,
   rename,
   rm,
@@ -119,14 +120,41 @@ function checkPrivate(
  *  root may remove or rename the entry. */
 const STICKY = 0o1000;
 
+/** The uid map of the first user namespace, which maps every uid to itself. */
+const INITIAL_UID_MAP = "0 0 4294967295";
+
+/** The uid a file shows whose owner this process's user namespace does not map, where
+ *  `/proc/sys/kernel/overflowuid` cannot be read. */
+const DEFAULT_OVERFLOW_UID = 65534;
+
+/**
+ * Whether `uid`, the owner of a directory or link on the way, is one taken as safe for `mine`,
+ * this user's uid: `mine`, root's (0), and, where this process runs in a user namespace other than
+ * the first one (a gVisor sandbox, a rootless container), the overflow uid, which root's own files
+ * show there, as does every owner the namespace does not map (`/proc/self/uid_map`,
+ * `/proc/sys/kernel/overflowuid`). The two files are read only for an owner neither of the first
+ * two is.
+ */
+async function safeOwner(uid: number, mine: number): Promise<boolean> {
+  if (uid === mine || uid === 0) return true;
+  const map = (await readFile("/proc/self/uid_map", "utf8").catch(() => ""))
+    .trim()
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/).join(" "));
+  if (map[0] === "" || (map.length === 1 && map[0] === INITIAL_UID_MAP)) return false;
+  const named = Number.parseInt(
+    await readFile("/proc/sys/kernel/overflowuid", "utf8").catch(() => ""),
+    10
+  );
+  return uid === (Number.isNaN(named) ? DEFAULT_OVERFLOW_UID : named);
+}
+
 /**
  * Refuses `info`, a directory the system looks a name up in on the way to `what`, where another
  * user could replace what is in it: one its group or anyone else may write to without the sticky
- * bit, or that neither this user nor root owns. This is OpenSSH's StrictModes rule for the
- * directories above a key, so a sticky one others may write to, as /tmp is, is taken, and so is
- * one of root's own.
+ * bit, or whose owner is not {@link safeOwner}'s.
  */
-function checkOnTheWay(info: Stats, what: string): void {
+async function checkOnTheWay(info: Stats, what: string): Promise<void> {
   const onTheWay = `a directory on the way to ${what}`;
   const mode = info.mode & 0o7777;
   if ((mode & 0o022) !== 0 && (mode & STICKY) === 0) {
@@ -135,7 +163,7 @@ function checkOnTheWay(info: Stats, what: string): void {
     );
   }
   const uid = process.getuid?.();
-  if (uid !== undefined && info.uid !== uid && info.uid !== 0) {
+  if (uid !== undefined && !(await safeOwner(info.uid, uid))) {
     throw new Error(
       `${onTheWay} is owned by uid ${info.uid}, neither this user (uid ${uid}) nor root; keep the login under directories of this user's own`
     );
@@ -143,13 +171,13 @@ function checkOnTheWay(info: Stats, what: string): void {
 }
 
 /**
- * Refuses `info`, a link on the way to `what`, where neither this user nor root owns it: its owner
+ * Refuses `info`, a link on the way to `what`, whose owner is not {@link safeOwner}'s: its owner
  * can remove it and make it again naming another place, in a sticky directory too, between the
- * walk and the open. StrictModes asks the same of each part of a key's path.
+ * walk and the open.
  */
-function checkLinkOnTheWay(info: Stats, what: string): void {
+async function checkLinkOnTheWay(info: Stats, what: string): Promise<void> {
   const uid = process.getuid?.();
-  if (uid !== undefined && info.uid !== uid && info.uid !== 0) {
+  if (uid !== undefined && !(await safeOwner(info.uid, uid))) {
     throw new Error(
       `a link on the way to ${what} is owned by uid ${info.uid}, neither this user (uid ${uid}) nor root; keep the login under directories and links of this user's own`
     );
@@ -167,30 +195,37 @@ async function lstatOnTheWay(path: string, what: string): Promise<Stats | null> 
   }
 }
 
+/** What {@link walkTheWay} meets: each directory it looks a name up in, and each link it follows,
+ *  with the directory that link is in, each by the path the walk reached it by. */
+interface OnTheWay {
+  readonly directory: (reached: string, info: Stats) => Promise<void>;
+  readonly link: (inside: string, info: Stats) => Promise<void>;
+}
+
 /**
- * Refuses `dir`, named as `what` names it, where a directory the system looks a name up in to
- * reach it fails {@link checkOnTheWay}: each one from `/` down, the working directory's own where
- * `dir` is relative, and the one each link on the way is in, since another user who replaces that
- * link picks where the way goes; and where a link on the way fails {@link checkLinkOnTheWay}. The
- * names are walked as an open walks them: each by its `lstat`, a link by its `readlink`, from `/`
- * where its target is absolute and else from the directory it is in, and `..` up from the
- * directory reached, which is no link. At most {@link LINKS_FOLLOWED_AT_MOST} looks at a link are
- * made. A name that is not there ends the walk, which the caller's own look at `dir` refuses.
+ * Walks `path` as an open walks it, and answers the path it reaches, which holds no link, or null
+ * where a name on the way is not there. Each name is looked at by its `lstat`, a link by its
+ * `readlink`, from `/` where its target is absolute and else from the directory it is in, and
+ * `..` goes up from the directory reached. A relative `path` is walked from the working
+ * directory. At most {@link LINKS_FOLLOWED_AT_MOST} looks at a link are made, a look again after
+ * a `readlink` that found the link replaced included. `meet` is told of each directory before a
+ * name is looked up in it, and of each link before it is read. `what` names where the walk goes,
+ * for an error.
  */
-async function checkDirectoriesOnTheWay(dir: string, what: string): Promise<void> {
-  const names = (isAbsolute(dir) ? dir : `${process.cwd()}/${dir}`).split("/");
+async function walkTheWay(path: string, what: string, meet?: OnTheWay): Promise<string | null> {
+  const names = (isAbsolute(path) ? path : `${process.cwd()}/${path}`).split("/");
   let reached = "/";
   let info = await lstatOnTheWay(reached, what);
   let followed = 0;
   for (let name = names.shift(); name !== undefined; name = names.shift()) {
-    if (info === null) return;
+    if (info === null) return null;
     if (name === "" || name === ".") continue;
     if (name === "..") {
       reached = dirname(reached);
       info = await lstatOnTheWay(reached, what);
       continue;
     }
-    checkOnTheWay(info, what);
+    await meet?.directory(reached, info);
     const next = reached === "/" ? `/${name}` : `${reached}/${name}`;
     const here = await lstatOnTheWay(next, what);
     if (here === null || !here.isSymbolicLink()) {
@@ -198,7 +233,7 @@ async function checkDirectoriesOnTheWay(dir: string, what: string): Promise<void
       info = here;
       continue;
     }
-    checkLinkOnTheWay(here, what);
+    await meet?.link(reached, here);
     // Each look at a link is a hop, a look again after its readlink failed included.
     followed += 1;
     if (followed > LINKS_FOLLOWED_AT_MOST) throw notARegularFile("a loop of links");
@@ -220,6 +255,46 @@ async function checkDirectoriesOnTheWay(dir: string, what: string): Promise<void
       info = await lstatOnTheWay(reached, what);
     }
   }
+  return info === null ? null : reached;
+}
+
+/** The home directory, `HOME`, by the path a walk reaches it by ({@link walkTheWay}), or null
+ *  where `HOME` names no absolute path, or none that a walk reaches. */
+async function homeReached(): Promise<string | null> {
+  const home = process.env.HOME ?? "";
+  if (!isAbsolute(home)) return null;
+  return await walkTheWay(home, "the home directory").catch(() => null);
+}
+
+/**
+ * Refuses `dir`, named as `what` names it, where a directory the system looks a name up in to
+ * reach it fails {@link checkOnTheWay}, or a link on the way fails {@link checkLinkOnTheWay}: each
+ * directory from `/` down, the working directory's own where `dir` is relative, and the one each
+ * link on the way is in, since another user who replaces that link picks where the way goes
+ * ({@link walkTheWay}). The directories above the home directory are taken unchecked, and the
+ * links in them: they hold the home directory, so a machine where they are not safe is unsafe for
+ * everything its user keeps; in a container they can be any owner's. A name that is not there
+ * ends the walk, which the caller's own look at `dir` refuses.
+ *
+ * OpenSSH's StrictModes check of the path to a key also refuses a directory that neither its user
+ * nor root owns, and stops at the home directory. The rest is this code's own choice: OpenSSH
+ * takes the path's `realpath` and checks no link, checks no directory a link is in, refuses every
+ * directory its group or others may write to, a sticky one included, and takes a private group's
+ * 0775 directory; this code takes a sticky directory, refuses any group write, and takes the
+ * overflow uid in a user namespace ({@link safeOwner}).
+ */
+async function checkDirectoriesOnTheWay(dir: string, what: string): Promise<void> {
+  const home = await homeReached();
+  const aboveHome = (at: string) =>
+    home !== null && home !== at && (at === "/" || home.startsWith(`${at}/`));
+  await walkTheWay(dir, what, {
+    directory: async (at, info) => {
+      if (!aboveHome(at)) await checkOnTheWay(info, what);
+    },
+    link: async (inside, info) => {
+      if (!aboveHome(inside)) await checkLinkOnTheWay(info, what);
+    },
+  });
 }
 
 /**

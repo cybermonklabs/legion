@@ -1099,34 +1099,39 @@ replace, a named pipe, which a read waits on until a process writes to it, a soc
 loop of links. It reads the login a new one replaces, and every login it trades, only from a
 regular file of at most 64 KiB, in a directory it checks before it opens the file; where the
 setting names a link, it checks the directory of each link on the way and of the file at its end
-as well. Every directory above those, and each one a link on the way sits in, must be one that
-neither its group nor anyone else may write to unless it has the sticky bit, as /tmp has, and that
-this user or root owns, and each link on the way one this user or root owns, as OpenSSH's
-StrictModes asks of the path to a key. It exits 1 when the broker refuses the login, the person
-denies it, its code expires, or the broker answers a
-poll with any other 4xx, with an OAuth error or without one (a proxy's page, a bare challenge),
-naming its status; a poll the broker did not answer, its 429 and a 5xx are polled again, at the
-broker's interval, from 1 s and at most 60 s before any `slow_down` (each of which adds 5 s), and
-5 s where it names none. It then writes no file. It exits 1 too when a login that was approved
-cannot be kept: it names the login's credential, which the broker holds live, and says to revoke
-it in Machine logins on the page the code was typed into. Where it wrote a copy of
-the login whole, the copy is kept beside the file, under the file's name with `.kept-<uuid>`
-added, and the message names that suffix, whatever fails after it, letting go of the lock
-included: moved over the file, the copy is the login and its credential needs no revoke; unused,
-the person deletes it, since it holds the login's key and refresh token, and revokes the
-credential. A login kept whose lock the command then cannot let go of is kept all the same: it
-exits 0, says why the lock was left, and names no credential to revoke; another process takes that
-lock over once it is 15 s old. A code or an access token is taken to live an hour at most,
-whatever the broker says. What the broker answers for the person to read (the page, the code, the
-credential's id) is refused where it holds a control or format character (a right-to-left
-override), and an OAuth code is shown only where it is one the clients know. The host it names is
-this machine's name in the form the broker takes
-(`Adas-MacBook-Pro.local` is `adas-macbook-pro.local`). A second login of the machine replaces the
-file, and the earlier login's credential stays live at the broker until it lapses or is revoked,
-so the command names that credential and says to revoke it in Machine logins on the page the code
-was typed into. The earlier login is the one the file holds just before the save, read under the
-lock the save holds, so of two logins made at once the one kept second names the other. On a
-machine whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
+as well. Every directory on the way to those but the ones above the home directory, which hold the
+home directory itself, must be one that neither its group nor anyone else may write to unless it
+has the sticky bit, as /tmp has, and that this user or root owns, the directory each link on the
+way sits in included; each link on the way must be this user's or root's too. In a user namespace
+other than the first one (a gVisor sandbox, a rootless container), the overflow uid that root's
+own files show there counts as root. The owner rule and the stop at the home directory are the
+ones OpenSSH's StrictModes holds the path to a key to. The rest is this command's own choice: it
+takes a sticky directory, which OpenSSH refuses, it refuses a directory its group may write to,
+where OpenSSH takes one of a private group, and it checks each link on the way and the directory
+each is in, where OpenSSH resolves the path first. It exits 1 when the broker refuses the login,
+the person denies it, its code expires, or the broker answers a poll with any other 4xx, with
+an OAuth error or without one (a proxy's page, a bare challenge), naming its status; a poll the
+broker did not answer, its 429 and a 5xx are polled again, at the broker's interval, from 1 s and
+at most 60 s before any `slow_down` (each of which adds 5 s), and 5 s where it names none. It then
+writes no file. It exits 1 too when a login that was approved cannot be kept: it names the login's
+credential, which the broker holds live, and says to revoke it in Machine logins on the page the
+code was typed into. Where it wrote a copy of the login whole, the copy is kept beside the file,
+under the file's name with `.kept-<uuid>` added, and the message names that suffix, whatever
+fails after it, letting go of the lock included: moved over the file, the copy is the login and
+its credential needs no revoke; unused, the person deletes it, since it holds the login's key and
+refresh token, and revokes the credential. A login kept whose lock the command then cannot let go
+of is kept all the same: it exits 0, says why the lock was left, and names no credential to revoke;
+another process takes that lock over once it is 15 s old. A code or an access token is taken to
+live an hour at most, whatever the broker says. What the broker answers for the person to read
+(the page, the code, the credential's id) is refused where it holds a control or format character
+(a right-to-left override), and an OAuth code is shown only where it is one the clients know. The
+host it names is this machine's name in the form the broker takes (`Adas-MacBook-Pro.local`
+is `adas-macbook-pro.local`). A second login of the machine replaces the file, and the earlier
+login's credential stays live at the broker until it lapses or is revoked, so the command names
+that credential and says to revoke it in Machine logins on the page the code was typed into. The
+earlier login is the one the file holds just before the save, read under the lock the save
+holds, so of two logins made at once the one kept second names the other. On a machine whose
+`AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude

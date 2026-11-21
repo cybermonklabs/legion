@@ -383,7 +383,7 @@ async function throughADirectoryLink(broker: string) {
 test("a login reached through a directory link in a directory others may write is refused before it is opened", async () => {
   // A directory link sits in the directory above it: another user who can write there replaces
   // the link, and with it the directory the login is read from. Every directory on the way is
-  // checked, as OpenSSH's StrictModes checks each directory above a key.
+  // checked (`checkDirectoriesOnTheWay` says which of its rules are OpenSSH's and which its own).
   const stub = broker();
   const { shared, login, settings } = await throughADirectoryLink(stub.url);
   await chmod(shared, 0o777);
@@ -525,6 +525,171 @@ test("a link on the way whose readlink keeps failing as replaced stops at the bo
   }
   expect(refused?.message).toContain("is a loop of links, not a regular file");
   expect(reads).toBe(40);
+});
+
+test("a directory on the way that its group may write is refused too", async () => {
+  // Every member of the group can replace what is in it, as anyone can in a 0777 one.
+  const stub = broker();
+  const { shared, settings } = await throughADirectoryLink(stub.url);
+  await chmod(shared, 0o770);
+  for (const setting of settings) {
+    const refused = await readDeviceLogin(setting).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(refused?.message, setting).toContain("mode 0770");
+    expect(refused?.message, setting).toContain("on the way to");
+  }
+});
+
+test("a directory others may write inside an absolute link's target is refused", async () => {
+  // A link whose target is absolute is walked from `/`: the directories of its target are on the
+  // way, and here one of them is one others may write to.
+  const stub = broker();
+  const base = makeDirectory();
+  const open = join(base, "open");
+  const login = join(open, "inner", "device-login.json");
+  await writeDeviceLoginFile(login, stub.url);
+  const own = join(base, "own");
+  await mkdir(own, { mode: 0o700 });
+  await fs.symlink(dirname(login), join(own, "hop"));
+  await chmod(open, 0o777);
+  const path = join(own, "hop", "device-login.json");
+  const refused = await readDeviceLogin(path).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(refused?.message).toContain("mode 0777");
+  expect(refused?.message).toContain("on the way to");
+  // Control: with that directory 0755 the same path is read.
+  await chmod(open, 0o755);
+  expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
+});
+
+test("a link on the way that root owns is no refusal", async () => {
+  // A system's own links are root's, as macOS's /var -> private/var and /tmp -> private/tmp are,
+  // and root can change any file anyway. The link reads as root's.
+  const stub = broker();
+  const { shared, settings } = await throughADirectoryLink(stub.url);
+  await chmod(shared, 0o755);
+  const link = join(await fs.realpath(shared), "sub");
+  let lookedAt = 0;
+  const realLstat = fs.lstat;
+  const lstats = spyOn(fs, "lstat").mockImplementation((async (
+    ...args: Parameters<typeof fs.lstat>
+  ) => {
+    const info = await realLstat(...args);
+    if (String(args[0]) !== link) return info;
+    lookedAt += 1;
+    return new Proxy(info, {
+      get: (seen, key) => (key === "uid" ? 0 : Reflect.get(seen, key)),
+    });
+  }) as typeof fs.lstat);
+  try {
+    for (const setting of settings) {
+      expect((await readDeviceLogin(setting)).credentialId).toBe(STAND_IN_CREDENTIAL);
+    }
+  } finally {
+    lstats.mockRestore();
+  }
+  // Control: the walk did look at the link, as root's.
+  expect(lookedAt).toBeGreaterThan(0);
+});
+
+/** Makes `lstat` report `uid` as the owner of each path in `owned`, until `restore`. */
+function lstatReportsOwner(uid: number, owned: readonly string[]) {
+  const realLstat = fs.lstat;
+  const lstats = spyOn(fs, "lstat").mockImplementation((async (
+    ...args: Parameters<typeof fs.lstat>
+  ) => {
+    const info = await realLstat(...args);
+    if (!owned.includes(String(args[0]))) return info;
+    return new Proxy(info, {
+      get: (seen, key) => (key === "uid" ? uid : Reflect.get(seen, key)),
+    });
+  }) as typeof fs.lstat);
+  return { restore: () => lstats.mockRestore() };
+}
+
+/** Makes this process read `uidMap` as its `/proc/self/uid_map`, and 65534 as the overflow uid,
+ *  until `restore`. */
+function readsUidMap(uidMap: string) {
+  const realReadFile = fs.readFile;
+  const reads = spyOn(fs, "readFile").mockImplementation((async (
+    ...args: Parameters<typeof fs.readFile>
+  ) => {
+    const at = String(args[0]);
+    if (at === "/proc/self/uid_map") return uidMap;
+    if (at === "/proc/sys/kernel/overflowuid") return "65534\n";
+    return await realReadFile(...args);
+  }) as typeof fs.readFile);
+  return { restore: () => reads.mockRestore() };
+}
+
+test("in a user namespace other than the first, a directory on the way the overflow uid owns is root's", async () => {
+  // In a gVisor sandbox or a rootless container, root's own directories show as the overflow uid.
+  const stub = broker();
+  const { shared, settings } = await throughADirectoryLink(stub.url);
+  await chmod(shared, 0o755);
+  const owners = lstatReportsOwner(65534, [await fs.realpath(shared)]);
+  const namespace = readsUidMap("         0       1000          1\n");
+  try {
+    for (const setting of settings) {
+      expect((await readDeviceLogin(setting)).credentialId).toBe(STAND_IN_CREDENTIAL);
+    }
+  } finally {
+    owners.restore();
+    namespace.restore();
+  }
+});
+
+test("in the first user namespace, a directory on the way the overflow uid owns is refused", async () => {
+  // There the overflow uid is a user's of its own (nobody's), not root's.
+  const stub = broker();
+  const { shared, settings } = await throughADirectoryLink(stub.url);
+  await chmod(shared, 0o755);
+  const owners = lstatReportsOwner(65534, [await fs.realpath(shared)]);
+  const namespace = readsUidMap("         0          0 4294967295\n");
+  try {
+    for (const setting of settings) {
+      const refused = await readDeviceLogin(setting).then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+      expect(refused?.message, setting).toContain("owned by uid 65534, neither this user");
+    }
+  } finally {
+    owners.restore();
+    namespace.restore();
+  }
+});
+
+test("a login under the home directory is read whoever owns the directories above it", async () => {
+  // They hold the home directory itself: as OpenSSH does, the walk checks the home directory and
+  // what is below it, and nothing above it, which in a container can be any owner's.
+  const stub = broker();
+  const base = makeDirectory();
+  const home = join(base, "home");
+  const path = join(home, ".config", "legion", "device-login.json");
+  await writeDeviceLoginFile(path, stub.url);
+  const other = (process.getuid?.() ?? 0) + 4242;
+  const owners = lstatReportsOwner(other, [await fs.realpath(base)]);
+  const saved = process.env.HOME;
+  try {
+    process.env.HOME = home;
+    expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
+    // Control: with the home directory elsewhere, the same directory is on the way, and refused.
+    process.env.HOME = join(base, "elsewhere");
+    const refused = await readDeviceLogin(path).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(refused?.message).toContain(`owned by uid ${other}, neither this user`);
+  } finally {
+    owners.restore();
+    if (saved === undefined) delete process.env.HOME;
+    else process.env.HOME = saved;
+  }
 });
 
 test("a relative link in a directory reached through a link climbs from where the link really is", async () => {
