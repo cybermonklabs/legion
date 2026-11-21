@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate, hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // claude-backend-tmux.sh's prerequisites on a box whose own `secrets` store holds no App credential
@@ -97,13 +97,13 @@ const tools = [
 // The gate is given every name: it walks each one and names the missing ones in its warning.
 // `found` is the run's own walk, whose real binaries the stand-in PATH below is built from.
 const found = new Map(tools.map((name) => [name, hostTool(name)] as const));
-const skip = skipWithout(...tools);
+const host = hostGate({ programs: tools });
 
 // Nothing below is read by a run that will not happen, so a host that skips builds none of it;
 // and it is built in a hook, below the one the reservation registered, so a run that selects no
 // row of this file builds none of it either.
 beforeAll(() => {
-  if (skip) return;
+  if (host.missing) return;
   mkdirSync(bin);
   mkdirSync(scratch);
   // The stand-ins the prerequisites need only find: each prints nothing and exits 0.
@@ -137,7 +137,7 @@ printf '{"implement":"example-implement[bot]","review":"example-review[bot]"}'`
   writeFileSync(keyFile, "sk-test\n", { mode: 0o600 });
 });
 
-test.skipIf(skip)(
+host.test(
   "the prerequisites reach both Apps' credentials and never ask the box's own secrets store",
   () => {
     const run = Bun.spawnSync(["bash", script], {

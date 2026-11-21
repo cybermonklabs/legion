@@ -1,13 +1,14 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // held-port.py's real-process tests: the helper hands its socket to the real envoy-listener of
 // this branch, which serves on it through ENVOY_LISTEN_FD. They read /proc, so they run on Linux,
-// and they build the listener with go; a host that is neither skips them, naming what it lacks.
+// and they build the listener with go; a host that is neither skips them outside CI, naming what
+// it lacks, and fails them by name under GITHUB_ACTIONS (hostGate).
 
 const helper = join(import.meta.dir, "held-port.py");
 const envoy = join(import.meta.dir, "..", "..", "..", "packages", "envoy");
@@ -30,19 +31,18 @@ let nats: Server | undefined;
 const natsClients: Socket[] = [];
 let natsUrl = "";
 
-const onLinux = process.platform === "linux";
-if (!onLinux) {
-  console.warn(
-    `Skipped the tests in ${import.meta.path}. They read /proc, which this host's ` +
-      `${process.platform} does not have; they run on linux.`
-  );
-}
 // Both gates are read, so a host that has neither says so about both.
-const withoutGo = skipWithout("go");
-const skip = !onLinux || withoutGo;
+const host = hostGate({
+  programs: ["go"],
+  reason:
+    process.platform === "linux"
+      ? ""
+      : `They read /proc, which this host's ${process.platform} does not have; they run on linux.`,
+});
+const gated = host.describe;
 
 beforeAll(async () => {
-  if (skip) return;
+  if (host.missing) return;
   const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {
     cwd: envoy,
     stdout: "pipe",
@@ -264,7 +264,7 @@ function closeOnExec(pid: number, fd: number): boolean {
   return (Number.parseInt(flags[1], 8) & O_CLOEXEC) !== 0;
 }
 
-describe.skipIf(skip)("held-port.py exec", () => {
+gated("held-port.py exec", () => {
   test("the listener serves the handed socket on the port in the port file, in the helper's own process", async () => {
     const portFile = join(work, "serves.port");
     const running = exec("exec of the listener", portFile, [listener]);
@@ -341,7 +341,7 @@ describe.skipIf(skip)("held-port.py exec", () => {
   }, 60_000);
 });
 
-describe.skipIf(skip)("held-port.py keep", () => {
+gated("held-port.py keep", () => {
   test("two listeners started from one keeper serve its port, which stays held between them", async () => {
     const portFile = join(work, "kept.port");
     const socket = join(work, "keeper.sock");
