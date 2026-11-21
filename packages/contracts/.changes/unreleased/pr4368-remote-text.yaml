@@ -19,9 +19,10 @@ body: |-
   (`equals`, `equalsIgnoringCase`, `startsWith`, `isEmpty`) and parses a time (`date`). It also
   exports `tokens`, Go's `redact.Tokens` (both replay `testdata/tokens.json`), and `refusalFetch`,
   the fetch every openid-client call is handed: it records the credentials each refused request
-  carried, every value under a name `public-request-names.ts` does not declare public, and changes
-  no answer, and a `LibraryError` prints the error's words with them redacted while its code
-  compares as the answer gave it.
+  carried, every value under a name `public-request-names.ts` does not declare public (of an
+  `Authorization` or a `Proxy-Authorization`, only the part after its scheme, as Go's
+  `requestTokens` reads it), and changes no answer, and a `LibraryError` prints the error's words
+  with them redacted while its code compares as the answer gave it.
 time: 2026-11-18T05:15:23Z
 custom:
     Issue: pr4368

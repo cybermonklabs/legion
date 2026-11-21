@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { LibraryError, refusalFetch, requestCredentials } from "./remote-text";
+import { LibraryError, refusalFetch, requestCredentials, tokens } from "./remote-text";
 
 // requestCredentials is every value a request carries under a name no contract declares public;
 // scope's value is public. Go's TestRequestTokensReadsEveryCredentialARequestCarries.
@@ -36,6 +36,37 @@ test("requestCredentials reads every value a request carries", () => {
     body: JSON.stringify({ request: { proof: "json-proof-RDX-3c4d" } }),
   });
   expect(json).toContain("json-proof-RDX-3c4d");
+});
+
+// The scheme of an Authorization or a Proxy-Authorization header - Bearer, token, DPoP, any word
+// before its first space - is the header's grammar and no credential: an answer's words beside the
+// credential's own are not cut where they share characters with the scheme and the space after it.
+// Here the credential is a word-shaped stand-in, so the word of the answer that is a run of it is
+// cut, and the space before that word survives. A value that names no scheme is one credential
+// whole, and a Basic pair's user and password are credentials whatever the scheme's case. Go's
+// TestTheSchemeOfAnAuthorizationIsNoCredential.
+test("the scheme of an Authorization is no credential", () => {
+  const said = "API rate limit exceeded for installation ID 7.";
+  const url = "http://127.0.0.1:1/repos/acme/widgets";
+  for (const name of ["Authorization", "proxy-authorization", "PROXY-AUTHORIZATION"]) {
+    for (const scheme of ["Bearer", "token", "DPoP"]) {
+      const carried = requestCredentials(url, {
+        headers: { [name]: `${scheme} installation-token` },
+      });
+      expect(tokens(said, -1, ...carried), `under ${name}: ${scheme}`).toBe(
+        "API rate limit exceeded for [redacted] ID 7."
+      );
+    }
+  }
+  expect(requestCredentials(url, { headers: { authorization: "installation-token" } })).toEqual([
+    "installation-token",
+  ]);
+  const basic = btoa("client:pair-secret-RDX");
+  const pair = requestCredentials(url, { headers: { Authorization: `basic ${basic}` } });
+  for (const want of [basic, "client", "pair-secret-RDX"]) {
+    expect(pair).toContain(want);
+  }
+  expect(pair).not.toContain(`basic ${basic}`);
 });
 
 // refusalFetch hands every answer on as it came, and records the refused request's credentials;

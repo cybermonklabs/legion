@@ -5724,6 +5724,13 @@
       "production": "requestCredentials"
     },
     {
+      "id": "ts-scheme-is-no-credential",
+      "requirement": "r4-unchanged",
+      "file": "packages/contracts/src/remote-text-refusal.test.ts",
+      "test": "the scheme of an Authorization is no credential",
+      "production": "requestCredentials: an Authorization's scheme is no credential, so the space before an answer's word survives"
+    },
+    {
       "id": "ts-refusal-fetch",
       "requirement": "r3-each-site",
       "file": "packages/contracts/src/remote-text-refusal.test.ts",

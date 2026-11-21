@@ -877,10 +877,12 @@ export function refusalFetch<Options extends FetchOptions>(
 /**
  * Every value a request carries under a name a wire contract does not declare public
  * (`PUBLIC_REQUEST_NAMES` in public-request-names.ts): each such header's value whole and after
- * its scheme, a Basic pair's user and password as sent and decoded, its URL's user and password
- * and each such value of its query, and each such value of its form or string of its JSON body. A
- * name nobody listed counts, so a new parameter is a credential until a contract declares it
- * public. Go's `requestTokens`.
+ * its scheme, but for an `Authorization` or a `Proxy-Authorization` that names a scheme, whose
+ * scheme (Bearer, token, Basic, any word before its first space) is the header's grammar and no
+ * credential, only the part after it; a Basic pair's user and password as sent and decoded; its
+ * URL's user and password and each such value of its query; and each such value of its form or
+ * string of its JSON body. A name nobody listed counts, so a new parameter is a credential until a
+ * contract declares it public. Go's `requestTokens`.
  */
 export function requestCredentials(url: string, options: FetchOptions): string[] {
   const credentials: string[] = [];
@@ -888,8 +890,9 @@ export function requestCredentials(url: string, options: FetchOptions): string[]
   for (const [name, value] of new Headers(options.headers ?? {})) {
     if (name.toLowerCase() === "content-type") contentType = value.toLowerCase();
     if (isPublicRequestName("header", name)) continue;
-    credentials.push(value);
+    const authorization = ["authorization", "proxy-authorization"].includes(name.toLowerCase());
     const space = value.trim().indexOf(" ");
+    if (!authorization || space < 0) credentials.push(value);
     if (space < 0) continue;
     const scheme = value.trim().slice(0, space);
     const credential = value
