@@ -22,10 +22,10 @@ import (
 // only the DialOptions among them.
 type ConnectOption interface{ apply(*connectOpts) }
 
-// DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection
-// and WithReconnectErrClock. Dial's name and environment are its parameters, so WithName and
-// WithEnvironment are not DialOptions, and neither are the options of a client's JetStream
-// (WithReplicas, WithPublishAcknowledgementClock).
+// DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection,
+// WithPromptReconnect and WithReconnectErrClock. Dial's name and environment are its parameters,
+// so WithName and WithEnvironment are not DialOptions, and neither are the options of a client's
+// JetStream (WithReplicas, WithPublishAcknowledgementClock).
 type DialOption func(*connectOpts)
 
 func (o DialOption) apply(opts *connectOpts) { o(opts) }
@@ -49,20 +49,20 @@ type connectOpts struct {
 	beforeRequestFlush          func()
 	background                  bool
 	silentCutDetection          bool
-	immediateReconnect          bool
+	promptReconnect             bool
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
 // (connectWithContext): the NATS credential names (credential, nil for none), the pings of
-// WithSilentCutDetection and the retry of WithImmediateReconnect, each when the client asked for
-// it.
+// WithSilentCutDetection and the redial waits of WithPromptReconnect, each when the client asked
+// for it.
 func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	settings := []nats.Option{credential}
 	if o.silentCutDetection {
 		settings = append(settings, detectSilentCuts)
 	}
-	if o.immediateReconnect {
-		settings = append(settings, nats.ReconnectWait(0), nats.ReconnectJitter(reconnectJitterImmediate, reconnectJitterImmediate))
+	if o.promptReconnect {
+		settings = append(settings, promptRedial)
 	}
 	if len(settings) == 1 {
 		return credential
@@ -204,14 +204,24 @@ func WithSilentCutDetection() DialOption {
 	return func(o *connectOpts) { o.silentCutDetection = true }
 }
 
-// WithImmediateReconnect has every connection the client makes retry at once after a cut, with a
-// jitter of reconnectJitterImmediate rather than the second every other client waits. It is for
-// the one client a hub's other clients wait on: the NATS auth service
-// (internal/cipher/natscallout), which is itself a client of the hub it admits connections to, so
-// a restart drops its connection too and every client that comes back before it is refused until
-// it returns. The jitter keeps two replicas from dialling in the same instant.
-func WithImmediateReconnect() DialOption {
-	return func(o *connectOpts) { o.immediateReconnect = true }
+// WithPromptReconnect has every connection the client makes redial at once after a cut, within a
+// jitter of 50 ms where every other client waits a second, and back off while the hub stays away
+// or refuses it: each later wait is drawn anew between half and all of a bound that starts at
+// 250 ms and doubles with each redial up to 2 s, and the next outage starts at once again
+// (promptRedialWait). It is for the one client a hub's other clients wait on: the NATS auth
+// service (internal/cipher/natscallout), which is itself a client of the hub it admits
+// connections to, so a restart drops its connection too and every client that comes back before
+// it is refused until it returns. So the cap is short: it bounds each wait at 2 s, whatever the
+// outage's length, and a dial follows each wait; that dial, like one already in flight when the
+// hub returns, takes its own time, up to its 5 s timeout when it hangs (connectTimeout). The
+// backoff is for a hub that refuses the service's own user, as one whose auth_callout does not
+// list it yet does: redialling within 50 ms each time, a replica connected to it 35 times a second
+// for as long as it refused (1,055 times in 30 s against an in-process nats-server 2.15.1); with
+// the backoff it connects 24 times in its first 30 s and at most once in any second after its
+// first, for one URL (each wait is followed by a dial of every URL of the pool), which for two
+// replicas is nothing to the hub. The jitter keeps two replicas from dialling in the same instant.
+func WithPromptReconnect() DialOption {
+	return func(o *connectOpts) { o.promptReconnect = true }
 }
 
 type subscriptionTransport uint8
@@ -409,7 +419,7 @@ type Client struct {
 //
 // It takes the DialOptions: WithConnectInBackground, which returns the connection before it has
 // connected (a core subscription made on it before then is sent once it connects),
-// WithSilentCutDetection and WithReconnectErrClock.
+// WithSilentCutDetection, WithPromptReconnect and WithReconnectErrClock.
 //
 // For JetStream-backed publishing or a durable consumer, use Connect; to reconcile the stream
 // this codebase owns, ConnectOwningStream.
