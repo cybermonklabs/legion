@@ -524,14 +524,14 @@ func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool
 	}
 	nodes := make(map[[2]string]resolvedNode, len(seen))
 	for kind, ids := range byKind {
-		entry, known := nodeRegistry[kind]
-		if !known || entry.load == nil {
+		load := nodeRegistry[kind]
+		if load == nil {
 			// A kind this build cannot address is a node a newer build added, read while both
 			// builds serve one graph_edges: its edges are omitted, as an edge whose other end no
 			// longer exists is. A kind the registry resolves no nodes of is omitted the same way.
 			continue
 		}
-		if err := entry.load(ctx, q, who, kind, byRefKey, ids, nodes); err != nil {
+		if err := load(ctx, q, who, kind, byRefKey, ids, nodes); err != nil {
 			return nil, err
 		}
 	}

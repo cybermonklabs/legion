@@ -901,7 +901,7 @@ var commentsRowWriters = []string{
 	"packages/envoy/internal/dispatch/api/comment_create.go#api.*server.createCommentFor",
 	"packages/envoy/internal/dispatch/api/comment_delivery.go#api.*server.replyComment",
 	"packages/envoy/cmd/dispatch-seed/write_items.go#main.*seedRun.writeComments",
-	"packages/envoy/internal/dispatch/graphcensus/backfill.go#graphcensus.CommentWrite.Queue",
+	"packages/envoy/internal/dispatch/refs/comment_nodes.go#refs.CommentWrite.Queue",
 	"packages/envoy/internal/dispatch/grapherase/erase.go#grapherase.*Erasure.apply",
 }
 
@@ -1478,7 +1478,10 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 			if err != nil {
 				return err
 			}
-			if err := store.RunWrite(ctx, tx, stored.writeNode); err != nil {
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				graphstore.QueueNodes(b, stored.written)
+				return nil
+			}); err != nil {
 				return err
 			}
 			// The row the node is written for. It carries the columns the write under test
@@ -1490,7 +1493,7 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 			`, commentID, run.issue, graphstore.KindComment); err != nil {
 				return err
 			}
-			return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return stored.caused(b, graphstore.NoEvent) })
+			return graphstore.Caused(ctx, tx, stored.written, graphstore.NoEvent)
 		},
 		left: func(ctx context.Context) ([]string, error) {
 			return readStrings(ctx, run.database.Pool, `

@@ -22,10 +22,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // eraseApplicationName is how the erase appears in pg_stat_activity, as the census names itself:
-// an operator reading the activity of a database sees which pass holds its rows.
+// an operator reading the activity of a database sees which pass holds its rows. The erase opens
+// that one connection (store.Connect) and uses no pool and migrates nothing: the schema it works
+// on is the deployment's own.
 const eraseApplicationName = "envoy-dispatch erase"
 
 // eraseMarker stands where the erased bytes were in a row the erase rewrites rather than
@@ -35,37 +38,6 @@ const eraseApplicationName = "envoy-dispatch erase"
 // when, and everything else it removed. It names the node and never the text, so a row it marks
 // holds none of what was erased.
 const eraseMarker = "[erased by envoy-dispatch erase %s:%s, recorded in graph_erasures]"
-
-// projectedTables are the tables that carry a node's address, and so are the rows a node is
-// projected onto (migration 20261109022248 gave all three `node_kind` and `node_address`). Issue
-// is the column naming the issue that owns a row itself, empty for a table whose rows are owned
-// through their document alone, by the artifact_id all three carry: a comment is an issue's or a
-// document's (comments_one_owner, migration 0009), and a block and a block reference are their
-// document's. Key is the table's primary key, the order the erase takes a node's rows of it in
-// (lockProjectionRows) and how the listing names each.
-//
-// The erase walks all three by (node_kind, node_address) rather than by the node's kind, so a
-// kind that gains a projection carries no second list here to keep in step.
-var projectedTables = []struct{ Table, Issue, Key string }{
-	{Table: "comments", Issue: "issue_key", Key: "id"},
-	{Table: "document_blocks", Key: "artifact_id, block_id"},
-	{Table: "block_refs", Key: "artifact_id, block_id, to_kind, to_id, kind"},
-}
-
-// connect opens the erase's one connection, named in pg_stat_activity (eraseApplicationName). The
-// erase uses no pool and migrates nothing: the schema it works on is the deployment's own.
-func connect(ctx context.Context, databaseURL string) (*pgx.Conn, error) {
-	config, err := pgx.ParseConfig(databaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse Postgres URL: %w", err)
-	}
-	config.RuntimeParams["application_name"] = eraseApplicationName
-	conn, err := pgx.ConnectConfig(ctx, config)
-	if err != nil {
-		return nil, fmt.Errorf("connect: %w", err)
-	}
-	return conn, nil
-}
 
 // ParseNode reads the `<kind>:<id>` the --node flag takes. The kind is the node's kind as
 // graph_nodes keys it and holds no colon; everything after the first one is the id, so a page's
@@ -97,15 +69,16 @@ func ParseNode(value string) (kind, id string, err error) {
 //
 // confirm is the digest of a listing. With none the run reads everything it would delete,
 // rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no
-// writer, and answers it with its digest, having written nothing. With one it takes its locks in
-// the store's lock order (lockInStoreOrder), reads the listing again under them, and erases only
-// when that listing has the digest it was given (Erasure.Mismatch); otherwise it answers both
-// digests and removes nothing. It refuses, removing nothing, while another node's row states
-// something about this one (Blockers), or while its document's live text holds the erased bytes
-// where its markdown spells them otherwise (Unredacted), since the seed would keep them. A tuple
-// another writer commits into the node after that listing was read ends the run as an error with
-// nothing removed (graphstore.EraseNode), since the run deletes the tuples it listed and no
-// others.
+// writer, and answers it with its digest, having written nothing. With one it first searches for
+// the rows it leaves in a read-only transaction of its own, which takes no lock (searchLeft), then
+// takes its locks in the store's lock order (lockInStoreOrder), reads the rest of the listing again
+// under them, and erases only when that listing has the digest it was given (Erasure.Mismatch);
+// otherwise it answers both digests and removes nothing. It refuses, removing nothing, while
+// another node's row states something about this one (Blockers), or while its document's live
+// text holds the erased bytes where its markdown spells them otherwise (Unredacted), since the
+// seed would keep them. A tuple another writer commits into the node after that listing was read
+// ends the run as an error with nothing removed (graphstore.EraseNode), since the run deletes the
+// tuples it listed and no others.
 //
 // It refuses a type node, a supertag or an attribute, before it opens a connection: a type is
 // data the block schema seeds (migration 20261109051232, pmdoc/schemanodes), and no route and no
@@ -149,7 +122,7 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 			"and the event log keeps addressing it, so deleting it leaves the census a difference no erase can close", kind, id, kind)
 	}
 	confirm = strings.TrimPrefix(strings.TrimSpace(confirm), "sha256:")
-	conn, err := connect(ctx, databaseURL)
+	conn, err := store.Connect(ctx, databaseURL, eraseApplicationName)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +208,7 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	if err := e.eraseBlockTexts(ctx, tx, read); err != nil {
 		return err
 	}
-	for _, held := range projectedTables {
+	for _, held := range graphstore.ProjectedTables {
 		references, err := referencesTo(ctx, tx, held.Table)
 		if err != nil {
 			return err

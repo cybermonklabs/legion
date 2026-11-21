@@ -152,10 +152,12 @@ func readyProjectDocumentUpload(t *testing.T, base routeFixture) lockedItemWrite
 	document := createProjectDocument(t, fixture.handler, "LOCK", "Design notes", base.spec)
 	waitForArtifactVersion(t, fixture.handler, document.ID, 1)
 	revised := strings.Replace(base.spec, "Revision token r0", "Revision token r1", 1)
+	// The upload replaces the document, so it names the token of the version it replaces.
+	replaced := uploadBase(t, fixture.handler, document.ID)
 	return fixture.routeWrite(t, "the document's next version",
 		func(handler http.Handler) *httptest.ResponseRecorder {
-			return dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/LOCK/artifacts", map[string]string{
-				"name": "Design notes", "content": revised,
+			return dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/LOCK/artifacts", map[string]any{
+				"name": "Design notes", "content": revised, "precondition": replaced,
 			}, "alice")
 		},
 		func(t *testing.T, answer *httptest.ResponseRecorder) {
@@ -265,10 +267,13 @@ func readyUploadUnderApprovalRequest(t *testing.T, base routeFixture) lockedItem
 	waitForArtifactVersion(t, fixture.handler, fixture.artifactID, 1)
 	request := requestApproval(t, fixture.handler, fixture.artifactID)
 	revised := strings.Replace(base.spec, "Revision token r0", "Revision token r1", 1)
+	// The upload replaces the spec, so it names the token of the version it replaces.
+	replaced := uploadBase(t, fixture.handler, fixture.artifactID)
 	return fixture.routeWrite(t, "the spec's next version and the request it moves",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+fixture.issueKey+"/artifacts", map[string]any{
 				"name": "spec.md", "content": revised, "summary": "Bump the revision", "actor": sessionActor(),
+				"precondition": replaced,
 			})
 		},
 		func(t *testing.T, answer *httptest.ResponseRecorder) {
@@ -365,10 +370,12 @@ func readyUploadRestoringTheApprovedText(t *testing.T, base routeFixture) locked
 	fixture := base.issue(t, "Upload restoring the approved text")
 	request := approvedThenRequested(t, fixture)
 	approved := versionMarkdown(t, fixture.handler, fixture.artifactID, 1)
+	// The upload replaces the spec, so it names the token of the version it replaces.
+	replaced := uploadBase(t, fixture.handler, fixture.artifactID)
 	return fixture.routeWrite(t, "the restoring version and the request its carry answers",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+fixture.issueKey+"/artifacts", map[string]any{
-				"name": "spec.md", "content": approved, "actor": sessionActor(),
+				"name": "spec.md", "content": approved, "actor": sessionActor(), "precondition": replaced,
 			})
 		},
 		func(t *testing.T, answer *httptest.ResponseRecorder) {

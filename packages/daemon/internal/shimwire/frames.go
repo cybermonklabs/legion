@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // The frame type names, verbatim from the shipped protocol.
@@ -184,6 +186,11 @@ type AgentSecretsTokenResult struct {
 // again; a launcher process that restarts says false and is pushed the check again. The hello
 // does not refuse a tag of another shape than LeakCheckTagPattern: the launcher connects, and the
 // daemon refuses that tag as the cause of the start it cannot serve the check for.
+//
+// ResumesBySession is this launcher saying it can look a session up by its id and resume the file
+// it finds (LauncherStart.ResumeSession). A launcher built before the member sends none, and the
+// daemon names a session only to a launcher that said resumesBySession: to any other it names no
+// session, and the agent's own command carries `--resume=<session id>` instead.
 type LauncherHello struct {
 	Token              string `json:"token"`
 	Sandbox            string `json:"sandbox"`
@@ -192,6 +199,7 @@ type LauncherHello struct {
 	LauncherID         string `json:"launcherId"`
 	LeakCheckTag       string `json:"leakCheckTag,omitempty"`
 	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
+	ResumesBySession   bool   `json:"resumesBySession,omitempty"`
 }
 
 // LauncherHelloAck admits a launcher to receive child process commands, and hands it the
@@ -588,13 +596,28 @@ type LauncherState struct {
 // before the child starts, and removes the directory when the child ends — so a role started in a
 // running pod never waits on the kubelet to propagate a Secret. Argv and Env name those files by
 // path; no credential is ever in Argv, Env, or an error.
+//
+// ResumeFile is the session file the child resumes. ResumeSession is the id of a session the
+// child resumes where the daemon knows no file of it: the launcher looks the id up in the session
+// table and resumes the file it finds, as it resumes ResumeFile. An older launcher ignores
+// resumeSession and sends no resumesBySession in its hello, and the daemon names a session only to
+// a launcher that said resumesBySession (LauncherHello), so an older launcher is never sent one; an
+// older daemon sends no resumeSession.
 type LauncherStart struct {
-	ID         string            `json:"id"`
-	Generation uint64            `json:"generation"`
-	Argv       []string          `json:"argv"`
-	Env        []string          `json:"env"`
-	Files      map[string]string `json:"files,omitempty"`
-	ResumeFile string            `json:"resumeFile,omitempty"`
+	ID            string            `json:"id"`
+	Generation    uint64            `json:"generation"`
+	Argv          []string          `json:"argv"`
+	Env           []string          `json:"env"`
+	Files         map[string]string `json:"files,omitempty"`
+	ResumeFile    string            `json:"resumeFile,omitempty"`
+	ResumeSession string            `json:"resumeSession,omitempty"`
+	// AgentExecutable is the agent's executable as /proc/<pid>/exe reads it once any start
+	// wrapper has exec'd it: an absolute path, such as the image's /opt/omp/bin/omp. Argv cannot
+	// say it, because a deployment's setup wraps the agent in `/bin/sh -c <script> legion-start`.
+	// The daemon fills it for an Oh My Pi launch, and a launcher with a session writer token
+	// knows the agent's process by it (internal/launcher's sessionPeer). It is empty for a
+	// Claude Code launch, whose agent writes no session itself.
+	AgentExecutable string `json:"agentExecutable,omitempty"`
 }
 
 // GenerationDir is the directory under a launcher's private directory that holds one generation's
@@ -677,11 +700,19 @@ type Prompt struct {
 
 // Response is OMP's answer to a request, carrying the request's own id. Data is the answer's
 // payload, left raw because its shape belongs to the command (worker-rpc.ts:369-377).
+//
+// Code is Oh My Pi's class of a refusal: a refused request's error response carries it at the
+// top level, right after Error (`RpcResponse` in packages/coding-agent/src/modes/rpc/rpc-types.ts
+// of cybermonklabs/oh-my-pi at the pinned tag). For a `prompt` or `abort_and_prompt` its one value
+// is `session_busy`: the prompt was refused, or failed, because the agent was busy (docs/rpc.md
+// there). Nothing in the daemon reads it; it is modelled so the frame survives this package
+// whole, as PromptError.Code is.
 type Response struct {
 	ID      string          `json:"id"`
 	Command string          `json:"command"`
 	Success bool            `json:"success"`
 	Error   string          `json:"error,omitempty"`
+	Code    string          `json:"code,omitempty"`
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
@@ -742,25 +773,34 @@ type PromptResult struct {
 }
 
 // PromptError is how a prompt's work failed, as the pinned Oh My Pi declares it: `{message,
-// provider?, model?, httpStatus?, retryable}`, the "failure detail of a `prompt_result` with
-// `status: \"error\"`". Oh My Pi writes it for a prompt whose last assistant message ended with
-// stopReason "error" — a provider request its own retries could not get through, where
-// Retryable says it may still succeed later — and for one it failed outright before any turn.
+// provider?, model?, httpStatus?, retryable, code?}`, the "failure detail of a `prompt_result`
+// with `status: \"error\"`" (`RpcPromptError` in packages/coding-agent/src/modes/rpc/rpc-types.ts,
+// and docs/rpc.md, of cybermonklabs/oh-my-pi at the pinned tag). Oh My Pi writes it for a prompt
+// whose last assistant message ended with stopReason "error" — a provider request its own retries
+// could not get through, where Retryable says it may still succeed later — and for one it failed
+// outright before any turn.
 //
-// Only Message is read, as the reason a failed prompt is recorded with (PromptResult.Reason).
-// The other members are modelled so the frame survives this package whole, the way every other
-// frame does: a decode that kept only what today's reader wants would quietly drop the provider,
-// the model and the status behind a failure from anything that re-encodes it.
+// Code is Oh My Pi's class of the failure, when it gives one, and it declares two values there:
+// `cost_cap`, the session reached `session.maxCost`, and `session_busy`, the agent was busy: the
+// prompt was refused, or it waited at least 30 s and another run still held the agent.
+//
+// Message is the reason a failed prompt is recorded with (PromptResult.Reason), and
+// internal/stream carries Retryable, HTTPStatus, Provider and Model onto its own PromptResult
+// event. Nothing in the daemon reads Code: it is modelled, as the other members are, so the frame
+// survives this package whole, the way every other frame does. A decode that kept only what
+// today's reader wants would quietly drop the class, the provider, the model and the status
+// behind a failure from anything that re-encodes it.
 type PromptError struct {
 	Message    string `json:"message"`
 	Provider   string `json:"provider,omitempty"`
 	Model      string `json:"model,omitempty"`
 	HTTPStatus int    `json:"httpStatus,omitempty"`
 	Retryable  bool   `json:"retryable"`
+	Code       string `json:"code,omitempty"`
 }
 
 // Reason is Oh My Pi's message for work that ended in an error, and the empty string for work
-// that did not: the one thing the daemon reads of the failure.
+// that did not: the reason a failed prompt is recorded with.
 func (f PromptResult) Reason() string {
 	if f.Error == nil {
 		return ""
@@ -1524,6 +1564,15 @@ func (f LauncherHello) Validate() error {
 	return nil
 }
 
+// Validate refuses a launcher start the launcher cannot act on: one with no id, no generation or
+// no argv, or with a file name that is not a plain file name. A start that names its session by
+// its id alone (ResumeSession) is refused too when it also names a file (ResumeFile), which is two
+// sessions to resume, when the id is not a single path element (it holds `/` or NUL), which no
+// session file name ends in, or when its argv does not hold exactly one element
+// `--resume=<ResumeSession>`: the launcher resumes the file it finds for the id by replacing that
+// one element with the file's path, and with none or two there is nothing certain to replace. The
+// daemon is the frame's only sender, so each of these is a bug of the daemon's, which the refusal
+// names.
 func (f LauncherStart) Validate() error {
 	switch {
 	case f.ID == "":
@@ -1536,6 +1585,24 @@ func (f LauncherStart) Validate() error {
 	for name := range f.Files {
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
 			return fmt.Errorf("%w: launcher_start file name %q is not a plain file name", ErrMalformedFrame, name)
+		}
+	}
+	if f.ResumeSession != "" {
+		if f.ResumeFile != "" {
+			return fmt.Errorf("%w: launcher_start names both resumeFile and resumeSession", ErrMalformedFrame)
+		}
+		if strings.ContainsAny(f.ResumeSession, "/\x00") {
+			return fmt.Errorf("%w: launcher_start resumeSession %q is not a single path element", ErrMalformedFrame, f.ResumeSession)
+		}
+		resume := "--resume=" + f.ResumeSession
+		held := 0
+		for _, arg := range f.Argv {
+			if arg == resume {
+				held++
+			}
+		}
+		if held != 1 {
+			return fmt.Errorf("%w: launcher_start argv holds %s %d times, want it exactly once for resumeSession", ErrMalformedFrame, resume, held)
 		}
 	}
 	return nil
@@ -1656,7 +1723,8 @@ func (f AgentSecretsToken) Validate() error {
 func Decode(line []byte) (Frame, error) {
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, fmt.Errorf("%w: %.80q", ErrNotAFrame, line)
+		// The line is the far side's: the URL rule reads it whole before it is cut (redact.Runes).
+		return nil, fmt.Errorf("%w: %q", ErrNotAFrame, redact.Runes(string(line), 80))
 	}
 	var head struct {
 		Type string `json:"type"`

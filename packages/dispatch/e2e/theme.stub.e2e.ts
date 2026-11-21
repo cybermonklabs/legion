@@ -1,6 +1,6 @@
 /** Every registered palette token read off the live elements of the Inbox, a spec and a
  *  Conversation, in light and in dark: a computed colour is the browser's answer and not the
- *  server's, so it runs against a recording (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  server's, so it runs against a recording (packages/dispatch/README.md, "The stubbed layer").
  */
 import { expect, type Locator } from "@playwright/test";
 
@@ -116,7 +116,7 @@ const test = stubbed(async () => {
 // full lane's alone (.github/workflows/dispatch-browser.yaml), does not run at all.
 //
 // Every token it reads is what the browser draws from one fixed answer, so it runs against a
-// recording rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+// recording rather than against a harness (packages/dispatch/README.md, "The stubbed layer").
 // SLOW(>=2s): 7.5 s on replay - three pages read in both schemes, and two states no baseline
 // holds, an expanded thread and the phone margin sheet, opened and read in both schemes too.
 // Each scheme switch is a 150 ms ease this row polls through.

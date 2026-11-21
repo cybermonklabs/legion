@@ -420,7 +420,7 @@ func (s *server) createStoredMessage(
 	// row will name is handed over: it gives the document its `#id`s resolve against, its
 	// issue's spec, which no read of the row can answer yet.
 	referenceChanges, indexWrite, err := s.planPendingItem(
-		ctx, tx, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey}, createdAt, issueKey != nil,
+		ctx, tx, actor, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey}, createdAt, issueKey != nil,
 	)
 	if err != nil {
 		return model.Message{}, nil, err
@@ -443,9 +443,7 @@ func (s *server) createStoredMessage(
 			queueReplyParentMessageLock(b, parent.ID)
 			parentRepair.Queue(b)
 		}
-		if err := graphstore.QueueNodes(b, messageNode); err != nil {
-			return err
-		}
+		graphstore.QueueNodes(b, messageNode)
 		b.Queue("", `
 			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
 			values ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -468,9 +466,7 @@ func (s *server) createStoredMessage(
 		if issueKey != nil {
 			refs.QueueStamp(b, "message", message.ID)
 		}
-		if err := graphstore.QueueCaused(b, messageNode, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, messageNode, graphstore.LatestEvent)
 		// A targeted message's attempt 1 is queued here, with the writes of the transaction that
 		// stores the message, unclaimed and naming no session yet, as writeBroadcast opens each
 		// recipient's: a process that dies, or a request whose connection is cut, between this

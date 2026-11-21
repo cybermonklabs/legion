@@ -70,13 +70,12 @@ With no key, the daemon reads each App's bot login from GraphQL's `viewer` under
 tokens, refuses a token whose `GET /apps/<slug>` names an id other than `app_id`, and reads whether
 the App is installed on a repository from that owner's installation's repository list.
 A read-only token holds what the command's read-only release gives: the broker's holds
-`contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, and the first three
-alone where the App's installation has not been granted Actions.
+`contents: read`, `metadata: read`, `pull_requests: read`, `actions: read`, `checks: read` and
+`statuses: read`, less each of the last three the App's installation has not been granted.
 A configured key asks for a set that differs from the broker's: `contents`, `metadata`,
 `pull_requests`, `issues`, `actions`, `checks`, `statuses` and `attestations`, each at `read`
-(`readPermissions` in `packages/daemon/internal/appauth`), so a controller reads an issue, a check
-run, a commit status or an attestation through a key-minted read-only token and not through the
-broker's.
+(`readPermissions` in `packages/daemon/internal/appauth`), so a controller reads an issue or an
+attestation through a key-minted read-only token and not through the broker's.
 A configured key reads what the installation is granted before each mint and asks for its set
 cut down to it.
 The daemon passes the command's stderr through as it runs, with every GitHub token in it redacted,
@@ -273,7 +272,14 @@ the saved help is the pin's).
 The shared clone's `credential.helper` is `!legion git-credential` with `credential.useHttpPath`
 on, so a pane's `git` and `jj git push` read the hosts.yml of the owner of the repository in the
 path git asks about — of the owner a configured rename moved that repository to where a pair
-names it — and nothing else.
+names it — and nothing else, but for a repository of an owner the bundle holds no directory
+for. The helper reads such a repository from GitHub once, with the token of the directory
+`GH_CONFIG_DIR` names where that is a directory of the bundle. Where GitHub answers that it is a
+fork, the helper answers the token it would answer for the fork's `parent`, or else for its
+`source`, where the bundle holds that owner's directory. That repository is usually the base of
+the fork's pull requests, whose token GitHub takes for a maintainer's commit to the branch of such
+a pull request from a fork in a personal account, and GitHub decides which branch of the fork
+that token may update. Every other repository of such an owner gets nothing.
 Every provision, a pane's and a pod's, also writes `remote.origin.gh-resolved base`, gh's own
 default-repository marker, into the clone's own configuration where that configuration holds no
 `gh-resolved` line, so a worker who adds an `upstream` remote keeps gh's choice, and `legion gh`'s,
@@ -361,9 +367,31 @@ The pinned install is a pod's: the daemon reads the check at the tag the worker 
 pushes it to the pod's launcher, which installs it ([Worker image](kubernetes.md#worker-image)).
 So a box that writes to public repositories carries the check through the check's own installer,
 run on the machine the daemon runs on.
-A daemon that resolves none logs one line per launch naming the pane, tells that pane no
-`PUBLIC_LEAK_CHECK`, and every write from it to a public repository is then refused with a setup
-error naming the missing check.
+A daemon that resolves none tells that pane no `PUBLIC_LEAK_CHECK`.
+What a pane's `legion gh` writes then meet is the deployment's leak check setting, which a tmux
+daemon reads from its process environment as a Kubernetes daemon does:
+`LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_MANIFEST_SHA256`, or the `leak_check` block
+of `legion.yaml` ([Worker image](kubernetes.md#worker-image)).
+With the setting, every pane is told the check's manifest digest as
+`LEGION_LEAK_CHECKER_MANIFEST_SHA256`, the daemon logs one line per launch naming a pane it
+resolved no check for, and every write that pane's `legion gh` makes to a public repository is
+refused with a setup error naming the missing check.
+A pane that resolves a check whose manifest digest is anything but that one — another program, a
+launcher script edited beside an unchanged program, a missing README or must-pass lines — has
+every call of its `legion gh` refused, reads included, with a setup error naming the digest told
+and the digest found, so the check the machine's installer put there must be the tag the setting
+names, whole.
+
+Under a checker digest, `legion gh` writes the four files it hashed into a new 0700 directory before it runs the check, and removes that directory when the call ends. A role pod puts that directory under `/var/run/legion/private`, a memory-backed path only that role's mount namespace reaches. A tmux pane has no such mount: its fallback is a 0700 directory under `/tmp`. That fallback keeps other Unix users out and is removed on every normal call exit, but it does not isolate same-user panes and it is not the `/var/run/legion/private` boundary.
+A broken setup on the machine is told to the pane all the same, as the path it is broken at: a
+stale `PUBLIC_LEAK_CHECK`, a `PUBLIC_LEAK_CHECK` or pointer file naming a directory or a file with
+no execute bit, a pointer file that names nothing or cannot be read, or, where nothing else names
+a check, a `public-leak-check.sh` on `PATH` that is a dangling link or has no execute bit. Its
+public writes, pushes included, are then refused under either setting, and the daemon logs a line
+per launch.
+With no setting, the daemon logs once at boot that the deployment leak check is not configured, and
+a pane's `legion gh` with no check named anywhere writes under the guard's visibility read and this
+repository's own private-name rules alone.
 
 The real gh is a compiled program, so when the first `gh` on the daemon's `PATH`
 is a script (a `gh` wrapper of the box's own, as the devbox's login `PATH` heads with, or asdf's
@@ -424,7 +452,7 @@ minted from Dispatch's Settings → Agent tokens
 
 The agent-secrets helper holds a credential of its own: the machine login a person approves for
 `agent-secrets machine login`. The helper spends that credential on the broker's own routes
-(`packages/envoy/internal/broker/helper/broker.go`) and asks the broker for no Dispatch token. The
+(`packages/envoy/internal/cipher/helper/broker.go`) and asks the broker for no Dispatch token. The
 broker can exchange such a login's access token for one (`docs/kubernetes.md`, "The Dispatch
 identity the broker can issue"), and nothing on this box does that at this release.
 `dispatch://INFRA-267` is where the daemon and its workers get Dispatch tokens of their own, a dev
@@ -556,11 +584,13 @@ provider_keys:
 - **`pane_env`** refuses `PATH` (the runtime composes it), every name the runtime sets on a pane
   (its own `LEGION_*` names, the XDG directories, the gh variables, `PI_CONFIG_FILES`,
   `LEGION_CONTROLLER`, `LEGION_SLACK_CHANNELS`), the variables it sets on every Claude Code pane
-  (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_CRON`), the git
+  (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_CRON`), the one it sets to `1` on every pane that
+  resumes a recorded Oh My Pi session (`OMP_SESSION_EXCLUSIVE`, which holds that Oh My Pi to the
+  session it resumes), the git
   identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the pointers to the secrets every launch
   gets as a file of its own (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`), the variables that place
   the session a resume reads (`OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`,
-  `OMP_SESSION_SQL_DSN_FILE`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
+  `OMP_SESSION_SQL_DSN_FILE`, `OMP_CONFIG_ROOT`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
   `_FILE` pointer, any credential-shaped name (`…_TOKEN`, `…_KEY`, `…_SECRET`, `…_SEED`,
   `…_PASSWORD`, `…_PAT`, `…_GRANT`, `…_CREDENTIALS`, `PRIVATE_KEY`), and any value holding a URL
   with a password in it (`scheme://user:password@…`). A value on tmux's command line is readable by
@@ -577,8 +607,8 @@ provider_keys:
   arm it runs in (`legion.arms=memory:memory` once decoded), so each model call says which arm's
   files it ran with. The agent keeps the last value a key is
   given, so the daemon's pairs come last. A spend row names an issue, a role or an arm only
-  where the spend collector keeps that key: a collector that keeps a list of `theorem.*`
-  attributes alone drops all three (dispatch://INFRA-1835). A controller pane serves no issue and carries the
+  where the spend collector keeps that key. A deployment's collector may keep a fixed list of
+  attributes; include all three in that list to group spend by them. A controller pane serves no issue and carries the
   role alone, and the boot gate's probe runs no role, so it carries the operator's value with its
   trailing commas and whitespace dropped and nothing added.
   The loader reads this one value for its content as well as its name: it
@@ -733,6 +763,12 @@ provider_keys:
   other secret file the daemon reads follows: one that cannot be read, is not a regular file, holds
   nothing, or is readable by its group or others refuses the boot, naming the variable and the
   file. Kubernetes refuses the form: a file on the daemon's disk reaches no pod.
+  Under tmux the boot also refuses a key named for a variable every pane carries, a key whose
+  `_FILE` pointer every pane carries, and, with the reason `pane_env` gives, a key named for a
+  variable that places the session a resume reads, one the runtime tells a Claude Code pane or a
+  resumed Oh My Pi pane after the operator's variables, or a launch secret's pointer.
+  The shim exports every provider key into the environment of the agent it starts (Oh My Pi, or
+  `legion claude-bridge` on a Claude Code pane), where it acts as the pane variable of that name.
 - **`controller: daemon`** works under tmux too: the daemon launches the controller in a pane of
   its own window, `controller`, working in `<state_dir>/controller`, told `LEGION_CONTROLLER=1` and
   an empty `LEGION_SLACK_CHANNELS`, and supervises it like a root architect. It needs

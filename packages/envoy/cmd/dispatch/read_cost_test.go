@@ -309,11 +309,8 @@ func seedReadCostHistory(t *testing.T, arm *costArm) *readCostShape {
 // history that is not the person's whose page is read, and answers its artifact id.
 func costUploadDocumentAs(t *testing.T, arm *costArm, login, issue, name, content string) string {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{"name": name, "content": content})
-	if err != nil {
-		t.Fatalf("encode %s: %v", name, err)
-	}
-	answer := arm.server.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", string(body), asUser(login))
+	body := arm.server.documentUpload(t, issue, name, content, login)
+	answer := arm.server.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", body, asUser(login))
 	if answer.status != http.StatusCreated {
 		t.Fatalf("%s: upload %s as %s: status %d: %s", arm.name, name, login, answer.status, answer.body)
 	}

@@ -3,7 +3,8 @@ name: CI caches
 # Fills the Actions caches ci.yaml's jobs restore, so a pull request or a merge group finds
 # them warm. ci.yaml runs on a pull request, a merge group and a dispatch, and no longer on a push
 # to main: the queue tests every change on the tree it lands as, so a run on main would only test
-# that tree again (ci.yaml's header says it). No step of that workflow saves a cache entry any
+# that tree again (.github/ci-notes/ci.md#why-the-router-runs-on-these-events-and-no-others says
+# it). No step of that workflow saves a cache entry any
 # more, and the actions it calls save only in a dispatched run, so the families it restores need
 # a filler of their own, and this workflow is it.
 #
@@ -67,7 +68,9 @@ name: CI caches
 # restores the entry and never saves it. This workflow's push to main is where the entry lands in
 # the scope every later run reads. check-ci-filters.sh's cache-family rule reads this workflow's
 # own actions/cache steps and not a composite action's, so it holds nothing of these two families;
-# ci.yaml's "Caches" paragraph is the record of their restores and saves.
+# the "Caches" paragraph of
+# .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs is the
+# record of their restores and saves.
 #
 # One entry here is no Go family: the elan home the airlock-lean job restores, whose key is the
 # content of the Lean toolchain the model names rather than a Go version. Two others that were
@@ -107,9 +110,9 @@ concurrency:
 permissions:
   contents: read
 
-# The proxy fall-through ci.yaml's env block explains: with `|`, a go command that hits ANY error
-# from proxy.golang.org - a reset mid-stream among them - fetches the same bytes from the source
-# and checks them against go.sum.
+# The proxy fall-through each ci-job-*.yaml file's env block explains: with `|`, a go command
+# that hits ANY error from proxy.golang.org - a reset mid-stream among them - fetches the same
+# bytes from the source and checks them against go.sum.
 env:
   GOPROXY: https://proxy.golang.org|direct
 
@@ -537,7 +540,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/elan
-          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain') }}
           lookup-only: true
 
       - if: steps.elan-cache.outputs.cache-hit != 'true'
@@ -548,10 +551,10 @@ jobs:
       - name: Build what airlock-lean builds
         if: steps.elan-cache.outputs.cache-hit != 'true'
         run: lake build
-        working-directory: packages/envoy/internal/broker/airlock/lean
+        working-directory: packages/envoy/internal/cipher/proxyrules/lean
 
       - if: steps.elan-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/elan
-          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain') }}

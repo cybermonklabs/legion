@@ -63,7 +63,10 @@ func causeOf(column string) string {
 // statements as one batch of their own (QueueWrite). It is for a writer with no write phase to
 // queue them on: a backfill, a seed, a delivery's settle.
 func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
-	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueWrite(b, nodes, tuples) })
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		QueueWrite(b, nodes, tuples)
+		return nil
+	})
 }
 
 // QueueWrite queues the write of every node and the append of every tuple on b. It appends only:
@@ -85,12 +88,11 @@ func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 // follow the node - holds the write for its event instead (PlanUncaused, QueueNodes,
 // QueueCaused), so that the base attributes are appended under that event rather than under the
 // sentinel.
-func QueueWrite(b *store.WriteBatch, nodes []Node, tuples []Tuple) error {
-	for _, node := range nodes {
-		if _, err := PartiesValue(node.Parties); err != nil {
-			return fmt.Errorf("node %s/%s: %w", node.Kind, node.ID, err)
-		}
-	}
+//
+// Its statements build their arguments when the write phase sends them (store.WriteBatch's
+// QueueBuilt), so a node or a writer that cannot be encoded - a party PartiesValue refuses among
+// them - fails Send rather than this call, which therefore answers nothing.
+func QueueWrite(b *store.WriteBatch, nodes []Node, tuples []Tuple) {
 	mark := int64(0)
 	if len(nodes) > 0 {
 		mark = nextNodeMark()
@@ -99,7 +101,6 @@ func QueueWrite(b *store.WriteBatch, nodes []Node, tuples []Tuple) error {
 	queueAppend(b, appending{
 		tuples: len(tuples), tuple: func(index int) Tuple { return tuples[index] }, nodes: nodes, mark: mark,
 	})
-	return nil
 }
 
 // Uncaused is a write of this store whose cause did not exist while its node write was queued,
@@ -112,9 +113,9 @@ func QueueWrite(b *store.WriteBatch, nodes []Node, tuples []Tuple) error {
 // it.
 //
 // It is the one shape of that write for every writer it applies to: a comment's request (api's
-// commentStoreWrite), a version's block index (refs.BlockIndexing), a follow of an ask
-// (asks.Followed) and the settle of a delivery attempt (Reached). A writer with nothing to state
-// holds the zero Uncaused, for which Caused writes nothing.
+// commentStoreWrite), a version's block index (refs.BlockIndexing) and a follow of an ask
+// (asks.Followed). A writer with nothing to state holds the zero Uncaused, for which Caused
+// writes nothing.
 type Uncaused struct {
 	// Nodes are the nodes the write wrote. QueueCaused moves each its node write made or moved
 	// onto the event, and, for a write of PlanUncaused, each still at the sentinel, so a node an
@@ -129,8 +130,8 @@ type Uncaused struct {
 	// baseAt is how many of Tuples the base attributes the node write states follow.
 	baseAt int
 	// sentinel says QueueCaused also moves onto the event every node of Nodes still at the
-	// sentinel, as PlanUncaused's writer holds all of them for its cause; a follow's or a settle's
-	// node (the arms) is caused only where that write made it.
+	// sentinel, as PlanUncaused's writer holds all of them for its cause; a follow's node (the
+	// arms) is caused only where that write made it.
 	sentinel bool
 	// appended, where Counting set it, counts the tuples the append appends (queueAppend).
 	appended *int64
@@ -187,18 +188,22 @@ func PlanUncaused(nodes []Node, stated []Tuple) Uncaused {
 
 // QueueNodes queues the node write of write (PlanUncaused) on b: every node now, at the sentinel,
 // each it makes or moves left marked for the append QueueCaused queues. It appends nothing. The
-// nodes and tuples are read when the write phase sends the statements, so a value that cannot be
-// encoded fails Send rather than this call, which returns nil (QueueWrite).
-func QueueNodes(b *store.WriteBatch, write Uncaused) error {
+// nodes and tuples are read when the write phase sends the statements, so the writer does not
+// change them after this call, and a value that cannot be encoded fails Send rather than this
+// call, which answers nothing (QueueWrite).
+func QueueNodes(b *store.WriteBatch, write Uncaused) {
 	queueNodes(b, write.Nodes, write.mark, len(write.Tuples), func(index int) Tuple {
 		return write.Tuples[index].Tuple
 	})
-	return nil
 }
 
-// Caused is QueueCaused run at once, as a batch of its own, for a writer with no write phase.
+// Caused is QueueCaused run at once, as a batch of its own, for a writer with no write phase. Its
+// error is the batch's: a statement that fails, or a tuple that cannot be encoded, fails Send.
 func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
-	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueCaused(b, write, event) })
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		QueueCaused(b, write, event)
+		return nil
+	})
 }
 
 // QueueCaused queues the append of what write stated under event, the event that caused it, and
@@ -216,7 +221,12 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 // over their addresses, as it reads what the node write left on each. Writing them again would pay
 // a second node write per node for one column, and the upsert's own guard would refuse it, since
 // nothing else about the node moved.
-func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) error {
+//
+// Each tuple is stated under event as the append binds it, read from write where it stands when
+// the write phase sends the statements, rather than copied here: a version's block index holds a
+// tuple a block. The writer does not change write after this call, and a tuple that cannot be
+// encoded fails Send rather than this call, which answers nothing (QueueWrite).
+func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) {
 	legacy := event
 	queueAppend(b, appending{
 		tuples: len(write.Tuples),
@@ -232,7 +242,6 @@ func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) error {
 		nodes: write.Nodes, mark: write.mark, baseAt: write.baseAt,
 		cause: &event, sentinel: write.sentinel, appended: write.appended,
 	})
-	return nil
 }
 
 // The base attributes, as the kind of the tuple that states each spells it. graph_nodes carries a
@@ -315,10 +324,63 @@ func markAttributes(row string) string {
 	return `((-` + row + `.source_event) % ` + strconv.Itoa(markSpan) + `)::integer`
 }
 
-// queueNodes queues the node write of nodes. Its arguments are built only as the write phase sends
-// them (store.WriteBatch's QueueBuilt), so a large version holds encoded arguments one statement
-// at a time. The first statement inserts and locks each node in address order, the project check
-// refuses a project move under those locks, and the last statement moves every changed projection.
+// queueNodes queues the write of nodes, in two statements, each of whose rows arrive in ascending
+// (kind, id): a write touching several nodes takes its row locks in that order, so two such
+// writes cannot each hold the row the other waits for. The first inserts every node the store
+// does not hold and locks every node it does, at the level an update of that row takes, changing
+// nothing in it; the second moves supertag, visibility, state and attributes on each row whose
+// columns differ, gives a row the project it does not hold yet and the parties the node names, and
+// leaves made_at and made_by as the row's own first write left them - the row is the projection
+// of its tuples and may be written again, and a later write that learns the event id has to be
+// able to move source_event. Where a node names a project, a statement between the two refuses a
+// project move under the locks the first took (ErrProjectMoved). A node the write restates
+// (Node.Restates) keeps its row's visibility and attributes, and its row's state unless that
+// state or the node's is gone: its writer says only whether the node is there, so the row moves
+// to gone when the writer says gone, and to the writer's state only from gone. Both statements
+// leave mark, which the write's caller drew (nextNodeMark), on the rows they made or moved
+// (nodeMarks). Their arguments are built only as the write phase sends them (store.WriteBatch's
+// QueueBuilt), so a large version holds encoded arguments one statement at a time.
+//
+// The rows carry the base attributes the write states, one attribute at a time, for the append
+// to state. A node the insert made states `visibility` and `state`, which is the node carrying
+// both from its first write, and `project` and `parties` where it carries them (markMade). A node
+// that was already there states `visibility` where this write moved its stored visibility, and
+// `state` where this write moved its stored state, each on its own, `project` where it gave the
+// row its first project, and `parties` where it moved them: a write that moves one of them states
+// that one, and a node written again with none moved states none, so a re-index of a document
+// nothing moved appends nothing. A node whose base attributes the caller states itself (stated,
+// tuple) is marked even where nothing moved, so the append moves it onto the cause. An attribute a
+// restating write kept did not move, so nothing is stated of it, and one it moved moved to the
+// value the node carries, which is what its tuple states: the log never says a restated node went
+// live while its row stayed at the state another write gave it. The two are compared separately
+// because they move separately - a node hidden from a project keeps its state, and a deleted
+// block keeps its visibility - and a row whose column moved while the log said nothing would be a
+// row no appended fact explains, which nothing may mend later, since no tuple is ever updated.
+// Each tuple carries the time, the writer and the cause of the node write that states it.
+//
+// Both stored values are compared on the row the second statement updates. Under READ COMMITTED
+// that statement reads a snapshot of its own, taken once the first holds every row the write
+// touches: what it compares against is the newest committed version of each row, and no other
+// writer can move one until this transaction ends. Read in the snapshot of a statement that then
+// waited on a row, they would be the row as it stood before the writer it waited on, while the
+// write goes over the version that writer committed: one writer states a node gone, a second
+// waits on its row and moves it back to live, compares live with live and states nothing, and the
+// row says live while its newest state tuple says gone. What a restating write keeps is read off
+// that same row, so one that waited on a write marking the node otherwise keeps the state that
+// write committed, rather than writing live over it and stating nothing. Locking the rows already
+// there in a statement of their own before inserting the new ones would read fresh values too,
+// but it takes the rows out of ascending (kind, id) wherever a new node sorts before one already
+// there. Two writes racing over a node the store does not hold yet are one case of the same: the
+// second's insert waits on the first's, then finds the row there and locks it, and its second
+// statement compares against what the first committed. The pass that writes a block's node holds
+// its document's owner lock before it reaches this.
+//
+// Neither statement joins the nodes it was handed against another list it was handed: each reads
+// them once, and the second meets graph_nodes through its primary key. Planned without the
+// arrays' sizes, as a cached statement is planned from its sixth run on, a join of two such lists
+// is a nested loop that rescans one per row of the other, which measured 3,009 ms against 193 ms
+// over a 1,999-block version, so what the write did to each node rides on the node's own row
+// instead (nodeMarks).
 func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated int, tuple func(index int) Tuple) {
 	if len(nodes) == 0 {
 		return
@@ -381,6 +443,10 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated int, tuple
 				kind, id, named, held, ErrProjectMoved)
 		})
 	}
+	// The move reads, beside the five columns it compares, whether the write restates each node
+	// (Node.Restates): a node the insert made has no stored state, visibility or attributes to
+	// keep. It reads too the project and the parties each node names, and whether its caller states
+	// one of its base attributes itself (states).
 	b.QueueBuilt("write graph nodes", `
 		with incoming as (
 			select kind, id, supertag, visibility, state, attributes, restates, project_key,
@@ -392,7 +458,7 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated int, tuple
 			supertag = incoming.supertag,
 			visibility = `+writtenVisibility+`,
 			state = `+writtenState+`,
-			attributes = incoming.attributes,
+			attributes = `+writtenAttributes+`,
 			project_key = coalesce(graph_nodes.project_key, incoming.project_key),
 			parties = coalesce(incoming.parties, graph_nodes.parties),
 			source_event = `+markSQL("$8", `case when graph_nodes.visibility is distinct from `+writtenVisibility+` then `+strconv.Itoa(markVisibility)+` else 0 end
@@ -404,7 +470,7 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated int, tuple
 		  and (graph_nodes.supertag is distinct from incoming.supertag
 		       or graph_nodes.visibility is distinct from `+writtenVisibility+`
 		       or graph_nodes.state is distinct from `+writtenState+`
-		       or graph_nodes.attributes is distinct from incoming.attributes
+		       or graph_nodes.attributes is distinct from `+writtenAttributes+`
 		       or `+fillsProject+`
 		       or `+movesParties+`
 		       or (incoming.states and not `+markedBy("graph_nodes", "$8")+`))
@@ -445,18 +511,24 @@ const (
 	movesParties = `(incoming.parties is not null and graph_nodes.parties is distinct from incoming.parties)`
 )
 
-// writtenVisibility and writtenState are the visibility and the state the move writes a row at,
-// read off the row its update holds (graph_nodes, before the update) and the node it was handed
-// (incoming): the node's own, but for a node the write restates (Node.Restates), which keeps the
-// row's visibility, and the row's state unless the row's or the node's is gone. A state that
-// moves therefore moves to the node's own, the value the append states of it. Each is spelled
-// once and read three times, by the update's set, by its mark and by its condition, so a row a
-// restating write keeps as it is takes no update.
+// writtenVisibility, writtenState and writtenAttributes are the visibility, the state and the
+// attributes the move writes a row at, read off the row its update holds (graph_nodes, before the
+// update) and the node it was handed (incoming): the node's own, but for a node the write restates
+// (Node.Restates), which keeps the row's visibility and attributes, and the row's state unless the
+// row's or the node's is gone. A state that moves therefore moves to the node's own, the value the
+// append states of it. A restating writer owns only the facts it writes the node again for - a
+// block's text and place, a comment's anchor - and none of the node's attributes, which another
+// write gives the node as it may give it a state: no writer that restates a node states any, so
+// the empty object such a node carries would otherwise erase what that other write stored. The
+// visibility and the state are each spelled once and read three times, by the update's set, by its
+// mark and by its condition, and the attributes twice, by the set and the condition, since no base
+// attribute states them: a row a restating write keeps as it is takes no update.
 const (
 	writtenVisibility = `case when incoming.restates then graph_nodes.visibility else incoming.visibility end`
 	writtenState      = `case when incoming.restates and incoming.state <> '` + StateGone + `'
 				and graph_nodes.state <> '` + StateGone + `'
 			then graph_nodes.state else incoming.state end`
+	writtenAttributes = `case when incoming.restates then graph_nodes.attributes else incoming.attributes end`
 )
 
 // appending is one append of a write's tuples (queueAppend): the caller's own, and the base

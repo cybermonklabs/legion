@@ -33,11 +33,12 @@ var peopleLockAt = time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
 // the store already holds has no node row QueueAuthored locks, since the node arm upserts `do
 // nothing`.
 //
-// QueueReached writes the session's node alone, and the settle appends that node's two base
-// attributes under the receipt it appends after it (Caused). Its node is held the same way and
-// the settle must queue behind it, and only then behind a held copy of one of those attributes
-// under the same receipt, which the value repeat key covers. A session the store already holds
-// has no row QueueReached locks and no attribute the settle restates.
+// QueueReached writes the session's node alone, with the settle's receipt as its cause in hand,
+// and states that node's two base attributes under the receipt in the same statement, after the
+// node (WriteArms). Its node is held the same way and the settle must queue behind it, and only
+// then behind a held copy of one of those attributes under the same receipt, which the value
+// repeat key covers. A session the store already holds has no row QueueReached locks and no
+// attribute the settle restates.
 func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -145,7 +146,7 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 	t.Run("the settle waits at a new session's node", func(t *testing.T) {
 		who := model.Actor{Kind: "user", ID: "alice"}
 		const receipt = int64(9400101)
-		node := SessionNode("reached-new", who, peopleLockAt, NoEvent)
+		node := SessionNode("reached-new", who, peopleLockAt, receipt)
 		holder, release := beginHolder(t, ctx, database)
 		insertNodeRow(t, ctx, holder, node)
 
@@ -164,7 +165,7 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 	t.Run("the settle appends its base attributes after the session's node", func(t *testing.T) {
 		who := model.Actor{Kind: "user", ID: "alice"}
 		const receipt = int64(9400102)
-		node := SessionNode("reached-attributes", who, peopleLockAt, NoEvent)
+		node := SessionNode("reached-attributes", who, peopleLockAt, receipt)
 		visibility := Tuple{
 			FromKind: node.Kind, FromID: node.ID, Kind: AttributeVisibility, ToKind: KindValue, ToID: node.Visibility,
 			At: peopleLockAt, Who: who, SourceEvent: receipt, Asserted: true,
@@ -191,7 +192,7 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 	t.Run("the settle takes no row of a session the store already holds", func(t *testing.T) {
 		who := model.Actor{Kind: "user", ID: "alice"}
 		const first, second = int64(9400103), int64(9400104)
-		node := SessionNode("reached-again", who, peopleLockAt, NoEvent)
+		node := SessionNode("reached-again", who, peopleLockAt, first)
 		runPeopleWrite(t, ctx, database, "the session's first settle", settleWrite(node.ID, who, first))
 		holder, release := beginHolder(t, ctx, database)
 		lockNodeRow(t, ctx, holder, node)
@@ -215,21 +216,14 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 	storetest.RequireNoMarkedCause(t, database, "QueueAuthored, QueueReached and the settles that caused them")
 }
 
-// settleWrite is the settle of a delivery attempt with its receipt appended after the session's
-// node: the session the attempt reached recorded in the settling transaction (QueueReached, with
-// no cause in hand), and the receipt appended after it, which moves that node onto itself and
-// appends its base attributes under it (Caused).
+// settleWrite is the settle of a delivery attempt with its receipt appended before the session's
+// node: the session the attempt reached recorded in the settling transaction under that receipt,
+// its cause in hand (QueueReached), as the settle states it right after the receipt in one batch.
 func settleWrite(session string, who model.Actor, receipt int64) func(context.Context, pgx.Tx) error {
 	return func(ctx context.Context, tx pgx.Tx) error {
-		var reached Uncaused
-		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			var err error
-			reached, err = QueueReached(b, model.DeliveryStateSent, session, who, peopleLockAt, NoEvent)
-			return err
-		}); err != nil {
-			return err
-		}
-		return Caused(ctx, tx, reached, receipt)
+		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			return QueueReached(b, model.DeliveryStateSent, session, who, peopleLockAt, receipt)
+		})
 	}
 }
 

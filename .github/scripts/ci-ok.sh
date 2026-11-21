@@ -42,13 +42,13 @@
 # A re-run of only the failed jobs leaves no such skip: `gh run rerun <id> --failed` was
 # measured twice on pull request #2734, and each re-run kept 30 of the run's 31 jobs, ran only
 # the failed job again, and ci-ok passed both times. A merge_group run of ci.yaml is never
-# re-run at all: every job of a re-run attempt of a merge-group run but the `ci-ok` and
-# `pr-title` jobs skips, each held back by a term of its own `if:` (the comment above ci.yaml's
-# `changes` job says which), deliberately, because a group is tested once, and a pull request
-# the queue removed is tested again when it is added again. Those two jobs run on such an
-# attempt, because each is named for a required check and a skipped job's check run is a passing
-# required check; a step of each fails the attempt before this script judges anything, so the
-# run of skips it leaves never reaches this verdict.
+# re-run at all: every job of a re-run attempt of a merge-group run but the `ci-ok` and `pr-title`
+# jobs skips, each held back by a term of its own `if:`, deliberately, because a group is tested
+# once, and a pull request the queue removed is tested again when it is added again
+# (.github/ci-notes/ci.md#what-the-changes-job-selects-and-the-two-terms-every-job-carries says
+# which term). Those two jobs run on such an attempt, because each is named for a required check and
+# a skipped job's check run is a passing required check; a step of each fails the attempt before
+# this script judges anything, so the run of skips it leaves never reaches this verdict.
 #
 # Its inputs, from the ci-ok job's step and from ci-ok-report.sh:
 #   NEEDS              `changes`' result and outputs, as `toJSON(needs.changes)` gives them, and

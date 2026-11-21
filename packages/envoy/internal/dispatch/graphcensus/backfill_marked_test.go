@@ -388,3 +388,66 @@ func TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed(t *testing.T)
 		}
 	}
 }
+
+// A backfill of a lower marking rule run after a backfill of a higher rule records its own rule's
+// horizon and leaves the higher rule's as that run recorded it. Were one row shared by every rule,
+// the older build's backfill would move it above the newer rule's, and the newer rule's first
+// tick would pass over every event between the two, which the older backfill marked by its own
+// rule and not by the newer one (R13).
+func TestABackfillOfALowerMarkingRuleLeavesAHigherRulesHorizon(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	lower, higher := refs.BlockIndexMarkingRule, refs.BlockIndexMarkingRule+1
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U');
+	`); err != nil {
+		t.Fatalf("seed project CORE: %v", err)
+	}
+	appendHorizonEvent(t, database)
+	if _, err := backfillAt(ctx, database, io.Discard, higher); err != nil {
+		t.Fatalf("backfill at marking rule %d: %v", higher, err)
+	}
+	want := horizonOfRule(t, database, higher)
+	appended := appendHorizonEvent(t, database)
+	if _, err := backfillAt(ctx, database, io.Discard, lower); err != nil {
+		t.Fatalf("backfill at marking rule %d: %v", lower, err)
+	}
+	if got := horizonOfRule(t, database, higher); got != want {
+		t.Errorf("after a backfill of marking rule %d the horizon of rule %d is %d, want the %d the backfill of rule %d recorded",
+			lower, higher, got, want, higher)
+	}
+	if own := horizonOfRule(t, database, lower); own < appended {
+		t.Errorf("the backfill of marking rule %d recorded the horizon %d, below the event %d written before it began", lower, own, appended)
+	}
+}
+
+// appendHorizonEvent appends one event of issue CORE-1, its seq taken off the issue's own counter
+// as events.Append takes it, and answers its id.
+func appendHorizonEvent(t *testing.T, database *store.Store) int64 {
+	t.Helper()
+	var id int64
+	if err := database.Pool.QueryRow(context.Background(), `
+		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
+		insert into events (issue_key, seq, type, actor, payload, notify)
+		select 'CORE-1', bumped.last_seq, 'issue.updated', '{"kind":"user","id":"alice"}', '{}', false from bumped
+		returning id
+	`).Scan(&id); err != nil {
+		t.Fatalf("append an event of CORE-1: %v", err)
+	}
+	return id
+}
+
+// horizonOfRule reads the horizon the newest backfill of the marking rule rule recorded, which has
+// to be there.
+func horizonOfRule(t *testing.T, database *store.Store, rule int) int64 {
+	t.Helper()
+	var horizon int64
+	if err := database.Pool.QueryRow(context.Background(), `
+		select event_id from graph_backfill_horizon where marking_rule = $1
+	`, rule).Scan(&horizon); err != nil {
+		t.Fatalf("read the horizon of marking rule %d: %v", rule, err)
+	}
+	return horizon
+}

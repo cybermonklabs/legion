@@ -28,13 +28,13 @@
 # and actor what they were before, and the planted event keeps its key holding the secret as it
 # was while the string under it is redacted; each erase is recorded in one `graph_erasures` row,
 # which holds what was removed - the block's own version and review by name - who ran it and
-# when, and holds no erased text; every node left carries a supertag of the closed list the store
-# itself holds, so the erases wrote no node of their own; `envoy-dispatch census --store` reads
-# zero differences over rows it read; the command's path over HTTP answers 404 to the
-# deployment's agent bearer and to a person's cookie alike, because no route serves it; and a
-# comment whose whole body is `Yes`, erased beside another issue's spec version and another
-# person's comment that each hold `Yes`, lists both of those rows as rows it leaves and leaves
-# them and their issue's events byte for byte what they were.
+# when, and holds no erased text; every node left carries a supertag the store declares, and the
+# store holds the supertag nodes it held before the erases, so the erases wrote no node of their
+# own; `envoy-dispatch census --store` reads zero differences over rows it read; the command's
+# path over HTTP answers 404 to the deployment's agent bearer and to a person's cookie alike,
+# because no route serves it; and a comment whose whole body is `Yes`, erased beside another
+# issue's spec version and another person's comment that each hold `Yes`, lists both of those
+# rows as rows it leaves and leaves them and their issue's events byte for byte what they were.
 #
 # Every read that wants zero after the erases - the nodes' tuples, the version, the four stores of
 # the erased nodes - runs before them as well and finds the rows that held the secret, and the
@@ -585,6 +585,14 @@ pass E2 "envoy-dispatch backfill-graph-store ran, so every row the census reads 
 # E3: each erase refuses until it has listed what it would remove, and each listing names what
 # derives from its node and what it leaves.
 #
+# The store's supertag nodes as they stand before anything erases, which E7 reads again with the
+# same statement: an erase writes no node of its own and removes no type, so the list it reads
+# then is this one.
+readonly supertags_sql="select coalesce(string_agg(id, ',' order by id), '') from graph_nodes where kind = 'supertag'"
+query E3 "read the store's supertag nodes" "$supertags_sql"
+[[ -n "$answer" ]] || fail E3 "read the store's supertag nodes" "the store holds no supertag node"
+readonly supertags_before="$answer"
+
 # The event log as it stands before the erases: the rows of the comment's own events that hold
 # the secret, and the id, the time and the actor of every row holding it. R5 redacts a payload in
 # place rather than deleting its row, because the log is append-only, so these are the facts E5
@@ -657,9 +665,7 @@ readonly events_before="$answer"
 # text in their own rows, which the erase does not reach, so erasing the node alone would report
 # an erasure that left that text in place. Each run against one, with --confirm too, is refused,
 # and the store read whole is what it was after both.
-query E3 "read a supertag node of the store" "select id from graph_nodes where kind = 'supertag' order by id limit 1"
-[[ -n "$answer" ]] || fail E3 "read a supertag node of the store" "the store holds no supertag node"
-readonly -a kept_nodes=("role:$census_role" "page:role/$census_role" "session:$session" "supertag:$answer"
+readonly -a kept_nodes=("role:$census_role" "page:role/$census_role" "session:$session" "supertag:${supertags_before%%,*}"
   "issue:$key" "artifact:$document_ref")
 for kept in "${kept_nodes[@]}"; do
   want_rows E3 "the store holds $kept" 1 \
@@ -765,9 +771,9 @@ want_rows E4 "the refused runs wrote nothing" 1 "$version_sql"
 want_rows E4 "the refused runs recorded no erasure of the block" 0 \
   "select count(*) from graph_erasures where node_id = '$block'"
 
-# The block's erase confirmed by the digest of another listing, the comment's: the run reads its
-# own listing again under its locks, finds a digest other than the one it was given, and removes
-# nothing, so the store read whole is what it was.
+# The block's erase confirmed by the digest of another listing, the comment's: the run lists the
+# rows it leaves before it takes its locks, reads the rest of its listing again under them, finds a
+# digest other than the one it was given, and removes nothing, so the store read whole is what it was.
 query E4 "read the store whole before a run confirming another listing's digest" "$unchanged_sql"
 readonly store_before_mismatch="$answer"
 erase E4 --node "$block_node" --confirm "$comment_digest"
@@ -947,14 +953,17 @@ jq -e '(.removed.versions | length) == 0 and (.removed.reviews | length) == 0' "
   fail E6 "the comment's record ends no version and no review" "$(<"$work/erasure.comment.json")"
 pass E6 "the block's graph_erasures row holds $document_ref version $version and review $review, and the comment's ends none"
 
-# E7: the erases wrote no node of their own, so every node left carries a supertag of the closed
-# list the store itself holds.
+# E7: the erases wrote no node of their own. Every node left carries a supertag the store
+# declares, and the store's supertag nodes are the ones E3 read before the erases: the list is
+# the store's own, so a type a later change adds needs no line here.
 want_rows E7 "every node carries a supertag the store declares" 0 \
   "select count(*) from graph_nodes n where not exists (select 1 from graph_nodes s where s.kind = 'supertag' and s.id = n.supertag)"
-query E7 "count the supertag nodes" "select count(*) from graph_nodes where kind = 'supertag'"
-[[ "$answer" == 27 ]] ||
-  fail E7 "the closed list holds 27 supertags" "the store holds $answer supertag node(s)"
-pass E7 "the closed list of 27 supertags is what every node's supertag comes from"
+query E7 "read the store's supertag nodes" "$supertags_sql"
+[[ "$answer" == "$supertags_before" ]] ||
+  fail E7 "the erases wrote and removed no supertag node" \
+    "the store held $supertags_before before the erases and holds $answer now"
+IFS=, read -ra supertags <<<"$supertags_before"
+pass E7 "the ${#supertags[@]} supertags the store held before the erases are the ones every node's supertag comes from"
 
 # E8: the census after the erases reads zero differences.
 census_code=0

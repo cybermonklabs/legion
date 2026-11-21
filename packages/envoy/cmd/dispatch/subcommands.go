@@ -194,12 +194,31 @@ func committedOpenAPIPath() (string, error) {
 	}
 }
 
-// openMigrated opens the database a DB subcommand works on, brings it to the current schema and
-// installs the block schema the store's type nodes build (schemanodes.InstallFromStore), as the
-// server's boot does beside its own migration run, so a subcommand that parses, renders or writes
-// a document holds it to the store's types rather than to the file this binary embeds. It reports
-// each failure on out under the subcommand's label. The caller closes the returned store's pool.
+// openMigrated opens the database a document subcommand works on, brings it to the current
+// schema (openMigratedWithoutBlockSchema) and installs the block schema the store's type nodes
+// build (schemanodes.InstallFromStore), as the server's boot does beside its own migration run,
+// so a subcommand that parses, renders or writes a document holds it to the store's types rather
+// than to the file this binary embeds. It reports each failure on out under the subcommand's
+// label. The caller closes the returned store's pool.
 func openMigrated(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
+	database, ok := openMigratedWithoutBlockSchema(ctx, label, databaseURL, out)
+	if !ok {
+		return nil, false
+	}
+	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+		fmt.Fprintf(out, "%s: install the block schema from the store: %v\n", label, err)
+		database.Pool.Close()
+		return nil, false
+	}
+	return database, true
+}
+
+// openMigratedWithoutBlockSchema opens the database a DB subcommand works on and brings it to the
+// current schema, and installs no block schema. backfill-files opens its database here: it moves
+// file bytes and parses no document, so the store's types are nothing it reads, and a store whose
+// types this build cannot install is no reason for it to refuse. It reports each failure on out
+// under the subcommand's label. The caller closes the returned store's pool.
+func openMigratedWithoutBlockSchema(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
 	if strings.TrimSpace(databaseURL) == "" {
 		fmt.Fprintln(out, label+": DATABASE_URL is required")
 		return nil, false
@@ -211,11 +230,6 @@ func openMigrated(ctx context.Context, label, databaseURL string, out io.Writer)
 	}
 	if err := database.Migrate(ctx); err != nil {
 		fmt.Fprintf(out, "%s: migrate database: %v\n", label, err)
-		database.Pool.Close()
-		return nil, false
-	}
-	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
-		fmt.Fprintf(out, "%s: install the block schema from the store: %v\n", label, err)
 		database.Pool.Close()
 		return nil, false
 	}
@@ -313,6 +327,8 @@ func backfillAnchorBlocks(ctx context.Context, databaseURL string, out io.Writer
 // when any failed, and can be run again at any time; the server serves a row from its bytes
 // whenever it holds them. The move refuses, with exit 1 and before it touches a row, while a live
 // server process has no bucket (bucketlessProcesses): that process serves a file only from its row.
+// It reads and writes file versions alone, never a document's, so it installs no block schema
+// (openMigratedWithoutBlockSchema).
 func backfillFiles(ctx context.Context, args []string, databaseURL, bucket string, out io.Writer) int {
 	flags := flag.NewFlagSet("backfill-files", flag.ContinueOnError)
 	flags.SetOutput(out)
@@ -333,7 +349,7 @@ func backfillFiles(ctx context.Context, args []string, databaseURL, bucket strin
 		fmt.Fprintln(out, "backfill-files: DISPATCH_FILE_STORE_BUCKET is required")
 		return 1
 	}
-	database, ok := openMigrated(ctx, "backfill-files", databaseURL, out)
+	database, ok := openMigratedWithoutBlockSchema(ctx, "backfill-files", databaseURL, out)
 	if !ok {
 		return 1
 	}

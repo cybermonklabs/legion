@@ -47,12 +47,21 @@ func reserveForAuthor(t *testing.T, tx pgx.Tx, kind, id string) {
 	}
 }
 
+// closureOf is CORE-1's closure as who reads it.
+func closureOf(t *testing.T, tx pgx.Tx, who model.Actor) []Member {
+	t.Helper()
+	members, _, err := Closure(context.Background(), tx, who, "CORE-1")
+	if err != nil {
+		t.Fatalf("read the closure as %s: %v", who.ID, err)
+	}
+	return members
+}
+
 // A private comment's links are no part of the closure another person reads, so it is neither
 // a member's via nor reaches a member, and a private document is no member at all. Its author
 // reads both.
 func TestTheClosureAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
 	tx := prefixFixture(t)
-	ctx := context.Background()
 	_, publicDocument := createReferenceArtifact(t, tx, "", "CORE", "public-md")
 	_, privateDocument := createReferenceArtifact(t, tx, "", "CORE", "private-md")
 	publicComment := createReferenceComment(t, tx, "CORE-1")
@@ -62,15 +71,7 @@ func TestTheClosureAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 	reserveForAuthor(t, tx, "comment", privateComment)
 	reserveForAuthor(t, tx, "artifact", privateDocument)
 
-	closure := func(who model.Actor) []Member {
-		t.Helper()
-		members, _, err := Closure(ctx, tx, who, "CORE-1")
-		if err != nil {
-			t.Fatalf("read the closure as %s: %v", who.ID, err)
-		}
-		return members
-	}
-	if got := closure(privateReader); len(got) != 0 {
+	if got := closureOf(t, tx, privateReader); len(got) != 0 {
 		t.Errorf("another person's closure = %#v; want no member, since one link is the private comment's and the other reaches the private document", got)
 	}
 	want := []Member{
@@ -78,7 +79,30 @@ func TestTheClosureAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 		{RefKey: publicDocument, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: privateComment}},
 	}
 	sort.Slice(want, func(left, right int) bool { return want[left].RefKey < want[right].RefKey })
-	if got := closure(privateAuthor); !reflect.DeepEqual(got, want) {
+	if got := closureOf(t, tx, privateAuthor); !reflect.DeepEqual(got, want) {
+		t.Errorf("the author's closure = %#v; want %#v", got, want)
+	}
+}
+
+// The closure reads its second hop under the same visibility as its first. An issue comment links
+// a public document A, and A links a document B reserved for its author. Another person's closure
+// is A alone, at depth 1 through the comment, and nothing of B. Its author's is A at depth 1 and
+// B at depth 2 through A.
+func TestTheClosureAnswersADocumentReservedForItsAuthorTwoHopsAwayToThatAuthorAlone(t *testing.T) {
+	tx := prefixFixture(t)
+	publicDocument, publicDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "public-md")
+	_, privateDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "private-md")
+	comment := createReferenceComment(t, tx, "CORE-1")
+	insertReference(t, tx, "comment", comment, "artifact", publicDocumentKey)
+	insertReference(t, tx, "artifact", publicDocument, "artifact", privateDocumentKey)
+	reserveForAuthor(t, tx, "artifact", privateDocumentKey)
+
+	firstHop := Member{RefKey: publicDocumentKey, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}
+	if got, want := closureOf(t, tx, privateReader), []Member{firstHop}; !reflect.DeepEqual(got, want) {
+		t.Errorf("another person's closure = %#v; want %#v, without the private document %s", got, want, privateDocumentKey)
+	}
+	want := []Member{firstHop, {RefKey: privateDocumentKey, Depth: 2, Via: model.ReferenceVia{Kind: "artifact", ID: publicDocument}}}
+	if got := closureOf(t, tx, privateAuthor); !reflect.DeepEqual(got, want) {
 		t.Errorf("the author's closure = %#v; want %#v", got, want)
 	}
 }
@@ -411,15 +435,19 @@ func TestReplyBlocksAnswerANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 	}
 }
 
-// A private issue is no descendant another person reads, and neither is an issue under it. Its
-// author reads both.
+// A private issue is no descendant another person reads at any depth, and neither is an issue
+// under it; its author reads them all. CORE-2, a child of CORE-1, holds the walk's first step to
+// that, and CORE-5, under the public CORE-4, holds every step below the first.
 func TestIssueDescendantsAnswerANodeReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
 	tx := prefixFixture(t)
 	ctx := context.Background()
 	for _, issue := range []struct {
 		key, parent string
 		number      int
-	}{{"CORE-2", "CORE-1", 2}, {"CORE-3", "CORE-2", 3}} {
+	}{
+		{"CORE-2", "CORE-1", 2}, {"CORE-3", "CORE-2", 3},
+		{"CORE-4", "CORE-1", 4}, {"CORE-5", "CORE-4", 5}, {"CORE-6", "CORE-5", 6},
+	} {
 		if _, err := tx.Exec(ctx, `
 			insert into issues (key, project_key, number, title, created_by, rank, parent_key)
 			values ($1, 'CORE', $2, 'A child', '{"kind":"user","id":"alice"}', 'U', $3)
@@ -428,11 +456,15 @@ func TestIssueDescendantsAnswerANodeReservedForItsAuthorToThatAuthorAlone(t *tes
 		}
 	}
 	reserveForAuthor(t, tx, "issue", "CORE-2")
+	reserveForAuthor(t, tx, "issue", "CORE-5")
 
 	for _, read := range []struct {
 		who  model.Actor
 		want []string
-	}{{privateReader, []string{}}, {privateAuthor, []string{"CORE-2", "CORE-3"}}} {
+	}{
+		{privateReader, []string{"CORE-4"}},
+		{privateAuthor, []string{"CORE-2", "CORE-3", "CORE-4", "CORE-5", "CORE-6"}},
+	} {
 		got, err := IssueDescendants(ctx, tx, read.who, "CORE-1")
 		if err != nil {
 			t.Fatalf("read the descendants of CORE-1 as %s: %v", read.who.ID, err)

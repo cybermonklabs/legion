@@ -77,10 +77,9 @@ func TestAnAppendPastOneStatementLandsInTheOrderOfOne(t *testing.T) {
 				nodes, relations, values := write(document, NoEvent)
 				held := PlanUncaused(nodes, slices.Concat(relations, values))
 				return func(b *store.WriteBatch) error {
-					if err := QueueNodes(b, held); err != nil {
-						return err
-					}
-					return QueueCaused(b, held, cause)
+					QueueNodes(b, held)
+					QueueCaused(b, held, cause)
+					return nil
 				}, slices.Concat(stated(relations), stated(values), based(nodes))
 			},
 		},
@@ -90,7 +89,8 @@ func TestAnAppendPastOneStatementLandsInTheOrderOfOne(t *testing.T) {
 			write: func(document string) (func(*store.WriteBatch) error, []string) {
 				nodes, relations, values := write(document, cause)
 				return func(b *store.WriteBatch) error {
-					return QueueWrite(b, nodes, slices.Concat(relations, values))
+					QueueWrite(b, nodes, slices.Concat(relations, values))
+					return nil
 				}, slices.Concat(stated(relations), based(nodes), stated(values))
 			},
 		},

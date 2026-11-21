@@ -542,7 +542,7 @@ export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
  *  and the `visual-phone` project runs. Derived from the layer each entry carries, as
  *  `shotRoutes` is, so a page joins this set by saying so in its own row.
  *
- *  A phone width is one under 768 px (`packages/dispatch/AGENTS.md`, "Phone acceptance"), where
+ *  A phone width is one under 768 px (`packages/dispatch/README.md`, "Projects"), where
  *  the shell hides the sidebar behind the navigation drawer and shows the compact top bar. That
  *  alone changes every page, so the entries that carry `shoot-phone` are those whose own content
  *  the width rearranges rather than only its frame: the Inbox becomes the compact row list with

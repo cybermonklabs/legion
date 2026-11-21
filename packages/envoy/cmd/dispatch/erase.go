@@ -26,10 +26,12 @@ import (
 // markdown holds the erased text and each approval over it by its issue and its version, its
 // embedding rows, each event row about it by its id, its document's history - and every row it
 // would leave, which holds the same bytes and derives from another node, by its table and key.
-// It prints that listing with its digest and exits 1. Run with --confirm <digest> it reads the
-// listing again in its own transaction, under its locks, and removes what it lists only when that
-// listing has the digest it was given, recording what went into `graph_erasures` with no erased
-// text in the row; a listing that changed since is refused with both digests, removing nothing.
+// It prints that listing with its digest and exits 1. Run with --confirm <digest> it first
+// searches again for the rows it would leave, in a read-only transaction of its own that takes no
+// lock, then reads the rest of the listing again in its own transaction, under its locks, and
+// removes what it lists only when that listing has the digest it was given, recording what went
+// into `graph_erasures` with no erased text in the row; a listing that changed since is refused
+// with both digests, removing nothing.
 //
 // The exit convention is the census's: 0 when it erased, 1 when it refused and said why (no
 // --confirm, a digest that is not the listing's, a row of another node that states something
