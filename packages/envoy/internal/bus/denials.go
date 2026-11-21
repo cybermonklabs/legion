@@ -155,9 +155,14 @@ func (c *Client) deniedPublishOf(subjects []string, sentAt time.Time) error {
 // deniedPublishMatching is the server's refusal of the caller's own publish to a subject matches
 // accepts, recorded at or after sentAt (deniedPublish), and nil when none is: the read of a send
 // whose subject holds a part nats.go picks as it sends, which the caller cannot name and so
-// describes, such as the name of a watch's consumer (watchCreate.matches). matches accepts only a
-// subject whose refusal the caller's own publish would meet too, since the refusal this takes is
-// then gone from the record of the send that earned it.
+// describes, such as the name of a watch's consumer (watchCreate.matches). matches should accept
+// only a subject whose refusal the caller's own publish would meet too, since the refusal this
+// takes is then gone from the record of the send that earned it. watchCreate.matches has one
+// exception: a grant that refuses one consumer by name refuses only that consumer's create, so its
+// refusal can answer a watch of the same shape whose own create the grant allows, and takes the
+// refusal from the send that earned it. That needs a named consumer on a bucket's KV_ stream, and
+// this module creates none: every named consumer it creates is on Stream (the listener's durable,
+// the session consumers, Dispatch's delivery and job durables), whose creates no watch matches.
 func (c *Client) deniedPublishMatching(matches func(subject string) bool, sentAt time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
