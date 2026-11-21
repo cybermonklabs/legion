@@ -420,7 +420,7 @@ type Client struct {
 // subscriptions on reconnect by itself, so it needs none of Client's recovery, and it touches no
 // stream. It refuses a NATS server that is not this machine's on the same terms as Connect,
 // reading ENVOY_ALLOW_REMOTE_NATS from environment too, which answers as os.LookupEnv does
-// (WithEnvironment).
+// (WithEnvironment), and a server URL nats.go would read other than as written (checkedNATSURLs).
 //
 // It takes the DialOptions: WithConnectInBackground, which returns the connection before it has
 // connected (a core subscription made on it before then is sent once it connects),
@@ -430,6 +430,10 @@ type Client struct {
 // this codebase owns, ConnectOwningStream.
 func Dial(name string, urls []string, environment func(string) (string, bool), options ...DialOption) (*nats.Conn, error) {
 	opts := parseConnectOptions(options)
+	urls, err := checkedNATSURLs(urls)
+	if err != nil {
+		return nil, err
+	}
 	if err := refuseRemoteNATS(urls, environment); err != nil {
 		return nil, err
 	}
@@ -464,7 +468,8 @@ func Dial(name string, urls []string, environment func(string) (string, bool), o
 // Every client, from Connect or ConnectOwningStream, connects as the NATS user the environment
 // names: an nkey seed (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED) or a service's platform token
 // (NATS_SERVICE_TOKEN_FILE or NATS_SERVICE_GOOGLE_AUDIENCE; credential). An unusable one is an error
-// before any dial; none set connects without a credential. It connects through the
+// before any dial, and so is a server URL nats.go would read other than as written
+// (checkedNATSURLs); none set connects without a credential. It connects through the
 // SOCKS5 proxy the environment names (ENVOY_NATS_SOCKS5_PROXY, socks5Proxy), or directly when it
 // names none. Every connection the client dials later, to recover, is the same user's, through
 // the same proxy.
@@ -502,6 +507,10 @@ func ConnectOwningStream(urls []string, options ...ConnectOption) (*Client, erro
 // first connection's reconnect hook once its ensure has succeeded (startKeeperOnce), so its
 // keeper runs no pass before that ensure.
 func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error) {
+	urls, err := checkedNATSURLs(urls)
+	if err != nil {
+		return nil, err
+	}
 	if err := refuseRemoteNATS(urls, opts.environment); err != nil {
 		return nil, err
 	}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -160,6 +161,17 @@ func writeConfigFile(t *testing.T, body string) string {
 		t.Fatalf("write config file: %v", err)
 	}
 	return path
+}
+
+// withNATSPassword is a nats_urls line holding before and then a URL at host whose user legion has
+// password, a made-up value, built here so that no source line holds a URL with a password.
+func withNATSPassword(password, host string, before ...string) string {
+	last := "nats://legion:" + password + "@" + host
+	quoted := make([]string, 0, len(before)+1)
+	for _, entry := range append(before, last) {
+		quoted = append(quoted, fmt.Sprintf("%q", entry))
+	}
+	return "nats_urls: [" + strings.Join(quoted, ", ") + "]\n"
 }
 
 func noEnv(string) string { return "" }
@@ -1019,6 +1031,34 @@ func TestEndpointURLKeepsAPath(t *testing.T) {
 	}
 }
 
+// The nats_urls lists the unquoted-item and mixing rules leave alone load: a quoted item and a
+// block list carrying a user name (neither is split at a comma), an all-ws and an all-nats list, and
+// the quoted password a withNATSPassword row writes.
+func TestNatsURLsThatLoad(t *testing.T) {
+	for _, tc := range []struct {
+		name, line string
+		want       []string
+	}{
+		{"a quoted item with a user name", `nats_urls: ["nats://127.0.0.1:4222", "nats://madeUpNatsUser@127.0.0.1:4223"]` + "\n",
+			[]string{"nats://127.0.0.1:4222", "nats://madeUpNatsUser@127.0.0.1:4223"}},
+		{"a block list with a user name", "nats_urls:\n  - nats://127.0.0.1:4222\n  - nats://madeUpNatsUser@127.0.0.1:4223\n",
+			[]string{"nats://127.0.0.1:4222", "nats://madeUpNatsUser@127.0.0.1:4223"}},
+		{"an all-ws list", "nats_urls: [ws://127.0.0.1:8080, wss://127.0.0.1:8443]\n", []string{"ws://127.0.0.1:8080", "wss://127.0.0.1:8443"}},
+		{"an all-nats list", "nats_urls: [nats://127.0.0.1:4222, tls://127.0.0.1:4223]\n", []string{"nats://127.0.0.1:4222", "tls://127.0.0.1:4223"}},
+		{"a quoted password", withNATSPassword("madeUpNatsPassword", "127.0.0.1:4222"), []string{"nats://legion:madeUpNatsPassword" + "@127.0.0.1:4222"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(writeConfigFile(t, strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n", tc.line, 1)), noEnv)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if !slices.Equal(cfg.NatsURLs, tc.want) {
+				t.Fatalf("NatsURLs = %q, want %q", cfg.NatsURLs, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadRefuses(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1091,17 +1131,114 @@ func TestLoadRefuses(t *testing.T) {
 			body: minimalFile + "daemon_url: http://127.0.0.1:13370/?x=1\n",
 			want: "daemon_url must not include a query string or fragment",
 		},
+		// Every refusal of a nats_urls entry names it by its position alone, never by any of its
+		// text: a query can hold a token, and a credential holding a "/", "?", "#", space or comma
+		// ends url.Parse's authority early or is no userinfo it reads, so its password's head reads
+		// as the port, a token written as the user parses with its head as the host, and nothing
+		// that removes a URL's userinfo finds the credential to cut.
 		{
 			name: "nats_urls entry with a query string",
 			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
-				`nats_urls: ["nats://127.0.0.1:4222?token=token"]`+"\n", 1),
-			want: `nats_urls entry "nats://127.0.0.1:4222?token=token" must not include a query string or fragment; use URL userinfo or a secret for credentials`,
+				`nats_urls: ["nats://127.0.0.1:4222?token=madeUpNatsQueryToken"]`+"\n", 1),
+			want: `nats_urls entry 1 must not include a query string or fragment; use URL userinfo or a secret for credentials`,
 		},
 		{
 			name: "nats_urls entry with a fragment",
 			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
 				`nats_urls: ["nats://127.0.0.1:4222#fragment"]`+"\n", 1),
-			want: `nats_urls entry "nats://127.0.0.1:4222#fragment" must not include a query string or fragment; use URL userinfo or a secret for credentials`,
+			want: `nats_urls entry 1 must not include a query string or fragment; use URL userinfo or a secret for credentials`,
+		},
+		{
+			name: "nats_urls entry whose password holds a /, second in the list",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword/abc", "127.0.0.1:4222", "nats://127.0.0.1:4222"), 1),
+			want: `nats_urls entry 2 must be a valid URL`,
+		},
+		{
+			name: "nats_urls entry whose password holds a ?",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword?abc", "127.0.0.1:4222"), 1),
+			want: `nats_urls entry 1 must be a valid URL`,
+		},
+		{
+			name: "nats_urls entry whose password holds a #",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword#abc", "127.0.0.1:4222"), 1),
+			want: `nats_urls entry 1 must be a valid URL`,
+		},
+		{
+			name: "nats_urls entry whose password holds a space",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword abc", "127.0.0.1:4222"), 1),
+			want: `nats_urls entry 1 must be a valid URL`,
+		},
+		{
+			name: "nats_urls entry whose password holds a comma",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword,abc", "127.0.0.1:4222"), 1),
+			want: `nats_urls entry 1 cannot be read: it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`,
+		},
+		{
+			// Two servers in one entry: before, the entry loaded and the NATS client split it, and it
+			// is refused with the comma's reason, which says how to list them.
+			name: "nats_urls entry that lists two servers",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:4222,nats://127.0.0.1:4223"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`,
+		},
+		{
+			// Two servers with a space after the comma, which endpointURL alone refuses as no valid
+			// URL: the comma is tested first, so the reason still says how to list them.
+			name: "nats_urls entry that lists two servers with a space after the comma",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:4222, nats://127.0.0.1:4223"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`,
+		},
+		{
+			// An unquoted flow list splits a credential at its comma into two entries before any
+			// entry holds a comma, the made-up token's head the first entry's host. The second,
+			// unquoted and carrying a user name, is refused by position, whatever its scheme.
+			name: "nats_urls unquoted list that splits a credential at its comma",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				"nats_urls: [nats://madeUpNatsTokenHead,nats://madeUpNatsTokenTail@127.0.0.1:4222]\n", 1),
+			want: `nats_urls entry 2 carries a user name or password in an unquoted [...] list item; quote it, or write the list as a block list`,
+		},
+		{
+			name: "nats_urls unquoted list that splits a credential at its comma, a foreign scheme after it",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				"nats_urls: [nats://madeUpNatsTokenHead,x://madeUpNatsTokenTail@127.0.0.1:4222]\n", 1),
+			want: `nats_urls entry 2 carries a user name or password in an unquoted [...] list item; quote it, or write the list as a block list`,
+		},
+		{
+			// Quoted, the same two entries pass the unquoted-item rule; the list's tail rule still
+			// refuses the second for its scheme.
+			name: "nats_urls quoted list whose later entry carries a user name and a foreign scheme",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://madeUpNatsTokenHead", "x://madeUpNatsTokenTail@127.0.0.1:4222"]`+"\n", 1),
+			want: `nats_urls entry 2 cannot be read: it carries a user name or password and names none of the schemes nats, tls, ws and wss, as the part after a comma in a credential does once the list is split on its commas; in a nats or tls list such a URL connected before, but a credential split there has its head dialled and printed as a host: name the URL's scheme, and write a comma in a credential percent-encoded (%2C)`,
+		},
+		{
+			// The NATS client refuses a list that mixes websocket and other servers at boot; the
+			// loader refuses it first, by position.
+			name: "nats_urls list that mixes nats and ws",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:4222", "ws://127.0.0.1:8080"]`+"\n", 1),
+			want: `nats_urls entry 2 cannot be read: the list mixes websocket (ws, wss) and other (nats, tls) schemes, which the NATS client refuses; list servers of one kind`,
+		},
+		{
+			// A websocket entry whose path stops parsing once decoded, as the NATS client's handshake
+			// decodes it: it loaded before and the daemon's connect then refused it; the loader now
+			// refuses it with natsurl's reason.
+			name: "nats_urls websocket entry whose path stops parsing once decoded",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["ws://127.0.0.1:4222/%25zz"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: its path does not parse once decoded, as the NATS client's websocket handshake decodes it; write a "%" in its path as %2525`,
+		},
+		{
+			name: "nats_urls entry naming a token that holds a / as its user",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://madeUpNatsToken/abc@127.0.0.1:4222"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`,
 		},
 		{
 			name: "envoy_url with a query string",
@@ -1239,7 +1376,7 @@ func TestLoadRefuses(t *testing.T) {
 		{
 			name: "nats_urls holding something that is not a URL",
 			body: minimalFile + "nats_urls: [nats://127.0.0.1:4222, nats-host]\n",
-			want: `nats_urls entry "nats-host" must be a valid URL`,
+			want: `nats_urls entry 2 must be a valid URL`,
 		},
 		{
 			name: "envoy_token_file blank",
@@ -1276,15 +1413,36 @@ func TestLoadRefuses(t *testing.T) {
 			body: minimalFile + "provider_keys: GEMINI_API_KEY_TESTS\n",
 			want: "provider_keys must be a mapping of the variable OMP reads to the key that holds it (a secretsd key, or file:/abs/path under runtime tmux; under runtime kubernetes, a key of the providers Secret), e.g. {GEMINI_API_KEY: GEMINI_API_KEY_TESTS}",
 		},
+		// A refusal of a provider key's variable or value names its entry by position, or by the
+		// variable it is for, never its text: what is refused can be the provider's key itself,
+		// pasted where a name goes, and `legion stop` prints this error as it is.
 		{
 			name: "provider_keys with a variable that is not a variable name",
-			body: minimalFile + "provider_keys: {1PASSWORD: ONEPASSWORD_TESTS}\n",
-			want: `provider_keys key "1PASSWORD" (the variable OMP reads) must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+			body: minimalFile + "provider_keys: {GEMINI_API_KEY: GEMINI_API_KEY_TESTS, 1PASSWORD: ONEPASSWORD_TESTS}\n",
+			want: `provider_keys entry 2: its key (the variable OMP reads) must be an upper-case environment variable name (upper-case letters, digits, and underscores, not starting with a digit)`,
+		},
+		{
+			name: "provider_keys with a provider's key pasted where the variable goes",
+			body: minimalFile + "provider_keys: {\"madeUp-provider-key-0123456789abcdef\": GEMINI_API_KEY_TESTS}\n",
+			want: `provider_keys entry 1: its key (the variable OMP reads) must be an upper-case environment variable name (upper-case letters, digits, and underscores, not starting with a digit)`,
+		},
+		{
+			// A key made only of letters, digits and underscores, which a shell takes as a variable
+			// name: it would become the entry's name in every line about it, so it is refused for its
+			// lowercase letters.
+			name: "provider_keys with a name-shaped provider's key pasted where the variable goes",
+			body: minimalFile + "provider_keys: {GEMINI_API_KEY: GEMINI_API_KEY_TESTS, MadeUpProviderKey0123456789abcdefXYZ: OPENAI_API_KEY_TESTS}\n",
+			want: `provider_keys entry 2: its key (the variable OMP reads) must be an upper-case environment variable name (upper-case letters, digits, and underscores, not starting with a digit)`,
 		},
 		{
 			name: "provider_keys with a command where the secretsd key goes",
 			body: minimalFile + "provider_keys: {GEMINI_API_KEY: \"secrets get GEMINI_API_KEY_TESTS\"}\n",
-			want: `provider_keys value "secrets get GEMINI_API_KEY_TESTS" for GEMINI_API_KEY (the key that holds it) must be an environment variable name (letters, digits, and underscores, not starting with a digit), or file: and an absolute path`,
+			want: `provider_keys value for GEMINI_API_KEY (the key that holds it) must be an environment variable name (letters, digits, and underscores, not starting with a digit), or file: and an absolute path`,
+		},
+		{
+			name: "provider_keys with a provider's key pasted where the secretsd key goes",
+			body: minimalFile + "provider_keys: {GEMINI_API_KEY: \"madeUp-provider-key-0123456789abcdef\"}\n",
+			want: `provider_keys value for GEMINI_API_KEY (the key that holds it) must be an environment variable name (letters, digits, and underscores, not starting with a digit), or file: and an absolute path`,
 		},
 		{
 			name: "provider_keys naming a file by a relative path",

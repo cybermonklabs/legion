@@ -295,7 +295,7 @@ func TestTheTmuxSettingsShowTheTakeOver(t *testing.T) {
 var settingsFixturePlanted = []string{
 	"BEGIN", "PRIVATE KEY",
 	"postgres://", "fixture-dsn-password",
-	"legion:fixture-", "fixture-envoy-password", "fixture-nats-password",
+	"legion:fixture-", "fixture-envoy-password", "fixture-nats-user",
 	"legion:fixture-plugin-", "fixture-plugin-password", "fixture-plugin-token",
 	"/var/run/legion/OPERATOR_TOKEN", "/var/run/legion/ENVOY_TOKEN", "/var/run/legion/NATS_NKEY_SEED",
 	"/var/run/legion/NATS_DAEMON_NKEY_SEED", "/var/run/legion/DISPATCH_TOKEN", "/var/run/secrets/agent-secrets/token",

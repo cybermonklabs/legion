@@ -2342,7 +2342,10 @@ func checkPodReachable(cfg Config) error {
 		default:
 			continue
 		}
-		return fmt.Errorf("%s %s %s; name the host pods reach it at when runtime is kubernetes", address.key, address.value, why)
+		// By its scheme and host alone: the refusal is about the host, and the URL's userinfo is
+		// where these keys take a credential, which `legion stop` prints this error with.
+		named := (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host}).String()
+		return fmt.Errorf("%s %s %s; name the host pods reach it at when runtime is kubernetes", address.key, named, why)
 	}
 	return nil
 }

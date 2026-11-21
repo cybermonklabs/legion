@@ -100,6 +100,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/sessiontiming/*'
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
+  - 'packages/envoy/natsurl/*'
   - 'packages/envoy/testnatsimages/*'
   - 'packages/envoy/steprecord/*'
 dispatch_server: &dispatch_server
@@ -189,6 +190,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/migrationid/*'
   - 'packages/envoy/roleholder/*'
   - 'packages/envoy/natsversion/*'
+  - 'packages/envoy/natsurl/*'
 legion_command: &legion_command
   - 'packages/daemon/cmd/legion/*'
   - 'packages/daemon/internal/admit/*'
@@ -284,6 +286,7 @@ legion_command: &legion_command
   # why: .github/ci-notes/ci.md#legion_command-the-one-public-door-onto-the-generated-envoy-session
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
+  - 'packages/envoy/natsurl/*'
   - 'packages/envoy/steprecord/*'
 listener_command: &listener_command
   - 'packages/envoy/cmd/listener/*'
@@ -321,6 +324,7 @@ listener_command: &listener_command
   - 'packages/envoy/listenfd/*'
   - 'packages/envoy/roleholder/*'
   - 'packages/envoy/natsversion/*'
+  - 'packages/envoy/natsurl/*'
 jj_install: &jj_install
   - '.github/actions/install-jj/**'
   - 'packages/daemon/docker/worker.Dockerfile'
@@ -427,6 +431,7 @@ plugin_pack:
   - 'packages/envoy/sessiontiming/*'
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
+  - 'packages/envoy/natsurl/*'
   - 'packages/envoy/steprecord/*'
   - 'packages/envoy/testnatsimages/*'
   - 'packages/contracts/**'
@@ -1073,6 +1078,7 @@ test:
   - '!packages/envoy/listenerwire/**/*_test.go'
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -1241,6 +1247,7 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/migrationid/*'
   - 'packages/envoy/roleholder/*'
   - 'packages/envoy/natsversion/*'
+  - 'packages/envoy/natsurl/*'
   - 'packages/envoy/internal/cipher/wire/*'
   - 'packages/envoy/infra/gcp/testdata/dispatch-pod.golden'
 test_fixtures:
@@ -1373,6 +1380,7 @@ pi_legion:
   - 'packages/envoy/sessiontiming/*'
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
+  - 'packages/envoy/natsurl/*'
   - 'packages/envoy/steprecord/*'
   - *go_workspace
   - 'AGENTS.md'
@@ -1633,6 +1641,7 @@ envoy_infra_go:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
+  - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -1790,6 +1799,7 @@ dispatch_memory:
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -1828,6 +1838,7 @@ dispatch_multiprocess:
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -1920,6 +1931,7 @@ dispatch_two_builds_go:
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -2015,6 +2027,7 @@ dispatch_two_builds:
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -2110,6 +2123,7 @@ listener_server_change:
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -2159,6 +2173,7 @@ broker_multiprocess:
   - 'packages/envoy/natscred/*'
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/natsversion/*'
+  - 'packages/envoy/natsurl/*'
   - 'packages/envoy/internal/cipher/wire/*'
   - 'packages/envoy/internal/cipherclient/**'
   - 'packages/envoy/internal/ciphertoken/*'
@@ -2201,6 +2216,7 @@ broker_multiprocess:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
+  - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#airlock_lean-the-lean-model-of-the-airlock-and-the-go-code-it-covers
@@ -2329,6 +2345,7 @@ envoy_smoke:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
+  - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
@@ -2424,6 +2441,7 @@ worker_image:
   - 'packages/envoy/sessiontiming/**'
   - 'packages/envoy/subjectforms/**'
   - 'packages/envoy/natsversion/**'
+  - 'packages/envoy/natsurl/**'
   - 'packages/envoy/steprecord/**'
   - 'packages/envoy/testnatsimages/**'
   - '.omp-pin'
@@ -2721,6 +2739,7 @@ envoy_go_race:
   - '!packages/envoy/loadtest/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
+  - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
@@ -2860,6 +2879,7 @@ envoy_go_race_api:
   - 'packages/envoy/migrationid/*'
   - 'packages/envoy/roleholder/*'
   - 'packages/envoy/natsversion/*'
+  - 'packages/envoy/natsurl/*'
   - 'packages/envoy/internal/cipher/wire/*'
   - 'packages/contracts/schemas/dispatch-openapi.json'
   - 'packages/contracts/fixtures/live/**'
@@ -2954,6 +2974,7 @@ envoy_go_race_api:
   - '!packages/envoy/listenerwire/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -3073,6 +3094,7 @@ envoy_go_claim_model:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
+  - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'

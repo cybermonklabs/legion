@@ -24,6 +24,9 @@ func TestNATSURLWithoutUserinfo(t *testing.T) {
 		{"127.0.0.1:4222", "127.0.0.1:4222"},
 		{"nats://user:secret@host:4222/%zz", "host:4222/%zz"},
 		{"nats://user:secret@host:4222/a@b", "b"},
+		{"nats://127.0.0.1:4222/%zz?token=marker-7#marker-8", "nats://127.0.0.1:4222/%zz"},
+		{"wss://user:secret@host:443/nats?token=marker-9#marker-10", "wss://host:443/nats"},
+		{"nats://user:secret@host:4222/%zz?token=marker-11", "host:4222/%zz"},
 	} {
 		if got := natsURLWithoutUserinfo(tc.raw); got != tc.want {
 			t.Errorf("natsURLWithoutUserinfo(%q) = %q, want %q", tc.raw, got, tc.want)

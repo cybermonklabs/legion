@@ -1285,6 +1285,18 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			body: kubernetesWith("nats_urls: [nats://nats.internal.example:4222]", "nats_urls: [nats://nats.internal.example:4222, nats://127.0.0.2:4222]"),
 			want: "nats_urls nats://127.0.0.2:4222 names a loopback host, which in a pod is the pod itself; name the host pods reach it at when runtime is kubernetes",
 		},
+		// The refusal names the URL by its scheme and host: its userinfo is where these keys take a
+		// credential, and `legion stop` prints this error as it is.
+		{
+			name: "a nats_urls entry on loopback with a password",
+			body: kubernetesWith("nats_urls: [nats://nats.internal.example:4222]\n", withNATSPassword("madeUpNatsPassword", "127.0.0.2:4222")),
+			want: "nats_urls nats://127.0.0.2:4222 names a loopback host, which in a pod is the pod itself; name the host pods reach it at when runtime is kubernetes",
+		},
+		{
+			name: "envoy_url on loopback with a token as its user",
+			body: kubernetesWith("envoy_url: http://envoy-listener.internal.example:9020", "envoy_url: http://madeUpEnvoyToken@127.0.0.1:9020"),
+			want: "envoy_url http://127.0.0.1:9020 names a loopback host, which in a pod is the pod itself; name the host pods reach it at when runtime is kubernetes",
+		},
 		{
 			name: "dispatch_url on loopback",
 			body: kubernetesWith("dispatch_url: https://dispatch.internal.example", "dispatch_url: http://127.0.0.1:8080"),

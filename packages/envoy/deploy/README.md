@@ -217,7 +217,7 @@ to its clients as `PGPASSWORD` alone. `compose/dispatch.env.example`'s URL is in
 | Var | Required | Notes |
 | --- | --- | --- |
 | `ENVOY_MACHINE_ID` | yes | Logical machine name used in published metadata. |
-| `NATS_URLS` | yes | Comma-separated NATS URLs. |
+| `NATS_URLS` | yes | Comma-separated NATS URLs. A URL after the first that carries a user name or password names its scheme (`nats://`, `tls://`, `ws://` or `wss://`), and a comma in a credential is written `%2C`; otherwise the start refuses the list, naming the URL by its position. |
 | `ENVOY_ALLOW_REMOTE_NATS` | yes, for a shared NATS | Set to `1` to reach a NATS that is not this host's own. The listener owns the `ENVOY_NOTIFICATIONS` stream, so every start reconciles it; without this the start refuses a non-loopback `NATS_URLS`, naming the URL. `compose/listener.compose.yml` sets it. |
 | `NATS_NKEY_SEED_FILE` | no | A file holding the NATS nkey user seed this process connects as (trimmed); wins over `NATS_NKEY_SEED`. A set but empty, missing, unreadable, blank or non-user-seed value refuses startup naming the variable and path. Neither set connects without a credential. |
 | `NATS_NKEY_SEED` | no | The NATS nkey user seed itself, when `NATS_NKEY_SEED_FILE` is unset. |
@@ -293,7 +293,7 @@ The Dispatch service reads its public browser origin and NATS URLs from
 | --- | --- | --- |
 | `DATABASE_URL` | yes | The external Dispatch Postgres URL (production: the Aurora `dispatch` database), as `postgres://<user>:<password>@<host>:<port>/<database>?sslmode=require`, with the password percent-encoded. The auto-deployer accepts only that form, with `connect_timeout` and `application_name` the other query keys it allows, and refuses any other (Auto-deployer, above). The compose runs no Postgres of its own. |
 | `DISPATCH_SERVER_URL` | yes | Public browser origin and sign-in callback origin. It must be the URL humans type into their browser; Dispatch's client at the sign-in issuer (the sign-in pool's app client, or the Google web client) must list `<DISPATCH_SERVER_URL>/auth/callback`. |
-| `NATS_URLS` | yes | Comma-separated NATS URLs for Dispatch. |
+| `NATS_URLS` | yes | Comma-separated NATS URLs for Dispatch. A URL after the first that carries a user name or password names its scheme (`nats://`, `tls://`, `ws://` or `wss://`), and a comma in a credential is written `%2C`; otherwise the start refuses the list, naming the URL by its position. |
 | `ENVOY_ALLOW_REMOTE_NATS` | yes, for a shared NATS | Set to `1` to reach a NATS that is not this host's own. The server owns the `ENVOY_NOTIFICATIONS` stream, so it reconciles it on its first connection; without this the start refuses a non-loopback NATS, naming the URL. `compose/dispatch.compose.yml` sets it. |
 | `NATS_NKEY_SEED_FILE` | no | A file holding the NATS nkey user seed this process connects as (trimmed); wins over `NATS_NKEY_SEED`. A set but empty, missing, unreadable, blank or non-user-seed value refuses startup naming the variable and path. Neither set connects without a credential. |
 | `NATS_NKEY_SEED` | no | The NATS nkey user seed itself, when `NATS_NKEY_SEED_FILE` is unset. |
