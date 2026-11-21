@@ -632,6 +632,48 @@ test("References lists the issue's links and Referenced by the nodes that link t
   }
 });
 
+// An issue that links to nothing and that other nodes link to: `links` is empty and `linked_from`
+// holds a row. The section is collapsed by default, so what it shows before anyone opens it is all
+// a reader learns from a glance. A closed disclosure that reads "References (0)" over the only rows
+// the read gave hides them: nothing on the closed section says that a node links to the issue.
+test("an issue only other nodes link to shows Referenced by (1) before the section is opened", async () => {
+  const comment = "dddddddd-0000-4000-8000-000000000003";
+  const answer: IssueReferences = {
+    links: [],
+    linked_from: [
+      {
+        kinds: ["mentions"],
+        name: "This links to CORE-1.",
+        node: graphNode({
+          id: comment,
+          issue_key: "OPS-1",
+          kind: "comment",
+          project: "OPS",
+          ref: `dispatch://OPS-1/comment/${comment}`,
+        }),
+        via: { id: "CORE-1", kind: "issue" },
+      },
+    ],
+    members: [],
+    truncated: false,
+  };
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], answer);
+
+  try {
+    // Every element that names the count, kept where a reader sees it with the section closed:
+    // outside a closed <details>, or in that <details>' own <summary>.
+    const shown = (await screen.findAllByText(/Referenced by \(1\)/)).filter((element) => {
+      const closed = element.closest("details:not([open])");
+      return closed === null || (closed.querySelector("summary")?.contains(element) ?? false);
+    });
+    expect(shown).not.toHaveLength(0);
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
 test("a references read cut at its bound says References unavailable with a Retry that reads again", async () => {
   const user = userEvent.setup();
   const refusal =
