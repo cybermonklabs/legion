@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // proxiedLookup is a connect's environment that names the proxy at address.

@@ -22,7 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // healthzWithin is how long /healthz may take to answer a JetStream that stopped answering: its

@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // listenerRelay lets this test hold one NATS request from the listener, then drop the live link so

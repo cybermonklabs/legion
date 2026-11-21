@@ -27,8 +27,8 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // --- Unit Tests (no NATS needed — test Match() against pre-populated cache) ---

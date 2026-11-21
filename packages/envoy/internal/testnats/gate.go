@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // Gate is one TCP address a test holds for its whole life, which relays to srv while it is open

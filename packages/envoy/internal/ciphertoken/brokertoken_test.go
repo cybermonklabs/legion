@@ -21,7 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }

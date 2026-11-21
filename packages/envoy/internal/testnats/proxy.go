@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // Proxy relays a client's TCP connections to a NATS server, so a test can take one client off

@@ -16,7 +16,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // unansweredBucket is the bucket the handle-open rows below open a jetstream handle on, created

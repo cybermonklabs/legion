@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testport"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -527,28 +528,15 @@ func TestTheReadFollowsGitHubsRedirectAndHandsTheDownloadHostNoToken(t *testing.
 	}
 }
 
-// closedAddress is an address on 127.0.0.1 that nothing listens on: a port the test held and let
-// go, so a dial there is refused.
-func closedAddress(t *testing.T) string {
-	t.Helper()
-	held, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("hold a port: %v", err)
-	}
-	address := held.Addr().String()
-	if err := held.Close(); err != nil {
-		t.Fatalf("let the port go: %v", err)
-	}
-	return address
-}
-
 // GitHub answers a tarball read with a redirect to its download host, whose URL carries a token
 // of its own in its query, and a redirect can name a userinfo too. A read whose redirect leads to
 // a port nothing listens on fails, and Go's client writes the URL it last asked into that error:
 // its query whole, and its user name (it masks only a password). The read is refused with a cause
-// that names the failure and the URL's host and path, and holds no part of the credential.
+// that names the failure and the URL's host and path, and holds no part of the credential. The
+// port is one the test holds bound and never listening (testport.Refused), so no other program on
+// the machine can take it and answer the redirect, as one did a port the test had let go of.
 func TestAReadRedirectedWithAURLCredentialIsRefusedWithACauseThatHoldsNoneOfIt(t *testing.T) {
-	dead := closedAddress(t)
+	dead := testport.Refused(t)
 	const download = "/theorem-labs/agent-infra/legacy.tar.gz/refs/tags/" + theTag
 	for _, tc := range []struct {
 		name, redirect string

@@ -13,7 +13,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // A KV watcher's ordered consumer reports nats.ErrConsumerNotActive only while its connection is

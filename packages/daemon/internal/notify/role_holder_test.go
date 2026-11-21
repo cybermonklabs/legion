@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/sjawhar/envoy/testport"
 )
 
 // RoleHolder names every session the listener names as a role's holder, whatever state it gives
@@ -90,9 +92,9 @@ func TestRoleHolderNamesEveryHolderTheListenerNames(t *testing.T) {
 	}
 
 	t.Run("a listener it cannot reach", func(t *testing.T) {
-		server := httptest.NewServer(http.NotFoundHandler())
-		server.Close()
-		_, _, err := New(server.URL, "").RoleHolder(context.Background(), "legion-x")
+		// A port the test holds and nothing listens on: every dial is refused, and no other process
+		// can take the port and answer as a listener (testport.Refused).
+		_, _, err := New("http://"+testport.Refused(t), "").RoleHolder(context.Background(), "legion-x")
 		var lookup *RoleLookupRefused
 		if err == nil || errors.As(err, &lookup) {
 			t.Fatalf("RoleHolder of a closed listener = %v, want a plain error that asking again can clear", err)

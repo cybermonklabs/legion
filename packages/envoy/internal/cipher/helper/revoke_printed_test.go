@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // TestARevokeThatCannotReachTheBrokerPrintsNoID: the id of a revoke ends its request URL, and for
@@ -138,16 +139,11 @@ func TestNoLineMadeFromARevokesFailurePrintsItsID(t *testing.T) {
 	}
 }
 
-// closedBroker is the address of a port nothing listens on: a connection to it is refused.
+// closedBroker is the address of a port the test holds and nothing listens on (testport.Refused):
+// a connection to it is refused, and no other process can take the port and answer.
 func closedBroker(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	address := "http://" + listener.Addr().String()
-	listener.Close()
-	return address
+	return "http://" + testport.Refused(t)
 }
 
 // brokenHTTPBroker is the address of a server that answers every request with a status line HTTP

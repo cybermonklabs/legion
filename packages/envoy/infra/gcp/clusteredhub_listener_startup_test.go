@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/sjawhar/envoy/testport"
 )
 
 // listenerLoopback is the address the session listener's probes ask, on the pod's own loopback.
@@ -71,9 +73,9 @@ func TestClusteredNatsHubListenerStartupProbePassesOnlyOnTheSample(t *testing.T)
 		})
 	}
 	t.Run("no server", func(t *testing.T) {
-		server := httptest.NewServer(http.NotFoundHandler())
-		closed := server.URL
-		server.Close()
+		// A port the test holds and nothing listens on, so curl's dial is refused and no other
+		// process can take the port and answer the scrape (testport.Refused).
+		closed := "http://" + testport.Refused(t)
 		exit, stderr := runStartupScript(t, strings.ReplaceAll(script, listenerLoopback, closed))
 		require.Equal(t, 1, exit, "the script's exit with nothing listening at %s (stderr %q)", closed, stderr)
 	})
