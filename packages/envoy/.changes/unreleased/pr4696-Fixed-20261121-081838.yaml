@@ -4,18 +4,24 @@ body: |-
   endpoint's answer by its status alone: a 5xx, a 408 or a 429, whatever OAuth error its body
   names, and no answer at all are the issuer down, and every other answer is the issuer
   answering, whose OAuth error only names the reason. The broker's check of its sign-in client
-  reads `ready` and `client_rejected` only from a 4xx: an answer of 408, 429 or 5xx is now
-  `issuer_unreachable`. Before, such an answer naming `invalid_grant` read as `ready` and one
-  naming `invalid_client` as `client_rejected`, so the broker published a verdict on its client
-  from an issuer that could not answer. A sign-in's code exchange that meets the issuer down is
-  now the issuer being unavailable: Dispatch's callback answers it `503 SIGNIN_UNAVAILABLE` where
-  it answered 502, and the broker's approval page answers it 503 "Sign-in unavailable" where it
-  said the provider's answer did not verify, and writes `issuer_unreachable` as
-  `last_failed_sign_in_reason` where it wrote the error the body named, or nothing. Every other
-  answer, a 4xx with or without an OAuth error and a 2xx naming one, is a failed sign-in, answered
-  as before; the broker writes its error as the reason only when it names one of the four it
-  writes. The agent-secrets helper reads the broker's own answers the same way: a
-  login poll answered 408, 429 or 5xx naming `access_denied` or `expired_token` now polls again,
+  reads `ready` only from `invalid_grant` at a refusal's status (a 4xx that is no 408 or 429), and
+  `client_rejected` from every other refusal, whatever OAuth error it names or none: an answer of
+  408, 429 or 5xx is now `issuer_unreachable`, and so is a 2xx naming an error or a 3xx. Before,
+  a 429 or 5xx naming `invalid_grant` read as `ready` and one naming `invalid_client` as
+  `client_rejected`, so the broker published a verdict on its client from an issuer that could not
+  answer. A sign-in's code exchange that meets the issuer down is now the issuer being
+  unavailable: Dispatch's callback answers it `503 SIGNIN_UNAVAILABLE` where it answered 502, and
+  the broker's approval page answers it 503 "Sign-in unavailable" where it said the provider's
+  answer did not verify, and writes `issuer_unreachable` as `last_failed_sign_in_reason` where it
+  wrote the error the body named, or nothing. Every other answer, a 4xx with or without an OAuth
+  error, a 2xx naming one or holding no token and a 3xx, is a failed sign-in answered as before:
+  Dispatch's 502, and the broker's 403 page. The broker writes the error as the reason only when a
+  4xx names one of the four it writes; before, it also wrote one a 2xx named. A discovery document
+  whose `revocation_endpoint` is `null` now fails discovery, as one whose `revocation_endpoint` is
+  a number already did. The broker's approval page refuses a callback whose code is longer than
+  2048 bytes with 400 `SIGN_IN_CODE_INVALID`, and sends the provider no token request for it. The
+  agent-secrets helper reads the broker's own answers the same way: a login poll answered 408, 429
+  or 5xx naming `access_denied` or `expired_token` now polls again,
   where it recorded the login denied or expired, and a refresh of the machine login ends the login
   only on a 400 or 401 naming `invalid_grant`, as Dispatch's refresh ends a sign-in: one answered
   5xx naming `invalid_grant` now keeps the login and is retried, where it deleted the machine file.
