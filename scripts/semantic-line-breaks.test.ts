@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const SCRIPT = resolve(import.meta.dir, "semantic-line-breaks.ts");
 const REPO_ROOT = resolve(import.meta.dir, "..");
@@ -271,6 +271,21 @@ test("--write writes the files it can after one it refuses, and exits 2", async 
   expect(exitCode).toBe(2);
   expect(await readFile(refused, "utf8")).toBe("# One. Two\n");
   expect(await readFile(fixed, "utf8")).toBe("One.\nTwo.\n");
+});
+
+test("a path that cannot be read is named, and the files after it are still checked and written", async () => {
+  const first = await markdownFile("One. Two.\n");
+  const missing = join(dirname(first), "no-such-guide.md");
+  const last = await markdownFile("Three. Four.\n");
+  const checked = run([first, missing, last]);
+  expect(checked.stdout).toBe(`${first}:1: R1: One. Two.\n${last}:1: R1: Three. Four.\n`);
+  expect(checked.stderr).toContain(`${missing}: `);
+  expect(checked.exitCode).toBe(2);
+  const { exitCode, stderr } = run(["--write", first, missing, last]);
+  expect(stderr).toContain(`${missing}: `);
+  expect(exitCode).toBe(2);
+  expect(await readFile(first, "utf8")).toBe("One.\nTwo.\n");
+  expect(await readFile(last, "utf8")).toBe("Three.\nFour.\n");
 });
 
 for (const [shape, opening, message] of [

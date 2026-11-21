@@ -1251,16 +1251,20 @@ async function readText(path: string): Promise<string | undefined> {
   return bytes === undefined ? undefined : LENIENT_UTF8.decode(bytes);
 }
 
+/** Exit 1 when a file has a finding, and 2, which wins, when a file cannot be read. */
 async function checkFiles(paths: readonly string[]): Promise<number> {
   let status = 0;
   for (const path of paths) {
     const text = await readText(path);
-    if (text === undefined) return 2;
+    if (text === undefined) {
+      status = 2;
+      continue;
+    }
     const blocks = scanBlocks(splitLines(text).lines);
     warnVerbatim(path, blocks.verbatimFrom);
     for (const finding of check(text, blocks)) {
       process.stdout.write(`${path}:${finding.line + 1}: R${finding.rule}: ${finding.message}\n`);
-      status = 1;
+      status = Math.max(status, 1);
     }
   }
   return status;
@@ -1280,7 +1284,10 @@ async function writeFiles(paths: readonly string[]): Promise<number> {
   let status = 0;
   for (const path of paths) {
     const bytes = await readBytes(path);
-    if (bytes === undefined) return 2;
+    if (bytes === undefined) {
+      status = 2;
+      continue;
+    }
     let text: string;
     try {
       text = STRICT_UTF8.decode(bytes);
@@ -1321,7 +1328,8 @@ async function writeFiles(paths: readonly string[]): Promise<number> {
 // file's own. In both modes, a file whose verbatim element (`<pre>`, `<code>` and the like,
 // outside code) turns the checks off for the rest of the file gets one
 // `file:line: warning: <tag> opens a verbatim element; ...` line on stderr; it does not change the
-// exit code.
+// exit code. A path that cannot be read is named on stderr and makes the exit 2 in both modes; the
+// files after it are still checked or written.
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const write = args[0] === "--write";
