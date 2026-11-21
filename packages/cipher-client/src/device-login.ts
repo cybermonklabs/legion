@@ -55,6 +55,7 @@ import {
 import {
   DEVICE_LOGIN_FILE_NAMED,
   type DeviceLogin,
+  deviceLoginDirectory,
   KeptCopyError,
   lockLost,
   readDeviceLogin,
@@ -213,15 +214,18 @@ function page(uri: string, endpoint: string): string {
 
 /**
  * Runs `work` holding the device login's lock, `<path>.lock` (`device-login-lock.ts`, which
- * holds its protocol), and answers what it answers. `work` is handed `held`, which reads the lock
- * again and says whether it is still this call's: false once another caller took it from a holder
- * that was stopped. `signal` ends the wait for a lock another process holds, as `LockHeldError`.
+ * holds its protocol), and answers what it answers. It first makes the login's directory and
+ * refuses one another user could write to ({@link deviceLoginDirectory}), so no other user picks
+ * what the lock opens. `work` is handed `held`, which reads the lock again and says whether it is
+ * still this call's: false once another caller took it from a holder that was stopped. `signal`
+ * ends the wait for a lock another process holds, as `LockHeldError`.
  */
 export async function withDeviceLoginLock<T>(
   path: string,
   work: (held: () => Promise<boolean>) => Promise<T>,
   options: DeviceLoginLockOptions = {}
 ): Promise<T> {
+  await deviceLoginDirectory(path);
   return await withLoginLock(path, DEVICE_LOGIN_FILE_NAMED, work, options);
 }
 

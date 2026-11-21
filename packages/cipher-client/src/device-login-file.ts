@@ -6,10 +6,11 @@
 //
 // - The file is `AGENT_SECRETS_DEVICE_LOGIN_FILE`, else `~/.config/legion/device-login.json`,
 //   mode 0600 in a directory others cannot write to and this user owns.
-// - Only a regular file is read or replaced. A directory cannot be replaced by a rename, and a
-//   read of a named pipe that no process writes to never returns, so either at the file's path is
-//   refused before a code is asked for (`deviceLoginPlace`), and a read opens the path once
-//   without waiting and checks and reads that one open file (`readDeviceLogin`).
+// - Only a regular file is read or replaced, and only one of at most 64 KiB is read. A directory
+//   cannot be replaced by a rename, and a read of a named pipe that no process writes to never
+//   returns, so either at the file's path is refused before a code is asked for
+//   (`deviceLoginPlace`). A read checks the directory first, then opens the path once, without
+//   waiting and as no terminal, and checks and reads that one open file (`readDeviceLogin`).
 // - A save writes a new temporary file beside it, syncs it and renames it over the file, under the
 //   login's lock (`device-login-lock.ts`), so the file is always one whole login. A save of a new
 //   login that fails once its copy is whole keeps that copy (`keptCopy`): the broker holds its
@@ -20,7 +21,12 @@ import { constants, type Stats } from "node:fs";
 import { access, type FileHandle, mkdir, open, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { holdSecret } from "@legion/contracts/held-secrets";
-import { DEVICE_LOGIN_STALE_LOCK_MS, removeLeftLocks, removeUntouched } from "./device-login-lock";
+import {
+  DEVICE_LOGIN_MOST_BYTES,
+  DEVICE_LOGIN_STALE_LOCK_MS,
+  removeLeftLocks,
+  removeUntouched,
+} from "./device-login-lock";
 import { messageOf, readErrorCode } from "./error-text";
 import { DEVICE_LOGIN_COMMAND } from "./token-errors";
 
@@ -103,13 +109,15 @@ function checkPrivate(
  * in it: a directory whose mode lets its group or anyone else write to it, or that this user does
  * not own. A directory others may only read and enter is taken, as `mkdir -p` leaves the
  * `~/.config/legion` that envoy.json lives in: the login's file is 0600 itself, and its name is
- * no secret. Each refusal names the directory by the file's setting and the fix.
+ * no secret. Each refusal names the directory by the file's setting and the fix. `absent`, where
+ * it is given, is the refusal of a directory that is not there.
  */
-async function checkLoginDirectory(dir: string): Promise<void> {
+async function checkLoginDirectory(dir: string, absent?: () => Error): Promise<void> {
   let info: Stats;
   try {
     info = await stat(dir);
   } catch (error) {
+    if (absent !== undefined && readErrorCode(error) === "ENOENT") throw absent();
     throw new Error(`read the directory of ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   }
   checkPrivate(
@@ -143,13 +151,10 @@ function notARegularFile(info: Stats): Error {
 
 /**
  * Makes the directory of the login at `path`, 0700, where it is absent, and refuses one another
- * user could replace the login in ({@link checkLoginDirectory}), one this user cannot enter and
- * write to (a 0555 directory, or the 0600 one a `chmod -R 600` leaves), and a `path` that is there
- * and is not a regular file, a link to one included ({@link notARegularFile}): a link to nothing
- * is taken, since a save's rename replaces the link. `dispatch login --device` runs it before it
- * asks for a code, so no person approves a login this machine could not keep there.
+ * user could replace the login or its lock in ({@link checkLoginDirectory}). The login's lock runs
+ * it before it opens anything there (`withDeviceLoginLock`), and so does {@link deviceLoginPlace}.
  */
-export async function deviceLoginPlace(path: string): Promise<void> {
+export async function deviceLoginDirectory(path: string): Promise<void> {
   const dir = dirname(path);
   try {
     await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -157,6 +162,19 @@ export async function deviceLoginPlace(path: string): Promise<void> {
     throw new Error(`make the directory of ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   }
   await checkLoginDirectory(dir);
+}
+
+/**
+ * Makes the directory of the login at `path` and refuses one another user could replace the
+ * login in ({@link deviceLoginDirectory}), and refuses one this user cannot enter and write to (a
+ * 0555 directory, or the 0600 one a `chmod -R 600` leaves), and a `path` that is there and is not
+ * a regular file, a link to one included ({@link notARegularFile}): a link to nothing is taken,
+ * since a save's rename replaces the link. `dispatch login --device` runs it before it asks for a
+ * code, so no person approves a login this machine could not keep there.
+ */
+export async function deviceLoginPlace(path: string): Promise<void> {
+  await deviceLoginDirectory(path);
+  const dir = dirname(path);
   try {
     await access(dir, constants.W_OK | constants.X_OK);
   } catch (error) {
@@ -176,35 +194,46 @@ export async function deviceLoginPlace(path: string): Promise<void> {
   if (!info.isFile()) throw notARegularFile(info);
 }
 
+/** How the login's file is opened to be read: read-only, without waiting (an open of a named pipe
+ *  would wait for a writer), and never as this process's controlling terminal (the open of a tty
+ *  can make it one). A link is followed: the setting may name one. */
+const LOGIN_READ = constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOCTTY;
+
 /**
  * The device login at `path`. A file that is not there is refused naming
  * {@link DEVICE_LOGIN_COMMAND}; a path that is not a regular file is refused ({@link
  * notARegularFile}); a file whose mode grants its group or anyone else any access, or that this
  * user does not own, is refused naming the fix, since it holds the login's key and refresh token,
  * and so is one in a directory another user could replace it in ({@link checkLoginDirectory}); one
- * that is not a whole login (no JSON object, a missing value, a key that is not a P-256 PKCS#8 key,
- * an expiry that is no time) is refused. The path is opened once, without waiting, and the checks
- * and the read are of that one open file: a look at the path and a second open could open a named
- * pipe put in its place between the two, and a read of a pipe nobody writes to never returns.
- * Each refusal names the file by its setting ({@link DEVICE_LOGIN_FILE_NAMED}) and quotes none of
- * its content. The refresh and access tokens are held (`holdSecret`), so no line this process
- * prints carries them.
+ * over {@link DEVICE_LOGIN_MOST_BYTES}, or that is not a whole login (no JSON object, a missing
+ * value, a key that is not a P-256 PKCS#8 key, an expiry that is no time) is refused. The
+ * directory is checked before the file is opened: in one another user can write to, that user
+ * picks what an open would open, and the open of a device can do something. The path is then
+ * opened once ({@link LOGIN_READ}), and the checks and the read are of that one open file: a look
+ * at the path and a second open could open a named pipe put in its place between the two, and a
+ * read of a pipe nobody writes to never returns. Each refusal names the file by its setting
+ * ({@link DEVICE_LOGIN_FILE_NAMED}) and quotes none of its content. The refresh and access tokens
+ * are held (`holdSecret`), so no line this process prints carries them.
  */
 export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
+  const absent = () =>
+    new Error(
+      `this machine has no device login: ${DEVICE_LOGIN_FILE_NAMED} is not there; log this machine in with: ${DEVICE_LOGIN_COMMAND}`
+    );
+  const failed = (error: unknown) =>
+    new Error(`read ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
+  await checkLoginDirectory(dirname(path), absent);
   let handle: FileHandle;
   try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    handle = await open(path, LOGIN_READ);
   } catch (error) {
-    const code = readErrorCode(error);
-    throw new Error(
-      code === "ENOENT"
-        ? `this machine has no device login: ${DEVICE_LOGIN_FILE_NAMED} is not there; log this machine in with: ${DEVICE_LOGIN_COMMAND}`
-        : `read ${DEVICE_LOGIN_FILE_NAMED}: ${code}`
-    );
+    throw readErrorCode(error) === "ENOENT" ? absent() : failed(error);
   }
   let data: string;
   try {
-    const info = await handle.stat();
+    const info = await handle.stat().catch((error: unknown) => {
+      throw failed(error);
+    });
     if (!info.isFile()) throw notARegularFile(info);
     checkPrivate(
       info,
@@ -213,13 +242,21 @@ export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
       "lets others read the login's key; run chmod 600 on it",
       `remove it and log in again with: ${DEVICE_LOGIN_COMMAND}`
     );
-    await checkLoginDirectory(dirname(path));
+    if (info.size > DEVICE_LOGIN_MOST_BYTES) {
+      throw new Error(
+        `${DEVICE_LOGIN_FILE_NAMED} is not a device login: it is over ${DEVICE_LOGIN_MOST_BYTES / 1024} KiB, many times a login's size; set ${DEVICE_LOGIN_FILE_VAR} to the login's own file, or log this machine in again with: ${DEVICE_LOGIN_COMMAND}`
+      );
+    }
     data = await handle.readFile("utf8").catch((error: unknown) => {
-      throw new Error(`read ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
+      throw failed(error);
     });
-  } finally {
-    await handle.close();
+  } catch (error) {
+    await handle.close().catch(() => {});
+    throw error;
   }
+  await handle.close().catch((error: unknown) => {
+    throw failed(error);
+  });
   let json: Record<string, unknown>;
   try {
     const parsed: unknown = JSON.parse(data);

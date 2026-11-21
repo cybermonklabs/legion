@@ -1,12 +1,13 @@
 // packages/cipher-client/src/__tests__/device-login-file.test.ts
 //
 // The file a machine keeps its device login in (`device-login-file.ts`): its read refuses a file
-// that is not there, not private or not a regular file, and the save of a new login, where a step
-// after the person's approval fails. The broker holds the login's credential live from the
-// approval on, so a login that is not kept is refused naming that credential and where to revoke
-// it, and a copy written whole is kept; a login that is kept is answered as kept, whatever fails
-// after its save, so no person is told to revoke the login the machine uses. A row that fails a
-// step fails one filesystem call by its path (`rename`, `readFile`).
+// that is not there, not private, not a regular file or over 64 KiB, in words that never name its
+// path, and the save of a new login, where a step after the person's approval fails. The broker
+// holds the login's credential live from the approval on, so a login that is not kept is refused
+// naming that credential and where to revoke it, and a copy written whole is kept; a login that is
+// kept is answered as kept, whatever fails after its save, so no person is told to revoke the login
+// the machine uses. A row that fails a step fails one filesystem call by its path (`rename`, `rm`,
+// or a read's `readFile` or `close`).
 
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { rmSync } from "node:fs";
@@ -183,6 +184,54 @@ test("a login file swapped for a named pipe after it is looked at is never waite
   expect(read).not.toBeInstanceOf(Error);
   expect((read as DeviceLogin).credentialId).toBe(STAND_IN_CREDENTIAL);
 }, 10_000);
+
+test("a login in a directory others may write is refused before its file is opened", async () => {
+  // In such a directory another user picks what is at the path, and the open of some nodes (a
+  // device) does something. A named pipe stands in for such a node: the read refuses the
+  // directory, and never opens what is at the path.
+  const path = loginPath();
+  await mkdir(dirname(path), { recursive: true });
+  await chmod(dirname(path), 0o777);
+  expect(Bun.spawnSync(["mkfifo", path]).exitCode).toBe(0);
+  const opened: string[] = [];
+  const realOpen = fs.open;
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    opened.push(String(args[0]));
+    return await realOpen(...args);
+  }) as typeof fs.open);
+  let refused: Error | null;
+  try {
+    refused = await readDeviceLogin(path).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+  } finally {
+    opens.mockRestore();
+  }
+  expect(refused?.message).toContain("mode 0777");
+  expect(refused?.message).toContain("chmod 700");
+  expect(opened).not.toContain(path);
+});
+
+test("a login file over 64 KiB is refused before it is read", async () => {
+  // JSON takes white space after its object, so the login padded still parses as the login: only
+  // the bound refuses it. At 64 KiB it is read; one byte over, it is refused.
+  const stub = broker();
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url);
+  const login = await fs.readFile(path, "utf8");
+  await fs.writeFile(path, login.padEnd(64 * 1024));
+  expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
+  await fs.writeFile(path, login.padEnd(64 * 1024 + 1));
+  const refused = await readDeviceLogin(path).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(refused?.message).toContain("over 64 KiB");
+  expect(refused?.message).not.toContain(dirname(path));
+});
 
 test("an approved login whose save fails once it is written keeps a whole copy, and names it", async () => {
   const stub = broker({ credentialId: "cred-unsaved-1" });

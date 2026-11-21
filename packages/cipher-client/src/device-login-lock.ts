@@ -1,12 +1,17 @@
 // packages/cipher-client/src/device-login-lock.ts
 //
 // The lock every process of one machine takes before it reads, refreshes or trades the machine's
-// device login (`device-login.ts`, `withDeviceLoginLock`): `<file>.lock`, beside the login's file.
+// device login (`device-login.ts`, `withDeviceLoginLock`): `<file>.lock`, beside the login's file,
+// in a directory the caller made and checked is one only this user can write to.
 //
 // - It is taken by creating the file exclusively, holding this process's pid and a value of this
-//   call's own, and its holder touches it every 5 s while it holds it. A lock is read through a
-//   file opened once without waiting, and only where that file is a regular one, so a named pipe
-//   left at its path holds no caller: it reads as no holder's lock, and is taken over once stale.
+//   call's own, and its holder touches it every 5 s while it holds it. A lock is the node at its
+//   path, never what a link there names, since no caller makes one as a link. It is looked at
+//   through one open of it, without waiting and as no terminal, and that one open file gives both
+//   its status and its holder value, which is read only where it is a regular file of at most
+//   64 KiB: a named pipe left at its path holds no caller, and neither does a huge file. Such a
+//   node, or one no open reads (a link, a socket), holds no holder's value, so it is taken over
+//   once stale, by its own status.
 // - A lock untouched for 15 s is taken as one whose holder died. Only one caller takes it over:
 //   the one that creates the take-over's own lock, `<file>.lock.steal`, and finds the lock still
 //   stale under it. A `.lock.steal` left for 5 s by a caller that died or stopped is removed.
@@ -34,7 +39,7 @@ import { constants, type Stats } from "node:fs";
 import {
   type FileHandle,
   link,
-  mkdir,
+  lstat,
   open,
   readdir,
   rename,
@@ -56,6 +61,16 @@ export const DEVICE_LOGIN_STALE_LOCK_MS = TRADE_ATTEMPT_MS / 2;
 
 /** How often a lock's holder touches it: three times in each {@link DEVICE_LOGIN_STALE_LOCK_MS}. */
 export const LOCK_HEARTBEAT_MS = DEVICE_LOGIN_STALE_LOCK_MS / 3;
+
+/** The most a device login or its lock is read of: 64 KiB, many times a login's size, so a file
+ *  far larger (a log, a disk image named by mistake) is refused, not read whole into memory. */
+export const DEVICE_LOGIN_MOST_BYTES = 64 * 1024;
+
+/** How a lock is opened to be looked at: read-only, without waiting (an open of a named pipe
+ *  would wait for a writer), never as this process's controlling terminal (the open of a tty can
+ *  make it one), and not through a link. */
+const LOCK_READ =
+  constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOCTTY | constants.O_NOFOLLOW;
 
 /** How long a caller waits between two tries of a lock another process holds. */
 const LOCK_RETRY_MS = 100;
@@ -84,13 +99,14 @@ export interface DeviceLoginLockOptions {
  */
 export type TakeOverStep = "lock-stale" | "steal-stale" | "taking";
 
-/** `path`'s status, or null where nothing is there. `named` names the login in an error. */
-async function statOrNone(path: string, named: string): Promise<Stats | null> {
+/** `path`'s own status, a link's and not what it names, or null where nothing is there. `what`
+ *  names the file in an error. */
+async function statOrNone(path: string, what: string): Promise<Stats | null> {
   try {
-    return await stat(path);
+    return await lstat(path);
   } catch (error) {
     if (readErrorCode(error) === "ENOENT") return null;
-    throw new Error(`read the lock beside ${named}: ${readErrorCode(error)}`);
+    throw new Error(`read ${what}: ${readErrorCode(error)}`);
   }
 }
 
@@ -119,33 +135,37 @@ interface Seen {
 }
 
 /**
- * What `path` holds: "" where nothing is there, where it cannot be read, or where it is no regular
- * file. A plain read of a named pipe left at a lock's path would wait until a process writes to
- * it, and so would every caller of the lock; so the path is opened once without waiting, and read
- * through that open file only where it is a regular one.
+ * `path` as it is now ({@link Seen}), or null where nothing is there. Its status and its holder
+ * value are of one open of it ({@link LOCK_READ}), so they are of one file. The value is "" where
+ * that file is no regular one (a plain read of a named pipe would wait until a process writes to
+ * it, and so would every caller of the lock), is over {@link DEVICE_LOGIN_MOST_BYTES}, or cannot
+ * be read. Where the path cannot be opened at all (a link, a socket), its own status is taken
+ * ({@link statOrNone}), with "" for its value. `what` names the file in an error.
  */
-async function holderValue(path: string): Promise<string> {
+async function look(path: string, what: string): Promise<Seen | null> {
   let handle: FileHandle;
   try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
-  } catch {
-    return "";
+    handle = await open(path, LOCK_READ);
+  } catch (error) {
+    if (readErrorCode(error) === "ENOENT") return null;
+    const stats = await statOrNone(path, what);
+    return stats === null ? null : { stats, value: "" };
   }
+  let seen: Seen;
   try {
-    if (!(await handle.stat()).isFile()) return "";
-    return await handle.readFile("utf8");
-  } catch {
-    return "";
-  } finally {
-    await handle.close();
+    const stats = await handle.stat();
+    const readable = stats.isFile() && stats.size <= DEVICE_LOGIN_MOST_BYTES;
+    seen = { stats, value: readable ? await handle.readFile("utf8").catch(() => "") : "" };
+  } catch (error) {
+    await handle.close().catch(() => {});
+    throw new Error(`read ${what}: ${readErrorCode(error)}`);
   }
-}
-
-/** `path` as it is now ({@link Seen}), or null where nothing is there. */
-async function look(path: string, named: string): Promise<Seen | null> {
-  const stats = await statOrNone(path, named);
-  if (stats === null) return null;
-  return { stats, value: await holderValue(path) };
+  // The file is closed once on each path: a second close after one that failed could close a
+  // descriptor another open was handed since.
+  await handle.close().catch((error: unknown) => {
+    throw new Error(`read ${what}: ${readErrorCode(error)}`);
+  });
+  return seen;
 }
 
 /** Whether a file as a caller looks at it is the very file `was` names: the same device, inode,
@@ -188,11 +208,10 @@ async function removeIfStill(
  * file first and leaves one holding another caller's value untouched: another caller took it over
  * while this one was stopped. It removes its own only through {@link removeIfStill}, never by
  * name, since another caller can take it over between that look and the removal too, where this
- * caller stops there for longer than the file's stale bound. `what` names the file in an error,
- * and `named` the login.
+ * caller stops there for longer than the file's stale bound. `what` names the file in an error.
  */
-async function removeOwn(path: string, value: string, what: string, named: string): Promise<void> {
-  const seen = await look(path, named);
+async function removeOwn(path: string, value: string, what: string): Promise<void> {
+  const seen = await look(path, what);
   if (seen === null || seen.value !== value) return;
   await removeIfStill(path, (took) => took.value === value, what);
 }
@@ -214,13 +233,15 @@ async function takeStale(
   named: string,
   options: DeviceLoginLockOptions
 ): Promise<boolean> {
-  const found = await statOrNone(lock, named);
+  const locked = `the lock beside ${named}`;
+  const found = await statOrNone(lock, locked);
   if (found === null) return true;
   if (Date.now() - found.mtimeMs <= DEVICE_LOGIN_STALE_LOCK_MS) return false;
   await options.at?.("lock-stale");
   const steal = `${lock}.steal`;
+  const stealing = `the take-over lock beside ${named}`;
   if (!(await createOwn(steal, mine, named))) {
-    const taking = await look(steal, named);
+    const taking = await look(steal, stealing);
     if (taking !== null && Date.now() - taking.stats.mtimeMs > STEAL_STALE_MS) {
       await options.at?.("steal-stale");
       await removeIfStill(steal, sameFile(taking), `the dead take-over lock beside ${named}`);
@@ -228,29 +249,30 @@ async function takeStale(
     return false;
   }
   try {
-    const again = await look(lock, named);
+    const again = await look(lock, locked);
     if (again === null) return true;
     if (Date.now() - again.stats.mtimeMs <= DEVICE_LOGIN_STALE_LOCK_MS) return false;
     await options.at?.("taking");
     return await removeIfStill(lock, sameFile(again), `the stale lock beside ${named}`);
   } finally {
-    await removeOwn(steal, mine, `the take-over lock beside ${named}`, named);
+    await removeOwn(steal, mine, stealing);
   }
 }
 
 /**
  * Runs `work` holding the lock of the login at `path`, `<path>.lock`, and answers what it
- * answers. A lock another process holds is tried again every 100 ms until it is free, `signal`
- * ends (rejecting with `LockHeldError`, which names the lock, with the signal's reason as its
- * cause, and `work` never run), or it is stale and this caller alone takes it ({@link takeStale}).
- * The holder touches the lock every {@link LOCK_HEARTBEAT_MS} while `work` runs, on a timer that
- * holds no process open, so a holder that is slow is never taken for dead, and lets go of it when
- * `work` settles, removing it only while it still holds its own value ({@link removeOwn}). Where
- * `work` rejects and letting go then fails too, `work`'s error is the one rejected with, since it
- * says what `work` did and did not do, and the release's is kept as its cause where it has none.
- * `work` is handed `held`, which reads the lock again and says whether it still holds this call's
- * value: false once another caller took it from a holder that was stopped. `named` names the login
- * in an error.
+ * answers. The caller has made the login's directory and checked that no other user can write to
+ * it, so no other user picks what is at the lock's path. A lock another process holds is tried
+ * again every 100 ms until it is free, `signal` ends (rejecting with `LockHeldError`, which names
+ * the lock, with the signal's reason as its cause, and `work` never run), or it is stale and this
+ * caller alone takes it ({@link takeStale}). The holder touches the lock every
+ * {@link LOCK_HEARTBEAT_MS} while `work` runs, on a timer that holds no process open, so a holder
+ * that is slow is never taken for dead, and lets go of it when `work` settles, removing it only
+ * while it still holds its own value ({@link removeOwn}). Where `work` rejects and letting go then
+ * fails too, `work`'s error is the one rejected with, since it says what `work` did and did not
+ * do, and the release's is kept as its cause where it has none. `work` is handed `held`, which
+ * reads the lock again and says whether it still holds this call's value: false once another
+ * caller took it from a holder that was stopped. `named` names the login in an error.
  */
 export async function withLoginLock<T>(
   path: string,
@@ -259,16 +281,12 @@ export async function withLoginLock<T>(
   options: DeviceLoginLockOptions = {}
 ): Promise<T> {
   const lock = `${path}.lock`;
+  const locked = `the lock beside ${named}`;
   const mine = `${process.pid} ${randomUUID()}\n`;
   const wait = options.sleep ?? ((ms: number, signal?: AbortSignal) => sleep(ms, signal, true));
-  try {
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  } catch (error) {
-    throw new Error(`make the directory of ${named}: ${readErrorCode(error)}`);
-  }
   while (true) {
     if (options.signal?.aborted === true) {
-      throw new LockHeldError(`the lock beside ${named}`, { cause: options.signal.reason });
+      throw new LockHeldError(locked, { cause: options.signal.reason });
     }
     if (await createOwn(lock, mine, named)) break;
     if (await takeStale(lock, mine, named, options)) continue;
@@ -283,16 +301,16 @@ export async function withLoginLock<T>(
   beat.unref();
   let answer: T;
   try {
-    answer = await work(async () => (await holderValue(lock)) === mine);
+    answer = await work(async () => (await look(lock, locked))?.value === mine);
   } catch (error) {
     clearInterval(beat);
-    await removeOwn(lock, mine, `the lock beside ${named}`, named).catch((released: unknown) => {
+    await removeOwn(lock, mine, locked).catch((released: unknown) => {
       if (error instanceof Error && error.cause === undefined) error.cause = released;
     });
     throw error;
   }
   clearInterval(beat);
-  await removeOwn(lock, mine, `the lock beside ${named}`, named);
+  await removeOwn(lock, mine, locked);
   return answer;
 }
 

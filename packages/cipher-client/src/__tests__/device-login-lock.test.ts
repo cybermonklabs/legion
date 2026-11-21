@@ -8,12 +8,14 @@
 // timer callback by hand, so no row is decided by a clock.
 
 import { expect, spyOn, test } from "bun:test";
+import { constants } from "node:fs";
 import * as fs from "node:fs/promises";
-import { readdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, readdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { writeDeviceLoginFile } from "../../test/device-logins";
 import { withDeviceLoginLock } from "../device-login";
+import { readDeviceLogin } from "../device-login-file";
 import { DEVICE_LOGIN_STALE_LOCK_MS, LOCK_HEARTBEAT_MS } from "../device-login-lock";
 import { TRADE_ATTEMPT_MS } from "../token-client";
 import { LockHeldError } from "../token-errors";
@@ -584,4 +586,158 @@ test("a holder whose work fails and whose release then fails is told the work's 
   expect((failure.cause as Error | undefined)?.message).toContain("EIO");
   // Control: letting go did fail, so the lock is still there.
   expect(await readdir(dirname(path))).toContain("device-login.json.lock");
+});
+
+test("a lock in a directory others may write is refused before it is opened or made", async () => {
+  // In such a directory another user picks what is at the lock's path.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  await chmod(dirname(path), 0o777);
+  let ran = false;
+  const refused = await withDeviceLoginLock(path, async () => {
+    ran = true;
+  }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(refused?.message).toContain("mode 0777");
+  expect(refused?.message).toContain("chmod 700");
+  expect(ran).toBe(false);
+  expect(await readdir(dirname(path))).toEqual(["device-login.json"]);
+});
+
+test("a link at the lock's path is no holder's lock, even to a file holding the holder's value", async () => {
+  // The lock is never made as a link, so a link there is no caller's lock: it is not followed.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  const copy = join(dirname(path), "a-copy-of-the-lock");
+  let heldThroughLink: boolean | undefined;
+  await withDeviceLoginLock(path, async (held) => {
+    await writeFile(copy, await readFile(lock, "utf8"));
+    await fs.rm(lock);
+    await fs.symlink(copy, lock);
+    heldThroughLink = await held();
+  });
+  expect(heldThroughLink).toBe(false);
+  // The holder leaves the link, as it leaves any lock that is not its own.
+  expect((await fs.lstat(lock)).isSymbolicLink()).toBe(true);
+});
+
+test("the login and its lock are opened to be read as no terminal, and the lock not through a link", async () => {
+  // A device node's open can make it the controlling terminal of a caller that leads its session;
+  // each open of the login or its lock to read it says it must not.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  const opened: { path: string; flags: number }[] = [];
+  const realOpen = fs.open;
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    if (typeof args[1] === "number") opened.push({ path: String(args[0]), flags: args[1] });
+    return await realOpen(...args);
+  }) as typeof fs.open);
+  try {
+    await withDeviceLoginLock(path, async (held) => {
+      expect(await held()).toBe(true);
+      await readDeviceLogin(path);
+    });
+  } finally {
+    opens.mockRestore();
+  }
+  const ofLogin = opened.filter((open) => open.path === path);
+  const ofLock = opened.filter((open) => open.path === lock);
+  expect(ofLogin.length).toBeGreaterThan(0);
+  expect(ofLock.length).toBeGreaterThan(0);
+  for (const open of ofLogin) expect(open.flags & constants.O_NOCTTY).toBe(constants.O_NOCTTY);
+  const lockFlags = constants.O_NOCTTY | constants.O_NOFOLLOW;
+  for (const open of ofLock) expect(open.flags & lockFlags).toBe(lockFlags);
+});
+
+test("a link to nothing at the lock's path is waited for while fresh, and taken over once stale", async () => {
+  // The lock cannot be made beside such a link, and a look that follows it finds nothing there. A
+  // caller that tries 50 times to make the lock without one wait is stopped by its signal, so a
+  // caller that spins fails the row rather than hanging it.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  let caller = new AbortController();
+  let makes = 0;
+  const realOpen = fs.open;
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    if (String(args[0]) === lock && args[1] === "wx") {
+      makes += 1;
+      if (makes > 50) caller.abort(new Error("the caller spun"));
+    }
+    return await realOpen(...args);
+  }) as typeof fs.open);
+  try {
+    // A fresh link is waited for, as a live holder's lock; at the first wait it goes, as a holder
+    // that lets go.
+    await fs.symlink(join(dirname(path), "nothing"), lock);
+    let waits = 0;
+    await withDeviceLoginLock(path, async () => {}, {
+      signal: caller.signal,
+      sleep: async () => {
+        waits += 1;
+        await fs.rm(lock, { force: true });
+      },
+    });
+    expect(waits).toBe(1);
+    // A link untouched for the stale bound is taken over with no wait.
+    caller = new AbortController();
+    makes = 0;
+    await fs.symlink(join(dirname(path), "nothing"), lock);
+    const old = staleTime();
+    await fs.lutimes(lock, old, old);
+    let staleWaits = 0;
+    await withDeviceLoginLock(path, async () => {}, {
+      signal: caller.signal,
+      sleep: async () => {
+        staleWaits += 1;
+      },
+    });
+    expect(staleWaits).toBe(0);
+  } finally {
+    opens.mockRestore();
+  }
+  expect(await readdir(dirname(path))).toEqual(["device-login.json"]);
+});
+
+test("a lock over 64 KiB is taken over as stale without being read whole", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  await writeFile(lock, "x".repeat(1024 * 1024));
+  const old = staleTime();
+  await utimes(lock, old, old);
+  // The longest read of the lock, by its path or moved aside.
+  let longest = 0;
+  const realOpen = fs.open;
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    const handle = await realOpen(...args);
+    if (String(args[0]).startsWith(lock)) {
+      const readHandle = handle.readFile.bind(handle);
+      handle.readFile = (async (...options: Parameters<typeof handle.readFile>) => {
+        const read = await readHandle(...options);
+        longest = Math.max(longest, read.length);
+        return read;
+      }) as typeof handle.readFile;
+    }
+    return handle;
+  }) as typeof fs.open);
+  try {
+    await withDeviceLoginLock(path, async () => {});
+  } finally {
+    opens.mockRestore();
+  }
+  // Its own lock is read as it lets go, so a read was seen; none was of the stale one.
+  expect(longest).toBeGreaterThan(0);
+  expect(longest).toBeLessThanOrEqual(64 * 1024);
+  expect(await readdir(dirname(path))).toEqual(["device-login.json"]);
 });
