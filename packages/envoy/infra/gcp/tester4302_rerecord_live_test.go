@@ -27,7 +27,7 @@ import (
 // record must not be Clean. At 7c7131eece it records, and the check is Clean of a hub whose
 // password a peer read.
 func TestRouteCheckAfterARecordTakenOnceAuthorizationWasDropped(t *testing.T) {
-	t.Skip("a documented limit of the record, which this change scopes and does not fix: docs/nats-hub.md:1215, Route authorization, " +
+	t.Skip("a documented limit of the record, which this change scopes and does not fix: docs/nats-hub.md:1218, Route authorization, " +
 		"\"a record is valid only for a `secretKey` that has never been under `authorization`\", and routes record prints it " +
 		"(TestRecordThenCheck); the stronger fix, a list of the keys that were under authorization, needs a person's yes")
 	keys := newLiveHubKeys(t)

@@ -85,12 +85,23 @@ func (k *kubectlSource) args(args ...string) []string {
 	return append(append(all, "--namespace", k.Namespace), args...)
 }
 
+// inClusterContext names the cluster a pod reads through its ServiceAccount, with no kubeconfig.
+const inClusterContext = "in-cluster"
+
 // Cluster reads the context kubectl reads through, the one given or its kubeconfig's current one,
 // and that context's API server, from `kubectl config view --minify`, which keeps that context and
-// its cluster alone and reads no object of the cluster.
+// its cluster alone and reads no object of the cluster. In a pod with no kubeconfig, as the
+// operator's Job runs, kubectl reads the cluster through the pod's ServiceAccount (client-go's
+// in-cluster configuration), and `config view --minify` fails, having no current context: with no
+// context given, and KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT set, as the kubelet sets
+// them in every pod, the cluster is in-cluster, at that address.
 func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
 	out, err := k.kubectl(ctx, "config", "view", "--minify", "--output", "json")
 	if err != nil {
+		host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
+		if k.Context == "" && host != "" && port != "" {
+			return Cluster{Context: inClusterContext, Server: "https://" + net.JoinHostPort(host, port)}, nil
+		}
 		return Cluster{}, err
 	}
 	var config struct {

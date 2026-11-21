@@ -16,9 +16,11 @@ const usageText = `usage: envoy-infra routes record --namespace <ns> --statefuls
        envoy-infra routes check --namespace <ns> --statefulset <name> --record <file> [--context <kubeconfig context>] [--kubectl <path>] [--monitor-port <port>] [--route-port <port>]
   record, once routeAuthorization's env stage has rolled every pod, before routes: saves each pod's
     uid and its nats container's restart count and start, and the context and cluster it read
-    through; exit 0 when recorded, 2 otherwise, and while any pod's route port already requires
-    authorization. A record is valid only for a secretKey that has never been under authorization:
-    after a rollback below authorization, or any exit 1 of check, rotate to a new secretKey first.
+    through, "in-cluster" in a pod with no kubeconfig and no --context, which reads the cluster as
+    the pod's ServiceAccount; exit 0 when recorded, 2 otherwise, and while any pod's route port
+    already requires authorization. A record is valid only for a secretKey that has never been
+    under authorization: after a rollback below authorization, or any exit 1 of check, rotate to a
+    new secretKey first.
   check, once authorization is on every pod, through the record's context and cluster: exit 0 when
     authorization is in force with a password and every route since it loaded joined two of the
     hub's servers, which says nothing of any time before the record; 1 when another process held one

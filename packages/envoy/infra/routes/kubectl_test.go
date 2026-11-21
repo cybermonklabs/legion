@@ -2,6 +2,7 @@ package routes_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -37,7 +38,8 @@ dir="$FAKE_KUBECTL_DIR"
 args="$*"
 printf '%s\n' "$args" >> "$dir/calls"
 case "$args" in
-*" config view --minify --output json") exec cat "$dir/config.json" ;;
+*" config view --minify --output json") [ -f "$dir/config.json" ] || { echo "error: current-context must exist in order to minify" >&2; exit 1; }
+  exec cat "$dir/config.json" ;;
 *" get statefulset envoy-nats --output json") exec cat "$dir/statefulset.json" ;;
 *" get pod "*" --output json") pod=${args#* get pod }; pod=${pod%% *}; exec cat "$dir/pod-$pod.json" ;;
 *" port-forward pod/"*) pod=${args#* port-forward pod/}; pod=${pod%% *}; remote=${args##*:}
@@ -298,6 +300,62 @@ func TestKubectlForwardWritesItsPIDBeforeItListens(t *testing.T) {
 		_, err = strconv.Atoi(strings.TrimSpace(string(pid)))
 		require.NoError(t, err)
 	}
+}
+
+// In a pod that runs as a ServiceAccount with no kubeconfig, as the operator's Job does, kubectl
+// reads the cluster through its in-cluster configuration, and `kubectl config view --minify` fails
+// ("current-context must exist in order to minify", kubectl v1.36.4). With no --context given and
+// KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT set, the Source names the cluster in-cluster,
+// at that address, so routes record and routes check run there; a record taken so is refused, exit
+// 2, through a kubeconfig context. Controls: with --context given the same failure stays an error,
+// and with a kubeconfig its context and cluster are read as before, the variables set or not.
+func TestKubectlClusterInAPodWithNoKubeconfig(t *testing.T) {
+	ctx := context.Background()
+	h := cleanHub()
+	src, dir := fakeKubeHub(t, h)
+	defer src.Close()
+	kubectl := filepath.Join(dir, "kubectl")
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+	open := func(context string) routes.Source {
+		t.Helper()
+		s, err := routes.OpenKubectl(routes.Target{Namespace: "envoy", StatefulSet: "envoy-nats", Kubectl: kubectl, Context: context, MonitorPort: 8222, RoutePort: 6222})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	}
+	cluster, err := open("").Cluster(ctx)
+	require.NoError(t, err)
+	require.Equal(t, routes.Cluster{Context: "example-context", Server: "https://example-context.example.invalid"}, cluster,
+		"control: a kubeconfig is read as before, though the in-cluster variables are set")
+
+	require.NoError(t, os.Remove(filepath.Join(dir, "config.json")))
+	cluster, err = open("").Cluster(ctx)
+	require.NoError(t, err)
+	require.Equal(t, routes.Cluster{Context: "in-cluster", Server: "https://10.96.0.1:443"}, cluster)
+	_, err = open("example-context").Cluster(ctx)
+	require.ErrorContains(t, err, "current-context must exist in order to minify", "control: a context given is read from a kubeconfig or not at all")
+
+	run := func(args ...string) (int, string, string) {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		code := routes.Command(ctx, append(args, "--namespace", "envoy", "--statefulset", "envoy-nats", "--kubectl", kubectl), &stdout, &stderr, routes.OpenKubectl)
+		return code, stdout.String(), stderr.String()
+	}
+	out := filepath.Join(t.TempDir(), "routes.json")
+	back := h.atEnv()
+	code, stdout, stderr := run("record", "--out", out)
+	back()
+	require.Equal(t, 0, code, "stderr %q", stderr)
+	require.Contains(t, stdout, `through context "in-cluster" of the cluster at "https://10.96.0.1:443"`)
+	code, stdout, stderr = run("check", "--record", out)
+	require.Equal(t, 0, code, "the check in the pod: stdout %q stderr %q", stdout, stderr)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"),
+		[]byte(`{"current-context":"example-context","clusters":[{"name":"example","cluster":{"server":"https://example-context.example.invalid"}}]}`), 0o600))
+	code, _, stderr = run("check", "--record", out, "--context", "example-context")
+	require.Equal(t, 2, code, "a record taken in the pod, checked through a kubeconfig context: stderr %q", stderr)
+	require.Contains(t, stderr, `is the record taken through context "in-cluster" of the cluster at "https://10.96.0.1:443", not through context "example-context"`)
 }
 
 // OpenKubectl refuses a kubectl it cannot find, naming it, before it runs anything.

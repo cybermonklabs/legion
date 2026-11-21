@@ -1171,9 +1171,10 @@ server dialed the address such a process named with the user and the password; w
 it sent no credential. So `authorization` fences a process that tries to join after it, and not one
 that joined before.
 
-So the rollout runs two commands of `envoy-infra`, as an identity whose kubeconfig may `get` the
+So the rollout runs two commands of `envoy-infra`, as an identity that may `get` the
 StatefulSet and each of its pods, and `create` `pods/portforward` and `get` `pods/log` on each pod,
-all of which a Role grants by name:
+all of which a Role grants by name: through a kubeconfig, or in a pod with none, such as a Job, as
+the pod's ServiceAccount, which kubectl then reads the cluster through:
 
 ```sh
 # once env has rolled every pod:
@@ -1183,8 +1184,10 @@ envoy-infra routes check --namespace envoy --statefulset envoy-nats --record rou
 ```
 
 `routes record` saves each pod's `uid`, its nats container's `restartCount` and `startedAt`, the
-time, and the kubeconfig context it read through with its cluster's API server, which `routes
-check` requires of its own context and cluster, exit 2 otherwise, since a hub of the same names on
+time, and the kubeconfig context it read through with its cluster's API server, or, in a pod with
+no kubeconfig and no `--context` given, the context `in-cluster` and the server
+`https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT`. `routes check` requires the record's
+context and cluster of its own, exit 2 otherwise, since a hub of the same names on
 another cluster has other pods, which the check would read as a new container on every pod. It
 refuses until the `env` roll has finished: while any pod is not Ready with a running
 nats container, is not on the update revision of a finished roll of the StatefulSet (its
