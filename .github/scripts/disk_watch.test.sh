@@ -162,27 +162,40 @@ echo "case: the least value falls when the watched file system fills"
 # space moved by up to 1,300 MiB in 20 s, so another writer freeing more than 64 MiB hid the case's
 # write and failed this case, and another writer filling - or the sampler's own state and series
 # files beside the watched directory - let it pass with no reading of the case's write at all. So
-# the case watches a tmpfs that only it can see: mounted in an unprivileged user and mount
-# namespace, with the sampler started inside it and the state file outside it, on $work. The one
+# the case watches a tmpfs that only it can see: mounted in unprivileged user, mount and PID
+# namespaces, with the sampler started inside them and the state file outside, on $work. The one
 # write that tmpfs ever takes is the case's 64 MiB, so the least free must fall by all of it.
 # Where the kernel refuses an unprivileged mount, there is no file system only this case writes:
 # a run by hand says SKIP and counts nothing rather than measuring a shared one, and CI, whose job
 # turns Ubuntu's AppArmor restriction off first (ci-job-test.yaml), fails the case instead.
 private="$work/private"
 private_state="$work/private.json"
+private_ready="$work/private.status"
 mkdir "$private"
-if private_out=$(unshare --user --map-root-user --mount sh -c 'mount -t tmpfs -o size=1m tmpfs "$1"' sh "$private" 2>&1); then
-  # The sampler outlives this shell and keeps the namespace, and the tmpfs in it, until it stops.
-  private_status=0
-  private_out=$(unshare --user --map-root-user --mount sh -c '
-    mount -t tmpfs -o size=128m tmpfs "$1" || exit 90
-    env -i PATH="$2" HOME="$3" TMPDIR="$3" "$4" start --path "$1" --state "$5" || exit 91
-    dd if=/dev/zero of="$1/filler" bs=1M count=64 status=none || exit 92
-  ' sh "$private" "$work/bin" "$work" "$watch" "$private_state" 2>&1) || private_status=$?
+if private_out=$(unshare --user --map-root-user --mount --pid --fork sh -c 'mount -t tmpfs -o size=1m tmpfs "$1"' sh "$private" 2>&1); then
+  # The namespaces live exactly as long as this script holds the pipe below open. Their first
+  # process waits on it, and when the first process of a PID namespace exits the kernel kills every
+  # other process in it: the sampler with it, and the tmpfs with the mount namespace. Only this
+  # script holds the write end (the samplers start closes every inherited descriptor), so the
+  # namespaces end when the case closes it, or when this script exits by any path, a SIGKILL that
+  # no trap sees included; no sampler is left on its 5,400 s backstop. The pid in the state file
+  # is the sampler's pid inside its own PID namespace, so nothing here signals it: `report`, which
+  # would, is left to the cases of the shared sampler.
+  exec {private_hold}> >(exec unshare --user --map-root-user --mount --pid --fork sh -c '
+    mount -t tmpfs -o size=128m tmpfs "$1" || { echo 90 >"$6"; exit; }
+    env -i PATH="$2" HOME="$3" TMPDIR="$3" "$4" start --path "$1" --state "$5" >/dev/null 2>&1 || { echo 91 >"$6"; exit; }
+    dd if=/dev/zero of="$1/filler" bs=1M count=64 status=none || { echo 92 >"$6"; exit; }
+    echo 0 >"$6"
+    cat >/dev/null
+  ' sh "$private" "$work/bin" "$work" "$watch" "$private_state" "$private_ready")
+  for _ in $(seq 100); do
+    [ -s "$private_ready" ] && break
+    sleep 0.2
+  done
+  private_status=$(tr -d '\n' 2>/dev/null <"$private_ready" || true)
   check "start watched a tmpfs only this case writes, and the case wrote 64 MiB on it" \
     "$(is "$private_status" 0)"
   if [ "$private_status" = 0 ]; then
-    pid=$(field "$private_state" sampler_pid)
     private_before=$(field "$private_state" before_kb)
     fell=0
     for _ in $(seq 20); do
@@ -193,13 +206,18 @@ if private_out=$(unshare --user --map-root-user --mount sh -c 'mount -t tmpfs -o
     check "least_kb fell by at least the 64 MiB written, 65536 kB below before_kb" \
       "$([ "$fell" -ge 65536 ] && echo true || echo false)"
     check "before_kb is unchanged" "$(is "$(field "$private_state" before_kb)" "$private_before")"
-    # The sampler is the last process in that namespace, so stopping it also frees the tmpfs.
-    run_watch report --state "$private_state"
-    check "report stopped that sampler" "$(is "$(alive "$pid")" false)"
-    [ "$(alive "$pid")" = true ] || pid=""
-  else
-    printf '%s\n' "$private_out" >&2
+    # The sampler is seen from here by its command line, which names the case's own private path:
+    # it must be seen while the namespaces live, or its absence after them would prove nothing.
+    check "the sampler runs in the namespaces, seen by its command line" \
+      "$([ -n "$(pgrep -f -- "disk_watch.py sample --path $private " || true)" ] && echo true || echo false)"
   fi
+  exec {private_hold}>&-
+  for _ in $(seq 50); do
+    pgrep -f -- "disk_watch.py sample --path $private " >/dev/null || break
+    sleep 0.1
+  done
+  check "closing the pipe ended the namespaces, and the sampler in them" \
+    "$(is "$(pgrep -f -- "disk_watch.py sample --path $private " || true)" "")"
 elif [ "${GITHUB_ACTIONS:-}" = true ]; then
   check "the kernel granted an unprivileged tmpfs mount, which the job's step before this one allows: ${private_out%%$'\n'*}" false
 else
