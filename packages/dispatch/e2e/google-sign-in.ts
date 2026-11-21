@@ -137,7 +137,9 @@ export async function queueGoogleSignIn(
  *  `repeatable` is the browser errors a hop is made again for, `NETWORK_CHANGED` alone unless a
  *  caller names others: Playwright cannot fail a request with that error itself (its
  *  `route.abort` codes hold no network change), so the row that proves the repeat
- *  (`outside-passkey.e2e.ts`) drops a hop with another error and names it here. */
+ *  (`outside-passkey.e2e.ts`) drops a hop with another error and names it here. `onRepeat` hears
+ *  of each repeat alone; a wait of `goAgain`'s that ran out is noted on the row's report
+ *  (`noteRepeat`), so a caller counting repeats counts nothing else. */
 export async function signInWithGoogle(
   page: Page,
   origin: string,
@@ -188,7 +190,8 @@ export async function signInWithGoogle(
       repeats++;
       onRepeat(`${hop}: ${error}, made again`);
       // The repeat's own events settle the wait, and a failure of it reaches `failed` again.
-      void goAgain(page, request.url(), onRepeat).catch(() => undefined);
+      // goAgain's note of a wait that ran out goes to the row's report, not to `onRepeat`.
+      void goAgain(page, request.url(), noteRepeat).catch(() => undefined);
       return;
     }
     reject(new Error(`the browser's request to ${hop} for ${email} failed: ${error}`));
