@@ -137,28 +137,36 @@ test("dispatch login refuses a call it cannot make, and says why", async () => {
   expect(openDirectory.stdout).toContain("chmod 700");
   expect(stub.authorizations).toHaveLength(0);
   // So is a directory of this user's own that this user cannot enter (0600, as a `chmod -R 600`
-  // leaves it) or cannot write to (0555). Root passes `access` on any mode, so under root these
-  // cases would ask for a code; they run only as an ordinary user, as CI's runner is.
+  // leaves it) or cannot write to (0555). Root passes `access` on any mode, so under root each
+  // case asks for its code and keeps the login there; the row checks that instead, so it always
+  // checks something. Each case has a broker of its own that approves at once.
   const asRoot = process.getuid?.() === 0;
-  for (const [name, mode] of asRoot
-    ? []
-    : ([
-        ["unentered", 0o600],
-        ["closed", 0o555],
-      ] as const)) {
+  for (const [name, mode] of [
+    ["unentered", 0o600],
+    ["closed", 0o555],
+  ] as const) {
+    const approving = broker();
     const closed = path.join(tempDir(), name, "device-login.json");
     mkdirSync(path.dirname(closed));
     chmodSync(path.dirname(closed), mode);
     const closedDirectory = await dispatch(["login", "--device", "--person", PERSON], {
       ...env,
+      AGENT_SECRETS_URL: approving.url,
       AGENT_SECRETS_DEVICE_LOGIN_FILE: closed,
     });
     chmodSync(path.dirname(closed), 0o700);
-    expect(closedDirectory.code, `${name}: ${closedDirectory.stdout}`).toBe(2);
-    expect(closedDirectory.stdout, name).toContain("cannot enter and write");
-    expect(closedDirectory.stdout, name).toContain("EACCES; run chmod 700");
-    expect(stub.authorizations, name).toHaveLength(0);
+    if (asRoot) {
+      expect(closedDirectory.code, `${name}: ${closedDirectory.stdout}`).toBe(0);
+      expect(closedDirectory.stdout, name).not.toContain("cannot enter and write");
+      expect(approving.authorizations, name).toHaveLength(1);
+    } else {
+      expect(closedDirectory.code, `${name}: ${closedDirectory.stdout}`).toBe(2);
+      expect(closedDirectory.stdout, name).toContain("cannot enter and write");
+      expect(closedDirectory.stdout, name).toContain("EACCES; run chmod 700");
+      expect(approving.authorizations, name).toHaveLength(0);
+    }
   }
+  expect(stub.authorizations).toHaveLength(0);
 
   const denied = await dispatch(["login", "--device", "--person", PERSON], env);
   expect(denied.code).toBe(1);
