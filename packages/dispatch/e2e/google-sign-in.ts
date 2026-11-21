@@ -144,7 +144,9 @@ export async function signInWithGoogle(
     signInBoundMs
   );
   try {
-    await page.getByRole("link", { name: "Sign in with Google" }).click();
+    // The press does not wait for the navigation it starts: Playwright's wait for it would end
+    // at the action deadline as a bare click timeout that names no hop, before the bound above.
+    await page.getByRole("link", { name: "Sign in with Google" }).click({ noWaitAfter: true });
     return await answered;
   } finally {
     clearTimeout(bound);
