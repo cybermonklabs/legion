@@ -804,16 +804,13 @@ func TestCountedChangesNameTheIssueOfAChangedContentTarget(t *testing.T) {
 		if err != nil {
 			t.Fatalf("comment on %d issues: %v", CountedChangeLimit+1, err)
 		}
-		targets := []Target{}
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				t.Fatalf("scan a comment's id: %v", err)
-			}
-			targets = append(targets, Target{Kind: "comment", ID: id})
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the comments' ids: %v", err)
 		}
-		if err := rows.Err(); err != nil {
-			t.Fatalf("iterate the comments' ids: %v", err)
+		targets := make([]Target, len(ids))
+		for index, id := range ids {
+			targets[index] = Target{Kind: "comment", ID: id}
 		}
 		if len(targets) != CountedChangeLimit+1 {
 			t.Fatalf("wrote %d comments; want one on each of %d issues", len(targets), CountedChangeLimit+1)

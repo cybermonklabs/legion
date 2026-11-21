@@ -397,9 +397,10 @@ export function isDocumentUnloadable(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "DOCUMENT_UNLOADABLE";
 }
 
-// An issue's reference closure walk cut at the server's bound (`503 REFERENCES_TIMEOUT`): the walk
-// costs the database the whole bound each time, so an automatic retry only multiplies that cost
-// and shows nothing more. The page offers its own Retry instead.
+// An issue's references read, one hop each way, cut at the server's 2 s bound (`503
+// REFERENCES_TIMEOUT`): a read that reaches the bound costs the database the whole of it, so an
+// automatic retry only multiplies that cost and shows nothing more. The page offers its own Retry
+// instead.
 export function isReferencesTimeout(error: unknown): boolean {
   return error instanceof ApiError && error.status === 503 && error.code === "REFERENCES_TIMEOUT";
 }
@@ -1709,8 +1710,10 @@ export class DispatchApiClient {
     );
   }
 
+  /** The issue's references read, each member carrying its latest version alone
+   *  (`versions=latest`): the Artifacts tab, its one reader, draws no member's older versions. */
   getIssueReferences(key: string) {
-    return this.read("/api/v1/issues/{key}/references", { key });
+    return this.read("/api/v1/issues/{key}/references", { key }, { versions: "latest" });
   }
 
   /** Everyone who worked the issue, running or not: people, and agent sessions merged with the

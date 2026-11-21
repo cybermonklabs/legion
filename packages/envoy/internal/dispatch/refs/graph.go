@@ -149,8 +149,7 @@ func itemBlockIDs(kind ItemKind, param string) string {
 }
 
 // itemBlockLinks and itemBlockCurrent are the rule that a link a block of an item holds stands
-// while that block is one of the item's current ones; askPartLinksFrom and askPartLinksCurrent
-// (refs/ask_blocks.go) still write it for closureQuery. itemBlockLinks is the from of a read of
+// while that block is one of the item's current ones. itemBlockLinks is the from of a read of
 // the links the blocks of an item of kind hold, its link table aliased r joined to its blocks
 // table aliased b by the item and the block id, and itemBlockCurrent the condition on b. A
 // removed block keeps its row with no position, so the links it held drop out until a revision
@@ -535,6 +534,11 @@ func (n resolvedNode) name() string {
 
 // nodeLoader loads the nodes of one kind whose ids are ids into nodes. Artifact ids are uuids on
 // the from side of an edge and ref_keys on the to side; byRefKey says which the ids are.
+//
+// The block, ask, comment and message loaders join issues, artifacts and artifact_versions by
+// lateral probes by key that each stop at their first row, so however many ids a read passes, the
+// planner cannot hash-join a sequential read of a whole table, as it did for a plain join to
+// issues from about 80 ids with 12,000 issues. Each of those loaders names its probes.
 type nodeLoader func(ctx context.Context, q Queryer, kind string, byRefKey bool, ids []string, nodes map[[2]string]resolvedNode) error
 
 // nodeLoaders resolves each node kind this build knows. These are node kinds, the ends of an
@@ -692,9 +696,7 @@ func loadArtifactNodes(ctx context.Context, q Queryer, _ string, byRefKey bool, 
 // that version (blockFirstVersion); its last change is its changed version, by that version's
 // authors. It belongs to its document at its changed version.
 //
-// Each join to artifacts and artifact_versions is a lateral probe by key that stops at its first
-// row, so however many ids a read passes, the planner cannot hash-join a sequential read of a
-// whole table, as it did for a plain join to issues from about 80 ids with 12,000 issues.
+// Its joins to artifacts and artifact_versions are lateral probes by key (nodeLoader).
 func loadBlockNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select d.node_id, d.block_id, d.excerpt, d.changed_version, d.changed_at, changed.authors,
@@ -785,9 +787,7 @@ func anchorVersion(alias string) string {
 // The edit lookup repeats events_ask_payload_id's type list (migration 0030), so the planner can
 // prove the partial index serves it.
 //
-// Each join to issues and artifacts is a lateral probe by key that stops at its first row, so
-// however many ids a read passes, the planner cannot hash-join a sequential read of a whole table,
-// as it did for a plain join to issues from about 80 ids with 12,000 issues.
+// Its joins to issues and artifacts are lateral probes by key (nodeLoader).
 func loadAskNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	anchorArtifact := store.CastableUUID(`k.anchor->>'artifact_id'`)
 	rows, err := q.Query(ctx, `
@@ -857,9 +857,7 @@ func loadAskNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []string
 // belongs to its issue. A reply shares its head's owner, and so the owner its reference, and the
 // reference of the block it names, are written under.
 //
-// Each join to issues and artifacts is a lateral probe by key that stops at its first row, so
-// however many ids a read passes, the planner cannot hash-join a sequential read of a whole table,
-// as it did for a plain join to issues from about 80 ids with 12,000 issues.
+// Its joins to issues and artifacts are lateral probes by key (nodeLoader).
 func loadCommentNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select c.id::text, c.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), c.body,
@@ -915,9 +913,7 @@ func loadCommentNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []st
 // it answers, which shares its issue, and another message to its issue; a direct message belongs
 // to no node.
 //
-// The join to issues is a lateral probe by key that stops at its first row, so however many ids
-// a read passes, the planner cannot hash-join a sequential read of every issue, as it did for a
-// plain join from about 80 ids with 12,000 issues.
+// Its join to issues is a lateral probe by key (nodeLoader).
 func loadMessageNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select m.id::text, m.issue_key, coalesce(i.project_key, ''), m.body, m.author, m.created_at, m.in_reply_to::text, m.replies_to_block

@@ -303,7 +303,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     };
   }
   const readPromise = client.read(issueKey, readEvents);
-  // Start the independent, non-fatal closure lookup with the issue read. `read` retains
+  // Start the independent, non-fatal references lookup with the issue read. `read` retains
   // its internal issue-then-events order because event pagination starts at issue.last_seq.
   const referencesPromise = issueReferencesOrUnavailable(client, issueKey);
   const read = await readPromise;
@@ -330,8 +330,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
       read.events,
       references,
       pictures.lines,
-      incoming,
-      outgoing,
+      { incoming, outgoing },
       linkBase,
       coverage,
       agents

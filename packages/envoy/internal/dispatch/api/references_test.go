@@ -453,8 +453,7 @@ func referencesBudgetCase(t *testing.T, database *store.Store) bool {
 		t.Fatalf("with 1 ms left the budget answered %v, want the timeout set", err)
 	}
 	value, err := setting()
-	var pgError *pgconn.PgError
-	if errors.As(err, &pgError) && pgError.Code == "57014" {
+	if closureBoundHit(err) {
 		return false
 	}
 	if err != nil || value != "1ms" {

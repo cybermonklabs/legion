@@ -23,21 +23,11 @@ type Member struct {
 
 // References is an issue's references read: Links, every node the issue's own content links to;
 // LinkedFrom, every node that links to the issue or to its own content; and Members, the
-// documents of Links.
+// documents of Links. When Closure answers no error, Links and LinkedFrom are never nil, so the
+// answer writes [] for a list with no row.
 type References struct {
 	Members           []Member
-	Links, LinkedFrom []Related
-}
-
-// Related is one node at the other end of a link of an issue's references read: Node, the node as
-// the graph read names it; Name, the words the graph read shows for it (resolvedNode.name);
-// Kinds, the distinct kinds of its links, in order; and Via, the lowest of the issue's nodes at
-// the near end of those links.
-type Related struct {
-	Node  model.GraphNode
-	Name  string
-	Kinds []string
-	Via   model.ReferenceVia
+	Links, LinkedFrom []model.ReferenceLink
 }
 
 // documentTarget is true of a link row r whose target is a document, or a block a current
@@ -316,8 +306,10 @@ func Closure(ctx context.Context, q Queryer, issueKey string) (References, error
 		return References{}, fmt.Errorf("read the links into %s and its own content: %w", issueKey, err)
 	}
 	lookups := make([]edgeRow, 0, len(out)+len(in))
-	for _, row := range slices.Concat(out, in) {
-		lookups = append(lookups, edgeRow{otherKind: row.kind, otherID: row.id})
+	for _, rows := range [...][]linkRow{out, in} {
+		for _, row := range rows {
+			lookups = append(lookups, edgeRow{otherKind: row.kind, otherID: row.id})
+		}
 	}
 	nodes, err := resolveNodes(ctx, tagged, true, lookups)
 	if err != nil {
@@ -339,29 +331,25 @@ func readLinkRows(ctx context.Context, q Queryer, statement, issueKey string) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var links []linkRow
-	for rows.Next() {
-		var row linkRow
-		if err := rows.Scan(&row.kind, &row.id, &row.kinds, &row.via.Kind, &row.via.ID); err != nil {
-			return nil, err
-		}
-		links = append(links, row)
-	}
-	return links, rows.Err()
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (linkRow, error) {
+		var link linkRow
+		err := row.Scan(&link.kind, &link.id, &link.kinds, &link.via.Kind, &link.via.ID)
+		return link, err
+	})
 }
 
 // related is each of rows whose node nodes names, in the order of the node's kind, then its id.
-func related(rows []linkRow, nodes map[[2]string]resolvedNode) []Related {
-	list := make([]Related, 0, len(rows))
+// It is never nil.
+func related(rows []linkRow, nodes map[[2]string]resolvedNode) []model.ReferenceLink {
+	list := make([]model.ReferenceLink, 0, len(rows))
 	for _, row := range rows {
 		node, found := nodes[[2]string{row.kind, row.id}]
 		if !found {
 			continue
 		}
-		list = append(list, Related{Node: node.GraphNode, Name: node.name(), Kinds: row.kinds, Via: row.via})
+		list = append(list, model.ReferenceLink{Node: node.GraphNode, Name: node.name(), Kinds: row.kinds, Via: row.via})
 	}
-	slices.SortFunc(list, func(left, right Related) int {
+	slices.SortFunc(list, func(left, right model.ReferenceLink) int {
 		return cmp.Or(strings.Compare(left.Node.Kind, right.Node.Kind), strings.Compare(left.Node.ID, right.Node.ID))
 	})
 	return list

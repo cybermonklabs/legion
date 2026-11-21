@@ -642,8 +642,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 			Via:      closureMember.Via,
 		})
 	}
-	links, linkedFrom := referenceLinks(closure.Links), referenceLinks(closure.LinkedFrom)
-	etag, err := referencesETag(issue.LastSeq, members, links, linkedFrom, latestOnly)
+	etag, err := referencesETag(issue.LastSeq, members, closure.Links, closure.LinkedFrom, latestOnly)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -656,19 +655,9 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, model.IssueReferences{
 		Members:    members,
 		Truncated:  false,
-		Links:      links,
-		LinkedFrom: linkedFrom,
+		Links:      closure.Links,
+		LinkedFrom: closure.LinkedFrom,
 	})
-}
-
-// referenceLinks is rows as the answer writes them: [] when there is none, since a nil slice
-// encodes as null, which this build never writes.
-func referenceLinks(rows []refs.Related) []model.ReferenceLink {
-	links := make([]model.ReferenceLink, 0, len(rows))
-	for _, row := range rows {
-		links = append(links, model.ReferenceLink{Node: row.Node, Name: row.Name, Kinds: row.Kinds, Via: row.Via})
-	}
-	return links
 }
 
 // referencesClosureBound is the budget every statement of one GET of an issue's references shares
@@ -718,17 +707,23 @@ type closureBudget struct {
 }
 
 func (b closureBudget) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	if err := setStatementBudget(ctx, b.tx, referencesClosureBound-time.Since(b.started)); err != nil {
+	if err := b.spend(ctx); err != nil {
 		return nil, err
 	}
 	return b.tx.Query(ctx, sql, args...)
 }
 
 func (b closureBudget) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	if err := setStatementBudget(ctx, b.tx, referencesClosureBound-time.Since(b.started)); err != nil {
+	if err := b.spend(ctx); err != nil {
 		return refusedRow{err: err}
 	}
 	return b.tx.QueryRow(ctx, sql, args...)
+}
+
+// spend gives the next statement of the read what is left of referencesClosureBound since
+// started (setStatementBudget).
+func (b closureBudget) spend(ctx context.Context) error {
+	return setStatementBudget(ctx, b.tx, referencesClosureBound-time.Since(b.started))
 }
 
 // refusedRow is the row closureBudget answers for a statement it did not send: its Scan answers

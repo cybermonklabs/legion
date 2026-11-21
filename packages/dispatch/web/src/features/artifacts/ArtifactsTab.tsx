@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useId, useMemo, useState } from "react";
+import { memo, type ReactNode, useId, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
@@ -207,8 +207,13 @@ function ReferenceLinkRow({
 // header's "Referenced by" toggle, which reads the edges into the issue's own node alone. An
 // answer without `links`, from a build before the one-hop read, is drawn as that build's walk
 // always was: the documents of its `members`, each with its depth, and a line when the walk was
-// cut at 8 hops.
-function References({ references }: { references: ReferencesAnswer }): ReactNode {
+// cut at 8 hops. It is memoized: a keystroke in the tab's filter renders the tab again, and the
+// answer, the one prop, is the same object until the read answers anew.
+const References = memo(function References({
+  references,
+}: {
+  references: ReferencesAnswer;
+}): ReactNode {
   if (references.links === undefined) {
     const members = references.members ?? [];
     if (members.length === 0) {
@@ -284,7 +289,7 @@ function References({ references }: { references: ReferencesAnswer }): ReactNode
       )}
     </ReferencesDisclosure>
   );
-}
+});
 
 function ArtifactRow({
   artifact,

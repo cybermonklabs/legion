@@ -52,7 +52,7 @@ export function edgeLine(edge: GraphEdge): string {
 }
 
 /**
- * How a read degrades a graph or closure section the server cannot serve. Dispatch's own 404 is a
+ * How a read degrades a graph or references section the server cannot serve. Dispatch's own 404 is a
  * server without the route; any other failure, a gateway's 404 page included, is named.
  */
 function unavailableReason(error: unknown): string {
@@ -86,7 +86,7 @@ export async function issueReferencesOrUnavailable(
 /**
  * What the issue's requirements lack, or why the server could not say: a Dispatch that does not
  * serve the coverage read yet answers `unavailable`, and any other failure is named, as the
- * closure and graph sections do (unavailableReason). A swallowed failure would make a spec with
+ * references and graph sections do (unavailableReason). A swallowed failure would make a spec with
  * uncovered requirements read exactly like a fully covered one.
  */
 export async function issueCoverageOrReason(
@@ -104,8 +104,8 @@ export async function issueCoverageOrReason(
  * The sections every read ends with: the `Node:` line (the read node's maker, last change and
  * parent), `Referenced by:` (edges pointing at the node, mentions and structure alike) and
  * `Links:` (edges it writes), read from the reference graph in both directions. A graph the
- * server cannot serve degrades to one "unavailable" row, like the closure section, so the read
- * itself still answers.
+ * server cannot serve degrades to one "unavailable" row, like the References section, so the
+ * read itself still answers.
  */
 export async function graphSections(client: DispatchClient, ref: string): Promise<string[]> {
   const [incoming, outgoing] = await Promise.all([

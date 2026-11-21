@@ -386,14 +386,16 @@ function referenceSections(
 
 /** An issue's read: its facts, `References:` and `Events:`, then the pictures its texts show and
  *  the issue node's `Node:` line, `Referenced by:` and `Links:` from the graph read of the issue
- *  node in each direction (`incoming`, `outgoing`). */
+ *  node in each direction (`graph.incoming`, `graph.outgoing`). */
 export function issueSummary(
   issue: IssueDetails,
   events: readonly DispatchEvent[],
   references: IssueReferencesAnswer | string,
   pictures: readonly string[],
-  incoming: GraphReferences | string,
-  outgoing: GraphReferences | string,
+  graph: {
+    readonly incoming: GraphReferences | string;
+    readonly outgoing: GraphReferences | string;
+  },
   linkBase: string | undefined,
   coverage: IssueCoverage | string,
   agents?: LiveAgents
@@ -401,7 +403,7 @@ export function issueSummary(
   const asks = issue.open_asks ?? [];
   const labels = issue.labels ?? [];
   const links = issue.external_links ?? [];
-  const sections = referenceSections(references, incoming, outgoing);
+  const sections = referenceSections(references, graph.incoming, graph.outgoing);
   const spec = issue.artifacts?.find((artifact) => artifact.primary);
   const specApproval =
     spec === undefined ? undefined : approvalLine(spec, typeof issue.closed_at === "string");
@@ -456,7 +458,7 @@ export function issueSummary(
     "Events:",
     ...(events.length === 0 ? ["- none"] : events.map(eventLine)),
     ...pictures,
-    ...graphSectionLines(incoming, outgoing, sections.referencedBy),
+    ...graphSectionLines(graph.incoming, graph.outgoing, sections.referencedBy),
   ].join("\n");
 }
 

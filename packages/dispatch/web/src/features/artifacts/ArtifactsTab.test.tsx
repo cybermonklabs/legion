@@ -5,9 +5,10 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
-import type { Artifact, GraphEdge, IssueReferences } from "../../api/types";
+import type { Artifact, IssueReferences } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
 import { ArtifactsTab } from "./ArtifactsTab";
 
@@ -62,27 +63,6 @@ const noReferences: IssueReferences = {
  *  `packages/envoy/cmd/dispatch/README.md`), so the answer reaches the page as the route's. */
 function olderAnswer(answer: Omit<IssueReferences, "links" | "linked_from">): IssueReferences {
   return answer as IssueReferences;
-}
-
-/** A node as the graph read gives it, with no maker, change or parent recorded. */
-function graphNode(
-  kind: string,
-  id: string,
-  ref: string,
-  owner: { readonly issue_key?: string; readonly project: string }
-): GraphEdge["node"] {
-  return {
-    changed_at: null,
-    changed_by: null,
-    id,
-    kind,
-    made_at: null,
-    made_by: null,
-    parent: null,
-    parent_version: null,
-    ref,
-    ...owner,
-  };
 }
 
 function Location() {
@@ -477,12 +457,18 @@ test("References lists the issue's links and Referenced by the nodes that link t
   const comment = "cccccccc-0000-4000-8000-000000000009";
   const message = "eeeeeeee-0000-4000-8000-000000000007";
   const viaComment = { id: "comment-1", kind: "comment" };
-  const projectDocument = graphNode("artifact", "artifact-a", "dispatch://CORE/artifact/a-md", {
+  const projectDocument = graphNode({
+    id: "artifact-a",
+    kind: "artifact",
     project: "CORE",
+    ref: "dispatch://CORE/artifact/a-md",
   });
-  const issueDocument = graphNode("artifact", "artifact-c", "dispatch://CORE-7/artifact/c-md", {
+  const issueDocument = graphNode({
+    id: "artifact-c",
     issue_key: "CORE-7",
+    kind: "artifact",
     project: "CORE",
+    ref: "dispatch://CORE-7/artifact/c-md",
   });
   const answer: IssueReferences = {
     members: [
@@ -520,18 +506,24 @@ test("References lists the issue's links and Referenced by the nodes that link t
       {
         kinds: ["mentions"],
         name: "Ship the parser",
-        node: graphNode("issue", "CORE-9", "dispatch://CORE-9", {
+        node: graphNode({
+          id: "CORE-9",
           issue_key: "CORE-9",
+          kind: "issue",
           project: "CORE",
+          ref: "dispatch://CORE-9",
         }),
         via: { id: "artifact-1", kind: "artifact" },
       },
       {
         kinds: ["mentions"],
         name: "The parser lands on Friday.",
-        node: graphNode("comment", comment, `dispatch://CORE-9/comment/${comment}`, {
+        node: graphNode({
+          id: comment,
           issue_key: "CORE-9",
+          kind: "comment",
           project: "CORE",
+          ref: `dispatch://CORE-9/comment/${comment}`,
         }),
         via: viaComment,
       },
@@ -546,17 +538,23 @@ test("References lists the issue's links and Referenced by the nodes that link t
       {
         kinds: ["mentions"],
         name: "e.md",
-        node: graphNode("artifact", "artifact-e", "dispatch://OPS/artifact/e-md", {
+        node: graphNode({
+          id: "artifact-e",
+          kind: "artifact",
           project: "OPS",
+          ref: "dispatch://OPS/artifact/e-md",
         }),
         via: { id: "CORE-1/diagram-png", kind: "artifact" },
       },
       {
         kinds: ["mentions"],
         name: "See the diagram",
-        node: graphNode("message", message, `dispatch://CORE-7/message/${message}`, {
+        node: graphNode({
+          id: message,
           issue_key: "CORE-7",
+          kind: "message",
           project: "CORE",
+          ref: `dispatch://CORE-7/message/${message}`,
         }),
         via: { id: "CORE-1", kind: "issue" },
       },

@@ -491,11 +491,23 @@ var oneHopTables = []fixtureTable{
 	{"message_block_refs", []string{"message_id", "block_id", "from_node", "to_kind", "to_id", "kind"}},
 }
 
-// The actor every row of the one-hop fixture is made by, and the authors of every version.
-const (
-	fixtureActor   = `{"kind":"user","id":"alice"}`
-	fixtureAuthors = `[{"kind":"user","id":"alice"}]`
-)
+// fixtureAuthors is the authors of every version of the one-hop fixture, whose rows are each made
+// by edgesFixtureActor.
+const fixtureAuthors = `[{"kind":"user","id":"alice"}]`
+
+// seededUUID is a version 4 uuid made of the next two draws of random, so that a fixture seeded
+// alike writes the same ids.
+func seededUUID(random *rand.Rand) uuid.UUID {
+	var id uuid.UUID
+	binary.BigEndian.PutUint64(id[:8], random.Uint64())
+	binary.BigEndian.PutUint64(id[8:], random.Uint64())
+	id[6] = id[6]&0x0f | 0x40
+	id[8] = id[8]&0x3f | 0x80
+	return id
+}
+
+// pgUUID is id as a fixture's copy writes a uuid column.
+func pgUUID(id uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: id, Valid: true} }
 
 // fixtureDocument is one document of a fixture: its id, its ref_key, which a link to it stores,
 // and its name, the words the graph read shows for it.
@@ -640,15 +652,6 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 	built := time.Now()
 	at := time.Date(2026, 11, 20, 1, 32, 0, 0, time.UTC)
 	random := rand.New(rand.NewPCG(4704, 1098))
-	newID := func() uuid.UUID {
-		var id uuid.UUID
-		binary.BigEndian.PutUint64(id[:8], random.Uint64())
-		binary.BigEndian.PutUint64(id[8:], random.Uint64())
-		id[6] = id[6]&0x0f | 0x40
-		id[8] = id[8]&0x3f | 0x80
-		return id
-	}
-	pgID := func(id uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: id, Valid: true} }
 	nullable := func(value string) any {
 		if value == "" {
 			return nil
@@ -668,9 +671,9 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 	}
 	names := map[[2]string]string{}
 	issue := func(key, project string, number int, title, parent string) {
-		add("issues", key, project, number, title, fixtureActor, fmt.Sprintf("%s%08d", project, number), nullable(parent))
+		add("issues", key, project, number, title, edgesFixtureActor, fmt.Sprintf("%s%08d", project, number), nullable(parent))
 		if whole {
-			add("events", key, 1, "issue.created", fixtureActor, "{}", false, at)
+			add("events", key, 1, "issue.created", edgesFixtureActor, "{}", false, at)
 		}
 		names[[2]string{"issue", key}] = title
 	}
@@ -680,13 +683,13 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 		if owner != "" {
 			prefix = owner
 		}
-		doc := fixtureDocument{id: newID(), refKey: prefix + "/" + slug, name: name}
-		add("artifacts", pgID(doc.id), nullable(owner), project, slug, name, "doc", fixtureActor, doc.refKey)
-		add("artifact_versions", pgID(doc.id), 1, fixtureAuthors)
-		add("document_indexed_versions", pgID(doc.id), 1)
+		doc := fixtureDocument{id: seededUUID(random), refKey: prefix + "/" + slug, name: name}
+		add("artifacts", pgUUID(doc.id), nullable(owner), project, slug, name, "doc", edgesFixtureActor, doc.refKey)
+		add("artifact_versions", pgUUID(doc.id), 1, fixtureAuthors)
+		add("document_indexed_versions", pgUUID(doc.id), 1)
 		for _, block := range blocks {
-			add("document_blocks", pgID(doc.id), block.id, doc.refKey+"#"+block.id, block.kind, "sha", name, 1, at)
-			add("document_block_texts", pgID(doc.id), block.id, 1, name)
+			add("document_blocks", pgUUID(doc.id), block.id, doc.refKey+"#"+block.id, block.kind, "sha", name, 1, at)
+			add("document_block_texts", pgUUID(doc.id), block.id, 1, name)
 		}
 		documents[doc.refKey] = doc
 		return doc
@@ -706,24 +709,24 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 		if toTypes != nil {
 			types = toTypes
 		}
-		add("block_refs", pgID(doc.id), block, doc.refKey+"#"+block, toKind, toID, kind, 1, types)
+		add("block_refs", pgUUID(doc.id), block, doc.refKey+"#"+block, toKind, toID, kind, 1, types)
 	}
 	// item writes an ask, a comment or a message of issueKey with one block for each of parts,
 	// each of that part's type, b1 first.
 	item := func(kind ItemKind, issueKey, words string, parts ...string) uuid.UUID {
-		id := newID()
+		id := seededUUID(random)
 		tables, err := kind.tables()
 		if err != nil {
 			t.Fatal(err)
 		}
-		add(tables.items, pgID(id), issueKey, fixtureActor, words)
+		add(tables.items, pgUUID(id), issueKey, edgesFixtureActor, words)
 		for position, part := range parts {
 			blockID := "b" + strconv.Itoa(position+1)
-			node := string(kind) + "/" + id.String() + "#" + blockID
+			node := itemBlockNodeID(kind, id.String(), blockID)
 			if kind == ItemMessage {
-				add(tables.blocks, pgID(id), blockID, node, position, part, "sha", words, at, at)
+				add(tables.blocks, pgUUID(id), blockID, node, position, part, "sha", words, at, at)
 			} else {
-				add(tables.blocks, pgID(id), blockID, node, position, part, "sha", words, 1, at)
+				add(tables.blocks, pgUUID(id), blockID, node, position, part, "sha", words, 1, at)
 			}
 		}
 		names[[2]string{string(kind), id.String()}] = words
@@ -741,7 +744,7 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 			if err != nil {
 				t.Fatal(err)
 			}
-			add(tables.refs, pgID(id), block, string(kind)+"/"+id.String()+"#"+block, toKind, toID, "mentions")
+			add(tables.refs, pgUUID(id), block, itemBlockNodeID(kind, id.String(), block), toKind, toID, "mentions")
 		}
 	}
 
@@ -874,9 +877,6 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 		itemVia := func(kind ItemKind, id uuid.UUID) model.ReferenceVia {
 			return model.ReferenceVia{Kind: string(kind), ID: id.String()}
 		}
-		blockOf := func(kind ItemKind, id uuid.UUID, block string) string {
-			return string(kind) + "/" + id.String() + "#" + block
-		}
 		type ownTarget struct {
 			kind, id string
 			via      model.ReferenceVia
@@ -892,17 +892,17 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 			{"block", notes.refKey + "#b1", artifactVia(notes)},
 			{"ask", question.String(), itemVia(ItemAsk, question)},
 			{"ask", second.String(), itemVia(ItemAsk, second)},
-			{"ask_block", blockOf(ItemAsk, question, "b1"), itemVia(ItemAsk, question)},
-			{"ask_block", blockOf(ItemAsk, question, "b2"), itemVia(ItemAsk, question)},
-			{"ask_block", blockOf(ItemAsk, second, "b1"), itemVia(ItemAsk, second)},
+			{"ask_block", itemBlockNodeID(ItemAsk, question.String(), "b1"), itemVia(ItemAsk, question)},
+			{"ask_block", itemBlockNodeID(ItemAsk, question.String(), "b2"), itemVia(ItemAsk, question)},
+			{"ask_block", itemBlockNodeID(ItemAsk, second.String(), "b1"), itemVia(ItemAsk, second)},
 			{"comment", unindexed.String(), itemVia(ItemComment, unindexed)},
 			{"comment", indexed.String(), itemVia(ItemComment, indexed)},
-			{"comment_block", blockOf(ItemComment, indexed, "b1"), itemVia(ItemComment, indexed)},
-			{"comment_block", blockOf(ItemComment, indexed, "b2"), itemVia(ItemComment, indexed)},
+			{"comment_block", itemBlockNodeID(ItemComment, indexed.String(), "b1"), itemVia(ItemComment, indexed)},
+			{"comment_block", itemBlockNodeID(ItemComment, indexed.String(), "b2"), itemVia(ItemComment, indexed)},
 			{"message", plain.String(), itemVia(ItemMessage, plain)},
 			{"message", blocked.String(), itemVia(ItemMessage, blocked)},
-			{"message_block", blockOf(ItemMessage, blocked, "b1"), itemVia(ItemMessage, blocked)},
-			{"message_block", blockOf(ItemMessage, blocked, "b2"), itemVia(ItemMessage, blocked)},
+			{"message_block", itemBlockNodeID(ItemMessage, blocked.String(), "b1"), itemVia(ItemMessage, blocked)},
+			{"message_block", itemBlockNodeID(ItemMessage, blocked.String(), "b2"), itemVia(ItemMessage, blocked)},
 		}
 		for source := range 400 {
 			count := 1
@@ -975,13 +975,13 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 				case 0:
 					itemLink(kind, id, "b1", "artifact", first[index%len(first)].refKey)
 				case 1:
-					itemLink(kind, id, "b1", kind.BlockKind(), string(kind)+"/"+next.String()+"#b1")
+					itemLink(kind, id, "b1", kind.BlockKind(), itemBlockNodeID(kind, next.String(), "b1"))
 				default:
 					itemLink(kind, id, "b1", string(kind), next.String())
 				}
 			}
 		}
-		add("architecture_sources", "OPS", int64(1), "ops/architecture", "main", int64(1), fixtureActor)
+		add("architecture_sources", "OPS", int64(1), "ops/architecture", "main", int64(1), edgesFixtureActor)
 		add("architecture_snapshots", int64(1), "OPS", "c0ffee", "{}")
 		for index := range oneHopMinimumRows {
 			id := "c" + strconv.Itoa(index)
@@ -1097,7 +1097,7 @@ func (f oneHopFixture) checkAnswer(t *testing.T, references References) {
 	t.Helper()
 	for _, field := range []struct {
 		name string
-		got  []Related
+		got  []model.ReferenceLink
 		want []string
 	}{{"links", references.Links, f.links}, {"linked_from", references.LinkedFrom, f.linkedFrom}} {
 		got := make([]string, 0, len(field.got))
@@ -1624,20 +1624,12 @@ func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
 		rows["projects"] = [][]any{{"RAND", "RAND project", "alice"}}
 		for seed := range graphs {
 			random := rand.New(rand.NewPCG(uint64(seed+1), 4704))
-			newID := func() uuid.UUID {
-				var id uuid.UUID
-				binary.BigEndian.PutUint64(id[:8], random.Uint64())
-				binary.BigEndian.PutUint64(id[8:], random.Uint64())
-				id[6] = id[6]&0x0f | 0x40
-				id[8] = id[8]&0x3f | 0x80
-				return id
-			}
 			issueKey := "RAND-" + strconv.Itoa(seed+1)
-			rows["issues"] = append(rows["issues"], []any{issueKey, "RAND", seed + 1, "Random graph " + strconv.Itoa(seed+1), fixtureActor, fmt.Sprintf("r%08d", seed+1)})
+			rows["issues"] = append(rows["issues"], []any{issueKey, "RAND", seed + 1, "Random graph " + strconv.Itoa(seed+1), edgesFixtureActor, fmt.Sprintf("r%08d", seed+1)})
 			ids := make([]uuid.UUID, 40)
 			refKeys := make([]string, 40)
 			for index := range ids {
-				ids[index] = newID()
+				ids[index] = seededUUID(random)
 				var owner any
 				slug := fmt.Sprintf("g%d-d%d", seed+1, index)
 				refKeys[index] = "RAND/" + slug
@@ -1645,8 +1637,8 @@ func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
 					owner = issueKey
 					refKeys[index] = issueKey + "/" + slug
 				}
-				rows["artifacts"] = append(rows["artifacts"], []any{pgtype.UUID{Bytes: ids[index], Valid: true}, owner, "RAND", slug, slug, "doc", fixtureActor, refKeys[index]})
-				rows["document_blocks"] = append(rows["document_blocks"], []any{pgtype.UUID{Bytes: ids[index], Valid: true}, "b1", refKeys[index] + "#b1", "paragraph", "sha", slug, 1, time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)})
+				rows["artifacts"] = append(rows["artifacts"], []any{pgUUID(ids[index]), owner, "RAND", slug, slug, "doc", edgesFixtureActor, refKeys[index]})
+				rows["document_blocks"] = append(rows["document_blocks"], []any{pgUUID(ids[index]), "b1", refKeys[index] + "#b1", "paragraph", "sha", slug, 1, time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)})
 			}
 			target := func(index int) (string, string) {
 				switch choice := random.IntN(10); {
@@ -1668,8 +1660,8 @@ func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
 					ref("artifact", id.String(), kind, toID)
 				}
 			}
-			comment := newID()
-			rows["comments"] = append(rows["comments"], []any{pgtype.UUID{Bytes: comment, Valid: true}, issueKey, fixtureActor, "cites"})
+			comment := seededUUID(random)
+			rows["comments"] = append(rows["comments"], []any{pgUUID(comment), issueKey, edgesFixtureActor, "cites"})
 			reached := 2 + random.IntN(len(ids)-2)
 			ref("comment", comment.String(), "artifact", refKeys[reached])
 			for range random.IntN(4) {
