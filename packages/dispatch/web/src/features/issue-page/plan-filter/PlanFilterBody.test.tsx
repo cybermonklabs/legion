@@ -1,10 +1,11 @@
 import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
 import {
   artifactBlocksQuery,
@@ -41,6 +42,7 @@ import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId } from "../tree-drafts";
+import { issueAsksQuery } from "../useIssueTree";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
 /**
@@ -568,7 +570,7 @@ test("an address opened before the reads answer lands on its step once they answ
     expect(document.activeElement).toBe(retryOf(refused, "plan"));
     await userEvent.keyboard("{Enter}");
     expect(asked).toEqual(["plan"]);
-    refused.redraw(root, failedAs([], [{ failure: 1, read: "plan", retrying: true }]));
+    refused.redraw(root, failedAs([], [{ failure: 1, read: "plan", retrying: true }], true));
     refused.redraw(root, ANSWERED);
     await settled();
     await aFrame();
@@ -654,9 +656,15 @@ function taskBlock(id: string): ArtifactBlock {
 }
 
 /** A query client holding every read the issue's tree is built from (`useIssueTree.ts`), each
- *  answered and never stale, so none is sent: the plan's two tasks, and the spec's blocks, which
- *  a case may leave unheld for its read to go to `api.getArtifactBlocks`. */
-function slotClient({ specHeld = true }: { specHeld?: boolean } = {}): QueryClient {
+ *  answered and never stale, so none is sent: the plan's two tasks, and the spec's blocks, either
+ *  of which a case may leave unheld for its read to go to `api.getArtifactBlocks`. */
+function slotClient({
+  planHeld = true,
+  specHeld = true,
+}: {
+  planHeld?: boolean;
+  specHeld?: boolean;
+} = {}): QueryClient {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -678,11 +686,14 @@ function slotClient({ specHeld = true }: { specHeld?: boolean } = {}): QueryClie
     document: null,
     open_questions: [],
   });
-  for (const read of ["asks", "comments", "issue-messages"]) client.setQueryData([read, KEY], []);
-  client.setQueryData(artifactBlocksQuery(PLAN_ARTIFACT).queryKey, [
-    taskBlock("t1"),
-    taskBlock("t2"),
-  ]);
+  client.setQueryData(issueAsksQuery(KEY).queryKey, []);
+  for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
+  if (planHeld) {
+    client.setQueryData(artifactBlocksQuery(PLAN_ARTIFACT).queryKey, [
+      taskBlock("t1"),
+      taskBlock("t2"),
+    ]);
+  }
   if (specHeld) client.setQueryData(artifactBlocksQuery(SPEC_ARTIFACT).queryKey, []);
   return client;
 }
@@ -783,7 +794,7 @@ test("a refused read of the spec's blocks says so, with a Retry that reads them 
 // A read asked again that holds no answer is out again rather than failed while it runs, and its
 // line stays drawn through that run, its Retry busy and still holding the focus, so a second
 // press asks nothing and the focus never leaves the line (`slots/view-plan.tsx`'s
-// `failedWithNothing`, `FailedReadLine`).
+// `standsFailed`, `FailedReadLine`).
 test("a refused read's line stays drawn while its Retry reads again, its Retry busy and focused", async () => {
   setViewport(1440);
   const again = Promise.withResolvers<never>();
@@ -823,24 +834,88 @@ test("a refused read's line stays drawn while its Retry reads again, its Retry b
   }
 });
 
+// A refused read asked again while the browser is offline is held, not sent: TanStack Query
+// pauses its fetch until the network is back, and the read, which holds no answer, goes to
+// `pending` with its error cleared and its fetch `paused`, so it is neither in error nor running,
+// and keeps its count of failures. It still stands failed (`useIssueTree.ts`'s `standsFailed`),
+// so its line stays drawn with its Retry.
+test("a refused read's line stays drawn while its Retry waits for the network", async () => {
+  setViewport(1440);
+  const again = Promise.withResolvers<never>();
+  let specReads = 0;
+  const blocks = spyOn(api, "getArtifactBlocks").mockImplementation(((id: string) => {
+    if (id !== SPEC_ARTIFACT) return again.promise;
+    specReads += 1;
+    return specReads === 1 ? Promise.reject(new Error("refused")) : again.promise;
+  }) as never);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const client = slotClient({ specHeld: false });
+  const view = renderSlot(client, issueRead());
+  try {
+    const line = () => view.container.querySelector('[data-plan-unreadable="statements"]');
+    await waitFor(() => {
+      if (line() === null) throw new Error("the view says nothing of the refused statements read");
+    });
+    onlineManager.setOnline(false);
+    await userEvent.click(retryOf(view, "statements"));
+    const state = () => client.getQueryState(artifactBlocksQuery(SPEC_ARTIFACT).queryKey);
+    await waitFor(() =>
+      expect(state()?.fetchStatus, "Retry offline does not hold the spec's blocks read").toBe(
+        "paused"
+      )
+    );
+    await settled();
+    const read = state();
+    expect(
+      {
+        data: read?.data,
+        errorUpdateCount: read?.errorUpdateCount,
+        fetchStatus: read?.fetchStatus,
+        status: read?.status,
+      },
+      "the spec's blocks read asked again offline is not a paused refetch that holds no answer"
+    ).toEqual({ data: undefined, errorUpdateCount: 1, fetchStatus: "paused", status: "pending" });
+    expect(specReads, "Retry offline sent the spec's blocks read").toBe(1);
+    expect(
+      line(),
+      "the statements line leaves while its Retry waits for the network"
+    ).not.toBeNull();
+    expect(
+      line()?.querySelector("button")?.textContent,
+      "the statements line drops its Retry while its Retry waits for the network"
+    ).toBe(CONTROL_LABELS.retry);
+  } finally {
+    view.unmount();
+    // Back online once the view is gone: its query client no longer listens for the network
+    // then, so the held read is never sent.
+    onlineManager.setOnline(true);
+    blocks.mockRestore();
+    names.mockRestore();
+  }
+});
+
 /** The reads as the slot hands them on where `reads` failed before they first answered, in the
- *  order given, each after its first failure and not running again, each Retry noting its read in
- *  `asked`. */
+ *  order given, each after its first failure and not running again, with no read out, each Retry
+ *  noting its read in `asked`. */
 function failed(asked: PlanRead[], ...reads: PlanRead[]): PlanReads {
   return failedAs(
     asked,
-    reads.map((read) => ({ failure: 1, read, retrying: false }))
+    reads.map((read) => ({ failure: 1, read, retrying: false })),
+    false
   );
 }
 
 /** The reads as the slot hands them on where each of `lines` failed before it first answered:
- *  which failure it is, and whether it runs again, as a read asked again does. */
+ *  which failure it is, and whether it runs again, as a read asked again does; and whether a
+ *  read is still out (`out`), as a line that runs again is. */
 function failedAs(
   asked: PlanRead[],
-  lines: readonly { failure: number; read: PlanRead; retrying: boolean }[]
+  lines: readonly { failure: number; read: PlanRead; retrying: boolean }[],
+  out: boolean
 ): PlanReads {
   return {
     failed: lines.map((line) => ({ ...line, retry: () => asked.push(line.read) })),
+    out,
     state: "failed",
   };
 }
@@ -857,9 +932,7 @@ async function settled(): Promise<void> {
 /** Lets one frame pass, in which the address's landing focuses its row (`landOnRow`). */
 async function aFrame(): Promise<void> {
   await act(async () => {
-    const { promise, resolve } = Promise.withResolvers<number>();
-    requestAnimationFrame(resolve);
-    await promise;
+    await nextFrame();
   });
 }
 
@@ -927,7 +1000,7 @@ test("the focus stays in the view while a retried read is out, and goes on to a 
   setViewport(1440);
   const root = issue([task("t1"), task("t2", { needs: ["t1"] })]);
   /** The plan's read, after its first failure, running again. */
-  const planRunsAgain = failedAs([], [{ failure: 1, read: "plan", retrying: true }]);
+  const planRunsAgain = failedAs([], [{ failure: 1, read: "plan", retrying: true }], true);
   /** Draws the view with `reads` refused and the focus on the Retry of `on`, then runs `steps`. */
   const from = async (
     reads: readonly PlanRead[],
@@ -986,7 +1059,7 @@ test("the focus stays in the view while a retried read is out, and goes on to a 
     view.redraw(root, planRunsAgain);
     inTheView(view, "the read Retry asked again is out");
     runningAgain(view, "plan");
-    view.redraw(root, failedAs([], [{ failure: 2, read: "plan", retrying: false }]));
+    view.redraw(root, failedAs([], [{ failure: 2, read: "plan", retrying: false }], false));
     inTheView(view, "the read Retry asked again is refused again");
     expect(document.activeElement, "the read refused again leaves the focus off its Retry").toBe(
       retryOf(view, "plan")
@@ -1030,7 +1103,8 @@ test("the focus stays in the view while a retried read is out, and goes on to a 
         [
           { failure: 1, read: "plan", retrying: false },
           { failure: 1, read: "statements", retrying: true },
-        ]
+        ],
+        true
       )
     );
     inTheView(view, "the statements read Retry asked again is out");
@@ -1106,11 +1180,7 @@ test("a focus moved onto the view's tree from its Retry stays on the tree", asyn
     // The stage gives the Retry the focus as the view is drawn, and counts a focus moved off it
     // onto the tree in that same frame as the chord's (`slots/stage.tsx`'s `placed`): a reader
     // moves a frame later at the soonest.
-    await act(async () => {
-      const { promise, resolve } = Promise.withResolvers<number>();
-      requestAnimationFrame(resolve);
-      await promise;
-    });
+    await aFrame();
     act(() => retryOf(view, "plan").focus());
     expect(document.activeElement).toBe(retryOf(view, "plan"));
     act(() => tree.focus({ preventScroll: true }));
@@ -1118,13 +1188,58 @@ test("a focus moved onto the view's tree from its Retry stays on the tree", asyn
       document.activeElement,
       "a focus moved from the Retry onto the tree is sent back to the Retry"
     ).toBe(tree);
-    // The tree holds nothing while its reads have not answered, and says so.
+    // The tree holds nothing while its reads have not answered, and reads busy only while a read
+    // is out: a refused read that is not running again leaves it not busy.
     expect(
       tree.getAttribute("aria-busy"),
-      "the tree of a view whose read is refused is not busy"
-    ).toBe("true");
+      "the tree of a view whose refused read is not running reads busy"
+    ).toBe("false");
   } finally {
     view.unmount();
+  }
+});
+
+// A read still out beside one that was refused - here the spec's blocks not yet answered, and
+// the plan's refused - leaves the view's tree busy: it holds nothing because a read has not
+// answered yet. Once the spec's answer is in, only the refused read is left, waiting for its
+// Retry, and the tree is not busy.
+test("the view's tree reads busy while a read is out beside a refused one, and not once it answers", async () => {
+  setViewport(1440);
+  const spec = Promise.withResolvers<ArtifactBlock[]>();
+  const blocks = spyOn(api, "getArtifactBlocks").mockImplementation(((id: string) =>
+    id === PLAN_ARTIFACT ? Promise.reject(new Error("refused")) : spec.promise) as never);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const view = renderSlot(slotClient({ planHeld: false, specHeld: false }), issueRead());
+  try {
+    const busy = () =>
+      view.container
+        .querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`)
+        ?.getAttribute("aria-busy");
+    const lines = () =>
+      [...view.container.querySelectorAll("[data-plan-unreadable]")].map((line) =>
+        line.getAttribute("data-plan-unreadable")
+      );
+    await waitFor(() =>
+      expect(lines(), "the view says nothing of the refused plan read").toEqual(["plan"])
+    );
+    await settled();
+    expect(
+      busy(),
+      "the tree of a view whose spec read is out beside a refused one is not busy"
+    ).toBe("true");
+    spec.resolve([]);
+    await waitFor(() =>
+      expect(busy(), "the tree of a view whose one read not answered is refused reads busy").toBe(
+        "false"
+      )
+    );
+    expect(lines(), "the refused plan read's line leaves once the spec's blocks answer").toEqual([
+      "plan",
+    ]);
+  } finally {
+    view.unmount();
+    blocks.mockRestore();
+    names.mockRestore();
   }
 });
 
@@ -1141,11 +1256,7 @@ test("the view's tree leaving the page with the focus on it gives the focus to t
     );
     if (tree === null) throw new Error("the view draws no tree");
     // A reader moves a frame after the stage gave the Retry the focus at the soonest, as above.
-    await act(async () => {
-      const { promise, resolve } = Promise.withResolvers<number>();
-      requestAnimationFrame(resolve);
-      await promise;
-    });
+    await aFrame();
     act(() => retryOf(view, "plan").focus());
     act(() => tree.focus({ preventScroll: true }));
     expect(document.activeElement).toBe(tree);

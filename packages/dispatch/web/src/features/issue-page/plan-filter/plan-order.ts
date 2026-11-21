@@ -209,10 +209,10 @@ export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
     if (held === undefined) members.set(group, [index]);
     else held.push(index);
   });
-  // Which groups each group waits on, and which wait on it. An edge inside one group is no
-  // wait: that is what being one group means.
+  // Which groups each group waits on, and every group some other group waits on. An edge inside
+  // one group is no wait: that is what being one group means.
   const waitsOn = new Map<number, Set<number>>();
-  const holdsUp = new Map<number, Set<number>>();
+  const waitedOn = new Set<number>();
   needs.forEach((needed, index) => {
     const group = groupOf[index] ?? index;
     for (const one of needed) {
@@ -221,16 +221,15 @@ export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
       const waiting = waitsOn.get(group) ?? new Set<number>();
       waiting.add(before);
       waitsOn.set(group, waiting);
-      const holding = holdsUp.get(before) ?? new Set<number>();
-      holding.add(group);
-      holdsUp.set(before, holding);
+      waitedOn.add(before);
     }
   });
   // The order is a depth-first walk that places the groups a group needs, each the same way,
   // before the group itself, so a need stands above the first group that needs it, past only
   // that group's other needs, and a chain reads down the page. It starts from each group no other
   // group needs, in the plan's own order, and takes the groups one needs in that order too. A
-  // group placed already keeps its place.
+  // group placed already keeps its place. Every group is reached from a start, since groups never
+  // wait on each other in a circle: the tasks of such a circle would be one group.
   const entries: PlanEntry[] = [];
   const placed = new Set<number>();
   const place = (group: number): void => {
@@ -248,14 +247,9 @@ export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
     if (alone && first !== undefined) entries.push({ kind: "step", task: first });
     else entries.push({ kind: "cycle", tasks });
   };
-  const groups = [...members.keys()].sort((one, other) => one - other);
-  for (const group of groups) {
-    if ((holdsUp.get(group)?.size ?? 0) === 0) place(group);
+  for (const group of [...members.keys()].sort((one, other) => one - other)) {
+    if (!waitedOn.has(group)) place(group);
   }
-  // Every group is reached from a start, since groups never wait on each other in a circle: the
-  // tasks of such a circle would be one group. Walking them all again places nothing then, and
-  // keeps every node drawn whatever the input.
-  for (const group of groups) place(group);
   return entries;
 }
 

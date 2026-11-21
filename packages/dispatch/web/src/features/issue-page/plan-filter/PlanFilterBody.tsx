@@ -36,6 +36,7 @@ import { focusedNodeOf, IssueTree, landOnRow, useReleaseFocus } from "../IssueTr
 import { drawnLine, firstLineOf, heldBy, lineWords, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
+import type { FailedRead } from "../outline-reads";
 import { authorText, pageChrome } from "../page-structure";
 import {
   CONTROL_LABELS,
@@ -64,20 +65,25 @@ export type PlanRead = "plan" | "statements";
 
 /** A read that failed before it first answered, with the press that asks that read alone again:
  *  whether it runs again (`retrying`), and which failure it is (`failure`), as the slot reads
- *  them (`slots/view-plan.tsx`). */
-export interface FailedRead {
-  readonly failure: number;
+ *  them (`slots/view-plan.tsx`). Those three mean what they mean on the outline's line
+ *  (`outline-reads.ts`'s `FailedRead`); `read` says which of the view's two reads failed. */
+export type PlanFailedRead = Pick<FailedRead, "failure" | "retry" | "retrying"> & {
   readonly read: PlanRead;
-  readonly retry: () => void;
-  readonly retrying: boolean;
-}
+};
 
 /** How the reads the body is drawn from stand: one still out, both answered, or one or both
  *  failed before they first answered, in the order the slot gives them (`slots/view-plan.tsx`). */
 export type PlanReads =
   | { readonly state: "waiting" }
   | { readonly state: "answered" }
-  | { readonly state: "failed"; readonly failed: readonly FailedRead[] };
+  | {
+      readonly state: "failed";
+      readonly failed: readonly PlanFailedRead[];
+      /** Whether a read of the view's is still out, waiting for its first answer or running
+       *  again: a refused read running again is out, and one that waits for its Retry or for the
+       *  network is not. */
+      readonly out: boolean;
+    };
 
 /**
  * The Plan filter's body (the picture `page-v3-plan-1440.png` and the prototype's `.plan`).
@@ -222,9 +228,13 @@ export function PlanFilterBody({
   // slot's line, which describes the tree.
   const saysEmpty = empty && answered && emptyLine !== undefined;
   const emptyLineId = useId();
-  // The empty tree leaving the page with the focus on it - a reader rested there, then tasks
-  // came - says so as a failed line does (`FailedReadLine`), so the stage puts the focus back in
-  // the view (`slots/stage.tsx`).
+  // A copy of `FailedReadLine`'s ref callback (`slots/failed-read-line.tsx`), for a box that is
+  // no failed line: when the empty tree leaves the page with the focus on it - a reader rested
+  // there, then tasks came - it calls the failed-line context (`FailedLineLeaves`) as a failed
+  // line leaving with the focus does, and leans on the stage's order of fallbacks for that line
+  // (`slots/stage.tsx`'s `StageBox`) to put the focus back in the view: on the tree's tab-stop
+  // row, since no Retry is left once tasks came. It stays a copy until that ref callback is
+  // exported for other boxes.
   const leaves = useContext(FailedLineLeaves);
   const treeBox = useCallback(
     (element: HTMLDivElement | null) =>
@@ -297,10 +307,12 @@ export function PlanFilterBody({
         // (`useIssueKeymap.ts`'s `reachPart`): it holds nothing, and once the reads have
         // answered the empty line stands under it, as `IssueTree` draws that line, and describes
         // it. `IssueTree`'s tree takes no focus; this one does, so the chord and the stage have a
-        // tree in the view to put the focus on.
+        // tree in the view to put the focus on. It reads busy while a read is out, still waiting
+        // for its first answer or running again (`PlanReads`' `out`), and not while each read
+        // not yet answered is refused and waits, for its Retry or for the network.
         <div className="mb-3 flex min-w-0 flex-col" ref={treeBox}>
           <div
-            aria-busy={!answered}
+            aria-busy={reads.state === "waiting" || (reads.state === "failed" && reads.out)}
             aria-describedby={saysEmpty ? emptyLineId : undefined}
             aria-label={CONTROL_LABELS.tree}
             className="flex min-w-0 flex-col"
