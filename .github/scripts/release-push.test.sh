@@ -1116,6 +1116,7 @@ run_name_step() {
 }
 mkdir -p "$work/wir-bare" "$work/wir-checkout/.github/scripts"
 cp "$release_push" "$work/wir-checkout/.github/scripts/release-push.sh"
+cp "$script_dir/gh-read.sh" "$work/wir-checkout/.github/scripts/gh-read.sh"
 leak_rules_into "$work/wir-checkout"
 run_name_step "$work/wir-bare"
 check "with no checkout: the step exits 127, having called no gh, as every legion release did" \
@@ -1493,6 +1494,8 @@ k7="$work/k7"
 mkdir -p "$k7/none/.github/scripts" "$k7/bad/.github/scripts" "$k7/bad/packages/daemon/internal/leakguard"
 cp "$release_push" "$k7/none/.github/scripts/release-push.sh"
 cp "$release_push" "$k7/bad/.github/scripts/release-push.sh"
+cp "$script_dir/gh-read.sh" "$k7/none/.github/scripts/gh-read.sh"
+cp "$script_dir/gh-read.sh" "$k7/bad/.github/scripts/gh-read.sh"
 printf 'this file is no TOML at all {{{\n' > "$k7/bad/packages/daemon/internal/leakguard/private-names.toml"
 # k7_run <tree>: the `release` create from that tree's copy of the script, against the stub gh.
 k7_run() {

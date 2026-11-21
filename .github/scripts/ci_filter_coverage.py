@@ -1244,6 +1244,10 @@ ENV_ALLOWED = frozenset({
     # go_notices would have to match every Go file of the repository again. go reads it nowhere.
     "GH_TOKEN",
     "GOPROXY",
+    # The job's timeout-minutes, which .github/scripts/gh-read.sh's wait for a spent API budget
+    # stays within. The daemon API contract check's step in the lint job sets it, and around_job
+    # reads that step's env as it reads GH_TOKEN's above. go reads it nowhere.
+    "JOB_TIMEOUT_MINUTES",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
     # The commit envoy-go-checks' edited-migrations step compares a bypass run's tree with:

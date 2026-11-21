@@ -255,9 +255,9 @@ check "records every other job as unread" "$(contains "$(field .output.summary)"
 check "and the reporting job at its own status" \
   "$(contains "$(field .output.summary)" '^typecheck: failure (selected')"
 check "warns why it posted on an unread run" \
-  "$(contains "$out" "::warning::GitHub refused this run's job list three times")"
+  "$(contains "$out" "::warning::GitHub refused this run's job list at every attempt gh-read.sh made")"
 check "warns that it could not tell a runner shutdown from a failure either" \
-  "$(contains "$out" '::warning::GitHub refused the check runs on abc123 three times')"
+  "$(contains "$out" '::warning::GitHub refused the check runs on abc123 at every attempt gh-read.sh made')"
 
 echo "case: GitHub refuses the post"
 jobs typecheck=in_progress lint=in_progress envoy-client=queued
@@ -265,7 +265,7 @@ touch "$work/post-fails"
 run_report "$selects" merge_group failure
 check "fails the step" "$(is "$status" 1)"
 check "tried three times" "$(is "$(posted)" 3)"
-check "says so" "$(contains "$out" 'GitHub refused the ci-ok check run on abc123 three times')"
+check "says so" "$(contains "$out" 'GitHub refused the ci-ok check run on abc123 at every attempt gh-read.sh made')"
 
 echo "case: CHANGES is not toJSON(needs.changes)"
 jobs typecheck=in_progress

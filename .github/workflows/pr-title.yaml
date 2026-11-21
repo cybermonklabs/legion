@@ -124,5 +124,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+          JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/check-pr-text.sh"

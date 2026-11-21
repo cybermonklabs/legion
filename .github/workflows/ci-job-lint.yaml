@@ -112,6 +112,7 @@ jobs:
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
+          JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
         run: .github/scripts/check-daemon-api-contract.sh
 
       - name: Check the release workflows keep credentials out of jobs that run dependency code
