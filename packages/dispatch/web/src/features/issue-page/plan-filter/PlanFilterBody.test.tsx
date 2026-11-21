@@ -1331,22 +1331,23 @@ test("a task whose needs names a task the plan does not hold keeps the plan's ow
 });
 
 // The filter's view hands the tasks over grouped by the statement each one serves, which is the
-// spec's order. A chain of tasks stays together: the row after a task is a task it frees, and
-// where it frees none, the next free task in the order the plan is written in. Each task is drawn
-// once.
-test("the row after a task is a task it frees, before a free task written earlier", () => {
+// spec's order. The walk starts from each task nothing needs, in the order the plan is written
+// in, and places the tasks one needs above it, so a task that needs nothing stands just above the
+// first task that needs it, not at the top. Each task is drawn once.
+test("a task stands just above the first task that needs it, not at the top", () => {
   setViewport(1440);
   // The view hands the third task over first and the first twice, by the statements they serve;
-  // the plan writes the three in their numbers' order, and the third needs the first, so it
-  // stands right after the first and before the second.
+  // the plan writes the three in their numbers' order, and the third needs the first. Nothing
+  // needs the second or the third, so the walk starts from the second, then from the third,
+  // which places the first just above it.
   const view = renderBody(
     issue([task("t3", { needs: ["t1"] }), task("t1"), task("t2"), task("t1")]),
     { written: ["t1", "t2", "t3"] }
   );
   try {
-    expect(rowIds(view.container)).toEqual([D("t1"), D("t3"), D("t2")]);
-    expect(["t1", "t3", "t2"].map((id) => rowOf(view, id).getAttribute("data-plan-start"))).toEqual(
-      ["0", "1", "0"]
+    expect(rowIds(view.container)).toEqual([D("t2"), D("t1"), D("t3")]);
+    expect(["t2", "t1", "t3"].map((id) => rowOf(view, id).getAttribute("data-plan-start"))).toEqual(
+      ["0", "0", "1"]
     );
   } finally {
     view.unmount();
@@ -1366,17 +1367,17 @@ test("the written order reads the cached blocks and sends no blocks read of its 
   });
   try {
     expect(read, "the body sends a read of the plan's blocks of its own").not.toHaveBeenCalled();
-    expect(rowIds(view.container)).toEqual([D("t1"), D("t3"), D("t2")]);
+    expect(rowIds(view.container)).toEqual([D("t2"), D("t1"), D("t3")]);
     await act(async () => {
       client.setQueryData(
         ["artifact", PLAN_ARTIFACT, "blocks"],
-        ["t2", "t1", "t3"].map((id) => ({ id }))
+        ["t3", "t1", "t2"].map((id) => ({ id }))
       );
       const { promise, resolve } = Promise.withResolvers<void>();
       setTimeout(resolve, 0);
       await promise;
     });
-    expect(rowIds(view.container)).toEqual([D("t2"), D("t1"), D("t3")]);
+    expect(rowIds(view.container)).toEqual([D("t1"), D("t3"), D("t2")]);
     expect(read, "the body sends a read of the plan's blocks of its own").not.toHaveBeenCalled();
   } finally {
     view.unmount();

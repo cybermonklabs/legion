@@ -70,10 +70,11 @@ function blockOf(id: string): string {
 }
 
 test("a task stands after every task in its needs, wherever the plan writes it", () => {
-  // Written as the chain's last task, a free task, then the chain's first two: the chain is
-  // drawn as a chain, and the free task, written before the chain's first task, stands before it.
+  // Written as the chain's last task, a free task, then the chain's first two: the walk starts
+  // from the chain's last task, which nothing needs, and places the chain above it first to last;
+  // then from the free task, which nothing needs either.
   const entries = planOrder([task("t3", ["t2"]), task("t4"), task("t1"), task("t2", ["t1"])]);
-  expect(drawn(entries)).toEqual(["t4", "t1", "t2", "t3"]);
+  expect(drawn(entries)).toEqual(["t1", "t2", "t3", "t4"]);
 });
 
 test("a chain written in the order its needs allow is drawn in that order", () => {
@@ -86,26 +87,34 @@ test("a task needed by two tasks stands before both, each of them in the plan's 
   expect(drawn(entries)).toEqual(["t1", "t2", "t3"]);
 });
 
-test("a chain of tasks stays together: the next row is a task the last one frees", () => {
-  // Written a to g. Task a frees c and d, and c, the first of the two in the plan's own order,
-  // frees e. Task e frees nothing, since f still waits on b, so the order goes back to a for d.
-  // Then it takes the next free task, b, which frees f, and the last free task, g.
+test("a task stands just above the first task that needs it, so a chain reads down the page", () => {
+  // Written a to e. The walk starts from d, the first task nothing needs, and places what it
+  // needs above it: c, and above c, b. Then it starts from e, the next task nothing needs, and
+  // places a above it. So a, which needs nothing, stands just above e and not at the top.
   const needs: Record<string, readonly string[]> = {
-    c: ["a"],
-    d: ["a"],
-    e: ["c"],
-    f: ["b", "e"],
+    c: ["b"],
+    d: ["c"],
+    e: ["a"],
   };
-  const order = drawn(
-    planOrder(["a", "b", "c", "d", "e", "f", "g"].map((id) => task(id, needs[id])))
-  );
-  expect(order).toEqual(["a", "c", "e", "d", "b", "f", "g"]);
+  const order = drawn(planOrder(["a", "b", "c", "d", "e"].map((id) => task(id, needs[id]))));
+  expect(order).toEqual(["b", "c", "d", "a", "e"]);
   for (const [later, needed] of Object.entries(needs)) {
     for (const earlier of needed) {
       expect(order.indexOf(earlier), `${later} stands after ${earlier}`).toBeLessThan(
         order.indexOf(later)
       );
     }
+  }
+  // Each task something needs is the row right before the first task that needs it.
+  for (const earlier of new Set(Object.values(needs).flat())) {
+    const firstNeeding = Math.min(
+      ...Object.entries(needs)
+        .filter(([, needed]) => needed.includes(earlier))
+        .map(([later]) => order.indexOf(later))
+    );
+    expect(order.indexOf(earlier) + 1, `${earlier} stands right before what first needs it`).toBe(
+      firstNeeding
+    );
   }
 });
 

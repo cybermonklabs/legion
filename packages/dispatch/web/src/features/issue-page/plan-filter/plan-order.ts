@@ -8,14 +8,15 @@ import { blockNodeId } from "../tree-drafts";
 /**
  * The plan's tasks as ordered steps.
  *
- * A step stands after every task in its `needs`, and a chain of tasks stays together. The next
- * step after a task is a task it frees, one that needs it and nothing else still to be placed,
- * and of those the first in the plan's own order. Where it frees none, the order goes back to the
- * task placed most recently that still frees one not yet placed, and takes the first of those;
- * where no placed task does, it takes the first free task left, one that needs nothing, in the
- * plan's own order. So a reader sees the step that follows a step next to it rather than far down
- * the chart, and where the `needs` leave a choice the plan's own order makes it, so a reader who
- * knows the plan document recognises it.
+ * A step stands after every task in its `needs`. The order is a walk over the `needs`: it starts
+ * from each task no other task needs, in the plan's own order, and places a task by first placing
+ * each task it needs, the same way and in the plan's own order, and then the task itself; a task
+ * placed already keeps its place. So each task something needs stands above the first task that
+ * needs it, with nothing between them but that task's other needs and what they need in turn,
+ * and a chain reads down the page: a reader sees the step that follows a step next to it rather
+ * than far down the chart, and a task that needs nothing stands just above the first task that
+ * needs it, not at the top. Where the `needs` leave a choice the plan's own order makes it, so a
+ * reader who knows the plan document recognises it.
  *
  * Tasks that need each other, directly or through the rest, are one cycle: no order can put any
  * of them after every task it needs, so they are one group, which the page draws as one line
@@ -157,10 +158,10 @@ export function writtenOrder(
  * other, one cycle holding them all. `nodes` are the rows the Plan filter draws with no words
  * filter on, in the plan's own order (`writtenOrder`): the whole plan, since a words filter
  * chooses which places the view draws and not where they stand. A node that is no plan task
- * needs nothing and is needed by nothing, so it is drawn as a free task that frees none; the Plan
- * view hands over none, since it keeps the address's node only where it is a task
- * (`slots/view-plan.tsx`). A task the filter drew under two statements is one task here, at its
- * first place: a plan holds each task once, and its second statement is its "Also under" chip,
+ * needs nothing and is needed by nothing, so the walk starts from it at its place in the plan's
+ * own order; the Plan view hands over none, since it keeps the address's node only where it is a
+ * task (`slots/view-plan.tsx`). A task the filter drew under two statements is one task here, at
+ * its first place: a plan holds each task once, and its second statement is its "Also under" chip,
  * so the task is not drawn twice.
  */
 export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
@@ -225,21 +226,19 @@ export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
       holdsUp.set(before, holding);
     }
   });
-  // The order is depth-first, so a chain of tasks stays together. `freed` is a stack: for each
-  // placed group, the groups it freed that are not placed yet, in the plan's own order, with the
-  // group placed last on top. The next group is the first one the top holds, a top that holds
-  // none is dropped, and with the stack empty the next group is the first free group left. A
-  // free group needs nothing, so no group frees it.
-  const free = [...members.keys()]
-    .filter((group) => (waitsOn.get(group)?.size ?? 0) === 0)
-    .sort((one, other) => one - other);
-  const freed: number[][] = [];
-  const nextGroup = (): number | undefined => {
-    while (freed.at(-1)?.length === 0) freed.pop();
-    return (freed.at(-1) ?? free).shift();
-  };
+  // The order is a depth-first walk that places the groups a group needs, each the same way,
+  // before the group itself, so a need stands above the first group that needs it, past only
+  // that group's other needs, and a chain reads down the page. It starts from each group no other
+  // group needs, in the plan's own order, and takes the groups one needs in that order too. A
+  // group placed already keeps its place.
   const entries: PlanEntry[] = [];
-  for (let group = nextGroup(); group !== undefined; group = nextGroup()) {
+  const placed = new Set<number>();
+  const place = (group: number): void => {
+    if (placed.has(group)) return;
+    placed.add(group);
+    for (const before of [...(waitsOn.get(group) ?? [])].sort((one, other) => one - other)) {
+      place(before);
+    }
     const tasks = (members.get(group) ?? []).flatMap((index) => {
       const node = nodes[index];
       return node === undefined ? [] : [node];
@@ -248,16 +247,15 @@ export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
     const first = tasks[0];
     if (alone && first !== undefined) entries.push({ kind: "step", task: first });
     else entries.push({ kind: "cycle", tasks });
-    // The groups this one frees: each that waited on it and on no other group still to be placed.
-    const frees: number[] = [];
-    for (const later of holdsUp.get(group) ?? []) {
-      const waiting = waitsOn.get(later);
-      if (waiting === undefined) continue;
-      waiting.delete(group);
-      if (waiting.size === 0) frees.push(later);
-    }
-    freed.push(frees.sort((one, other) => one - other));
+  };
+  const groups = [...members.keys()].sort((one, other) => one - other);
+  for (const group of groups) {
+    if ((holdsUp.get(group)?.size ?? 0) === 0) place(group);
   }
+  // Every group is reached from a start, since groups never wait on each other in a circle: the
+  // tasks of such a circle would be one group. Walking them all again places nothing then, and
+  // keeps every node drawn whatever the input.
+  for (const group of groups) place(group);
   return entries;
 }
 
