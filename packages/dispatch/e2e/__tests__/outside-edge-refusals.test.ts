@@ -560,9 +560,12 @@ describe(scriptName, () => {
   }
 
   // The hasher is tested before any list is read or any request sent: it hashes the empty input
-  // and `abc`, and the run stops unless both are SHA-256's. A hasher that ignores its input, and
-  // one that fails from its first call, each make it stop there, with the stand-in seeing no
-  // request. The script before this test read PASS with the first: every body hashed alike.
+  // and `abc`, and the run stops unless both are SHA-256's. A hasher that ignores its input, one
+  // that fails from its first call, and one that gives the empty input's true SHA-256 and one
+  // constant for anything else each make it stop there, with the stand-in seeing no request. The
+  // stand-in forwards broker-pending without a marker to another 404 body, so a run that went on
+  // would hash every body alike and read PASS: the script before this test did so with the first,
+  // and with the `abc` half of the test removed it does so with the third.
   const selfTests = [
     {
       name: "a sha256sum that ignores its input",
@@ -574,12 +577,24 @@ describe(scriptName, () => {
       body: "exit 1",
       gave: ["unreadable", "unreadable"],
     },
+    {
+      name: "a sha256sum right for the empty input and constant for anything else",
+      body: [
+        "data=''",
+        "IFS= read -r -d '' data",
+        `if [ -z "$data" ]; then printf '%s  -\\n' ${sha("")}; else printf '%s  -\\n' ${sha("hasher")}; fi`,
+      ].join("\n"),
+      gave: [sha(""), sha("hasher")],
+    },
   ];
   for (const { name, body, gave } of selfTests) {
     test.skipIf(withoutTools)(
       `(i) reads UNKNOWN before any request with ${name}`,
       async () => {
-        const edge = await standIn(production);
+        const edge = await standIn([
+          planted(pending, { status: 404, marker: undefined, body: "backend: no such page\n" }),
+          ...production,
+        ]);
         try {
           const run = await check(
             `i self-test ${name}`,
