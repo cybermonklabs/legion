@@ -277,7 +277,7 @@ const (
 // one and the project's own; this boot drops the shared one in place. That loses nothing only once
 // every listener reports role and agent wakes on project subjects and no role or agent report of
 // the project is left unread on the shared subject past the consumer's ack floor (plan C's
-// stored-wake read, scripts/stored-wake-read.sh), which is why this build deploys after that read.
+// drain read, `legion cutover-read drain`, CutoverReader.Drain), which is why this build deploys after that read.
 // A consumer that applied messages before and is now
 // missing starts at the last one it applied (openConsumer), except the ready consumer, which
 // starts at its own creation: it carries the listener's liveness report, which says nothing about

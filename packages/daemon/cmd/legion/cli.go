@@ -53,6 +53,7 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 		passThrough("git", "the commit half of a pod's git and the git first on a tmux pane's PATH: adds a git commit's Omp-Session and Legion-Role trailers and runs the real git (a git wrapper runs it, never a person)", runGit, stdout, stderr),
 		passThrough("gh", "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)", runGh, stdout, stderr),
 		newLeakCheckCommand(stderr),
+		newCutoverReadCommand(stdout),
 	)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
