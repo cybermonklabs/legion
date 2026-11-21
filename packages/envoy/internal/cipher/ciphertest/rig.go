@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
 // podAudience is the fixed audience every Rig's pod verifier is constructed for, and the value
@@ -163,6 +164,9 @@ type rigConfig struct {
 	minters    map[string]requests.Minter
 	personPods []personPod
 	edge       bool
+	// edgeDeviceLimit is the edge's bucket every caller of a device authorization shares
+	// (api.Edge.DeviceLimit); nil is api.DefaultEdgeDeviceLimit.
+	edgeDeviceLimit *ratelimit.Limit
 }
 
 // EdgeMachineLoginURL is the page a device authorization made at a Rig's edge sends its person
@@ -180,6 +184,12 @@ const (
 // chain each take EdgeURL as their EdgeAudience, as cmd/cipherd wires them.
 func WithEdge() Option {
 	return func(c *rigConfig) { c.edge = true }
+}
+
+// WithEdgeDeviceLimit is WithEdge with limit as the edge's bucket every caller of a device
+// authorization shares, for a test of that bucket that cannot wait for its refill.
+func WithEdgeDeviceLimit(limit ratelimit.Limit) Option {
+	return func(c *rigConfig) { c.edge, c.edgeDeviceLimit = true, &limit }
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -334,7 +344,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 	api.Register(mux, deps)
 	if config.edge {
-		api.RegisterEdge(edgeMux, deps, api.Edge{URL: edgeURL, VerificationURL: EdgeMachineLoginURL, WorkspaceDomains: []string{SignInDomain, EdgeWorkspaceDomain}})
+		api.RegisterEdge(edgeMux, deps, api.Edge{URL: edgeURL, VerificationURL: EdgeMachineLoginURL, WorkspaceDomains: []string{SignInDomain, EdgeWorkspaceDomain}, DeviceLimit: config.edgeDeviceLimit})
 	}
 
 	operatorFile := filepath.Join(t.TempDir(), "operator")

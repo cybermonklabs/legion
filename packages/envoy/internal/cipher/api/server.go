@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -189,10 +190,18 @@ type server struct {
 	// loginKeyPrefix opens every per-login bucket's key: "" on the broker's own address, and
 	// edgeLoginKeyPrefix at its edge.
 	loginKeyPrefix string
+	// loginKeyByAddress is whether a person's per-login bucket is also keyed on the caller's
+	// address (spendDeviceLoginBucket): at the edge, where anyone on the internet can name a
+	// person, so a flood from one address cannot empty the bucket that person uses from another.
+	loginKeyByAddress bool
 	// verificationURI is the page a device authorization on this listener sends a person to:
 	// BROKER_MACHINE_LOGIN_URL on the broker's own address (oauth.Provider.VerificationURL), and
 	// BROKER_EDGE_MACHINE_LOGIN_URL at its edge.
 	verificationURI string
+	// health is the Postgres ping GET /healthz answers from at the edge, cached (cachedPing), so a
+	// caller on the internet cannot make the broker ping its database at the rate it asks; nil on
+	// the broker's own address, which pings on each request.
+	health *cachedPing
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -750,11 +759,48 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "SHUTTING_DOWN", "the broker is shutting down and is no longer taking new traffic")
 		return
 	}
-	if err := s.deps.Enroll.Store.Pool.Ping(r.Context()); err != nil {
+	ping := s.deps.Enroll.Store.Pool.Ping
+	if s.health != nil {
+		ping = s.health.result
+	}
+	if err := ping(r.Context()); err != nil {
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "ping Postgres", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
+}
+
+// healthCacheFor is how long the edge's GET /healthz answers from one Postgres ping: the load
+// balancer's health check asks every few seconds, so a second is fresh enough for it, and a caller
+// on the internet who asks at any rate costs the database at most one ping a second per pod.
+const healthCacheFor = time.Second
+
+// cachedPing is a Postgres ping whose result is kept for healthCacheFor. Callers that ask while
+// a ping runs wait for it rather than ping again, so at most one ping runs at a time.
+type cachedPing struct {
+	ping func(context.Context) error
+	now  func() time.Time
+
+	mu  sync.Mutex
+	at  time.Time
+	err error
+}
+
+// result is the last ping's result while it is under healthCacheFor old, and a new ping's
+// otherwise. A ping the caller's own request ended (ctx done) is answered to that caller and not
+// kept, since it says nothing about the database.
+func (c *cachedPing) result(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if now := c.now(); !c.at.IsZero() && now.Sub(c.at) < healthCacheFor {
+		return c.err
+	}
+	err := c.ping(ctx)
+	if ctx.Err() != nil {
+		return err
+	}
+	c.at, c.err = c.now(), err
+	return err
 }
 
 // signInStatusResponse is GET /signin/status's answer, the broker's one signin_status row as it

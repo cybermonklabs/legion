@@ -23,6 +23,10 @@
 // polls once an interval for as long as its person has not decided. A 5xx writes no line here
 // either: the writer of each one already logs its cause.
 //
+// The edge is recorded by EdgeMiddleware: its lines name port=edge and its samples carry
+// port="edge", so a reader can leave it out, and the mux's own 404 and 405 there, which anyone on
+// the internet can send at any rate, are counted and write no line.
+//
 // The line never holds a secret's value or the refusal's message text: it names the code, and the
 // code is read from the answer (refusalCode), not the words around it.
 //
@@ -194,6 +198,23 @@ type Recorder struct {
 	// the handler returns; body keeps a refusal's bytes either way, for the code.
 	holding bool
 	body    bytes.Buffer
+	// port is PortEdge for an answer of the broker's edge (EdgeMiddleware), and empty for one of
+	// its API port (Middleware).
+	port string
+}
+
+// PortEdge is the value of the port field of the edge's refusal lines and of the port label of
+// its broker_answers_total samples (EdgeMiddleware). The API port's and the airlock's proxy port's
+// lines and samples carry no port, so a filter or an alert that leaves the edge out reads
+// port!="edge", which every one of theirs matches.
+const PortEdge = "edge"
+
+// EdgeMiddleware is Middleware for the broker's edge, whose callers are anyone on the internet:
+// each refusal line it writes names port=edge, each sample it counts carries port="edge", and the
+// mux's own 404 and 405 (an answer to a path or a method the edge serves no route for, which a
+// scanner sends at its own rate) are counted and write no line.
+func EdgeMiddleware(next http.Handler, answers *metrics.Counter) http.Handler {
+	return middleware(next, answers, PortEdge)
 }
 
 // Middleware records every answer next writes: it gives the answer its id, counts it on answers
@@ -202,8 +223,13 @@ type Recorder struct {
 // from the request Middleware hands next, so next is the mux itself: a handler between the two
 // that hands the mux a request of its own (r.WithContext) leaves every line's route empty.
 func Middleware(next http.Handler, answers *metrics.Counter) http.Handler {
+	return middleware(next, answers, "")
+}
+
+// middleware is Middleware for the port port names: "" for the API port, PortEdge for the edge.
+func middleware(next http.Handler, answers *metrics.Counter, port string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec := &Recorder{ResponseWriter: w, id: NewID(), correlation: CorrelationID(r), arrived: time.Now(), class: CallerPublic}
+		rec := &Recorder{ResponseWriter: w, id: NewID(), correlation: CorrelationID(r), arrived: time.Now(), class: CallerPublic, port: port}
 		// The request the mux is handed, whose Pattern names the route once next has returned.
 		r = r.WithContext(context.WithValue(r.Context(), recorderKey{}, rec))
 		completed := false
@@ -215,7 +241,7 @@ func Middleware(next http.Handler, answers *metrics.Counter) http.Handler {
 				rec.mu.Lock()
 				class := rec.class
 				rec.mu.Unlock()
-				Count(answers, http.StatusInternalServerError, "", class)
+				countAt(answers, http.StatusInternalServerError, "", class, port)
 			}
 		}()
 		next.ServeHTTP(rec, r)
@@ -399,8 +425,9 @@ type RefusalLine struct {
 // answer_id, status, code, method, route, caller_class, caller, the names
 // (SecretNames.AppendFields), then extras, a port's own fields that come before correlation_id,
 // then correlation_id when the caller sent one, then trailing, a port's own fields that come
-// after it. The API port and the edge have none of either; the airlock's proxy port names its
-// host, reason and path as extras, and its issue and slot as trailing.
+// after it. The API port has none of either, the edge names port=edge as its one extra, and the
+// airlock's proxy port names its host, reason and path as extras, and its issue and slot as
+// trailing.
 //
 // Every text field of the line, extras and trailing included, is cut by Clip here (ClipFields),
 // where it enters the line, rather than by each writer: the method, the host and the path are
@@ -575,14 +602,18 @@ func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
 		answerCode = refusalCode(rec.status, fields, noted)
 	}
 	if ended {
-		answers.Inc(outcome(outcomeCancelled), code(answerCode), callerClass(class))
+		answers.Inc(rec.labels(outcome(outcomeCancelled), code(answerCode), callerClass(class))...)
 	} else {
-		if Refused(rec.status, answerCode) {
+		if Refused(rec.status, answerCode) && !rec.unrouted(r) {
 			line := RefusalLine{ID: rec.id, Status: rec.status, Code: answerCode, Method: r.Method, Route: r.Pattern,
 				CallerClass: class, Caller: caller, Secrets: secrets, Correlation: rec.correlation}
-			slog.Warn(RefusalMessage, line.Fields(nil)...)
+			var extras []any
+			if rec.port != "" {
+				extras = []any{"port", rec.port}
+			}
+			slog.Warn(RefusalMessage, line.Fields(extras)...)
 		}
-		Count(answers, rec.status, answerCode, class)
+		countAt(answers, rec.status, answerCode, class, rec.port)
 	}
 
 	if !rec.holding {
@@ -608,10 +639,36 @@ func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
 // each answer it writes itself. An answer net/http writes before any handler runs is counted by
 // neither.
 func Count(answers *metrics.Counter, status int, answerCode, class string) {
+	countAt(answers, status, answerCode, class, "")
+}
+
+// countAt is Count for the port port names, whose samples carry it as their port label when it
+// is not empty (PortEdge).
+func countAt(answers *metrics.Counter, status int, answerCode, class, port string) {
 	if !codePattern.MatchString(answerCode) {
 		answerCode = httpCode(status)
 	}
-	answers.Inc(outcome(outcomeOf(status, answerCode)), code(answerCode), callerClass(class))
+	labels := [][2]string{outcome(outcomeOf(status, answerCode)), code(answerCode), callerClass(class)}
+	if port != "" {
+		labels = append(labels, portLabel(port))
+	}
+	answers.Inc(labels...)
+}
+
+// labels is a sample's labels for this answer's port: labels, then port when the answer is the
+// edge's.
+func (rec *Recorder) labels(labels ...[2]string) [][2]string {
+	if rec.port != "" {
+		labels = append(labels, portLabel(rec.port))
+	}
+	return labels
+}
+
+// unrouted reports whether this is an edge answer the mux wrote itself for a path or a method the
+// edge serves no route for: a 404 or a 405 with no route matched. EdgeMiddleware counts such an
+// answer and writes it no line, since anyone on the internet can send it at any rate.
+func (rec *Recorder) unrouted(r *http.Request) bool {
+	return rec.port == PortEdge && r.Pattern == "" && (rec.status == http.StatusNotFound || rec.status == http.StatusMethodNotAllowed)
 }
 
 // CountCarried counts one answer the broker carried rather than wrote: a call the airlock's
@@ -622,10 +679,12 @@ func CountCarried(answers *metrics.Counter, status int, class string) {
 	answers.Inc(outcome(outcomeServed), code(httpCode(status)), callerClass(class))
 }
 
-// The three labels of broker_answers_total, in the order every sample names them.
+// The labels of broker_answers_total, in the order every sample names them: outcome, code and
+// caller_class on every sample, then port on the edge's alone.
 func outcome(value string) [2]string     { return [2]string{"outcome", value} }
 func code(value string) [2]string        { return [2]string{"code", value} }
 func callerClass(value string) [2]string { return [2]string{"caller_class", value} }
+func portLabel(value string) [2]string   { return [2]string{"port", value} }
 
 // refusal reports whether status is a refusal's: 400 to 499.
 func refusal(status int) bool { return status >= 400 && status < 500 }

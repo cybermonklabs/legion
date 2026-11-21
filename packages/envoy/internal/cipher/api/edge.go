@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"authelia.com/provider/oauth2"
 
@@ -33,6 +34,9 @@ type Edge struct {
 	// refused before it spends anything (refuseWorkspaceLogin), and so is a refresh, a device code
 	// grant and a trade of a login whose person is on one (edgeTokenHooks).
 	WorkspaceDomains []string
+	// DeviceLimit bounds the device authorizations the edge takes from every caller together, in
+	// one bucket beside each address's own; nil means DefaultEdgeDeviceLimit.
+	DeviceLimit *ratelimit.Limit
 }
 
 // edgeLoginKeyPrefix opens the key of every per-login bucket the edge spends, so a key the edge
@@ -96,13 +100,21 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 	// The gates have refused every request edgeClientAddress reads no address from before a
 	// bucket is reached, so the answer dropped here is never false.
 	address := func(r *http.Request) string { address, _ := edgeClientAddress(r); return address }
+	launchers := newLauncherLimiter(limits, address)
+	device := DefaultEdgeDeviceLimit
+	if edge.DeviceLimit != nil {
+		device = *edge.DeviceLimit
+	}
+	launchers.overall = ratelimit.NewBucket(device)
 	s := &server{
-		deps:            edgeDeps,
-		launcherLimiter: newLauncherLimiter(limits, address),
-		tokenLimiter:    ratelimit.NewKeyed(token),
-		address:         address,
-		loginKeyPrefix:  edgeLoginKeyPrefix,
-		verificationURI: edge.VerificationURL,
+		deps:              edgeDeps,
+		launcherLimiter:   launchers,
+		tokenLimiter:      ratelimit.NewKeyed(token),
+		address:           address,
+		loginKeyPrefix:    edgeLoginKeyPrefix,
+		loginKeyByAddress: true,
+		verificationURI:   edge.VerificationURL,
+		health:            &cachedPing{ping: func(ctx context.Context) error { return deps.Enroll.Store.Pool.Ping(ctx) }, now: time.Now},
 	}
 	for _, route := range routes() {
 		pattern := route.Method + " " + route.Pattern

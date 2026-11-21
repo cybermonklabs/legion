@@ -216,6 +216,7 @@ func main() {
 	// BROKER_SECRETS_KMS_KEY_ARN, or BROKER_SECRETS_KMS_KEY_NAME under gcp-secret-manager.
 	fakeSecrets := os.Getenv("BROKER_FAKE_SECRETS_FILE")
 	fatal(refusePortZeroPublicURLInProduction(cfg.PublicURL, fakeSecrets))
+	fatal(refuseHTTPEdgeURLInProduction(cfg.EdgeURL, fakeSecrets))
 	// And, in the same breath, the airlock's test-only settings: every one of them is a local
 	// run's, so a production start that names any of them is refused here rather than running
 	// a broker that mints against a stand-in or dials an address no production proxy may.
@@ -756,14 +757,15 @@ func main() {
 	}
 	// The edge's own server, for a deployment that has one, on the socket the boot bound: the
 	// device login's two routes and the health check (api.RegisterEdge), on the same request
-	// deadline, answer recorder and timeouts as the API, since what it serves is the API's own
-	// handlers on a server of its own.
+	// deadline and timeouts as the API, since what it serves is the API's own handlers on a
+	// server of its own. Its answers are recorded by answer.EdgeMiddleware: their lines name
+	// port=edge and their samples port="edge", and the mux's own 404 and 405 write no line.
 	var edgeServer *http.Server
 	if started.EdgeListener != nil {
 		edgeMux := http.NewServeMux()
 		api.RegisterEdge(edgeMux, deps, api.Edge{URL: cfg.EdgeURL, VerificationURL: cfg.EdgeMachineLoginURL, WorkspaceDomains: cfg.WorkspaceDomains()})
 		edgeServer = &http.Server{
-			Handler:           withRequestDeadline(answer.Middleware(edgeMux, answers), requestDeadline),
+			Handler:           withRequestDeadline(answer.EdgeMiddleware(edgeMux, answers), requestDeadline),
 			ReadHeaderTimeout: srv.ReadHeaderTimeout,
 			ReadTimeout:       srv.ReadTimeout,
 			WriteTimeout:      srv.WriteTimeout,
@@ -1000,6 +1002,22 @@ func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) erro
 		return nil
 	}
 	return fmt.Errorf("BROKER_PUBLIC_URL %q: port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention", redact.URL(publicURL))
+}
+
+// refuseHTTPEdgeURLInProduction refuses a BROKER_EDGE_URL whose scheme is not https unless
+// BROKER_FAKE_SECRETS_FILE makes this a local run, as refusePortZeroPublicURLInProduction does:
+// the edge answers callers on the internet, and over plain http anyone on the path could rewrite a
+// device authorization's verification_uri and user_code to send a person to a page of their own. A
+// broker with no edge (an empty edgeURL) is refused nothing. Extracted from main so a test can
+// drive it directly instead of through fatal, which calls os.Exit.
+func refuseHTTPEdgeURLInProduction(edgeURL, fakeSecretsFile string) error {
+	if edgeURL == "" || fakeSecretsFile != "" {
+		return nil
+	}
+	if u, err := url.Parse(edgeURL); err == nil && strings.EqualFold(u.Scheme, "https") {
+		return nil
+	}
+	return fmt.Errorf("BROKER_EDGE_URL %q: the edge answers callers on the internet and must be https in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may serve it over http", redact.URL(edgeURL))
 }
 
 // publicURLPortZero reports whether publicURL names port 0, its port read as a number the way

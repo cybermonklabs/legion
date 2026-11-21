@@ -17,42 +17,48 @@ import (
 
 // deviceAuthorization is POST /v1/oauth/device_authorization: a machine login's device
 // authorization request (RFC 8628), public. It spends its source address's launcher bucket before
-// the provider does any work, as the token login does (refuseAddress); then it verifies the
-// request object to read the person its login_hint names and spends that person's bucket
-// (launcherLoginKey). A refused request is 429 with Retry-After. Deps.DeviceLogin then opens the
-// login in the provider's transaction, and its refusals are OAuth errors (invalid_request) whose
+// the provider does any work, as the token login does (refuseAddress), and at the edge the edge's
+// one bucket every caller shares too (launcherLimiter.overall). Deps.DeviceLogin then verifies the
+// request and opens the login in the provider's transaction, and only a login it opened spends
+// the bucket of the person its login_hint names (spendDeviceLoginBucket), so a request that writes
+// nothing costs that person nothing; a refusal there rolls the login back. A refused request is
+// 429 with Retry-After. Deps.DeviceLogin's refusals are OAuth errors (invalid_request) whose
 // description names the broker's code: a request object that does not verify, repeats a jti or
 // names another key than dpop_jkt REQUEST_INVALID, one naming a service
 // SERVICE_LOGS_IN_WITH_TOKEN. The answer's verification_uri is this listener's page
 // (server.verificationURI).
 func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
-	if !s.launcherLimiter.addressAllows(r) {
-		oauth.WriteRefusal(w, rateLimitedRefusal(s.launcherLimiter.perAddress.Every()))
+	if refused, ok := s.launcherLimiter.addressAllows(r); !ok {
+		oauth.WriteRefusal(w, rateLimitedRefusal(refused.Every))
 		return
 	}
 	if !readOAuthForm(w, r) {
 		return
 	}
 	s.deps.OAuth.DeviceAuthorize(w, r, s.verificationURI, func(ctx context.Context, form url.Values, userCode string) error {
-		if err := s.spendDeviceLoginBucket(form); err != nil {
+		if err := s.deps.DeviceLogin(ctx, form, userCode); err != nil {
 			return deviceLoginRefusal(err)
 		}
-		return deviceLoginRefusal(s.deps.DeviceLogin(ctx, form, userCode))
+		return deviceLoginRefusal(s.spendDeviceLoginBucket(r, form))
 	})
 }
 
-// spendDeviceLoginBucket verifies form's request object, refusing one naming a service before it
-// reaches the limiter, and spends one request of the person:<login> bucket it names, under this
-// listener's key prefix (server.loginKeyPrefix): a RATE_LIMITED refusal when that bucket is empty.
-func (s *server) spendDeviceLoginBucket(form url.Values) error {
+// spendDeviceLoginBucket spends one request of the bucket of the person form's request object
+// names, which Deps.DeviceLogin has verified: person:<login> under this listener's key prefix
+// (server.loginKeyPrefix), and at the edge the caller's address after it
+// (server.loginKeyByAddress), so a flood from one address spends that address's bucket for the
+// person and never the one a caller elsewhere uses. It is a RATE_LIMITED refusal when that bucket
+// is empty.
+func (s *server) spendDeviceLoginBucket(r *http.Request, form url.Values) error {
 	obj, err := record.VerifyRequestObject(form.Get("request"), s.deps.MachineLogin.Audience, s.deps.MachineLogin.Skew, time.Now())
 	if err != nil {
 		return err
 	}
-	if obj.Service() != "" {
-		return machine.ErrServiceLogsInWithToken
+	key := s.loginKeyPrefix + launcherLoginKey(obj)
+	if s.loginKeyByAddress {
+		key += ":" + s.address(r)
 	}
-	if !s.launcherLimiter.perLogin.AllowAt(s.loginKeyPrefix+launcherLoginKey(obj), time.Now()) {
+	if !s.launcherLimiter.perLogin.AllowAt(key, time.Now()) {
 		return rateLimitedRefusal(s.launcherLimiter.perLogin.Every())
 	}
 	return nil

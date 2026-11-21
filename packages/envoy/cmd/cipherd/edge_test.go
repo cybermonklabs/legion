@@ -513,8 +513,10 @@ func TestTheEdgeServesTheDeviceLoginFromTheBinary(t *testing.T) {
 			}
 		}
 	}
-	// The edge's answers count in broker_answers_total beside the API port's, and the metric's HELP
-	// says so: the two EDGE_WORKSPACE_LOGIN refusals above are samples of it on the metrics port.
+	// The edge's answers count in broker_answers_total beside the API port's, labelled
+	// port="edge", and the metric's HELP says so: the two EDGE_WORKSPACE_LOGIN refusals above are
+	// samples of it on the metrics port, and the binary records the edge through
+	// answer.EdgeMiddleware.
 	scrape := metricsScrape(t, broker.MetricsAddr(t))
 	if !strings.Contains(scrape, "# HELP broker_answers_total "+answersHelpPrefix) {
 		t.Errorf("the metrics port's HELP for broker_answers_total does not begin %q:\n%s", answersHelpPrefix, scrape)
@@ -525,8 +527,8 @@ func TestTheEdgeServesTheDeviceLoginFromTheBinary(t *testing.T) {
 			edgeRefusals = strings.TrimSpace(line)
 		}
 	}
-	if !strings.HasSuffix(edgeRefusals, " 2") {
-		t.Errorf("broker_answers_total's EDGE_WORKSPACE_LOGIN sample is %q, want the edge's 2 refusals counted", edgeRefusals)
+	if !strings.HasSuffix(edgeRefusals, ` 2`) || !strings.Contains(edgeRefusals, `port="edge"`) {
+		t.Errorf("broker_answers_total's EDGE_WORKSPACE_LOGIN sample is %q, want the edge's 2 refusals counted with port=\"edge\"", edgeRefusals)
 	}
 
 	broker.Terminate(t)
