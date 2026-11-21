@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fifotest"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -3110,14 +3111,42 @@ func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			// A check that opened a named pipe would wait on it, so each runs with a bound.
+			// A check that opened a planted named pipe plainly would wait there for a writer. The
+			// verdict comes from the kernel, not a clock: the row reads that wait between its own
+			// (fifotest.Watch). The correct check opens each file with O_NONBLOCK and holds it for
+			// a moment, which is no such wait. A check that is only slow is waited for, to 30 s
+			// before the test binary's deadline.
+			bound := testwait.Bounded(t, 1<<60, 30*time.Second)
+			if bound <= 0 {
+				t.Fatalf("less than 30 s of the test binary's deadline was left when the case began: it has no time to wait for ghConfigShape")
+			}
 			done := make(chan error, 1)
 			go func() { done <- ghConfigShape(dir) }()
+			giveUp := time.After(bound)
+			poll := time.NewTicker(testwait.Poll)
+			defer poll.Stop()
+			watches := []*fifotest.Watch{{Path: filepath.Join(dir, ghconfig.HostsFile)}, {Path: filepath.Join(dir, ghconfig.ConfigFile)}}
 			var err error
-			select {
-			case err = <-done:
-			case <-time.After(5 * time.Second):
-				t.Fatalf("ghConfigShape did not return within 5 s")
+		wait:
+			for {
+				select {
+				case err = <-done:
+					break wait
+				case <-poll.C:
+					for _, watch := range watches {
+						opened, watchErr := watch.Opened()
+						if watchErr != nil {
+							t.Fatalf("cannot tell whether ghConfigShape waits in a plain open of %s: %v", watch.Path, watchErr)
+						}
+						if opened {
+							// The watch's own open was the writer that open needed, so the check
+							// goes on and its goroutine ends.
+							t.Fatalf("ghConfigShape opened the named pipe at %s plainly and waited there for a writer", filepath.Base(watch.Path))
+						}
+					}
+				case <-giveUp:
+					t.Fatalf("ghConfigShape did not return, to 30 s before the test binary's deadline, and waited in no plain open of a planted pipe")
+				}
 			}
 			switch {
 			case tc.want == "" && err != nil:

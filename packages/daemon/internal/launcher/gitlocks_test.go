@@ -861,6 +861,15 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		shortGitLockClock(t, 20*time.Millisecond, time.Millisecond)
 		t.Chdir(c.dir)
 		useSweepingLauncher(t)
+		// The verdict is an event, not a window: the channel the sweep's ticker goroutine closes
+		// as it returns (gitLockServed), read once Run has returned. Closed, that goroutine has
+		// left its loop and no pass of it can run; open, it was still running when Run returned,
+		// however late its next pass would come. It is set before the launcher starts, and put
+		// back after the launcher's own cleanup, for the reason shortGitLockClock gives.
+		served := make(chan (<-chan struct{}), 1)
+		previous := gitLockServed
+		gitLockServed = func(done <-chan struct{}) { served <- done }
+		t.Cleanup(func() { gitLockServed = previous })
 		f := newFleet(t, 2*time.Second, "tester")
 		running := c.lock("refs/heads/running.lock", "stale", time.Hour)
 		testwait.Eventually(t, "the sweep's clock to remove "+running, func() bool { return swept(running) })
@@ -873,9 +882,16 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
 			t.Fatalf("Run did not return after its context ended; the launcher's log:\n%s", f.stderr.String())
 		}
-		after := c.lock("refs/heads/after.lock", "stale", time.Hour)
-		if testwait.Holds(500*time.Millisecond, testwait.Poll, func() bool { return swept(after) }) {
-			t.Fatalf("a pass ran after Run returned: the sweep outlived the container's own process")
+		var ticker <-chan struct{}
+		select {
+		case ticker = <-served:
+		default:
+			t.Fatal("Run returned with no git lock sweep started: the launcher swept nothing")
+		}
+		select {
+		case <-ticker:
+		default:
+			t.Fatalf("Run returned before the sweep's ticker goroutine did: a pass can still run after the container's own process is gone; the launcher's log:\n%s", f.stderr.String())
 		}
 	})
 }

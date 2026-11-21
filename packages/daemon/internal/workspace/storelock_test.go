@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fifotest"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // heldLock is a Request.StoreLock that knows whether it is held, so a runner can read, at each
@@ -381,40 +383,74 @@ func TestRemoveAsideAnswersAParentSwappedForAFifo(t *testing.T) {
 		t.Fatalf("Provision: %v", err)
 	}
 	parent := filepath.Dir(working.Dir)
-	// The bound guards the aside's removal alone, so it starts at the swap: the jj and git Remove
-	// runs under the lock before it are as slow as the host is, with nothing blocking them.
+	// The verdict comes from the kernel, not a clock: a removal that opens the swapped parent
+	// plainly waits in that open for a writer, which the row reads between its waits
+	// (fifotest.Watch). The correct removal opens it with O_NONBLOCK and holds it for a moment,
+	// which is no such wait. A Remove that is only slow, in its jj and git runs under the lock or
+	// in the removal itself, is waited for, to 30 s before the test binary's deadline.
+	bound := testwait.Bounded(t, 1<<60, 30*time.Second)
+	if bound <= 0 {
+		t.Fatalf("less than 30 s of the test binary's deadline was left when the row began: it has no time to wait for Remove")
+	}
+	// The swap records its errors rather than reporting them: it runs in Remove's goroutine, which
+	// a row that failed early has stopped waiting for, and the row reads them once Remove answers.
 	swapped := make(chan struct{})
 	var once sync.Once
+	var swapErr error
 	lock := &unlockWatch{onUnlock: func() {
 		once.Do(func() {
 			defer close(swapped)
 			if err := os.Rename(parent, parent+".moved"); err != nil {
-				t.Error(err)
+				swapErr = err
+				return
 			}
-			if err := syscall.Mkfifo(parent, 0o644); err != nil {
-				t.Error(err)
-			}
+			swapErr = syscall.Mkfifo(parent, 0o644)
 		})
 	}}
 	done := make(chan error, 1)
 	go func() { done <- Remove(context.Background(), run, working, lock) }()
-	var armed, bound = (<-chan struct{})(swapped), (<-chan time.Time)(nil)
+	giveUp := time.After(bound)
+	poll := time.NewTicker(testwait.Poll)
+	defer poll.Stop()
+	watch := &fifotest.Watch{Path: parent}
+	// ended waits for Remove's goroutine once the row has failed, to 10 s before the deadline.
+	ended := func() {
+		select {
+		case <-done:
+		case <-time.After(testwait.Bounded(t, 1<<60, 10*time.Second)):
+		}
+	}
 	for answered := false; !answered; {
 		select {
 		case err := <-done:
 			answered = true
+			if swapErr != nil {
+				t.Fatalf("swap %s for a fifo as the store lock was let go: %v", parent, swapErr)
+			}
 			if !errors.Is(err, syscall.ENOTDIR) || !strings.Contains(err.Error(), "remove workspace directory") {
 				t.Fatalf("Remove with its workspace's parent swapped for a fifo answered %v, want the aside's removal refused with ENOTDIR", err)
 			}
-		case <-armed:
-			armed, bound = nil, time.After(30*time.Second)
-		case <-bound:
-			// Open the fifo for writing so the blocked open returns and Remove's goroutine ends.
-			if writer, openErr := os.OpenFile(parent, os.O_WRONLY, 0); openErr == nil {
+		case <-poll.C:
+			select {
+			case <-swapped:
+			default:
+				continue
+			}
+			opened, err := watch.Opened()
+			if err != nil {
+				t.Fatalf("cannot tell whether Remove waits in a plain open of %s: %v", parent, err)
+			}
+			if opened {
+				ended()
+				t.Fatalf("Remove opened %s, its workspace's parent swapped for a fifo, plainly and waited there for a writer: a workspace parent swapped for a fifo blocks the aside's removal", parent)
+			}
+		case <-giveUp:
+			// Open the fifo for writing so an open that waits returns and Remove's goroutine ends.
+			if writer, openErr := os.OpenFile(parent, os.O_WRONLY|syscall.O_NONBLOCK, 0); openErr == nil {
 				_ = writer.Close()
 			}
-			<-done
-			t.Fatalf("Remove was still opening %s 30s after its parent became a fifo: a workspace parent swapped for a fifo blocks the aside's removal", parent)
+			ended()
+			t.Fatalf("Remove did not return, to 30 s before the test binary's deadline, and waited in no plain open of %s", parent)
 		}
 	}
 	if info, err := os.Lstat(parent); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
