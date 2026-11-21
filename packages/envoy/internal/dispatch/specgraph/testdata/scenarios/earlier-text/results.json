@@ -1,0 +1,28 @@
+[
+  {
+    "check": "messages-come-in-the-order-of-their-writes",
+    "check_version": 1,
+    "kind": "run",
+    "outcome": "pass",
+    "commit": "c0",
+    "job": "go-checks",
+    "leg": "",
+    "attempt": 1,
+    "at": "2026-11-05T10:00:00Z",
+    "seq": 1
+  },
+  {
+    "check": "messages-come-in-the-order-of-their-writes",
+    "check_version": 1,
+    "kind": "failing_example",
+    "outcome": "fail",
+    "commit": "c0",
+    "job": "go-checks",
+    "leg": "",
+    "attempt": 1,
+    "at": "2026-11-05T10:05:00Z",
+    "seq": 2,
+    "fault_author": "agent-b",
+    "test_authors": ["agent-a"]
+  }
+]

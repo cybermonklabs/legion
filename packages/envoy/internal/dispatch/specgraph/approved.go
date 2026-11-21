@@ -14,60 +14,72 @@ import (
 
 // ApprovedVersion is one text that the approved spec held for a node (R2: "Dispatch keeps each
 // text that the approved spec held"): its version number, the time of the approval that wrote it,
-// in approved.json an RFC 3339 time as time.RFC3339Nano writes it, with an upper-case T and Z, and
-// Block, the node's block as Print writes it, which a change copies into the files.
+// in approved.json a time of timeForm, and Document, the node's YAML document as Print writes it,
+// which a change copies into the files.
 type ApprovedVersion struct {
-	Version int       `json:"version"`
-	At      time.Time `json:"at"`
-	Block   string    `json:"block"`
+	Version  int       `json:"version" input:"nonzero"`
+	At       time.Time `json:"at" input:"nonzero"`
+	Document string    `json:"document" input:"nonzero"`
 }
 
 // ApprovedNode is one statement, check, component, interface or term of the approved spec, with
 // each text that it held, oldest first. The newest version is its current text, unless the
 // approved spec removed the node: a removed node has no current text, and its id is never used
 // for another text (R1). PartlyChecked marks a statement whose checks decide only part of it, as
-// the reviewer of its level judged (R10).
+// the reviewer of its level judged (R10). Removed and PartlyChecked are nil when they are not set,
+// since false is a value of each.
 type ApprovedNode struct {
-	ID            string            `json:"id"`
-	Removed       bool              `json:"removed"`
-	PartlyChecked bool              `json:"partly_checked"`
-	Versions      []ApprovedVersion `json:"versions"`
+	ID            string            `json:"id" input:"nonzero"`
+	Removed       *bool             `json:"removed" input:"present: false is a node that the approved spec keeps"`
+	PartlyChecked *bool             `json:"partly_checked" input:"present: false is a statement whose checks decide all of it"`
+	Versions      []ApprovedVersion `json:"versions" input:"nonzero"`
 }
 
 // Approved is the approved spec (R2): each node that it holds or held, by id.
 type Approved struct {
-	Nodes map[string]ApprovedNode
+	Nodes map[string]ApprovedNode `input:"zero: no node"`
 }
 
 // ApprovedFile is approved.json, the approved spec as a file holds it, and the one definition of
 // that form (approvedForm): WriteApproved writes it, and ReadApproved reads it. "at" is an RFC 3339
-// time as time.RFC3339Nano writes it, with an upper-case T and Z, such as "2026-11-10T00:00:00Z":
-// the reader refuses a lower-case t or z, which RFC 3339 allows, and the writer writes upper case.
-// An approved spec that holds no node is {"nodes":[]}.
+// time as time.RFC3339Nano writes it, such as "2026-11-10T00:00:00Z" (timeForm). An approved spec
+// that holds no node is {"nodes":[]}.
+// The form of approved.json, with the type of each value in approvedForm, is
+// {"nodes":[{"id","removed","partly_checked","versions":[{"version","at","document"}]}]}.
 type ApprovedFile struct {
-	Nodes []ApprovedNode `json:"nodes"`
+	Nodes []ApprovedNode `json:"nodes" input:"nonzero"`
 }
 
-// timeForm is a time as each form text of this package names its type: an RFC 3339 time as
-// time.RFC3339Nano writes it, which the readers take only with an upper-case T and Z.
-const timeForm = `<RFC 3339 time with an upper-case T and Z>`
+// timeForm is a time as each form text of this package names its type: an RFC 3339 time with an
+// upper-case T, in UTC with an upper-case Z, as time.RFC3339Nano writes it, or at an offset such as
+// +01:00, which the readers order by its instant. The readers refuse a lower-case t or z, which RFC
+// 3339 allows. A time at the zero instant, 0001-01-01T00:00:00Z at any offset, is no time: the
+// readers refuse it as a member that is not set ("it sets no at", "it sets no now", "it has no
+// time").
+const timeForm = `<RFC 3339 time with an upper-case T, and Z or an offset such as +01:00>`
 
 // approvedForm is the form of approved.json, with the type of each value, as ReadApproved names it
 // for a value of another type.
-const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"` + timeForm + `","block":"<block>"}, …]}, …]}`
+const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"` + timeForm + `","document":"<document>"}, …]}, …]}`
 
 // ReadApproved reads an approved spec in the form of approved.json (ApprovedFile). It refuses
 // what decodeJSON refuses (a byte that is not UTF-8, a field it does not know or that is written
 // in other letters, a field that one object gives two times, a value of another type than
 // approvedForm needs, such as a time that is not RFC 3339, named by its place, no object or text
-// after it), a file with no list of nodes (null, {} or "nodes": null), a node with no id, an id on
-// two nodes, a node with no version, version numbers that do not go up from 1, a version with no
-// time or with one older than the one before it, and a block that is not its node's one block as
-// Print writes it. The error names the node, by its id as quoted prints a value of the input, and
-// the version. It reads the whole file, with no bound on its size.
+// after it, and a null at any place, such as null or "nodes": null), a file with no list of nodes
+// ({}), and what ApprovedNode.check refuses, in an error that names the node, by its id as quoted
+// prints a value of the input: a node with no id, an id on two nodes, a node that does not set
+// removed or partly_checked, since false is a value of each, a node with no version, version
+// numbers that do not go up from 1, a version with no time or with one older than the one before
+// it, and a document that is not its node's one document as Print writes it, naming the version.
+// It reads the whole file, with no bound on its size.
 func ReadApproved(r io.Reader) (Approved, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return Approved{}, fmt.Errorf("specgraph: approved spec: %w", err)
+	}
 	var file ApprovedFile
-	if err := decodeJSONFrom(r, &file, approvedForm); err != nil {
+	if err := decodeJSON(data, &file, approvedForm); err != nil {
 		return Approved{}, fmt.Errorf("specgraph: approved spec: %w", err)
 	}
 	return file.approved()
@@ -81,8 +93,8 @@ func WriteApproved(w io.Writer, a Approved) error {
 	file := ApprovedFile{Nodes: make([]ApprovedNode, 0, len(a.Nodes))}
 	for _, id := range slices.Sorted(maps.Keys(a.Nodes)) {
 		n := a.Nodes[id]
-		if n.ID != id {
-			return fmt.Errorf("specgraph: approved spec: node %s is under the id %s", quoted(n.ID), quoted(id))
+		if err := n.keyFault(id); err != nil {
+			return err
 		}
 		file.Nodes = append(file.Nodes, n)
 	}
@@ -97,30 +109,48 @@ func WriteApproved(w io.Writer, a Approved) error {
 	return err
 }
 
-// approved is the approved spec that f holds, or the first fault of f that ReadApproved refuses.
+// approved is the approved spec that f holds, or the first fault of f that ReadApproved refuses:
+// of each node in its order, a fault of its id or of its texts (ApprovedNode.textFault), and then
+// of each node, a member that it does not set (ApprovedNode.unsetMemberFault).
 func (f ApprovedFile) approved() (Approved, error) {
 	if f.Nodes == nil {
 		return Approved{}, errors.New(`specgraph: approved spec: it holds no "nodes" list`)
 	}
 	a := Approved{Nodes: make(map[string]ApprovedNode, len(f.Nodes))}
 	for _, n := range f.Nodes {
-		if n.ID == "" {
-			return Approved{}, errors.New("specgraph: approved spec: a node has no id")
-		}
 		if _, twice := a.Nodes[n.ID]; twice {
 			return Approved{}, fmt.Errorf("specgraph: approved spec: node %s is in the approved spec two times", quoted(n.ID))
 		}
-		if err := n.check(); err != nil {
+		if err := n.textFault(); err != nil {
 			return Approved{}, err
 		}
 		a.Nodes[n.ID] = n
 	}
+	for _, n := range f.Nodes {
+		if err := n.unsetMemberFault(); err != nil {
+			return Approved{}, err
+		}
+	}
 	return a, nil
 }
 
-// check is the first fault of n that ReadApproved refuses, or nil.
+// check is the first fault of n that ReadApproved refuses, or nil: a fault of its id or of its
+// texts, and then a member that it does not set.
 func (n ApprovedNode) check() error {
-	if len(n.Versions) == 0 {
+	if err := n.textFault(); err != nil {
+		return err
+	}
+	return n.unsetMemberFault()
+}
+
+// textFault is the fault of the id or of the texts of n, or nil: no id, no version, version numbers
+// that do not go up from 1, a version with no time or with one older than the one before it, and a
+// document that is not its node's one document as Print writes it.
+func (n ApprovedNode) textFault() error {
+	switch {
+	case n.ID == "":
+		return errors.New("specgraph: approved spec: a node has no id")
+	case len(n.Versions) == 0:
 		return fmt.Errorf("specgraph: approved node %s: it has no version", quoted(n.ID))
 	}
 	for i, v := range n.Versions {
@@ -134,7 +164,7 @@ func (n ApprovedNode) check() error {
 			fault = fmt.Sprintf("it is older than version %d", n.Versions[i-1].Version)
 		default:
 			if _, problems := versionText(n.ID, v); len(problems) != 0 {
-				fault = fmt.Sprintf("%s (line %d of its block)", problems[0].Detail, problems[0].Pos.Line)
+				fault = fmt.Sprintf("%s (line %d of its document)", problems[0].Detail, problems[0].Pos.Line)
 			}
 		}
 		if fault != "" {
@@ -144,15 +174,45 @@ func (n ApprovedNode) check() error {
 	return nil
 }
 
+// unsetMemberFault is the refusal of n that does not set Removed or PartlyChecked, whose false is
+// a value of each (memberMark), or nil.
+func (n ApprovedNode) unsetMemberFault() error {
+	switch {
+	case n.Removed == nil:
+		return fmt.Errorf("specgraph: approved node %s: it sets no removed; a node that the approved spec keeps sets false", quoted(n.ID))
+	case n.PartlyChecked == nil:
+		return fmt.Errorf("specgraph: approved node %s: it sets no partly_checked; a statement whose checks decide all of it sets false", quoted(n.ID))
+	}
+	return nil
+}
+
+// removed is whether the approved spec removed n. A node that does not set Removed, which check
+// refuses, has no current text either: Current and Since leave it out, as they leave out a node
+// with no version.
+func (n ApprovedNode) removed() bool {
+	return n.Removed == nil || *n.Removed
+}
+
+// keyFault is the refusal of n under the key id of an Approved, which is not its own id, or nil:
+// Current reads a node by its key and would leave such a node out, so WriteApproved and the entry
+// of the derivation (Input.check) refuse it.
+func (n ApprovedNode) keyFault(id string) error {
+	if n.ID != id {
+		return fmt.Errorf("specgraph: approved spec: node %s is under the id %s", quoted(n.ID), quoted(id))
+	}
+	return nil
+}
+
 // Current is the tree of the current text of each node that the approved spec did not remove.
 // Each node is at the position "approved <id> version <n>", line 1. A caller that builds an
-// Approved itself, as the pilot does from the store, can give a block that ReadApproved would
-// refuse: Current leaves that node out and gives each problem of its block.
+// Approved itself, as the pilot does from the store, can give a document that ReadApproved would
+// refuse: Current leaves that node out and gives each problem of its document. It leaves out a
+// node with no version or that does not set Removed too, which ApprovedNode.check refuses.
 func (a Approved) Current() (Tree, []Problem) {
 	var tree Tree
 	var problems []Problem
 	for id, n := range a.Nodes {
-		if n.Removed || len(n.Versions) == 0 {
+		if n.removed() || len(n.Versions) == 0 {
 			continue
 		}
 		text, refused := versionText(id, n.Versions[len(n.Versions)-1])
@@ -174,36 +234,92 @@ func (a Approved) Current() (Tree, []Problem) {
 // when the approved spec does not hold id or removed it.
 func (a Approved) Since(id string) time.Time {
 	n, held := a.Nodes[id]
-	if !held || n.Removed || len(n.Versions) == 0 {
+	if !held || n.removed() || len(n.Versions) == 0 {
 		return time.Time{}
 	}
 	return n.Versions[len(n.Versions)-1].At
 }
 
 // versionText is the tree of the one node that version v of the approved node id holds, at the
-// position "approved <id> version <n>". problems is each reason it holds none: a line that Parse
-// refuses, or bad-approved-block for a block of no node or of two, of a node with another id, or
-// not as Print writes its node.
+// position "approved <id> version <n>". problems is each reason it holds none: a problem of the
+// reader in the document (bad-yaml, no-node, bad-time-limit, not-printed), or bad-approved-document
+// (approvalKinds) for a document of no node or of two, of a node with another id, with a value at an
+// id place that is not an id (notAnID), or not as Print writes its node. The schema's other
+// problems are the rules' of the files, as Validate's are, and pass here: an approved text that
+// breaks a rule reads as its node, so a check with no failing example reads as such (R9).
 func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	name := fmt.Sprintf("approved %s version %d", id, v.Version)
-	tree, problems := Parse(map[string][]byte{name: []byte(v.Block)})
+	tree, problems := Parse(map[string][]byte{name: []byte(v.Document)})
+	// Parse holds a document with no problem that loses a node to the document that Print writes
+	// (not-printed); a document with a problem of the schema that loses a node it does not hold to
+	// it, so the check below does.
+	printedFormUnchecked := slices.ContainsFunc(problems, func(p Problem) bool { return p.Effect == LosesNode })
+	problems = slices.DeleteFunc(problems, func(p Problem) bool { return p.Rule == "schema" })
 	if len(problems) != 0 {
 		return Tree{}, problems
 	}
-	refuse := func(detail string) (Tree, []Problem) {
-		return Tree{}, []Problem{idProblem(Position{File: name, Line: 1}, id, "bad-approved-block: "+detail)}
+	refuse := func(kind approvalKind, args ...any) (Tree, []Problem) {
+		return Tree{}, []Problem{idProblem(Position{File: name, Line: 1}, id, fmt.Sprintf(approvalKinds[kind], args...))}
 	}
 	nodes := nodesOf(tree)
 	switch {
 	case len(nodes) != 1:
-		return refuse(fmt.Sprintf("the block holds %d nodes, not one", len(nodes)))
+		return refuse(approvedNodeCount, len(nodes))
 	case nodes[0].id != id:
-		return refuse(fmt.Sprintf("the block holds node %s, not %s", quoted(nodes[0].id), quoted(id)))
+		return refuse(approvedOtherNode, quoted(nodes[0].id), quoted(id))
 	}
-	if printed, err := nodes[0].node.Print(); err != nil || printed != v.Block {
-		return refuse("the block is not as Print writes it")
+	if member, value, found := notAnID(nodes[0].node); found {
+		return refuse(approvedNotAnID, member, quoted(value))
+	}
+	if printedFormUnchecked {
+		if printed, err := nodes[0].node.Print(); err != nil || printed != v.Document {
+			return refuse(approvedNotPrinted)
+		}
 	}
 	return tree, nil
+}
+
+// notAnID is the first value of node, the one node of an approved document, at a place that names
+// a node and not in the shape of an id, by its member: its id, its parent, and each node that it
+// serves, is about or joins, the places that the schema gives the definition id (#/$defs/id, or an
+// item of #/$defs/ids). The derivation reads a relation only by an id (isIDShape), so a relation of
+// another value, a name of no letter and no digit among them, would read as no relation: a
+// statement at the top of the tree in place of under its parent, which can make that parent met.
+// The schema refuses such a value in the files; in an approved document its problems pass, so
+// versionText refuses it here. A "" at a place that is not an entry of a list, such as an id, a
+// parent or the statement that a check serves, is one that the node does not set, and each entry
+// of a list is set.
+// The problem is bad-approved-document: <member> "<value>" is no id, with the value as quoted
+// prints it, and ReadApproved refuses the version with it (ApprovedNode.textFault).
+func notAnID(node any) (member, value string, found bool) {
+	type place struct {
+		member, value string
+		entry         bool
+	}
+	entries := func(member string, ids []string) []place {
+		places := make([]place, len(ids))
+		for i, id := range ids {
+			places[i] = place{member, id, true}
+		}
+		return places
+	}
+	var places []place
+	switch n := node.(type) {
+	case Statement:
+		places = slices.Concat([]place{{"id", n.ID, false}, {"parent", n.Parent, false}}, entries("serves", n.Serves), entries("about", n.About))
+	case Check:
+		places = []place{{"id", n.ID, false}, {"serves", n.Serves, false}}
+	case Component:
+		places = slices.Concat([]place{{"id", n.ID, false}, {"parent", n.Parent, false}}, entries("joins", n.Joins))
+	case Term:
+		places = []place{{"id", n.ID, false}}
+	}
+	for _, p := range places {
+		if (p.entry || p.value != "") && !isIDShape(p.value) {
+			return p.member, p.value, true
+		}
+	}
+	return "", "", false
 }
 
 // idProblem is the problem detail of the node id at pos: its rule is the word before the

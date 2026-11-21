@@ -1,0 +1,52 @@
+{
+  "nodes": [
+    {
+      "id": "messages-reach-sessions",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: requirement\nid: messages-reach-sessions\nkind: behavior\ntext:\n  - Envoy delivers each message to the session that it is for.\n"
+        }
+      ]
+    },
+    {
+      "id": "a-stored-message-survives-a-restart",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: requirement\nid: a-stored-message-survives-a-restart\nkind: behavior\nparent: messages-reach-sessions\ntext:\n  - Envoy delivers each stored message to its session after the listener starts again.\n"
+        }
+      ]
+    },
+    {
+      "id": "a-production-restart-loses-no-message",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: check\nid: a-production-restart-loses-no-message\nserves: a-stored-message-survives-a-restart\nsubject: production\nprocedure: program\ntest:\n  runner: go\n  selector: github.com/sjawhar/envoy/cmd/listener TestAProductionRestartLosesNoMessage\n  job: production-checks\nclaim: A message that production stores before a restart reaches its session after the restart.\nprocedure_text:\n  - The program stores one message in production, starts the listener again and reads the messages of the session.\n  - It must find the message one time.\nfailing_example:\n  - A listener that deletes its stored messages when it starts.\n"
+        }
+      ]
+    },
+    {
+      "id": "the-graph-holds-a-delivery-of-each-message",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: check\nid: the-graph-holds-a-delivery-of-each-message\nserves: a-stored-message-survives-a-restart\nsubject: graph\nprocedure: query\nclaim: Each message record of the graph has a delivery record.\nprocedure_text:\n  - The query reads each message record of the graph.\n  - It returns each message record that has no delivery record.\nfailing_example:\n  - A copy of the graph with one message record that has no delivery record.\n"
+        }
+      ]
+    }
+  ]
+}

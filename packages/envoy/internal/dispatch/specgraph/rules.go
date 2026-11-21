@@ -16,29 +16,33 @@ type Options struct {
 	Retired []string
 }
 
-// Validate finds each fault of the tree that a program can find, sorted by file, line, node and
-// rule:
+// Validate finds each fault of the tree that a program can find beyond the schema, sorted by file,
+// line, node and rule. The schema of the files (schema/spec-node.schema.json, which Parse checks)
+// states presence, type and closed values; Validate states words and meaning, and passes over each
+// value that the schema refuses (an empty value, or a reference that is not an id), so one fault
+// gives one problem:
 //
-//   - an id: doubled-id (one id on two nodes of any kind), bad-id (not words of lower-case ASCII
-//     letters and digits joined by single hyphens, or a word that states a position), retired-id
-//     (an id the approved spec removed);
-//   - a statement: no-text, bad-kind, no-parent, missing-target (a serves or about relation to a
-//     node the files do not hold as a statement, or as a component or interface), no-about (a
-//     structure statement about no component), leaf-without-check, supported-without-check (a
-//     statement with statements under it that other statements serve, and that no check serves:
-//     R5), and loop (a cycle through parent and serves relations, or through the parents of
-//     components);
-//   - a check: check-serves (not exactly one statement), no-claim, no-procedure,
-//     no-failing-example, bad-subject, bad-procedure, no-test and no-job (a program check without
-//     its test part), test-on-non-program, bad-selector (a go selector that picks no one test);
-//   - a component: bad-component (no name, a purpose that is not one sentence, a parent that is no
-//     component, or joins on a component that is no interface) and bad-interface (fewer than two
-//     components joined, or a joined node that is no component);
-//   - a term: bad-term (no name or definition);
+//   - an id: doubled-id (one id on two nodes of any kind), bad-id (an id with a word that states a
+//     position), retired-id (an id the approved spec removed);
+//   - a statement: no-text (a text with no letter or digit), no-parent, missing-target (a serves or
+//     about relation to a node the files do not hold as a statement, or as a component or
+//     interface), leaf-without-check, supported-without-check (a statement with statements under
+//     it that other statements serve, and that no check serves: R5), and loop (a cycle through
+//     parent and serves relations, or through the parents of components);
+//   - a check: check-serves (a statement that the files do not hold), no-claim, no-procedure,
+//     no-failing-example (each a text with no letter or digit), bad-claim (a claim of more than one
+//     sentence), no-test and no-job (a runner, selector or job with no word), bad-selector (a go
+//     selector that picks no one test);
+//   - a component: bad-component (a name or a purpose with no letter or digit, a purpose that is
+//     not one sentence, or a parent that is no component) and bad-interface (a joined node that is
+//     no component);
+//   - a term: bad-term (a name or a definition with no letter or digit);
 //   - any text: code-in-text, a name of code in a statement's text, a check's claim, procedure or
 //     failing example, a component's name or purpose, or a term's name or definition (R4 and R15).
-//     A check's test part and job name code by design and are not read. Parse reads each heading
-//     for code too, and refuses a claim of more than one sentence (bad-field).
+//     A check's test part and job name code by design and are not read.
+//
+// The rule no-parent is a parent of a statement that the files do not hold as a statement, and
+// leaf-without-check is a statement that is the parent of no statement and that no check serves.
 func Validate(t Tree, o Options) []Problem {
 	v := validator{tree: t, kinds: map[string]string{}, retired: map[string]bool{}, edges: map[string][]edge{}}
 	for _, id := range o.Retired {
@@ -55,14 +59,14 @@ func Validate(t Tree, o Options) []Problem {
 		v.component(c)
 	}
 	for _, term := range t.Terms {
-		if !hasWord(term.Name) || !hasWord(term.Definition) {
-			v.problem(term.Pos, term.ID, "bad-term: a term has a name and a definition")
+		if missing(term.Name) || missing(term.Definition) {
+			v.problem(term.Pos, term.ID, ruleBadTerm)
 		}
 		v.code(term.Pos, term.ID, "name", term.Name)
 		v.code(term.Pos, term.ID, "definition", term.Definition)
 	}
 	for _, cycle := range findLoops(v.edges) {
-		v.problem(v.first[cycle[0]], cycle[0], "loop: "+loopDetail(cycle))
+		v.problem(v.first[cycle[0]], cycle[0], ruleLoop, loopDetail(cycle))
 	}
 	SortProblems(v.problems)
 	return v.problems
@@ -79,17 +83,77 @@ type validator struct {
 	problems []Problem
 }
 
-// problem records a problem of node at pos; detail begins with the rule.
-func (v *validator) problem(pos Position, node, detail string) {
-	if node == "" {
-		node = "-"
-	}
-	rule, _, _ := strings.Cut(detail, ":")
-	v.problems = append(v.problems, Problem{Pos: pos, Node: node, Rule: rule, Detail: detail})
+// ruleKind is one kind of problem that Validate gives, an index of ruleKinds.
+type ruleKind int
+
+// The kinds of problem that Validate gives. numRuleKinds counts them, so each new kind is a place
+// of ruleKinds, which ProblemKinds lists, and the table test of the lines that print a problem
+// (cmd/spec-check) fails until it has a row.
+const (
+	ruleDoubledID ruleKind = iota
+	ruleBadID
+	ruleRetiredID
+	ruleNoText
+	ruleNoParent
+	ruleMissingTarget
+	ruleTargetOfAnotherKind
+	ruleLeafWithoutCheck
+	ruleSupportedWithoutCheck
+	ruleLoop
+	ruleCheckServes
+	ruleNoClaim
+	ruleNoProcedure
+	ruleNoFailingExample
+	ruleBadClaim
+	ruleNoTest
+	ruleBadSelector
+	ruleNoJob
+	ruleBadComponent
+	ruleComponentParent
+	ruleBadInterface
+	ruleBadTerm
+	ruleCodeInText
+	numRuleKinds
+)
+
+// ruleKinds is the format of the Detail of each kind of problem that Validate gives, which begins
+// with its rule; validator.problem fills it. Each value of the input in it is cut where the rule
+// passes it (Cut), so a long id or a long name of code prints its start and its end.
+var ruleKinds = [numRuleKinds]string{
+	ruleDoubledID:             "doubled-id: also at %s:%d",
+	ruleBadID:                 "bad-id: %q is not an id: words of lower-case ASCII letters and digits joined by single hyphens, with no word that states a position",
+	ruleRetiredID:             "retired-id: the approved spec removed this id",
+	ruleNoText:                "no-text: a statement has a text",
+	ruleNoParent:              "no-parent: the files hold no statement %q",
+	ruleMissingTarget:         "missing-target: %s names %q, which the files do not hold",
+	ruleTargetOfAnotherKind:   "missing-target: %s names %q, which is a %s, not a %s",
+	ruleLeafWithoutCheck:      "leaf-without-check: no statement is under it and no check serves it",
+	ruleSupportedWithoutCheck: "supported-without-check: other statements serve it and no check serves it",
+	ruleLoop:                  "loop: %s",
+	ruleCheckServes:           "check-serves: a check serves exactly one statement of the files",
+	ruleNoClaim:               "no-claim: the check has no claim",
+	ruleNoProcedure:           "no-procedure: the check has no procedure",
+	ruleNoFailingExample:      "no-failing-example: the check has no failing example",
+	ruleBadClaim:              "bad-claim: a claim is one sentence",
+	ruleNoTest:                "no-test: a program check names its runner and its selector",
+	ruleBadSelector:           `bad-selector: a go selector is "<import path> <TopLevelTestName>"`,
+	ruleNoJob:                 "no-job: a program check names the job that runs its test",
+	ruleBadComponent:          "bad-component: a component has a name and one sentence of purpose",
+	ruleComponentParent:       "bad-component: parent %q is no component",
+	ruleBadInterface:          "bad-interface: joins %q, which is no component",
+	ruleBadTerm:               "bad-term: a term has a name and a definition",
+	ruleCodeInText:            "code-in-text: %s names code: %s",
+}
+
+// problem records the problem of the kind kind of node at pos: its Detail is the kind's format
+// filled with args, and its rule the word before the Detail's first colon.
+func (v *validator) problem(pos Position, node string, kind ruleKind, args ...any) {
+	v.problems = append(v.problems, idProblem(pos, node, fmt.Sprintf(ruleKinds[kind], args...)))
 }
 
 // ids judges the id of every node, and records the kind and the first position of each, in file
-// and line order, so a doubled id names the first place that holds it.
+// and line order, so a doubled id names the first place that holds it. An id that is not of the
+// schema's shape (an empty one among them) is the schema's problem, and passes here.
 func (v *validator) ids() {
 	type held struct {
 		id, kind string
@@ -118,17 +182,16 @@ func (v *validator) ids() {
 	v.first = map[string]Position{}
 	for _, h := range all {
 		switch {
-		case h.id == "":
-			v.problem(h.pos, "-", "bad-id: the block has no id")
+		case !isIDShape(h.id):
 			continue
 		case !IsID(h.id):
-			v.problem(h.pos, h.id, fmt.Sprintf("bad-id: %q is not an id: words of lower-case ASCII letters and digits joined by single hyphens, with no word that states a position", h.id))
+			v.problem(h.pos, h.id, ruleBadID, Cut(h.id))
 		}
 		if v.retired[h.id] {
-			v.problem(h.pos, h.id, "retired-id: the approved spec removed this id")
+			v.problem(h.pos, h.id, ruleRetiredID)
 		}
 		if at, doubled := v.first[h.id]; doubled {
-			v.problem(h.pos, h.id, fmt.Sprintf("doubled-id: also at %s:%d", at.File, at.Line))
+			v.problem(h.pos, h.id, ruleDoubledID, at.File, at.Line)
 			continue
 		}
 		v.first[h.id], v.kinds[h.id] = h.pos, h.kind
@@ -136,14 +199,18 @@ func (v *validator) ids() {
 }
 
 // target judges one relation of node to the node id names, which must be of one of the kinds
-// wanted: missing-target when the files hold no such node.
+// wanted: missing-target when the files hold no such node. A reference that is not an id is the
+// schema's problem, and passes here.
 func (v *validator) target(pos Position, node, attribute, id string, wanted ...string) bool {
+	if !isIDShape(id) {
+		return false
+	}
 	kind, held := v.kinds[id]
 	switch {
 	case !held:
-		v.problem(pos, node, fmt.Sprintf("missing-target: %s names %q, which the files do not hold", attribute, id))
+		v.problem(pos, node, ruleMissingTarget, attribute, Cut(id))
 	case !slices.Contains(wanted, kind):
-		v.problem(pos, node, fmt.Sprintf("missing-target: %s names %q, which is a %s, not a %s", attribute, id, kind, strings.Join(wanted, " or an ")))
+		v.problem(pos, node, ruleTargetOfAnotherKind, attribute, Cut(id), kind, strings.Join(wanted, " or an "))
 	default:
 		return true
 	}
@@ -151,19 +218,14 @@ func (v *validator) target(pos Position, node, attribute, id string, wanted ...s
 }
 
 func (v *validator) statement(s Statement) {
-	if !hasWord(s.Text) {
-		v.problem(s.Pos, s.ID, "no-text: a statement has a text")
+	if missing(s.Text) {
+		v.problem(s.Pos, s.ID, ruleNoText)
 	}
-	switch s.Kind {
-	case KindBehavior, KindStructure, KindProperty:
-	default:
-		v.problem(s.Pos, s.ID, fmt.Sprintf("bad-kind: %q is not behavior, structure or property", s.Kind))
-	}
-	if s.Parent != "" {
+	if isIDShape(s.Parent) {
 		if v.kinds[s.Parent] == "statement" {
 			v.edges[s.ID] = append(v.edges[s.ID], edge{to: s.Parent, relation: "parent"})
 		} else {
-			v.problem(s.Pos, s.ID, fmt.Sprintf("no-parent: the files hold no statement %q", s.Parent))
+			v.problem(s.Pos, s.ID, ruleNoParent, Cut(s.Parent))
 		}
 	}
 	for _, id := range s.Serves {
@@ -174,15 +236,12 @@ func (v *validator) statement(s Statement) {
 	for _, id := range s.About {
 		v.target(s.Pos, s.ID, "about", id, "component", "interface")
 	}
-	if s.Kind == KindStructure && len(s.About) == 0 {
-		v.problem(s.Pos, s.ID, "no-about: a statement of kind structure names its components or interfaces")
-	}
-	if s.ID != "" && len(v.tree.ChecksOf(s.ID)) == 0 {
+	if isIDShape(s.ID) && len(v.tree.ChecksOf(s.ID)) == 0 {
 		switch {
 		case len(v.tree.Children(s.ID)) == 0:
-			v.problem(s.Pos, s.ID, "leaf-without-check: no statement is under it and no check serves it")
+			v.problem(s.Pos, s.ID, ruleLeafWithoutCheck)
 		case v.served(s.ID):
-			v.problem(s.Pos, s.ID, "supported-without-check: other statements serve it and no check serves it")
+			v.problem(s.Pos, s.ID, ruleSupportedWithoutCheck)
 		}
 	}
 	v.code(s.Pos, s.ID, "text", s.Text)
@@ -195,46 +254,36 @@ func (v *validator) served(id string) bool {
 }
 
 func (v *validator) check(c Check) {
-	if strings.Contains(c.Serves, " ") || v.kinds[c.Serves] != "statement" {
-		v.problem(c.Pos, c.ID, "check-serves: a check serves exactly one statement of the files")
+	if isIDShape(c.Serves) && v.kinds[c.Serves] != "statement" {
+		v.problem(c.Pos, c.ID, ruleCheckServes)
 	}
-	for _, part := range []struct{ value, detail string }{
-		{c.Claim, "no-claim: the check has no claim"},
-		{c.ProcedureText, "no-procedure: the check has no procedure"},
-		{c.FailingExample, "no-failing-example: the check has no failing example"},
+	for _, part := range []struct {
+		value string
+		kind  ruleKind
+	}{
+		{c.Claim, ruleNoClaim},
+		{c.ProcedureText, ruleNoProcedure},
+		{c.FailingExample, ruleNoFailingExample},
 	} {
-		if !hasWord(part.value) {
-			v.problem(c.Pos, c.ID, part.detail)
+		if missing(part.value) {
+			v.problem(c.Pos, c.ID, part.kind)
 		}
 	}
-	switch c.Subject {
-	case SubjectCode, SubjectProduction, SubjectGraph:
-	default:
-		v.problem(c.Pos, c.ID, fmt.Sprintf("bad-subject: %q is not code, production or graph", c.Subject))
+	if sentenceEnd.MatchString(c.Claim) {
+		v.problem(c.Pos, c.ID, ruleBadClaim)
 	}
-	switch c.Procedure {
-	case ProcedureProgram:
+	if c.Procedure == ProcedureProgram && c.Test != nil {
 		switch {
-		case c.Test == nil || c.Test.Runner == "" || c.Test.Selector == "":
-			v.problem(c.Pos, c.ID, "no-test: a program check names its runner and its selector")
-		case c.Test.Runner == "go":
+		case missing(c.Test.Runner) || missing(c.Test.Selector):
+			v.problem(c.Pos, c.ID, ruleNoTest)
+		case c.Test.Runner == "go" && c.Test.Selector != "":
 			if _, _, err := ParseSelector(c.Test.Selector); err != nil {
-				v.problem(c.Pos, c.ID, `bad-selector: a go selector is "<import path> <TopLevelTestName>"`)
+				v.problem(c.Pos, c.ID, ruleBadSelector)
 			}
 		}
-		if c.Test != nil && c.Test.Job == "" {
-			v.problem(c.Pos, c.ID, "no-job: a program check names the job that runs its test")
+		if missing(c.Test.Job) {
+			v.problem(c.Pos, c.ID, ruleNoJob)
 		}
-	case ProcedureQuery, ProcedureAgent:
-		if c.Test != nil {
-			article := "a"
-			if c.Procedure == ProcedureAgent {
-				article = "an"
-			}
-			v.problem(c.Pos, c.ID, fmt.Sprintf("test-on-non-program: %s %s check names no runner, selector or job", article, c.Procedure))
-		}
-	default:
-		v.problem(c.Pos, c.ID, fmt.Sprintf("bad-procedure: %q is not program, query or agent", c.Procedure))
 	}
 	v.code(c.Pos, c.ID, "claim", c.Claim)
 	v.code(c.Pos, c.ID, "procedure", c.ProcedureText)
@@ -258,27 +307,34 @@ func hasWord(s string) bool {
 	return strings.IndexFunc(s, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0
 }
 
+// missing reports whether s is a text that is present and holds no letter or digit. An absent text
+// ("") is the schema's problem.
+func missing(s string) bool {
+	return s != "" && !hasWord(s)
+}
+
+// isIDShape reports whether id has the schema's shape of an id (slug, the pattern of the schema's
+// id). Validate reads a relation, and judges an id, only when it has; the schema refuses each
+// other one.
+func isIDShape(id string) bool {
+	return slug.MatchString(id)
+}
+
 func (v *validator) component(c Component) {
-	if !hasWord(c.Name) || !hasWord(c.Purpose) || sentenceEnd.MatchString(c.Purpose) {
-		v.problem(c.Pos, c.ID, "bad-component: a component has a name and one sentence of purpose")
+	if missing(c.Name) || missing(c.Purpose) || sentenceEnd.MatchString(c.Purpose) {
+		v.problem(c.Pos, c.ID, ruleBadComponent)
 	}
-	if c.Parent != "" {
+	if isIDShape(c.Parent) {
 		if v.kinds[c.Parent] == "component" {
 			v.edges[c.ID] = append(v.edges[c.ID], edge{to: c.Parent, relation: "parent"})
 		} else {
-			v.problem(c.Pos, c.ID, fmt.Sprintf("bad-component: parent %q is no component", c.Parent))
+			v.problem(c.Pos, c.ID, ruleComponentParent, Cut(c.Parent))
 		}
-	}
-	switch {
-	case c.Interface && len(c.Joins) < 2:
-		v.problem(c.Pos, c.ID, "bad-interface: an interface joins two or more components")
-	case !c.Interface && len(c.Joins) > 0:
-		v.problem(c.Pos, c.ID, `bad-component: only a component of kind="interface" joins components`)
 	}
 	if c.Interface {
 		for _, id := range c.Joins {
-			if v.kinds[id] != "component" {
-				v.problem(c.Pos, c.ID, fmt.Sprintf("bad-interface: joins %q, which is no component", id))
+			if isIDShape(id) && v.kinds[id] != "component" {
+				v.problem(c.Pos, c.ID, ruleBadInterface, Cut(id))
 			}
 		}
 	}
@@ -286,9 +342,12 @@ func (v *validator) component(c Component) {
 	v.code(c.Pos, c.ID, "purpose", c.Purpose)
 }
 
-// code records code-in-text when text, the field of node, names code.
+// code records code-in-text when text, the field of node, names code, each name cut (Cut).
 func (v *validator) code(pos Position, node, field, text string) {
 	if names := CodeNames(text); len(names) > 0 {
-		v.problem(pos, node, fmt.Sprintf("code-in-text: %s names code: %s", field, strings.Join(names, ", ")))
+		for i, name := range names {
+			names[i] = Cut(name)
+		}
+		v.problem(pos, node, ruleCodeInText, field, strings.Join(names, ", "))
 	}
 }

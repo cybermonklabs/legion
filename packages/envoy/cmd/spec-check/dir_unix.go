@@ -1,0 +1,60 @@
+//go:build unix
+
+package main
+
+import (
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"syscall"
+
+	"golang.org/x/sys/unix"
+)
+
+// inode is the inode of the entry that info describes.
+func inode(info fs.FileInfo) uint64 {
+	return uint64(info.Sys().(*syscall.Stat_t).Ino)
+}
+
+// writable answers nil when this process may write in the directory dir and in its parent, where
+// print builds the directory that takes the place of dir (stagingPath), and else the refusal. The
+// refusal of the parent says what to change: write permission on the parent, or, for a dir that is
+// a mount point (on another device than its parent), the way out of a mount point, which a parent
+// that the process may write would meet next, when the system refuses the exchange.
+func writable(dir string) error {
+	if err := unix.Access(dir, unix.W_OK); err != nil {
+		return &fs.PathError{Op: "write", Path: dir, Err: err}
+	}
+	parent := filepath.Dir(dir)
+	err := unix.Access(parent, unix.W_OK)
+	if err == nil {
+		return nil
+	}
+	wayOut := "give this process write permission on " + parent + ", or run print as a user who may write there, then run print again"
+	var at, above unix.Stat_t
+	if unix.Stat(dir, &at) == nil && unix.Stat(parent, &above) == nil && at.Dev != above.Dev {
+		wayOut = dir + " is a mount point, which print cannot put another directory in the place of: " + mountPointWayOut
+	}
+	return fmt.Errorf("print builds the directory that takes the place of %s beside it, in %s, and this process may not write there (%w): %s",
+		dir, parent, &fs.PathError{Op: "write", Path: parent, Err: err}, wayOut)
+}
+
+// sameOwner gives the directory path the owner and the group of old, the spec directory dir, when
+// they are others, through fsys. A system that refuses it, as for a process that is not the owner
+// of dir, not a member of its group and not root, gets the way out.
+func sameOwner(fsys fileSystem, path, dir string, old fs.FileInfo) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	have, want := info.Sys().(*syscall.Stat_t), old.Sys().(*syscall.Stat_t)
+	if have.Uid == want.Uid && have.Gid == want.Gid {
+		return nil
+	}
+	if err := fsys.lchown(path, int(want.Uid), int(want.Gid)); err != nil {
+		return fmt.Errorf("print gives the new directory the owner and the group of %s, %d:%d, and the system refused it (%w): run print as the owner of %s, as a member of its group, or as root, then run print again",
+			dir, want.Uid, want.Gid, err, dir)
+	}
+	return nil
+}

@@ -12,9 +12,9 @@ import (
 )
 
 // decodeJSON decodes data, one JSON value, into v, and form is the format as a person reads it,
-// such as approvedForm, which it names for a value of another type. It is the one reader of each
-// JSON file of a format of this package, approved.json (ApprovedFile), and it refuses each text
-// that the format does not hold:
+// such as approvedForm, which it names for a value of another type. It is the one reader of every
+// JSON file of a format of this package (approved.json, ApprovedFile, and each JSON file of a
+// scenario), and it refuses each text that the format does not hold:
 //
 //   - a byte that is not UTF-8 (RFC 8259 §8.1: JSON text "MUST be encoded using UTF-8"): "it is not
 //     UTF-8";
@@ -29,13 +29,24 @@ import (
 //     "<JSON pointer>" is of another type", and "it is not in the form <form>" for the whole text.
 //     The words are the package's, since encoding/json/v2 names a Go type, and picks its verb,
 //     "cannot" or "unable to", once in each process;
+//   - a JSON null at any place, a member, a value of a map, an element of a list or the whole text,
+//     also one that v keeps as JSON text: "it is not in the form <form>: the value at "<JSON
+//     pointer>" is null", and "it is not in the form <form>: it is null" for the whole text. A null
+//     says nothing, and the decoder would read it as the zero value of its place, a real value of
+//     the form, such as the empty label of a file or no run of a job; no member of a format takes
+//     null;
 //   - in each of those lines, "<JSON pointer>" is the place as quoted prints it: whole up to 100
 //     bytes, else its first and its last 50 bytes with … between them, since a map of a format
 //     takes the names that its writer picks, and a long name would make the line as long;
 //   - a text that is not JSON, in the words of encoding/json/jsontext, which name the place too.
 //
-// The report of go test -json is no format of this package: ReadGoTestJSON reads it as go test
-// writes it, and passes over the members that it does not name.
+// So no text that the format does not hold reads as a text that it holds: without these refusals,
+// a name in other letters, a name given two times, a null or text after the value would read as
+// the value of another text of the format.
+//
+// A map of the format, such as the paths of a commit's tree, takes any name, in its own letters,
+// one time. The report of go test -json is no format of this package: ReadGoTestJSON reads it as
+// go test writes it, and passes over the members that it does not name.
 func decodeJSON(data []byte, v any, form string) error {
 	if !utf8.Valid(data) {
 		return errors.New("it is not UTF-8")
@@ -61,7 +72,33 @@ func decodeJSON(data []byte, v any, form string) error {
 	if _, err := dec.ReadToken(); !errors.Is(err, io.EOF) {
 		return errors.New("text after the JSON value")
 	}
+	switch place, null, err := nullPlace(data); {
+	case err != nil:
+		return err
+	case null && place == "":
+		return fmt.Errorf("it is not in the form %s: it is null", form)
+	case null:
+		return fmt.Errorf("it is not in the form %s: the value at %s is null", form, quoted(place))
+	}
 	return nil
+}
+
+// nullPlace is the JSON pointer of the first null of data, a JSON text that decodeJSON read whole,
+// and whether data holds one; err is a fault of the reader other than the end of data, since a text
+// that it could not read is no text with no null.
+func nullPlace(data []byte) (place string, null bool, err error) {
+	dec := jsontext.NewDecoder(bytes.NewReader(data))
+	for {
+		token, err := dec.ReadToken()
+		switch {
+		case errors.Is(err, io.EOF):
+			return "", false, nil
+		case err != nil:
+			return "", false, err
+		case token.Kind() == 'n':
+			return string(dec.StackPointer()), true, nil
+		}
+	}
 }
 
 // decodeJSONFrom reads all of r and decodes it with decodeJSON.
@@ -73,27 +110,34 @@ func decodeJSONFrom(r io.Reader, v any, form string) error {
 	return decodeJSON(data, v, form)
 }
 
-// quotedBound is the most bytes of a value of the input that quoted prints whole. encoding/json/v2
+// quotedBound is the most bytes of a value of the input that Cut keeps whole. encoding/json/v2
 // and encoding/json/jsontext cut a JSON pointer to about 100 bytes in their own errors
 // (jsonwire.TruncatePointer(pointer, 100) in Go 1.27's src/encoding/json), so a refusal in the
 // package's words is no longer than the library's was, and still names the place.
 const quotedBound = 100
 
-// quoted is s, a value of the input that a refusal prints, such as a JSON pointer or a node id, as
-// a Go string literal: whole when it holds at most quotedBound bytes, else its first and its last
+// Cut is s, a value of the input that a line prints, such as a JSON pointer, a node id or a line
+// of a file: whole when it holds at most quotedBound bytes, else its first and its last
 // quotedBound/2 bytes, each cut at a whole UTF-8 character, with … in place of the rest. So the
-// start of the value and its last part stay, the line grows with no name of the input, and each
-// control character in it is an escape, as %q writes it.
-func quoted(s string) string {
-	if len(s) > quotedBound {
-		start, end := quotedBound/2, len(s)-quotedBound/2
-		for start > 0 && !utf8.RuneStart(s[start]) {
-			start--
-		}
-		for end < len(s) && !utf8.RuneStart(s[end]) {
-			end++
-		}
-		s = s[:start] + "…" + s[end:]
+// start of the value and its last part stay, and a line grows with no value of the input. Each
+// line of the package and of spec-check that names such a value prints it through Cut, bare or
+// quoted; a key, such as Problem.Node, stays whole where it is kept.
+func Cut(s string) string {
+	if len(s) <= quotedBound {
+		return s
 	}
-	return strconv.Quote(s)
+	start, end := quotedBound/2, len(s)-quotedBound/2
+	for start > 0 && !utf8.RuneStart(s[start]) {
+		start--
+	}
+	for end < len(s) && !utf8.RuneStart(s[end]) {
+		end++
+	}
+	return s[:start] + "…" + s[end:]
+}
+
+// quoted is Cut(s) as a Go string literal, so each control character in it is an escape, as %q
+// writes it.
+func quoted(s string) string {
+	return strconv.Quote(Cut(s))
 }

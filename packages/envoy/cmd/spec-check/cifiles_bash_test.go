@@ -76,12 +76,13 @@ func bashScripts() []string {
 // ./bin does the same for a nested sh and for a path. Whenever Bash runs spec-check with compare
 // as its first argument, directly or in a nested shell, the guard names the file; a miss fails the
 // test. The guard can name more, and the test logs how many files it names where no shell runs
-// the comparison.
+// the comparison. A system with no bash on PATH skips the test, and fails it in a CI job, whose
+// runner has bash (skipOutsideCI).
 func TestCIFilesThatCompareNamesEachComparisonThatBashRuns(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
-		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
+		skipOutsideCI(t, fmt.Sprintf("bash is not on PATH, so no script can run in it: %v", err))
 	}
 	began := time.Now()
 	var files []bashFile
@@ -169,12 +170,12 @@ func bashEarlierScripts() []string {
 // The scripts of the round-6 reader's Bash test, which the text rule names too, run in bash as
 // scripts, as that test ran them: whenever Bash runs the comparison, directly or in a nested shell,
 // the guard names the file. So no comparison that a head of the text rule named in that corpus is
-// lost.
+// lost. With no bash on PATH it skips outside CI and fails in a CI job, as the test above does.
 func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
-		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
+		skipOutsideCI(t, fmt.Sprintf("bash is not on PATH, so no script can run in it: %v", err))
 	}
 	began := time.Now()
 	var files []bashFile

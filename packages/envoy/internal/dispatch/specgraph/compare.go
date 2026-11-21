@@ -2,12 +2,38 @@ package specgraph
 
 import "slices"
 
-// The Detail of each rule of Compare.
+// approvalKind is one kind of problem of a comparison with the approved spec, an index of
+// approvalKinds: a rule of Compare, or bad-approved-document, which versionText gives for a
+// document of the approved spec.
+type approvalKind int
+
+// The kinds of problem of a comparison with the approved spec. numApprovalKinds counts them, so
+// each new kind is a place of approvalKinds, which ProblemKinds lists, and the table test of the
+// lines that print a problem (cmd/spec-check) fails until it has a row.
 const (
-	detailUnapprovedID   = "unapproved-id: the approved spec never held this id"
-	detailUnapprovedText = "unapproved-text: the approved spec never held this text"
-	detailRemovedID      = "removed-id: the approved spec removed this id and never held this text for it"
+	unapprovedID approvalKind = iota
+	unapprovedText
+	removedID
+	approvedNodeCount
+	approvedOtherNode
+	approvedNotAnID
+	approvedNotPrinted
+	numApprovalKinds
 )
+
+// approvalKinds is the format of the Detail of each kind of problem of a comparison with the
+// approved spec, which begins with its rule: Compare's rules, and bad-approved-document for a
+// document of no node or of two, of a node with another id, with a value at an id place that is
+// not an id, or not as Print writes its node.
+var approvalKinds = [numApprovalKinds]string{
+	unapprovedID:       "unapproved-id: the approved spec never held this id",
+	unapprovedText:     "unapproved-text: the approved spec never held this text",
+	removedID:          "removed-id: the approved spec removed this id and never held this text for it",
+	approvedNodeCount:  "bad-approved-document: the document holds %d nodes, not one",
+	approvedOtherNode:  "bad-approved-document: the document is of node %s, not %s",
+	approvedNotAnID:    "bad-approved-document: %s %s is no id",
+	approvedNotPrinted: "bad-approved-document: the document is not as Print writes it",
+}
 
 // Holding is which approved text of a node the files hold: Present when they hold one, Version its
 // number, and Current when it is the node's current text.
@@ -31,7 +57,7 @@ type Comparison struct {
 }
 
 // Compare compares the spec files at one commit with the approved spec (R2). A node's text is its
-// Digest, and an approved version's is the Digest of its block's node, so a move to another file or
+// Digest, and an approved version's is the Digest of its document's node, so a move to another file or
 // another order changes no text. Each problem names the node with its file and line, sorted as
 // Validate sorts them:
 //
@@ -50,7 +76,7 @@ func Compare(files Tree, a Approved) Comparison {
 	c := Comparison{Holds: map[string]Holding{}}
 	texts := make(map[string]map[string]int, len(a.Nodes)) // id -> digest -> its newest version
 	for id, n := range a.Nodes {
-		if !n.Removed {
+		if !n.removed() {
 			c.Holds[id] = Holding{}
 		}
 		texts[id] = map[string]int{}
@@ -67,12 +93,12 @@ func Compare(files Tree, a Approved) Comparison {
 		detail := ""
 		switch {
 		case !held:
-			detail = detailUnapprovedID
-		case !approvedText && approved.Removed:
-			detail = detailRemovedID
+			detail = approvalKinds[unapprovedID]
+		case !approvedText && approved.removed():
+			detail = approvalKinds[removedID]
 		case !approvedText:
-			detail = detailUnapprovedText
-		case approved.Removed:
+			detail = approvalKinds[unapprovedText]
+		case approved.removed():
 			// The files still hold a text of a removed node; it holds no current text.
 			if !slices.Contains(c.Removed, f.id) {
 				c.Removed = append(c.Removed, f.id)

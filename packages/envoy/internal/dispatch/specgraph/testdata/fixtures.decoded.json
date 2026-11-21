@@ -1,0 +1,4905 @@
+{
+  "changes/checks/base/claims.yaml": [
+    {
+      "data": {
+        "id": "legion-keeps-each-claim-in-dispatch",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of each issue in Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "program",
+        "procedure_text": [
+          "The program claims one issue, starts the daemon again and reads the claims.",
+          "It must find the claim one time."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestARestartKeepsTheClaim"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A claim that is 59 minutes old stays after a restart.",
+        "failing_example": [
+          "A daemon that removes each claim older than 58 minutes when it starts."
+        ],
+        "id": "a-claim-at-the-time-limit-stays",
+        "procedure": "program",
+        "procedure_text": [
+          "The program makes a claim 59 minutes old, starts the daemon again and reads the claims.",
+          "It must find the claim."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestAClaimAtTheTimeLimitStays"
+        },
+        "time_limit": "720h0m0s",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reports a claim that it cannot read after a restart.",
+        "failing_example": ["A daemon that starts with no claims and writes no report."],
+        "id": "a-lost-claim-is-reported",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent stops the database during a restart and reads the log of the daemon.",
+          "It must find one report for the claim."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "changes/checks/base/interfaces.yaml": [
+    {
+      "data": {
+        "id": "dispatch",
+        "kind": "component",
+        "name": "Dispatch",
+        "purpose": ["It keeps the issues, the documents and the results of each project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion",
+        "kind": "component",
+        "name": "Legion",
+        "purpose": ["It runs the agents that work on the issues of a project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion-to-dispatch",
+        "joins": ["dispatch", "legion"],
+        "kind": "interface",
+        "name": "Legion to Dispatch",
+        "purpose": ["Legion reads issues and writes results through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["legion-to-dispatch"],
+        "id": "legion-reads-issues-only-through-dispatch",
+        "kind": "structure",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion reads each issue only through the interface to Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No read of an issue by Legion skips the interface to Dispatch.",
+        "failing_example": [
+          "A copy of the graph with one read of an issue that goes around the interface."
+        ],
+        "id": "no-issue-read-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each read of an issue by Legion that does not go through the interface.",
+          "It must return none."
+        ],
+        "serves": "legion-reads-issues-only-through-dispatch",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["A work unit is work that makes one or more statements true."],
+        "id": "work-unit",
+        "name": "work unit",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "changes/checks/head/claims.yaml": [
+    {
+      "data": {
+        "id": "legion-keeps-each-claim-in-dispatch",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of each issue in Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of each issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "program",
+        "procedure_text": [
+          "The program claims one issue, starts the daemon again and reads the claims.",
+          "It must find the claim one time."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestARestartKeepsTheClaim"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A claim that is 59 minutes old stays after a restart.",
+        "failing_example": [
+          "A daemon that removes each claim older than 58 minutes when it starts."
+        ],
+        "id": "a-claim-at-the-time-limit-stays",
+        "procedure": "program",
+        "procedure_text": [
+          "The program makes a claim 59 minutes old, starts the daemon again and reads the claims.",
+          "It must find the claim."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestAClaimAtTheTimeLimitStays"
+        },
+        "time_limit": "720h0m0s",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reports a claim that it cannot read after a restart.",
+        "failing_example": ["A daemon that starts with no claims and writes no report."],
+        "id": "a-lost-claim-is-reported",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent stops the database during a restart and reads the log of the daemon.",
+          "It must find one report for the claim."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "changes/checks/head/interfaces.yaml": [
+    {
+      "data": {
+        "id": "dispatch",
+        "kind": "component",
+        "name": "Dispatch",
+        "purpose": ["It keeps the issues, the documents and the results of each project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion",
+        "kind": "component",
+        "name": "Legion",
+        "purpose": ["It runs the agents that work on the issues of a project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion-to-dispatch",
+        "joins": ["dispatch", "legion"],
+        "kind": "interface",
+        "name": "Legion to Dispatch",
+        "purpose": ["Legion reads issues and writes results through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["legion-to-dispatch"],
+        "id": "legion-reads-issues-only-through-dispatch",
+        "kind": "structure",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion reads each issue only through the interface to Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No read of an issue by Legion skips the interface to Dispatch.",
+        "failing_example": [
+          "A copy of the graph with one read of an issue that goes around the interface."
+        ],
+        "id": "no-issue-read-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each read of an issue by Legion that does not go through the interface.",
+          "It must return none."
+        ],
+        "serves": "legion-reads-issues-only-through-dispatch",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["A work unit is work that makes one or more statements true."],
+        "id": "work-unit",
+        "name": "work unit",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "changes/move/base/claims.yaml": [
+    {
+      "data": {
+        "id": "legion-keeps-each-claim-in-dispatch",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of each issue in Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "program",
+        "procedure_text": [
+          "The program claims one issue, starts the daemon again and reads the claims.",
+          "It must find the claim one time."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestARestartKeepsTheClaim"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A claim that is 59 minutes old stays after a restart.",
+        "failing_example": [
+          "A daemon that removes each claim older than 58 minutes when it starts."
+        ],
+        "id": "a-claim-at-the-time-limit-stays",
+        "procedure": "program",
+        "procedure_text": [
+          "The program makes a claim 59 minutes old, starts the daemon again and reads the claims.",
+          "It must find the claim."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestAClaimAtTheTimeLimitStays"
+        },
+        "time_limit": "720h0m0s",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reports a claim that it cannot read after a restart.",
+        "failing_example": ["A daemon that starts with no claims and writes no report."],
+        "id": "a-lost-claim-is-reported",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent stops the database during a restart and reads the log of the daemon.",
+          "It must find one report for the claim."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "changes/move/base/interfaces.yaml": [
+    {
+      "data": {
+        "id": "dispatch",
+        "kind": "component",
+        "name": "Dispatch",
+        "purpose": ["It keeps the issues, the documents and the results of each project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion",
+        "kind": "component",
+        "name": "Legion",
+        "purpose": ["It runs the agents that work on the issues of a project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion-to-dispatch",
+        "joins": ["dispatch", "legion"],
+        "kind": "interface",
+        "name": "Legion to Dispatch",
+        "purpose": ["Legion reads issues and writes results through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["legion-to-dispatch"],
+        "id": "legion-reads-issues-only-through-dispatch",
+        "kind": "structure",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion reads each issue only through the interface to Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No read of an issue by Legion skips the interface to Dispatch.",
+        "failing_example": [
+          "A copy of the graph with one read of an issue that goes around the interface."
+        ],
+        "id": "no-issue-read-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each read of an issue by Legion that does not go through the interface.",
+          "It must return none."
+        ],
+        "serves": "legion-reads-issues-only-through-dispatch",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["A work unit is work that makes one or more statements true."],
+        "id": "work-unit",
+        "name": "work unit",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "changes/move/head/claims.yaml": [
+    {
+      "data": {
+        "id": "legion-keeps-each-claim-in-dispatch",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of each issue in Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    }
+  ],
+  "changes/move/head/interfaces.yaml": [
+    {
+      "data": {
+        "id": "dispatch",
+        "kind": "component",
+        "name": "Dispatch",
+        "purpose": ["It keeps the issues, the documents and the results of each project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion",
+        "kind": "component",
+        "name": "Legion",
+        "purpose": ["It runs the agents that work on the issues of a project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion-to-dispatch",
+        "joins": ["dispatch", "legion"],
+        "kind": "interface",
+        "name": "Legion to Dispatch",
+        "purpose": ["Legion reads issues and writes results through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["legion-to-dispatch"],
+        "id": "legion-reads-issues-only-through-dispatch",
+        "kind": "structure",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion reads each issue only through the interface to Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No read of an issue by Legion skips the interface to Dispatch.",
+        "failing_example": [
+          "A copy of the graph with one read of an issue that goes around the interface."
+        ],
+        "id": "no-issue-read-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each read of an issue by Legion that does not go through the interface.",
+          "It must return none."
+        ],
+        "serves": "legion-reads-issues-only-through-dispatch",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["A work unit is work that makes one or more statements true."],
+        "id": "work-unit",
+        "name": "work unit",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "changes/move/head/restarts.yaml": [
+    {
+      "data": {
+        "claim": "The daemon reports a claim that it cannot read after a restart.",
+        "failing_example": ["A daemon that starts with no claims and writes no report."],
+        "id": "a-lost-claim-is-reported",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent stops the database during a restart and reads the log of the daemon.",
+          "It must find one report for the claim."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A claim that is 59 minutes old stays after a restart.",
+        "failing_example": [
+          "A daemon that removes each claim older than 58 minutes when it starts."
+        ],
+        "id": "a-claim-at-the-time-limit-stays",
+        "procedure": "program",
+        "procedure_text": [
+          "The program makes a claim 59 minutes old, starts the daemon again and reads the claims.",
+          "It must find the claim."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestAClaimAtTheTimeLimitStays"
+        },
+        "time_limit": "720h0m0s",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "program",
+        "procedure_text": [
+          "The program claims one issue, starts the daemon again and reads the claims.",
+          "It must find the claim one time."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestARestartKeepsTheClaim"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "changes/one-word/base/claims.yaml": [
+    {
+      "data": {
+        "id": "legion-keeps-each-claim-in-dispatch",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of each issue in Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "program",
+        "procedure_text": [
+          "The program claims one issue, starts the daemon again and reads the claims.",
+          "It must find the claim one time."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestARestartKeepsTheClaim"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A claim that is 59 minutes old stays after a restart.",
+        "failing_example": [
+          "A daemon that removes each claim older than 58 minutes when it starts."
+        ],
+        "id": "a-claim-at-the-time-limit-stays",
+        "procedure": "program",
+        "procedure_text": [
+          "The program makes a claim 59 minutes old, starts the daemon again and reads the claims.",
+          "It must find the claim."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestAClaimAtTheTimeLimitStays"
+        },
+        "time_limit": "720h0m0s",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reports a claim that it cannot read after a restart.",
+        "failing_example": ["A daemon that starts with no claims and writes no report."],
+        "id": "a-lost-claim-is-reported",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent stops the database during a restart and reads the log of the daemon.",
+          "It must find one report for the claim."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "changes/one-word/base/interfaces.yaml": [
+    {
+      "data": {
+        "id": "dispatch",
+        "kind": "component",
+        "name": "Dispatch",
+        "purpose": ["It keeps the issues, the documents and the results of each project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion",
+        "kind": "component",
+        "name": "Legion",
+        "purpose": ["It runs the agents that work on the issues of a project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion-to-dispatch",
+        "joins": ["dispatch", "legion"],
+        "kind": "interface",
+        "name": "Legion to Dispatch",
+        "purpose": ["Legion reads issues and writes results through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["legion-to-dispatch"],
+        "id": "legion-reads-issues-only-through-dispatch",
+        "kind": "structure",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion reads each issue only through the interface to Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No read of an issue by Legion skips the interface to Dispatch.",
+        "failing_example": [
+          "A copy of the graph with one read of an issue that goes around the interface."
+        ],
+        "id": "no-issue-read-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each read of an issue by Legion that does not go through the interface.",
+          "It must return none."
+        ],
+        "serves": "legion-reads-issues-only-through-dispatch",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["A work unit is work that makes one or more statements true."],
+        "id": "work-unit",
+        "name": "work unit",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "changes/one-word/head/claims.yaml": [
+    {
+      "data": {
+        "id": "legion-keeps-each-claim-in-dispatch",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of each issue in Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion keeps the claim of an open issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "program",
+        "procedure_text": [
+          "The program claims one issue, starts the daemon again and reads the claims.",
+          "It must find the claim one time."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestARestartKeepsTheClaim"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A claim that is 59 minutes old stays after a restart.",
+        "failing_example": [
+          "A daemon that removes each claim older than 58 minutes when it starts."
+        ],
+        "id": "a-claim-at-the-time-limit-stays",
+        "procedure": "program",
+        "procedure_text": [
+          "The program makes a claim 59 minutes old, starts the daemon again and reads the claims.",
+          "It must find the claim."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestAClaimAtTheTimeLimitStays"
+        },
+        "time_limit": "720h0m0s",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reports a claim that it cannot read after a restart.",
+        "failing_example": ["A daemon that starts with no claims and writes no report."],
+        "id": "a-lost-claim-is-reported",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent stops the database during a restart and reads the log of the daemon.",
+          "It must find one report for the claim."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "changes/one-word/head/interfaces.yaml": [
+    {
+      "data": {
+        "id": "dispatch",
+        "kind": "component",
+        "name": "Dispatch",
+        "purpose": ["It keeps the issues, the documents and the results of each project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion",
+        "kind": "component",
+        "name": "Legion",
+        "purpose": ["It runs the agents that work on the issues of a project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion-to-dispatch",
+        "joins": ["dispatch", "legion"],
+        "kind": "interface",
+        "name": "Legion to Dispatch",
+        "purpose": ["Legion reads issues and writes results through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["legion-to-dispatch"],
+        "id": "legion-reads-issues-only-through-dispatch",
+        "kind": "structure",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion reads each issue only through the interface to Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No read of an issue by Legion skips the interface to Dispatch.",
+        "failing_example": [
+          "A copy of the graph with one read of an issue that goes around the interface."
+        ],
+        "id": "no-issue-read-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each read of an issue by Legion that does not go through the interface.",
+          "It must return none."
+        ],
+        "serves": "legion-reads-issues-only-through-dispatch",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["A work unit is work that makes one or more statements true."],
+        "id": "work-unit",
+        "name": "work unit",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "changes/relations/base/spec.yaml": [
+    {
+      "data": {
+        "id": "dispatch",
+        "kind": "component",
+        "name": "Dispatch",
+        "purpose": ["It keeps the issues, the documents and the results of each project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion",
+        "kind": "component",
+        "name": "Legion",
+        "purpose": ["It runs the agents that work on the issues of a project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion-keeps-each-claim-in-dispatch",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of each issue in Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "program",
+        "procedure_text": [
+          "The program claims one issue, starts the daemon again and reads the claims.",
+          "It must find the claim one time."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestARestartKeepsTheClaim"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-lost-claim-is-reported",
+        "kind": "behavior",
+        "text": ["Legion reports each claim that it cannot read after a restart."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reports a claim that it cannot read after a restart.",
+        "failing_example": ["A daemon that starts with no claims and writes no report."],
+        "id": "the-log-names-a-lost-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent stops the database during a restart and reads the log of the daemon.",
+          "It must find one report for the claim."
+        ],
+        "serves": "a-lost-claim-is-reported",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "changes/relations/head/spec.yaml": [
+    {
+      "data": {
+        "id": "dispatch",
+        "kind": "component",
+        "name": "Dispatch",
+        "purpose": ["It keeps the issues, the documents and the results of each project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion",
+        "kind": "component",
+        "name": "Legion",
+        "purpose": ["It runs the agents that work on the issues of a project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion-keeps-each-claim-in-dispatch",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of each issue in Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["legion"],
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "program",
+        "procedure_text": [
+          "The program claims one issue, starts the daemon again and reads the claims.",
+          "It must find the claim one time."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestARestartKeepsTheClaim"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-lost-claim-is-reported",
+        "kind": "behavior",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion reports each claim that it cannot read after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reports a claim that it cannot read after a restart.",
+        "failing_example": ["A daemon that starts with no claims and writes no report."],
+        "id": "the-log-names-a-lost-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent stops the database during a restart and reads the log of the daemon.",
+          "It must find one report for the claim."
+        ],
+        "serves": "a-lost-claim-is-reported",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "compare/approved-text/spec/components.yaml": [
+    {
+      "data": {
+        "id": "billing",
+        "kind": "component",
+        "name": "Billing",
+        "purpose": ["It sends a bill for each order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders",
+        "kind": "component",
+        "name": "Orders",
+        "purpose": ["It keeps the orders that customers send."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders-to-billing",
+        "joins": ["billing", "orders"],
+        "kind": "interface",
+        "name": "Orders to billing",
+        "purpose": ["Orders sends each order to billing through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "shipping",
+        "kind": "component",
+        "name": "Shipping",
+        "purpose": ["It sends the products of each paid order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["An order is a request of a customer for one or more products."],
+        "id": "order",
+        "name": "order",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "compare/approved-text/spec/orders.yaml": [
+    {
+      "data": {
+        "id": "acme-keeps-each-order",
+        "kind": "behavior",
+        "text": ["ACME keeps each order that a customer sends."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-survives-a-restart",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["ACME keeps each stored order after the order service starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service reads each stored order after it starts again.",
+        "failing_example": ["An order service that keeps its orders in memory only."],
+        "id": "a-restart-keeps-each-order",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one order, starts the order service again and reads the orders.",
+          "It must find the order one time."
+        ],
+        "serves": "an-order-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestARestartKeepsEachOrder"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["orders-to-billing"],
+        "id": "orders-reach-billing-only-through-the-interface",
+        "kind": "structure",
+        "parent": "acme-keeps-each-order",
+        "text": [
+          "The order service sends each order to billing only through the interface between them."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No order goes from the order service to billing outside the interface.",
+        "failing_example": [
+          "A copy of the graph with one order that goes to billing outside the interface."
+        ],
+        "id": "no-order-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each order that goes to billing outside the interface.",
+          "It must return none."
+        ],
+        "serves": "orders-reach-billing-only-through-the-interface",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "compare/check-text/spec/components.yaml": [
+    {
+      "data": {
+        "id": "billing",
+        "kind": "component",
+        "name": "Billing",
+        "purpose": ["It sends a bill for each order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders",
+        "kind": "component",
+        "name": "Orders",
+        "purpose": ["It keeps the orders that customers send."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders-to-billing",
+        "joins": ["billing", "orders"],
+        "kind": "interface",
+        "name": "Orders to billing",
+        "purpose": ["Orders sends each order to billing through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "shipping",
+        "kind": "component",
+        "name": "Shipping",
+        "purpose": ["It sends the products of each paid order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["An order is a request of a customer for one or more products."],
+        "id": "order",
+        "name": "order",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "compare/check-text/spec/orders.yaml": [
+    {
+      "data": {
+        "id": "acme-keeps-each-order",
+        "kind": "behavior",
+        "text": ["ACME keeps each order that a customer sends."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-survives-a-restart",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["ACME keeps each stored order after the order service starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service reads each stored order after it starts again.",
+        "failing_example": ["An order service that keeps its orders in memory only."],
+        "id": "a-restart-keeps-each-order",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one order, starts the order service again and reads the orders.",
+          "It must find the order."
+        ],
+        "serves": "an-order-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestARestartKeepsEachOrder"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["orders-to-billing"],
+        "id": "orders-reach-billing-only-through-the-interface",
+        "kind": "structure",
+        "parent": "acme-keeps-each-order",
+        "text": [
+          "The order service sends each order to billing only through the interface between them."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No order goes from the order service to billing outside the interface.",
+        "failing_example": [
+          "A copy of the graph with one order that goes to billing outside the interface."
+        ],
+        "id": "no-order-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each order that goes to billing outside the interface.",
+          "It must return none."
+        ],
+        "serves": "orders-reach-billing-only-through-the-interface",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "compare/component-purpose/spec/components.yaml": [
+    {
+      "data": {
+        "id": "billing",
+        "kind": "component",
+        "name": "Billing",
+        "purpose": ["It sends a bill for each order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders",
+        "kind": "component",
+        "name": "Orders",
+        "purpose": ["It keeps the orders that customers send and cancel."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders-to-billing",
+        "joins": ["billing", "orders"],
+        "kind": "interface",
+        "name": "Orders to billing",
+        "purpose": ["Orders sends each order to billing through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "shipping",
+        "kind": "component",
+        "name": "Shipping",
+        "purpose": ["It sends the products of each paid order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["An order is a request of a customer for one or more products."],
+        "id": "order",
+        "name": "order",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "compare/component-purpose/spec/orders.yaml": [
+    {
+      "data": {
+        "id": "acme-keeps-each-order",
+        "kind": "behavior",
+        "text": ["ACME keeps each order that a customer sends."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-survives-a-restart",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["ACME keeps each stored order after the order service starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service reads each stored order after it starts again.",
+        "failing_example": ["An order service that keeps its orders in memory only."],
+        "id": "a-restart-keeps-each-order",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one order, starts the order service again and reads the orders.",
+          "It must find the order one time."
+        ],
+        "serves": "an-order-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestARestartKeepsEachOrder"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["orders-to-billing"],
+        "id": "orders-reach-billing-only-through-the-interface",
+        "kind": "structure",
+        "parent": "acme-keeps-each-order",
+        "text": [
+          "The order service sends each order to billing only through the interface between them."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No order goes from the order service to billing outside the interface.",
+        "failing_example": [
+          "A copy of the graph with one order that goes to billing outside the interface."
+        ],
+        "id": "no-order-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each order that goes to billing outside the interface.",
+          "It must return none."
+        ],
+        "serves": "orders-reach-billing-only-through-the-interface",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "compare/earlier-text/spec/components.yaml": [
+    {
+      "data": {
+        "id": "billing",
+        "kind": "component",
+        "name": "Billing",
+        "purpose": ["It sends a bill for each order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders",
+        "kind": "component",
+        "name": "Orders",
+        "purpose": ["It keeps the orders that customers send."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders-to-billing",
+        "joins": ["billing", "orders"],
+        "kind": "interface",
+        "name": "Orders to billing",
+        "purpose": ["Orders sends each order to billing through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "shipping",
+        "kind": "component",
+        "name": "Shipping",
+        "purpose": ["It sends the products of each paid order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["An order is a request of a customer for one or more products."],
+        "id": "order",
+        "name": "order",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "compare/earlier-text/spec/orders.yaml": [
+    {
+      "data": {
+        "id": "acme-keeps-each-order",
+        "kind": "behavior",
+        "text": ["ACME keeps each order that a customer sends."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-survives-a-restart",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["ACME keeps each stored order after the order service starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service reads each stored order after it starts again.",
+        "failing_example": ["An order service that keeps its orders in memory only."],
+        "id": "a-restart-keeps-each-order",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one order, starts the order service again and reads the orders.",
+          "It must find the order one time."
+        ],
+        "serves": "an-order-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestARestartKeepsEachOrder"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["orders-to-billing"],
+        "id": "orders-reach-billing-only-through-the-interface",
+        "kind": "structure",
+        "parent": "acme-keeps-each-order",
+        "text": [
+          "The order service sends each order to billing only through the interface between them."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No order goes from the order service to billing outside the interface.",
+        "failing_example": [
+          "A copy of the graph with one order that goes to billing outside the interface."
+        ],
+        "id": "no-order-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each order that goes to billing outside the interface.",
+          "It must return none."
+        ],
+        "serves": "orders-reach-billing-only-through-the-interface",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "compare/interface-joins/spec/components.yaml": [
+    {
+      "data": {
+        "id": "billing",
+        "kind": "component",
+        "name": "Billing",
+        "purpose": ["It sends a bill for each order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders",
+        "kind": "component",
+        "name": "Orders",
+        "purpose": ["It keeps the orders that customers send."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders-to-billing",
+        "joins": ["billing", "orders", "shipping"],
+        "kind": "interface",
+        "name": "Orders to billing",
+        "purpose": ["Orders sends each order to billing through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "shipping",
+        "kind": "component",
+        "name": "Shipping",
+        "purpose": ["It sends the products of each paid order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["An order is a request of a customer for one or more products."],
+        "id": "order",
+        "name": "order",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "compare/interface-joins/spec/orders.yaml": [
+    {
+      "data": {
+        "id": "acme-keeps-each-order",
+        "kind": "behavior",
+        "text": ["ACME keeps each order that a customer sends."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-survives-a-restart",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["ACME keeps each stored order after the order service starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service reads each stored order after it starts again.",
+        "failing_example": ["An order service that keeps its orders in memory only."],
+        "id": "a-restart-keeps-each-order",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one order, starts the order service again and reads the orders.",
+          "It must find the order one time."
+        ],
+        "serves": "an-order-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestARestartKeepsEachOrder"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["orders-to-billing"],
+        "id": "orders-reach-billing-only-through-the-interface",
+        "kind": "structure",
+        "parent": "acme-keeps-each-order",
+        "text": [
+          "The order service sends each order to billing only through the interface between them."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No order goes from the order service to billing outside the interface.",
+        "failing_example": [
+          "A copy of the graph with one order that goes to billing outside the interface."
+        ],
+        "id": "no-order-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each order that goes to billing outside the interface.",
+          "It must return none."
+        ],
+        "serves": "orders-reach-billing-only-through-the-interface",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "compare/not-in-files/spec/components.yaml": [
+    {
+      "data": {
+        "id": "billing",
+        "kind": "component",
+        "name": "Billing",
+        "purpose": ["It sends a bill for each order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders",
+        "kind": "component",
+        "name": "Orders",
+        "purpose": ["It keeps the orders that customers send."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders-to-billing",
+        "joins": ["billing", "orders"],
+        "kind": "interface",
+        "name": "Orders to billing",
+        "purpose": ["Orders sends each order to billing through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "shipping",
+        "kind": "component",
+        "name": "Shipping",
+        "purpose": ["It sends the products of each paid order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["An order is a request of a customer for one or more products."],
+        "id": "order",
+        "name": "order",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "compare/not-in-files/spec/orders.yaml": [
+    {
+      "data": {
+        "id": "acme-keeps-each-order",
+        "kind": "behavior",
+        "text": ["ACME keeps each order that a customer sends."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-survives-a-restart",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["ACME keeps each stored order after the order service starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service reads each stored order after it starts again.",
+        "failing_example": ["An order service that keeps its orders in memory only."],
+        "id": "a-restart-keeps-each-order",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one order, starts the order service again and reads the orders.",
+          "It must find the order one time."
+        ],
+        "serves": "an-order-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestARestartKeepsEachOrder"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "compare/one-of-four/spec/components.yaml": [
+    {
+      "data": {
+        "id": "billing",
+        "kind": "component",
+        "name": "Billing",
+        "purpose": ["It sends a bill for each order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders",
+        "kind": "component",
+        "name": "Orders",
+        "purpose": ["It keeps the orders that customers send."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders-to-billing",
+        "joins": ["billing", "orders"],
+        "kind": "interface",
+        "name": "Orders to billing",
+        "purpose": ["Orders sends each order to billing through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "shipping",
+        "kind": "component",
+        "name": "Shipping",
+        "purpose": ["It sends the products of each paid order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["An order is a request of a customer for one or more products."],
+        "id": "order",
+        "name": "order",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "compare/one-of-four/spec/orders.yaml": [
+    {
+      "data": {
+        "id": "acme-keeps-each-order",
+        "kind": "behavior",
+        "text": ["ACME keeps each order that a customer sends."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-survives-a-restart",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["ACME keeps each stored order after the order service starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service reads each stored order after it starts again.",
+        "failing_example": ["An order service that keeps its orders in memory only."],
+        "id": "a-restart-keeps-each-order",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one order, starts the order service again and reads the orders.",
+          "It must find the order one time."
+        ],
+        "serves": "an-order-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestARestartKeepsEachOrder"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["orders-to-billing"],
+        "id": "orders-reach-billing-only-through-the-interface",
+        "kind": "structure",
+        "parent": "acme-keeps-each-order",
+        "text": [
+          "The order service sends each order to billing only through the interface between them."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No order goes from the order service to billing outside the interface.",
+        "failing_example": [
+          "A copy of the graph with one order that goes to billing outside the interface."
+        ],
+        "id": "no-order-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each order that goes to billing outside the interface.",
+          "It must return none."
+        ],
+        "serves": "orders-reach-billing-only-through-the-interface",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "each-order-gets-one-bill",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["Billing sends one bill for each order that a customer pays online."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Billing sends one bill for each order that a customer pays.",
+        "failing_example": ["A billing service that sends a bill for each attempt to pay."],
+        "id": "billing-sends-one-bill",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent pays one order and reads the bills of the customer.",
+          "It must find one bill."
+        ],
+        "serves": "each-order-gets-one-bill",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "compare/one-word/spec/components.yaml": [
+    {
+      "data": {
+        "id": "billing",
+        "kind": "component",
+        "name": "Billing",
+        "purpose": ["It sends a bill for each order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders",
+        "kind": "component",
+        "name": "Orders",
+        "purpose": ["It keeps the orders that customers send."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders-to-billing",
+        "joins": ["billing", "orders"],
+        "kind": "interface",
+        "name": "Orders to billing",
+        "purpose": ["Orders sends each order to billing through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "shipping",
+        "kind": "component",
+        "name": "Shipping",
+        "purpose": ["It sends the products of each paid order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["An order is a request of a customer for one or more products."],
+        "id": "order",
+        "name": "order",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "compare/one-word/spec/orders.yaml": [
+    {
+      "data": {
+        "id": "acme-keeps-each-order",
+        "kind": "behavior",
+        "text": ["ACME keeps each order that a customer sends."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-survives-a-restart",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["ACME keeps each stored paid order after the order service starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service reads each stored order after it starts again.",
+        "failing_example": ["An order service that keeps its orders in memory only."],
+        "id": "a-restart-keeps-each-order",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one order, starts the order service again and reads the orders.",
+          "It must find the order one time."
+        ],
+        "serves": "an-order-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestARestartKeepsEachOrder"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["orders-to-billing"],
+        "id": "orders-reach-billing-only-through-the-interface",
+        "kind": "structure",
+        "parent": "acme-keeps-each-order",
+        "text": [
+          "The order service sends each order to billing only through the interface between them."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No order goes from the order service to billing outside the interface.",
+        "failing_example": [
+          "A copy of the graph with one order that goes to billing outside the interface."
+        ],
+        "id": "no-order-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each order that goes to billing outside the interface.",
+          "It must return none."
+        ],
+        "serves": "orders-reach-billing-only-through-the-interface",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "compare/removed-id-reused/spec/components.yaml": [
+    {
+      "data": {
+        "id": "billing",
+        "kind": "component",
+        "name": "Billing",
+        "purpose": ["It sends a bill for each order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders",
+        "kind": "component",
+        "name": "Orders",
+        "purpose": ["It keeps the orders that customers send."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders-to-billing",
+        "joins": ["billing", "orders"],
+        "kind": "interface",
+        "name": "Orders to billing",
+        "purpose": ["Orders sends each order to billing through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "shipping",
+        "kind": "component",
+        "name": "Shipping",
+        "purpose": ["It sends the products of each paid order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["An order is a request of a customer for one or more products."],
+        "id": "order",
+        "name": "order",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "compare/removed-id-reused/spec/orders.yaml": [
+    {
+      "data": {
+        "id": "acme-keeps-each-order",
+        "kind": "behavior",
+        "text": ["ACME keeps each order that a customer sends."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-survives-a-restart",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["ACME keeps each stored order after the order service starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service reads each stored order after it starts again.",
+        "failing_example": ["An order service that keeps its orders in memory only."],
+        "id": "a-restart-keeps-each-order",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one order, starts the order service again and reads the orders.",
+          "It must find the order one time."
+        ],
+        "serves": "an-order-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestARestartKeepsEachOrder"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["orders-to-billing"],
+        "id": "orders-reach-billing-only-through-the-interface",
+        "kind": "structure",
+        "parent": "acme-keeps-each-order",
+        "text": [
+          "The order service sends each order to billing only through the interface between them."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No order goes from the order service to billing outside the interface.",
+        "failing_example": [
+          "A copy of the graph with one order that goes to billing outside the interface."
+        ],
+        "id": "no-order-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each order that goes to billing outside the interface.",
+          "It must return none."
+        ],
+        "serves": "orders-reach-billing-only-through-the-interface",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-is-paid-once",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["ACME sends a receipt for each payment of an order."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service refuses a second payment of one order.",
+        "failing_example": ["An order service that takes each payment that it gets."],
+        "id": "a-second-payment-is-refused",
+        "procedure": "program",
+        "procedure_text": [
+          "The program pays one order two times and reads the payments.",
+          "It must find one payment."
+        ],
+        "serves": "an-order-is-paid-once",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestASecondPaymentIsRefused"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "compare/removed-kept/spec/components.yaml": [
+    {
+      "data": {
+        "id": "billing",
+        "kind": "component",
+        "name": "Billing",
+        "purpose": ["It sends a bill for each order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders",
+        "kind": "component",
+        "name": "Orders",
+        "purpose": ["It keeps the orders that customers send."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders-to-billing",
+        "joins": ["billing", "orders"],
+        "kind": "interface",
+        "name": "Orders to billing",
+        "purpose": ["Orders sends each order to billing through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "shipping",
+        "kind": "component",
+        "name": "Shipping",
+        "purpose": ["It sends the products of each paid order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["An order is a request of a customer for one or more products."],
+        "id": "order",
+        "name": "order",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "compare/removed-kept/spec/orders.yaml": [
+    {
+      "data": {
+        "id": "acme-keeps-each-order",
+        "kind": "behavior",
+        "text": ["ACME keeps each order that a customer sends."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-survives-a-restart",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": [
+          "ACME keeps each stored order and its state after the order service starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service reads each stored order after it starts again.",
+        "failing_example": ["An order service that keeps its orders in memory only."],
+        "id": "a-restart-keeps-each-order",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one order, starts the order service again and reads the orders.",
+          "It must find the order one time."
+        ],
+        "serves": "an-order-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestARestartKeepsEachOrder"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["orders-to-billing"],
+        "id": "orders-reach-billing-only-through-the-interface",
+        "kind": "structure",
+        "parent": "acme-keeps-each-order",
+        "text": [
+          "The order service sends each order to billing only through the interface between them."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No order goes from the order service to billing outside the interface.",
+        "failing_example": [
+          "A copy of the graph with one order that goes to billing outside the interface."
+        ],
+        "id": "no-order-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each order that goes to billing outside the interface.",
+          "It must return none."
+        ],
+        "serves": "orders-reach-billing-only-through-the-interface",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-is-paid-once",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["ACME takes the payment of each order one time and refunds each second payment."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service refuses a second payment of one order.",
+        "failing_example": ["An order service that takes each payment that it gets."],
+        "id": "a-second-payment-is-refused",
+        "procedure": "program",
+        "procedure_text": [
+          "The program pays one order two times and reads the payments.",
+          "It must find one payment."
+        ],
+        "serves": "an-order-is-paid-once",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestASecondPaymentIsRefused"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "compare/term-definition/spec/components.yaml": [
+    {
+      "data": {
+        "id": "billing",
+        "kind": "component",
+        "name": "Billing",
+        "purpose": ["It sends a bill for each order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders",
+        "kind": "component",
+        "name": "Orders",
+        "purpose": ["It keeps the orders that customers send."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders-to-billing",
+        "joins": ["billing", "orders"],
+        "kind": "interface",
+        "name": "Orders to billing",
+        "purpose": ["Orders sends each order to billing through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "shipping",
+        "kind": "component",
+        "name": "Shipping",
+        "purpose": ["It sends the products of each paid order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["An order is a request of a customer for one product."],
+        "id": "order",
+        "name": "order",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "compare/term-definition/spec/orders.yaml": [
+    {
+      "data": {
+        "id": "acme-keeps-each-order",
+        "kind": "behavior",
+        "text": ["ACME keeps each order that a customer sends."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-survives-a-restart",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["ACME keeps each stored order after the order service starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service reads each stored order after it starts again.",
+        "failing_example": ["An order service that keeps its orders in memory only."],
+        "id": "a-restart-keeps-each-order",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one order, starts the order service again and reads the orders.",
+          "It must find the order one time."
+        ],
+        "serves": "an-order-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestARestartKeepsEachOrder"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["orders-to-billing"],
+        "id": "orders-reach-billing-only-through-the-interface",
+        "kind": "structure",
+        "parent": "acme-keeps-each-order",
+        "text": [
+          "The order service sends each order to billing only through the interface between them."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No order goes from the order service to billing outside the interface.",
+        "failing_example": [
+          "A copy of the graph with one order that goes to billing outside the interface."
+        ],
+        "id": "no-order-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each order that goes to billing outside the interface.",
+          "It must return none."
+        ],
+        "serves": "orders-reach-billing-only-through-the-interface",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "compare/two-checks/spec/components.yaml": [
+    {
+      "data": {
+        "id": "billing",
+        "kind": "component",
+        "name": "Billing",
+        "purpose": ["It sends a bill for each order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders",
+        "kind": "component",
+        "name": "Orders",
+        "purpose": ["It keeps the orders that customers send."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders-to-billing",
+        "joins": ["billing", "orders"],
+        "kind": "interface",
+        "name": "Orders to billing",
+        "purpose": ["Orders sends each order to billing through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "shipping",
+        "kind": "component",
+        "name": "Shipping",
+        "purpose": ["It sends the products of each paid order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["An order is a request of a customer for one or more products."],
+        "id": "order",
+        "name": "order",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "compare/two-checks/spec/orders.yaml": [
+    {
+      "data": {
+        "id": "acme-keeps-each-order",
+        "kind": "behavior",
+        "text": ["ACME keeps each order that a customer sends."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-survives-a-restart",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["ACME keeps each stored order after the order service starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service reads each stored order after a crash stops it and it starts again.",
+        "failing_example": [
+          "An order service that writes its orders to disk only when it stops normally."
+        ],
+        "id": "a-crash-keeps-each-order",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one order, stops the order service with a kill signal, starts it again and reads the orders.",
+          "It must find the order one time."
+        ],
+        "serves": "an-order-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestACrashKeepsEachOrder"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service reads each stored order after it starts again.",
+        "failing_example": ["An order service that keeps its orders in memory only."],
+        "id": "a-restart-keeps-each-order",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one order, starts the order service again and reads the orders.",
+          "It must find the order one time."
+        ],
+        "serves": "an-order-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestARestartKeepsEachOrder"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["orders-to-billing"],
+        "id": "orders-reach-billing-only-through-the-interface",
+        "kind": "structure",
+        "parent": "acme-keeps-each-order",
+        "text": [
+          "The order service sends each order to billing only through the interface between them."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No order goes from the order service to billing outside the interface.",
+        "failing_example": [
+          "A copy of the graph with one order that goes to billing outside the interface."
+        ],
+        "id": "no-order-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each order that goes to billing outside the interface.",
+          "It must return none."
+        ],
+        "serves": "orders-reach-billing-only-through-the-interface",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "compare/unapproved-statement/spec/components.yaml": [
+    {
+      "data": {
+        "id": "billing",
+        "kind": "component",
+        "name": "Billing",
+        "purpose": ["It sends a bill for each order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders",
+        "kind": "component",
+        "name": "Orders",
+        "purpose": ["It keeps the orders that customers send."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "orders-to-billing",
+        "joins": ["billing", "orders"],
+        "kind": "interface",
+        "name": "Orders to billing",
+        "purpose": ["Orders sends each order to billing through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "shipping",
+        "kind": "component",
+        "name": "Shipping",
+        "purpose": ["It sends the products of each paid order."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["An order is a request of a customer for one or more products."],
+        "id": "order",
+        "name": "order",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "compare/unapproved-statement/spec/orders.yaml": [
+    {
+      "data": {
+        "id": "acme-keeps-each-order",
+        "kind": "behavior",
+        "text": ["ACME keeps each order that a customer sends."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "an-order-survives-a-restart",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["ACME keeps each stored order after the order service starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The order service reads each stored order after it starts again.",
+        "failing_example": ["An order service that keeps its orders in memory only."],
+        "id": "a-restart-keeps-each-order",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one order, starts the order service again and reads the orders.",
+          "It must find the order one time."
+        ],
+        "serves": "an-order-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/orders TestARestartKeepsEachOrder"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["orders-to-billing"],
+        "id": "orders-reach-billing-only-through-the-interface",
+        "kind": "structure",
+        "parent": "acme-keeps-each-order",
+        "text": [
+          "The order service sends each order to billing only through the interface between them."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No order goes from the order service to billing outside the interface.",
+        "failing_example": [
+          "A copy of the graph with one order that goes to billing outside the interface."
+        ],
+        "id": "no-order-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each order that goes to billing outside the interface.",
+          "It must return none."
+        ],
+        "serves": "orders-reach-billing-only-through-the-interface",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "each-order-gets-one-bill",
+        "kind": "behavior",
+        "parent": "acme-keeps-each-order",
+        "text": ["Billing sends one bill for each order that a customer pays."],
+        "type": "requirement"
+      },
+      "schema": true
+    }
+  ],
+  "nodes/all-kinds.yaml": [
+    {
+      "data": {
+        "about": ["envoy-delivery"],
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "envoy-delivers-each-message",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "envoy-delivery",
+        "kind": "component",
+        "name": "Envoy delivery",
+        "parent": "envoy",
+        "purpose": ["It delivers each stored message to the session that it is for."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion-to-dispatch",
+        "joins": ["dispatch", "legion"],
+        "kind": "interface",
+        "name": "Legion to Dispatch",
+        "purpose": ["Legion reads issues and writes results through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["A work unit is work that makes one or more statements true."],
+        "id": "work-unit",
+        "name": "work unit",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "nodes/quoted.yaml": [
+    {
+      "data": {
+        "definition": [
+          "a: b",
+          "x #y",
+          "no",
+          "2026-11-16",
+          "it's",
+          "say \"x\"",
+          "a\tb",
+          "café",
+          "emoji 😀",
+          " lead"
+        ],
+        "id": "quoted",
+        "name": "quoted term",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "nodes/separators.yaml": [
+    {
+      "data": {
+        "definition": ["a\u2028b", "c\u2029d", "ef"],
+        "id": "separators",
+        "name": "separators term",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/carry/files/c2/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/carry/files/c3/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/carry/files/c4/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/carry/files/m2/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/earlier-text/files/c1/spec.yaml": [
+    {
+      "data": {
+        "id": "sessions-keep-their-messages",
+        "kind": "behavior",
+        "text": ["Envoy keeps each message of a session until the session reads it."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-session-reads-its-messages-in-order",
+        "kind": "behavior",
+        "parent": "sessions-keep-their-messages",
+        "text": ["A session reads its messages in the order that Envoy received them."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Two messages that one sender writes reach the session in the order of the writes.",
+        "failing_example": ["A listener that delivers the newest message first."],
+        "id": "messages-come-in-the-order-of-their-writes",
+        "procedure": "program",
+        "procedure_text": [
+          "The program writes two messages from one sender and reads the session.",
+          "It must find them in the order of the writes."
+        ],
+        "serves": "a-session-reads-its-messages-in-order",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestMessagesComeInTheOrderOfTheirWrites"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/earlier-text/files/c2/spec.yaml": [
+    {
+      "data": {
+        "id": "sessions-keep-their-messages",
+        "kind": "behavior",
+        "text": ["Envoy keeps each message of a session until the session reads it."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-session-reads-its-messages-in-order",
+        "kind": "behavior",
+        "parent": "sessions-keep-their-messages",
+        "text": ["A session reads its messages in the order that their senders wrote them."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Two messages that one sender writes reach the session in the order of the writes.",
+        "failing_example": ["A listener that delivers the newest message first."],
+        "id": "messages-come-in-the-order-of-their-writes",
+        "procedure": "program",
+        "procedure_text": [
+          "The program writes two messages from one sender and reads the session.",
+          "It must find them in the order of the writes."
+        ],
+        "serves": "a-session-reads-its-messages-in-order",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestMessagesComeInTheOrderOfTheirWrites"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/earlier-text/files/c3/spec.yaml": [
+    {
+      "data": {
+        "id": "sessions-keep-their-messages",
+        "kind": "behavior",
+        "text": ["Envoy keeps each message of a session until the session reads it."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-session-reads-its-messages-in-order",
+        "kind": "behavior",
+        "parent": "sessions-keep-their-messages",
+        "text": ["A session reads its messages in the order that Envoy received them."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Two messages that one sender writes reach the session in the order of the writes.",
+        "failing_example": ["A listener that delivers the newest message first."],
+        "id": "messages-come-in-the-order-of-their-writes",
+        "procedure": "program",
+        "procedure_text": [
+          "The program writes two messages from one sender and reads the session.",
+          "It must find them in the order of the writes."
+        ],
+        "serves": "a-session-reads-its-messages-in-order",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestMessagesComeInTheOrderOfTheirWrites"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/one-commit-two-answers/files/c1/spec.yaml": [
+    {
+      "data": {
+        "id": "relay-answers-requests",
+        "kind": "behavior",
+        "text": ["The relay answers each request that it receives."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "relay-answers-in-time",
+        "kind": "behavior",
+        "parent": "relay-answers-requests",
+        "text": ["The relay answers a request within the time that the request names."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The relay answers a request that names one second within one second.",
+        "failing_example": ["A relay that waits two seconds before each answer."],
+        "id": "relay-answers-within-the-limit",
+        "procedure": "program",
+        "procedure_text": [
+          "The program sends one request that names one second.",
+          "It must get the answer within one second."
+        ],
+        "serves": "relay-answers-in-time",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestTheRelayAnswersWithinTheLimit"
+        },
+        "time_limit": "24h0m0s",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "relay-answers-on-each-platform",
+        "kind": "behavior",
+        "parent": "relay-answers-requests",
+        "text": ["The relay answers each request on Linux machines and on Arm machines."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The relay answers one request on each machine of the job.",
+        "failing_example": ["A relay that stops before it answers."],
+        "id": "relay-answers-on-linux-and-arm",
+        "procedure": "program",
+        "procedure_text": [
+          "The program sends one request to the relay and reads the answer.",
+          "It must get one answer."
+        ],
+        "serves": "relay-answers-on-each-platform",
+        "subject": "code",
+        "test": {
+          "job": "go-checks-platforms",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestTheRelayAnswersOnEachPlatform"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "relay-answers-once",
+        "kind": "behavior",
+        "parent": "relay-answers-requests",
+        "text": ["The relay sends one answer for each request."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The relay sends one answer to a request that it receives two times.",
+        "failing_example": ["A relay that answers each copy of a request."],
+        "id": "relay-answers-once-per-request",
+        "procedure": "program",
+        "procedure_text": [
+          "The program sends one request two times and counts the answers.",
+          "It must count one answer."
+        ],
+        "serves": "relay-answers-once",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestTheRelayAnswersOnce"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "relay-refuses-a-bad-request",
+        "kind": "behavior",
+        "parent": "relay-answers-requests",
+        "text": ["The relay refuses a request that it cannot read."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The relay refuses a request whose body is not valid.",
+        "failing_example": ["A relay that answers a request with a body that is not valid."],
+        "id": "relay-refuses-a-malformed-request",
+        "procedure": "program",
+        "procedure_text": [
+          "The program sends one request with a body that is not valid.",
+          "It must get a refusal."
+        ],
+        "serves": "relay-refuses-a-bad-request",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestTheRelayRefusesAMalformedRequest"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/production-and-graph/files/m2/spec.yaml": [
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that production stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-production-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message in production, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "production",
+        "test": {
+          "job": "production-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestAProductionRestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each message record of the graph has a delivery record.",
+        "failing_example": [
+          "A copy of the graph with one message record that has no delivery record."
+        ],
+        "id": "the-graph-holds-a-delivery-of-each-message",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads each message record of the graph.",
+          "It returns each message record that has no delivery record."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/refusal/files/c2/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/refusal/files/c3/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/refusal/files/c4/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/refusal/files/m2/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/silent-leg/files/c4/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/silent-leg/files/m2/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/wait-cycle/files/m1/spec.yaml": [
+    {
+      "data": {
+        "id": "envoy-delivers-messages",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message that a sender writes."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that a sender writes reaches a listener that is connected.",
+        "failing_example": ["A sender that drops each message."],
+        "id": "a-sent-message-reaches-a-listener",
+        "procedure": "program",
+        "procedure_text": [
+          "The program connects one listener and writes one message.",
+          "It must find the message at the listener."
+        ],
+        "serves": "envoy-delivers-messages",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestASentMessageReachesAListener"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-message-reaches-a-late-session",
+        "kind": "behavior",
+        "parent": "envoy-delivers-messages",
+        "text": ["A session that connects after a message was written gets that message."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A session that connects after a write gets the message of that write.",
+        "failing_example": [
+          "A listener that delivers only the messages that arrive after a session connects."
+        ],
+        "id": "a-late-session-gets-the-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program writes one message and then connects one session.",
+          "It must find the message in the session."
+        ],
+        "serves": "a-message-reaches-a-late-session",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestALateSessionGetsTheMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "envoy-delivers-messages",
+        "text": [
+          "A message that Envoy stored before a restart reaches its session after the restart."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A stored message reaches its session after the listener starts again.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-keeps-the-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartKeepsTheMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/about-a-missing-component/spec.yaml": [
+    {
+      "data": {
+        "about": ["legion"],
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent claims one issue, starts the daemon again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/bad-id/spec.yaml": [
+    {
+      "data": {
+        "id": "step-3",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent claims one issue, starts the daemon again and reads the claims."
+        ],
+        "serves": "step-3",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/check-serves-two-statements/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-claim-survives-a-database-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the database starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent claims one issue, starts the daemon again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after the database starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-database-restart-keeps-the-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent claims one issue, starts the database again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-database-restart",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after each restart.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "each-restart-keeps-the-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent claims one issue, starts the daemon and the database again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-database-restart a-claim-survives-a-restart",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": false
+    }
+  ],
+  "trees/check-subject-not-allowed/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent claims one issue, starts the daemon again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "the logs",
+        "type": "check"
+      },
+      "schema": false
+    }
+  ],
+  "trees/check-without-failing-example/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent claims one issue, starts the daemon again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": false
+    }
+  ],
+  "trees/claim-names-a-path/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The code in cmd/listener/main.go reads the claim of an issue after a restart.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent claims one issue, starts the daemon again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/component-names-a-package/spec.yaml": [
+    {
+      "data": {
+        "id": "dispatch",
+        "kind": "component",
+        "name": "Dispatch",
+        "purpose": ["It keeps the issues and the documents that internal/dispatch/pmdoc parses."],
+        "type": "component"
+      },
+      "schema": true
+    }
+  ],
+  "trees/component-no-purpose/spec.yaml": [
+    {
+      "data": {
+        "id": "dispatch",
+        "kind": "component",
+        "name": "Dispatch",
+        "type": "component"
+      },
+      "schema": false
+    }
+  ],
+  "trees/doubled-id/a.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent claims one issue, starts the daemon again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/doubled-id/b.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the database starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after the database starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-database-restart-keeps-the-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent claims one issue, starts the database again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/go-selector-two-words-missing/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "program",
+        "procedure_text": [
+          "The program claims one issue, starts the daemon again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "TestX"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/interface-joins-a-missing-component/spec.yaml": [
+    {
+      "data": {
+        "id": "dispatch",
+        "kind": "component",
+        "name": "Dispatch",
+        "purpose": ["It keeps the issues, the documents and the results of each project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion-to-dispatch",
+        "joins": ["dispatch", "legion"],
+        "kind": "interface",
+        "name": "Legion to Dispatch",
+        "purpose": ["Legion reads issues and writes results through it."],
+        "type": "component"
+      },
+      "schema": true
+    }
+  ],
+  "trees/interface-joins-one/spec.yaml": [
+    {
+      "data": {
+        "id": "dispatch",
+        "kind": "component",
+        "name": "Dispatch",
+        "purpose": ["It keeps the issues, the documents and the results of each project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion",
+        "kind": "component",
+        "name": "Legion",
+        "purpose": ["It runs the agents that work on the issues of a project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion-to-dispatch",
+        "joins": ["dispatch"],
+        "kind": "interface",
+        "name": "Legion to Dispatch",
+        "purpose": ["Legion reads issues and writes results through it."],
+        "type": "component"
+      },
+      "schema": false
+    }
+  ],
+  "trees/leaf-without-check/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    }
+  ],
+  "trees/missing-parent/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "parent": "legion-keeps-each-claim",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent claims one issue, starts the daemon again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/parent-and-serves-loop/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "serves": ["legion-keeps-each-claim"],
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion-keeps-each-claim",
+        "kind": "behavior",
+        "parent": "a-claim-survives-a-restart",
+        "text": ["Legion keeps the claim of each issue in Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Dispatch holds the claim of an issue that Legion claims.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-claim-is-in-dispatch",
+        "procedure": "agent",
+        "procedure_text": ["An agent claims one issue and reads the issue in Dispatch."],
+        "serves": "legion-keeps-each-claim",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/parent-loop/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "parent": "legion-keeps-each-claim",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion-keeps-each-claim",
+        "kind": "behavior",
+        "parent": "a-claim-survives-a-restart",
+        "text": ["Legion keeps the claim of each issue in Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    }
+  ],
+  "trees/program-check-test-part/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "program",
+        "procedure_text": [
+          "The program claims one issue, starts the daemon again and reads the claims.",
+          "It must find the claim one time."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestARestartKeepsTheClaim"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/program-check-without-job/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "program",
+        "procedure_text": [
+          "The program claims one issue, starts the daemon again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestARestartKeepsTheClaim"
+        },
+        "type": "check"
+      },
+      "schema": false
+    }
+  ],
+  "trees/program-check-without-test-part/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "program",
+        "procedure_text": [
+          "The program claims one issue, starts the daemon again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": false
+    }
+  ],
+  "trees/program-procedure-names-a-test/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "program",
+        "procedure_text": [
+          "The program TestARestart_LosesNoClaim claims one issue, starts the daemon again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestARestart_LosesNoClaim"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/query-check-with-test-part/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The graph holds each claim that the daemon made before a restart.",
+        "failing_example": ["A copy of the graph with one claim removed."],
+        "id": "each-claim-is-in-the-graph",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each claim that the daemon made and that the graph does not hold."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "graph",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestEachClaimIsInTheGraph"
+        },
+        "type": "check"
+      },
+      "schema": false
+    }
+  ],
+  "trees/retired-id/spec.yaml": [
+    {
+      "data": {
+        "id": "gone-statement",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent claims one issue, starts the daemon again and reads the claims."
+        ],
+        "serves": "gone-statement",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/statement-names-a-package/spec.yaml": [
+    {
+      "data": {
+        "id": "a-document-keeps-its-blocks",
+        "kind": "behavior",
+        "text": ["The parser in internal/dispatch/pmdoc keeps each block of a document."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A document that Dispatch saves holds each of its blocks.",
+        "failing_example": ["A parser that drops the last block of a document."],
+        "id": "a-saved-document-keeps-its-blocks",
+        "procedure": "agent",
+        "procedure_text": ["An agent saves a document of three blocks and reads it again."],
+        "serves": "a-document-keeps-its-blocks",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/statement-without-kind/spec.yaml": [
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": false
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent claims one issue, starts the daemon again and reads the claims."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/structure-statement-without-about/spec.yaml": [
+    {
+      "data": {
+        "id": "legion-reads-issues-only-through-dispatch",
+        "kind": "structure",
+        "text": ["Legion reads each issue only through the interface to Dispatch."],
+        "type": "requirement"
+      },
+      "schema": false
+    },
+    {
+      "data": {
+        "claim": "No read of an issue by Legion skips the interface to Dispatch.",
+        "failing_example": [
+          "A copy of the graph with one read of an issue that goes around the interface."
+        ],
+        "id": "no-issue-read-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each read of an issue by Legion that does not go through the interface."
+        ],
+        "serves": "legion-reads-issues-only-through-dispatch",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/valid/claims.yaml": [
+    {
+      "data": {
+        "id": "legion-keeps-each-claim-in-dispatch",
+        "kind": "behavior",
+        "text": ["Legion keeps the claim of each issue in Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-claim-survives-a-restart",
+        "kind": "behavior",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion keeps the claim of an issue after the daemon starts again."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reads the claim of an issue after it starts again.",
+        "failing_example": ["A daemon that keeps its claims in memory only."],
+        "id": "a-restart-keeps-the-claim",
+        "procedure": "program",
+        "procedure_text": [
+          "The program claims one issue, starts the daemon again and reads the claims.",
+          "It must find the claim one time."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestARestartKeepsTheClaim"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A claim that is 59 minutes old stays after a restart.",
+        "failing_example": [
+          "A daemon that removes each claim older than 58 minutes when it starts."
+        ],
+        "id": "a-claim-at-the-time-limit-stays",
+        "procedure": "program",
+        "procedure_text": [
+          "The program makes a claim 59 minutes old, starts the daemon again and reads the claims.",
+          "It must find the claim."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "example.com/acme/daemon TestAClaimAtTheTimeLimitStays"
+        },
+        "time_limit": "720h0m0s",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "The daemon reports a claim that it cannot read after a restart.",
+        "failing_example": ["A daemon that starts with no claims and writes no report."],
+        "id": "a-lost-claim-is-reported",
+        "procedure": "agent",
+        "procedure_text": [
+          "An agent stops the database during a restart and reads the log of the daemon.",
+          "It must find one report for the claim."
+        ],
+        "serves": "a-claim-survives-a-restart",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "trees/valid/interfaces.yaml": [
+    {
+      "data": {
+        "id": "dispatch",
+        "kind": "component",
+        "name": "Dispatch",
+        "purpose": ["It keeps the issues, the documents and the results of each project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion",
+        "kind": "component",
+        "name": "Legion",
+        "purpose": ["It runs the agents that work on the issues of a project."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "legion-to-dispatch",
+        "joins": ["dispatch", "legion"],
+        "kind": "interface",
+        "name": "Legion to Dispatch",
+        "purpose": ["Legion reads issues and writes results through it."],
+        "type": "component"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "about": ["legion-to-dispatch"],
+        "id": "legion-reads-issues-only-through-dispatch",
+        "kind": "structure",
+        "parent": "legion-keeps-each-claim-in-dispatch",
+        "text": ["Legion reads each issue only through the interface to Dispatch."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "No read of an issue by Legion skips the interface to Dispatch.",
+        "failing_example": [
+          "A copy of the graph with one read of an issue that goes around the interface."
+        ],
+        "id": "no-issue-read-skips-the-interface",
+        "procedure": "query",
+        "procedure_text": [
+          "The query returns each read of an issue by Legion that does not go through the interface.",
+          "It must return none."
+        ],
+        "serves": "legion-reads-issues-only-through-dispatch",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "definition": ["A work unit is work that makes one or more statements true."],
+        "id": "work-unit",
+        "name": "work unit",
+        "type": "term"
+      },
+      "schema": true
+    }
+  ]
+}
