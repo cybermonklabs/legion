@@ -393,8 +393,11 @@ func TestAnOutcomeReadWhoseCommitReplyIsWithheldEndsAtItsBound(t *testing.T) {
 			t.Fatalf("readOutcome = %v, %v; want committed: the status was read before the COMMIT", got, err)
 		}
 		t.Logf("the read returned after %s", elapsed)
-		if elapsed > outcomeReadBound+250*time.Millisecond {
-			t.Fatalf("readOutcome returned after %s, want at most %s: its COMMIT has no grace", elapsed, outcomeReadBound+250*time.Millisecond)
+		// A COMMIT given the grace a caller's commit has ends at outcomeReadBound plus
+		// commitReplyBound; half that grace over the read's own bound leaves a loaded runner room
+		// and still tells the two apart.
+		if bound := outcomeReadBound + commitReplyBound/2; elapsed > bound {
+			t.Fatalf("readOutcome returned after %s, want at most %s: its COMMIT has no grace", elapsed, bound)
 		}
 	})
 	t.Run("the settlement", func(t *testing.T) {

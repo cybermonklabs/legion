@@ -390,9 +390,11 @@ func TestAnUnreachableStoreLeavesTheOutcomeUnknownUntilItAnswers(t *testing.T) {
 	}
 
 	// The control transaction: the caller's next transaction, open on the caller's mark before the
-	// watcher's first read could run, and for the whole wait.
-	rig.fault.Refuse(false)
-	held, err := rig.pool.BeginTx(parent, pgx.TxOptions{})
+	// store answers any read of the watcher's, and for the whole wait. The proxy refuses every
+	// connection until it is open, so it opens on the direct pool: the mark it sets is the
+	// caller's context's, whichever pool it holds a connection of, and that mark is what the
+	// watcher's reads must not wait on.
+	held, err := NewPool(rig.observer).BeginTx(parent, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the control transaction on the live parent: %v", err)
 	}
@@ -403,9 +405,7 @@ func TestAnUnreachableStoreLeavesTheOutcomeUnknownUntilItAnswers(t *testing.T) {
 	if !holdsConnection(parent) {
 		t.Fatal("the control transaction does not hold the caller's mark")
 	}
-	if since := time.Since(got.at); since >= outcomeRetryFirst/2 {
-		t.Fatalf("the control transaction opened after the watcher's first read could have run (%s after Transact returned)", since)
-	}
+	rig.fault.Refuse(false)
 
 	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the watcher runs the hooks while the caller's mark holds a connection", func() bool {
 		return rig.hooks.Load() == 1
