@@ -1509,11 +1509,21 @@ const (
 // roleDrainPlan is what that stage builds and runs: a role layout under Dir, which it covers with
 // a memory filesystem of its own, and a shim that leaves a descendant behind which catches
 // SIGTERM and removes roleDrainFile. Leaves says whether that descendant then exits or goes on
-// running, which is the whole difference between the row's two cases.
+// running, which is the whole difference between the row's two cases. Bound is the bound
+// role-init's wait takes in place of roleNamespaceDrain (roleDrainBoundEnv).
 type roleDrainPlan struct {
 	Dir    string
 	Leaves bool
+	Bound  time.Duration
 }
+
+// roleDrainStaysBound is the bound role-init's wait takes in the case whose descendant stays,
+// which waits it out: thirty seconds, far past any stall of the descendant's trap, which must run
+// before the kill for the case to read anything — a trap 2.25 s late is killed inside
+// roleNamespaceDrain's two seconds — and short enough that the case costs half a minute. The case
+// whose descendant leaves takes a bound no wait of it reaches, since its wait ends when the
+// namespace empties; both are held under the test binary's deadline less a margin.
+const roleDrainStaysBound = 30 * time.Second
 
 // A role whose shim exits on its own has its namespace signalled before it is killed: role-init
 // sends SIGTERM over the role's whole namespace once it has reported the shim's status and before
@@ -1525,13 +1535,17 @@ type roleDrainPlan struct {
 // was killed with no signal before it.
 //
 // The cases differ in what the descendant does once it has removed the file, and each reads how
-// role-init's wait ended from the line role-init logs when it ends (runRoleShim), never from a
-// clock of the stage's. One descendant goes on running, so nothing but the SIGKILL ends it: the
-// wait must end at its bound, with role-init's own clock past roleNamespaceDrain. The other
-// leaves, and the wait must end with the namespace emptied, which is what tells it from a wait
-// that sleeps its bound whatever the role does. The verdict is that order alone, so a loaded
-// machine that slows role-init's polls or the descendant's exit changes no case's verdict; the
-// stage's one deadline is a hang guard (roleDrainReport).
+// role-init's wait loop ended from the line role-init logs as it leaves the loop (runRoleShim),
+// never from a clock of the stage's. One descendant goes on running, so nothing but the SIGKILL
+// ends it: the loop must end at its bound, with role-init's own clock past that bound. The other
+// leaves, and the loop must end with the namespace emptied, which is what tells it from a wait
+// that sleeps its bound whatever the role does. Each case sets the bound itself (roleDrainPlan),
+// far past any stall of the descendant's trap, so the trap runs before the kill however loaded the
+// machine; roleNamespaceDrain's own two seconds are not this row's subject. The row reads how the
+// loop ended and not when role-init exits: a role-init that slept after its loop and before its
+// kill would pass it. The verdict is that order alone, so a loaded machine that slows role-init's
+// polls or the descendant's trap changes no case's verdict; the stage's one deadline is a hang
+// guard (roleDrainReport).
 func TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills(t *testing.T) {
 	if encoded := os.Getenv(roleDrainEnv); encoded != "" {
 		var plan roleDrainPlan
@@ -1547,15 +1561,18 @@ func TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills(t *testing.T) {
 	}
 	requireRoleNamespaces(t)
 	mount := stageMountPoint(t)
+	// Each bound is whole milliseconds, the precision of the span role-init logs, so a span
+	// rounded to them never reads under a bound the wait did reach.
 	for _, tc := range []struct {
 		name   string
 		leaves bool
+		bound  time.Duration
 	}{
-		{"a descendant that stays is signalled before it is killed", false},
-		{"a descendant that leaves ends the wait with the namespace", true},
+		{"a descendant that stays is signalled before it is killed", false, testwait.Bounded(t, roleDrainStaysBound, time.Minute).Truncate(time.Millisecond)},
+		{"a descendant that leaves ends the wait with the namespace", true, testwait.Bounded(t, 2*time.Minute, time.Minute).Truncate(time.Millisecond)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			report, output := roleDrainReport(t, roleDrainPlan{Dir: mount, Leaves: tc.leaves})
+			report, output := roleDrainReport(t, roleDrainPlan{Dir: mount, Leaves: tc.leaves, Bound: tc.bound})
 			if report["status"] != "0" {
 				t.Fatalf("the role's status = %q, want the shim's own exit 0\n%s", report["status"], output)
 			}
@@ -1571,9 +1588,9 @@ func TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills(t *testing.T) {
 			case !tc.leaves && ended != roleDrainBounded:
 				t.Errorf("role-init's wait ended with %q, want %q: a descendant that never leaves is not waited for until the bound\n%s",
 					ended, roleDrainBounded, output)
-			case !tc.leaves && span < roleNamespaceDrain:
-				t.Errorf("role-init's wait ended at its bound %s after its SIGTERM by its own clock, want at least roleNamespaceDrain (%s): a descendant that never leaves is killed before the wait is over\n%s",
-					span, roleNamespaceDrain, output)
+			case !tc.leaves && span < tc.bound:
+				t.Errorf("role-init's wait ended at its bound %s after its SIGTERM by its own clock, want at least the bound the case set (%s): a descendant that never leaves is killed before the wait is over\n%s",
+					span, tc.bound, output)
 			}
 		})
 	}
@@ -1679,7 +1696,7 @@ func runRoleDrain(plan roleDrainPlan) error {
 			return err
 		}
 	}
-	process, err := newRoleProcess(cfg, os.Environ(), os.Stdout, os.Stderr)
+	process, err := newRoleProcess(cfg, append(os.Environ(), roleDrainBoundEnv+"="+plan.Bound.String()), os.Stdout, os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -1716,7 +1733,7 @@ func runRoleDrain(plan roleDrainPlan) error {
 // that waited in a loop of sleeps would fork its next sleep the moment role-init's SIGTERM killed
 // the one it was waiting for, before the shell ran the pending trap, and a trap that then left
 // would leave that new sleep behind with no signal of its own — a process of the row's own
-// making, which role-init rightly waits the whole of roleNamespaceDrain for and then kills, so
+// making, which role-init rightly waits the whole of its bound for and then kills, so
 // the case that reads the namespace emptied would read the bound instead and fail for what the
 // rig left rather than for what role-init did. The caught of the case whose descendant stays
 // does go on forking sleeps after the signal, which is that case's whole point: a descendant that

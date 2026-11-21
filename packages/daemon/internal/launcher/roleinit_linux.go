@@ -578,7 +578,7 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 		// and the kill below ends what is left, which is where a git or a jj can leave a lock.
 		ticks := time.NewTicker(namespaceReapPoll)
 		began := time.Now()
-		drained := began.Add(roleNamespaceDrain)
+		drained := began.Add(roleDrainBound)
 		for draining := true; draining; {
 			remaining, err := reapNamespace()
 			switch {
@@ -589,7 +589,7 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 				roleLogf(cfg, "role-init: %s %s after its SIGTERM", roleDrainEmptied, time.Since(began).Round(time.Millisecond))
 				draining = false
 			case !time.Now().Before(drained):
-				roleLogf(cfg, "role-init: %s %s after its SIGTERM, the drain's bound of %s: killing them", roleDrainBounded, time.Since(began).Round(time.Millisecond), roleNamespaceDrain)
+				roleLogf(cfg, "role-init: %s %s after its SIGTERM, the drain's bound of %s: killing them", roleDrainBounded, time.Since(began).Round(time.Millisecond), roleDrainBound)
 				draining = false
 			default:
 				<-ticks.C
