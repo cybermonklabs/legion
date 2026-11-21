@@ -56,21 +56,6 @@ func (r GroupRule) BootLog(issuer, clientID string) {
 	slog.Info("dispatch: signing people in through the sign-in pool", "issuer", issuer, "client_id", clientID, "group", r.Group)
 }
 
-// DomainHint is false: a sign-in pool's group has no Workspace domain to name.
-func (r GroupRule) DomainHint() bool {
-	return false
-}
-
-// OffersAccountChooser is false: a refusal under a group keeps its plain link to /auth/start.
-func (r GroupRule) OffersAccountChooser() bool {
-	return false
-}
-
-// GoogleAtOutsideOrigin is false: a pool's people sign in at the canonical origin alone.
-func (r GroupRule) GoogleAtOutsideOrigin() bool {
-	return false
-}
-
 // CanRefresh is always true: a group's row always has something to refresh.
 func (r GroupRule) CanRefresh(stored string) bool {
 	return true

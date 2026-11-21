@@ -24,10 +24,10 @@ import (
 // /auth/passkey/register/finish takes what it made, enrolls the passkey with the link and signs the
 // person in, and /auth/passkey/login/begin and /login/finish sign in with a passkey already
 // enrolled. At the canonical (tailnet) origin each answers 404 exactly as a path no route serves
-// does, and at the outside origin GET /auth/start and GET /auth/callback answer that 404 too
-// unless DISPATCH_SIGNIN_OUTSIDE=1 (googleSignInHere), so a restricted member signs in there with
-// a passkey alone. These are the only routes that do work for a caller with no credential besides
-// the Google sign-in's two.
+// does. At the outside origin GET /auth/start and GET /auth/callback answer that 404 too, with
+// passkey sign-in on or off (googleSignInHere), so a restricted member signs in there with a passkey
+// alone. These are the only routes that do work for a caller with no credential besides the Google
+// sign-in's two.
 const (
 	// passkeyCeremonyCookie is the ceremony cookie's name, with the `__Host-` prefix, which a
 	// browser takes only from this host itself, Secure, with Path=/ and no Domain: so no other host
@@ -94,15 +94,14 @@ func (r *router) atOutside(req *http.Request) bool {
 	return r.ctx.OutsideOrigin != "" && publicOrigin(r.ctx.ServerURL, r.ctx.OutsideOrigin, req) == r.ctx.OutsideOrigin
 }
 
-// googleSignInHere serves next, the Google sign-in's start or callback, except at the outside
-// origin of a deployment whose rule serves no Google sign-in there
-// (identity.SignInRule.GoogleAtOutsideOrigin; a server with no rule serves none), where it answers
-// the 404 a path no route serves answers. A passkey deployment signs its people from outside in
-// there with a passkey, and any other deployment that answers at an outside origin (its passkeys
-// turned off, or that origin kept for agents) signs nobody in there.
+// googleSignInHere serves next, the Google sign-in's start or callback, at the canonical origin
+// alone: at the outside origin it answers the 404 a path no route serves answers (writeNoRoute,
+// logged once, as its route), with passkey sign-in on or off, since Google signs in the
+// Workspace's people alone and they sign in at the canonical origin, and a person from outside
+// signs in with a passkey or not at all.
 func (r *router) googleSignInHere(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		if (r.ctx.SignInRule == nil || !r.ctx.SignInRule.GoogleAtOutsideOrigin()) && r.atOutside(req) {
+		if r.atOutside(req) {
 			writeNoRoute(w, req)
 			return
 		}

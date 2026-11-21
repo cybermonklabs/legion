@@ -15,13 +15,11 @@
  *
  * `google` is Google's shape, with the issuer standing in for Google: the servers admit the
  * Workspace domain `googleSignIn.domain` (`DISPATCH_SIGNIN_DOMAIN`, which only
- * `DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1` lets a server take from an issuer other than Google's)
- * and, with outside sign-in on (`DISPATCH_SIGNIN_OUTSIDE=1`), an account outside it that a
- * project's access list names, as a restricted member. Each server answers at a second origin,
- * `googleOutsideOrigin` of its canonical one (`DISPATCH_OUTSIDE_ORIGIN`). The issuer signs in
- * nobody of its own: a spec queues each person, with the claims Google gives that account, at the
- * issuer's `/_dev/sign-in-as`. Only `e2e/outside-sign-in.e2e.ts` runs then, with one process or
- * two.
+ * `DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1` lets a server take from an issuer other than Google's),
+ * and no Google account outside it. Each server answers at a second origin, `googleOutsideOrigin`
+ * of its canonical one (`DISPATCH_OUTSIDE_ORIGIN`). The issuer signs in nobody of its own: a spec
+ * queues each person, with the claims Google gives that account, at the issuer's
+ * `/_dev/sign-in-as`. Only `e2e/outside-sign-in.e2e.ts` runs then, with one process or two.
  *
  * Any other value is refused naming the allowed ones, as `e2e/harness-processes.ts` refuses its
  * own, and `e2e/run-server.sh` refuses it the same way.

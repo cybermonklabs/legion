@@ -83,10 +83,6 @@
             "value": "example.com"
           },
           {
-            "name": "DISPATCH_SIGNIN_OUTSIDE",
-            "value": "1"
-          },
-          {
             "name": "DISPATCH_SERVER_URL",
             "value": "https://example-dispatch.example-tailnet.ts.net"
           },

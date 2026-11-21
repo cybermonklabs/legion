@@ -2,8 +2,8 @@ kind: Fixed
 body: |-
   An access token the secrets broker issued for a restricted member from outside the sign-in
   domain is held to the rule their personal agent tokens are: it is refused
-  `401 TOKEN_OWNER_NOT_ADMITTED` once `DISPATCH_SIGNIN_OUTSIDE` is off or no project names them,
-  at every request and at a live socket's next heartbeat, and acts again once both hold; a full
+  `401 TOKEN_OWNER_NOT_ADMITTED` once the deployment admits nobody from outside or no project names
+  them, at every request and at a live socket's next heartbeat, and acts again once both hold; a full
   member's broker token answers as before. A personal agent token whose owner differs from the
   person's row only in letter case is held to that person's member kind. A document socket's
   heartbeat resolves the signed-in person's cookie alone, as its open does, so a socket closes

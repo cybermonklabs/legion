@@ -8,8 +8,8 @@ import (
 	"github.com/sjawhar/envoy/internal/fold"
 )
 
-// The reasons WorkspaceLogin and VerifiedLogin refuse a Google sign-in, one per rule, so each
-// caller can word its own refusal: Dispatch's sign-in page and the secrets broker's approval page.
+// The reasons WorkspaceLogin refuses a Google sign-in, one per rule, so each caller can word its own
+// refusal: Dispatch's sign-in page and the secrets broker's approval page.
 var (
 	ErrNoSubject        = errors.New("oidc: the Google ID token carries no subject")
 	ErrNoEmail          = errors.New("oidc: the Google ID token carries no email address")
@@ -39,10 +39,13 @@ const addressPart = `[^@\s\v\x{85}\p{Z}]+`
 // ErrEmailNotVerified, and still returns the login when the email has an address's shape, so the
 // refusal can name the person.
 func WorkspaceLogin(claims Claims, domain string) (string, error) {
-	login, err := accountLogin(claims)
-	if err != nil {
-		return "", err
+	if claims.Subject == "" {
+		return "", ErrNoSubject
 	}
+	if !EmailShape.MatchString(claims.Email) {
+		return "", ErrNoEmail
+	}
+	login := fold.ASCII(claims.Email)
 	if domain == "" || claims.HostedDomain != domain {
 		return login, fmt.Errorf("%s (hd %q): %w", login, claims.HostedDomain, ErrNotInDomain)
 	}
@@ -50,35 +53,4 @@ func WorkspaceLogin(claims Claims, domain string) (string, error) {
 		return login, fmt.Errorf("%s: %w", login, ErrEmailNotVerified)
 	}
 	return login, nil
-}
-
-// VerifiedLogin applies WorkspaceLogin's rules but the domain to a Google ID token's claims, and
-// returns the person's login, the email with its ASCII letters lowered (fold.ASCII): the account
-// must have a subject and an email of an address's shape that Google has verified, whatever its
-// hd. It is for an account outside any Workspace, which a caller admits on a rule of its own
-// (Dispatch's outside sign-in, admitting an address a project's access list names). A refusal
-// wraps ErrNoSubject, ErrNoEmail or ErrEmailNotVerified, and still returns the login when the
-// email has an address's shape.
-func VerifiedLogin(claims Claims) (string, error) {
-	login, err := accountLogin(claims)
-	if err != nil {
-		return "", err
-	}
-	if !claims.EmailVerified {
-		return login, fmt.Errorf("%s: %w", login, ErrEmailNotVerified)
-	}
-	return login, nil
-}
-
-// accountLogin is the login of claims, its email with its ASCII letters lowered (fold.ASCII),
-// refusing an account with no subject (ErrNoSubject) or with no email of an address's shape
-// (ErrNoEmail).
-func accountLogin(claims Claims) (string, error) {
-	if claims.Subject == "" {
-		return "", ErrNoSubject
-	}
-	if !EmailShape.MatchString(claims.Email) {
-		return "", ErrNoEmail
-	}
-	return fold.ASCII(claims.Email), nil
 }

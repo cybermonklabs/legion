@@ -130,14 +130,11 @@ type bootConfig struct {
 	SignInClientSecret string
 	SignInGroup        string
 	SignInDomain       string
-	// SignInOutside is DISPATCH_SIGNIN_OUTSIDE=1: under SignInDomain, a verified Google account
-	// outside the domain signs in too, as a restricted member, while a project names it directly
-	// (identity.OutsideRule).
-	SignInOutside bool
 	// SignInWorkspaceDomains is DISPATCH_SIGNIN_WORKSPACE_DOMAINS, the other domains the Workspace
-	// owns beside SignInDomain, each trimmed; nil when unset. Under SignInOutside an account outside
-	// the Workspace at an address on one of them is refused (identity.OutsideRule.WorkspaceDomains);
-	// without it nothing reads them.
+	// owns beside SignInDomain, each trimmed; nil when unset. A person from outside the domain at an
+	// address on one of them, or on SignInDomain, is refused (identity.OutsideRule's
+	// WorkspaceDomains, identity.WorkspaceAddress), since such an address signs in only as a
+	// Workspace account.
 	SignInWorkspaceDomains []string
 	// SignInPasskey is DISPATCH_SIGNIN_PASSKEY=1: under SignInDomain, a person outside the domain
 	// that a project names directly signs in with a passkey at OutsideOrigin, enrolled through the
@@ -1570,9 +1567,6 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, err
 		}
 	}
-	if boot.SignInOutside, err = parseSignInSwitch("DISPATCH_SIGNIN_OUTSIDE", env.get("DISPATCH_SIGNIN_OUTSIDE")); err != nil {
-		return bootConfig{}, err
-	}
 	if boot.SignInPasskey, err = parseSignInSwitch("DISPATCH_SIGNIN_PASSKEY", env.get("DISPATCH_SIGNIN_PASSKEY")); err != nil {
 		return bootConfig{}, err
 	}
@@ -1624,8 +1618,6 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		// reaches that address name themself in the header and be that person (R6). The
 		// acknowledgement below says the header is trusted on a test harness; it cannot make a
 		// deployment's outside address trustworthy, so the pair is refused before it is read.
-		// DISPATCH_SIGNIN_OUTSIDE, the other setting that faces people from outside, is refused
-		// beside header identity with the rest of the sign-in settings (checkSignInSettings).
 		if boot.OutsideOrigin != "" {
 			return bootConfig{}, errors.New("DISPATCH_OUTSIDE_ORIGIN must be unset because header identity takes whoever a request header names, and the outside origin is the address people from outside reach Dispatch at: header identity is only for tests and local harnesses")
 		}

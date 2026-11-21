@@ -30,12 +30,12 @@ type tokenListsRig struct {
 }
 
 // newTokenListsRig seeds the three projects, names erin on each, and makes GAMMA private when
-// private is set. The deployment signs in people from outside its domain (signInOutside), as one
-// that holds a restricted member does: erin's tokens act only while that rule admits her
+// private is set. The deployment admits restricted members (admitsRestricted), as one that holds
+// a restricted member does: erin's tokens act only while that rule admits her
 // (restrictedOwnerAdmitted), which the three lists do.
 func newTokenListsRig(t *testing.T, private bool) *tokenListsRig {
 	t.Helper()
-	rig := &tokenListsRig{brokerTokenRig: newBrokerTokenRigOn(t, testServerOptions{signInOutside: true})}
+	rig := &tokenListsRig{brokerTokenRig: newBrokerTokenRigOn(t, testServerOptions{admitsRestricted: true})}
 	seedPeople(t, rig.database, accessErin)
 	markRestricted(t, rig.database, accessErin)
 	rig.alpha = seedProject(t, rig.brokerTokenRig, listedAlpha, "Alpha")

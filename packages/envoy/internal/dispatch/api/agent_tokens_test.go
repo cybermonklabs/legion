@@ -245,10 +245,10 @@ func TestAKeyedTokenMintKeepsNoPlaintextAndMintsOnce(t *testing.T) {
 }
 
 // outsideTokenRig is two API servers over one database, as one deployment is before and after its
-// operator turns outside sign-in off: on signs in people from outside its domain (its sign-in rule,
-// testOutsideRule, is Deps.RestrictedAdmission) and off does not. The database holds ACC, which
-// alice owns and whose access list names erin, a restricted member, and erin's personal token,
-// which she minted at her browser.
+// operator stops admitting restricted members: on admits them (its sign-in rule, testOutsideRule,
+// is Deps.RestrictedAdmission) and off does not. The database holds ACC, which alice owns and whose
+// access list names erin, a restricted member, and erin's personal token, which she minted at her
+// browser.
 type outsideTokenRig struct {
 	on, off  http.Handler
 	database *store.Store
@@ -257,7 +257,7 @@ type outsideTokenRig struct {
 
 func newOutsideTokenRig(t *testing.T) outsideTokenRig {
 	t.Helper()
-	on, database := newAccessServerWith(t, testServerOptions{signInOutside: true})
+	on, database := newAccessServerWith(t, testServerOptions{admitsRestricted: true})
 	off, _, _ := newTestServer(t, testServerOptions{store: database})
 	if listed := dispatchRequest(t, on, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
@@ -272,13 +272,13 @@ func newOutsideTokenRig(t *testing.T) outsideTokenRig {
 // erinsTokenWhoami is GET /api/v1/whoami's answer to erin's token where it acts.
 const erinsTokenWhoami = `{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","project":null,"scopes":["person","approve"],"service":null,"session":null}`
 
-// TestARestrictedOwnersTokenActsOnlyWhileOutsideSignInAdmitsThem (R5): a restricted member's
-// personal token is held, at every use, to the rule that signs the member in. It acts while the
-// deployment signs in people from outside its domain and a project names the owner. Over the same
-// database with outside sign-in off it is 401 TOKEN_OWNER_NOT_ADMITTED naming the setting, on a
-// read and on a write, which appends nothing. Once no project names the owner it is refused with
-// the same code, saying so, and once one names them again it acts again: nothing revoked it.
-func TestARestrictedOwnersTokenActsOnlyWhileOutsideSignInAdmitsThem(t *testing.T) {
+// TestARestrictedOwnersTokenActsOnlyWhileTheDeploymentAdmitsThem (R5): a restricted member's
+// personal token is held, at every use, to the rule that admits the member. It acts while the
+// deployment admits restricted members and a project names the owner. Over the same database on a
+// deployment that admits none it is 401 TOKEN_OWNER_NOT_ADMITTED saying so, on a read and on a
+// write, which appends nothing. Once no project names the owner it is refused with the same code,
+// saying so, and once one names them again it acts again: nothing revoked it.
+func TestARestrictedOwnersTokenActsOnlyWhileTheDeploymentAdmitsThem(t *testing.T) {
 	rig := newOutsideTokenRig(t)
 	whoami := func(handler http.Handler) *httptest.ResponseRecorder {
 		t.Helper()
@@ -297,14 +297,14 @@ func TestARestrictedOwnersTokenActsOnlyWhileOutsideSignInAdmitsThem(t *testing.T
 			t.Fatalf("erin's token: %s = %s, want the refusal to say %q", call, response.Body.String(), saying)
 		}
 	}
-	wantActs("outside sign-in on and ACC's list naming erin")
+	wantActs("restricted members admitted and ACC's list naming erin")
 
-	wantRefused(whoami(rig.off), "GET /api/v1/whoami with outside sign-in off", "DISPATCH_SIGNIN_OUTSIDE is unset")
+	wantRefused(whoami(rig.off), "GET /api/v1/whoami with restricted members not admitted", "admits nobody from outside it")
 	before := allEvents(t, rig.database)
 	wantRefused(agentRequest(t, rig.off, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "ACC", "title": "Written after outside sign-in was turned off",
+		"project": "ACC", "title": "Written once restricted members were no longer admitted",
 		"actor": map[string]string{"kind": "session", "id": "erin-agent"},
-	}, rig.token), "POST /api/v1/issues with outside sign-in off", "DISPATCH_SIGNIN_OUTSIDE is unset")
+	}, rig.token), "POST /api/v1/issues with restricted members not admitted", "admits nobody from outside it")
 	if after := allEvents(t, rig.database); after != before {
 		t.Fatalf("erin's refused write moved events from %d to %d", before, after)
 	}
@@ -343,8 +343,9 @@ func TestARestrictedOwnersTokenIsRefusedWhenTheListsCannotBeRead(t *testing.T) {
 
 // TestARestrictedOwnersTokenIsHeldToTheRuleWhateverTheCaseOfItsOwner: a token's owner is compared
 // with the people row case folded, as the store compares an email, so a token whose row names erin
-// in other letters than her people row is still a restricted member's token: refused with outside
-// sign-in off, acting while it is on and ACC lists her, and refused again once no project names her.
+// in other letters than her people row is still a restricted member's token: refused where
+// restricted members are not admitted, acting where they are and ACC lists her, and refused again
+// once no project names her.
 func TestARestrictedOwnersTokenIsHeldToTheRuleWhateverTheCaseOfItsOwner(t *testing.T) {
 	rig := newOutsideTokenRig(t)
 	const spelled = "Erin@Other.Example"
@@ -363,9 +364,9 @@ func TestARestrictedOwnersTokenIsHeldToTheRuleWhateverTheCaseOfItsOwner(t *testi
 			t.Fatalf("the token owned by %s: %s = %s, want the refusal to say %q", spelled, call, response.Body.String(), saying)
 		}
 	}
-	wantRefused(whoami(rig.off), "GET /api/v1/whoami with outside sign-in off", "DISPATCH_SIGNIN_OUTSIDE is unset")
+	wantRefused(whoami(rig.off), "GET /api/v1/whoami with restricted members not admitted", "admits nobody from outside it")
 	if response := whoami(rig.on); response.Code != http.StatusOK {
-		t.Fatalf("the token owned by %s: GET /api/v1/whoami with outside sign-in on and ACC's list naming erin = %d %s, want 200",
+		t.Fatalf("the token owned by %s: GET /api/v1/whoami with restricted members admitted and ACC's list naming erin = %d %s, want 200",
 			spelled, response.Code, response.Body.String())
 	}
 	if unlisted := dispatchRequest(t, rig.on, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); unlisted.Code != http.StatusOK {
@@ -376,7 +377,7 @@ func TestARestrictedOwnersTokenIsHeldToTheRuleWhateverTheCaseOfItsOwner(t *testi
 
 // TestARestrictedOwnersTokenIsHeldToTheRuleWhateverSpacesSurroundItsOwner: a token whose row names
 // erin with spaces around her address is her token, held to the rule as her address reads in her
-// people row. With other.example among the Workspace's domains the rule refuses her sign-in
+// people row. With other.example among the Workspace's domains the rule refuses her
 // (identity.ErrWorkspaceAddress), so it refuses the token too, saying so, while ACC's list still
 // names her. The same token acts under the rule that lists no such domain, which shows the token
 // reaches the restricted owner's check rather than being refused for another reason.
@@ -389,7 +390,7 @@ func TestARestrictedOwnersTokenIsHeldToTheRuleWhateverSpacesSurroundItsOwner(t *
 	token := personalTokenOwnedBy(t, rig.database, spelled, model.ScopePerson)
 	actor, err := directServer(Deps{Store: rig.database, RestrictedAdmission: testOutsideRule(rig.database.Pool)}).personalTokenActor(context.Background(), token)
 	if err != nil || actor.Owner == nil {
-		t.Fatalf("the token owned by %q with outside sign-in on and ACC's list naming erin: %+v, %v; want it to act", spelled, actor, err)
+		t.Fatalf("the token owned by %q with restricted members admitted and ACC's list naming erin: %+v, %v; want it to act", spelled, actor, err)
 	}
 	ofTheWorkspace := directServer(Deps{Store: rig.database, RestrictedAdmission: testOutsideRule(rig.database.Pool, "other.example")})
 	_, err = ofTheWorkspace.personalTokenActor(context.Background(), token)
@@ -400,12 +401,13 @@ func TestARestrictedOwnersTokenIsHeldToTheRuleWhateverSpacesSurroundItsOwner(t *
 	}
 }
 
-// TestAFullMembersTokenAnswersAsBeforeWithOutsideSignInOff (R9): with outside sign-in off, the
-// token of a full member and that of an owner no people row holds answer GET /api/v1/whoami as they
-// always did, and the same two statements resolve each, the token's lookup and the record of its
-// use, neither reading an access list. The instrument is shown seeing a list read in the same run:
-// a restricted owner's token, which must read one, resolves in three.
-func TestAFullMembersTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T) {
+// TestAFullMembersTokenAnswersAsBeforeWhereNoRestrictedMemberIsAdmitted (R9): on a deployment that
+// admits no restricted member, the token of a full member and that of an owner no people row holds
+// answer GET /api/v1/whoami as they always did, and the same two statements resolve each, the
+// token's lookup and the record of its use, neither reading an access list. The instrument is shown
+// seeing a list read in the same run: a restricted owner's token, which must read one, resolves in
+// three.
+func TestAFullMembersTokenAnswersAsBeforeWhereNoRestrictedMemberIsAdmitted(t *testing.T) {
 	rig := newOutsideTokenRig(t)
 	minted := dispatchRequest(t, rig.off, http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": "alice's agent"}, "alice")
 	if minted.Code != http.StatusCreated {
@@ -419,7 +421,7 @@ func TestAFullMembersTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T) {
 	traced := &store.Store{Pool: storetest.Traced(t, rig.database.Pool, recorder, nil)}
 	for _, test := range []struct {
 		name, token, whoami string
-		signInOutside       bool
+		admitsRestricted    bool
 		statements          int
 		readsLists          bool
 	}{
@@ -427,10 +429,10 @@ func TestAFullMembersTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T) {
 			`{"kind":"agent","owner":"alice","project":null,"scopes":["person","approve"],"service":null,"session":null}`, false, 2, false},
 		{"an owner no people row holds", personalTokenOwnedBy(t, rig.database, nobody, model.ScopePerson),
 			`{"kind":"agent","owner":"nobody@example.com","project":null,"scopes":["person"],"service":null,"session":null}`, false, 2, false},
-		{"erin, a restricted member, with outside sign-in on", rig.token, erinsTokenWhoami, true, 3, true},
+		{"erin, a restricted member, with restricted members admitted", rig.token, erinsTokenWhoami, true, 3, true},
 	} {
 		handler := rig.off
-		if test.signInOutside {
+		if test.admitsRestricted {
 			handler = rig.on
 		}
 		response := agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, test.token)
@@ -438,7 +440,7 @@ func TestAFullMembersTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T) {
 			t.Errorf("%s: GET /api/v1/whoami = %d %s, want 200 %s", test.name, response.Code, got, test.whoami)
 		}
 		before := len(recorder.Statements())
-		actor, err := directServer(Deps{Store: traced, RestrictedAdmission: restrictedAdmissionOf(test.signInOutside, traced.Pool)}).personalTokenActor(context.Background(), test.token)
+		actor, err := directServer(Deps{Store: traced, RestrictedAdmission: restrictedAdmissionOf(test.admitsRestricted, traced.Pool)}).personalTokenActor(context.Background(), test.token)
 		statements := recorder.Statements()[before:]
 		readsLists := strings.Contains(strings.Join(statements, "\n"), access.Marker)
 		if err != nil || actor.Owner == nil || len(statements) != test.statements || readsLists != test.readsLists {

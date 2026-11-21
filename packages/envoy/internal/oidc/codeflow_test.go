@@ -45,11 +45,10 @@ func newCodeFlowForDomain(t *testing.T, domain string) (*oidctest.Issuer, *CodeF
 	return issuer, NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, domain)
 }
 
-// authURL is flow's authorization URL for flowRedirect, with the domain hint, failing the test
-// when there is none.
+// authURL is flow's authorization URL for flowRedirect, failing the test when there is none.
 func authURL(t *testing.T, flow *CodeFlow, state, nonce string) string {
 	t.Helper()
-	location, err := flow.AuthURL(context.Background(), flowRedirect, state, nonce, AuthOptions{DomainHint: true})
+	location, err := flow.AuthURL(context.Background(), flowRedirect, state, nonce)
 	if err != nil {
 		t.Fatalf("AuthURL: %v", err)
 	}
@@ -179,70 +178,6 @@ func TestCodeFlowAuthURLAsksGoogleForOfflineAccessInTheDomain(t *testing.T) {
 		if group.Has(name) {
 			t.Errorf("group mode: the authorization request carries %s=%q", name, group.Get(name))
 		}
-	}
-}
-
-// The domain hint is the caller's to ask for: a domain-mode flow names its domain as hd only when
-// asked, as Dispatch asks while only the domain's people sign in, and asks Google for offline
-// access with consent either way, since the sign-in keeps its refresh token whoever signs in.
-func TestCodeFlowAuthURLSendsTheDomainHintOnlyWhenAsked(t *testing.T) {
-	_, flow := newCodeFlowForDomain(t, flowDomain)
-	_, groupFlow := newCodeFlowFor(t)
-	query := func(flow *CodeFlow, domainHint bool) url.Values {
-		t.Helper()
-		location, err := flow.AuthURL(context.Background(), flowRedirect, "state-1", "nonce-1", AuthOptions{DomainHint: domainHint})
-		if err != nil {
-			t.Fatalf("AuthURL: %v", err)
-		}
-		parsed, err := url.Parse(location)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return parsed.Query()
-	}
-	if hinted := query(flow, true); hinted.Get("hd") != flowDomain {
-		t.Errorf("asked for the hint: hd = %q, want %q", hinted.Get("hd"), flowDomain)
-	}
-	unhinted := query(flow, false)
-	if unhinted.Has("hd") {
-		t.Errorf("not asked for the hint: the request carries hd=%q", unhinted.Get("hd"))
-	}
-	for name, want := range map[string]string{"access_type": "offline", "prompt": "consent"} {
-		if got := unhinted.Get(name); got != want {
-			t.Errorf("not asked for the hint: %s = %q, want %q", name, got, want)
-		}
-	}
-	if group := query(groupFlow, true); group.Has("hd") {
-		t.Errorf("a flow with no hosted domain asked for the hint: the request carries hd=%q", group.Get("hd"))
-	}
-}
-
-// The account chooser is the caller's to ask for, as the hint is: a domain-mode flow asks Google
-// for it beside the consent a refresh token needs only when asked, as Dispatch asks on the link a
-// refused sign-in offers, and a flow with no hosted domain, a sign-in pool's, never asks.
-func TestCodeFlowAuthURLAsksForTheAccountChooserOnlyWhenAsked(t *testing.T) {
-	_, flow := newCodeFlowForDomain(t, flowDomain)
-	_, groupFlow := newCodeFlowFor(t)
-	prompt := func(flow *CodeFlow, options AuthOptions) (string, bool) {
-		t.Helper()
-		location, err := flow.AuthURL(context.Background(), flowRedirect, "state-1", "nonce-1", options)
-		if err != nil {
-			t.Fatalf("AuthURL: %v", err)
-		}
-		parsed, err := url.Parse(location)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return parsed.Query().Get("prompt"), parsed.Query().Has("prompt")
-	}
-	if got, _ := prompt(flow, AuthOptions{SelectAccount: true}); got != "select_account consent" {
-		t.Errorf("asked for the chooser: prompt = %q, want %q", got, "select_account consent")
-	}
-	if got, _ := prompt(flow, AuthOptions{}); got != "consent" {
-		t.Errorf("not asked for the chooser: prompt = %q, want %q", got, "consent")
-	}
-	if got, asked := prompt(groupFlow, AuthOptions{SelectAccount: true}); asked {
-		t.Errorf("a flow with no hosted domain asked for the chooser: prompt = %q", got)
 	}
 }
 
@@ -484,7 +419,7 @@ func TestCodeFlowGrantsUseTheDiscoveredConfigWithoutARace(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			_, _ = flow.AuthURL(context.Background(), flowRedirect, "state-1", "nonce-1", AuthOptions{})
+			_, _ = flow.AuthURL(context.Background(), flowRedirect, "state-1", "nonce-1")
 		}()
 		go func() {
 			defer wg.Done()
@@ -535,7 +470,7 @@ func TestCodeFlowSendsNoRedirectWhenTheCallerNamesNone(t *testing.T) {
 	recorder := &formRecorder{}
 	flow.http.Transport = recorder
 	ctx := context.Background()
-	authorization, err := flow.AuthURL(ctx, "", "state-1", "nonce-1", AuthOptions{})
+	authorization, err := flow.AuthURL(ctx, "", "state-1", "nonce-1")
 	if err != nil {
 		t.Fatalf("AuthURL: %v", err)
 	}

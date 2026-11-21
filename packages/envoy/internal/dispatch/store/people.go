@@ -206,7 +206,7 @@ func signInMemberKind(email string, kind model.MemberKind) error {
 // for the next sign-in to revoke again; one that commits is logged at WARN with the address, and
 // with how many tokens it revoked when it replaced an account or revoked another account's tokens.
 //
-// A restricted sign-in (an account outside the Workspace) never takes a full member's address
+// A restricted sign-in (a person from outside the domain) never takes a full member's address
 // (takesAMembersAddress): it writes nothing and returns auth.ErrAddressHeldByMember, read once
 // before the plain token's retirement (refuseAMembersAddress), so the member's token is never
 // revoked, and again under the row's lock, so a member's sign-in that commits in between is
@@ -447,9 +447,9 @@ func revokeOtherAccountsTokens(ctx context.Context, tx pgx.Tx, email, subject st
 // takesAMembersAddress reports whether a sign-in of subject as kind would take an address whose
 // existing row records a member of storedKind under stored, empty for no Google account: a
 // restricted sign-in to a full member's row under another account or none. Such an address is a
-// member's of the Workspace, often on another domain it owns, which an account outside the
-// Workspace can hold the verified email of; were it taken, that account would end the member's
-// sessions and read every project that names the member.
+// member's of the Workspace, often on another domain it owns, which a person from outside can be
+// listed at; were it taken, that person would end the member's sessions and read every project
+// that names the member.
 func takesAMembersAddress(kind model.MemberKind, stored, storedKind, subject string) bool {
 	return kind == model.MemberRestricted && storedKind == string(model.MemberFull) && stored != subject
 }

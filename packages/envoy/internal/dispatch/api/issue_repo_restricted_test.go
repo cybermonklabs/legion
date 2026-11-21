@@ -25,7 +25,7 @@ const restrictedRepoRefusal = `{"code":"RESTRICTED_MEMBER","error":"a restricted
 // repository, so an issue of ACC with no repository of its own resolves to it.
 func newIssueRepoAccessServer(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database := newAccessServerWith(t, testServerOptions{signInOutside: true})
+	handler, database := newAccessServerWith(t, testServerOptions{admitsRestricted: true})
 	if named := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); named.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC: status=%d body=%s", named.Code, named.Body.String())
 	}

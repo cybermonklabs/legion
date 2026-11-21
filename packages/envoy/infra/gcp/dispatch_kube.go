@@ -686,9 +686,8 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// The four sign-in variables render together or not at all, in the place they always held, so
 	// a deployment with sign-in on renders what it always rendered (gcp/testdata/dispatch-pod.golden)
 	// and one without it names no client, no issuer and no domain: Dispatch then asks nobody to
-	// sign in. DISPATCH_SIGNIN_OUTSIDE follows the domain only with signInOutside, which needs
-	// sign-in on, and DISPATCH_SIGNIN_WORKSPACE_DOMAINS follows them only with signInWorkspaceDomains,
-	// which needs sign-in on too: the entries comma-joined, as Dispatch splits them. The IAP door's
+	// sign in. DISPATCH_SIGNIN_WORKSPACE_DOMAINS follows them only with signInWorkspaceDomains,
+	// which needs sign-in on: the entries comma-joined, as Dispatch splits them. The IAP door's
 	// three variables take that same place, since the resolver refuses the Google client beside it,
 	// and render only with iapAudience: the identity mode, the audience, and the domain whose
 	// accounts may use Dispatch, which Dispatch holds the signed header's hd claim to. A deployment
@@ -701,9 +700,6 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if s.signInOn {
 		appEnv = append(appEnv, secretEnv("DISPATCH_SIGNIN_CLIENT_SECRET", dispatchSecretName, "DISPATCH_SIGNIN_CLIENT_SECRET"),
 			valueEnv("DISPATCH_SIGNIN_ISSUER", "https://accounts.google.com"), valueEnv("DISPATCH_SIGNIN_CLIENT_ID", s.signIn.clientID), valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
-		if s.signInOutside {
-			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_OUTSIDE", "1"))
-		}
 		if len(s.signInWorkspaceDomains) > 0 {
 			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_WORKSPACE_DOMAINS", strings.Join(s.signInWorkspaceDomains, ",")))
 		}

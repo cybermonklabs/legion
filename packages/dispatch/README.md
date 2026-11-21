@@ -400,10 +400,9 @@ DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslm
 
 It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess` sets.
 
-`DISPATCH_E2E_SIGNIN=google` signs people in as a deployment that signs in with Google does, with
-outside sign-in on: the same issuer stands in for Google, and each server admits the Workspace
-domain `example.com` and, as a restricted member, an account outside it that a project's access
-list names (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_OUTSIDE=1`). Each server answers at a
+`DISPATCH_E2E_SIGNIN=google` signs people in as a deployment that signs in with Google does: the
+same issuer stands in for Google, and each server admits the Workspace domain `example.com`
+(`DISPATCH_SIGNIN_DOMAIN`) and no Google account outside it. Each server answers at a
 second origin, `http://localhost:<port>` (`DISPATCH_OUTSIDE_ORIGIN`), beside its canonical
 `http://127.0.0.1:<port>`. The issuer signs in nobody of its own: a spec queues each person, with
 the claims Google gives that account, at the issuer's `POST /_dev/sign-in-as`. Only

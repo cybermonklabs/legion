@@ -881,9 +881,10 @@ Its Postgres is a second one the harness starts from the same image.
 ## What the outside sign-in step runs
 
 One server signs people in through the same issuer standing in for Google
-(DISPATCH_E2E_SIGNIN=google, e2e/harness-signin.ts), with outside sign-in on and a second
-origin, and its one spec signs a person from outside the domain in there as a restricted
-member while an access list names them. The steps before built the dashboard, the server
+(DISPATCH_E2E_SIGNIN=google, e2e/harness-signin.ts) and answers at a second origin, and its one
+spec refuses a Google account outside the domain at the canonical origin while an access list
+names it, signs a member of the domain in there, and finds no Google sign-in at the second
+origin. The steps before built the dashboard, the server
 and the issuer. Its Postgres is a third one the harness starts from the same image: this
 job has no job-level DATABASE_URL, and a run of one stack given neither a database nor an
 image starts its server with no database, which e2e/run-server.sh refuses. Measured once,

@@ -113,7 +113,7 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	stub := ciphertokentest.NewStubBroker(t)
 	served, _ := newAccessServerWith(t, testServerOptions{
-		signInOutside: true, brokerTokens: stubBrokerTokens(t, stub),
+		admitsRestricted: true, brokerTokens: stubBrokerTokens(t, stub),
 		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
 	})
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
@@ -232,7 +232,7 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 // kind, and erin's token holds person and approve and reads her inbox, named.
 func TestARestrictedMembersPersonScopeBrokerTokenHoldsNoScope(t *testing.T) {
 	stub := ciphertokentest.NewStubBroker(t)
-	served, _ := newAccessServerWith(t, testServerOptions{signInOutside: true, brokerTokens: stubBrokerTokens(t, stub)})
+	served, _ := newAccessServerWith(t, testServerOptions{admitsRestricted: true, brokerTokens: stubBrokerTokens(t, stub)})
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}
@@ -285,8 +285,8 @@ func TestARestrictedMembersPersonScopeBrokerTokenHoldsNoScope(t *testing.T) {
 func TestARemovalWhileTheBrokerIsDownIsPaidOnceItIsBack(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
-		signInOutside:   true,
-		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		admitsRestricted: true,
+		agentSecretsURL:  rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
 	})
 	ctx := t.Context()
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {

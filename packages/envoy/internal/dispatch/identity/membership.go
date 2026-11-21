@@ -44,9 +44,7 @@ type Refresher interface {
 // ends nothing: the request that found the confirmation lapsed is refused with
 // ErrSignInUnavailable, since no one is served on a lapsed confirmation, and the session
 // generation and refresh token stay, so the first request after the issuer answers again
-// refreshes and is served. Under OutsideRule, access lists that cannot be read
-// (ErrMembershipUnreadable) end nothing either: the request is refused with that error and the
-// sign-in kept, so a database blip signs nobody out.
+// refreshes and is served.
 //
 // A passkey's sign-in (its row's account of the outside origin, auth.PersonMembership.Issuer)
 // has no issuer to refresh with: Passkeys confirms it. It stands only while Passkeys is set and
@@ -55,7 +53,9 @@ type Refresher interface {
 // AdmitsRestricted again and finds a passkey: a person no list names directly any more, or whose
 // address is on a domain the Workspace owns, has their sign-in ended and their passkeys deleted in
 // one transaction (PasskeySignIns.End), and a person with no passkey left has their sign-in ended
-// (PasskeySignIns.Confirm); lists that cannot be read end nothing, as above.
+// (PasskeySignIns.Confirm). Access lists that cannot be read (ErrMembershipUnreadable) end
+// nothing: the request is refused with that error and the sign-in kept, so a database blip signs
+// nobody out.
 type Membership struct {
 	People auth.PeopleStore
 	SignIn Refresher
@@ -173,10 +173,6 @@ func (m *Membership) refresh(ctx context.Context, email string) error {
 		return fmt.Errorf("%w: %w", ErrSignInUnavailable, err)
 	}
 	person, err := m.Rule.Person(ctx, session.Claims)
-	if errors.Is(err, ErrMembershipUnreadable) {
-		slog.Warn("dispatch: the access lists could not be read to confirm a lapsed membership; the request is refused and the sign-in kept", "email", email, "error", err)
-		return err
-	}
 	if err != nil {
 		return m.end(ctx, email, membership, err.Error())
 	}

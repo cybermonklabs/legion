@@ -64,7 +64,7 @@ func newRestrictedTokenRigWith(t *testing.T, access projectaccess.Access, option
 	client := ciphertest.NewClient(t, broker.URL, strings.TrimPrefix(broker.URL, "http://"))
 	client.DPoP, client.UIToken = cipherclient.NewDPoPTransport, broker.UIToken
 	dispatchAccount := accountTokenFile(t, broker.UIToken)
-	options.signInOutside = true
+	options.admitsRestricted = true
 	options.brokerTokens = func(database *store.Store) *ciphertoken.Verifier {
 		verifier, err := ciphertoken.New(ciphertoken.Options{
 			BrokerURL: broker.URL, Account: ciphertoken.NewAccountToken(dispatchAccount), Origins: []string{testServerURL},

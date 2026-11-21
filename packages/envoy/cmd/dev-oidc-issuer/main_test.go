@@ -356,7 +356,7 @@ func TestTheCodeFlowSignsInTheDefaultPersonUntilAnotherIsQueued(t *testing.T) {
 	}
 
 	flow := oidc.NewCodeFlow(issuerURL, testClientID, testClientSecret, testDomain)
-	authURL, err := flow.AuthURL(ctx, testRedirect, "state-3", "nonce-3", oidc.AuthOptions{DomainHint: true})
+	authURL, err := flow.AuthURL(ctx, testRedirect, "state-3", "nonce-3")
 	if err != nil {
 		t.Fatal(err)
 	}
