@@ -19,12 +19,14 @@
 // Across projects (LEGION_E2E_ACROSS_PROJECTS=1) the roots are issues of project LEGION, whose
 // daemon this is, and each issue they rest on is of a second project of the same Dispatch, OTHR,
 // which no daemon runs. R is set under P through Dispatch's own parent route, which a Dispatch
-// that takes no parent of another project refuses, so the run then fails at its first step. Two
-// steps follow the refusal: pending, where R2's step waits on the open approval request of P2 and
-// opens at the first controller tick after the person approves P2, and accepted, where R3's
-// register_gate on P3 is refused once P3 stands in retro as the sign_off of P3's daemon writes it.
-// The daemon then applies no controller tick but the one the pending step hands it
-// (overrides.controllerTicks).
+// that takes no parent of another project refuses, so the run then fails at its first step; with
+// LEGION_E2E_PARENT_LINK=sql each such link is instead written straight into the scratch
+// Dispatch's database (linkAcross), as the daemon's own tests write it, which proves the daemon's
+// part on a Dispatch that refuses the link on every route. Two steps follow the refusal: pending,
+// where R2's step waits on the open approval request of P2 and opens at the first controller tick
+// after the person approves P2, and accepted, where R3's register_gate on P3 is refused once P3
+// stands in retro as the sign_off of P3's daemon writes it. The daemon then applies no controller
+// tick but the one the pending step hands it (overrides.controllerTicks).
 //
 // Once the daemon has stopped, the driver writes the scratch Dispatch's whole event log, one event
 // to a line as GET /api/v1/events/log serves it, to dispatch-events.jsonl beside the daemon's log
@@ -73,6 +75,11 @@ const registerGateDispatchRootEnv = "LEGION_E2E_DISPATCH_ROOT"
 // REGISTER_GATE_BASIS_ACROSS_PROJECTS.
 const registerGateAcrossProjectsEnv = "LEGION_E2E_ACROSS_PROJECTS"
 
+// registerGateParentLinkEnv says how the run across projects sets a root under an issue of
+// another project: route or empty through Dispatch's own parent route, sql straight into the
+// scratch Dispatch's database. The script sets it from REGISTER_GATE_BASIS_LINK.
+const registerGateParentLinkEnv = "LEGION_E2E_PARENT_LINK"
+
 // The two projects of the run across projects: the roots' own, and that of the issues they rest
 // on.
 const (
@@ -108,6 +115,9 @@ type registerGateBasisLive struct {
 	// across is a run across projects, and ticks then the daemon's one source of controller ticks.
 	across bool
 	ticks  chan time.Time
+	// linkBySQL, across projects alone, writes each root's parent straight into the scratch
+	// Dispatch's database (linkAcross) instead of through Dispatch's parent route.
+	linkBySQL bool
 	// root is R, a root the daemon admitted, and parent is P, whose primary document the person
 	// approved at version approved.
 	root, parent scratchIssue
@@ -188,6 +198,13 @@ func newRegisterGateBasisLive(t *testing.T) *registerGateBasisLive {
 		board.log = file
 	}
 	across := os.Getenv(registerGateAcrossProjectsEnv) == "1"
+	var linkBySQL bool
+	switch link := os.Getenv(registerGateParentLinkEnv); {
+	case link == "sql" && across:
+		linkBySQL = true
+	case link != "" && link != "route":
+		t.Fatalf("%s=%q: want route, or sql with %s=1", registerGateParentLinkEnv, link, registerGateAcrossProjectsEnv)
+	}
 	var rig *personHandoverRig
 	if across {
 		rig = newProjectRigOn(t, startScratchDispatchOn(t, board), natsURL, registerGateRootProject, "acme/widgets", 3)
@@ -195,7 +212,7 @@ func newRegisterGateBasisLive(t *testing.T) *registerGateBasisLive {
 	} else {
 		rig = newPersonHandoverRigOn(t, board, 2)
 	}
-	r := &registerGateBasisLive{personHandoverRig: rig, toolRoot: toolRoot, home: t.TempDir(), across: across}
+	r := &registerGateBasisLive{personHandoverRig: rig, toolRoot: toolRoot, home: t.TempDir(), across: across, linkBySQL: linkBySQL}
 	if across {
 		r.ticks = make(chan time.Time)
 		r.tune = func(o *overrides) { o.controllerTicks = r.ticks }
@@ -215,7 +232,12 @@ func newRegisterGateBasisLive(t *testing.T) *registerGateBasisLive {
 	r.boot()
 	projects := "project " + r.cfg.Project
 	if across {
-		projects = fmt.Sprintf("roots in project %s and the issues they rest on in project %s", registerGateRootProject, registerGateOtherProject)
+		link := "through Dispatch's parent route"
+		if linkBySQL {
+			link = "written in the scratch Dispatch's database"
+		}
+		projects = fmt.Sprintf("roots in project %s and the issues they rest on in project %s, each link between them %s",
+			registerGateRootProject, registerGateOtherProject, link)
 	}
 	r.note("Dispatch %s built from %s (database of its own, events on %s), %s; daemon %s of project %s; the tool of %s",
 		r.baseURL, dispatchRoot, natsURL, projects, r.d.base, r.cfg.Project, toolRoot)
@@ -250,14 +272,21 @@ func (r *registerGateBasisLive) resting(fields map[string]any) map[string]any {
 // setUnder sets parent as root's Dispatch parent as the person does at the dashboard, through
 // Dispatch's own route, and waits for the daemon to apply the link. root and parent are of two
 // projects, so a Dispatch that takes no parent of another project refuses the write, and the run
-// ends here with Dispatch's answer.
+// ends here with Dispatch's answer. With linkBySQL the link is written straight into the scratch
+// Dispatch's database instead, which makes no event: the daemon hears of it only where it reads
+// Dispatch, as at a registration and at a controller tick.
 func (r *registerGateBasisLive) setUnder(root, parent scratchIssue) {
 	t := r.t
 	t.Helper()
-	status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPatch, "/api/v1/issues/"+root.Key, map[string]any{"parent": parent.Key}, asPerson)
-	if status != http.StatusOK {
-		t.Fatalf("Dispatch refused to set %s, of project %s, under %s, of project %s: PATCH /api/v1/issues/%s {\"parent\": %q} as the person = %d %s",
-			root.Key, registerGateRootProject, parent.Key, registerGateOtherProject, root.Key, parent.Key, status, answer)
+	if r.linkBySQL {
+		r.mustLinkAcross(root.Key, parent.Key)
+		r.note("%s's parent written as %s in the scratch Dispatch's database", root.Key, parent.Key)
+	} else {
+		status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPatch, "/api/v1/issues/"+root.Key, map[string]any{"parent": parent.Key}, asPerson)
+		if status != http.StatusOK {
+			t.Fatalf("Dispatch refused to set %s, of project %s, under %s, of project %s: PATCH /api/v1/issues/%s {\"parent\": %q} as the person = %d %s",
+				root.Key, registerGateRootProject, parent.Key, registerGateOtherProject, root.Key, parent.Key, status, answer)
+		}
 	}
 	r.quiet(root.Key)
 	if shown := r.issue(root.Key); shown.Parent == nil || *shown.Parent != parent.Key {
@@ -270,7 +299,7 @@ func (r *registerGateBasisLive) setUnder(root, parent scratchIssue) {
 // so the daemon records nothing of it, marks p1 to p3 in its primary document, and the person
 // approves its latest version. The person sets P as R's parent, and R's one check serves P2.
 // Across projects P is of OTHR, which this daemon never records, and R is set under it through
-// Dispatch's parent route.
+// Dispatch's parent route, or with linkBySQL in the scratch Dispatch's database.
 func (r *registerGateBasisLive) world() {
 	t := r.t
 	t.Helper()

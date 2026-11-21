@@ -23,7 +23,9 @@
 # With REGISTER_GATE_BASIS_ACROSS_PROJECTS=1 the roots are issues of project LEGION, whose daemon
 # the driver boots, and the issues they rest on are of project OTHR, which no daemon runs; R is
 # set under P through Dispatch's own parent route, which a Dispatch that takes no parent of
-# another project refuses (400 PARENT_INPUT, so the run fails at world), and two steps follow:
+# another project refuses (400 PARENT_INPUT, so the run fails at world), or, with
+# REGISTER_GATE_BASIS_LINK=sql, by a write straight into the scratch Dispatch's database, and two
+# steps follow:
 #   - pending: R2 registers on the open approval request of P2 and its step waits; the person
 #     approves P2, and the step opens at the one controller tick the driver then runs, not before;
 #   - accepted: P3's status is written retro as its daemon's sign_off writes it, and R3's
@@ -53,6 +55,14 @@
 # takes no parent of another project is the run's negative control: it fails at world.
 # REGISTER_GATE_BASIS_ACROSS_PROJECTS is 1 for the run across projects, and unset or empty for the
 # run in one project; any other value is refused with exit 2.
+# REGISTER_GATE_BASIS_LINK says how the run across projects sets each root under an issue of OTHR:
+# route (the default, also when unset or empty) through Dispatch's own parent route, which only a
+# Dispatch that takes a parent of another project answers 200, or sql, a write of the issue's
+# parent_key straight into the scratch Dispatch's database, as the daemon's own tests write it,
+# which makes no event, so the daemon reads the link only from Dispatch itself, at a registration
+# and at a controller tick. sql proves the daemon's part on a Dispatch that refuses the link on
+# every route, which is what register-gate-basis-across-projects.sh runs in CI. sql without
+# REGISTER_GATE_BASIS_ACROSS_PROJECTS=1, and any other value, is refused with exit 2.
 # REGISTER_GATE_BASIS_EVIDENCE_DIR (default a fresh directory under TMPDIR, or /tmp when it is
 # unset, kept and printed) keeps the transcript, the nats-server's log, the daemon's, Dispatch's
 # (dispatch.log), the driver's output, and the scratch Dispatch's whole event log
@@ -80,6 +90,20 @@ case "${REGISTER_GATE_BASIS_ACROSS_PROJECTS:-}" in
   1) export LEGION_E2E_ACROSS_PROJECTS=1 ;;
   *)
     echo "FAIL prerequisites: REGISTER_GATE_BASIS_ACROSS_PROJECTS=$REGISTER_GATE_BASIS_ACROSS_PROJECTS is neither 1 nor empty" >&2
+    exit 2
+    ;;
+esac
+case "${REGISTER_GATE_BASIS_LINK:-route}" in
+  route) unset LEGION_E2E_PARENT_LINK ;;
+  sql)
+    [ "${REGISTER_GATE_BASIS_ACROSS_PROJECTS:-}" = 1 ] || {
+      echo "FAIL prerequisites: REGISTER_GATE_BASIS_LINK=sql sets a parent of another project, so it needs REGISTER_GATE_BASIS_ACROSS_PROJECTS=1" >&2
+      exit 2
+    }
+    export LEGION_E2E_PARENT_LINK=sql
+    ;;
+  *)
+    echo "FAIL prerequisites: REGISTER_GATE_BASIS_LINK=$REGISTER_GATE_BASIS_LINK is neither route nor sql" >&2
     exit 2
     ;;
 esac

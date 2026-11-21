@@ -410,9 +410,16 @@ Each item below names a script, then what it proves.
   `register_gate` with step `spec`, the root's own primary document, the basis `dispatch://<P>/spec` at the version the person approved and a reason is looked up on P and sent with one grant, and the daemon records the root's spec step open on P's approval;
   with a decision block open in the root's spec, the same call is refused by the tool, naming the block, before any request reaches the daemon, and the daemon records nothing.
   `REGISTER_GATE_BASIS_DISPATCH_ROOT` names another checkout to build that Dispatch from.
-  With `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1` the roots are of project `LEGION` and the issues they rest on of project `OTHR`: the root is set under P through Dispatch's own parent route, a second root's step waits on another issue's open approval request and opens at the first controller tick after the person approves it, and a third root's registration is refused with `BASIS_ACCEPTED` once the issue it rests on stands in retro.
+  With `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1` the roots are of project `LEGION` and the issues they rest on of project `OTHR`: the root is set under P through Dispatch's own parent route (or, with `REGISTER_GATE_BASIS_LINK=sql`, by a write of its parent straight into the scratch Dispatch's database), a second root's step waits on another issue's open approval request and opens at the first controller tick after the person approves it, and a third root's registration is refused with `BASIS_ACCEPTED` once the issue it rests on stands in retro.
   Every run keeps the scratch Dispatch's whole event log, `dispatch-events.jsonl`, in its evidence directory.
   Run with `REGISTER_GATE_BASIS_TOOL_ROOT` at the commit the branch starts from, it is the change's negative control; across projects, run with `REGISTER_GATE_BASIS_DISPATCH_ROOT` at a Dispatch that takes no parent of another project, it fails at `world`.
+  No GitHub, no cluster
+
+- `register-gate-basis-across-projects.sh`
+
+  `register-gate-basis.sh` across two projects with `REGISTER_GATE_BASIS_LINK=sql`, on the Dispatch this checkout builds, which takes no parent of another project on any route: each root of `LEGION` is set under its issue of `OTHR` in the scratch Dispatch's database, its registration on an approved issue of `OTHR` opens its step, a registration on an open approval request of `OTHR` opens at the one controller tick after the person approves, and a registration once that issue is accepted is refused with `BASIS_ACCEPTED`.
+  This is the run of the cross-project gate `e2e.yaml` makes on a hosted runner.
+  With the daemon of the commit before the daemon's cross-project change (`packages/daemon` alone at that commit, Dispatch and the tool this checkout's), it fails at `pending`: the step still waits after the controller tick that follows the person's approval.
   No GitHub, no cluster
 
 - `parent-waits.sh`
@@ -5094,7 +5101,7 @@ The issues, pull requests, slots and the claims the boot relaunches are seeded t
 
 ```sh
 LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  [LEGION_E2E_NATS_BIN=<nats-server>] [REGISTER_GATE_BASIS_ACROSS_PROJECTS=1] [REGISTER_GATE_BASIS_DISPATCH_ROOT=<checkout>] \
+  [LEGION_E2E_NATS_BIN=<nats-server>] [REGISTER_GATE_BASIS_ACROSS_PROJECTS=1 [REGISTER_GATE_BASIS_LINK=sql]] [REGISTER_GATE_BASIS_DISPATCH_ROOT=<checkout>] \
   bash scripts/e2e/register-gate-basis.sh     # → "register gate basis e2e: PASS in <n>s", exit 0
 ```
 
@@ -5108,8 +5115,8 @@ The broker is the run's own, as for [`child-adoption.sh`](#child-adoptionsh);
 a `LEGION_TEST_NATS_URL` in the caller's environment is not read.
 A run takes one to five minutes, most of it building the driver and Dispatch.
 The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
-before them the script refuses a host with no `bun`, no `node_modules` at the checkout's root or at the root of the tool's checkout, no driver file in the tool's checkout, or no `packages/envoy/go.mod` in the Dispatch checkout, and a `REGISTER_GATE_BASIS_ACROSS_PROJECTS` that is neither `1` nor empty with exit 2.
-It exports `LEGION_E2E_REPO_ROOT`, this checkout, `LEGION_E2E_DISPATCH_ROOT`, the checkout the driver builds Dispatch from and runs it in (`REGISTER_GATE_BASIS_DISPATCH_ROOT`, this checkout by default; a relative path is read from the directory the script runs in; it needs no `bun install`), `LEGION_E2E_TOOL_ROOT`, the checkout whose tool it runs (`REGISTER_GATE_BASIS_TOOL_ROOT`, this checkout by default), and, for `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1`, `LEGION_E2E_ACROSS_PROJECTS=1`, the run across two projects.
+before them the script refuses a host with no `bun`, no `node_modules` at the checkout's root or at the root of the tool's checkout, no driver file in the tool's checkout, or no `packages/envoy/go.mod` in the Dispatch checkout, a `REGISTER_GATE_BASIS_ACROSS_PROJECTS` that is neither `1` nor empty, and a `REGISTER_GATE_BASIS_LINK` that is neither `route` nor `sql`, or `sql` without `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1`, with exit 2.
+It exports `LEGION_E2E_REPO_ROOT`, this checkout, `LEGION_E2E_DISPATCH_ROOT`, the checkout the driver builds Dispatch from and runs it in (`REGISTER_GATE_BASIS_DISPATCH_ROOT`, this checkout by default; a relative path is read from the directory the script runs in; it needs no `bun install`), `LEGION_E2E_TOOL_ROOT`, the checkout whose tool it runs (`REGISTER_GATE_BASIS_TOOL_ROOT`, this checkout by default), for `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1`, `LEGION_E2E_ACROSS_PROJECTS=1`, the run across two projects, and, for `REGISTER_GATE_BASIS_LINK=sql`, `LEGION_E2E_PARENT_LINK=sql`, which writes each parent of another project in the scratch Dispatch's database.
 When the first `bun` on `PATH` is a script or mise itself, as on a devbox, the script puts the directory of the real `bun` that `mise which bun` names first on `PATH`, which the driver hands the tool's `bun`: under the run's own `HOME` a mise shim finds the operator's mise config untrusted and exits 1 before `bun` starts.
 A real `bun`, such as CI's, is left alone.
 
@@ -5139,6 +5146,9 @@ Each step prints what it proves as its first line.
 With `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1` the daemon is project `LEGION`'s, with a cap of three, and its controller ticks only when the driver hands it a moment (`overrides.controllerTicks`).
 The roots R, R2 and R3 are issues of `LEGION`, and P, P2 and P3, the issues they rest on, are issues of a second project of the same Dispatch, `OTHR`, which no daemon runs.
 In `world` the person sets P as R's parent through Dispatch's own route, `PATCH /api/v1/issues/<R>` with `parent`; a Dispatch that takes no parent of another project answers `400 PARENT_INPUT` `parent must be in the same project`, and the run fails there.
+With `REGISTER_GATE_BASIS_LINK=sql` each of the three links, R under P, R2 under P2 and R3 under P3, is instead a write of the root's `parent_key` straight into the scratch Dispatch's database (`linkAcross` of `internal/daemon/basis_gate_scratch_dispatch_test.go`, which the daemon's own tests of a parent of another project write it with).
+That write makes no event, so the daemon reads each link only from Dispatch itself, at the registration and at the controller tick, and the run passes on a Dispatch that refuses the link on every route, this checkout's among them.
+That is the run [`register-gate-basis-across-projects.sh`](#register-gate-basis-across-projectssh) makes, and the one `e2e.yaml` runs on a hosted runner.
 In `registration` the message on R names P on its line `- The ancestor is <P>.`, as `scripts/dispatch/cross-project-basis-census.ts` reads it.
 Two steps follow `refusal`:
 
@@ -5180,6 +5190,23 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
 
 The daemon, the tool and the world are this checkout's in both runs, and only Dispatch differs.
 The run fails at `world`, and `proof.log` holds Dispatch's answer to R's link under P: `= 400 {"code":"PARENT_INPUT","error":"parent must be in the same project"}`.
+
+With `REGISTER_GATE_BASIS_LINK=sql` the Dispatch is no longer what the run proves, so its negative control is the daemon of the commit before the daemon's cross-project change.
+It runs as the same script from a copy of this checkout whose `packages/daemon` is that commit's, with this checkout's driver (`internal/daemon/register_gate_basis_live_test.go`), its rig (`internal/daemon/person_handover_scratch_dispatch_test.go`) and `linkAcross` copied in, and the two seams the driver drives that the older daemon lacks ported unchanged: `overrides.controllerTicks` with its branch in `workflowRuntime.tickController`, and `dispatch.HTTPClient.SetAcceptanceStatus`, which the driver writes P3's acceptance with and which no code of that daemon calls.
+Dispatch and the tool stay this checkout's (`REGISTER_GATE_BASIS_TOOL_ROOT` at this checkout).
+The run passes `world`, `registration` and `refusal`, and fails at `pending`: the daemon applies the one controller tick after the person's approval (its log holds `workflow: the status repair ran` with `trigger` `tick`) and R2's step still waits, so `proof.log` ends that step with `Legion did not <R2> to start planning on the approval of <P2>`.
+
+## register-gate-basis-across-projects.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/register-gate-basis-across-projects.sh     # → "register gate basis e2e: PASS in <n>s", exit 0
+```
+
+[`register-gate-basis.sh`](#register-gate-basissh) with `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1` and `REGISTER_GATE_BASIS_LINK=sql`, set whatever the caller's environment holds, and nothing else:
+the steps, the checks, the evidence and the daemon's negative control are that section's.
+It proves the daemon's part of the cross-project gate on the Dispatch this checkout builds, which takes no parent of another project on any route, so `e2e.yaml` runs it on a hosted runner, from its row of `.github/e2e-scripts.json`.
+A run against a Dispatch that takes such a parent through its own route is `register-gate-basis.sh` with `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1` alone.
 
 ## parent-waits.sh
 
