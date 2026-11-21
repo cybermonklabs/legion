@@ -81,11 +81,11 @@ dispatch_events() {
   jq -s -c 'add' <<<"$pages"
 }
 dispatch_status_is() { dispatch_get "issues/$1" | jq -e --arg status "$2" '.status == $status'; }
-# review_cap_posted ISSUE: whether a standing message of ISSUE names review_round_cap=3. A message
-# its author deleted reads with deleted_at set and no body (dispatch://INFRA-1523), so it counts as
-# not posted and its body is never read.
+# review_cap_posted ISSUE: whether a standing message of ISSUE names review_round_cap=3
+# (lib/review-cap-posted.jq, which passes over a message its author deleted). workflow_lib, this
+# file's own directory, is set below, before any caller runs it.
 review_cap_posted() {
-  dispatch_events "$1" | jq -e 'any(.[]; .type == "message.created" and .payload.deleted_at == null and (.payload.body | contains("review_round_cap=3")))'
+  dispatch_events "$1" | jq -e -f "$workflow_lib/review-cap-posted.jq"
 }
 # session_actor_body SESSION BODY prints the JSON object BODY with SESSION as its actor: the shape a
 # bearer caller must name, or Dispatch refuses the write (ACTOR_KIND).
