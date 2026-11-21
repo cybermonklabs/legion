@@ -25,8 +25,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"authelia.com/provider/oauth2"
 	hoauth2 "authelia.com/provider/oauth2/handler/oauth2"
@@ -321,12 +324,33 @@ func sessionOf(request oauth2.Requester) (*oauth2.DefaultSession, error) {
 	return nil, fmt.Errorf("oauthstore stores *oauth2.DefaultSession and *ExchangeSession sessions, got %T", request.GetSession())
 }
 
+// ErrUnstorableText is a request the store keeps no row of, because text it would write holds a
+// control character: a key or value of the form a stored request carries, or a DPoP proof's jti.
+// Postgres writes U+0000 in neither text nor jsonb, so such a write failed and answered 500 where
+// the caller sent a request nobody could serve; the other control characters are refused with it,
+// since no client of the broker writes one in any of those fields. The provider answers it 400
+// invalid_request REQUEST_INVALID (oauth.Provider.writeError), and nothing is written.
+var ErrUnstorableText = errors.New("oauthstore: the request holds a control character, which the store does not keep")
+
+// holdsControl reports whether s holds a control character (unicode.IsControl: Cc, U+0000 among
+// them).
+func holdsControl(s string) bool {
+	return strings.IndexFunc(s, unicode.IsControl) >= 0
+}
+
 // flatten is the request as a row's JSON, its session the one the request holds rather than the
-// *oauth2.DefaultSession inside it, so an exchanged token's claims survive the round trip.
+// *oauth2.DefaultSession inside it, so an exchanged token's claims survive the round trip. A form
+// whose key or value holds a control character is ErrUnstorableText: every row a request is stored
+// as passes through here, so the refusal holds for each of them, before anything is written.
 func flatten(request oauth2.Requester) (storedRequest, error) {
 	client := request.GetClient()
 	if client == nil {
 		return storedRequest{}, errors.New("oauthstore: the request names no client")
+	}
+	for key, values := range request.GetRequestForm() {
+		if holdsControl(key) || slices.ContainsFunc(values, holdsControl) {
+			return storedRequest{}, ErrUnstorableText
+		}
 	}
 	return storedRequest{
 		ClientID: client.GetID(),
@@ -796,8 +820,12 @@ const jtiRetentionMargin = time.Minute
 // CheckAndSetDPoPProofUsed records a DPoP proof as used until exp plus jtiRetentionMargin, keyed
 // on its jti and target URI (htu), and reports whether it already was. The insert, or the takeover
 // of an expired record of the same key, is one statement, so two requests presenting the same
-// proof cannot both see it unused. Sweep deletes expired records.
+// proof cannot both see it unused. Sweep deletes expired records. A jti holding a control character
+// is ErrUnstorableText, and records nothing.
 func (s *Store) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _, htu string, exp time.Time) (bool, error) {
+	if holdsControl(jti) {
+		return false, ErrUnstorableText
+	}
 	var recorded bool
 	err := s.db(ctx).QueryRow(ctx, `insert into oauth_dpop_proofs (jti, htu, expires_at) values ($1, $2, $3)
 		on conflict (jti, htu) do update set expires_at = excluded.expires_at

@@ -261,15 +261,17 @@ func TestAskingAgainAfterTheProjectIsLostSaysProjectNotNamed(t *testing.T) {
 	}
 }
 
-// TestK3OutageWithholdsOnlyTaggedSecrets: while Dispatch cannot be reached, a request for a
-// tagged secret fails ErrProjectAccessUnavailable and a release of a tagged grant releases
+// TestK3OutageWithholdsOnlyTaggedSecrets: while Dispatch cannot answer for a project, a request
+// for a tagged secret fails ErrProjectAccessUnavailable and a release of a tagged grant releases
 // nothing and leaves the grant live, while an untagged secret is requested and released as
-// before.
+// before. Dispatch's person route goes on answering here: while it cannot say what kind of member
+// the session's person is, every request and release of that session is refused
+// (TestARestrictedOperatorGetsNoSecret).
 func TestK3OutageWithholdsOnlyTaggedSecrets(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	_, tagged := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
-	dispatch.SetDown(true)
+	dispatch.SetProjectsDown(true)
 	if request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_KEY"), "", nil); !errors.Is(err, ErrProjectAccessUnavailable) {
 		t.Fatalf("a request for PRIV_KEY while Dispatch is down = %+v, %v; want ErrProjectAccessUnavailable", request, err)
 	}
@@ -283,7 +285,7 @@ func TestK3OutageWithholdsOnlyTaggedSecrets(t *testing.T) {
 	if release, err := m.Values(t.Context(), untagged, enr, nil, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] != "auto-v1" {
 		t.Fatalf("Values(AUTO_TOKEN) while Dispatch is down = %v, %v; want its value", release.Values, err)
 	}
-	dispatch.SetDown(false)
+	dispatch.SetProjectsDown(false)
 	if _, err := m.Values(t.Context(), tagged, enr, nil, ReleaseCall{}); err != nil {
 		t.Fatalf("Values of the TEAM grant once Dispatch answers: %v", err)
 	}
@@ -484,13 +486,15 @@ func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 // Dispatch nothing of a tag, a session or a channel. Their reasons name an issue key, as nearly
 // every agent's does (the judge's issue check needs one), and "SHA-256", which has an issue key's
 // form. A broker with no project-access client then asks Dispatch nothing at all. A broker holding
-// one asks one thing and nothing else: whether the person reading a row may see the project of
+// one asks two things and nothing else: whether the person reading a row may see the project of
 // each key its reason names (HideUnseen), every key and not the first alone, since a reason
-// naming a private project's issue is that project's text. "Asks Dispatch nothing" is true of the
-// first broker; of the second it is true of everything but those reads.
+// naming a private project's issue is that project's text; and what kind of member the session's
+// person is, which every request, approval, release and airlock connection of a person's session
+// asks (restrictedOperator). "Asks Dispatch nothing" is true of the first broker; of the second
+// it is true of everything but those reads.
 func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 	const reason = "INFRA-12: check the SHA-256 of the deploy bundle"
-	reasonReads := []string{"access INFRA", "access SHA"}
+	reasonReads := []string{"access INFRA", "access SHA", "member kind of " + fixtureOperator}
 	for _, c := range []struct {
 		name   string
 		client bool
@@ -537,12 +541,12 @@ func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 			}
 			for _, q := range questions {
 				if !slices.Contains(reasonReads, q) {
-					t.Errorf("an untagged deployment asked Dispatch %q; want only the reason keys' project reads %v", q, reasonReads)
+					t.Errorf("an untagged deployment asked Dispatch %q; want only the reason keys' project reads and the person's member kind %v", q, reasonReads)
 				}
 			}
 			for _, want := range reasonReads {
 				if !slices.Contains(questions, want) {
-					t.Errorf("an untagged deployment never asked Dispatch %q (it asked %v): a key of the reason went unread", want, questions)
+					t.Errorf("an untagged deployment never asked Dispatch %q (it asked %v): a key of the reason or the person went unread", want, questions)
 				}
 			}
 		})

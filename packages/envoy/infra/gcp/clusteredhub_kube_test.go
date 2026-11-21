@@ -215,7 +215,7 @@ func TestClusteredNatsHubChartValuesFollowTheSizes(t *testing.T) {
 	require.Equal(t, want, values)
 }
 
-// With INFRA-546's streamMaxBytes the chart takes the sizes it gives
+// With the measured streamMaxBytes the chart takes the sizes it gives
 // (TestClusteredNatsHubSizingFollowsStreamMaxBytes): a 53Gi claim holding at most 47Gi, and
 // nats-server at 5Gi under a GOMEMLIMIT of 80% of it, 4096MiB; an explicit natsMemory of 4.5Gi
 // gives ⌊0.8 × 4608⌋ = 3686MiB. Without streamMaxBytes, TestClusteredNatsHubChartValues pins
@@ -404,7 +404,8 @@ var (
 // The hub pods admit NATS's client port from each client namespace, from the hub's own tailnet
 // hosts, which forward the tailnet's port to it, and from the session listener's own pod, which
 // dials the hub as a client of its own; the route port from the hub pods alone, since routes
-// carry no credential; the monitoring port from the monitor namespaces; and the exporter's port
+// carry no credential unless routeAuthorization has reached authorization; the monitoring port
+// from the monitor namespaces; and the exporter's port
 // from the metrics namespaces, GMP's by default. Nothing else reaches them.
 func TestClusteredNatsHubNetworkPolicy(t *testing.T) {
 	args := clusteredArgs()

@@ -498,7 +498,9 @@ jobs:
 
       # The merge job's two reads of its own run, driven under a stand-in gh: the attempt route
       # the jobs read takes, the retry ladder's attempts and the waits between them, and the two
-      # refusal messages are checked here rather than on a runner against GitHub.
+      # refusal messages are checked here rather than on a runner against GitHub. Its negative
+      # control traces the drive with strace, which this job's ubuntu-24.04-arm image carries; the
+      # harness refuses by name on an image without it.
       - name: Test the browser lane's run reads
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_run_reads_test == 'true'
         run: .github/scripts/dispatch-browser-run-reads.test.sh

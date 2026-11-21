@@ -33,7 +33,7 @@ func (r *Registry) LegacyTopicWarnings(sessionID string, topics []string) []stri
 	own := contracts.LegacyAgentSubject(sessionID)
 	var warnings []string
 	for _, topic := range topics {
-		canonical, legacy := contracts.CanonicalTopic(topic)
+		canonical, legacy := oldFormOf(topic)
 		if !legacy {
 			continue
 		}
@@ -59,10 +59,22 @@ func (r *Registry) LegacyTopicWarnings(sessionID string, topics []string) []stri
 func (r *Registry) CountStoredLegacyTopics(sessionID string, topics []string) {
 	own := contracts.LegacyAgentSubject(sessionID)
 	for _, topic := range topics {
-		if _, legacy := contracts.CanonicalTopic(topic); legacy && topic != own {
+		if _, legacy := oldFormOf(topic); legacy && topic != own {
 			r.countLegacy("interest")
 		}
 	}
+}
+
+// oldFormOf is a topic's new form, and whether the topic is in the old form, for the counts above:
+// the old form contracts.CanonicalTopic reads, and also an issue-event filter only old-form names
+// match though it names no key (contracts.LegacyIssueFilter), which CanonicalTopic reads as its own
+// new form. A subscriber on such a filter hears nothing once Dispatch publishes the new form, so
+// it is a reader the old form's refusal would stop, and the count must move for it.
+func oldFormOf(topic string) (canonical string, legacy bool) {
+	if canonical, legacy := contracts.CanonicalTopic(topic); legacy {
+		return canonical, true
+	}
+	return contracts.LegacyIssueFilter(topic)
 }
 
 // ClaimedRole reads a role a claim names in either form (contracts.CanonicalRole) and answers the
@@ -77,6 +89,25 @@ func (r *Registry) ClaimedRole(role string) (name, warning string) {
 	r.countLegacy("role")
 	current := project + "." + name
 	return name, role + " is the old form of " + current + "; claim " + current
+}
+
+// ReadRole reads a role that a publish to its lane, a message on the role lane or a holder lookup
+// (GET /v1/roles/<role>) names, in either form (contracts.CanonicalRole), and answers the role's
+// name, which its claim record is keyed by, with a warning for the old form, "<old> is the old form
+// of <project>.<name>; name <project>.<name>", counted (kind="role_read"). A role in the new form
+// answers its name and no warning, and a name valid says is no role (roles.Valid, which the claim
+// route holds a claim to; store cannot import package roles, which imports it) is neither counted
+// nor named: a mistyped name is no reader of the old form. It is ClaimedRole's count for every
+// other reader of a role name: a publisher that only sends to a role, never claims one, is still
+// on the old form, and its sends stop resolving once the old form is refused.
+func (r *Registry) ReadRole(role string, valid func(name string) bool) (name, warning string) {
+	project, name, legacy := contracts.CanonicalRole(role)
+	if !legacy || !valid(name) {
+		return name, ""
+	}
+	r.countLegacy("role_read")
+	current := project + "." + name
+	return name, role + " is the old form of " + current + "; name " + current
 }
 
 // countLegacy counts one old-form name of kind, when the registry was opened with a counter.
