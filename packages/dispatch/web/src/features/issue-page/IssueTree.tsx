@@ -43,6 +43,7 @@ import {
   zoomBreadcrumb,
 } from "./tree-fold";
 import { everythingOpened, nodesInOrder, rowKeyOf } from "./tree-keys";
+import { EVENT_FRESH } from "./useIssueTree";
 import { abortOnReaderAct, type OnEditing, useNodeEditing } from "./useNodeEditing";
 import { moveToRow, useTreeKeymap } from "./useTreeKeymap";
 
@@ -233,7 +234,7 @@ export function IssueTree({
   const navigate = useNavigate();
   const takeRequest = useTakeOutlineRequest();
   // The reader, whose own new words a write from the line takes them to.
-  const reader = useQuery(whoAmIQuery()).data?.login;
+  const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const body = useRef<HTMLDivElement | null>(null);
   const crumbLine = useRef<HTMLParagraphElement | null>(null);
   // The failed reads' lines over the tree, and the one whose Retry the page opens on where no

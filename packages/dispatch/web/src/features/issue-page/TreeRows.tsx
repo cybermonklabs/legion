@@ -14,6 +14,7 @@ import { authorText, pageChrome } from "./page-structure";
 import { authorKind, CONTROL_LABELS, isReader } from "./page-words";
 import type { DrawnRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
+import { EVENT_FRESH } from "./useIssueTree";
 import { nodeEditable } from "./useNodeEditing";
 
 /**
@@ -85,7 +86,7 @@ export function TreeRows({
   // where the model holds no author.
   const agentText = useAgentText();
   // The reader, whose own words carry the ink rule and whose name is drawn in the ink.
-  const reader = useQuery(whoAmIQuery()).data?.login;
+  const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   // What each document's room last admitted the page to, read once for every row: a row of a
   // document its room admitted read-only takes no typing (`nodeEditable`).
   const admissions = useDocumentAdmissions();

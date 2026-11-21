@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -8,9 +8,10 @@ import type { CheckBlock } from "../../../api/types";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
+import { useOutlineReads } from "../outline-reads";
 import { presetView } from "../presets";
-import type { SlotProps } from "../slot-props";
-import { EVENT_FRESH, standsFailed, useIssueTree } from "../useIssueTree";
+import { EVENT_FRESH, standsFailed } from "../useIssueTree";
+import { verificationReading } from "../verification-filter/statement-state";
 import {
   type FailedRead,
   queryTyped,
@@ -18,14 +19,18 @@ import {
   type VerificationRead,
   type VerificationReads,
 } from "../verification-filter/VerificationFilterBody";
+import type { ViewSlotProps } from "./stage";
 
 /** Filled by INFRA-1196 part V, "The Verification view". */
-export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
+export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotProps): ReactNode {
   // The Verification view: the issue's one tree as the Verification view leaves it, each statement
   // with the checks that serve it and each check beside its newest result.
-  const { hash, search } = useLocation();
+  const { hash, key: following, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
-  const { root } = useIssueTree(issue);
+  // The tree, and whether every read its nodes come from holds its answer (`useOutlineReads`),
+  // each under the key and with the freshness the tree reads it by, so they cost no request of
+  // their own.
+  const { readsHeld, root } = useOutlineReads(issue);
   const { checks, reads } = useVerificationReads(issue.key);
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the view holds no row for still draws it, as the outline resolves
@@ -43,6 +48,27 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
     () => (typed ? presetView(root, "verification", "", named).root : undefined),
     [named, root, typed]
   );
+  // Whether the view draws a row of the node an address beside it names, said to the stage once
+  // for each following of the address, once every read the tree is built from holds its answer
+  // (`ViewSlotProps.onAddressDrawn`): before that the node may not have arrived. The view keeps
+  // the node whatever its filter draws, and draws it as a row at the view's top, as a statement,
+  // a check or a row of its own, and under a statement as one of its checks. Under a statement
+  // the view draws that statement's checks alone (`verificationReading`), so a node the tree
+  // places there that is no check, such as a plan task that serves the statement, is no row of
+  // the view. Where the view draws no row of the node - the tree holds none of it, or holds it
+  // there - the stage draws the outline in the view's place, which lands on the node or says
+  // that the issue holds none of it. It is said before the browser paints, so where the reads
+  // were held as the view was drawn, as on Back to its address, no table is painted in the
+  // outline's place.
+  const beside = address.target !== undefined && address.document === undefined;
+  const told = useRef<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (!beside || !readsHeld || told.current === following) return;
+    told.current = following;
+    const { loose, others, statements } = verificationReading({ checks, view: view.root });
+    const rows = [...statements, ...statements.flatMap((statement) => statement.checks), ...loose];
+    onAddressDrawn([...rows.map(({ node }) => node), ...others].some(({ id }) => named.has(id)));
+  }, [beside, checks, following, named, onAddressDrawn, readsHeld, view.root]);
   return (
     <NoTooltips>
       {/* The stage's column, which the body draws its own measure in. */}

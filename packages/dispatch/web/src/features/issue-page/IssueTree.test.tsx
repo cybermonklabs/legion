@@ -8959,7 +8959,7 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
     spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
   ];
   const sent = () => reads.reduce((all, read) => all + read.mock.calls.length, 0);
-  // The reader, whom the rows read under the app's `staleTime`, and the names, answered so that
+  // The reader, whom the rows read with the tree's freshness, and the names, answered so that
   // neither reaches the network.
   const others = [
     spyOn(api, "whoAmI").mockResolvedValue({ kind: "user", login: "alice" } as never),
