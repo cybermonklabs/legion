@@ -418,9 +418,7 @@ func TestNatsHubRefusesAnInvalidInputBeforeRegistering(t *testing.T) {
 	args.Hostname = "ab-"
 	m, err := run(t, args, nil, true)
 	require.ErrorContains(t, err, `envoy-infra:gcp:NatsHub example-hub: hostname "ab-"`)
-	var refused *core.InputError
-	require.ErrorAs(t, err, &refused)
-	require.Equal(t, "hostname", refused.Input, "%v", err)
+	requireInputError(t, err, "hostname")
 	require.Equal(t, []string{gcpProviderType}, m.Types(), "nothing registered beyond the test's provider")
 }
 
@@ -572,9 +570,7 @@ func TestNatsHubPassesOnCoresSeedRefusalOfUsers(t *testing.T) {
 			row.edit(args)
 			err := gcp.ResolveNatsHub(args)
 			require.EqualError(t, err, row.want)
-			var refused *core.InputError
-			require.ErrorAs(t, err, &refused)
-			require.Equal(t, row.input, refused.Input, "%v", err)
+			requireInputError(t, err, row.input)
 			require.NotContains(t, strings.ToUpper(err.Error()), seed)
 		})
 	}
@@ -616,9 +612,7 @@ func TestNatsHubRefusesASeedInAnInputWhenItResolves(t *testing.T) {
 			require.ErrorContains(t, err, "envoy-infra:gcp:NatsHub example-hub: "+row.input+
 				": an nkey user seed, which is never an input of the hub (not echoed)")
 			require.NotContains(t, strings.ToUpper(err.Error()), seed)
-			var refused *core.InputError
-			require.ErrorAs(t, err, &refused)
-			require.Equal(t, row.input, refused.Input, "%v", err)
+			requireInputError(t, err, row.input)
 			for _, r := range m.Registrations() {
 				for _, s := range plainStrings(resource.NewProperty(r.Inputs)) {
 					require.NotContains(t, strings.ToUpper(s), seed, "%s %s holds the seed", r.Type, r.Name)
@@ -687,9 +681,7 @@ func requireResolverRefusals(t *testing.T, cases []resolverRefusal) {
 				require.ErrorContains(t, err, want)
 			}
 			require.NotContains(t, err.Error(), authKey)
-			var refused *core.InputError
-			require.ErrorAs(t, err, &refused)
-			require.Equal(t, c.input, refused.Input, "%v", err)
+			requireInputError(t, err, c.input)
 		})
 	}
 }
@@ -711,9 +703,7 @@ func requireSeedRefusals(t *testing.T, seed string, rows []seedRefusal) {
 			row.edit(args)
 			err := gcp.ResolveNatsHub(args)
 			require.EqualError(t, err, row.path+": an nkey user seed, which is never an input of the hub (not echoed)")
-			var refused *core.InputError
-			require.ErrorAs(t, err, &refused)
-			require.Equal(t, row.input, refused.Input, "%v", err)
+			requireInputError(t, err, row.input)
 			require.NotContains(t, strings.ToUpper(err.Error()), seed)
 		})
 	}
