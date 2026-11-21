@@ -1818,6 +1818,15 @@
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "dispatch-agentsecrets.answer-echo"
+      },
+      {
+        "row": "dev-proxy-stands-answer-words-connect",
+        "base": "c82c3a0d9f23a4a17922f8979b461b8fe7e72f63",
+        "files": [
+          "packages/envoy/cmd/dev-proxy-stands/answer_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "dev-proxy-stands.answer-words/connect"
       }
     ],
     "boundary_fields": {
@@ -5029,6 +5038,20 @@
       }
     },
     {
+      "id": "dev-proxy-stands-answer-words-connect",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAConnectRefusalPrintsTheProxysWordsAsTheRuleReadsThem/echo",
+      "production": "dev-airlock-stands load connect: a CONNECT refusal's words as the rule reads them, read with the CONNECT they answer so its Proxy-Authorization is redacted (redact.Carried)",
+      "function": "(*github.com/sjawhar/envoy/cmd/dev-proxy-stands.loadOptions).connect",
+      "capture": "dev-proxy-stands.answer-words/connect",
+      "mutation": {
+        "file": "packages/envoy/cmd/dev-proxy-stands/load.go",
+        "preimage": "http.ReadResponse(bufio.NewReader(conn), sent)",
+        "replacement": "http.ReadResponse(bufio.NewReader(conn), nil)"
+      }
+    },
+    {
       "id": "daemon-answer-words-rate-limit",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
@@ -6571,6 +6594,11 @@
       "site": "GitHub's rate-limit headers, logged raw by the daemon's limit lines",
       "source": "the class search of the retried-trade finding",
       "guard": "daemon-answer-words-rate-limit"
+    },
+    {
+      "site": "dev-airlock-stands load connect: a CONNECT refusal read with no request, so its words held no record of the Proxy-Authorization the CONNECT carried",
+      "source": "the review of #4368 at c82c3a0d9f, finding 4",
+      "guard": "dev-proxy-stands-answer-words-connect"
     }
   ]
 }

@@ -3,11 +3,14 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -60,4 +63,75 @@ func TestAnUpgradeAnswerPrintsTheServicesWordsAsTheRuleReadsThem(t *testing.T) {
 		!strings.Contains(result.Frames, "the service read a frame from the command") || !strings.Contains(result.Frames, redacttest.Shown) {
 		t.Errorf("load upgrade answered %+v; want 101, the Upgrade header and the frame each as the rule reads them", result)
 	}
+}
+
+// refusingProxy is a proxy that refuses every CONNECT with 407 and the page page writes of the
+// Proxy-Authorization the CONNECT carried, and answers its address.
+func refusingProxy(t *testing.T, page func(proxyAuthorization string) string) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				request, err := http.ReadRequest(bufio.NewReader(conn))
+				if err != nil {
+					return
+				}
+				body := page(request.Header.Get("Proxy-Authorization"))
+				fmt.Fprintf(conn, "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
+			}()
+		}
+	}()
+	return listener.Addr().String()
+}
+
+// TestAConnectRefusalPrintsTheProxysWordsAsTheRuleReadsThem: the proxy, or whatever answers in its
+// place, refuses the CONNECT with 407 and a page that echoes the Proxy-Authorization the CONNECT
+// carried, the user and password it decodes from it, and words that quote a credential's URL. The
+// refusal names the page's words as the rule reads them, with every credential the CONNECT carried
+// redacted (redact.Carried over the CONNECT the answer is read with), and none of what the page
+// echoed (echo). A page that echoes nothing prints as the proxy wrote it (control). Captures
+// dev-proxy-stands.answer-words/connect.
+func TestAConnectRefusalPrintsTheProxysWordsAsTheRuleReadsThem(t *testing.T) {
+	refusal := func(t *testing.T, page func(proxyAuthorization string) string) (printed, reason string) {
+		t.Helper()
+		proxy := &url.URL{Scheme: "http", User: url.UserPassword(redacttest.User, redacttest.Password), Host: refusingProxy(t, page)}
+		proxyFile := writeFile(t, t.TempDir(), "proxy", proxy.String()+"\n")
+		var stdout, stderr strings.Builder
+		if code := run(context.Background(), []string{"load", "gap", "--proxy-file", proxyFile, "--host", "example.com", "--gap", "0"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("dev-airlock-stands load gap exited %d; stderr: %s", code, stderr.String())
+		}
+		var result struct{ Error string }
+		if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil {
+			t.Fatalf("load gap answered %q: %v", stdout.String(), err)
+		}
+		return stdout.String(), result.Error
+	}
+	t.Run("echo", func(t *testing.T) {
+		printed, reason := refusal(t, func(proxyAuthorization string) string {
+			return "refused Proxy-Authorization: " + proxyAuthorization + "; user " + redacttest.User + ", password " + redacttest.Password + "; " + redacttest.Words
+		})
+		redacttest.RequireNone(t, "dev-proxy-stands.answer-words/connect", printed)
+		if basic := base64.StdEncoding.EncodeToString([]byte(redacttest.User + ":" + redacttest.Password)); strings.Contains(printed, basic) {
+			t.Errorf("load gap printed the Basic credential the CONNECT carried: %s", printed)
+		}
+		if !strings.HasPrefix(reason, "the CONNECT answered 407 refused Proxy-Authorization: ") || !strings.Contains(reason, redacttest.Shown) {
+			t.Errorf("load gap answered the error %q; want the 407 and the page's words as the rule reads them", reason)
+		}
+	})
+	t.Run("control", func(t *testing.T) {
+		_, reason := refusal(t, func(string) string { return "proxy authentication required" })
+		if want := "the CONNECT answered 407 proxy authentication required"; reason != want {
+			t.Errorf("load gap answered the error %q; want %q, the page as the proxy wrote it", reason, want)
+		}
+	})
 }
