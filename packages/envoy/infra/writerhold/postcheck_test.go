@@ -258,13 +258,14 @@ func TestHoldThePostcheck(t *testing.T) {
 	}
 }
 
-// TestHoldTheResidualByRawClients records the residual the coordinator accepted (§3a, t-10's
-// dependencies): under exactly natsgrant.Operator(OperatorPhaseReleased), outside any hold, the
-// grant refuses a raw client's direct publish onto $KV.envoy_sessions.redirect, yet its snapshot
-// of KV_envoy_sessions with that deliver_subject succeeds, since nats-server checks a snapshot's
-// deliver subject against nothing but its own form, and the snapshot's chunks land in the bucket
-// as the record of key redirect. The row passes while the capability is as recorded, so a change
-// to it, in the grant or the server, fails the row and is seen.
+// TestHoldTheResidualByRawClients holds that the residual the coordinator once accepted is gone
+// (#4679's reads-only released grant): under exactly natsgrant.Operator(OperatorPhaseReleased),
+// outside any hold, the grant refuses a raw client's direct publish onto $KV.envoy_sessions.redirect,
+// and refuses its snapshot of KV_envoy_sessions with that deliver_subject too, so nothing lands in
+// the bucket. The control is released's grant as it stood before (the snapshot of KV_envoy_sessions
+// added, oldReleasedGrant): there the same snapshot succeeds, since nats-server checks a snapshot's
+// deliver subject against nothing but its own form, and its chunks land in the bucket as the record
+// of key redirect. It fails when the released grant holds a snapshot again.
 func TestHoldTheResidualByRawClients(t *testing.T) {
 	ctx := t.Context()
 	sessions := kvStreamPrefix + bus.SessionBucket
@@ -280,30 +281,50 @@ func TestHoldTheResidualByRawClients(t *testing.T) {
 	released := hub.operator(t, natsgrant.OperatorPhaseReleased, nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
 		refused <- err
 	}))
+	awaitRefusal := func(subject string) {
+		t.Helper()
+		select {
+		case err := <-refused:
+			require.True(t, errors.Is(err, nats.ErrPermissionViolation), "the refusal %v", err)
+			require.Contains(t, err.Error(), subject)
+			t.Logf("the released grant refuses %s: %v", subject, err)
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+			t.Fatal("the released grant did not refuse " + subject)
+		}
+	}
 
 	// The grant holds no publish onto the bucket: the direct write is the server's permissions
 	// violation, and no record lands.
 	require.NoError(t, released.Publish(redirect, []byte("direct")))
 	require.NoError(t, released.Flush())
-	select {
-	case err := <-refused:
-		require.True(t, errors.Is(err, nats.ErrPermissionViolation), "the direct publish's refusal %v", err)
-		require.Contains(t, err.Error(), redirect)
-		t.Logf("the grant refuses the direct publish: %v", err)
-	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
-		t.Fatal("the grant did not refuse the direct publish onto " + redirect)
-	}
+	awaitRefusal(redirect)
 	_, err = sessionsKV.Get("redirect")
 	require.ErrorIs(t, err, nats.ErrKeyNotFound)
 
-	// The snapshot aimed at the same subject succeeds, and what it sends is written into the
-	// bucket as the record of redirect: a chunk of the archive, then the snapshot's empty end
-	// message. The bucket keeps one message a key, so the end replaces the chunk; the admin's
-	// subscription to the subject shows the chunk's bytes, and the bucket's sequence shows both
-	// were stored.
+	// Nor a snapshot: the same snapshot request is the server's permissions violation, and the
+	// bucket's last sequence does not move.
 	stream, err := js.Stream(ctx, sessions)
 	require.NoError(t, err)
 	before := stream.CachedInfo().State.LastSeq
+	snapshot := fmt.Sprintf(natsserver.JSApiStreamSnapshotT, sessions)
+	request := map[string]any{"deliver_subject": redirect, "no_consumers": true}
+	raw, err := json.Marshal(request)
+	require.NoError(t, err)
+	require.NoError(t, released.PublishRequest(snapshot, released.NewRespInbox(), raw))
+	require.NoError(t, released.Flush())
+	awaitRefusal(snapshot)
+	info, err := stream.Info(ctx)
+	require.NoError(t, err)
+	require.Equal(t, before, info.State.LastSeq, "a snapshot under the released grant wrote into %s", sessions)
+	_, err = sessionsKV.Get("redirect")
+	require.ErrorIs(t, err, nats.ErrKeyNotFound)
+
+	// The control: the old released grant's snapshot aimed at the same subject succeeds, and what
+	// it sends is written into the bucket as the record of redirect: a chunk of the archive, then
+	// the snapshot's empty end message. The bucket keeps one message a key, so the end replaces the
+	// chunk; the admin's subscription to the subject shows the chunk's bytes, and the bucket's
+	// sequence shows both were stored.
+	old := hub.oldReleasedOperator(t)
 	sent, err := admin.SubscribeSync(redirect)
 	require.NoError(t, err)
 	require.NoError(t, admin.Flush())
@@ -313,9 +334,8 @@ func TestHoldTheResidualByRawClients(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"config"`
 	}
-	request := map[string]any{"deliver_subject": redirect, "no_consumers": true}
-	require.NoError(t, apiRequest(ctx, released, fmt.Sprintf(natsserver.JSApiStreamSnapshotT, sessions), request, &answer))
-	require.Nil(t, answer.Error, "the snapshot with deliver_subject %s", redirect)
+	require.NoError(t, apiRequest(ctx, old, snapshot, request, &answer))
+	require.Nil(t, answer.Error, "control: the old grant's snapshot with deliver_subject %s", redirect)
 	require.NotNil(t, answer.Config)
 	require.Equal(t, sessions, answer.Config.Name)
 	var landed struct {
@@ -326,15 +346,12 @@ func TestHoldTheResidualByRawClients(t *testing.T) {
 		} `json:"message"`
 	}
 	chunk, err := sent.NextMsg(testwait.Bounded(t, time.Minute, time.Second))
-	require.NoError(t, err, "the snapshot's first message onto %s", redirect)
-	require.NotEmpty(t, chunk.Data, "the snapshot's first message onto %s is a chunk of the archive", redirect)
-	testwait.Eventually(t, "the snapshot's chunk and its end to land in "+sessions+" as the record of redirect", func() bool {
+	require.NoError(t, err, "control: the snapshot's first message onto %s", redirect)
+	require.NotEmpty(t, chunk.Data, "control: the snapshot's first message onto %s is a chunk of the archive", redirect)
+	testwait.Eventually(t, "the control snapshot's chunk and its end to land in "+sessions+" as the record of redirect", func() bool {
 		landed.Error = nil
 		err := apiRequest(ctx, admin, fmt.Sprintf(natsserver.JSApiMsgGetT, sessions), map[string]string{"last_by_subj": redirect}, &landed)
 		return err == nil && landed.Error == nil && landed.Message.Sequence >= before+2
 	})
-	info, err := stream.Info(ctx)
-	require.NoError(t, err)
-	require.Equal(t, landed.Message.Sequence, info.State.LastSeq, "the record of redirect is the bucket's last message")
-	t.Logf("the snapshot under Operator(released) with deliver_subject %s succeeded: a %d-byte chunk was published there, and %s stored the record of redirect at sequence %d (last_seq before %d)", redirect, len(chunk.Data), sessions, landed.Message.Sequence, before)
+	t.Logf("control: the old released grant's snapshot with deliver_subject %s wrote a %d-byte chunk there, and %s stored the record of redirect at sequence %d (last_seq before %d)", redirect, len(chunk.Data), sessions, landed.Message.Sequence, before)
 }

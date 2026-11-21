@@ -22,11 +22,24 @@ import (
 // grantHub is a JetStream server whose one account, $G, holds the admin, its no_auth_user, which
 // sets each fixture up and plays every other client, and one static nkey user per operator phase,
 // each holding exactly natsgrant.Operator(phase)'s lists, so a step run as that user runs under
-// exactly that phase's grant.
+// exactly that phase's grant. It holds one more user, oldReleased: released's grant as it stood
+// before #4679 moved every snapshot to held, the snapshot of KV_envoy_sessions and its chunks'
+// acknowledgements added, the control of the residual the move closed.
 type grantHub struct {
-	server *testnats.Server
-	url    string
-	seeds  map[natsgrant.OperatorPhase]string
+	server      *testnats.Server
+	url         string
+	seeds       map[natsgrant.OperatorPhase]string
+	oldReleased string
+}
+
+// oldReleasedGrant is natsgrant.Operator(OperatorPhaseReleased) with the snapshot of
+// KV_envoy_sessions released held before #4679's reads-only grant (nats-server jetstream_api.go's
+// STREAM.SNAPSHOT and its $JS.SNAPSHOT.ACK chunk acknowledgements).
+func oldReleasedGrant() natsgrant.Permissions {
+	grant := natsgrant.Operator(natsgrant.OperatorPhaseReleased)
+	sessions := kvStreamPrefix + bus.SessionBucket
+	grant.Publish = append(append([]string{}, grant.Publish...), fmt.Sprintf(natsserver.JSApiStreamSnapshotT, sessions), "$JS.SNAPSHOT.ACK."+sessions+".>")
+	return grant
 }
 
 // startGrantHub starts a grantHub, shut down when t ends.
@@ -39,11 +52,23 @@ func startGrantHub(t *testing.T) *grantHub {
 		hub.seeds[phase] = seed
 		users = append(users, fmt.Sprintf("{ nkey: %q, permissions: %s }", public, permissionsConfig(natsgrant.Operator(phase))))
 	}
+	seed, public := testnats.User(t)
+	hub.oldReleased = seed
+	users = append(users, fmt.Sprintf("{ nkey: %q, permissions: %s }", public, permissionsConfig(oldReleasedGrant())))
 	_, admin := testnats.User(t)
 	users = append(users, fmt.Sprintf("{ nkey: %q }", admin))
 	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [\n    %s\n  ]\n}\nno_auth_user: %q\n", strings.Join(users, ",\n    "), admin)
 	hub.server, hub.url = testnats.StartConfig(t, config, []string{"-js"}, true)
 	return hub
+}
+
+// oldReleasedOperator connects as the oldReleased user, as operator connects a phase's user.
+func (h *grantHub) oldReleasedOperator(t *testing.T, opts ...nats.Option) *nats.Conn {
+	t.Helper()
+	conn, err := testnats.ConnectSeed(t, h.url, h.oldReleased, append([]nats.Option{nats.CustomInboxPrefix(natsgrant.OperatorInbox)}, opts...)...)
+	require.NoError(t, err, "connect as the old released grant")
+	t.Cleanup(conn.Close)
+	return conn
 }
 
 // permissionsConfig is grant as nats-server's configuration writes a user's permissions.
