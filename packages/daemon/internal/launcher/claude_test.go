@@ -380,7 +380,7 @@ func TestAClaudeFinalSaveAtTheFloorGraceLandsOrKeepsTheLastPeriodicSave(t *testi
 // Under a session database of the pod's own the launcher keeps the session through its
 // generation's proxy socket, the one the child's URL file names in the agent's spelling.
 func TestAClaudeSaveReachesTheTableThroughTheGenerationsProxy(t *testing.T) {
-	dsn := testdb.Database(t, "legion_launcher_claude_proxy_test")
+	dsn := testdb.PlainDatabase(t, "legion_launcher_claude_proxy_test")
 	database, dialer := sessionDatabaseAt(t, dsn)
 	g := newSessionRig(t, Config{SessionDatabase: database, SessionDialer: dialer.build})
 	file := filepath.Join(t.TempDir(), "OMP_SESSION_SQL_DSN")

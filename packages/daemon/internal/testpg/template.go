@@ -221,6 +221,10 @@ func prepare(dsn string) error {
 	if err != nil {
 		return err
 	}
+	// The template is opened only by the store that migrates it.
+	if templateURL, err = testdb.PoolBounded("LEGION_TEST_PG_DSN", templateURL); err != nil {
+		return err
+	}
 	// A file copy of template1, for the reason each clone of it is one.
 	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
 		return fmt.Errorf("create the template database: %w", err)

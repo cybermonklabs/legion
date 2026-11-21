@@ -33,7 +33,10 @@ import (
 )
 
 // testDSN is the devbox and CI Postgres the store tests run against. Without it
-// there is nothing to test: the store has no in-memory mode by design.
+// there is nothing to test: the store has no in-memory mode by design. Every pool a test opens
+// on it holds testdb.PoolConns connections at most (testdb.PoolBounded): each URL this package's
+// tests build from it goes only to a pool, Open's or pgxpool's, and a pool sized by the CPU count
+// would ask a large machine's Postgres for more connections than it allows.
 //
 // These tests name no internal/testpg helper, and the file imports that package nowhere: testpg
 // imports this one, to migrate the template its Clone copies, so an import of it here would be a
@@ -47,7 +50,11 @@ func testDSN(t *testing.T) string {
 	if dsn == "" {
 		t.Skip("LEGION_TEST_PG_DSN is unset, so there is no Postgres to test against: start one and set it as internal/testpg's own skip message says, which holds the whole recipe and the image to run.")
 	}
-	return dsn
+	bounded, err := testdb.PoolBounded("LEGION_TEST_PG_DSN", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bounded
 }
 
 // emptyStore opens a store on a database of its own, so "an empty database" in a

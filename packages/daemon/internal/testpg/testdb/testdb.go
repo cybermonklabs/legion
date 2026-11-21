@@ -3,8 +3,9 @@
 // to reach it across a network's delay (Delayed). A test is skipped without it: there is nothing
 // to run against.
 //
-// Database is an empty database. A test that needs the daemon's schema takes internal/testpg's
-// Clone or CloneStore instead, which copy a template that package migrated once.
+// Database is an empty database, as a URL a pgx pool opens (PoolBounded), and PlainDatabase the
+// same as a URL any other client reads. A test that needs the daemon's schema takes
+// internal/testpg's Clone or CloneStore instead, which copy a template that package migrated once.
 //
 // A package whose tests migrate into the database their DSN names, rather than making one per
 // test, takes one database for the whole run instead: RunDatabaseMain from its TestMain, and
@@ -55,8 +56,24 @@ const SkipMessage = "LEGION_TEST_PG_DSN is unset, so there is no Postgres to tes
 	"  port=$(docker port legion-pg 5432/tcp | head -1 | sed 's/.*://')\n" +
 	"  LEGION_TEST_PG_DSN=postgres://legion:legion@127.0.0.1:$port/legion go test ./..."
 
-// Database is the URL of a new, empty database named <prefix>_<random>, dropped at the test's end.
+// Database is the URL of a new, empty database named <prefix>_<random>, dropped at the test's end,
+// for a pgx pool to open: store.Open, pgxpool, or a daemon's postgres_dsn. Every pool opened on it
+// holds PoolConns connections at most (PoolBounded), so a test's pools do not grow with the
+// machine's CPU count. A URL that libpq, pgx.Connect, psql, a scratch Dispatch or another child
+// process reads is PlainDatabase's: pgx.Connect sends pool_max_conns to the server as a setting
+// the server does not know, and libpq refuses it.
 func Database(t testing.TB, prefix string) string {
+	t.Helper()
+	bounded, err := PoolBounded("LEGION_TEST_PG_DSN", PlainDatabase(t, prefix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bounded
+}
+
+// PlainDatabase is Database's database as a URL with no pool size: the URL a client other than a
+// pgx pool reads (Database says which).
+func PlainDatabase(t testing.TB, prefix string) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
@@ -233,8 +250,9 @@ const poolMaxConns = "pool_max_conns"
 // write an encoded space back as `+` and drop a pair holding `;`. name is what the caller read dsn
 // from, and it starts a refusal, as DatabaseURL's does. Only pgxpool reads that key: pgx.Connect
 // sends it to the server as a setting the server does not know, and libpq refuses the URL. So it
-// goes only on URLs that only pools open, and never on DatabaseURL's or Database's own, which an
-// admin connection, a scratch Dispatch and a shell can be given.
+// goes only on URLs that only pools open — Database's, internal/testpg's Clone and template's,
+// internal/daemon's and internal/store's testDSN — and never on DatabaseURL's or PlainDatabase's,
+// which an admin connection, a scratch Dispatch and a shell can be given.
 func PoolBounded(name, dsn string) (string, error) {
 	return rewriteDSN(name, dsn, rewrite{pooled: true})
 }
@@ -492,11 +510,12 @@ func RunDatabaseFor(dsn string) string {
 	return runDatabase
 }
 
-// DSNFile is a 0600 file under the test's temporary directory holding Database's URL, as the
-// providers Secret's key holds the session database's.
+// DSNFile is a 0600 file under the test's temporary directory holding PlainDatabase's URL, as the
+// providers Secret's key holds the session database's: the session database is read with
+// pgx.Connect (internal/ompsessions), never through a pool.
 func DSNFile(t testing.TB, prefix string) (dsn, file string) {
 	t.Helper()
-	dsn = Database(t, prefix)
+	dsn = PlainDatabase(t, prefix)
 	file = filepath.Join(t.TempDir(), "OMP_SESSION_SQL_DSN")
 	if err := os.WriteFile(file, []byte(dsn+"\n"), 0o600); err != nil {
 		t.Fatal(err)
