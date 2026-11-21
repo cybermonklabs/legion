@@ -38,10 +38,12 @@ type RoleReleaseAuthority struct {
 	// process holds - an absent instance is no match on either side, where
 	// session.InstanceMatches, written for a soft claim's predecessor, admits one.
 	ClientInstanceID string
-	// Force frees every claim the session holds, whoever holds it. It is the administrator's
-	// release, and DELETE /v1/interests/<session_id> is its one caller: an operator clearing a
-	// session's interests states no process and must still be able to free the roles that
-	// session took.
+	// Force frees each claim the session holds, whoever holds it, as the release read it: the
+	// claim it read, through the holder's renewals and an adoption, and not a grant made after
+	// its read, which it leaves standing (Registry.releaseReadRoleClaim). It is the
+	// administrator's release, and DELETE /v1/interests/<session_id> is its one caller: an
+	// operator clearing a session's interests states no process and must still be able to free
+	// the roles that session took.
 	Force bool
 	// handsBack is this release's statement that it is its caller's own hand-back of the roles
 	// whose lane topics it names, so a claim it may not free is marked handed back rather than
