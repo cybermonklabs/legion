@@ -3,6 +3,7 @@ package testdb
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -14,48 +15,142 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// processChildEnv carries the admin URL to the test binary TestTwoBinariesEachMakeADatabaseOfTheirOwnAndRunDropsIt
-// runs again: set, TestProcessDatabaseChild is that child.
+// processChildEnv carries the admin URL to a test binary a row here runs again: set,
+// TestProcessDatabaseChild is that child.
 const processChildEnv = "TESTDB_PROCESS_CHILD_ADMIN_URL"
+
+// processChildFailEnv, set in a child, makes it fail one of its own checks once it has made its
+// database (TestAChildBinaryThatFailsStillDropsItsDatabase).
+const processChildFailEnv = "TESTDB_PROCESS_CHILD_FAIL"
 
 // processChildPrefix is the prefix of the databases the children make.
 const processChildPrefix = "testdb_process_test"
 
-// TestProcessDatabaseChild is the child process TestTwoBinariesEachMakeADatabaseOfTheirOwnAndRunDropsIt
-// runs, and returns at once in any other run. In the child it does what a package's TestMain and
-// tests do, through Run: it asks ProcessDatabaseOn twice for its binary's database, checks that
-// both answers are the one database, and prints the database pgx selects from that URL and the
-// one the server says the connection is in, which the parent reads.
+// childLine is the line a child prints once it has made its database and connected to it.
+var childLine = regexp.MustCompile(`(?m)^testdb-child: url_database=(\S+) current_database=(\S+)$`)
+
+// TestProcessDatabaseChild is the child process the rows below run, and returns at once in any
+// other run. In the child it does what a package's TestMain and tests do, through Run
+// (processChild).
 func TestProcessDatabaseChild(t *testing.T) {
 	admin := os.Getenv(processChildEnv)
 	if admin == "" {
 		return
 	}
-	code := Run(func() int {
-		first := ProcessDatabaseOn(t, admin, processChildPrefix)
-		if again := ProcessDatabaseOn(t, admin, processChildPrefix); again != first {
-			t.Errorf("a second ProcessDatabaseOn of the same server and prefix answered another database")
-		}
-		config, err := pgx.ParseConfig(first)
-		if err != nil {
-			t.Fatal("parse the binary's database URL with pgx") // its error can quote the URL, which carries a credential
-		}
-		ctx := context.Background()
-		conn, err := pgx.ConnectConfig(ctx, config)
-		if err != nil {
-			t.Fatalf("connect to the binary's database: %v", err)
-		}
-		defer conn.Close(ctx)
-		var current string
-		if err := conn.QueryRow(ctx, "select current_database()").Scan(&current); err != nil {
-			t.Fatalf("read current_database(): %v", err)
-		}
-		fmt.Printf("testdb-child: url_database=%s current_database=%s\n", config.Database, current)
-		return 0
-	})
-	if code != 0 {
-		t.Fatalf("Run answered %d: a drop failed (printed above)", code)
+	if code := Run(func() int { return processChild(t, admin) }); code != 0 {
+		t.Fatalf("Run answered %d: one of the child's own checks failed (above), or Run's drop did (printed above)", code)
 	}
+}
+
+// processChild asks ProcessDatabaseOn twice for its binary's database, checks that both answers
+// are the one database, and prints the database pgx selects from that URL and the one the server
+// says the connection is in, which the parent reads. A check that fails fails t with Errorf and
+// answers 1, never Fatal: Fatal would end the test's goroutine inside Run's run, before Run's
+// drop, and leave a database the parent cannot name.
+func processChild(t *testing.T, admin string) int {
+	first := ProcessDatabaseOn(t, admin, processChildPrefix)
+	if again := ProcessDatabaseOn(t, admin, processChildPrefix); again != first {
+		t.Error("a second ProcessDatabaseOn of the same server and prefix answered another database")
+		return 1
+	}
+	config, err := pgx.ParseConfig(first)
+	if err != nil {
+		t.Error("parse the binary's database URL with pgx") // its error can quote the URL, which carries a credential
+		return 1
+	}
+	ctx := context.Background()
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		t.Errorf("connect to the binary's database: %v", err)
+		return 1
+	}
+	defer conn.Close(ctx)
+	var current string
+	if err := conn.QueryRow(ctx, "select current_database()").Scan(&current); err != nil {
+		t.Errorf("read current_database(): %v", err)
+		return 1
+	}
+	fmt.Printf("testdb-child: url_database=%s current_database=%s\n", config.Database, current)
+	if os.Getenv(processChildFailEnv) != "" {
+		t.Error("planted: the child fails one of its checks after it made its database")
+		return 1
+	}
+	return 0
+}
+
+// testServer is the BROKER_TEST_DATABASE_URL server, skipping t when the variable is unset, and
+// the URL pgx parses it to.
+func testServer(t *testing.T) (string, *pgx.ConnConfig) {
+	t.Helper()
+	admin := os.Getenv("BROKER_TEST_DATABASE_URL")
+	if admin == "" {
+		t.Skip("BROKER_TEST_DATABASE_URL must be set to run the Postgres rows of testdb")
+	}
+	config, err := pgx.ParseConfig(admin)
+	if err != nil {
+		t.Fatal("parse BROKER_TEST_DATABASE_URL with pgx") // its error can quote the URL, which carries a credential
+	}
+	return admin, config
+}
+
+// withPairs is server with the raw query pairs added to its query.
+func withPairs(server, pairs string) string {
+	if strings.Contains(server, "?") {
+		return server + "&" + pairs
+	}
+	return server + "?" + pairs
+}
+
+// childRun is one run of this test binary as TestProcessDatabaseChild.
+type childRun struct {
+	cmd *exec.Cmd
+	out bytes.Buffer
+}
+
+// startChild starts this test binary as TestProcessDatabaseChild on admin, with env added.
+func startChild(t *testing.T, admin string, env ...string) *childRun {
+	t.Helper()
+	c := &childRun{cmd: exec.Command(os.Args[0], "-test.run=^TestProcessDatabaseChild$", "-test.count=1", "-test.v")}
+	c.cmd.Env = append(append(os.Environ(), processChildEnv+"="+admin), env...)
+	c.cmd.Stdout, c.cmd.Stderr = &c.out, &c.out
+	if err := c.cmd.Start(); err != nil {
+		t.Fatalf("start a child: %v", err)
+	}
+	return c
+}
+
+// databasesLeft reads which of names pg_database still holds, and drops each it holds so the
+// server is left as the row found it. Every name is one a child made: the callers pass none
+// without the children's prefix.
+func databasesLeft(t *testing.T, admin string, config *pgx.ConnConfig, names []string) []string {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, admin)
+	if err != nil {
+		t.Fatalf("connect to the Postgres server at %s: %v", config.Host, err)
+	}
+	defer conn.Close(ctx)
+	rows, err := conn.Query(ctx, "select datname from pg_database where datname = any($1) order by 1", names)
+	if err != nil {
+		t.Fatalf("read pg_database: %v", err)
+	}
+	var left []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("read pg_database: %v", err)
+		}
+		left = append(left, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read pg_database: %v", err)
+	}
+	for _, name := range left {
+		if strings.HasPrefix(name, processChildPrefix+"_") {
+			_ = execOn(admin, config.Host, "drop database if exists "+name+" with (force)")
+		}
+	}
+	return left
 }
 
 // Two test binaries on one server each get a database of their own, the one their URL names in
@@ -68,44 +163,16 @@ func TestProcessDatabaseChild(t *testing.T) {
 // Controls: keep the query's dbname in databaseURL and the children read the admin's database;
 // take the drop out of Run and a child's database is left on the server.
 func TestTwoBinariesEachMakeADatabaseOfTheirOwnAndRunDropsIt(t *testing.T) {
-	admin := os.Getenv("BROKER_TEST_DATABASE_URL")
-	if admin == "" {
-		t.Skip("BROKER_TEST_DATABASE_URL must be set to run the Postgres rows of testdb")
-	}
-	adminConfig, err := pgx.ParseConfig(admin)
-	if err != nil {
-		t.Fatal("parse BROKER_TEST_DATABASE_URL with pgx") // its error can quote the URL, which carries a credential
-	}
-	queried, err := url.Parse(admin)
-	if err != nil {
-		t.Fatal("parse BROKER_TEST_DATABASE_URL")
-	}
-	query := queried.Query()
-	query.Set("dbname", adminConfig.Database)
-	query.Set("database", adminConfig.Database)
-	queried.RawQuery = query.Encode()
+	admin, config := testServer(t)
+	queried := withPairs(admin, "dbname="+url.QueryEscape(config.Database)+"&database="+url.QueryEscape(config.Database))
 
-	line := regexp.MustCompile(`(?m)^testdb-child: url_database=(\S+) current_database=(\S+)$`)
-	type child struct {
-		cmd *exec.Cmd
-		out bytes.Buffer
-	}
-	children := make([]*child, 2)
-	for i := range children {
-		c := &child{cmd: exec.Command(os.Args[0], "-test.run=^TestProcessDatabaseChild$", "-test.count=1", "-test.v")}
-		c.cmd.Env = append(os.Environ(), processChildEnv+"="+queried.String())
-		c.cmd.Stdout, c.cmd.Stderr = &c.out, &c.out
-		if err := c.cmd.Start(); err != nil {
-			t.Fatalf("start child %d: %v", i, err)
-		}
-		children[i] = c
-	}
+	children := []*childRun{startChild(t, queried), startChild(t, queried)}
 	names := make([]string, 0, len(children))
 	for i, c := range children {
 		if err := c.cmd.Wait(); err != nil {
 			t.Fatalf("child %d: %v:\n%s", i, err, c.out.String())
 		}
-		match := line.FindStringSubmatch(c.out.String())
+		match := childLine.FindStringSubmatch(c.out.String())
 		if match == nil {
 			t.Fatalf("child %d printed no testdb-child line:\n%s", i, c.out.String())
 		}
@@ -113,7 +180,7 @@ func TestTwoBinariesEachMakeADatabaseOfTheirOwnAndRunDropsIt(t *testing.T) {
 		if selected != current {
 			t.Errorf("child %d: its URL selects %s, and the server put the connection in %s", i, selected, current)
 		}
-		if !strings.HasPrefix(current, processChildPrefix+"_") || current == adminConfig.Database {
+		if !strings.HasPrefix(current, processChildPrefix+"_") || current == config.Database {
 			t.Errorf("child %d ran in %s, not a database of its own (%s_…): the URL's query chose the database", i, current, processChildPrefix)
 			continue // a database the child did not make: read it no further, and never drop it
 		}
@@ -125,32 +192,70 @@ func TestTwoBinariesEachMakeADatabaseOfTheirOwnAndRunDropsIt(t *testing.T) {
 	if len(names) == 0 {
 		return
 	}
+	if left := databasesLeft(t, admin, config, names); len(left) > 0 {
+		t.Errorf("Run left the children's databases on the server: %v", left)
+	}
+}
 
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, admin)
+// A child binary one of whose own checks fails after it made its database still drops it: the
+// check fails t with Errorf and answers 1 to Run, which drops the database before the binary
+// exits with the failure. Control: fail the planted check with t.Fatal instead, which ends the
+// test's goroutine inside Run's run, and the database is left on the server.
+func TestAChildBinaryThatFailsStillDropsItsDatabase(t *testing.T) {
+	admin, config := testServer(t)
+	c := startChild(t, admin, processChildFailEnv+"=1")
+	err := c.cmd.Wait()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		t.Fatalf("the failing child answered %v, want exit status 1:\n%s", err, c.out.String())
+	}
+	if !strings.Contains(c.out.String(), "planted: the child fails one of its checks") {
+		t.Fatalf("the child failed, but not on its planted check:\n%s", c.out.String())
+	}
+	match := childLine.FindStringSubmatch(c.out.String())
+	if match == nil || !strings.HasPrefix(match[2], processChildPrefix+"_") {
+		t.Fatalf("the child printed no database of its own:\n%s", c.out.String())
+	}
+	if left := databasesLeft(t, admin, config, []string{match[2]}); len(left) > 0 {
+		t.Errorf("the failing child left its database on the server: %v", left)
+	}
+}
+
+// databaseURL replaces the path and drops each dbname or database pair of the query, whatever its
+// escapes, and keeps every other pair byte for byte and in order: an options value whose space is
+// %20 stays %20, where re-encoding the query writes it as +, which pgx reads as a plus. An empty
+// pair goes.
+func TestADatabaseURLDropsOnlyTheQuerysDatabasePairs(t *testing.T) {
+	server, err := url.Parse("postgres://u@h:5432/postgres?sslmode=disable&options=-c%20statement_timeout%3D5000&dbname=postgres&&db%6Eame=x&database=other&application_name=a+b")
 	if err != nil {
-		t.Fatalf("connect to the Postgres server at %s: %v", adminConfig.Host, err)
+		t.Fatal(err)
+	}
+	const want = "postgres://u@h:5432/t_db?sslmode=disable&options=-c%20statement_timeout%3D5000&application_name=a+b"
+	if got := databaseURL(*server, "t_db"); got != want {
+		t.Errorf("databaseURL =\n  %s\nwant\n  %s", got, want)
+	}
+}
+
+// A test's database on a server URL whose options pair holds an escaped space connects, with the
+// option in force. The option is work_mem, which bounds nothing in time: the admin URL carries it
+// too, so a statement_timeout there would also bound the create database, which a loaded server
+// can take longer than that over (5 s did, once, in a run here). Control: re-encode the query in
+// databaseURL (url.Values.Encode), and the connection is refused for an unrecognized
+// configuration parameter "+work_mem".
+func TestATestDatabaseOnAnOptionsURLConnectsWithTheOption(t *testing.T) {
+	admin, _ := testServer(t)
+	database := DatabaseOn(t, withPairs(admin, "options=-c%20work_mem%3D7MB"), "testdb_options_test")
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, database)
+	if err != nil {
+		t.Fatalf("connect to the test's database: %v", err)
 	}
 	defer conn.Close(ctx)
-	var left []string
-	rows, err := conn.Query(ctx, "select datname from pg_database where datname = any($1) order by 1", names)
-	if err != nil {
-		t.Fatalf("read pg_database: %v", err)
+	var workMem string
+	if err := conn.QueryRow(ctx, "show work_mem").Scan(&workMem); err != nil {
+		t.Fatalf("show work_mem: %v", err)
 	}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatalf("read pg_database: %v", err)
-		}
-		left = append(left, name)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read pg_database: %v", err)
-	}
-	if len(left) > 0 {
-		t.Errorf("Run left the children's databases on the server: %v", left)
-		for _, name := range left {
-			_ = execOn(admin, adminConfig.Host, "drop database if exists "+name+" with (force)")
-		}
+	if workMem != "7MB" {
+		t.Errorf("work_mem = %s, want 7MB: the options pair did not reach the connection", workMem)
 	}
 }

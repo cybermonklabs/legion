@@ -29,9 +29,10 @@ type processDatabase struct {
 
 // ProcessDatabaseOn answers a database of this test binary's own on the server adminURL names,
 // made by the first test that asks for it and dropped by Run once every test of the binary has
-// ended, as a URL of that database (databaseURL: adminURL with its path replaced by it, its query
-// kept less any dbname or database parameter). The name is prefix, an underscore and eight random
-// bytes in hex, so no other binary, nor another run of this one, takes it.
+// ended, as a URL of that database (databaseURL: adminURL with its path replaced by it, and its
+// query's pairs kept byte for byte but for any dbname or database). The name is prefix, an
+// underscore and eight random bytes in hex, so no other binary, nor another run of this one,
+// takes it.
 //
 // It is for a harness whose tests each make a schema of their own in one database, which costs a
 // test far less than a database of its own (DatabaseOn), and whose tests take a lock Postgres holds

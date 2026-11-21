@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -21,9 +22,9 @@ import (
 
 // DatabaseOn creates a database of this test's own on the server adminURL names, drops it when the
 // test ends, and returns a URL of that database (databaseURL: adminURL with its path replaced by
-// it, its query kept less any dbname or database parameter). The name is prefix, an underscore
-// and eight random bytes in hex: it is random because every test of every package sharing one
-// server takes a name there.
+// it, and its query's pairs kept byte for byte but for any dbname or database). The name is
+// prefix, an underscore and eight random bytes in hex: it is random because every test of every
+// package sharing one server takes a name there.
 //
 // Both statements run on adminURL itself, which is exact for every caller because a caller passes
 // the URL its own statements run on, and that URL and the result differ only in the database they
@@ -68,15 +69,26 @@ func newDatabaseName(prefix string) (string, error) {
 }
 
 // databaseURL is server's URL naming database in every field pgx selects a database by: its path
-// is replaced by database, and its query is kept less any dbname or database parameter, which pgx
-// reads over the path, so a server URL that carried one would put every caller in the one
-// database it names.
+// is replaced by database, and its query loses each dbname or database pair, which pgx reads over
+// the path, so a server URL that carried one would put every caller in the one database it names.
+// Every other pair is kept byte for byte, as are the pairs' order and escapes: re-encoding the
+// query (url.Values.Encode) would write a space as a plus, which pgx reads as a plus, so an
+// options pair such as -c%20statement_timeout%3D5000 would stop connecting. An empty pair is
+// dropped.
 func databaseURL(server url.URL, database string) string {
-	server.Path = "/" + database
-	query := server.Query()
-	query.Del("dbname")
-	query.Del("database")
-	server.RawQuery = query.Encode()
+	server.Path, server.RawPath = "/"+database, ""
+	var kept []string
+	for _, pair := range strings.Split(server.RawQuery, "&") {
+		if pair == "" {
+			continue
+		}
+		key, _, _ := strings.Cut(pair, "=")
+		if name, err := url.PathUnescape(key); err == nil && (name == "dbname" || name == "database") {
+			continue
+		}
+		kept = append(kept, pair)
+	}
+	server.RawQuery = strings.Join(kept, "&")
 	return server.String()
 }
 
