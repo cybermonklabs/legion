@@ -92,8 +92,9 @@ import { clopperPearsonUpper, DEFAULT_CONFIDENCE } from "./stats";
  * bundles, its calls, the sandbox's record, its `started.json`, an outcome kept pending while
  * its read-back did not run) are lost a `sandbox` one. A lost or changed `outcome.json` or
  * `outcomes.jsonl`, or any file outside every request's directory, refuses the stage: no outcome
- * can be read from it. A request with a pending outcome and no `outcome.json` is `started` until a
- * run commits that outcome.
+ * can be read from it. A request with a pending outcome and no `outcome.json` has no outcome until
+ * a run commits it: it is `started` where its `started.json` is kept, and `unjudged` where it is
+ * not, as for an `inputs` or `fact` deviation the judging stage built before a judge started.
  *
  * **The verdict, recomputed (points 2 and 6).** Each verdict outcome is recomputed by point 2's
  * rule from the five answers its sandbox result kept (`recordedAnswersOf`, `ruleVerdictOf`). A
