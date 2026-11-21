@@ -220,8 +220,8 @@ const OUTSIDE_BUNDLE = ["scripts/approval-eval/claim.ts", "scripts/approval-eval
 
 /**
  * Options whose value names a directory a run reads or writes: the digest takes it as a path.
- * `--draw` is the draw directory `s10-inputs.ts` reads, whose files the claim run's stage records
- * pin by their sha256 instead.
+ * `--draw` is the draw directory `s10-inputs.ts` reads, and `--inputs` the inputs directory
+ * `s10_judge.py` reads, whose files the claim run's stage records pin by their sha256 instead.
  */
 const PATH_OPTIONS: readonly string[] = [
   "--corpus",
@@ -231,6 +231,7 @@ const PATH_OPTIONS: readonly string[] = [
   "--slices",
   "--cache",
   "--draw",
+  "--inputs",
 ];
 
 /**
@@ -246,6 +247,7 @@ const FILE_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   "fresh-agent.ts": ["--omp"],
   "refusals.ts": ["--fixtures", "--distillation"],
   "run-round.ts": ["--arms", "--distillation"],
+  "s10_judge.py": ["--code", "--skill", "--never-decide"],
 };
 
 /**
