@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // capsAnUnsetStream is what a test tells a start (ensureStreamWithConfig) or a keeper pass
@@ -80,7 +81,7 @@ func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
 	accepted := make(chan net.Conn, 32)
 	urls := make([]string, 0, 2)
 	for range 2 {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		listener, err := testport.ListenLoopback()
 		if err != nil {
 			t.Fatalf("listen: %v", err)
 		}
