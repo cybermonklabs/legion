@@ -472,7 +472,7 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 		return Installation{}, limited
 	}
 	if status != http.StatusOK {
-		return Installation{}, fmt.Errorf("GET %s: %s", target, StatusText(status, body))
+		return Installation{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
 	}
 	var payload installationPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -831,7 +831,7 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 		return cachedToken{}, limited
 	}
 	if status != http.StatusCreated {
-		return cachedToken{}, fmt.Errorf("POST %s: %s", target, StatusText(status, body))
+		return cachedToken{}, fmt.Errorf("POST %s: %s", ShownBody(target), StatusText(status, body))
 	}
 	var payload struct {
 		Token       string        `json:"token"`
@@ -880,7 +880,7 @@ func (c *Client) CheckSource(ctx context.Context, owner, repo string) (Source, e
 		return Source{}, fmt.Errorf("%w: its token cannot read %s/%s", ErrNoInstallation, owner, repo)
 	}
 	if status != http.StatusOK {
-		return Source{}, fmt.Errorf("GET %s: %s", target, StatusText(status, body))
+		return Source{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
 	}
 	return Source{InstallationID: installation.ID, AppSlug: installation.AppSlug}, nil
 }
@@ -1092,7 +1092,7 @@ func (c *Client) Ref(ctx context.Context, token, owner, repo, branch string) (st
 		return "", fmt.Errorf("%w: %s on %s/%s", ErrNoBranch, branch, owner, repo)
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("GET %s: %s", target, StatusText(status, body))
+		return "", fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
 	}
 	sha := strings.TrimSpace(string(body))
 	if !commitSHA.MatchString(sha) {
@@ -1126,7 +1126,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 	case http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity:
 		return "", noBranch
 	default:
-		return "", fmt.Errorf("GET %s: %s", target, StatusText(status, body))
+		return "", fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
 	}
 	var ref struct {
 		Ref    string `json:"ref"`
@@ -1187,7 +1187,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 		return Dir{}, nil
 	}
 	if status != http.StatusOK {
-		return Dir{}, fmt.Errorf("GET %s: %s", target, StatusText(status, body))
+		return Dir{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
 	}
 	var tree struct {
 		SHA       string `json:"sha"`

@@ -76,7 +76,7 @@ func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path,
 // installation may not read this resource, or cannot see the repository at all — which the
 // results read takes as unknown, never as a commit it placed elsewhere. A rate limit behind
 // either status is the *RateLimitError instead. Any other status is the error CheckResponse
-// makes, named by the target. repoFull is the `owner/repo` the error names.
+// makes, named by the target as ShownBody shows it. repoFull is the `owner/repo` the error names.
 func CheckRepositoryResponse(status int, header http.Header, body []byte, repoFull, target string, handled ...int) error {
 	if status == http.StatusOK || slices.Contains(handled, status) {
 		return nil
@@ -88,7 +88,7 @@ func CheckRepositoryResponse(status int, header http.Header, body []byte, repoFu
 		return fmt.Errorf("%w: %s", ErrRepositoryUnreadable, repoFull)
 	}
 	if err := CheckResponse(status, header, body); err != nil {
-		return fmt.Errorf("GET %s: %w", target, err)
+		return fmt.Errorf("GET %s: %w", ShownBody(target), err)
 	}
 	return nil
 }

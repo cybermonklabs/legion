@@ -63,7 +63,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 			return nil, limited
 		}
 		if status != http.StatusOK {
-			return nil, fmt.Errorf("GET %s: %s", target, StatusText(status, body))
+			return nil, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
 		}
 		next, err := nextLink(header.Get("Link"), c.base)
 		if err != nil {
@@ -109,10 +109,10 @@ func (c *Client) Redeliver(ctx context.Context, deliveryID int64) error {
 		return limited
 	}
 	if status == http.StatusNotFound {
-		return fmt.Errorf("POST %s: status %d: %w", target, status, ErrNoDelivery)
+		return fmt.Errorf("POST %s: status %d: %w", ShownBody(target), status, ErrNoDelivery)
 	}
 	if status != http.StatusAccepted {
-		return fmt.Errorf("POST %s: %s", target, StatusText(status, body))
+		return fmt.Errorf("POST %s: %s", ShownBody(target), StatusText(status, body))
 	}
 	return nil
 }
@@ -479,6 +479,9 @@ const shownBodyRunes = 512
 //     line the cause quotes is cut with the cause's text, with the size of the cause's text.
 //   - Any other error that quotes GitHub's text, such as a bucket error that quotes a key
 //     (redeliver's bucketErr), is cut whole, with the size of its text (ShownErr).
+//   - A request's target, which a status error names, is cut alone, with the target's size. So is
+//     a next page link in nextLink's refusal. A target holds names Dispatch keeps and text GitHub
+//     gave (a next page link).
 //   - A time parse error, a JSON type error or a transport error whose text is still longer than
 //     shownErrMost (4,414 bytes) after the cuts above is cut whole, with the size of that text
 //     (ShownErr).
@@ -505,11 +508,12 @@ func ShownBody[Body ~string | ~[]byte](body Body) string {
 // most 2,079 bytes: shownBodyRunes runes of at most utf8.UTFMax bytes each, and `… (<n> bytes)`
 // for the largest n, 9223372036854775807 (math.MaxInt64). The text of each type that ShownErr cuts
 // the fields of holds at most two cut fields: a url.Error's URL and its cause, a time.ParseError's
-// Value and ValueElem or its Value and Message, and a json.UnmarshalTypeError's literal. A cut
-// field in ASCII takes at most 554 bytes of the text, quotes included. So in the usual case, where
-// the fields are ASCII, the text is far inside the bound and still names each field and reason.
-// ShownErr cuts whole each error whose text is still longer after it cuts the fields (shownErr),
-// so no answer passes the bound, whatever field is long.
+// Value and ValueElem or its Value and Message, and a json.UnmarshalTypeError's literal. In the
+// usual case, the text is inside the bound and still names each field and reason. A field that
+// the text escapes can make the text longer. Package time writes each byte below 0x20 or past
+// ASCII as \xNN and puts a \ before each " and \, and a url.Error quotes its URL with %q. ShownErr
+// cuts whole each error whose text is still longer after it cuts the fields (shownErr), so no
+// answer passes the bound, whatever field is long.
 const shownErrMost = 2*(shownBodyRunes*utf8.UTFMax+len("… (9223372036854775807 bytes)")) + 256
 
 // ShownErr is err as the errors of this package show it, cut once where it enters such an error,
@@ -562,11 +566,13 @@ func ShownErr(err error) error {
 	return shown
 }
 
-// shownErr is ShownErr(err), and cut is whether shown is an error other than err. The *url.Error
-// case reads cut for its cause and never compares two errors, since == panics on two errors of
-// one type that Go cannot compare. The case of each type whose fields it cuts leaves shown nil
-// where it cuts no field, and every such case ends at the check of shownErrMost after the switch.
+// shownErr is ShownErr(err), and cut is whether shown is an error other than err. shown starts as
+// err, and the nil case answers nil and false. The case of each type whose fields it cuts
+// replaces shown only where it cuts a field, and every such case ends at the check of shownErrMost
+// after the switch. The *url.Error case reads cut for its cause and never compares two errors,
+// since == panics on two errors of one type that Go cannot compare.
 func shownErr(err error) (shown error, cut bool) {
+	shown = err
 	switch e := err.(type) {
 	case nil:
 		return nil, false
@@ -597,9 +603,6 @@ func shownErr(err error) (shown error, cut bool) {
 			return &shownError{err: err, text: cutText}, true
 		}
 		return err, false
-	}
-	if !cut {
-		shown = err
 	}
 	if text := shown.Error(); len(text) > shownErrMost {
 		return &shownError{err: err, text: ShownBody(text)}, true
@@ -687,7 +690,8 @@ const nextLinkMaxBytes = 2048
 
 // nextLink returns the rel="next" target of an RFC 8288 Link header, refusing one outside the
 // client's API origin, since the next page is fetched with the App's JWT, and one longer than
-// nextLinkMaxBytes.
+// nextLinkMaxBytes. Each refusal names the link as ShownBody shows it, and the error of a link
+// that url.Parse cannot parse as ShownErr shows it, since that error quotes the link again.
 func nextLink(header, base string) (string, error) {
 	for _, part := range strings.Split(header, ",") {
 		segments := strings.Split(part, ";")
@@ -709,14 +713,14 @@ func nextLink(header, base string) (string, error) {
 		}
 		parsed, err := url.Parse(target)
 		if err != nil {
-			return "", fmt.Errorf("parse next page link %q: %w", target, err)
+			return "", fmt.Errorf("parse next page link %q: %w", ShownBody(target), ShownErr(err))
 		}
 		origin, err := url.Parse(base)
 		if err != nil {
 			return "", fmt.Errorf("parse API base %q: %w", base, err)
 		}
 		if parsed.Scheme != origin.Scheme || parsed.Host != origin.Host {
-			return "", fmt.Errorf("next page link %q leaves the API origin %s", target, base)
+			return "", fmt.Errorf("next page link %q leaves the API origin %s", ShownBody(target), base)
 		}
 		return target, nil
 	}

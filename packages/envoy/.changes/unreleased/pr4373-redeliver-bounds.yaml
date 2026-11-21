@@ -10,8 +10,8 @@ body: |-
     Any other error that quotes GitHub's text, such as a bucket error that quotes a key, is cut whole the same way, with the size of its text.
     Each such error, without the words the client puts before it, is at most 4,414 bytes: two texts cut the same way, each at most 2,079 bytes, and 256 bytes for the error's own words.
     A time parse error, a JSON type error or a transport error whose text is still longer after those cuts, such as a time value past ASCII that Go writes as `\xNN` for each byte, is cut whole the same way, with the size of that text.
-    A next page link of the deliveries listing longer than 2048 bytes is refused and shown the same way.
-    The redelivery sweep's errors and log lines therefore carry GitHub's text that way.
+    A next page link of the deliveries listing longer than 2048 bytes is refused and shown the same way, and a shorter one that the client refuses, and a request's target that a status error names, are shown the same way too.
+    The redelivery sweep's errors and log lines therefore carry GitHub's text that way, and so does the table that `envoy-dispatch redeliver-webhooks` prints, for each delivery's GUID, event and action.
 time: 2026-11-18T03:49:52.405000027Z
 custom:
     Issue: pr4373

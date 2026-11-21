@@ -368,7 +368,7 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
   A time value past ASCII can make such a text, since package time writes each of its bytes past ASCII as `\xNN`.
   The sweep's errors and lines therefore carry that text the same way.
   A next page link longer than 2048 bytes is refused rather than followed, and shown as `githubapp.ShownBody` shows it.
-  The refusal of a shorter link that cannot be parsed, or that leaves GitHub's API origin, names the link whole.
+  The refusal of a shorter link that cannot be parsed, or that leaves GitHub's API origin, shows the link the same way, and so does an error that names a next page GitHub answered with a status other than 200.
 
 - The running sweep lists the last hour and six minutes (`redeliver.Lookback`, the longest backoff plus three sweep intervals), long enough that a delivery coming due still sees GitHub's answer to its last request in the listing.
   To that it adds the open deliveries the listing no longer returns that its index says are due, one still owed a request and one whose claim has run out alike.
@@ -395,6 +395,8 @@ a rate limit GitHub answers its listing with is recorded for every process, as a
 envoy-dispatch redeliver-webhooks --since 72h --dry-run   # list what would be redelivered
 envoy-dispatch redeliver-webhooks --since 72h             # redeliver under the sweep's rules
 ```
+
+Its table shows each delivery's GUID, event and action as `githubapp.ShownBody` shows them, as the sweep's lines do.
 
 It reads the same App credentials and NATS configuration as the server, and opens the database `DATABASE_URL` names for the rate limits every process shares;
 it migrates nothing, so it runs against a database the server of its release has already migrated.

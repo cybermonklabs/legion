@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // shownMost is the longest text ShownBody makes: shownBodyRunes runes of at most utf8.UTFMax bytes
@@ -317,110 +318,111 @@ func TestATransportErrorAfterALongURLStillNamesItsCause(t *testing.T) {
 	}
 }
 
-// A value of an answer Go cannot decode is GitHub's text, which the decode's error quotes: a
-// time.ParseError quotes the value it could not parse twice, as Value and as ValueElem. The client
-// cuts each alone (ShownErr), so the error holds the value as ShownBody shows it, with the value's
-// size, and never the whole value. The error is no longer than the client's words and the longest
-// text ShownBody makes. It is still a *time.ParseError, and it still names the layout and the
-// reason. Package time quotes each value in the error's text and writes each byte past ASCII as
-// \xNN, so the `…` of the cut shows as \xe2\x80\xa6 there. The value here is an expires_at of
-// 100,000 bytes that is no time, in the 201 GitHub answers an installation token mint with.
+// A value of an answer Go cannot decode is GitHub's text, which the decode's error quotes. The
+// client cuts each field of the time.ParseError that holds such text alone (ShownErr), each with
+// its own size, so the error never holds the long text whole. The error is still a
+// *time.ParseError, and it still names the reason. Package time quotes each value in the error's
+// text and writes each byte past ASCII as \xNN, so the `…` of the cut shows as \xe2\x80\xa6
+// there. Each row is an expires_at in the 201 GitHub answers an installation token mint with:
+//
+//   - 100,000 bytes that are no time. The parse error quotes the value twice, as Value and as
+//     ValueElem, and names the layout. The error is no longer than the client's words and the
+//     longest text ShownBody makes.
+//   - A valid time and 100,000 bytes after it. time.Parse reads the time and fails on the text
+//     after it, with a reason that quotes that text (Message, `: extra text: "<text>"`), and
+//     ValueElem is that text. The client cuts the reason as it cuts the value (review of
+//     cybermonklabs/legion#4373 at a9c02f7a). The error quotes the value once, and it is no
+//     longer than the client's words and shownErrMost.
 func TestADecodeErrorOfALongValueIsCutToTheBound(t *testing.T) {
-	value := strings.Repeat("v", 100_000)
-	client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/app/installations/7/access_tokens" {
-			t.Errorf("GitHub saw %s %s; want the token mint only", r.Method, r.URL.Path)
-		}
-		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":"ghs_test","expires_at":%q}`, value)
-	})
-
-	_, err := client.Token(context.Background(), 7)
-	if err == nil {
-		t.Fatal("a token mint whose answer does not decode answered no error")
-	}
-	text := err.Error()
 	const prefix = "decode installation token: "
-	start := value[:256]
-	switch {
-	case strings.Contains(text, value):
-		t.Fatalf("the error (%d bytes) holds the %d-byte value whole; want it cut to a bound", len(text), len(value))
-	case len(text) > len(prefix)+shownMost:
-		t.Fatalf("the error is %d bytes; want at most %d, the client's words and the longest text ShownBody makes", len(text), len(prefix)+shownMost)
-	case !strings.HasPrefix(text, prefix):
-		t.Fatalf("the error is %.120q…; want it to start %q", text, prefix)
-	case !strings.Contains(text, start):
-		t.Fatalf("the error is %.200q…; want it to hold the start of the value", text)
-	}
-	var decode *time.ParseError
-	if !errors.As(err, &decode) {
-		t.Fatalf("the error %.120q… reaches no *time.ParseError", text)
-	}
-	if cut := ShownBody(value); decode.Value != cut || decode.ValueElem != cut {
-		t.Errorf("the decode error's Value is %.60q… (%d bytes) and its ValueElem %.60q… (%d bytes); want each as ShownBody shows the value, %d bytes ending %q",
-			decode.Value, len(decode.Value), decode.ValueElem, len(decode.ValueElem), len(cut), cut[strings.LastIndex(cut, "…"):])
-	}
-	if want := prefix + decode.Error(); text != want {
-		t.Errorf("the error is %.120q… (%d bytes); want the client's words and the decode error, %.120q… (%d bytes)", text, len(text), want, len(want))
-	}
-	// quoted is the value as ShownBody shows it, in the quotes of package time.
-	quoted := `"` + strings.ReplaceAll(ShownBody(value), "…", `\xe2\x80\xa6`) + `"`
-	if n := strings.Count(text, quoted); n != 2 {
-		t.Errorf("the error holds the value as ShownBody shows it (%q, in time's quotes) %d times; want twice, as Value and as ValueElem", quoted[len(quoted)-40:], n)
-	}
-	for _, reason := range []string{` as "2006-01-02T15:04:05Z07:00"`, "cannot parse"} {
-		if !strings.Contains(text, reason) {
-			t.Errorf("the error %.120q… does not hold %q; want it to name the layout and the reason", text, reason)
-		}
-	}
-}
-
-// A valid time with text after it is GitHub's text too. time.Parse reads the time and fails on
-// the text after it, with a reason that quotes that text (time.ParseError's Message,
-// `: extra text: "<text>"`). The client cuts the reason as it cuts the value (ShownErr), each with
-// its own size. So the error never holds the text after the time whole, is no longer than the
-// client's words and shownErrMost, and still names the reason. It is still a *time.ParseError.
-// The value here is an expires_at of a valid time and 100,000 bytes after it, in the 201 GitHub
-// answers an installation token mint with (review of cybermonklabs/legion#4373 at a9c02f7a).
-func TestADecodeErrorOfAValidTimeAndLongExtraTextIsCutToTheBound(t *testing.T) {
+	long := strings.Repeat("v", 100_000)
 	extra := strings.Repeat("x", 100_000)
-	value := "2026-11-20T00:00:00Z" + extra
-	client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/app/installations/7/access_tokens" {
-			t.Errorf("GitHub saw %s %s; want the token mint only", r.Method, r.URL.Path)
-		}
-		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":"ghs_test","expires_at":%q}`, value)
-	})
+	for _, row := range []struct {
+		name string
+		// expiresAt is the expires_at the mint answers, and long is the text of it that the error
+		// must never hold whole.
+		expiresAt, long string
+		// most is the longest the error may be after the client's words, and mostName names it.
+		most     int
+		mostName string
+		// value, valueElem and message are the parse error's fields as the client must cut them.
+		value, valueElem, message string
+		// quoted is how many times the error holds expiresAt as ShownBody shows it, in time's
+		// quotes.
+		quoted int
+		// start is the start of long in the error, and words are other texts the error must hold.
+		start string
+		words []string
+	}{{
+		name:      "a value of 100,000 bytes that is no time",
+		expiresAt: long,
+		long:      long,
+		most:      shownMost,
+		mostName:  "the longest text ShownBody makes",
+		value:     ShownBody(long),
+		valueElem: ShownBody(long),
+		quoted:    2,
+		start:     long[:256],
+		words:     []string{` as "2006-01-02T15:04:05Z07:00"`, "cannot parse"},
+	}, {
+		name:      "a valid time and 100,000 bytes after it",
+		expiresAt: "2026-11-20T00:00:00Z" + extra,
+		long:      extra,
+		most:      shownErrMost,
+		mostName:  "shownErrMost",
+		value:     ShownBody("2026-11-20T00:00:00Z" + extra),
+		valueElem: ShownBody(extra),
+		message:   ShownBody(`: extra text: "` + extra + `"`),
+		quoted:    1,
+		start:     `": extra text: "` + extra[:256],
+	}} {
+		t.Run(strings.ReplaceAll(row.name, " ", "_"), func(t *testing.T) {
+			client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/app/installations/7/access_tokens" {
+					t.Errorf("GitHub saw %s %s; want the token mint only", r.Method, r.URL.Path)
+				}
+				w.WriteHeader(http.StatusCreated)
+				fmt.Fprintf(w, `{"token":"ghs_test","expires_at":%q}`, row.expiresAt)
+			})
 
-	_, err := client.Token(context.Background(), 7)
-	if err == nil {
-		t.Fatal("a token mint whose answer does not decode answered no error")
-	}
-	text := err.Error()
-	const prefix = "decode installation token: "
-	switch {
-	case strings.Contains(text, extra):
-		t.Fatalf("the error (%d bytes) holds the %d bytes after the time whole; want them cut to a bound", len(text), len(extra))
-	case len(text) > len(prefix)+shownErrMost:
-		t.Fatalf("the error is %d bytes; want at most %d, the client's words and shownErrMost", len(text), len(prefix)+shownErrMost)
-	case !strings.HasPrefix(text, prefix):
-		t.Fatalf("the error is %.120q…; want it to start %q", text, prefix)
-	}
-	if reason := `": extra text: "` + extra[:256]; !strings.Contains(text, reason) {
-		t.Errorf("the error %.120q… does not hold %.40q…; want it to name the reason and the start of the text after the time", text, reason)
-	}
-	var decode *time.ParseError
-	if !errors.As(err, &decode) {
-		t.Fatalf("the error %.120q… reaches no *time.ParseError", text)
-	}
-	if want := prefix + decode.Error(); text != want {
-		t.Errorf("the error is %.120q… (%d bytes); want the client's words and the cut parse error, %.120q… (%d bytes)", text, len(text), want, len(want))
-	}
-	reason := `: extra text: "` + extra + `"`
-	if decode.Value != ShownBody(value) || decode.Message != ShownBody(reason) {
-		t.Errorf("the decode error's Value is %.60q… (%d bytes) and its Message %.60q… (%d bytes); want each as ShownBody shows it, with the value's size and the reason's size",
-			decode.Value, len(decode.Value), decode.Message, len(decode.Message))
+			_, err := client.Token(context.Background(), 7)
+			if err == nil {
+				t.Fatal("a token mint whose answer does not decode answered no error")
+			}
+			text := err.Error()
+			switch {
+			case strings.Contains(text, row.long):
+				t.Fatalf("the error (%d bytes) holds the %d-byte text whole; want it cut to a bound", len(text), len(row.long))
+			case len(text) > len(prefix)+row.most:
+				t.Fatalf("the error is %d bytes; want at most %d, the client's words and %s", len(text), len(prefix)+row.most, row.mostName)
+			case !strings.HasPrefix(text, prefix):
+				t.Fatalf("the error is %.120q…; want it to start %q", text, prefix)
+			case !strings.Contains(text, row.start):
+				t.Fatalf("the error is %.200q…; want it to hold %.40q…, the start of the long text", text, row.start)
+			}
+			var decode *time.ParseError
+			if !errors.As(err, &decode) {
+				t.Fatalf("the error %.120q… reaches no *time.ParseError", text)
+			}
+			if decode.Value != row.value || decode.ValueElem != row.valueElem || decode.Message != row.message {
+				t.Errorf("the decode error's Value is %.60q… (%d bytes), its ValueElem %.60q… (%d bytes) and its Message %.60q… (%d bytes); want %.60q… (%d bytes), %.60q… (%d bytes) and %.60q… (%d bytes), each as ShownBody shows it, with its own size",
+					decode.Value, len(decode.Value), decode.ValueElem, len(decode.ValueElem), decode.Message, len(decode.Message),
+					row.value, len(row.value), row.valueElem, len(row.valueElem), row.message, len(row.message))
+			}
+			if want := prefix + decode.Error(); text != want {
+				t.Errorf("the error is %.120q… (%d bytes); want the client's words and the decode error, %.120q… (%d bytes)", text, len(text), want, len(want))
+			}
+			// quoted is expiresAt as ShownBody shows it, in the quotes of package time.
+			quoted := `"` + strings.ReplaceAll(ShownBody(row.expiresAt), "…", `\xe2\x80\xa6`) + `"`
+			if n := strings.Count(text, quoted); n != row.quoted {
+				t.Errorf("the error holds the value as ShownBody shows it (%q, in time's quotes) %d times; want %d", quoted[len(quoted)-40:], n, row.quoted)
+			}
+			for _, word := range row.words {
+				if !strings.Contains(text, word) {
+					t.Errorf("the error %.120q… does not hold %q; want it to name the layout and the reason", text, word)
+				}
+			}
+		})
 	}
 }
 
@@ -599,6 +601,137 @@ func TestABlobErrorShowsTheTreesShaAndPathToABound(t *testing.T) {
 			}
 			if row.is != nil && !errors.Is(err, row.is) {
 				t.Errorf("the error %.120q… does not reach %v; want errors.Is to hold", err.Error(), row.is)
+			}
+		})
+	}
+}
+
+// A status error names its request's target, and a target holds names Dispatch keeps and text
+// GitHub gave. So each status error that a githubapp caller words itself names the target as
+// ShownBody shows it: whole within the bound, and past it the first 512 runes and the target's
+// size, never the target whole. Each row's request is answered 500:
+//
+//   - The deliveries listing's next page. The first page answers 200 with a Link header that
+//     names a next page link on the API origin of about 1,500 bytes, under nextLinkMaxBytes.
+//   - A Branch read of a name of 60 characters of three bytes, each byte path-escaped as %XX, so
+//     its target passes 512 runes (review of cybermonklabs/legion#4373 at e185c085).
+func TestAStatusErrorShowsItsTargetToABound(t *testing.T) {
+	const failure = `{"message":"Server Error"}`
+	branch := strings.Repeat("枝", 60)
+	for _, row := range []struct {
+		name string
+		// first is the listing's first page, which names target as its next page, and empty where
+		// the row's one request is to target.
+		first string
+		// target is the failed request's target after the client's base.
+		target string
+		// read is the client's read that fails.
+		read func(*Client) error
+	}{{
+		name:   "the deliveries listing's next page",
+		first:  "/app/hook/deliveries?per_page=100",
+		target: "/app/hook/deliveries?per_page=100&cursor=" + strings.Repeat("c", 1_450),
+		read: func(client *Client) error {
+			_, err := client.Deliveries(context.Background(), time.Time{}, nil)
+			return err
+		},
+	}, {
+		name:   "a branch of 60 characters of three bytes",
+		target: "/repos/acme/web/git/ref/heads/" + url.PathEscape(branch),
+		read: func(client *Client) error {
+			_, err := client.Branch(context.Background(), "ghs_test", "acme", "web", branch)
+			return err
+		},
+	}} {
+		t.Run(strings.ReplaceAll(row.name, " ", "_"), func(t *testing.T) {
+			client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.RequestURI() {
+				case row.first:
+					w.Header().Set("Link", "<http://"+r.Host+row.target+`>; rel="next"`)
+					fmt.Fprint(w, "[]")
+				case row.target:
+					w.WriteHeader(http.StatusInternalServerError)
+					fmt.Fprint(w, failure)
+				default:
+					githubtest.Unexpected(t, w, r)
+				}
+			})
+			whole := client.base + row.target
+			shown := ShownBody(whole)
+			if shown == whole || len(whole) > nextLinkMaxBytes {
+				t.Fatalf("the target is %d bytes; the test needs one that ShownBody cuts, of at most nextLinkMaxBytes (%d)", len(whole), nextLinkMaxBytes)
+			}
+
+			err := row.read(client)
+			if err == nil {
+				t.Fatal("a read GitHub answered 500 answered no error")
+			}
+			text := err.Error()
+			if strings.Contains(text, whole) {
+				t.Errorf("the error (%d bytes) names the %d-byte target whole; want it only as ShownBody shows it", len(text), len(whole))
+			}
+			if want := "GET " + shown + ": status 500: " + failure; text != want {
+				t.Errorf("the error is %.120q… (%d bytes); want the target as ShownBody shows it and the status, %.120q… (%d bytes)", text, len(text), want, len(want))
+			}
+		})
+	}
+}
+
+// nextLink refuses a next page link that leaves the API origin, and one that url.Parse cannot
+// parse. A link is GitHub's text, so each refusal names the link as ShownBody shows it, never
+// whole. url.Parse's *url.Error quotes the link again, so the refusal holds that error as
+// ShownErr shows it, whose URL is the link as ShownBody shows it. Each link is about 1,500 bytes,
+// under nextLinkMaxBytes and past 512 runes. The link that url.Parse cannot parse holds a control
+// byte (DEL), which %q writes as \x7f. Each refusal is no longer than shownErrMost: two texts as
+// ShownBody shows them, and 256 bytes of words.
+func TestANextLinkRefusalShowsTheLinkToABound(t *testing.T) {
+	const base = "https://api.github.com"
+	cursor := strings.Repeat("v", 1_450)
+	for _, row := range []struct {
+		name, link string
+		// want is the refusal's text. {link} stands for the link as ShownBody shows it, quoted
+		// with %q.
+		want string
+		// parse is whether the refusal reaches url.Parse's *url.Error.
+		parse bool
+	}{{
+		name: "a link that leaves the API origin",
+		link: "https://collector.example/app/hook/deliveries?per_page=100&cursor=" + cursor,
+		want: "next page link {link} leaves the API origin " + base,
+	}, {
+		name:  "a link that url.Parse cannot parse",
+		link:  base + "/app/hook/deliveries?per_page=100&cursor=\x7f" + cursor,
+		want:  "parse next page link {link}: parse {link}: net/url: invalid control character in URL",
+		parse: true,
+	}} {
+		t.Run(strings.ReplaceAll(row.name, " ", "_"), func(t *testing.T) {
+			shown := ShownBody(row.link)
+			if shown == row.link || len(row.link) > nextLinkMaxBytes {
+				t.Fatalf("the link is %d bytes; the test needs one that ShownBody cuts, of at most nextLinkMaxBytes (%d)", len(row.link), nextLinkMaxBytes)
+			}
+
+			next, err := nextLink("<"+row.link+`>; rel="next"`, base)
+			if err == nil {
+				t.Fatalf("the %d-byte link was followed (%d bytes); want a refusal", len(row.link), len(next))
+			}
+			text := err.Error()
+			for _, whole := range []struct{ form, text string }{{"as it is", row.link}, {"quoted with %q", fmt.Sprintf("%q", row.link)}} {
+				if strings.Contains(text, whole.text) {
+					t.Errorf("the refusal (%d bytes) holds the %d-byte link whole, %s; want it only as ShownBody shows it", len(text), len(row.link), whole.form)
+				}
+			}
+			if want := strings.ReplaceAll(row.want, "{link}", fmt.Sprintf("%q", shown)); text != want {
+				t.Errorf("the refusal is %.160q… (%d bytes); want %.160q… (%d bytes)", text, len(text), want, len(want))
+			}
+			if len(text) > shownErrMost {
+				t.Errorf("the refusal is %d bytes; want at most shownErrMost, %d", len(text), shownErrMost)
+			}
+			var parse *url.Error
+			switch reached := errors.As(err, &parse); {
+			case reached != row.parse:
+				t.Errorf("errors.As reaches a *url.Error: %t; want %t", reached, row.parse)
+			case reached && parse.URL != shown:
+				t.Errorf("url.Parse's error holds the link as %.80q… (%d bytes); want it as ShownBody shows it, %.80q… (%d bytes)", parse.URL, len(parse.URL), shown, len(shown))
 			}
 		})
 	}
