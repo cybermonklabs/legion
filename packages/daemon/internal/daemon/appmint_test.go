@@ -792,10 +792,14 @@ func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
 // until is two minutes or more past the first's and at most two minutes past its own line. A stop
 // during that wait ends the start at once.
 //
-// Each bound below is one the start's own decisions fix, whatever the machine's load. A line is
-// written some time after its wait was decided, so its wait left can be any amount under the wait
-// decided, and an until (whole seconds) any amount under two minutes past its line; bounds on those
-// gaps failed on a loaded machine.
+// The waited, wait-left and until checks follow from the start's own decisions, whatever the
+// machine's load: a line is written some time after its wait was decided, so its wait left can be
+// any amount under the wait decided, and an until (whole seconds) any amount under two minutes past
+// its line. Two bounds still follow the clock: the 90 s the test gives the two lines, and the 1 s
+// the start may take to return after its stop. The 90 s is the only bound on how long the first wait
+// runs past its until. An earlier version also held the second line to between 60 and 70 s after
+// the first, and each wait left to within 1 s of the wait decided; with a 1 s delay injected before
+// each line, both failed.
 func TestABootWaitsOneMinuteThenTwoForRefusalsOfOneCallThatNameNoTime(t *testing.T) {
 	quickAppMints(t)
 	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
