@@ -802,7 +802,12 @@ func routeConnections(r *Report, pod string, window []logLine, from int, ips map
 	logins := map[string]int{}
 	var loginOrder []string
 	for _, l := range window {
-		if match := routeAuthError.FindStringSubmatch(l.message); l.level == "ERR" && match != nil {
+		switch l.level {
+		case "ERR":
+			match := routeAuthError.FindStringSubmatch(l.message)
+			if match == nil {
+				continue
+			}
 			refused[match[2]] = true
 			if host, _, err := net.SplitHostPort(match[1]); err == nil && ips[host] {
 				if logins[host] == 0 {
@@ -810,8 +815,11 @@ func routeConnections(r *Report, pod string, window []logLine, from int, ips map
 				}
 				logins[host]++
 			}
-		}
-		if match := routeClosed.FindStringSubmatch(l.message); l.level == "INF" && match != nil {
+		case "INF":
+			match := routeClosed.FindStringSubmatch(l.message)
+			if match == nil {
+				continue
+			}
 			if strings.Contains(match[2], remoteTag) {
 				named[match[1]] = true
 			} else {
@@ -822,8 +830,11 @@ func routeConnections(r *Report, pod string, window []logLine, from int, ips map
 	counts := map[string]*routeConnection{}
 	var order []string
 	for i, l := range window {
+		if l.level != "INF" {
+			continue
+		}
 		match := routeCreated.FindStringSubmatch(l.message)
-		if l.level != "INF" || match == nil {
+		if match == nil {
 			continue
 		}
 		host, _, err := net.SplitHostPort(match[1])
