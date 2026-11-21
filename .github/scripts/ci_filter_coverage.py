@@ -15,10 +15,10 @@ that differs (pin_difference, name_list_difference) or by both directories, or s
 it (an env name outside ENV_ALLOWED, a shell, a container, an environment write that reaches it)
 can change what it compiles or which tests it runs. The pin is also the table's word for which
 tests the step runs, and reading everything says nothing where a filter selects every Go file
-already. What surrounds a go command is read over the steps whose writes reach it: a pinned step
-the steps before it, a claimed simple command the steps up to and including its own (job_up_to),
-and a script's go command each job's steps up to the last one whose run: starts the script
-(names_script, SCRIPT_START), or every step of a job that names it nowhere (around_job).
+already. What surrounds a go command is read over the steps whose writes may reach it: a pinned
+step the steps before it, a claimed simple command the steps up to and including its own
+(job_up_to), and a script's go command every step of each job that may run the script
+(around_job), since which step starts a script is nothing this check can prove.
 check-ci-filters.sh's header says why, gives the remedies - the step's own script line, or
 ENV_ALLOWED for a name with which go compiles the same files and runs the same tests - and gives
 the recipe that runs it as CI does, GOROOT unset.
@@ -1236,10 +1236,9 @@ ENV_ALLOWED = frozenset({
     "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL", "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # The token gh reads. A step of the lint job sets it for the daemon API contract check, and
-    # around_job reads the env of every step up to the one that runs go-release-notices.sh, that
-    # step among them, so without this name here every go command of that script would count as
-    # unreduced and go_notices would have to match every Go file of the repository again. go reads
-    # it nowhere.
+    # around_job reads the env of every step of the job that runs go-release-notices.sh, so
+    # without this name here every go command of that script would count as unreduced and
+    # go_notices would have to match every Go file of the repository again. go reads it nowhere.
     "GH_TOKEN",
     "GOPROXY",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
@@ -1322,29 +1321,6 @@ def job_up_to(job: dict, step: dict, including: bool = True) -> dict:
     return job if at is None else {**job, "steps": steps[:at + 1] if including else steps[:at]}
 
 
-# What may come before a script's path where a step starts it: the start of a line, a space, a
-# quote, an `=`, a `(` or a backtick; `./` after one of those; or a `/` after a variable
-# (`$NAME`), a `}` or a `)`, which end `${NAME}`, `${{ ... }}` and `$(...)`. A `/` after anything
-# else ends a directory of another path, so `tools/scripts/e2e-local.sh` is not
-# `packages/envoy/scripts/e2e-local.sh` run from `packages/envoy`.
-SCRIPT_START = r"(?:^|[\s'\"=(`]|(?:^|[\s'\"=(`])\./|(?:\$[A-Za-z_][A-Za-z0-9_]*|[})])/)"
-
-
-def names_script(holder: dict, job: dict, step: dict, source: str) -> bool:
-    """Whether a run: step names the repository script `source`: by its path from the repository
-    root, or from the directory the step runs in, as a whole word of its run: text after one of
-    SCRIPT_START's starts - `"$GITHUB_WORKSPACE/<script>"`, `${{ github.workspace }}/<script>`,
-    `$(<script> ...)`, a backticked call, `$(git rev-parse --show-toplevel)/<script>` and
-    `./<script>` among them. The script's own parent directories before its path from the step's
-    directory make its path from the root, which is read as that; any other directory before it
-    names another script. Nothing that goes on the path after it (`.bak`, `-old`, a longer name)
-    counts."""
-    run = str(step.get("run", ""))
-    workdir = step_workdir(holder, job, step)
-    paths = {source, os.path.relpath(source, workdir)} if workdir != "." else {source}
-    return any(re.search(rf"{SCRIPT_START}{re.escape(p)}(?![\w.-])", run) for p in paths)
-
-
 def around_reason(document: dict, job: dict, steps: list) -> str:
     """The first thing outside a go command's line that can change what it compiles: an env:,
     a step writing the job's environment, a shell or a container; or ''. `steps` are the steps
@@ -1401,21 +1377,16 @@ def owner_steps(units: list, owner: str) -> list:
     return [s for own, _, _, _, job in units if own == owner for s in job.get("steps") or []]
 
 
-def around_job(units: list, owner: str, source: str) -> str:
-    """The first thing around a ci.yaml job that can change what a go command its script `source`
-    holds compiles, over its own steps and those of a workflow it calls, each read under the env:,
-    defaults and container of the file that holds it; or ''. A job some step of which names the
-    script (names_script) is read up to and including the last such step, since a step after it
-    runs after the script. A job that names it nowhere is read whole, since it may start the
-    script some way this check does not see - in a form names_script does not read, by another
-    script, or by a test it compiles."""
+def around_job(units: list, owner: str) -> str:
+    """The first thing around a ci.yaml job that can change what a go command of a script it runs
+    compiles, over every step of the job and of each job of a workflow it calls, each read under
+    the env:, defaults and container of the file that holds it; or ''. Every step, since which one
+    starts the script is nothing this check can prove: a step can start it through another
+    script, from another directory or by a test it compiles, and a step that names its path may
+    only chmod or lint it. So a write after the last step that shows a start still counts: the
+    check errs wide, never narrow."""
     for own, _, _, holder, job in units:
-        if own != owner:
-            continue
-        steps = job.get("steps") or []
-        naming = [i for i, s in enumerate(steps) if "run" in s and names_script(holder, job, s, source)]
-        read = {**job, "steps": steps[:naming[-1] + 1]} if naming else job
-        reason = around_reason(holder, read, read.get("steps") or [])
+        reason = around_reason(holder, job, job.get("steps") or []) if own == owner else ""
         if reason:
             return reason
     return ""
@@ -1640,11 +1611,10 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                                                                           f"runs `{r.text}`; update or remove the Run"))
     # A script's go command is held exact rather than reduced: the line holding the pinned text is
     # that text alone, uncontinued, and no env:, shell: or defaults.run.shell of the workflow, the
-    # job or its steps, no container: and no environment write of the job can move it - each job's
-    # steps up to the last one naming the script, or all of them where it names the script nowhere
-    # (around_job), since the check does not otherwise know which step starts it. A job that calls
-    # a workflow runs the script from that workflow's jobs, so each of them is read the same way.
-    # Its variables are the Run author's.
+    # job or its steps, no container: and no environment write of the job can move it - over every
+    # step of the job (around_job), since the check cannot prove which step starts the script. A
+    # job that calls a workflow runs the script from that workflow's jobs, so each of them is read
+    # the same way. Its variables are the Run author's.
     for g in data.GATES:
         for r in g.runs:
             if not r.source:
@@ -1660,7 +1630,7 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                 continue
             lines = source_text.split("\n")
             held = [i for i, line in enumerate(lines) if r.text in line]
-            reason = around_job(units, g.job, r.source) or ("" if held else "its text spans lines")
+            reason = around_job(units, g.job) or ("" if held else "its text spans lines")
             for i in held:
                 line = lines[i].strip(" \t")
                 if not reason and line != r.text:
