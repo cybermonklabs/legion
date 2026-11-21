@@ -24,11 +24,12 @@ import (
 )
 
 // fakeDelivery is one delivery of a stored message as a durable consumer hands it to
-// consumeMessage, in the shape of lag_test.go's storedMessage: a fake is the only way to choose
-// JetStream's delivery count, to make one termination fail, or to read the record at the moment
-// the message is terminated. It keeps what consumeMessage asked of JetStream.
+// consumeMessage: a fake is the only way to choose JetStream's delivery count, to make one
+// termination fail, or to read the record at the moment the message is terminated. It keeps what
+// consumeMessage asked of JetStream, and every call it does not define fails the row by the call's
+// name (unexpectedMessage).
 type fakeDelivery struct {
-	jetstream.Msg
+	unexpectedMessage
 	subject  string
 	data     []byte
 	headers  nats.Header
@@ -44,18 +45,22 @@ type fakeDelivery struct {
 	naks  []time.Duration
 }
 
-// newDelivery is the first delivery by consumer of the message stored at stored as stream
-// sequence seq.
-func newDelivery(consumer, subject string, data []byte, seq uint64, stored time.Time) *fakeDelivery {
-	return &fakeDelivery{subject: subject, data: data, metadata: jetstream.MsgMetadata{
+var _ jetstream.Msg = (*fakeDelivery)(nil)
+
+// newDelivery is the first delivery by consumer, to the row t runs, of the message stored at
+// stored as stream sequence seq.
+func newDelivery(t testing.TB, consumer, subject string, data []byte, seq uint64, stored time.Time) *fakeDelivery {
+	return &fakeDelivery{unexpectedMessage: unexpectedMessage{t: t}, subject: subject, data: data, metadata: jetstream.MsgMetadata{
 		Sequence: jetstream.SequencePair{Stream: seq, Consumer: seq}, NumDelivered: 1, Consumer: consumer,
 		Stream: notificationStream, Timestamp: stored,
 	}}
 }
 
-// deliveredAgain is the same message delivered for the n-th time, with nothing asked of it yet.
+// deliveredAgain is the same message delivered for the n-th time to the same row, with nothing
+// asked of it yet.
 func (d *fakeDelivery) deliveredAgain(n uint64) *fakeDelivery {
-	again := &fakeDelivery{subject: d.subject, data: d.data, headers: d.headers, metadata: d.metadata, onTerm: d.onTerm}
+	again := &fakeDelivery{unexpectedMessage: d.unexpectedMessage, subject: d.subject, data: d.data, headers: d.headers,
+		metadata: d.metadata, onTerm: d.onTerm}
 	again.metadata.NumDelivered = n
 	again.metadata.Sequence.Consumer = d.metadata.Sequence.Consumer + n - d.metadata.NumDelivered
 	return again
@@ -260,7 +265,7 @@ func TestTheGiveUpRule(t *testing.T) {
 				}
 				return Result{}, errors.New("the handler fails")
 			})
-			delivery := newDelivery(consumer, subject, data, seq, stored).deliveredAgain(row.delivered)
+			delivery := newDelivery(t, consumer, subject, data, seq, stored).deliveredAgain(row.delivered)
 			consumeDelivery(ctx, delivery, productionRun(t, pool, &lockedBuffer{}, func() time.Time { return now }), handler)
 
 			if handled := calls == 1; handled != row.handled {
@@ -402,7 +407,7 @@ func TestALongerRetryLaterWaitReplacesTheDoubledDelay(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			logs := &lockedBuffer{}
 			data := envelopeWithID(t, captured, fmt.Sprintf("dispatch-wait-%d", i))
-			delivery := newDelivery(consumer, "notifications.dispatch.issue.CAPTURE-3.issue.updated", data, uint64(200+i), now).deliveredAgain(row.delivered)
+			delivery := newDelivery(t, consumer, "notifications.dispatch.issue.CAPTURE-3.issue.updated", data, uint64(200+i), now).deliveredAgain(row.delivered)
 			consumeDelivery(context.Background(), delivery, productionRun(t, pool, logs, func() time.Time { return now }),
 				handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) {
 					return Result{}, &RetryLater{After: row.wait, Err: errors.New("GitHub's rate limit")}
@@ -450,7 +455,7 @@ func TestTheTermFollowsTheCommittedRecord(t *testing.T) {
 			if row.production {
 				run = productionRun(t, pool, &lockedBuffer{}, clock)
 			}
-			first := newDelivery(consumer, "notifications.dispatch.issue.CAPTURE-3.issue.updated", data, seq, now.Add(-row.storedAgo))
+			first := newDelivery(t, consumer, "notifications.dispatch.issue.CAPTURE-3.issue.updated", data, seq, now.Add(-row.storedAgo))
 			delivery := first
 			if row.stopFirst {
 				ctx, cancel := context.WithCancel(context.Background())
@@ -487,7 +492,7 @@ func TestAMessageWhoseTermFailedComesBackAndIsTerminatedWithNoSecondRecord(t *te
 	run := boundRun(t, pool, &lockedBuffer{}, func() time.Time { return now })
 	calls := 0
 	handler := failingHandler(&calls)
-	first := newDelivery(consumer, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t), 400, now.Add(-time.Minute))
+	first := newDelivery(t, consumer, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t), 400, now.Add(-time.Minute))
 	first.termFails = 1
 	if consumeDelivery(context.Background(), first, run, handler) {
 		t.Fatal("a delivery whose termination failed was reported handled")
@@ -541,7 +546,7 @@ func TestWhileTheRecordCannotBeWrittenTheMessageIsNakedAndRecordedLater(t *testi
 			pool.refuse.Store(true)
 			run := boundRun(t, pool, &lockedBuffer{}, func() time.Time { return now })
 			calls := 0
-			first := newDelivery(consumer, "notifications.dispatch.issue.CAPTURE-3.issue.updated", row.data, 500, now.Add(-time.Minute))
+			first := newDelivery(t, consumer, "notifications.dispatch.issue.CAPTURE-3.issue.updated", row.data, 500, now.Add(-time.Minute))
 			for delivered := uint64(1); delivered <= 2; delivered++ {
 				delivery := first.deliveredAgain(delivered)
 				consumeDelivery(context.Background(), delivery, run, failingHandler(&calls))
@@ -581,7 +586,7 @@ func TestAGiveUpWhoseCommitFailsStillRecordsTheDeliverysFailure(t *testing.T) {
 	pool := &failingRecordPool{Pool: raw}
 	run := boundRun(t, pool, &lockedBuffer{}, func() time.Time { return now })
 	calls := 0
-	first := newDelivery(consumer, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t), 800, now.Add(-time.Minute))
+	first := newDelivery(t, consumer, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t), 800, now.Add(-time.Minute))
 	pool.refuseNextCommit.Store(true)
 	consumeDelivery(context.Background(), first, run, failingHandler(&calls))
 	if acks, terms, naks := first.asked(); acks != 0 || terms != 0 || !slices.Equal(naks, []time.Duration{nakDelay(1, run.spec)}) {
@@ -615,7 +620,7 @@ func TestAGiveUpIsLoggedOnceAtError(t *testing.T) {
 	logs := &lockedBuffer{}
 	run := boundRun(t, pool, logs, func() time.Time { return now })
 	long := strings.Repeat("the database refused the write; ", 100)
-	first := newDelivery(dispatchConsumerName("CAPTURE"), "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t), 600, now.Add(-time.Minute))
+	first := newDelivery(t, dispatchConsumerName("CAPTURE"), "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t), 600, now.Add(-time.Minute))
 	first.termFails = 1
 	handler := handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) { return Result{}, errors.New(long) })
 	consumeDelivery(context.Background(), first, run, handler)

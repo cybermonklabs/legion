@@ -140,7 +140,7 @@ func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
 				types[envelope.fact] = true
 			}
 			seq := uint64(1000 + i)
-			delivery := newDelivery(envelope.consumer, envelope.subject, envelope.data, seq, time.Now().Add(-time.Minute))
+			delivery := newDelivery(t, envelope.consumer, envelope.subject, envelope.data, seq, time.Now().Add(-time.Minute))
 			var committed bool
 			var readErr error
 			delivery.onTerm = func() {

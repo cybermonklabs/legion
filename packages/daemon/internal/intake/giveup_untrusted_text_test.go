@@ -47,7 +47,7 @@ func TestAMessageWhoseSubjectOrEventIDIsNoStorableTextIsRecordedAndGivenUp(t *te
 			if row.eventID != "" {
 				data = envelopeWithID(t, captured, row.eventID)
 			}
-			first := newDelivery(consumer, row.subject, data, seq, base.Add(-time.Minute))
+			first := newDelivery(t, consumer, row.subject, data, seq, base.Add(-time.Minute))
 			calls := 0
 			consumeDelivery(context.Background(), first, run, failingHandler(&calls))
 
