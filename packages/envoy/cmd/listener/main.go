@@ -472,11 +472,47 @@ func runSelfHealthMonitor(
 // with no read under way (kvCache.NeedsRead).
 var errCacheNeedsRead = errors.New("the cache does not follow its bucket and no read of it is under way")
 
-// checkSelfHealth pings the KV-backed caches, reports one whose copy needs a read, and runs the
-// optional durable consumer probe. Returns the first error encountered, or nil when all are
-// healthy. A copy that needs a read answers its Ping, so without its own failure here the monitor
-// would never rebuild it (isUnrecoverableSelfHealthFailure).
-func checkSelfHealth(caches []listenerCache, durable func() error) error {
+// errRoleLaneInactive is the self-health failure, and the /healthz error, of a role lane that
+// forwards no role message (roleLaneInactive).
+var errRoleLaneInactive = errors.New("role lane subscription inactive")
+
+// roleLaneInactive reports whether lane, the role lane's own client (bus.ConnectRoleLane),
+// forwards no role message: its connection is not connected, or it holds no valid subscription
+// that the server accepted (bus.Client.CoreSubOK). A nil lane, which a test that builds the
+// handlers without it holds, is not inactive. /healthz and the self-health probe both read it.
+func roleLaneInactive(lane *bus.Client) bool {
+	return lane != nil && (!lane.Connected() || !lane.CoreSubOK())
+}
+
+// checkRoleLane is the self-health probe's check of the role lane: errRoleLaneInactive while the
+// lane is inactive (roleLaneInactive). When the server refused the lane's subscription on a
+// connection that stays connected, the check first sends the subscription again
+// (bus.Client.ResendRefusedCore). The server applies a grant change by a reload of its
+// configuration, which keeps the connection, so this send is what brings the lane back after a
+// reload gives the grant back. The next probe reads what the server made of the send.
+func checkRoleLane(lane *bus.Client) error {
+	if !roleLaneInactive(lane) {
+		return nil
+	}
+	if err := lane.ResendRefusedCore(); err != nil {
+		return fmt.Errorf("%w: sending it again failed: %w", errRoleLaneInactive, err)
+	}
+	return errRoleLaneInactive
+}
+
+// checkSelfHealth pings the KV-backed caches, reports one whose copy needs a read, runs the
+// optional durable consumer probe and checks the role lane (checkRoleLane). Returns the first error
+// encountered, or nil when all are healthy. A copy that needs a read answers its Ping, so without
+// its own failure here the monitor would never rebuild it (isUnrecoverableSelfHealthFailure).
+//
+// The role lane is checked first, so a refused lane is sent again whatever else fails, and its
+// failure is returned last: each failure before it is one the monitor may rebuild, which the
+// monitor decides from the error returned. A role lane's failure is never rebuilt and never
+// counts toward a restart. A restart would stop every other route, and a start whose grant still
+// lacks the role lane fails at its subscribe. So every probe while the lane stays inactive logs
+// its WARN, `self-health probe failed`, and the first healthy one logs `self-health recovered`.
+func checkSelfHealth(caches []listenerCache, roleLane *bus.Client, durable func() error) error {
+	roleLaneErr := checkRoleLane(roleLane)
 	for _, c := range caches {
 		if err := c.cache.Ping(); err != nil {
 			return fmt.Errorf("%s kv: %w", c.name, err)
@@ -490,7 +526,7 @@ func checkSelfHealth(caches []listenerCache, durable func() error) error {
 			return fmt.Errorf("durable consumer: %w", err)
 		}
 	}
-	return nil
+	return roleLaneErr
 }
 
 // sessionHealthFields returns observability fields about the session cache for
@@ -614,9 +650,9 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": "subscription inactive"})
 			return
 		}
-		if d.roleLane != nil && (!d.roleLane.Connected() || !d.roleLane.CoreSubOK()) {
+		if roleLaneInactive(d.roleLane) {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": "role lane subscription inactive"})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": errRoleLaneInactive.Error()})
 			return
 		}
 		for _, c := range d.caches {
@@ -1805,7 +1841,7 @@ func main() {
 			monitorCtx,
 			logger,
 			func() error {
-				return checkSelfHealth(caches, probeDurable)
+				return checkSelfHealth(caches, roleLaneClient, probeDurable)
 			},
 			func(err error) bool {
 				return isUnrecoverableSelfHealthFailure(err, client, caches)

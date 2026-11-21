@@ -60,12 +60,18 @@ func bindBoundDurable(t *testing.T, client *bus.Client, consumer string, handler
 }
 
 // setupUnboundDurableFixture is the listener a recreated durable or a stalled rewatch is tested
-// against, built on client: handler bound to the durable, both registries open with their caches
-// ready, and the listenerDeps /healthz reads. The client is the caller's, so a test that needs one
-// of its own, with a clock for the bus's reconnect reporting, connects it and hands it over. It
-// returns a get() that serves one /healthz request, which is every piece the tests against this
-// listener share.
+// against, built on client (openHealthzDeps). It returns a get() that serves one /healthz request,
+// which is every piece the tests against this listener share.
 func setupUnboundDurableFixture(t *testing.T, client *bus.Client, consumer string, handler natsgo.MsgHandler) func() (int, map[string]any) {
+	t.Helper()
+	return serveHealthz(openHealthzDeps(t, client, consumer, handler))
+}
+
+// openHealthzDeps is the listenerDeps /healthz reads, built on client: handler bound to the
+// durable, and both registries open with their caches ready. The client is the caller's, so a test
+// that needs one of its own, with a clock for the bus's reconnect reporting, connects it and hands
+// it over, and the deps are returned for a caller to add what its test reads, such as a role lane.
+func openHealthzDeps(t *testing.T, client *bus.Client, consumer string, handler natsgo.MsgHandler) *listenerDeps {
 	t.Helper()
 	bindBoundDurable(t, client, consumer, handler)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
@@ -86,16 +92,21 @@ func setupUnboundDurableFixture(t *testing.T, client *bus.Client, consumer strin
 	if err := sessions.WaitForCacheReady(readyCtx); err != nil {
 		t.Fatalf("wait for session cache: %v", err)
 	}
+	return &listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), consumer: consumer}
+}
+
+// serveHealthz returns a get() that serves one /healthz request over deps, as the listener mounts
+// the handler, and answers its status code and decoded body.
+func serveHealthz(deps *listenerDeps) func() (int, map[string]any) {
 	state := &atomic.Pointer[listenerDeps]{}
-	state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), consumer: consumer})
-	get := func() (int, map[string]any) {
+	state.Store(deps)
+	return func() (int, map[string]any) {
 		recorder := httptest.NewRecorder()
 		healthzHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var body map[string]any
 		_ = json.Unmarshal(recorder.Body.Bytes(), &body)
 		return recorder.Code, body
 	}
-	return get
 }
 
 // startUnboundDurableMonitor runs the self-health monitor over client's durable the way the
@@ -114,7 +125,7 @@ func startUnboundDurableMonitor(t *testing.T, client *bus.Client, consumer strin
 		runSelfHealthMonitor(
 			ctx,
 			logger,
-			func() error { return checkSelfHealth(caches, probe) },
+			func() error { return checkSelfHealth(caches, nil, probe) },
 			func(err error) bool { return isUnrecoverableSelfHealthFailure(err, client, caches) },
 			client.Connected,
 			func() error { return rebuildListenerDependencies(ctx, client, caches, probe, consumer, handler, nil) },

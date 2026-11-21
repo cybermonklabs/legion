@@ -258,9 +258,10 @@ type recoverableSubscription struct {
 	binding chan struct{}
 	// refused is set when the server refused the subscription the client last sent for this
 	// registration on its current connection (onAsyncError), and cleared each time it is sent
-	// again: by a bind, and by nats.go itself on a reconnect in place (onReconnect). nats.go keeps
-	// a refused subscription valid, so without it a lane the server will not deliver to would read
-	// as subscribed. Only the core registration is ever marked.
+	// again: by a bind (a restore's, or ResendRefusedCore's on a connection that stayed up), and by
+	// nats.go itself on a reconnect in place (onReconnect). nats.go keeps a refused subscription
+	// valid, so without it a lane the server will not deliver to would read as subscribed. Only the
+	// core registration is ever marked.
 	refused bool
 	// pendingMsgs and pendingBytes, when set, are the pending limits of a core subscription,
 	// applied on every bind: the role lane's are far above any backlog its handler can build
@@ -1259,6 +1260,61 @@ func (c *Client) SubOK() bool {
 // is read from the server's own report of it (onAsyncError) until the subscription is sent again.
 func (c *Client) CoreSubOK() bool {
 	return c.subscriptionOK(coreSubscription)
+}
+
+// ResendRefusedCore sends the client's core subscription to the server again when the server has
+// refused it on the connection the client holds and that connection is connected. Nothing else
+// does. A reload of the server's configuration that takes the grant away revokes the subscription
+// and keeps the connection, and a later reload that gives the grant back does not restore it: the
+// server keeps no record of a subscription it refused, and nats.go sends a subscription again only
+// when it reconnects. Without a new send the subscription stays refused for the life of the
+// connection, whatever grant the server holds now.
+//
+// It binds a new subscription for the registration, which the server accepts or refuses again
+// (onAsyncError marks a refusal of it), and then unsubscribes the refused one. The server holds no
+// subscription under that sid, so it ignores the UNSUB. It sends nothing in three cases: while a
+// bind of the registration is in flight, since that bind sends the subscription again itself;
+// while the refused subscription still holds messages that the server delivered before the
+// revocation, since the unsubscribe would drop them and its handler takes them first; and on a
+// connection that is not connected, since the reconnect sends every subscription again.
+func (c *Client) ResendRefusedCore() error {
+	c.mu.Lock()
+	conn, js := c.Conn, c.js
+	c.subscriptionsMu.Lock()
+	subscription := &c.subscriptions[coreSubscription]
+	refused := subscription.active
+	send := !c.stopped() && conn != nil && conn.Status() == nats.CONNECTED && subscription.refused &&
+		subscription.binding == nil && refused != nil && refused.IsValid()
+	if send {
+		pending, _, err := refused.Pending()
+		send = err == nil && pending == 0
+	}
+	if !send {
+		c.subscriptionsMu.Unlock()
+		c.mu.Unlock()
+		return nil
+	}
+	// The bind sends the subscription again, and a refusal of it arrives only after the send.
+	subscription.refused = false
+	subscription.binding = make(chan struct{})
+	registration := *subscription
+	c.subscriptionsMu.Unlock()
+	c.mu.Unlock()
+	sub, err := bind(registration, conn, js)
+	if err := c.endBind(subscription, sub, err, false); err != nil {
+		// A bind that failed leaves the refused subscription as the one the client holds, and so
+		// refused. A bind that ended after Drain or Close stopped the client leaves both to them.
+		c.subscriptionsMu.Lock()
+		if subscription.active == refused {
+			subscription.refused = true
+		}
+		c.subscriptionsMu.Unlock()
+		return err
+	}
+	// The new subscription is the one the client holds now. The unsubscribe can only fail on a
+	// connection that closed meanwhile, which the recovery replaces with every subscription bound.
+	_ = refused.Unsubscribe()
+	return nil
 }
 
 func (c *Client) subscriptionOK(transport subscriptionTransport) bool {
