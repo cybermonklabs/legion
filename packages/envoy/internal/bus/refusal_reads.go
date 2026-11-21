@@ -2,6 +2,8 @@ package bus
 
 import (
 	"cmp"
+	"regexp"
+	"strconv"
 
 	"github.com/nats-io/nats.go"
 )
@@ -36,24 +38,27 @@ func readsRefusals(conn *nats.Conn, js nats.JetStreamContext) nats.JetStreamCont
 	if _, ok := js.(refusalReads); ok {
 		return js
 	}
-	return refusalReads{JetStreamContext: js, owner: clientOwning(conn)}
+	return refusalReads{JetStreamContext: js, owner: clientOwning(conn), conn: conn}
 }
 
 // readsOwnRefusals is readsRefusals with c named as the client whose record is read, for c's own
-// JetStream context and its stream ensure: the constructor ensures the stream on the connection it
-// is installing before c owns it (install), when clientOwning cannot find c yet.
-func (c *Client) readsOwnRefusals(js nats.JetStreamContext) nats.JetStreamContext {
+// JetStream context on conn and its stream ensure: the constructor ensures the stream on the
+// connection it is installing before c owns it (install), when clientOwning cannot find c yet.
+func (c *Client) readsOwnRefusals(conn *nats.Conn, js nats.JetStreamContext) nats.JetStreamContext {
 	if wrapped, ok := js.(refusalReads); ok {
 		js = wrapped.JetStreamContext
 	}
-	return refusalReads{JetStreamContext: js, owner: c}
+	return refusalReads{JetStreamContext: js, owner: c, conn: conn}
 }
 
 // refusalReads is a JetStream context whose requests read the record of owner, the client that
-// owns its connection, found once when it is built; nil when no client owns it.
+// owns its connection, found once when it is built; nil when no client owns it. conn is that
+// connection, whose server's version decides which subject a consumer's create is sent to
+// (consumerCreateSubject).
 type refusalReads struct {
 	nats.JetStreamContext
 	owner *Client
+	conn  *nats.Conn
 }
 
 // refusedVia is refusedBy through r's owner.
@@ -92,35 +97,90 @@ func (r refusalReads) ConsumerInfo(stream, consumer string, opts ...nats.JSOpt) 
 	})
 }
 
-// consumerCreateSubjects are the subjects a create or an update of the consumer cfg names, on
-// stream, can go to: nats.go picks one of three by the server's version and the consumer's filter
-// (nats.go@v1.55.0 jsm.go:488-590), so all three are read.
-func consumerCreateSubjects(stream string, cfg *nats.ConsumerConfig) []string {
+// consumerCreateSubject is the one subject a create or an update of the named consumer cfg, on
+// stream, is sent to, chosen as nats.go chooses it as it sends (nats.go@v1.55.0 jsm.go:505-534):
+// when serverVersion, what the connection reports of its server, is 2.9.0 or later
+// (natsServerMinVersion), the consumer's create, with the filter subject in it when cfg has one
+// other than ">"; on an older server, the durable create for a durable and the legacy create of an
+// unnamed consumer otherwise. nats.go reads the version off the connection as it sends the create,
+// and the callers read it as they hand the request to nats.go (AddConsumer, before the read of the
+// consumer that nats.go sends first). Only that one subject is listed: a create takes the refusal
+// of any subject it lists, and a refusal of a subject it never sends is another request's to
+// answer. nats.go also sends a durable's create to the durable create on a newer server when its
+// context carries UseLegacyDurableConsumers, which no context of this package does.
+//
+// A connection that is not connected, before its first connect or while it reconnects, reports no
+// version (ConnectedServerVersion answers ""), which nats.go reads as a server older than 2.9.0,
+// and so does this. Nothing is sent then: a bus connection buffers nothing while it is not
+// connected (ReconnectBufSize -1, internal/bus Connect), so nats.go fails the request at once with
+// nats.ErrReconnectBufExceeded, and there is no refusal for the create to read
+// (TestACreateBeforeTheFirstConnectEndsAtOnceWithItsOwnError). So the two reads of the version
+// choose differently only when the connection connects between them (one that drops between them
+// sends nothing): the create then goes to a subject this did not list, its refusal is not named,
+// and it ends at its own wait with its own error.
+func consumerCreateSubject(serverVersion, stream string, cfg *nats.ConsumerConfig) string {
 	name := cmp.Or(cfg.Name, cfg.Durable)
-	subjects := []string{jsAPI("CONSUMER.CREATE", stream, name), jsAPI("CONSUMER.DURABLE.CREATE", stream, name)}
-	if cfg.FilterSubject != "" {
-		subjects = append(subjects, jsAPI("CONSUMER.CREATE", stream, name, cfg.FilterSubject))
+	if !natsServerMinVersion(serverVersion, 2, 9, 0) {
+		if cfg.Durable != "" {
+			return jsAPI("CONSUMER.DURABLE.CREATE", stream, name)
+		}
+		return jsAPI("CONSUMER.CREATE", stream)
 	}
-	return subjects
+	if cfg.FilterSubject == "" || cfg.FilterSubject == ">" {
+		return jsAPI("CONSUMER.CREATE", stream, name)
+	}
+	return jsAPI("CONSUMER.CREATE", stream, name, cfg.FilterSubject)
 }
 
-// UpdateConsumer's request goes to one of the consumer's create subjects
-// (consumerCreateSubjects).
+// natsVersionPattern, natsVersionComponents and natsServerMinVersion copy nats.go's semVerRe,
+// versionComponents and serverMinVersion (nats.go@v1.55.0 nats.go:2788-2817), which it does not
+// export, by which nats.go picks a consumer create's subject (consumerCreateSubject). A version
+// with no number at its start, the empty one among them, reads as 0.0.0, and one that misses its
+// minor or its patch as -1.-1.-1: each is older than any minimum.
+var natsVersionPattern = regexp.MustCompile(`\Av?([0-9]+)\.?([0-9]+)?\.?([0-9]+)?`)
+
+func natsVersionComponents(version string) (major, minor, patch int) {
+	match := natsVersionPattern.FindStringSubmatch(version)
+	if match == nil {
+		return 0, 0, 0
+	}
+	var components [3]int
+	for index := range components {
+		number, err := strconv.Atoi(match[index+1])
+		if err != nil {
+			return -1, -1, -1
+		}
+		components[index] = number
+	}
+	return components[0], components[1], components[2]
+}
+
+func natsServerMinVersion(version string, major, minor, patch int) bool {
+	gotMajor, gotMinor, gotPatch := natsVersionComponents(version)
+	return !(gotMajor < major || (gotMajor == major && gotMinor < minor) || (gotMajor == major && gotMinor == minor && gotPatch < patch))
+}
+
+// UpdateConsumer's request goes to the consumer's create subject (consumerCreateSubject). A
+// consumer with no config or no name is sent as js sends it: nats.go refuses it before it sends
+// anything (nats.go@v1.55.0 jsm.go:474-486).
 func (r refusalReads) UpdateConsumer(stream string, cfg *nats.ConsumerConfig, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
-	return refusedVia(r, consumerCreateSubjects(stream, cfg), func() (*nats.ConsumerInfo, error) {
+	if cfg == nil || cmp.Or(cfg.Name, cfg.Durable) == "" {
+		return r.JetStreamContext.UpdateConsumer(stream, cfg, opts...)
+	}
+	return refusedVia(r, []string{consumerCreateSubject(r.conn.ConnectedServerVersion(), stream, cfg)}, func() (*nats.ConsumerInfo, error) {
 		return r.JetStreamContext.UpdateConsumer(stream, cfg, opts...)
 	})
 }
 
-// AddConsumer of a named consumer reads the consumer first and then creates it on one of its
-// create subjects (nats.go@v1.55.0 jsm.go:447-471, consumerCreateSubjects), in that order, so the
-// refusal it ends on is the one of the request it stopped at. An unnamed consumer, an ephemeral
-// one, is sent as js sends it: no start or repair makes one through this context.
+// AddConsumer of a named consumer reads the consumer first and then creates it on its create
+// subject (nats.go@v1.55.0 jsm.go:447-471, consumerCreateSubject), in that order, so the refusal
+// it ends on is the one of the request it stopped at. An unnamed consumer, an ephemeral one, is
+// sent as js sends it: no start or repair makes one through this context.
 func (r refusalReads) AddConsumer(stream string, cfg *nats.ConsumerConfig, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
 	if cfg == nil || cmp.Or(cfg.Name, cfg.Durable) == "" {
 		return r.JetStreamContext.AddConsumer(stream, cfg, opts...)
 	}
-	subjects := append([]string{jsAPI("CONSUMER.INFO", stream, cmp.Or(cfg.Name, cfg.Durable))}, consumerCreateSubjects(stream, cfg)...)
+	subjects := []string{jsAPI("CONSUMER.INFO", stream, cmp.Or(cfg.Name, cfg.Durable)), consumerCreateSubject(r.conn.ConnectedServerVersion(), stream, cfg)}
 	return refusedVia(r, subjects, func() (*nats.ConsumerInfo, error) {
 		return r.JetStreamContext.AddConsumer(stream, cfg, opts...)
 	})

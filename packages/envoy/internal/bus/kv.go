@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -199,21 +200,62 @@ func (kv KeyValue) keySubjects(key string) func() []string {
 	return func() []string { return []string{"$KV." + kv.Bucket() + "." + key} }
 }
 
-// getSubjects are the requests a read of key's last value can send: a direct get of the key's last
-// message, on a bucket that allows direct gets, and a get from the stream's leader on one that
-// does not (nats.go@v1.55.0 kv.go:642-686, js.go:216-217).
+// getSubjects is the one request a read of key's last value sends: a direct get of the key's last
+// message through a handle that reads directly, and a get from the stream's leader through one
+// that does not (readsDirect; nats.go@v1.55.0 kv.go:642-686, js.go:210-217, jsm.go:1304-1332).
+// The other is not listed: a read takes the refusal of any subject it lists, and a refusal of a
+// request it never sends is another read's to answer.
 func (kv KeyValue) getSubjects(key string) func() []string {
 	return func() []string {
 		stream := "KV_" + kv.Bucket()
-		return []string{jsAPI("DIRECT.GET", stream, "$KV."+kv.Bucket()+"."+key), jsAPI("STREAM.MSG.GET", stream)}
+		if readsDirect(kv.legacy) {
+			return []string{jsAPI("DIRECT.GET", stream, "$KV."+kv.Bucket()+"."+key)}
+		}
+		return []string{jsAPI("STREAM.MSG.GET", stream)}
 	}
 }
 
-// revisionSubjects are the requests a read of one revision can send: a direct get by sequence and
-// a get from the stream's leader (nats.go@v1.55.0 kv.go:642-686, js.go:214).
+// revisionSubjects is the one request a read of one revision sends: a direct get by sequence
+// through a handle that reads directly, and a get from the stream's leader through one that does
+// not (readsDirect; nats.go@v1.55.0 kv.go:642-668, js.go:210-214, jsm.go:1304-1332).
 func (kv KeyValue) revisionSubjects() []string {
 	stream := "KV_" + kv.Bucket()
-	return []string{jsAPI("DIRECT.GET", stream), jsAPI("STREAM.MSG.GET", stream)}
+	if readsDirect(kv.legacy) {
+		return []string{jsAPI("DIRECT.GET", stream)}
+	}
+	return []string{jsAPI("STREAM.MSG.GET", stream)}
+}
+
+// natsPackage is the import path of nats.go, whose legacy KV handle readsDirect reads.
+var natsPackage = reflect.TypeFor[nats.Conn]().PkgPath()
+
+// readsDirect reports whether legacy, a legacy KV handle, sends its reads of a key and of a
+// revision as direct gets, which any copy of the bucket answers, rather than as gets from the
+// stream's leader. nats.go decides that once, as it builds the handle, from its stream's
+// AllowDirect, keeps it in the handle's unexported useDirect, and reports it through no method
+// (nats.go@v1.55.0 kv.go:562-574, 642-668, 1353-1364), so it is read off the handle: a read of the
+// stream now would cost a request, and could answer otherwise than the read the handle was built
+// from. Only an unanswered read asks this (refusedAfter), so a read the server answers pays
+// nothing for it.
+//
+// A handle nats.go did not build, a test's double (NewKeyValue), is taken to read directly, as
+// every handle on a bucket this build creates does (Get). So is a nats.go handle that holds no
+// such field: TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends fails on it, since its handle
+// on a stream without AllowDirect would then be read as a direct one.
+func readsDirect(legacy nats.KeyValue) bool {
+	handle := reflect.ValueOf(legacy)
+	if handle.Kind() != reflect.Pointer || handle.IsNil() {
+		return true
+	}
+	kvs := handle.Elem()
+	if kvs.Kind() != reflect.Struct || kvs.Type().PkgPath() != natsPackage {
+		return true
+	}
+	useDirect := kvs.FieldByName("useDirect")
+	if useDirect.Kind() != reflect.Bool {
+		return true
+	}
+	return useDirect.Bool()
 }
 
 // watchSubjects are the requests a watch sends to create its consumer, whose name nats.go picks as
