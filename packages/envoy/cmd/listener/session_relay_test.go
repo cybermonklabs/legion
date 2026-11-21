@@ -128,12 +128,15 @@ func (f relayedFrame) listener() string {
 // silent. A message carrying the connection probe's header (bus.ConnectionProbeHeader) is no frame:
 // it is answered done before anything is decoded, as the plugins' shared consumer delivery
 // answers it, unless the stand-in is silent, and counted in probed rather than collected; the last
-// probe's reply subject is kept in probeReply.
+// probe's reply subject is kept in probeReply. Once its test's cleanup has begun to close its
+// connection (closed), it reports no failure to answer: a frame the listener delivers just as the
+// test ends meets that close, and its reply has no session left to reach.
 type sessionStandIn struct {
 	t          *testing.T
 	conn       *natsgo.Conn
 	frames     chan relayedFrame
 	silent     atomic.Bool
+	closed     atomic.Bool
 	probed     atomic.Int32
 	probeReply atomic.Pointer[string]
 }
@@ -151,13 +154,16 @@ func startSessionStandIn(t *testing.T, url, sessionID string, answer func(relaye
 func startSessionStandInOn(t *testing.T, conn *natsgo.Conn, sessionID string, answer func(relayedFrame) []string) *sessionStandIn {
 	t.Helper()
 	standIn := &sessionStandIn{t: t, conn: conn, frames: make(chan relayedFrame, 256)}
-	t.Cleanup(standIn.conn.Close)
+	t.Cleanup(func() {
+		standIn.closed.Store(true)
+		standIn.conn.Close()
+	})
 	if _, err := standIn.conn.Subscribe(bus.DeliverSubject(sessionID), func(msg *natsgo.Msg) {
 		if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
 			standIn.probeReply.Store(&msg.Reply)
 			standIn.probed.Add(1)
 			if !standIn.silent.Load() {
-				if err := msg.Respond([]byte(relayReplyDone)); err != nil {
+				if err := msg.Respond([]byte(relayReplyDone)); err != nil && !standIn.closed.Load() {
 					t.Errorf("answer the connection probe of %s: %v", sessionID, err)
 				}
 			}
@@ -188,11 +194,14 @@ func startSessionStandInOn(t *testing.T, conn *natsgo.Conn, sessionID string, an
 	return standIn
 }
 
+// reply sends word as the answer to frame. A failure is the test's, unless the test's own cleanup
+// closed the connection under it (closed): it is set before the close, so a failure the close
+// caused finds it set.
 func (s *sessionStandIn) reply(frame relayedFrame, word string) {
-	if err := s.conn.Publish(frame.msg.Reply, []byte(word)); err != nil {
+	if err := s.conn.Publish(frame.msg.Reply, []byte(word)); err != nil && !s.closed.Load() {
 		s.t.Errorf("reply %s to a frame: %v", word, err)
 	}
-	if err := s.conn.Flush(); err != nil {
+	if err := s.conn.Flush(); err != nil && !s.closed.Load() {
 		s.t.Errorf("flush the reply %s: %v", word, err)
 	}
 }
