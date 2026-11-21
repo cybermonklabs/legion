@@ -136,8 +136,8 @@ type Settings struct {
 	// seals each request to, read by nkeys.FromSeed, which derives the curve key a curve seed
 	// names (nkeys.FromCurveSeed).
 	SeedFile, IssuerSeedFile, XKeySeedFile string
-	// Services are the services it admits by platform identity (ParseServices).
-	Services []ServiceEntry
+	// Services are the services it admits by platform identity (config.NATSCallout.Services).
+	Services []config.NATSService
 }
 
 // Service is the running auth service: one connection to the hub, subscribed to the authorization
@@ -239,7 +239,7 @@ func Livez(service func() *Service) http.Handler {
 
 // decideFunc is how the service decides a request: Decide, unless a test replaces it to hand the
 // answer a grant of its own.
-type decideFunc func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error)
+type decideFunc func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error)
 
 // Start connects to the hub as the service's own user and answers every authorization request it
 // is sent, in the replicas' queue group, until Close. It reads the three seeds first, refusing a
@@ -486,7 +486,7 @@ func (s *Service) Ready(ctx context.Context) error {
 type answerer struct {
 	issuer, xkey nkeys.KeyPair
 	deps         Deps
-	services     []ServiceEntry
+	services     []config.NATSService
 	decide       decideFunc
 	// drops is the hand-off of what the service drops unanswered, which the counter moves into
 	// dropped (countDrops); dropped, refusals by label and failures, the answers it could not send,

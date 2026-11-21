@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -25,7 +26,7 @@ var emptyDirections = map[string]natsgrant.Permissions{
 // answering is a decideFunc that admits every request with grant, so a test hands the answer a
 // grant of its own and only the guard in admit stands between that grant and the server.
 func answering(grant natsgrant.Permissions) decideFunc {
-	return func(context.Context, Deps, []ServiceEntry, Request) (Decision, error) {
+	return func(context.Context, Deps, []config.NATSService, Request) (Decision, error) {
 		return Decision{Name: "session/test", Grant: grant, Expires: time.Now().Add(time.Hour)}, nil
 	}
 }

@@ -216,10 +216,16 @@ type Horizon struct {
 	// sets pauseFor and a test replaces it to see the waits Await takes.
 	pause func(ctx context.Context, d time.Duration)
 	// afterObservationParked runs, outside the lock, each time a caller finds an observation
-	// already in flight and parks on it rather than running one of its own. Nothing in
-	// production sets it; the package's own test of concurrent callers waits on it instead of
-	// sleeping for a share of them to arrive.
+	// already in flight and parks on it rather than running one of its own, before it waits on
+	// it. Nothing in production sets it; the package's tests wait on it instead of sleeping for
+	// callers to arrive, and some hold a caller in it, so that it waits only once later
+	// observations have ended.
 	afterObservationParked func()
+	// afterObservationBoundary runs, outside the lock, each time Safe or Await has read the count
+	// of observations started at its call (observationBoundary), before it looks for one. Nothing
+	// in production sets it; the package's tests hold a caller in it to have it look only after
+	// another caller has run an observation to its end.
+	afterObservationBoundary func()
 
 	mu sync.Mutex
 	// generation counts Resets. An observation records only into the generation it started in,
@@ -229,6 +235,11 @@ type Horizon struct {
 	// its order, and Safe and Await each wait for one numbered above the count when called.
 	started  uint64
 	inFlight *horizonFlight
+	// ended is the newest observation to have ended that its runner's cancellation did not
+	// abandon, nil before the first: observations run one at a time, so it is the highest
+	// numbered of those. A caller takes it when it is numbered above the count the caller waits
+	// past (observe).
+	ended *horizonFlight
 	// safe is H. safeThrough is the number of the newest observation H covers: proven safe, or
 	// with an A at or below H when recorded or later. Both are this generation's.
 	safe        int64
@@ -278,18 +289,6 @@ type horizonObservation struct {
 	xid        uint64
 	selfProven bool
 	at         time.Time
-}
-
-// horizonFlight is the one observation in flight, which concurrent callers share. Its fields
-// are written by the caller running it before done closes and read by the others after.
-type horizonFlight struct {
-	number     uint64
-	generation uint64
-	done       chan struct{}
-	err        error
-	// abandoned is an observation that failed because its runner's context ended; a waiter
-	// whose own context is still live runs another rather than return a cancellation not its own.
-	abandoned bool
 }
 
 // NewHorizon returns a Horizon observing the event log through db, with H at 0.
@@ -374,14 +373,12 @@ func (h *Horizon) Persisted(ctx context.Context) (int64, error) {
 // Like Await, Safe never settles for an observation already in flight when it is called: that
 // one took its snapshot before the call and can miss an id committed just before it, and if its
 // A were at or below H it would leave no gap (Gap), so the reader would arm no re-read for that
-// id. Safe waits it out and joins or runs the next. Its own observation saw every id committed
-// before the call, so each such id is at or below H, or stands above it and keeps a gap open
-// until H reaches it.
+// id. Safe waits it out, then joins one in flight, takes one that ended after the call, or runs
+// one. Its own observation saw every id committed before the call, so each such id is at or below
+// H, or stands above it and keeps a gap open until H reaches it.
 func (h *Horizon) Safe(ctx context.Context) (int64, error) {
-	h.mu.Lock()
-	after := h.started
-	h.mu.Unlock()
-	if err := h.observe(ctx, after); err != nil {
+	after := h.observationBoundary()
+	if _, err := h.observe(ctx, after); err != nil {
 		return 0, err
 	}
 	h.mu.Lock()
@@ -404,24 +401,30 @@ func (h *Horizon) Safe(ctx context.Context) (int64, error) {
 //
 // The observation has to start after the call: one already in flight took its snapshot before
 // the call and can miss an id committed just before it, so Await waits that one out rather than
-// share it. An observation error is retried after the backoff, like a held observation, until
-// observations have failed for horizonAwaitFailFor with no success between, measured from the
-// first failure since the last success, and is then returned; if ctx ends first, the last one is
-// reported with ctx's error. A failure the caller's own ctx caused counts for neither.
+// share it. Each observation it takes after its first is numbered above the one it took before,
+// and above every one that had ended when it last read the gap, since that read already counted
+// them; it may be one another caller ran meanwhile. An observation error is retried after the
+// backoff, like a held observation, until observations have failed for horizonAwaitFailFor with
+// no success between, measured from the first failure since the last success, and is then
+// returned; if ctx ends first, the last one is reported with ctx's error. A failure the caller's
+// own ctx caused counts for neither.
 func (h *Horizon) Await(ctx context.Context) (int64, error) {
-	h.mu.Lock()
-	after := h.started
-	h.mu.Unlock()
+	after := h.observationBoundary()
+	taken := after
 	wait := horizonBackoffMin
 	var failed error
 	var failingSince time.Time
 	for {
-		err := h.observe(ctx, after)
+		number, err := h.observe(ctx, taken)
+		taken = max(taken, number)
 		again := false
 		if err == nil {
 			failed = nil
 			h.mu.Lock()
 			proven, safe, gap := h.safeThrough > after, h.safe, h.gapLocked()
+			if h.ended != nil {
+				taken = max(taken, h.ended.number)
+			}
 			h.mu.Unlock()
 			if proven {
 				return safe, nil
@@ -641,39 +644,6 @@ func (h *Horizon) Reset() {
 	h.persistedSafe = 0
 }
 
-// observe returns once an observation numbered above after has ended, recorded or failed: it
-// joins the one in flight, or runs one itself when none is. An observation numbered at or below
-// after started before the caller needed it, so the caller waits it out and takes the next.
-func (h *Horizon) observe(ctx context.Context, after uint64) error {
-	for {
-		h.mu.Lock()
-		flight := h.inFlight
-		run := flight == nil
-		if run {
-			h.started++
-			flight = &horizonFlight{number: h.started, generation: h.generation, done: make(chan struct{})}
-			h.inFlight = flight
-		}
-		h.mu.Unlock()
-		if run {
-			h.run(ctx, flight)
-		} else {
-			if h.afterObservationParked != nil {
-				h.afterObservationParked()
-			}
-			select {
-			case <-flight.done:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-		if flight.number <= after || (flight.abandoned && ctx.Err() == nil) {
-			continue
-		}
-		return flight.err
-	}
-}
-
 // run takes flight's observation and records it, unless a Reset came between. A stall warning it
 // finds due runs on a goroutine of its own: its diagnosis query can take up to
 // horizonDiagnosisTimeout, which would otherwise hold up the relay, the hub or the handler that
@@ -691,6 +661,9 @@ func (h *Horizon) run(ctx context.Context, flight *horizonFlight) {
 	h.inFlight = nil
 	flight.err = err
 	flight.abandoned = err != nil && ctx.Err() != nil
+	if !flight.abandoned {
+		h.ended = flight
+	}
 	var stalled *horizonObservation
 	var safe, toPersist int64
 	var toPersistAt time.Time
