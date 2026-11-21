@@ -4,89 +4,16 @@ import { resolve } from "node:path";
 import {
   controllerToken,
   legionControllerNoticeSubject,
-  uncapturedTopicRefusal,
+  uncapturedTopicWarning,
 } from "@legion/contracts";
-import { deliverSubject } from "../consumer-delivery";
 import {
   controllerNoticeRole,
   reachesPrivateStreamSubject,
-  refuseUncapturedTopics,
   registrationTopics,
   rememberedTopics,
   replayFollowedSubjects,
-  streamDeliversNothing,
-  streamStores,
+  warningsForNamedTopics,
 } from "../stream-topics";
-
-test("the stream stores agent, producer and team topics, wildcards read literally", () => {
-  expect(streamStores("notifications.agent.ses_a")).toBe(true);
-  expect(streamStores("notifications.dispatch.issue.DSP-7.>")).toBe(true);
-  expect(streamStores("notifications.github.acme.repo.issue.3")).toBe(true);
-  expect(streamStores("notifications.team.deploy")).toBe(true);
-  expect(streamStores("notifications.envoy.exceptions.notifications.agent.ses_a")).toBe(true);
-  expect(streamStores("notifications.envoy.exceptions.notifications.team.deploy")).toBe(true);
-});
-
-test("an uncaptured topic, bare prefixes and the relay subject are not stored", () => {
-  expect(streamStores("notifications.lxspec.probe.all")).toBe(false);
-  expect(streamStores("notifications.teamx.deploy")).toBe(false);
-  expect(streamStores("notifications.dispatch.")).toBe(false);
-  expect(streamStores("notifications.>")).toBe(false);
-  expect(streamStores(deliverSubject("ses_a"))).toBe(false);
-});
-
-test("a topic nothing would be delivered on is one no stream subject captures, a role lane apart", () => {
-  // What the listener leaves out of a registration, and refuses a publish to by name
-  // (`bus.ReachesNoSession`).
-  expect(streamDeliversNothing("notifications.team")).toBe(true);
-  expect(streamDeliversNothing("notifications.github")).toBe(true);
-  expect(streamDeliversNothing("notifications.lxspec.probe.all")).toBe(true);
-  expect(streamDeliversNothing("notifications.envoy.deliver.ses_a")).toBe(true);
-  // A role lane travels over core NATS and its holder registers it.
-  expect(streamDeliversNothing("notifications.role.legion-omp-controller")).toBe(false);
-  expect(streamDeliversNothing("notifications.team.deploys")).toBe(false);
-  expect(streamDeliversNothing("notifications.agent.ses_a")).toBe(false);
-  // Only a notifications. topic is the listener's to refuse by name.
-  expect(streamDeliversNothing("team.deploys")).toBe(false);
-});
-
-test("a host refuses such a topic in the listener's own words", () => {
-  // The sentence a host's explicit subscribe refuses with is written once, in @legion/contracts,
-  // and the listener's warning for the same topic is generated from it
-  // (contracts.UncapturedTopicRefusal in packages/envoy/internal/contracts/generated.go): the two
-  // are one wording, so a caller reads the same reason whether its topic was refused here or
-  // dropped there. What this pins is the sentence itself, which the generated Go copy is checked
-  // against by packages/contracts' own `bun run check:go`.
-  expect(uncapturedTopicRefusal("notifications.team", "ses_a")).toBe(
-    "notifications.team was not registered: no stream subject captures it, so nothing would be delivered to ses_a on it; follow a notifications.team.<name> topic instead"
-  );
-  expect(uncapturedTopicRefusal("notifications.lxspec.probe", "ses_b")).toContain(
-    "notifications.lxspec.probe"
-  );
-  expect(uncapturedTopicRefusal("notifications.lxspec.probe", "ses_b")).toContain("ses_b");
-});
-
-test("a host's subscribe refuses an uncaptured topic, and no private subject", () => {
-  const own = "notifications.agent.ses_a";
-  // The listener leaves these out of a registration with no caller to tell; its tool refuses
-  // them, since a caller named them.
-  expect(() => refuseUncapturedTopics("ses_a", own, ["notifications.team"])).toThrow(
-    uncapturedTopicRefusal("notifications.team", "ses_a")
-  );
-  expect(() => refuseUncapturedTopics("ses_a", own, ["notifications.lxspec.probe"])).toThrow(
-    uncapturedTopicRefusal("notifications.lxspec.probe", "ses_a")
-  );
-  // A private stream subject is judged as one, by the listener and here alike: a host opens one
-  // itself, so it stays followed and is left out of the registration without a refusal.
-  expect(() => refuseUncapturedTopics("ses_a", own, ["notifications.>"])).not.toThrow();
-  expect(() => refuseUncapturedTopics("ses_a", own, ["notifications.*.x"])).not.toThrow();
-  expect(() => refuseUncapturedTopics("ses_a", own, ["notifications.agent.*"])).not.toThrow();
-  // A stored topic, the session's own subject and a role lane are no one's to refuse.
-  expect(() => refuseUncapturedTopics("ses_a", own, [own])).not.toThrow();
-  expect(() => refuseUncapturedTopics("ses_a", own, ["notifications.team.deploys"])).not.toThrow();
-  expect(() => refuseUncapturedTopics("ses_a", own, ["notifications.role.reviewer"])).not.toThrow();
-  expect(() => refuseUncapturedTopics("ses_a", own, ["team.deploys"])).not.toThrow();
-});
 
 describe("a controller notice lane", () => {
   test("names the role token its project's controller holds, as contracts mints it", () => {
@@ -211,12 +138,28 @@ describe("the topics a registration carries", () => {
     ]);
   });
 
-  test("leave out a topic nothing would be delivered on, which would be refused 400", () => {
-    // `notifications.team` is the bare base an earlier build expanded `notifications.team.>` to,
-    // and the one a stored row or a transcript brings back (INFRA-771 review).
+  test("keep a topic no stream subject this build compiles captures: the listener judges it", () => {
+    // `notifications.x.y` is under no subject this build's stream compiles (the listener's own rows
+    // use `notifications.x.>` as the subject a newer build adds, and check that bus.StreamCaptures
+    // refuses it). During a roll the deployed stream can hold that newer subject, and only the
+    // listener reads it: a topic left out here would stay out of the session's consumer filter,
+    // and the consumer would move past what is stored on it. `notifications.team` is the bare base
+    // an earlier build expanded `notifications.team.>` to, which a stored row or a transcript
+    // brings back (INFRA-771 review); it goes too, and the listener answers its warning.
     expect(
-      registrationTopics(OWN, ["notifications.team", "notifications.lxspec.probe.all"])
-    ).toEqual([OWN]);
+      registrationTopics(OWN, [
+        "notifications.x.y",
+        "notifications.x.>",
+        "notifications.team",
+        "notifications.lxspec.probe.all",
+      ])
+    ).toEqual([
+      OWN,
+      "notifications.x.y",
+      "notifications.x.>",
+      "notifications.team",
+      "notifications.lxspec.probe.all",
+    ]);
   });
 
   test("leave out a private stream subject that is not this session's, the role's lane apart", () => {
@@ -225,5 +168,47 @@ describe("the topics a registration carries", () => {
       registrationTopics(OWN, ["notifications.agent.ses-other", lane, "notifications.agent.*"])
     ).toEqual([OWN]);
     expect(registrationTopics(OWN, [lane], [controllerToken("acme")])).toEqual([OWN, lane]);
+  });
+});
+
+describe("the warnings a subscribe tool shows", () => {
+  const session = "ses-1";
+  const base = uncapturedTopicWarning("notifications.y.z", session);
+  const named = uncapturedTopicWarning("notifications.lxspec.probe", session);
+  const followed = uncapturedTopicWarning("notifications.team", session);
+  const privateSubject =
+    "notifications.agent.ses-other was not registered: it reaches a private stream subject";
+  const wiring =
+    "no GitHub event for acme/site in the stream's retention window; is the App installed there?";
+  const answered = (...warnings: string[]) => ({ session_id: session, warnings });
+
+  test("leave out the uncaptured-topic warning of a topic the caller did not name", () => {
+    // `notifications.y.z` is the base the client added for `notifications.y.z.>`, and
+    // `notifications.team` a topic the session follows that the caller did not name in this call:
+    // both stay registered, and the caller, who named neither, is not shown their warnings.
+    expect(
+      warningsForNamedTopics(answered(base, named, followed), [
+        "notifications.y.z.>",
+        "notifications.lxspec.probe",
+      ])
+    ).toEqual([named]);
+  });
+
+  test("show the warning of a base the caller named itself, and every warning of another kind", () => {
+    expect(warningsForNamedTopics(answered(base), ["notifications.y.z"])).toEqual([base]);
+    expect(
+      warningsForNamedTopics(answered(privateSubject, wiring), ["notifications.y.z.>"])
+    ).toEqual([privateSubject, wiring]);
+    expect(warningsForNamedTopics({ session_id: session }, ["notifications.y.z.>"])).toEqual([]);
+  });
+
+  test("show a warning that is not the uncaptured-topic text for the answer's session, word for word", () => {
+    // The sentence for another session, or a sentence in other words: neither is the warning the
+    // listener builds for this answer, so neither is taken for it.
+    const otherSession = uncapturedTopicWarning("notifications.y.z", "ses-2");
+    const otherWords = "notifications.y.z is registered, but nothing captures it";
+    expect(
+      warningsForNamedTopics(answered(otherSession, otherWords), ["notifications.y.z.>"])
+    ).toEqual([otherSession, otherWords]);
   });
 });

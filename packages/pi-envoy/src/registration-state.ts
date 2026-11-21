@@ -242,14 +242,15 @@ export interface TaskHandle {
   readonly readRoleHolder: (role: string) => Promise<string | undefined>;
   /** The listener's registered interests for a session; `undefined` when the read failed. */
   readonly readInterest: (sessionID: string) => Promise<Interest | undefined>;
-  /** Unregisters `topics` as `sessionID`'s interests at the listener. A failure is warned under
-   *  `warning`, the caller's own sentence for it, and swallowed, as a recovery's own unregister
-   *  was: the next pass reads the registry afresh. */
+  /** Unregisters `topics` as `sessionID`'s interests at the listener, and answers whether the
+   *  listener released them. A failure is warned under `warning`, the caller's own sentence for
+   *  it, and answered false, as a recovery's own unregister was: the next pass reads the registry
+   *  afresh. */
   readonly unregisterTopics: (
     sessionID: string,
     topics: readonly string[],
     warning: string
-  ) => Promise<void>;
+  ) => Promise<boolean>;
 
   // — NATS —
   /**
@@ -842,11 +843,15 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       },
       unregisterTopics: async (sessionID, topics, warning) => {
         guard();
-        await deps
+        return deps
           .client()
           .unsubscribe({ sessionID, topics: [...topics] })
-          .catch((error: unknown) =>
-            deps.log.warn(warning, { sessionID, topics, error: messageFor(error) })
+          .then(
+            () => true,
+            (error: unknown) => {
+              deps.log.warn(warning, { sessionID, topics, error: messageFor(error) });
+              return false;
+            }
           );
       },
       connect,

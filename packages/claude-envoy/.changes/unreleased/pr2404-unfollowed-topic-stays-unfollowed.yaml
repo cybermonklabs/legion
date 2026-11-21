@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  A topic that the person unfollows now stays unfollowed when the listener does not release it,
+  also across a restart. The first successful read of the registered interests follows each topic
+  that the registry entry lists. Before this change, when the listener did not release a topic
+  that `envoy_unsubscribe` or a `subscription.removed` frame removed, the entry still listed it,
+  and that read followed it again.
+
+  Now the state file of the session records each such unfollow in the new
+  `unfollowed` field of the ledger state. The first successful read, in the same process or in a
+  new one, releases each topic that the entry lists and that the state records as unfollowed
+  after its last follow, and it does not follow that topic. It follows each other topic of the
+  entry, also a topic that the state does not name: a follow whose state write failed, the base
+  `X` of an `X.>` follow, and a topic that another process of the session followed. A release
+  that the listener accepts removes the record. When the release fails again, the interest
+  reconciliation of the next heartbeat releases the topic. A client of an earlier release reads
+  the state file as before and ignores the new field.
+time: 2026-11-18T05:10:00.000000000Z
+custom:
+    Issue: pr2404

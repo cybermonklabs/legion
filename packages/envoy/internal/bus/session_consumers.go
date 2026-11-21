@@ -180,7 +180,8 @@ type SessionConsumers struct {
 	// streamMu guards streamNext and streamReading (streamState).
 	streamMu sync.Mutex
 	// streamNext is the stream read the streamState calls made since the last one began wait for;
-	// nil when none waits. streamReading is set while a goroutine sends the reads.
+	// nil when none waits. streamReading is set while a goroutine starts the reads
+	// (readStreamStates).
 	streamNext    *streamRead
 	streamReading bool
 }
@@ -188,8 +189,10 @@ type SessionConsumers struct {
 // ConnectSessionConsumers opens SessionConsumers on a Client of its own, named
 // "envoy-session-consumers" unless options name it: it connects as Connect does, as the NATS user,
 // through the proxy and under the remote-NATS rule the environment names, reconnects forever, and
-// dials a replacement for a connection nats.go gave up on. A pull (Pull) started on a connection
-// that was replaced ends with an error, and its caller pulls again.
+// dials a replacement for a connection nats.go gave up on. A pull (Pull) in progress at a
+// connection event of that client -- a disconnect, a reconnect in place, a close, or a connection
+// dialled to replace a closed one -- ends with ErrSessionPullReconnected, and its caller pulls
+// again (SessionPull.take).
 //
 // Every consumer this handle creates or updates carries inactiveThreshold, and
 // SessionConsumerInactiveThreshold when that is zero or negative: the listener passes the
@@ -216,8 +219,9 @@ type SessionConsumers struct {
 // decides on a version the connection reports and waits out one that reports none): every session
 // consumer filters on its agent subject in both forms, notifications.agent.<session> beside
 // notifications.agent.*.<session>, and on such a server it would lose the session's old-form
-// messages behind other sessions' traffic with no error. The listener calls this at its start and
-// ends the process on the error, so it refuses to start against such a server.
+// messages behind other sessions' traffic with no error. The listener calls this at its start and,
+// on the refusal (natsversion.RefusedRelease), stays unready and tries again, serving nothing, so
+// it never delivers from such a server.
 func ConnectSessionConsumers(urls []string, inactiveThreshold time.Duration, logger *slog.Logger, options ...ConnectOption) (*SessionConsumers, error) {
 	client, err := Connect(urls, append([]ConnectOption{WithName("envoy-session-consumers")}, options...)...)
 	if err != nil {
@@ -256,6 +260,12 @@ func (s *SessionConsumers) SetCreateFault(fault func(consumer string) error) {
 	s.createFault = fault
 }
 
+// ForceReconnect has nats.go reconnect the connection in place, as it does when the server drops
+// it: every pull in progress ends (ErrSessionPullReconnected, SessionPull.take) and its caller
+// pulls again. It is a seam for tests, which measure what a relay does with a lost pull; nothing
+// else calls it.
+func (s *SessionConsumers) ForceReconnect() error { return s.client.Conn.ForceReconnect() }
+
 // Drain drains the connection, letting acks already sent reach the server, within timeout.
 func (s *SessionConsumers) Drain(timeout time.Duration) error { return s.client.Drain(timeout) }
 
@@ -273,12 +283,26 @@ func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
 // on the connection, and keeps the subscription across a reconnect and on a connection dialled to
 // replace a closed one (Client.SubscribeCore). It is the connection's one core subscription: a
 // second call on another subject is refused with ErrSubscriptionHeld. It returns once the server
-// holds the subscription.
+// holds the subscription. A subscription the server refuses under the NATS user's grant is
+// refused before the flush's PONG and recorded only as the connection's last error, so a last
+// error that changed across the flush to a refusal of subject is returned, wrapping the server's
+// violation (nats.ErrPermissionViolation); the listener's start then tries it again on a new
+// connection (cmd/listener startSessionRelays).
 func (s *SessionConsumers) SubscribeReplies(subject string, handler nats.MsgHandler) error {
+	before := s.client.Connection().LastError()
 	if _, err := s.client.SubscribeCore(subject, handler); err != nil {
 		return err
 	}
-	return s.client.Connection().Flush()
+	conn := s.client.Connection()
+	if err := conn.Flush(); err != nil {
+		return err
+	}
+	if after := conn.LastError(); !sameError(after, before) {
+		if refusal, ok := readSubscriptionRefusal(after); ok && refusal.subject == subject {
+			return fmt.Errorf("bus: NATS refused the reply subscription %q: %w", subject, after)
+		}
+	}
+	return nil
 }
 
 // SessionConsumerStart is what Ensure or RestartAtFloor did to a session's consumer.

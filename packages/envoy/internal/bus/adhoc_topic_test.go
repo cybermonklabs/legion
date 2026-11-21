@@ -75,7 +75,7 @@ func TestUsesCoreTransportDecidesByTheDeployedSubjectsOnceItHasReadThem(t *testi
 		{[]string{"notifications.>"}, "team.deploy-squad.all", false},
 	} {
 		client := &Client{}
-		client.deployedSubjects.Store(&tc.deployed)
+		client.deployedSubjects.Store(&subjectsRead{subjects: tc.deployed})
 		if got := client.UsesCoreTransport(tc.topic); got != tc.core {
 			t.Errorf("deployed %v: UsesCoreTransport(%q) = %t, want %t", tc.deployed, tc.topic, got, tc.core)
 		}

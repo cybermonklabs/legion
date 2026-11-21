@@ -60,18 +60,18 @@ export const pgConnectionsVariable = "DISPATCH_E2E_PG_CONNECTIONS";
 const databaseName = "dispatch_e2e";
 /** packages/envoy, the Go module `connectionsArgs` runs in. */
 const envoyDirectory = fileURLToPath(new URL("../../envoy", import.meta.url));
-/** `go` with these prints `testlimits.ServerConnections`
+/** `go` with these prints `testlimits.FullSizeServerConnections`
  *  (packages/envoy/internal/dispatch/testlimits): the connections a Dispatch test server must
- *  allow beyond its superuser reserve. */
+ *  allow beyond its superuser reserve for every Dispatch process to run production's pool sizes. */
 const connectionsArgs = ["run", "./internal/dispatch/store/cmd/connections"];
 /** Postgres's default `superuser_reserved_connections`. The harness does not set it, so each
  *  stack's server keeps this many slots for superusers, and the suite's connections get none. */
 const superuserReserved = 3;
-/** A stack's connection limit: `testlimits.ServerConnections` plus `superuserReserved`. It comes
- *  from the Go code, so the harness holds no count of a Dispatch process's pool. A server that
- *  allows fewer does not fail where the size is wrong. It fails later, as a 53300 refusal inside
- *  a room, a lease or a socket, and nothing in that failure names the cause. The first stack
- *  that starts reads it, once per run.
+/** A stack's connection limit: `testlimits.FullSizeServerConnections` plus `superuserReserved`.
+ *  It comes from the Go code, so the harness holds no count of a Dispatch process's pool. A
+ *  server that allows fewer does not fail where the size is wrong. It fails later, as a 53300
+ *  refusal inside a room, a lease or a socket, and nothing in that failure names the cause. The
+ *  first stack that starts reads it, once per run.
  *
  *  `DISPATCH_E2E_PG_CONNECTIONS`, when set, is that number. Every CI job that starts stacks here
  *  sets it from a step that runs `connectionsArgs` before its browser step: the `shard` and

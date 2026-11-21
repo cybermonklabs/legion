@@ -322,8 +322,8 @@ func TestHealthzReportsTheSessionMaxAgeInUseAndFollowsAChangeWithinOnePass(t *te
 	d, _ := stalledSessionsRig(t)
 	maxAge := func() string {
 		t.Helper()
-		value, ok := sessionHealthFields(d.sessions)["session_max_age"].(string)
-		if !ok {
+		value := sessionHealthFields(d.sessions).SessionMaxAge
+		if value == "" {
 			t.Fatalf("/healthz carries no session_max_age: %+v", sessionHealthFields(d.sessions))
 		}
 		return value

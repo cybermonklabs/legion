@@ -237,7 +237,7 @@ func (r *SessionRegistry) deleteGone(ctx context.Context, candidate goneCandidat
 		}
 		revision = judged
 	}
-	_, answered, err := bus.Bounded(ctx, func() (struct{}, error) {
+	_, answered, err := bus.BoundedOn(ctx, kv, func() (struct{}, error) {
 		return struct{}{}, kv.Delete(candidate.sessionID, nats.LastRevision(revision))
 	})
 	if !answered {
@@ -267,7 +267,7 @@ func (r *SessionRegistry) deleteGone(ctx context.Context, candidate goneCandidat
 // read is dated by nothing, and a record no reader can judge is not one this pass deletes: it is
 // the error that reports the record kept.
 func (r *SessionRegistry) judgeGone(ctx context.Context, kv bus.KeyValue, sessionID string) (uint64, error) {
-	got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	got, answered, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if !answered {
 		return 0, fmt.Errorf("read session %s's record before deleting it: %w", sessionID, err)
 	}

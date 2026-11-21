@@ -1,9 +1,16 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 	"log/slog"
+	"maps"
+	"reflect"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,16 +19,133 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
+// JSONKeys are the object keys encoding/json writes for t's exported fields. A record type that
+// keeps the keys of a newer build passes them to DecodeKeeping as the keys it knows.
+func JSONKeys(t reflect.Type) []string {
+	keys := make([]string, 0, t.NumField())
+	for i := range t.NumField() {
+		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		switch name {
+		case "-":
+			continue
+		case "":
+			name = field.Name
+		}
+		keys = append(keys, name)
+	}
+	return keys
+}
+
+// DecodeKeeping reads data into value, the fields value's type names, and returns the JSON of every
+// key of the object not in known, or nil when there is none: the fields a newer build writes, which
+// EncodeKeeping writes back.
+//
+// The object's keys are read first, with no value decoded (onlyKnownKeys), and the object is
+// decoded into a map only when one of them is not in known, so a record of this build's own -
+// nearly every record - costs value's decode alone. That map's decode is not only work thrown
+// away: each decoder encoding/json pools keeps the strings it made (makeString in
+// encoding/json/v2), so a string many records repeat, such as a session's "aside" capability, is
+// one allocation they share, and the map's keys decoded between two records' values take its
+// place there ("topics" and "aside" share a slot), each record then keeping a copy of its own:
+// 1.6 MB over the 100,000 records session.TestKnownSessionsMemoryForAHundredThousandRecords holds.
+func DecodeKeeping(data []byte, value any, known []string) (map[string]json.RawMessage, error) {
+	if err := json.Unmarshal(data, value); err != nil {
+		return nil, err
+	}
+	if onlyKnownKeys(data, known) {
+		return nil, nil
+	}
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(data, &all); err != nil {
+		return nil, err
+	}
+	for _, key := range known {
+		delete(all, key)
+	}
+	if len(all) == 0 {
+		return nil, nil
+	}
+	return all, nil
+}
+
+// onlyKnownKeys reports whether data is a JSON object each of whose keys is written, with no
+// escape, as one of known. It decodes no value and keeps no string, and it answers false for
+// anything else - a key written with an escape, a key the object repeats, text it cannot read - so
+// DecodeKeeping decodes that object whole and decides as it always has.
+func onlyKnownKeys(data []byte, known []string) bool {
+	scanner, held := keyScanners.Get().(*keyScanner)
+	if !held {
+		scanner = &keyScanner{}
+		scanner.decoder = jsontext.NewDecoder(&scanner.reader)
+	}
+	defer keyScanners.Put(scanner)
+	scanner.reader.Reset(data)
+	scanner.decoder.Reset(&scanner.reader)
+	if scanner.decoder.PeekKind() != '{' {
+		return false
+	}
+	if _, err := scanner.decoder.ReadToken(); err != nil {
+		return false
+	}
+	for scanner.decoder.PeekKind() == '"' {
+		name, err := scanner.decoder.ReadValue()
+		if err != nil || !slices.Contains(known, string(name[1:len(name)-1])) {
+			return false
+		}
+		if err := scanner.decoder.SkipValue(); err != nil {
+			return false
+		}
+	}
+	_, err := scanner.decoder.ReadToken()
+	return err == nil
+}
+
+// keyScanner reads one object's keys for onlyKnownKeys. The decoder and the reader under it are
+// kept between reads (keyScanners), as internal/dispatch/api's eventBodyText keeps its payload
+// scanner, since every record a cache decodes is read so and each would otherwise allocate a
+// buffer its size.
+type keyScanner struct {
+	reader  bytes.Reader
+	decoder *jsontext.Decoder
+}
+
+// keyScanners holds those scanners between reads.
+var keyScanners sync.Pool
+
+// EncodeKeeping writes value's fields and the unknown keys it was decoded with (DecodeKeeping) as one
+// object, value's fields winning over an unknown key of the same name.
+func EncodeKeeping(value any, unknown map[string]json.RawMessage) ([]byte, error) {
+	known, err := json.Marshal(value)
+	if err != nil || len(unknown) == 0 {
+		return known, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(known, &fields); err != nil {
+		return nil, err
+	}
+	all := maps.Clone(unknown)
+	maps.Copy(all, fields)
+	return json.Marshal(all)
+}
+
 type Registry struct {
 	// kvMu guards roleKV, which Rewatch moves to a replacement connection. The interest bucket's
 	// handle is the watcher's (kvwatch.Watcher.KV).
-	kvMu                  sync.RWMutex
-	roleKV                bus.KeyValue
-	log                   *slog.Logger
-	now                   func() time.Time
-	openedAt              time.Time
-	restoredRoleRevisions map[string]uint64
-	mu                    sync.RWMutex
+	kvMu   sync.RWMutex
+	roleKV bus.KeyValue
+	log    *slog.Logger
+	now    func() time.Time
+	// started is the registry clock's reading when Open returned: this process's own start, the
+	// machine's service start while serviceSince has none to give (serviceStart).
+	started time.Time
+	// serviceSince reads the machine's service start (WithServiceSince); nil when the caller gave
+	// none.
+	serviceSince func() time.Time
+	mu           sync.RWMutex
 	// cache is the copy of the interest bucket: its interests, revision fence, marks and read epoch
 	// (kvwatch.Copy, newInterestCopy), which every write site reaches through.
 	cache kvwatch.Copy[Interest]
@@ -66,6 +190,7 @@ type openOpts struct {
 	replicas       int
 	now            func() time.Time
 	log            *slog.Logger
+	serviceSince   func() time.Time
 	roleWatch      []kvwatch.Option
 	legacySubjects LegacySubjectCounter
 }
@@ -92,10 +217,21 @@ func WithReplicas(n int) OpenOption {
 }
 
 // WithClock sets the registry's clock: the time every interest and role claim records, the reaper's
-// staleness window, and a restored role claim's grace window, which starts when Open returns. Tests
-// move it to end a window without waiting for it.
+// staleness window, the time a role claim's grace window is measured at, and the process's own
+// start (read when Open returns), which serves as the machine's service start when WithServiceSince
+// gives none. Tests move it to end a window without waiting for it.
 func WithClock(now func() time.Time) OpenOption {
 	return func(o *openOpts) { o.now = now }
+}
+
+// WithServiceSince sets where the registry reads the machine's service start for a role claim's
+// grace (ReleaseExpiredRoleClaim): since a time from which this machine's listener pods have served
+// without a gap. The listener passes its delivery lease's service_since, which every pod of the
+// machine reads from one record, so every pod gives a claim the same grace. since answers the zero
+// time while there is no record to read it from (a standby that has not read the record yet), and
+// without this option it is never set: the registry then takes its own start as the service start.
+func WithServiceSince(since func() time.Time) OpenOption {
+	return func(o *openOpts) { o.serviceSince = since }
 }
 
 // WithRoleClaimWatch adds options to the role claim watcher's own, after them, so a test sets the
@@ -123,7 +259,7 @@ func WithLegacySubjectCounter(counter LegacySubjectCounter) OpenOption {
 }
 
 // Open opens the interest and role claim buckets on conn, creating or raising each to the
-// registry's copies (bus.EnsureKeyValue) for as long as ctx lasts, and restores the role claims.
+// registry's copies (bus.EnsureKeyValue) for as long as ctx lasts, and starts both watchers.
 func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	opts := openOpts{replicas: 1, now: time.Now, log: slog.Default()}
 	for _, o := range options {
@@ -141,18 +277,14 @@ func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registr
 	if err != nil {
 		return nil, err
 	}
-	restoredRoleRevisions, err := roleRevisions(roleKV, kvwatch.ScanIdleTimeout, opts.log)
-	if err != nil {
-		return nil, err
-	}
 	r := &Registry{
-		roleKV:                roleKV,
-		log:                   opts.log,
-		index:                 newSubjectIndex(),
-		now:                   opts.now,
-		openedAt:              opts.now(),
-		restoredRoleRevisions: restoredRoleRevisions,
-		legacySubjects:        opts.legacySubjects,
+		roleKV:         roleKV,
+		log:            opts.log,
+		index:          newSubjectIndex(),
+		now:            opts.now,
+		started:        opts.now(),
+		serviceSince:   opts.serviceSince,
+		legacySubjects: opts.legacySubjects,
 	}
 	r.cache = newInterestCopy(r)
 	r.roleHolders = newRoleHolderCopy(r)
@@ -163,6 +295,19 @@ func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registr
 	r.watcher.Start()
 	r.roleWatcher.Start()
 	return r, nil
+}
+
+// serviceStart is the machine's service start a role claim's grace counts from: the time
+// WithServiceSince reads (the delivery lease's service_since, a server timestamp), or this
+// process's own start while that is zero or was never set, which is the service start of a pod
+// that serves alone.
+func (r *Registry) serviceStart() time.Time {
+	if r.serviceSince != nil {
+		if since := r.serviceSince(); !since.IsZero() {
+			return since
+		}
+	}
+	return r.started
 }
 
 // newRoleWatcher returns the watcher that feeds the holder view from kv. A read whose scan timed

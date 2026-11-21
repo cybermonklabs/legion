@@ -122,9 +122,9 @@ func (rec *requestRecord) refuse(w http.ResponseWriter, status int, outcome requ
 	rec.write(status, outcome)
 }
 
-// refuseWith writes a refusal whose body says more than writeJSONError's - a confirmed send's 403
-// naming the holder or its 504 naming who did not confirm (confirmed.go) - and records it under
-// outcome.
+// refuseWith writes a refusal whose body says more than writeJSONError's - a role send's 403
+// naming the holder, or its 504 naming the event that was not stored for its holder in time
+// (confirmed.go) - and records it under outcome.
 func (rec *requestRecord) refuseWith(w http.ResponseWriter, status int, outcome requestOutcome, body interface{}) {
 	writeJSON(w, status, body)
 	rec.write(status, outcome)

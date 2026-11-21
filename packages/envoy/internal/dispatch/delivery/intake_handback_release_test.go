@@ -184,14 +184,15 @@ func (r heldHandBack) handBackPending() bool {
 // stopBudget is the stop's deadline in the rows below (intakeStopBudget).
 const stopBudget = 3 * time.Second
 
-// holdLive reports whether the delivery durable's hold still names a holder, live.
+// holdLive reports whether the delivery durable's hold still names a holder, live: time left on it
+// (duty.HoldToken).
 func holdLive(t *testing.T, pool *store.Pool) bool {
 	t.Helper()
-	_, live, err := duty.HoldToken(t.Context(), pool, intakeHoldName(bus.DispatchDeliveryDurable))
+	_, left, err := duty.HoldToken(t.Context(), pool, intakeHoldName(bus.DispatchDeliveryDurable))
 	if err != nil {
 		t.Fatalf("read the delivery durable's hold: %v", err)
 	}
-	return live
+	return left > 0
 }
 
 // holdRenewedBeforeItsExpiry reads the expiry the delivery durable's hold has now, then waits until

@@ -334,8 +334,9 @@ test("every role claim and every release carries that same instance id, not one 
 
   try {
     const roleTopic = "notifications.role.reviewer"
-    await session.follow([roleTopic])
-    await session.unfollow([roleTopic])
+    const issueTopic = "notifications.dispatch.issue.DSP-5"
+    await session.follow([roleTopic, issueTopic])
+    await session.unfollow([roleTopic, issueTopic])
 
     // Read back from the registration rather than named here: the process mints it once, and
     // what matters is that the claim and the release say that same process (dispatch://INFRA-783),
@@ -346,8 +347,9 @@ test("every role claim and every release carries that same instance id, not one 
     expect(claims.filter((claim) => claim.clientInstanceID === instance)).toHaveLength(
       claims.length,
     )
+    // The release leaves the role's topic out: the role claim holds that topic, not the follow.
     expect(releases).toEqual([
-      { sessionID: "ses_claude", topics: [roleTopic], clientInstanceID: instance },
+      { sessionID: "ses_claude", topics: [issueTopic], clientInstanceID: instance },
     ])
   } finally {
     await session.shutdown()

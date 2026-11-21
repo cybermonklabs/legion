@@ -1,6 +1,7 @@
 package gcp_test
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,9 +15,15 @@ import (
 // app-shells/bash 5.3_p3-r3), so the rows run under both.
 func shellCommand(t *testing.T, args ...string) *exec.Cmd {
 	t.Helper()
+	return shellCommandContext(t, context.Background(), args...)
+}
+
+// shellCommandContext is shellCommand under ctx: the end of ctx kills the shell.
+func shellCommandContext(t *testing.T, ctx context.Context, args ...string) *exec.Cmd {
+	t.Helper()
 	shell := strings.Fields(os.Getenv("ENVOY_TEST_SHELL"))
 	if len(shell) == 0 {
 		shell = []string{"/bin/sh"}
 	}
-	return exec.Command(shell[0], append(shell[1:], args...)...)
+	return exec.CommandContext(ctx, shell[0], append(shell[1:], args...)...)
 }

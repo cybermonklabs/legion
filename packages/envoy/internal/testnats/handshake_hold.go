@@ -23,7 +23,7 @@ const lockHeldWait = 200 * time.Millisecond
 // the server's answer to the CONNECT of each connection made meanwhile. The server's INFO reaches
 // the client and the client's CONNECT reaches the server; nothing more the server sends does, as at
 // a hub whose auth service has not answered the CONNECT. nats.go holds its connection lock through a
-// reconnect attempt's dial and handshake (v1.53.1 doReconnect, nats.go:3458-3485), so while a
+// reconnect attempt's dial and handshake (v1.55.0 doReconnect, nats.go:3554-3581), so while a
 // handshake is held every read of the connection's state waits, until the client's connect timeout
 // ends the attempt; the next attempt is held in turn.
 //

@@ -188,7 +188,7 @@ export type ToolSpec = {
 export const envoyToolSpecs = [
   {
     name: "envoy_subscribe",
-    description: `Subscribe this session to Envoy notification topics. A notifications. topic no stream subject captures is refused by name: nothing would store it, so you would receive nothing on it; subscribe to a notifications.team.<name> topic instead. ${STORED_DELIVERY} ${TOPIC_GUIDE}`,
+    description: `Subscribe this session to Envoy notification topics. If no stream subject captures a notifications. topic yet, the listener returns a warning for it. The warning tells if the listener registered the topic. You receive nothing on that topic until a stream subject captures it. To receive what agents publish, subscribe to a notifications.team.<name> topic. ${STORED_DELIVERY} ${TOPIC_GUIDE}`,
     arguments: (schema) => ({
       topics: schema.array(schema.string()).describe("NATS-style topic patterns to subscribe to."),
     }),

@@ -46,6 +46,24 @@ const poolSizeParam = "pool_max_conns"
 // string that names its database. Every connection it opens scans timestamptz in UTC
 // (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
+	return open(ctx, databaseURL, productionPoolSizes)
+}
+
+// OpenWithin is Open for a test process that may open budget connections to Postgres in all: the
+// shared pool and every separate pool are sized to fit it (ScaledPoolSizes), so the Dispatch
+// processes a test suite starts fit a test server too small for production's sizes. cmd/dispatch
+// calls it only under DISPATCH_TEST_HOOKS=1 with DISPATCH_TEST_POOL_BUDGET set, which no
+// deployment sets. A budget below MinBudget is refused.
+func OpenWithin(ctx context.Context, databaseURL string, budget int) (*Store, error) {
+	sizes, err := ScaledPoolSizes(budget)
+	if err != nil {
+		return nil, err
+	}
+	return open(ctx, databaseURL, sizes)
+}
+
+// open is Open with the shared pool and every separate pool at sizes.
+func open(ctx context.Context, databaseURL string, sizes PoolSizes) (*Store, error) {
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
 		return nil, err
@@ -59,7 +77,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse Postgres URL: %w", err)
 	}
-	config.MaxConns = sharedPoolSize
+	config.MaxConns = sizes.Shared
 	config.AfterConnect = scanTimestampsInUTC
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
@@ -69,7 +87,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping Postgres: %w", err)
 	}
-	return &Store{Pool: NewPool(pool)}, nil
+	return &Store{Pool: &Pool{pool: pool, sizes: sizes}}, nil
 }
 
 // scanTimestampsInUTC makes every timestamptz a connection scans come back in UTC, whatever zone

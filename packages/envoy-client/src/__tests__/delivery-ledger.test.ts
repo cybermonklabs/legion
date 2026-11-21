@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { decode } from "@toon-format/toon";
+import { z } from "zod";
 import {
   createDeliveryLedger,
   DELIVERY_LEDGER_LIMIT,
@@ -11,11 +12,15 @@ import {
   failureNoticeFields,
   type LedgerChange,
   type LedgerSnapshot,
+  LedgerStateSchema,
+  releasedOnResume,
 } from "../delivery-ledger";
 
 const SESSION = "ses-1";
 const AGENT = `notifications.agent.${SESSION}`;
 const ISSUE = "notifications.dispatch.issue.DSP-1.>";
+const TEAM = "notifications.team.deploys";
+const ROLE = "notifications.role.reviewer";
 const T0 = Date.UTC(2026, 9, 26, 12, 0, 0);
 
 const clock = { now: T0 };
@@ -242,6 +247,84 @@ describe("the topics the ledger persists", () => {
     await writing;
 
     expect(host.writes).toEqual([]);
+  });
+});
+
+describe("the person's unfollows the ledger persists", () => {
+  test("are written with the followed subjects, until released or followed again", async () => {
+    host.followed = [AGENT, ISSUE, TEAM];
+    await ledger.followedChanged();
+    host.followed = [AGENT];
+    await ledger.followedChanged([ISSUE, TEAM, AGENT, ROLE]);
+
+    // One write, at once; an agent subject and a role lane are never recorded.
+    expect(host.writes.at(-1)?.state).toEqual({
+      topics: [AGENT],
+      unfollowed: [ISSUE, TEAM],
+    });
+    expect(ledger.state()).toEqual({
+      topics: [AGENT],
+      unfollowed: [ISSUE, TEAM],
+    });
+
+    // The listener released one: its record is done with.
+    await ledger.released([TEAM]);
+    expect(host.writes.at(-1)?.state).toEqual({ topics: [AGENT], unfollowed: [ISSUE] });
+
+    // A follow again takes the other's out, and a state with no record is written as before.
+    host.followed = [AGENT, ISSUE];
+    await ledger.followedChanged();
+    expect(host.writes.at(-1)?.state).toEqual({ topics: [AGENT, ISSUE] });
+    expect(ledger.state()).toEqual({ topics: [AGENT, ISSUE] });
+  });
+
+  test("come back from a restore, and a client of the earlier release still reads the state", async () => {
+    const state = { topics: [AGENT], unfollowed: [ISSUE] };
+    ledger.restore({ state, ledger: [] });
+
+    expect(ledger.state()).toEqual(state);
+    // The restored state is the ledger's own: the same followed subjects write nothing again.
+    await ledger.followedChanged();
+    expect(host.writes).toEqual([]);
+
+    // `LedgerStateSchema` as the release before this field had it: it reads the topics and drops
+    // the record, and a state it wrote parses here with no record.
+    const earlier = z.object({ topics: z.array(z.string()).default([]) });
+    expect(earlier.parse(state)).toEqual({ topics: [AGENT] });
+    expect(LedgerStateSchema.parse({ topics: [AGENT] })).toEqual({ topics: [AGENT] });
+  });
+});
+
+describe("a resume", () => {
+  test("releases from the listener's entry only a topic the state records an unfollow of after its last follow", () => {
+    const unfollowed = "notifications.dispatch.issue.DSP-2";
+    const refollowedHere = "notifications.dispatch.issue.DSP-3";
+    // Absent from the state, so no evidence: a follow whose ledger write failed, the base an
+    // `X.>` follow derives, a topic another process of the session followed.
+    const writeFailed = "notifications.dispatch.issue.DSP-4";
+    const derived = "notifications.dispatch.issue.DSP-1";
+    const otherProcess = "notifications.team.other";
+    const entry = [
+      AGENT,
+      ISSUE,
+      unfollowed,
+      refollowedHere,
+      writeFailed,
+      derived,
+      otherProcess,
+      ROLE,
+    ];
+    const state = {
+      topics: [AGENT, ISSUE],
+      // Records only a writer that broke the rule would leave beside a followed topic, an agent
+      // subject or a role lane: none of them is released either.
+      unfollowed: [unfollowed, refollowedHere, ISSUE, AGENT, ROLE],
+    };
+
+    expect(releasedOnResume(entry, state, [refollowedHere])).toEqual([unfollowed]);
+    // A state with no record, as an earlier release wrote it, or none at all: the entry wins.
+    expect(releasedOnResume(entry, { topics: [AGENT] })).toEqual([]);
+    expect(releasedOnResume(entry, undefined)).toEqual([]);
   });
 });
 

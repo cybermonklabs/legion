@@ -90,6 +90,12 @@ jobs:
       - name: Session state rig of a stalled session
         run: bun test ./test/session-stall.ts
         working-directory: packages/envoy-client
+      # The client sends a topic only a newer build's stream subject captures, and a real listener
+      # built from this tree keeps it in the session's consumer filter, so a message stored on it
+      # after the stream gained the subject reaches the session (INFRA-557).
+      - name: Delivery of a topic only a newer build's stream subject captures
+        run: bun test src/__tests__/newer-subject-delivery.test.ts
+        working-directory: packages/envoy-client
       - name: Stall test of pi-envoy
         run: bun test extensions/envoy.test.ts -t "NATS path freezes"
         working-directory: packages/pi-envoy

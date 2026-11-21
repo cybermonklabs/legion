@@ -1,0 +1,71 @@
+kind: Fixed
+body: |-
+    A message a session's relay had a `done` for when its receive term ended is no longer sent
+    again by the pod that takes the lease over. The term's end cancelled the relay, so the
+    frame was dropped unacknowledged and the successor, restarting the session's consumer at its
+    ack floor, was given the message again: the session took it twice. A relay stopped with a
+    frame in hand now goes on hearing the session for 750 ms (`relaySettleGrace`) and
+    acknowledges the message on its `done`, so the ack floor moves past it once nothing below it
+    is still held; and the pod taking the lease over waits what is left of `relayFormerSettle`
+    (the grace and a 250 ms margin, counted from its acquisition) before it restarts a session's
+    consumer, so the grace always ends first. It waits whenever the lease record names a former
+    holder that released the lease less than 70 s before, after a take-over by force too, and
+    waits for nothing only when every former holder the record names was taken over by force --
+    killed, its node lost, its record left to expire -- since such a holder settles nothing.
+    A frame the grace ends without a `done` is in doubt, its session's `received` notwithstanding:
+    `received` says the client decoded the frame, not that its host wrote the message, so only
+    `done` says the session took it. The stopping pod logs `session relay left a frame in doubt:
+    its settle bound ended with the session's reply still out` and the successor's restart sends
+    it again, with every other frame above that ack floor; the session's client answers that copy
+    and writes it once, since it joins a copy of a frame it still holds and drops one it has
+    already written. Every restart of a session's consumer sends again every frame above its ack
+    floor, so a repeat with the same event id is possible wherever a restart happens: a term's
+    end, a lost session-consumer link, a hard take-over, a pause that probes a silent session
+    again, a retry, a new epoch, and a session that leaves this pod's relay set and rejoins it.
+    A frame the session answered `done` out of order above one it still holds is sent again too,
+    since the floor cannot move past the held frame.
+    The grace is sized on a frame's round trip, measured on the test host over
+    200 frames: p50 2.44 ms, p99 11.8 ms, slowest 37.2 ms on a quiet box, 111 ms under load.
+    A hard take-over is bounded as before at 15 s, and the slowest message measured that was
+    published in the gap a receive-lost cut leaves between one pod's term and the next reached its
+    session 1.257 s after the cut.
+    A pod whose receive term ended no longer restarts a session's consumer. Before this change,
+    two short windows let that pod and the next holder restart one consumer at the same time.
+    In the first window, the term ended after the pod prepared the durable and before it started
+    to receive. The pod started its relays all the same. In the second window, the lease ended
+    the term before the receive loop heard it. A session event in that window started a relay
+    that restarted the consumer. Now the relays take a term only while the term's context is
+    live. Each restart checks the term just before it sends `RestartAtFloor`. It sends that call
+    on a context that ends at the first of two events: the end of the term, or the lease's loss
+    deadline. The loss deadline is the end of the holder's validity, 4 s after the start of its
+    last renewal on production timing. A call that the pod sent before that end can still land.
+    The next holder bounds that call. After a release, the next holder waits `relayFormerSettle`
+    (1 s) from its acquisition before it restarts a consumer. After a take-over by force, it
+    takes the record at least `leaseMargin` (1 s) after the loss deadline of the pod before it.
+    A pod whose receive term ended also no longer forwards a session's messages. Before this
+    change, its pull request could still wait at the server after the term ended. The pod then
+    forwarded a message the server delivered to it, and the term's end left that message
+    unacknowledged, so the next holder was given it again and the session took it twice. Now the
+    pod unsubscribes its pull's inbox as soon as its term ends, or as soon as the lease's loss
+    deadline passes. The server then drops the waiting pull request without handing it another
+    message: measured, a message stored just after the unsubscribe went to the next holder's pull
+    only. The next holder's restart of the consumer does not do this when no message awaits an
+    ack, because that restart updates the consumer in place and the old request stays. Each pull
+    request still waits 30 s, as before. The pod sends no pull request after its term ends, and it
+    does not start a pull. A message that reaches the pod after its term ended and before the
+    unsubscribe lands is not forwarded and gets no answer: no `done`, no NAK and no progress. The
+    next holder's restart of the session's consumer at its ack floor gives the message to that
+    holder. If no restart comes, the server delivers it again after the consumer's 60 s ack wait.
+    A frame that the pod forwarded before its term ended keeps the 750 ms settle grace as before.
+    The session reaper and the session consumer sweep follow the same rule when they delete a
+    session's consumer. Each delete is sent on a context that ends at the end of the term or at the
+    lease's loss deadline, and no delete starts after the term ended. Before this change, a delete
+    that the old pod reached after the lease stepped down could remove the consumer that the next
+    holder had just made for a session that came back.
+    The interest marker collector no longer purges a delete marker younger than 100 s, ten times
+    the longest wait of an interest write (the KV handle's 10 s). Before this change it purged
+    every marker below the lowest live revision at once, so an interest write planned before a
+    delete and sent late could find no marker and bring the deleted interest back.
+time: 2026-11-03T09:40:00.000000000Z
+custom:
+    Issue: pr2404

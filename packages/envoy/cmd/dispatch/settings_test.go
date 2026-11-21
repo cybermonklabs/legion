@@ -2082,6 +2082,39 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_POOL_BUDGET": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.PoolBudget != 0 {
+				t.Errorf("DISPATCH_TEST_POOL_BUDGET unset: PoolBudget = %d, want 0 (production's pool sizes)", boot.PoolBudget)
+			}
+			least := store.MinBudget()
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_POOL_BUDGET": " " + strconv.Itoa(least) + " "}); boot.PoolBudget != least {
+				t.Errorf("DISPATCH_TEST_POOL_BUDGET=%d: PoolBudget = %d", least, boot.PoolBudget)
+			}
+			for _, invalid := range []string{"x", "-19", "19.5", "+19", strconv.Itoa(least - 1)} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_POOL_BUDGET": invalid},
+					fmt.Sprintf("DISPATCH_TEST_POOL_BUDGET=%q (expected a whole number of connections, at least store.MinBudget's %d)", invalid, least))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_POOL_BUDGET": "19"}, "DISPATCH_TEST_HOOKS=1 required")
+			// Its reader: the server opens its database with every pool scaled to the budget, and,
+			// without one, at the sizes store.Open gives, which storetest opened this database at.
+			database := storetest.Open(t)
+			scaled, err := store.ScaledPoolSizes(19)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for value, want := range map[string]store.PoolSizes{"19": scaled, "": database.Pool.Sizes()} {
+				opened, err := openDatabase(context.Background(), resolveWith(t, map[string]string{
+					"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_POOL_BUDGET": value, "DATABASE_URL": databaseURLOf(t, database),
+				}))
+				if err != nil {
+					t.Fatalf("DISPATCH_TEST_POOL_BUDGET=%q: open the database: %v", value, err)
+				}
+				opened.Pool.Close()
+				if got := opened.Pool.Sizes(); got != want {
+					t.Errorf("DISPATCH_TEST_POOL_BUDGET=%q: the server opened its pools at %+v, want %+v", value, got, want)
+				}
+			}
+		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ROSTER_UNCACHED": "1"}); !boot.ListenerRosterUncached {
 				t.Error("DISPATCH_TEST_ROSTER_UNCACHED=1: ListenerRosterUncached false")

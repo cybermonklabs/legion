@@ -54,6 +54,15 @@ func startKeptRoleSweep(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 	return startSweep(ctx, interval, func(ctx context.Context) { sweepKeptRoleLanes(ctx, cfg, slots) })
 }
 
+// keptSweepConfig is cfg as the kept lane's sweep runs on the lease holder (holderLoops, main.go):
+// each write of the takeover passes it runs is held to the receive term relays serve and to the
+// lease's loss deadline for it (takeoverTerm, sessionRelays.termContext), so none is sent once the
+// term is over or another pod may hold the lease.
+func keptSweepConfig(cfg listenerDeliveryHandlerConfig, relays *sessionRelays) listenerDeliveryHandlerConfig {
+	cfg.takeoverTerm = relays.termContext
+	return cfg
+}
+
 // sweepKeptRoleLanes hands over every role the stream holds a kept copy on that its cursor has not
 // finished, and every role a takeover record that is not finished names (bus.TakeoverRecords). It
 // reads every kept role subject the stream holds a copy on in one call (bus.Client.KeptRoleLanes),

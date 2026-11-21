@@ -113,7 +113,7 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 			}
 			awaitLogLine(t, rig, "listener delivery mode cannot be read unambiguously", 15*time.Second)
 			awaitFanoutFinished(t, rig, durable, first.Sequence)
-			if got := rig.harness.config.attemptCache.Seen(unreadable.DedupeKey, relayed); got != tc.wantAttempt {
+			if got := ledgerAttempted(t, rig.harness.config, unreadable.DedupeKey, relayed); got != tc.wantAttempt {
 				t.Fatalf("an attempt record of %s is there: %t, want %t", relayed, got, tc.wantAttempt)
 			}
 
@@ -136,7 +136,7 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 			// The relay starts and must reach the later message, which is stored behind the
 			// refused one: the refusal is the fan-out's to report and nothing about it may stop
 			// the session's consumer.
-			rig.relays.setOwned(true)
+			rig.relays.setOwned(endlessTerm())
 			awaitRelayFrame(t, standIn, later, 20*time.Second)
 			reasons := deliveryExceptionsFor(t, exceptions, relayed, 2*time.Second)
 			if len(reasons) != 1 || reasons[0] != "delivery_failed" {

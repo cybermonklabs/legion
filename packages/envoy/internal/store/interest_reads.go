@@ -2,13 +2,11 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 
-	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 )
 
@@ -20,7 +18,9 @@ var ErrMalformedInterest = errors.New("malformed interest record")
 // Get returns the Interest for a session. Cache first, direct KV read on miss.
 // The KV fallback also repopulates the cache, bridging the warm-up window after
 // Open() before watch() has fully populated the cache. A cache hit answers in the
-// caller's goroutine; only the bucket read on a miss waits on ctx (bus.Bounded). The cache holds
+// caller's goroutine; only the bucket read on a miss waits on ctx (bus.BoundedOn), and it
+// ends at once with bus.ErrRequestLostWithConnection when its connection is lost before the answer
+// comes, rather than waiting out ctx for an answer nothing will send. The cache holds
 // only records it decoded (interestCache.Apply evicts the rest), so only the bucket read can meet
 // a record this build cannot decode: that is ErrMalformedInterest, logged at WARN with the session
 // it belongs to. A read of a bucket since recreated, or one the revision fence drops, is answered
@@ -42,19 +42,25 @@ func (r *Registry) Get(ctx context.Context, sessionID string) (Interest, error) 
 // The revision is what a write of the filter built from this row is fenced on (cmd/listener's
 // fenceFilterWrite): a row the bucket answers at a higher revision afterwards moved under that
 // write, so the filter it carries may be an older row's, over a newer registration's. A session
-// the bucket holds no row for answers revision 0 with nats.ErrKeyNotFound, and a row this build
-// cannot decode answers the revision a write of it is fenced on with ErrMalformedInterest.
+// the bucket holds no row for answers revision 0 with nats.ErrKeyNotFound, a session whose row a
+// delete or purge marker ended included, since that fence reads a row gone as a row that never
+// was; a row this build cannot decode answers the revision a write of it is fenced on with
+// ErrMalformedInterest.
 func (r *Registry) RefreshAt(ctx context.Context, sessionID string) (Interest, uint64, error) {
 	return r.getWithRevision(ctx, sessionID, true)
 }
 
-// getWithRevision is Get with the bucket revision the record it answers was read at: the revision
-// the copy's fence holds on a cache hit, the entry's own on a bucket read, and 0 for a session the
-// bucket holds no record for. A record this build cannot decode carries its revision too, since
-// the write that replaces it is conditional on it (putInterestAt). A cache hit whose fence belongs
-// to another epoch answers 0 as well (kvwatch.Copy.FenceFor): the write that names it then creates
-// the record, the bucket refuses it for a record it holds (ErrInterestPlanConflict), and the plan
-// made again over the bucket's own row carries the revision that write needs.
+// getWithRevision is Get with the bucket revision the record it answers was read at, the revision
+// a write of the record is fenced on (putInterestAt): the revision the copy's fence holds on a
+// cache hit, and the record's own on a bucket read. A record this build cannot decode carries its
+// revision too, since the write that replaces it is conditional on it. A session the bucket holds
+// no record for answers nats.ErrKeyNotFound at revision 0 from that one bucket read, a session
+// whose record a delete or purge marker ended included: this is the read of a caller that writes
+// only over a record it found, or writes nothing, and a caller that plans a write over a record
+// it found missing reads getLatest. A cache hit whose fence belongs to another epoch answers 0 as
+// well (kvwatch.Copy.FenceFor): the write that names it is refused over any record the bucket
+// holds (ErrInterestPlanConflict), and the plan made again over the bucket's own row carries the
+// revision that write needs.
 //
 // fromBucket reads the bucket even when the cache holds the record, for a caller whose cache may
 // be behind a write its answer must hold: one whose compare-and-swap the bucket refused, since
@@ -62,6 +68,25 @@ func (r *Registry) RefreshAt(ctx context.Context, sessionID string) (Interest, u
 // refused again (UpsertPlanned), and one reading the topics a registration on another listener
 // has just stored (RefreshAt).
 func (r *Registry) getWithRevision(ctx context.Context, sessionID string, fromBucket bool) (Interest, uint64, error) {
+	return r.readInterest(ctx, sessionID, fromBucket, false)
+}
+
+// getLatest is getWithRevision for a caller that plans a write over what it read, a record it
+// found missing included (UpsertWithin, PlanInterest, UpsertPlanned): a bucket read that finds no
+// record answers the revision of the key's newest entry beside nats.ErrKeyNotFound
+// (bus.KeyValue.GetLatest). That is a delete or purge marker's for a record one ended, and 0 only
+// for a session whose key holds no entry at all. A write planned on a deleted record therefore
+// lands only over that very delete, and one planned on no entry only where none was stored since:
+// a write at revision 0 is refused over any entry, a marker included (putInterestAt), so a plan
+// that read a marker as revision 0 would be refused for good. The marker costs a second read of
+// the bucket on every miss, and a failure of that read fails the whole read, which is why a
+// caller that writes nothing over a missing record reads getWithRevision instead.
+func (r *Registry) getLatest(ctx context.Context, sessionID string, fromBucket bool) (Interest, uint64, error) {
+	return r.readInterest(ctx, sessionID, fromBucket, true)
+}
+
+// readInterest is getWithRevision, and getLatest where latest is set.
+func (r *Registry) readInterest(ctx context.Context, sessionID string, fromBucket, latest bool) (Interest, uint64, error) {
 	if !fromBucket {
 		r.mu.RLock()
 		item, ok := r.cache.Get(sessionID)
@@ -73,15 +98,22 @@ func (r *Registry) getWithRevision(ctx context.Context, sessionID string, fromBu
 		}
 	}
 	kv, epoch := r.watcher.Handle()
-	entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	read, answered, err := bus.BoundedOn(ctx, kv, func() (bus.LatestEntry, error) {
+		if latest {
+			return kv.GetLatest(sessionID)
+		}
+		entry, err := kv.Get(sessionID)
+		return bus.LatestEntry{Entry: entry}, err
+	})
 	if !answered {
 		return Interest{}, 0, fmt.Errorf("read %s's interest record: %w", sessionID, err)
 	}
 	if err != nil {
-		return Interest{}, 0, err
+		return Interest{}, read.Revision, err
 	}
-	var fresh Interest
-	if err := json.Unmarshal(entry.Value(), &fresh); err != nil {
+	entry := read.Entry
+	fresh, err := decodeInterestValue(entry.Value())
+	if err != nil {
 		r.logger().Warn("registry read an interest record it cannot decode",
 			slog.String("session_id", sessionID),
 			slog.Uint64("revision", entry.Revision()),

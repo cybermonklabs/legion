@@ -1,0 +1,31 @@
+kind: Fixed
+body: |-
+    A short NATS outage no longer costs every session registration in flight a 503. When a
+    listener's NATS connection dropped and came back, a request it had already sent on that
+    connection - a session consumer call, the read of the notification stream's state, or a read
+    or write of a session's record, its interests or a role claim - waited out its whole deadline
+    (a registration's 3.5 s budget, 5 s for a relay restart), because the NATS client library
+    never fails a request whose connection drops. Such a request now fails as soon as the
+    connection reconnects, with `ErrRequestLostWithConnection`: a registration whose own request
+    was lost answers its 503 at once rather than at the end of its budget, so the client's retry
+    goes out on the new connection sooner, and a relay restart that lost a call this way starts
+    again without a retry wait. A read or write of a session's record, its interests or a role
+    claim that the drop catches between its send and the listener's first look at the connection
+    still waits out its deadline, as before. And one session's lost read of the stream's state
+    no longer delays the other sessions: every consumer create waited for that read, so one read
+    lost for 5 s made every registration behind it run past its 3.5 s budget and answer 503. The
+    next read now starts once the lost one has been out 250 ms, and the creates that arrive
+    together still share one read. Requests in two more places now end at the reconnect too. A
+    listener sets up
+    its notification stream each time its NATS connection comes back, before it rewatches its
+    records and receives again; when the connection dropped again during that setup, the setup
+    waited 10 s for a lost answer, and meanwhile the listener received nothing and answered its
+    health check 503. It now sends a lost read or create of the stream again at once on the new
+    connection, three sends at most, and after a lost update it reads the stream back rather than
+    sending the update again. And
+    Dispatch's GitHub intake, taking over from a process that died, could lose one answer the same
+    way and take the work over up to 12 s late, past the 17 s it promises; it now sends that
+    request again at once too.
+time: 2026-11-14T23:49:48.000000000Z
+custom:
+    Issue: pr2404

@@ -65,31 +65,56 @@ type TakeoverRecord struct {
 }
 
 // StoredTakeoverRecord is a takeover record as the stream holds it: its subject, its newest body,
-// and when the stream stored that body.
+// when the stream stored that body, and the stream sequence it stored it at, which a write of the
+// record names as the one it replaces (WriteTakeoverRecord).
 type StoredTakeoverRecord struct {
-	Subject string
-	Record  TakeoverRecord
-	Written time.Time
+	Subject  string
+	Record   TakeoverRecord
+	Written  time.Time
+	Sequence uint64
 }
 
+// ErrTakeoverRecordMoved is wrapped by the error of a WriteTakeoverRecord the stream refused
+// because the record's subject no longer held the message the writer read: another pass wrote
+// the record since, or the stream removed it (its age limit, a purge). The write stored nothing,
+// and the writer reads the record again before it decides anything more of it.
+var ErrTakeoverRecordMoved = errors.New("the takeover record changed under this write")
+
 // WriteTakeoverRecord publishes record on subject, a takeover record's own subject
-// (TakeoverSubject). The newest record on a subject stands, so the write takes no precondition.
-func (c *Client) WriteTakeoverRecord(ctx context.Context, subject string, record TakeoverRecord) error {
+// (TakeoverSubject), only while the stream's last sequence on subject is expected, and returns the
+// sequence the stream stored it at. expected is the sequence of the record the writer read
+// (StoredTakeoverRecord.Sequence), and 0 for a new record, which stores only while the subject
+// holds nothing (nats.ExpectLastSequencePerSubject). So a write lands only over the body its
+// writer read: a pass that read an older body, or one whose write comes late, after another pass
+// wrote the record or the stream removed it, is refused with ErrTakeoverRecordMoved rather than
+// bringing back what was written or removed since. Every other failure is the publish path's
+// (publishStoredRaw).
+func (c *Client) WriteTakeoverRecord(ctx context.Context, subject string, record TakeoverRecord, expected uint64) (uint64, error) {
 	data, err := json.Marshal(record)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if _, err := c.publishStoredRaw(ctx, subject, data, nil); err != nil {
-		return fmt.Errorf("bus: write the takeover record %s: %w", subject, err)
+	ack, err := c.publishStoredRaw(ctx, subject, data, nats.ExpectLastSequencePerSubject(expected))
+	if err != nil {
+		var apiErr *nats.APIError
+		if errors.As(err, &apiErr) && apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequence {
+			err = fmt.Errorf("%w: %w", ErrTakeoverRecordMoved, err)
+		}
+		return 0, fmt.Errorf("bus: write the takeover record %s: %w", subject, err)
 	}
-	return nil
+	return ack.Sequence, nil
 }
 
 // TakeoverRecords reads every takeover record the stream holds for role, or for every role when
 // role is empty, sorted by subject: one STREAM.INFO with the lane as its filter, as KeptRoleLanes
 // reads the kept lanes, and one read of the newest message on each subject it names. A record no
 // read can decode is left out, since no pass can act on it. Its errors are the stream's own, named
-// with the lane.
+// with the lane. The STREAM.INFO waits under a watch of the connection it went out on
+// (RequestOnConnection), as each stored-message read waits under its own (requestConfirmed):
+// nats.go fails no request whose connection drops, so a read whose answer was lost with its
+// connection fails at the reconnect with ErrRequestLostWithConnection rather than holding its
+// caller to ctx's end, which for the claim route's handover (cmd/listener's runTakenRoleDrain) is a
+// window of 10 minutes under the role's guard.
 func (c *Client) TakeoverRecords(ctx context.Context, role string) ([]StoredTakeoverRecord, error) {
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return nil, err
@@ -98,7 +123,9 @@ func (c *Client) TakeoverRecords(ctx context.Context, role string) ([]StoredTake
 	if role != "" {
 		filter = TakeoverSubjectPrefix + role + ".>"
 	}
-	info, err := c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))
+	info, err := RequestOnConnection(ctx, c, func(ctx context.Context) (*nats.StreamInfo, error) {
+		return c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("bus: read %s's takeover records: %w", Stream, err)
 	}
@@ -122,7 +149,7 @@ func (c *Client) TakeoverRecords(ctx context.Context, role string) ([]StoredTake
 		if err := json.Unmarshal(stored.Data, &record); err != nil || record.Role == "" || record.Previous == "" {
 			continue
 		}
-		records = append(records, StoredTakeoverRecord{Subject: subject, Record: record, Written: stored.Time})
+		records = append(records, StoredTakeoverRecord{Subject: subject, Record: record, Written: stored.Time, Sequence: stored.Sequence})
 	}
 	return records, nil
 }

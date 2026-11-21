@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -310,6 +311,9 @@ func holdsAll(line string, parts ...string) bool {
 	}
 	return true
 }
+
+// logAttribute is one key=value of a slog text line, its value quoted or bare.
+var logAttribute = regexp.MustCompile(`(\w+)=("(?:[^"\\]|\\.)*"|\S*)`)
 
 // logged reports whether the process has written a line holding all of parts.
 func (p *dispatchProcess) logged(parts ...string) bool {

@@ -8,9 +8,12 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -510,6 +513,90 @@ func TestARenewalFailureRecordIsKeyedByHolderAndPrunedPastTheLiveWindow(t *testi
 	}
 }
 
+// recordedRenewalFailures is every key the registry's record of failed renewals holds, whatever
+// its age: what the record keeps in memory, which RenewalFailedWithin's answer cannot show, since
+// that answer is judged by age alone.
+func recordedRenewalFailures(reg *Registry) []renewalFailureKey {
+	reg.renewalFailures.mu.Lock()
+	defer reg.renewalFailures.mu.Unlock()
+	keys := slices.Collect(maps.Keys(reg.renewalFailures.entries))
+	slices.SortFunc(keys, func(a, b renewalFailureKey) int {
+		return cmp.Or(strings.Compare(a.role, b.role), strings.Compare(a.sessionID, b.sessionID))
+	})
+	return keys
+}
+
+// A standby runs no role claim reaper - cmd/listener's holderLoops start it on the pod holding the
+// machine's delivery lease alone - yet it records renewal failures and answers the grant guard
+// like every pod. Its record is pruned when the guard asks (RenewalFailedWithin): a failure as old
+// as the window it is asked about leaves the record, so a pod that never runs the reaper does not
+// keep every failure it ever recorded. A younger failure stays.
+func TestARenewalFailureRecordIsPrunedOnAPodThatRunsNoReaper(t *testing.T) {
+	const (
+		holder    = "ses_standby_failed_registration"
+		other     = "ses_standby_other_registration"
+		role      = "standby-role"
+		otherRole = "standby-other-role"
+		window    = contracts.SessionLiveWindow
+	)
+	cause := errors.New("the interest bucket did not answer the registration's read")
+	rig := newRepairRig(t, nil)
+	claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
+	claimRoleAs(t, rig.reg, other, "m1", otherRole, roleClaimInstance)
+	waitForHeld(t, rig.reg, holder, role)
+	waitForHeld(t, rig.reg, other, otherRole)
+	settle(rig)
+
+	recorded := rig.clock.Now()
+	rig.reg.RecordRenewalFailures(holder, cause)
+	held := renewalFailureKey{role: role, sessionID: holder}
+	if got := recordedRenewalFailures(rig.reg); !slices.Equal(got, []renewalFailureKey{held}) {
+		t.Fatalf("the record holds %v after %s's failed registration, want only %v", got, holder, held)
+	}
+
+	// One window later the holder's failure answers no reader, and this pod has run no reaper:
+	// the grant guard's read of another session's younger failure is the only prune there is.
+	rig.clock.Set(recorded.Add(window))
+	otherRecorded := rig.clock.Now()
+	rig.reg.RecordRenewalFailures(other, cause)
+	requireRenewalFailure(t, rig.reg, otherRole, other, otherRecorded, cause)
+	young := renewalFailureKey{role: otherRole, sessionID: other}
+	if got := recordedRenewalFailures(rig.reg); !slices.Equal(got, []renewalFailureKey{young}) {
+		t.Fatalf("after the grant guard's read one window past %s's failure the record holds %v, want only %v: a pod that runs no reaper kept a failure no reader can be answered with",
+			holder, got, young)
+	}
+}
+
+// The role claim reaper's pass prunes the record by itself, with no read of it before the pass
+// (RenewalFailedWithin prunes too, so a row that reads the record first cannot tell whether the
+// pass pruned anything): a failure as old as the pass's window leaves the record.
+func TestTheRoleClaimReaperPrunesTheRenewalFailureRecordWithNoReadBeforeIt(t *testing.T) {
+	const (
+		holder = "ses_reaped_failed_registration"
+		role   = "reaped-role"
+		window = contracts.SessionLiveWindow
+	)
+	cause := errors.New("the interest bucket did not answer the registration's read")
+	rig := newRepairRig(t, nil)
+	claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
+	waitForHeld(t, rig.reg, holder, role)
+	settle(rig)
+
+	recorded := rig.clock.Now()
+	rig.reg.RecordRenewalFailures(holder, cause)
+	held := renewalFailureKey{role: role, sessionID: holder}
+	if got := recordedRenewalFailures(rig.reg); !slices.Equal(got, []renewalFailureKey{held}) {
+		t.Fatalf("the record holds %v after %s's failed registration, want only %v", got, holder, held)
+	}
+	rig.clock.Set(recorded.Add(window))
+	if _, err := rig.reg.ReapRoleClaims(context.Background(), func(string) bool { return true }, 0, window); err != nil {
+		t.Fatalf("the role claim reaper's pass: %v", err)
+	}
+	if got := recordedRenewalFailures(rig.reg); len(got) != 0 {
+		t.Fatalf("after the reaper's pass one window past %s's failure the record holds %v, want none", holder, got)
+	}
+}
+
 // Every act that turns on who holds a role reads that role's claim record, in both directions the
 // copy can be wrong in: a surplus copy names the session where the store names another session or
 // none, and a lost copy lacks a claim the store gives the session. Each act is required to do what
@@ -553,7 +640,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 					if !slices.Equal(renewal.Set, []string{role}) || len(renewal.Renewed) != 0 {
 						t.Fatalf("the renewal weighed %v and renewed %v, want [%s] weighed and nothing renewed: the store gives the role to %q", renewal.Set, renewal.Renewed, role, storeHolder)
 					}
-					if stored := storedRoleClaim(t, rig.reg, role); stored != claimed {
+					if stored := storedRoleClaim(t, rig.reg, role); !reflect.DeepEqual(stored, claimed) {
 						t.Fatalf("the claim is now %+v, want it as the store held it, %+v", stored, claimed)
 					}
 					assertNoRenewalFailure(t, rig.reg, role, holder)
@@ -626,7 +713,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 					if reads := claims.reads(); reads != 1 {
 						t.Fatalf("the deregistration read %s's claim %d times, want once: the copy names it, and the claim record decides it", role, reads)
 					}
-					if stored := storedRoleClaim(t, rig.reg, role); stored != claimed {
+					if stored := storedRoleClaim(t, rig.reg, role); !reflect.DeepEqual(stored, claimed) {
 						t.Fatalf("the claim is now %+v, want it as the store held it, %+v: the store gives the role to %q", stored, claimed, storeHolder)
 					}
 					assertNoInterestRecord(t, rig, holder)
@@ -773,7 +860,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 				if err == nil || !errors.Is(err, errClaimReadFailed) || !strings.Contains(err.Error(), role) {
 					t.Fatalf("the renewal whose claim read failed answered %v, want an error naming %s and carrying %v", err, role, errClaimReadFailed)
 				}
-				if len(renewal.Renewed) != 0 || stored != claimed {
+				if len(renewal.Renewed) != 0 || !reflect.DeepEqual(stored, claimed) {
 					t.Fatalf("the renewal whose claim read failed renewed %v and left the claim %+v, want nothing renewed and the claim %+v", renewal.Renewed, stored, claimed)
 				}
 				requireRenewalFailure(t, rig.reg, role, holder, at, errClaimReadFailed)
@@ -810,7 +897,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 				if !errors.Is(err, errClaimReadFailed) {
 					t.Fatalf("the deregistration whose claim read failed answered %v, want an error carrying %v", err, errClaimReadFailed)
 				}
-				if stored != claimed {
+				if !reflect.DeepEqual(stored, claimed) {
 					t.Fatalf("the deregistration whose claim read failed left the claim %+v, want it as the store held it, %+v", stored, claimed)
 				}
 				if _, err := rig.interests.Get(holder); err != nil {

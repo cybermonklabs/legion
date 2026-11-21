@@ -19,15 +19,21 @@ import (
 )
 
 // durableBindInterval is how often an intake that does not deliver tries for its durable's hold,
-// and for the durable under it. It is cmd/listener/durable.go's interval: a standby polls every two
-// seconds, so it takes the durable over within one interval of the holder releasing its hold, and
-// within one interval of the hold's lapse when the holder dies (intakeHoldTTL).
+// and for the durable under it. It was the listener's own bind interval until
+// cybermonklabs/legion#2404's delivery lease replaced that bind: a standby polls every two seconds,
+// so it starts to take the durable over within one interval of the holder releasing its hold. A
+// release wakes no standby here (the intake listens on no duty.HoldReleasedChannel), and the
+// take-over's own statements and JetStream calls come after that start. When the
+// holder dies it takes the durable over at the hold's lapse (intakeHoldTTL) rather than at the
+// poll after it, which comes up to one interval later: a poll that finds the hold live arms a
+// timer to the lapse it read (heldDurable.run).
 //
-// Unlike the listener, which gives up at its durableBindDeadline and exits so the runtime starts
-// it again, Dispatch's standby polls for the life of the process: there is no deadline and no
-// exit. A durable another envoy-dispatch process holds is not a failed start but the ordinary
-// state of every process but one, which has every other thing a Dispatch server does to get on
-// with meanwhile.
+// Dispatch's standby polls for the life of the process: there is no deadline and no exit. The
+// listener's standby does the same now: it waits for the machine's delivery lease for as long as
+// it runs, reading the lease record every half second, and takes the lease over within seconds of
+// its holder's stop (cmd/listener/lease.go). A durable another envoy-dispatch process holds is not
+// a failed start but the ordinary state of every process but one, which has every other thing a
+// Dispatch server does to get on with meanwhile.
 const durableBindInterval = 2 * time.Second
 
 // standbyLogEvery bounds how often one intake says it is standing by for its durable. The first
@@ -39,9 +45,25 @@ const standbyLogEvery = 30 * time.Second
 // The hold a process delivers from a durable under (intakeHoldName, duty.Hold): it lasts
 // intakeHoldTTL on the database's clock after each renewal, is renewed every intakeHoldRenew, and
 // reports itself lost intakeHoldMargin before it lapses, so the holder stops delivering before any
-// standby can take it. A holder that dies is replaced within intakeHoldTTL plus one
-// durableBindInterval. The holder checks that the durable still delivers to it on the same
-// interval it renews (heldDurable.check).
+// standby can take it. A holder that dies was replaced within intakeHoldTTL plus one
+// durableBindInterval in the runs below, a JetStream reply lost with the standby's connection
+// during the take-over included. That bound is measured, and no code holds it: the take-over's
+// read of the durable may take up to intakeHoldRenew (lookupDurable), each of its finishing steps
+// up to takeOverCallTimeout, and the whole finish up to takeOverFinishWithin (finishTakeOver). Its
+// hold lapses intakeHoldTTL after the last renewal that landed -- the whole of
+// intakeHoldTTL after the death when the death comes the instant after one -- and a standby tries
+// for it again at the lapse its last poll read (heldDurable.run), so the take-over starts at the
+// lapse and has durableBindInterval to finish in. At that worst phase, with the standby's poll
+// just before the lapse, twenty runs replaced the holder 15.021 s to 15.041 s after its death, a
+// margin of 1.959 s at least (TestADeadHolderIsReplacedWithinTheStatedBoundAtTheWorstPhase). A
+// standby that only polled did not keep the bound there: its next poll came a whole interval after
+// the one before the lapse, and twenty runs of the same row took 17.014 s to 17.033 s, past the
+// bound by the take-over's own statements and JetStream calls. A reply lost with the standby's
+// connection costs the take-over the reconnect, nats.go's reconnect wait of about 1 s, which the
+// interval holds too (TestATakeOverThatLosesAReplyWithItsConnectionReplacesADeadHolderWithinTheStatedBound):
+// each of the take-over's JetStream calls ends at that connection's loss and is sent again on the
+// connection that came back at once (onConnection), rather than at its deadline. The holder checks
+// that the durable still delivers to it on the same interval it renews (heldDurable.check).
 const (
 	intakeHoldTTL    = 15 * time.Second
 	intakeHoldRenew  = 5 * time.Second
@@ -163,8 +185,8 @@ func (t *bindThrottle) reportStandby(name, message string) {
 // durable's hold (intakeHoldName), so that of every envoy-dispatch process -- of this build and of
 // the build before it, during a rolling release -- one delivers from the durable at a time:
 //
-//   - A standby tries for the hold every durableBindInterval and takes it when no holder holds it
-//     live: released, lapsed, or never taken.
+//   - A standby tries for the hold every durableBindInterval, and again the moment a hold it found
+//     live lapses, and takes it when no holder holds it live: released, lapsed, or never taken.
 //   - Under the hold, and under the durable's consumer lease, it takes the durable over
 //     (takeOver): it records the stream sequence after the durable's ack floor in the hold's
 //     token, deletes the durable, subscribes to a fresh deliver subject, creates the durable again
@@ -251,11 +273,12 @@ const intakeHoldLost = "dispatch delivery: the intake's hold is lost; it stops d
 // until ctx ends; then it stops delivering and releases the hold (stop), under the one stop
 // deadline armed at ctx's end (stopContext), so a take-over under way at that moment spends that
 // budget rather than starting one of its own. Each durableBindInterval while it delivers nothing,
-// and ready reports true, it tries for the hold and the durable (attempt); each intakeHoldRenew
-// while it delivers, it checks the durable still delivers to it (check); and the moment its hold
-// is lost it stops delivering. wake, when not nil, answers a channel the loop waits on beside its
-// tickers and takes again each time it fires -- the delivery intake's settings cache storing
-// settings, which is what makes its first attempt ready (Intake.Run).
+// and ready reports true, it tries for the hold and the durable (attempt), and again the moment a
+// hold an attempt found another process holding lapses, by the time that attempt's read left it;
+// each intakeHoldRenew while it delivers, it checks the durable still delivers to it (check); and
+// the moment its hold is lost it stops delivering. wake, when not nil, answers a channel the loop
+// waits on beside its tickers and takes again each time it fires -- the delivery intake's settings
+// cache storing settings, which is what makes its first attempt ready (Intake.Run).
 func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, ready func() bool) {
 	// Armed before the first attempt, so a take-over under way as ctx ends -- a standby's poll,
 	// whose JetStream calls take their own time -- spends the stop's budget rather than starting
@@ -267,9 +290,29 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 	defer binds.Stop()
 	checks := time.NewTicker(intakeHoldRenew)
 	defer checks.Stop()
+	// lapse fires as the hold the last attempt found another process holding live lapses: the
+	// time that attempt's read left it on the database's clock, counted from the read's answer,
+	// so it fires after the lapse and never before. A standby whose holder died tries again then
+	// rather than at its next poll, which can come up to durableBindInterval after the lapse. The
+	// attempt it makes is an ordinary one, which reads the hold again and takes it only if no
+	// holder holds it live, so a holder whose renewal landed after the read the timer was armed
+	// from keeps its hold (TestAHolderThatRenewsBetweenAStandbysReadAndItsLapseTimerKeepsTheHold).
+	// An attempt that leaves this intake holding the hold stops the timer, so a lapse read before
+	// a poll took the hold fires no attempt later (TestAStandbyWhosePollTakesTheHoldLeavesNoLapseTimerToFire).
+	// Any other attempt that finds no hold held live leaves the timer as it was: one whose read
+	// failed keeps the lapse the read before it found, and a timer that fires once another process
+	// has taken the hold costs one attempt, which reads that process's hold and arms to its lapse.
+	lapse := time.NewTimer(time.Hour)
+	lapse.Stop()
+	defer lapse.Stop()
 	attempt := func() {
 		if d.subject == "" && ready() {
-			d.attempt(ctx)
+			switch left := d.attempt(ctx); {
+			case left > 0:
+				lapse.Reset(left)
+			case d.hold != nil:
+				lapse.Stop()
+			}
 		}
 	}
 	// Taken before each attempt, which reads what the cache holds, so settings stored after that
@@ -292,6 +335,8 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 			changed = wake()
 			attempt()
 		case <-binds.C:
+			attempt()
+		case <-lapse.C:
 			attempt()
 		case <-checks.C:
 			d.check(ctx)
@@ -318,46 +363,86 @@ func (d *heldDurable) stopDeliveringWithin(budget time.Duration) {
 // attempt tries to make this intake the one delivering from the durable: it takes the hold when
 // no other process holds it live, then takes the durable over under it (takeOver). A durable
 // bound to a subject no hold recorded is read first outside the consumer lease, so a holder that
-// waits for a process of the build before holds to let go takes no lease on every poll.
-func (d *heldDurable) attempt(ctx context.Context) {
-	if d.hold == nil && !d.takeHold(ctx) {
-		return
+// waits for a process of the build before holds to let go takes no lease on every poll. It
+// answers how long the hold another process holds live has left, as its read found it
+// (takeHold), and zero when this intake holds the hold, or found it free, or could not read it.
+func (d *heldDurable) attempt(ctx context.Context) (left time.Duration) {
+	if d.hold == nil {
+		if left = d.takeHold(ctx); d.hold == nil {
+			return left
+		}
 	}
 	info, err := d.lookupDurable(ctx)
 	if err == nil && d.boundElsewhere(info) {
-		return
+		return 0
 	}
 	// The take-over asked for mutual exclusion and nothing else, and no tick is due (the zero time).
 	duty.Exclusive(ctx, d.leases, consumerLease(d.name), time.Time{}, 0, d.takeOver)
+	return 0
 }
 
-// lookupDurable reads the durable's state from the server, bounded by intakeHoldRenew.
+// lookupDurable reads the durable's state from the server, bounded by intakeHoldRenew and by the
+// connection it goes out on (onConnection).
 func (d *heldDurable) lookupDurable(ctx context.Context) (*natsgo.ConsumerInfo, error) {
 	lookup, cancel := context.WithTimeout(ctx, intakeHoldRenew)
 	defer cancel()
-	return d.nats.JS().ConsumerInfo(bus.Stream, d.name, natsgo.Context(lookup))
+	return onConnection(lookup, d.nats, d.consumerInfo)
+}
+
+// consumerInfo is the take-over's request for the durable's state, on the context call: the
+// request onConnection makes for lookupDurable and readDurable.
+func (d *heldDurable) consumerInfo(call context.Context) (*natsgo.ConsumerInfo, error) {
+	return d.nats.JS().ConsumerInfo(bus.Stream, d.name, natsgo.Context(call))
+}
+
+// onConnection makes request, a JetStream request of the take-over on the client's connection,
+// ending it with bus.ErrRequestLostWithConnection as soon as that connection is lost before the
+// answer comes (bus.RequestOnConnection). nats.go fails no request its connection drops, so one
+// whose reply died with the old socket would otherwise wait out its whole deadline, and the
+// take-over with it, for an answer nothing will send. The take-over's read of the durable
+// (readDurable) and each step of finishTakeOver (retryHeld) send such a request again at once.
+// lookupDurable sends it once, and its callers treat the error as any failed lookup: attempt goes
+// on to the take-over under the consumer lease, whose own read (readDurable) asks again, and check
+// changes nothing and looks again intakeHoldRenew later, at run's next check.
+func onConnection[T any](ctx context.Context, client *bus.Client, request func(context.Context) (T, error)) (T, error) {
+	return bus.RequestOnConnection(ctx, client, request)
+}
+
+// readDurable is the take-over's read of the durable's state, under its consumer lease. A read lost
+// with its connection (onConnection) is sent again at once on the connection that came back, while
+// this intake holds its hold: the loss says nothing about the durable.
+func (d *heldDurable) readDurable(ctx context.Context) (*natsgo.ConsumerInfo, error) {
+	for {
+		info, err := onConnection(ctx, d.nats, d.consumerInfo)
+		if !errors.Is(err, bus.ErrRequestLostWithConnection) || !d.holds() {
+			return info, err
+		}
+		slog.Info("dispatch delivery: the NATS consumer read was lost with its connection; reading it again", "name", d.name)
+	}
 }
 
 // heldElsewhere is the standby line of an intake whose durable's hold another process holds live.
 const heldElsewhere = "dispatch delivery: NATS consumer held by another process; standing by"
 
 // takeHold takes the durable's hold when no holder holds it live, keeping the token its row
-// records, and reports whether this intake holds it now. duty.TryHold records its own token as it
-// takes a lapsed hold, so the lapsed hold's token is read first (duty.HoldToken).
-func (d *heldDurable) takeHold(ctx context.Context) bool {
+// records, and sets d.hold once this intake holds it. While another process holds it live, it
+// answers how long that hold has left on the database's clock, as the read found it, and zero
+// otherwise. duty.TryHold records its own token as it takes a lapsed hold, so the lapsed hold's
+// token is read first (duty.HoldToken), in the read that says how long the hold has left.
+func (d *heldDurable) takeHold(ctx context.Context) (left time.Duration) {
 	holdName := intakeHoldName(d.name)
 	bounded, cancel := context.WithTimeout(ctx, intakeHoldRenew)
 	defer cancel()
-	token, live, err := duty.HoldToken(bounded, d.leases, holdName)
+	token, left, err := duty.HoldToken(bounded, d.leases, holdName)
 	switch {
 	case err != nil:
 		if ctx.Err() == nil {
 			slog.Error("dispatch delivery: read the intake's hold", "name", d.name, "hold", holdName, "error", err)
 		}
-		return false
-	case live:
+		return 0
+	case left > 0:
 		d.throttle.reportStandby(d.name, heldElsewhere)
-		return false
+		return left
 	}
 	hold, err := duty.TryHold(bounded, d.leases, holdName, d.holder, duty.HoldOptions{
 		TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin, Token: token,
@@ -366,15 +451,15 @@ func (d *heldDurable) takeHold(ctx context.Context) bool {
 		if ctx.Err() == nil {
 			slog.Error("dispatch delivery: take the intake's hold", "name", d.name, "hold", holdName, "error", err)
 		}
-		return false
+		return 0
 	}
 	if hold == nil {
 		d.throttle.reportStandby(d.name, heldElsewhere)
-		return false
+		return 0
 	}
 	d.hold, d.recorded = hold, parseIntakeHoldToken(token)
 	slog.Info("dispatch delivery: took the intake's hold", "name", d.name, "hold", holdName)
-	return true
+	return 0
 }
 
 // boundElsewhere reports whether info is a durable bound to a subject the hold does not record: a
@@ -418,12 +503,11 @@ func (d *heldDurable) holds() bool {
 // end inside this one lease (finishTakeOver, which says what a lease given up with the durable
 // absent leaves behind).
 func (d *heldDurable) takeOver(ctx context.Context) {
-	js := d.nats.JS()
 	wanted := d.config()
 	name := wanted.Durable
 	create := wanted
 	deleteFirst := false
-	info, err := js.ConsumerInfo(bus.Stream, name, natsgo.Context(ctx))
+	info, err := d.readDurable(ctx)
 	switch {
 	case errors.Is(err, natsgo.ErrConsumerNotFound):
 		if d.recorded.start != 0 {
@@ -535,12 +619,14 @@ const (
 // stream's first message for the events durable and the next new message for the jobs durable
 // (TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconciles).
 func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst bool) {
-	js := d.nats.JS()
 	finish, cancel := context.WithTimeout(context.Background(), takeOverFinishWithin)
 	defer cancel()
 	if deleteFirst {
 		if d.retryHeld(finish, "delete NATS consumer to take it over", func(call context.Context) error {
-			if err := js.DeleteConsumer(bus.Stream, d.name, natsgo.Context(call)); err != nil && !errors.Is(err, natsgo.ErrConsumerNotFound) {
+			_, err := onConnection(call, d.nats, func(request context.Context) (struct{}, error) {
+				return struct{}{}, d.nats.JS().DeleteConsumer(bus.Stream, d.name, natsgo.Context(request))
+			})
+			if err != nil && !errors.Is(err, natsgo.ErrConsumerNotFound) {
 				return err
 			}
 			return nil
@@ -555,7 +641,9 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 		return
 	}
 	if d.retryHeld(finish, "create NATS consumer", func(call context.Context) error {
-		_, err := createDurable(js, &create, natsgo.Context(call))
+		_, err := onConnection(call, d.nats, func(request context.Context) (*natsgo.ConsumerInfo, error) {
+			return createDurable(d.nats.JS(), &create, natsgo.Context(request))
+		})
 		return err
 	}, "subject", create.FilterSubject, "start_seq", create.OptStartSeq) != nil {
 		d.stopDeliveringWithin(intakeHoldRenew)
@@ -584,14 +672,16 @@ var errHoldNotHeld = errors.New("the intake no longer holds its hold")
 
 // retryHeld calls step until it succeeds, while this intake holds its hold and finish has not
 // ended, waiting takeOverFirstRetry after the first failed try and twice as long after each one
-// after it, up to takeOverLastRetry. Each try runs on a context that ends takeOverCallTimeout
-// after it starts, or at the hold's loss deadline if that comes first, so no step acts once
-// another process can hold the hold. A try the connection's grant refuses (bus.ErrPublishDenied)
-// ends the step at once, since no later try gets past it. A failed try is logged at WARN as doing
-// what names, and the failure it gives up on at ERROR by failedStep, so a caller writes no step's
-// text a second time and keeps only what it does next. It returns nil once step succeeds, and
-// otherwise the last try's error, or errHoldNotHeld. attributes are the caller's own on that ERROR
-// line.
+// after it, up to takeOverLastRetry. A try lost with its connection
+// (bus.ErrRequestLostWithConnection) is tried again at once, on the connection that came back,
+// and leaves the wait where it was: the loss says nothing about the step. A try the connection's
+// grant refuses (bus.ErrPublishDenied) ends the step at once, since no later try gets past it.
+// Each try runs on a context that ends takeOverCallTimeout after it starts, or at the hold's loss
+// deadline if that comes first, so no step acts once another process can hold the hold. A failed
+// try is logged at WARN as doing what names, and the failure it gives up on at ERROR by
+// failedStep, so a caller writes no step's text a second time and keeps only what it does next.
+// It returns nil once step succeeds, and otherwise the last try's error, or errHoldNotHeld.
+// attributes are the caller's own on that ERROR line.
 func (d *heldDurable) retryHeld(finish context.Context, doing string, step func(context.Context) error, attributes ...any) error {
 	wait := takeOverFirstRetry
 	for {
@@ -611,15 +701,21 @@ func (d *heldDurable) retryHeld(finish context.Context, doing string, step func(
 		if errors.Is(err, bus.ErrPublishDenied) {
 			return d.failedStep(doing, err, attributes)
 		}
-		slog.Warn("dispatch delivery: take-over step failed; trying it again", "name", d.name, "step", doing, "retry_in", wait, "error", err)
-		timer := time.NewTimer(wait)
+		retryIn := wait
+		if errors.Is(err, bus.ErrRequestLostWithConnection) {
+			retryIn = 0
+		}
+		slog.Warn("dispatch delivery: take-over step failed; trying it again", "name", d.name, "step", doing, "retry_in", retryIn, "error", err)
+		timer := time.NewTimer(retryIn)
 		select {
 		case <-finish.Done():
 			timer.Stop()
 			return d.failedStep(doing, err, attributes)
 		case <-timer.C:
 		}
-		wait = min(2*wait, takeOverLastRetry)
+		if retryIn > 0 {
+			wait = min(2*wait, takeOverLastRetry)
+		}
 	}
 }
 

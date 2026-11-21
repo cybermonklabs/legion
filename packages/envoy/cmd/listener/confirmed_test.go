@@ -65,13 +65,14 @@ func newConfirmedRecord(t *testing.T) *dedupe.Cache {
 // withRoleClaimDrain gives d what POST /v1/roles/set needs beyond its stores, as main wires it.
 //
 // The delivery configuration a route runs a kept-lane drain on: a config over d's stores with
-// the dedupe cache and the attempt cache the drain judges a forward against (beforeForward),
+// the delivery ledger the drain takes its forward's attempt from (walkKeptRole),
 // startRoleForward(client) as the forward, a logger, a delivered counter, the drain's
 // kept-expired, dead-letter and undecodable counters, the dead letter's publish as main.go sets
 // it (client.PublishStoredAs), the guards two drains of one role take (roleKeepGuards) and the
-// listener's clock, time.Now as main.go sets it. POST /v1/roles/set hands this config to the
-// handovers it starts (runKeptRoleDrain) - a granted claim's, and one for each role of a claimant
-// it read not live before its refresh - and so does POST /v1/interests/subscribe for a
+// listener's clock, time.Now as main.go sets it. The ledger is this process's own (dedupe.Memory),
+// as a listener without the listener state bucket keeps it. POST /v1/roles/set hands this config
+// to the handovers it starts (runKeptRoleDrain) - a granted claim's, and one for each role of a
+// claimant it read not live before its refresh - and so does POST /v1/interests/subscribe for a
 // registration that makes its session live again while its row or the role claim copy names a
 // role for it, so a test that claims a role through the one route, or registers a role lane or a
 // session that holds a claim through the other, needs it.
@@ -83,10 +84,6 @@ func newConfirmedRecord(t *testing.T) *dedupe.Cache {
 // one window with nothing to keep in step by hand.
 func withRoleClaimDrain(t *testing.T, d *listenerDeps) *listenerDeps {
 	t.Helper()
-	cache := dedupe.New(10 * time.Minute)
-	t.Cleanup(cache.Stop)
-	attempts := dedupe.New(5 * time.Minute)
-	t.Cleanup(attempts.Stop)
 	logs := &cmdtest.LockedBuffer{}
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -98,8 +95,7 @@ func withRoleClaimDrain(t *testing.T, d *listenerDeps) *listenerDeps {
 		forwardRole:         startRoleForward(d.client),
 		registry:            d.registry,
 		sessions:            d.sessions,
-		dedupeCache:         cache,
-		attemptCache:        attempts,
+		ledger:              dedupe.NewMemory(deliveryHandlingLimit + ledgerTakeoverMargin),
 		logger:              logging.NewWithWriter("test", logs),
 		messagesDelivered:   metrics.New().NewCounter("test_messages_delivered", "test"),
 		roleKeptExpired:     metrics.New().NewCounter("test_role_kept_expired", "test"),
@@ -463,7 +459,7 @@ func TestDurableAcknowledgesAStoredForwardCopyAndDeliversNothing(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if harness.config.dedupeCache.Seen(forwardCopy.DedupeKey, "ses_subscriber") {
+	if ledgerDelivered(t, harness.config, forwardCopy.DedupeKey, "ses_subscriber") {
 		t.Fatalf("the durable delivered the stored copy to the topic's subscriber, which is sent nothing for it")
 	}
 }

@@ -7,10 +7,14 @@
  * wired to this server.
  */
 import { expect, spyOn, test } from "bun:test"
-import { mkdir, open, readdir, readFile, stat } from "node:fs/promises"
+import { mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises"
 import { legacyAgentSubject } from "@legion/contracts"
 import type { Interest, SubscribeResult } from "@legion/envoy-client/transport"
-import { type ChannelNotification, startChannelSession } from "../src/envoy-channel-server"
+import {
+  type ChannelNotification,
+  type ChannelSession,
+  startChannelSession,
+} from "../src/envoy-channel-server"
 import { type ReplayStateFile, replayStateFile, writeReplayState } from "../src/replay-state"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import {
@@ -98,37 +102,52 @@ function removalFrame(sessionID: string, topic: string): string {
   })
 }
 
+/** The listener's interest registry a row's sessions register with (`registryClient`). */
+interface Registry {
+  readonly client: FakeClient
+  topicsOf(sessionID: string): string[]
+  /** The topics of every release a session asked for, landed or refused, in order. */
+  readonly releases: string[][]
+  /** While set, every release fails, as a listener that is down fails it, and the entry keeps
+   *  the topics. */
+  refusing: boolean
+}
+
 /**
  * The listener's interest registry, as a session's registrations reach it: a registration merges
  * its topics into the entry and never removes one, and every one it accepts is answered with the
  * session's own consumer.
  */
-function registryClient(): {
-  readonly client: FakeClient
-  topicsOf(sessionID: string): string[]
-} {
+function registryClient(): Registry {
   const entries = new Map<string, Set<string>>()
   const entry = (sessionID: string): Set<string> => {
     const held = entries.get(sessionID) ?? new Set<string>()
     entries.set(sessionID, held)
     return held
   }
-  const client = recordingClient([], {
-    subscribe: async (input): Promise<SubscribeResult> => {
-      for (const topic of input.topics) entry(input.sessionID).add(topic)
-      return { ...noInterest(input.sessionID), topics: [...entry(input.sessionID)] }
-    },
-    unsubscribe: async (input) => {
-      for (const topic of input.topics) entry(input.sessionID).delete(topic)
-    },
-    getInterest: async (sessionID): Promise<Interest> => ({
-      session_id: sessionID,
-      machine_id: "devbox",
-      dir: "/tmp",
-      topics: [...entry(sessionID)],
+  const registry: Registry = {
+    client: recordingClient([], {
+      subscribe: async (input): Promise<SubscribeResult> => {
+        for (const topic of input.topics) entry(input.sessionID).add(topic)
+        return { ...noInterest(input.sessionID), topics: [...entry(input.sessionID)] }
+      },
+      unsubscribe: async (input) => {
+        registry.releases.push([...input.topics])
+        if (registry.refusing) throw new Error("the listener is down")
+        for (const topic of input.topics) entry(input.sessionID).delete(topic)
+      },
+      getInterest: async (sessionID): Promise<Interest> => ({
+        session_id: sessionID,
+        machine_id: "devbox",
+        dir: "/tmp",
+        topics: [...entry(sessionID)],
+      }),
     }),
-  })
-  return { client, topicsOf: (sessionID) => [...entry(sessionID)] }
+    topicsOf: (sessionID: string) => [...entry(sessionID)],
+    releases: [],
+    refusing: false,
+  }
+  return registry
 }
 
 async function stateOf(directory: string, sessionID: string): Promise<ReplayStateFile> {
@@ -285,6 +304,141 @@ test("a removal the relay delivers after a restart re-registered the topic takes
     expect(registry.topicsOf(SESSION)).not.toContain(ISSUE_TOPIC)
   } finally {
     await third.shutdown()
+  }
+})
+
+// A restart's first good read of the interests follows every topic the listener's entry holds but
+// one the person unfollowed whose release at the listener failed, which it releases instead:
+// `releasedOnResume` in @legion/envoy-client/delivery-ledger is the rule. Each row below holds
+// one side of it. The person's unfollow is recorded in the state file; a topic the file does not
+// name is no evidence, and it is followed again from the entry.
+const TEAM_TOPIC = "notifications.team.deploys"
+const UNFOLLOWED = "notifications.team.alpha"
+
+/** Starts this session against `registry`, as each process of it does. */
+function startOn(directory: string, registry: Registry): Promise<ChannelSession> {
+  return startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: new FakeNats(),
+      client: registry.client,
+    }),
+  )
+}
+
+/** The person unfollows `topics` while the listener refuses every release, so the entry keeps
+ *  them. */
+async function unfollowRefused(
+  session: ChannelSession,
+  registry: Registry,
+  topics: readonly string[],
+): Promise<void> {
+  registry.refusing = true
+  const answer = await session.unfollow(topics)
+  registry.refusing = false
+  expect(answer.registrationError).toBe("the listener is down")
+}
+
+test("a restart releases a topic the person unfollowed whose release failed, and does not follow it again", async () => {
+  const directory = scratchState()
+  const registry = registryClient()
+  const first = await startOn(directory, registry)
+  try {
+    await first.follow([ISSUE_TOPIC])
+    await unfollowRefused(first, registry, [ISSUE_TOPIC])
+  } finally {
+    await first.shutdown()
+  }
+  // The process stopped before a heartbeat released them: the entry still holds the topic and the
+  // base its follow derived.
+  expect(registry.topicsOf(SESSION)).toEqual(expect.arrayContaining([ISSUE_TOPIC, ISSUE_BASE]))
+
+  const second = await startOn(directory, registry)
+  try {
+    expect(second.topics()).not.toContain(ISSUE_TOPIC)
+    expect(second.topics()).not.toContain(ISSUE_BASE)
+    expect(registry.topicsOf(SESSION)).not.toContain(ISSUE_TOPIC)
+    expect(registry.topicsOf(SESSION)).not.toContain(ISSUE_BASE)
+    // The release landed, so the file holds no record of the unfollow any more.
+    expect((await stateOf(directory, SESSION)).state?.unfollowed).toBeUndefined()
+  } finally {
+    await second.shutdown()
+  }
+})
+
+test("a restart follows again a topic whose follow the state file never took, and releases the person's unfollow", async () => {
+  const directory = scratchState()
+  const registry = registryClient()
+  const file = replayStateFile(directory, SESSION)
+  const written: string[] = []
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk))
+    return true
+  })
+  let lastWritten: ReplayStateFile = { ledger: [] }
+  try {
+    const first = await startOn(directory, registry)
+    try {
+      await first.follow([UNFOLLOWED])
+      await unfollowRefused(first, registry, [UNFOLLOWED])
+      // From here every write of the file fails, as a full disk fails it: a directory where the
+      // file goes, so the rename onto it fails. The file keeps what the unfollow wrote.
+      lastWritten = await stateOf(directory, SESSION)
+      await rm(file)
+      await mkdir(file)
+      await first.follow([TEAM_TOPIC])
+      // The registration took the follow; the file did not.
+      expect(registry.topicsOf(SESSION)).toContain(TEAM_TOPIC)
+      expect(written.some((line) => line.includes("could not persist"))).toBe(true)
+    } finally {
+      await first.shutdown()
+    }
+  } finally {
+    stderr.mockRestore()
+  }
+  await rm(file, { recursive: true })
+  await writeReplayState(file, lastWritten)
+  expect(lastWritten.state?.topics).not.toContain(TEAM_TOPIC)
+
+  const releasesBefore = registry.releases.length
+  const second = await startOn(directory, registry)
+  try {
+    expect(second.topics()).toContain(TEAM_TOPIC)
+    expect(registry.topicsOf(SESSION)).toContain(TEAM_TOPIC)
+    expect(second.topics()).not.toContain(UNFOLLOWED)
+    expect(registry.topicsOf(SESSION)).not.toContain(UNFOLLOWED)
+    // The restart released the person's unfollow and nothing the file merely does not name.
+    expect(registry.releases.slice(releasesBefore).flat()).toEqual([UNFOLLOWED])
+  } finally {
+    await second.shutdown()
+  }
+})
+
+test("a restart follows again the base an X.> follow derived after the person unfollowed it, and releases the person's unfollow", async () => {
+  const directory = scratchState()
+  const registry = registryClient()
+  const first = await startOn(directory, registry)
+  try {
+    await first.follow([ISSUE_BASE, UNFOLLOWED])
+    await unfollowRefused(first, registry, [ISSUE_BASE, UNFOLLOWED])
+    // The `X.>` follow derives the base again: a follow after the person's unfollow of it.
+    await first.follow([ISSUE_TOPIC])
+    expect(first.topics()).toEqual(expect.arrayContaining([ISSUE_BASE, ISSUE_TOPIC]))
+  } finally {
+    await first.shutdown()
+  }
+
+  const releasesBefore = registry.releases.length
+  const second = await startOn(directory, registry)
+  try {
+    expect(second.topics()).toEqual(expect.arrayContaining([ISSUE_BASE, ISSUE_TOPIC]))
+    expect(registry.topicsOf(SESSION)).toEqual(expect.arrayContaining([ISSUE_BASE, ISSUE_TOPIC]))
+    expect(second.topics()).not.toContain(UNFOLLOWED)
+    expect(registry.topicsOf(SESSION)).not.toContain(UNFOLLOWED)
+    // The base was never released, not even for the registration to add it back: the restart
+    // released the person's unfollow alone.
+    expect(registry.releases.slice(releasesBefore).flat()).toEqual([UNFOLLOWED])
+  } finally {
+    await second.shutdown()
   }
 })
 

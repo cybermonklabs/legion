@@ -1,7 +1,6 @@
 package gcp
 
 import (
-	"strconv"
 	"strings"
 
 	appsv1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/apps/v1"
@@ -23,9 +22,10 @@ const (
 	clusteredHubListenerPreStopSeconds = 5
 	// clusteredHubListenerShutdownSeconds is the longest the session listener takes to stop on its
 	// SIGTERM: the HTTP server's 10 s, the role lane's 5 s (a 3 s drain of the lane's own client,
-	// and the 2 s receipt window for the forwards its handler handed over, roleLane.drain) and the
-	// NATS connection's 13 s drain, run one after another. The listener holds the three as
-	// stopHTTPGrace, stopLaneGrace and stopClientDrain, summed as stopBudget
+	// and the 2 s it waits for the stream to acknowledge the forwards its handler handed over,
+	// roleForwardTimeout, roleLane.drain) and the NATS connection's 13 s drain, run one after
+	// another. The listener holds the three as stopHTTPGrace, stopLaneGrace and stopClientDrain,
+	// summed as stopBudget
 	// (packages/envoy/cmd/listener/main.go); this module is a Go module of its own and cannot
 	// import them, so the number is written again here and the two listener pod goldens are held
 	// to stopBudget by the listener's own TestListenerPodGracesCoverTheStopBudget.
@@ -39,34 +39,16 @@ const (
 	// lane's drain and the NATS drain) are hard, and the process exits after them. So the margin
 	// covers the kubelet's own latency between the preStop hook's return and SIGTERM, the
 	// container's teardown and a late tick on a loaded node, and not a listener that runs over
-	// its own budget. A hung pod holds its durable for the whole grace. The replacement gives up
-	// waiting for it at the listener's 135 s bind deadline (durableBindDeadline in
-	// packages/envoy/cmd/listener/durable.go), which counts from the replacement's /v1 open, since
-	// the listener starts the bind right after it. So what has to fit under that deadline is the
-	// replacement's startup probe's lag behind that open (clusteredHubListenerStartupProbe) plus
-	// this grace: at 40 s the lag may be up to 95 s, and the probe's 10 s period keeps it at most
-	// 10 s. A longer grace costs nothing on a normal stop, because the kubelet proceeds as soon as
-	// the container exits.
+	// its own budget. The replacement pod stands by for the machine's delivery lease for as long
+	// as it runs (packages/envoy/cmd/listener/lease.go), so no deadline of the listener's own ends
+	// its wait for the durable this one holds. A longer grace costs nothing on a normal stop,
+	// because the kubelet proceeds as soon as the container exits.
 	clusteredHubListenerGraceSeconds = clusteredHubListenerPreStopSeconds + clusteredHubListenerShutdownSeconds + 7
 
 	// The listener pod's seed volume and where its container mounts it: its NATS seed from the
 	// operator's Secret, by reference.
 	clusteredHubListenerSeedMount = "/var/run/secrets/envoy"
 	clusteredHubListenerSeedFile  = "nats-seed"
-
-	// clusteredHubListenerServedGauge is the gauge whose sample line on the listener's /metrics
-	// says its /v1 gate is open and its interest list can be served. The listener's
-	// registerListGauges (packages/envoy/cmd/listener/main.go) writes it over the stores
-	// openV1Routes publishes right after it opens the gate, and writes no sample before then, nor
-	// while GET /v1/interests/ would answer the refilling 503 (before the interest copy's first
-	// complete read, or once the copy has not followed its bucket for longer than its stale
-	// bound); its # HELP and # TYPE lines are in every scrape. A listener has done so since
-	// legion-envoy-v29.15.0; an older one writes a sample from its first scrape, so the startup
-	// probe passes there at the listener's first answer, as the /livez probe before it did. This
-	// module cannot import package main, so the listener's own
-	// TestHubListenerStartupProbePassesOnlyOnceV1Serves holds this name, as the pod golden
-	// renders it, to registerListGauges.
-	clusteredHubListenerServedGauge = "envoy_active_interests"
 )
 
 // clusteredHubListenerEnv is the listener container's environment: the resolver's rendering of
@@ -108,43 +90,29 @@ func clusteredHubListenerName(release string) string {
 	return release + "-listener"
 }
 
-// clusteredHubListenerStartupProbe is the session listener's startup probe: /bin/sh -c of a scrape
-// of the listener's /metrics on the container's loopback port, which passes only when the scrape
-// holds the sample line of clusteredHubListenerServedGauge, so only once /v1 serves. The probe
-// holds no bearer, and a listener that requires one (clusteredHubListenerEnv) refuses /v1 to it
-// in apiAuth before the gate, while every listener serves /metrics to any caller (main's mux, and
-// isAPIAuthExemptPath in packages/envoy/cmd/listener/apiauth.go). The pattern is anchored and ends
-// in the space before the value, so it matches the sample line and never the gauge's "# HELP" or
-// "# TYPE" line. With -f curl prints nothing for an HTTP error, and a pipeline's status is its
-// last command's, grep's, in a POSIX shell without pipefail, which dash, the listener image's
-// /bin/sh, is; TestClusteredNatsHubListenerStartupProbePassesOnlyOnTheSample runs the rendered
-// script under the package's test shell (shellCommand: /bin/sh, or the shell ENVOY_TEST_SHELL
-// names). --max-time 5 makes curl give up inside the probe's 6 s timeout. 60 failures 10 s apart
-// give /v1 ten minutes to open, after which the kubelet restarts the container.
-func clusteredHubListenerStartupProbe(port int) *corev1.ProbeArgs {
-	script := "curl -fsS --max-time 5 http://127.0.0.1:" + strconv.Itoa(port) + "/metrics | grep -q '^" + clusteredHubListenerServedGauge + " '"
-	return &corev1.ProbeArgs{
-		Exec:          &corev1.ExecActionArgs{Command: pulumi.StringArray{pulumi.String("/bin/sh"), pulumi.String("-c"), pulumi.String(script)}},
-		PeriodSeconds: pulumi.Int(10), TimeoutSeconds: pulumi.Int(6), FailureThreshold: pulumi.Int(60),
-	}
-}
-
 // clusteredHubListenerPod is the session listener's pod: the listener container alone, with the
 // NATS seed mounted from the operator's Secret by reference. It runs as clusteredHubTailnetUID,
 // the uid its image's own user has, and stops inside clusteredHubListenerGraceSeconds, which
-// holds the preStop wait and the listener's own stop. Its startup probe
-// (clusteredHubListenerStartupProbe) passes only once the listener's /v1 gate is open, and until
-// it has passed the kubelet runs neither readiness nor liveness and the pod is not Ready.
-// So a new pod stays out of its Service until /v1 serves, and the rolling update
-// newClusteredHubListener sets (maxSurge 1, maxUnavailable 0) keeps the old pod serving until the
-// new one is Ready, which the Deployment controller holds. The gate opens without waiting for the
-// durable consumer the old pod holds until it stops (main opens /v1 before bindListenerDurable,
-// packages/envoy/cmd/listener/main.go), so the new pod's gate cannot wait on the old pod.
-// Readiness and liveness are answersProbe, curl -sS of /livez, which the listener answers 204
-// without touching NATS: they are status-blind, so a fault of the hub, which every pod shares,
-// neither takes the one pod out of its Service nor restarts it, and a listener whose bus is down
-// keeps its warm caches and repairs itself; only one that answers nothing at all is taken out or
-// restarted.
+// holds the preStop wait and the listener's own stop. Its three probes read two routes. Startup
+// and liveness are answersProbe, curl -sS of /livez, which the listener answers 204 from its
+// first answer on without touching NATS: they are status-blind, so only a listener that answers
+// nothing at all is restarted. A listener whose NATS does not answer, answers from its cluster's
+// state or refuses a grant at its start stays up and not ready for as long as that lasts
+// (packages/envoy/cmd/listener/README.md, "Start: what ends it and what it waits out"), and these
+// probes leave it running, with no restart and no restart backoff, so it serves the moment its
+// NATS lets it; one whose bus goes down later keeps its warm caches and repairs itself. Readiness
+// is readyProbe, curl -fsS of /healthz, which reads the HTTP status and never the body, and is the
+// pod's gate into its Service: the listener answers /healthz 503 "starting" until its /v1 gate is
+// open, its receive loop has started and its interest copy has completed its first read
+// (listenerHealth and interestCopyRead, packages/envoy/cmd/listener/main.go). So a new pod stays
+// out of its Service until its /v1 serves its interest list, and the rolling update newClusteredHubListener sets (maxSurge 1,
+// maxUnavailable 0) keeps the old pod serving until the new one is Ready, which the Deployment
+// controller holds. The new pod opens /v1 without waiting for the delivery lease the old pod
+// holds, and answers /healthz 200 as its standby, so the rolling update never waits for the lease.
+// The listener's own TestHubListenerIsReadyOnlyOnceItsV1Serves runs this readiness probe, as the
+// pod golden renders it, on a listener, and
+// TestHubListenerProbesNeverRestartAListenerWhoseNATSRefusesItsStart runs the startup and liveness
+// probes through a refusal.
 func clusteredHubListenerPod(s clusteredHubSettings) corev1.PodSpecArgs {
 	l := s.listener
 	pod := corev1.PodSpecArgs{
@@ -163,12 +131,11 @@ func clusteredHubListenerPod(s clusteredHubSettings) corev1.PodSpecArgs {
 			// proxy, then stops on its SIGTERM; the image (debian:bookworm-slim) carries
 			// /bin/sleep.
 			Lifecycle: sleepPreStop(clusteredHubListenerPreStopSeconds),
-			// Up to ten minutes for /v1 to open (clusteredHubListenerStartupProbe), then
-			// status-blind (answersProbe says why any answer is alive): 30 s of no answer at all
-			// takes the pod out of its Service and one minute of it restarts the container.
-			StartupProbe:    clusteredHubListenerStartupProbe(core.DefaultListenerPort),
+			// Up to two minutes for the first answer, then one minute of no answer at all
+			// restarts it (answersProbe says why any answer is alive).
+			StartupProbe:    answersProbe(core.DefaultListenerPort, 5, 24),
 			LivenessProbe:   answersProbe(core.DefaultListenerPort, 10, 6),
-			ReadinessProbe:  answersProbe(core.DefaultListenerPort, 10, 3),
+			ReadinessProbe:  readyProbe(core.DefaultListenerPort, 5, 6, 2),
 			SecurityContext: tailnetContainerSecurity(),
 		}},
 		Volumes: corev1.VolumeArray{corev1.VolumeArgs{Name: pulumi.String("nats-seed"), Secret: &corev1.SecretVolumeSourceArgs{
@@ -202,12 +169,11 @@ func newClusteredHubListener(ctx *pulumi.Context, s clusteredHubSettings, classR
 		return err
 	}
 	pods := pulumi.ToStringMap(clusteredHubListenerSelector(s.name))
-	// One pod, and the component writes the count with no input behind it: until
-	// cybermonklabs/legion#2404 gives the listener a delivery lease, each further copy waits the
-	// listener's durable bind deadline for the subscription the first copy holds, gives up and
-	// restarts, for ever. The new pod is surged in before the old one goes, so the rollout is a
-	// handover rather than a gap, and the durable the old pod holds is free by the time the new
-	// one has waited its deadline out.
+	// One pod, and the component writes the count with no input behind it. A further copy of a
+	// listener with the delivery lease (cybermonklabs/legion#2404) stands by and takes delivery
+	// over within seconds of the first pod's stop, where one from before it waited the durable
+	// out, gave up and restarted; raising the count is the deployment's change. The new pod is
+	// surged in before the old one goes, so the rollout is a handover rather than a gap.
 	if _, err := appsv1.NewDeployment(ctx, name, &appsv1.DeploymentArgs{
 		Metadata: objectMeta(name, s.namespace),
 		Spec: appsv1.DeploymentSpecArgs{

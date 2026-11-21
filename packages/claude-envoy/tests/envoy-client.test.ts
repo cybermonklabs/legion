@@ -625,7 +625,7 @@ test("a send whose only attempt was answered with an unreadable 2xx names that o
 })
 
 /** The sentence of the listener's 429 for a session past its sending limit
- *  (`senderRateLimitedAnswer`, packages/envoy/cmd/listener/sender_limit.go). */
+ *  (`listenerwire.SenderRateLimited`, built in packages/envoy/cmd/listener/sender_limit.go). */
 const RATE_LIMITED_SENTENCE =
   "Your sending is rate limited. This message was not sent. This listener lets one session send " +
   "4 messages a minute and 2 at once. You can send it again after 15 seconds."

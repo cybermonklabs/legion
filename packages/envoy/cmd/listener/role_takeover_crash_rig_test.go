@@ -112,7 +112,7 @@ func newCrashRig(t *testing.T) *crashRig {
 		defer cancel()
 		relays.stop(ctx)
 	})
-	relays.setOwned(true)
+	relays.setOwned(endlessTerm())
 	roleLane, _, err := bus.ConnectRoleLane([]string{url}, cfg.machineID, coreNATSDeliveryHandler(*cfg))
 	if err != nil {
 		t.Fatalf("open the role lane: %v", err)

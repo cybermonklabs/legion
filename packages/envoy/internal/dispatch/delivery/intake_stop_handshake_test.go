@@ -525,10 +525,10 @@ func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing
 }
 
 // A hand-back outside any stop on a reconnecting link logs at INFO, not ERROR. The bus sets
-// ReconnectBufSize -1 (connect.go:267), which disables the reconnect buffer: nats.go returns
-// ErrReconnectBufExceeded at once for every publish during a reconnect. The message stays
-// outstanding for its ack wait. The negative control is a callNATS without the INFO case for
-// ErrReconnectBufExceeded.
+// ReconnectBufSize -1 (internal/bus/connect.go, options), which disables the reconnect buffer:
+// nats.go returns ErrReconnectBufExceeded at once for every publish during a reconnect. The
+// message stays outstanding for its ack wait. The negative control is a callNATS without the INFO
+// case for ErrReconnectBufExceeded.
 func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 	logs := captureLogs(t)
 	handlerReady := make(chan struct{}, 1)

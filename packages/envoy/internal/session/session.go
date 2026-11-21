@@ -45,10 +45,10 @@ func (e SessionEntry) ConsumerRelaysStored(captured bool, storedSeq uint64) bool
 // storedSeq is the stream sequence of the durable path's copy of a stored message, 0 for any
 // other delivery, and captured is whether the deployed stream captures item's topic
 // (bus.Client.DeployedStreamCaptures), which the caller reads from its own bus client, since the
-// consumer's filter is judged on those same subjects (cmd/listener's sessionConsumerFilter). A
-// message is stored on the subject its envelope names as its topic, so the capture and the
-// sequence together decide whether a session on consumer delivery is already held this message by
-// its own consumer (SessionEntry.ConsumerRelaysStored). A delivery that is not the durable's copy
+// session's consumer holds only what that stream stores. A message is stored on the subject its
+// envelope names as its topic, so the capture and the sequence together decide whether a session
+// on consumer delivery is already held this message by its own consumer
+// (SessionEntry.ConsumerRelaysStored). A delivery that is not the durable's copy
 // of a stored message - the listener's core lane carries one - passes a sequence of 0, which
 // leaves a session on consumer delivery its consumer's copy whatever that copy's sequence is.
 func Resolve(item contracts.Envelope, sessionID string, entry *SessionEntry, storedSeq uint64, captured bool) error {

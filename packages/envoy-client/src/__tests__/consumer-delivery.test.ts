@@ -758,6 +758,56 @@ describe("frames already written", () => {
     expect(seqs(handed)).toEqual([1]);
     expect(repliesTo(replies, "_INBOX.2")).toEqual(["received", "done"]);
   });
+
+  // The listener repeats a frame its session received but had not written when the relaying
+  // pod's term ended (cmd/listener/README.md, "When a session can see a message twice"): the
+  // successor restarts the session's consumer at its ack floor and publishes that message again,
+  // on a reply inbox of its own. The host writes it once either way - the copy that arrives
+  // while the write runs joins the frame still held, and the one that arrives after it is
+  // dropped as already written - and every inbox is answered, so no copy waits out an ack wait.
+  //
+  // What this row guards: it fails with the held-redelivery join removed (the second copy is
+  // handed over a second time), and with both already-written checks removed (the third copy
+  // is). The receive-time check alone is redundant with the queue-time one: a copy the
+  // receive-time check would have dropped is dropped at its turn in the queue instead, so
+  // removing that one alone leaves the row green.
+  test("a copy of a frame received but not yet written is written once and answered on every inbox", async () => {
+    const clock = { now: T0 };
+    const ledger = deliveryLedger(clock);
+    const writes: number[] = [];
+    const { delivery, handed, replies, state, settled } = setup({ clock, ledger });
+    const write = Promise.withResolvers<void>();
+    state.deliver = async (frame) => {
+      // The host has the frame and writes it in its own time, letting the next one through.
+      frame.release();
+      await write.promise;
+      writes.push(frame.streamSeq);
+      await ledger.recordDelivered({ event_id: `evt-${frame.streamSeq}` });
+      frame.done();
+    };
+
+    delivery.receive(relay({ seq: 9, reply: "_INBOX.9" }));
+    expect(seqs(handed)).toEqual([9]);
+    expect(repliesTo(replies, "_INBOX.9")).toEqual(["received"]);
+
+    // The successor's relay sends the same stored message again while the write is still running.
+    delivery.receive(relay({ seq: 9, delivered: 2, reply: "_INBOX.9b" }));
+    expect(seqs(handed)).toEqual([9]);
+    expect(repliesTo(replies, "_INBOX.9b")).toEqual(["received"]);
+
+    write.resolve();
+    await settled();
+    expect(repliesTo(replies, "_INBOX.9")).toEqual(["received", "done"]);
+    expect(repliesTo(replies, "_INBOX.9b")).toEqual(["received", "done"]);
+
+    // And once more after the write finished with done: the ledger says the message is written.
+    delivery.receive(relay({ seq: 9, delivered: 3, reply: "_INBOX.9c" }));
+    await settled();
+
+    expect(seqs(handed)).toEqual([9]);
+    expect(writes).toEqual([9]);
+    expect(repliesTo(replies, "_INBOX.9c")).toEqual(["received", "done"]);
+  });
 });
 
 describe("follow filter", () => {
@@ -1154,7 +1204,7 @@ describe("one registration", () => {
     };
   }
 
-  test("carries the topics the listener will store, and takes the answer", async () => {
+  test("carries every followed topic but another session's private one, and takes the answer", async () => {
     const relay = fakeRelay();
     const told: string[] = [];
     const answers: string[] = [];
@@ -1163,8 +1213,8 @@ describe("one registration", () => {
     const result = await registerWithRelay({
       relay,
       ownAgentSubject: AGENT,
-      // The bare base a stored row or a transcript brings back: the listener stores it for no
-      // session and warns about it, so it never goes out (INFRA-771 review).
+      // The bare base a stored row or a transcript brings back goes too: no stream subject this
+      // build compiles captures it, and the listener, which reads the deployed stream's, judges it.
       followed: [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
       outage: inboundUnavailable(
         (why) => told.push(why),
@@ -1177,8 +1227,8 @@ describe("one registration", () => {
       answered: (answer) => answers.push(answer),
     });
 
-    expect(sent).toEqual([{ topics: [AGENT, TEAM], epoch: "epoch-1" }]);
-    expect(relay.followed).toEqual([[AGENT, TEAM]]);
+    expect(sent).toEqual([{ topics: [AGENT, TEAM, UNCAPTURED], epoch: "epoch-1" }]);
+    expect(relay.followed).toEqual([[AGENT, TEAM, UNCAPTURED]]);
     expect([result, answers, told]).toEqual(["registered", ["registered"], []]);
   });
 

@@ -22,7 +22,7 @@ export function inboundOffChannelSession(options: {
     async follow() {
       throw new Error(`inbound messages are off for this session: ${why}`)
     },
-    unfollow: async () => [],
+    unfollow: async () => ({ removed: [] }),
     // No heartbeat runs, so no role is ever regained, nothing is advertised for a change to
     // reach, no mod event has a router here to read it, and no row of a delivery was ever
     // recorded: this session takes no inbound message at all.

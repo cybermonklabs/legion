@@ -11,15 +11,16 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A topic under a subject only a newer build's stream carries (notifications.x.>, which this build
 // does not compile) is registered through this build's listener with no warning, and the session's
 // consumer filters on it, so a message stored on it while the two builds run is the consumer's to
-// deliver. The registration route and the consumer filter judge the one deployed stream: a route
-// that stored the topic and a filter that left it out would answer the session 200 for a topic it
-// is never delivered. A topic no stream captures is still left out of the registration with the
-// warning, and out of the filter.
+// deliver. A topic no stream captures is registered and filtered on too, with the warning that
+// nothing is delivered on it until a stream subject captures it: neither the registration route
+// nor the consumer filter asks the stream's subjects, so the filter carries both topics the route
+// stored, and the consumer delivers what the stream stores on a topic once a subject captures it.
 func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.T) {
 	const (
 		sessionID  = "ses_deployed_subject"
@@ -50,15 +51,15 @@ func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.
 	if err := json.Unmarshal([]byte(raw), &answer); err != nil {
 		t.Fatalf("decode the registration's answer %s: %v", raw, err)
 	}
-	if want := []string{contracts.UncapturedTopicRefusal(uncaptured, sessionID)}; !slices.Equal(answer.Warnings, want) {
+	if want := []string{listenerwire.UncapturedTopicWarning(uncaptured, sessionID)}; !slices.Equal(answer.Warnings, want) {
 		t.Fatalf("warnings = %q, want only %q: %s is captured by the deployed stream and %s by no stream", answer.Warnings, want, captured, uncaptured)
 	}
-	if !slices.Contains(answer.Topics, captured) || slices.Contains(answer.Topics, uncaptured) {
-		t.Fatalf("answered topics = %v, want %s among them and %s not", answer.Topics, captured, uncaptured)
+	if !slices.Contains(answer.Topics, captured) || !slices.Contains(answer.Topics, uncaptured) {
+		t.Fatalf("answered topics = %v, want %s and %s among them", answer.Topics, captured, uncaptured)
 	}
-	want := []string{"notifications.agent.*." + sessionID, contracts.LegacyAgentSubject(sessionID), captured}
+	want := []string{"notifications.agent.*." + sessionID, contracts.LegacyAgentSubject(sessionID), uncaptured, captured}
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
-		t.Fatalf("consumer filters %v, want %v: the filter must carry the topic the registration stored, and leave out the one it did not", got, want)
+		t.Fatalf("consumer filters %v, want %v: the filter must carry every topic the registration stored", got, want)
 	}
 
 	rig.store(t, captured)
@@ -72,12 +73,11 @@ func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.
 // build compiles would read the session as one nothing reaches and report a failure for a message
 // its consumer delivers.
 //
-// The row hands the message to the fan-out through the core handler, which no production path
-// does for such a topic today: the listener's own durable filters on the subjects this build
-// compiles (durable.go, startListenerSubscription, bus.StreamSubjects), so on an older build a
-// topic only a newer build's subjects capture never reaches the fan-out, and the session's
-// consumer filter is what delivers it during a roll. The row stands for a fan-out that does see
-// such a message, and holds that it judges it as the consumer filter does.
+// The row hands the message to the fan-out through the core handler. In production the listener's
+// own durable hands it over: that durable filters on every subject (durable.go, consumerFilterAll,
+// set by ensureListenerDurable), so on either build a topic only a newer build's subjects capture
+// reaches the fan-out, and the session's consumer filter is what delivers it during a roll. The row
+// holds that the fan-out judges such a message as the consumer filter does.
 func TestFanoutLeavesATopicOnlyTheDeployedStreamCapturesToTheSessionsConsumer(t *testing.T) {
 	const (
 		sessionID = "ses_deployed_fanout"
@@ -107,7 +107,7 @@ func TestFanoutLeavesATopicOnlyTheDeployedStreamCapturesToTheSessionsConsumer(t 
 		t.Fatalf("%s = %d, want no series at all - the session's consumer relays the message:\n%s", deliveredSeries("failed"), got, body)
 	}
 	noException(t, probe)
-	if harness.config.dedupeCache.Seen(item.DedupeKey, sessionID) || harness.config.attemptCache.Seen(item.DedupeKey, sessionID) {
+	if ledgerDelivered(t, harness.config, item.DedupeKey, sessionID) || ledgerAttempted(t, harness.config, item.DedupeKey, sessionID) {
 		t.Fatalf("the fan-out recorded %s, which it handed the message to nobody for", sessionID)
 	}
 }
@@ -141,6 +141,60 @@ func TestADeliveryExceptionOnALaneOnlyTheDeployedStreamCapturesIsStoredOnce(t *t
 	}
 	if got := info.State.Subjects[lane]; got != 1 {
 		t.Fatalf("the stream holds %d exceptions on %s, want 1", got, lane)
+	}
+	stored, err := js.GetLastMsg(bus.Stream, lane)
+	if err != nil {
+		t.Fatalf("read the exception on %s: %v", lane, err)
+	}
+	if got, want := stored.Header.Get(natsgo.MsgIdHdr), "exception."+reason+"."+origin; got != want {
+		t.Fatalf("stored message id = %q, want %q", got, want)
+	}
+}
+
+// A delivery exception on a lane only a subject added since the listener last read the deployed
+// stream's subjects captures - a newer build's start adding its own during a roll - is stored under
+// its one-copy message id too: publishDeliveryException judges the lane as its publish's transport
+// does (bus.Client.PublishTakesJetStream): on a read of the subjects again where the client's own
+// leave the lane uncaptured, made here because no read of them has ended in the last 250 ms and
+// none is in flight, and not on the subjects its client holds, which the row proves stale before
+// the exception. Inside that gap, or while a read younger than 2 s is in flight, the transport
+// reads nothing and answers on the subjects held. The same exception handed twice, as two
+// listeners each raise it for one stored message from their own durables, is stored once, under
+// exception.<reason>.<origin>.
+//
+// Judged on the subjects the client held, the first exception went to Publish, whose transport read
+// the subjects again and stored it under the exception's own dedupe key; that read was kept, so the
+// second was judged captured and stored under exception.<reason>.<origin>: two copies.
+func TestADeliveryExceptionOnALaneAddedSinceTheLastReadIsStoredOnce(t *testing.T) {
+	const (
+		topic  = "notifications.x.z"
+		lane   = bus.ExceptionTopicPrefix + topic
+		added  = bus.ExceptionTopicPrefix + "notifications.x.>"
+		reason = "delivery_failed"
+		origin = "origin-added"
+	)
+	if bus.StreamCaptures(lane) {
+		t.Fatalf("this build compiles a subject capturing %s; the test needs one it does not", lane)
+	}
+	client := connectToNewerBuildsStream(t)
+	js := client.JS()
+	addStreamSubject(t, js, added)
+	if client.DeployedStreamCaptures(lane) {
+		t.Fatalf("the listener judged %s captured before reading the stream's subjects again; the row needs a stale read", lane)
+	}
+
+	item := listenerTestEnvelope(topic, "exception-added-lane")
+	for range 2 {
+		if err := publishDeliveryException(client, item, reason, "ses_added_exception", origin); err != nil {
+			t.Fatalf("publish the delivery exception: %v", err)
+		}
+	}
+	info, err := js.StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: lane})
+	if err != nil {
+		t.Fatalf("read %s: %v", bus.Stream, err)
+	}
+	if got := info.State.Subjects[lane]; got != 1 {
+		t.Fatalf("the stream holds %d exceptions on %s after the same exception was raised twice, want 1: they were stored under two message ids", got, lane)
 	}
 	stored, err := js.GetLastMsg(bus.Stream, lane)
 	if err != nil {

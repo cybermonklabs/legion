@@ -244,8 +244,8 @@ func TestHoldLapseFreesAtOnceAndKeepsTheToken(t *testing.T) {
 	default:
 		t.Error("Lost is open after Lapse")
 	}
-	if token, held, err := duty.HoldToken(ctx, database.Pool, holdName); err != nil || held || token != "deliver.pending" {
-		t.Fatalf("HoldToken after Lapse = %q, held %v, error %v; want %q, not held", token, held, err, "deliver.pending")
+	if token, remaining, err := duty.HoldToken(ctx, database.Pool, holdName); err != nil || remaining > 0 || token != "deliver.pending" {
+		t.Fatalf("HoldToken after Lapse = %q with %s left, error %v; want %q with none left", token, remaining, err, "deliver.pending")
 	}
 
 	waiting, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -402,28 +402,29 @@ func lapsedExpiry(t *testing.T, database *store.Store) {
 	}
 }
 
-// HoldToken reads the token a hold's row records and whether a holder holds it live: no row is ""
-// and not held, a live hold is its token and held, and a lapsed row keeps its token, not held, so
-// a standby reads what the lapsed holder recorded before TryHold records its own.
-func TestHoldTokenReadsTheRowsTokenAndWhetherItIsLive(t *testing.T) {
+// HoldToken reads the token a hold's row records and how long a holder holds it live: no row is ""
+// with nothing left, a live hold is its token with the rest of its TTL left, and a lapsed row keeps
+// its token with nothing left, so a standby reads what the lapsed holder recorded before TryHold
+// records its own, and how long a live one has to run.
+func TestHoldTokenReadsTheRowsTokenAndHowLongItHasLeft(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	if token, held, err := duty.HoldToken(ctx, database.Pool, holdName); err != nil || held || token != "" {
-		t.Fatalf("HoldToken with no row = %q, held %v, error %v; want \"\", not held", token, held, err)
+	if token, remaining, err := duty.HoldToken(ctx, database.Pool, holdName); err != nil || remaining != 0 || token != "" {
+		t.Fatalf("HoldToken with no row = %q with %s left, error %v; want \"\" with none left", token, remaining, err)
 	}
 
 	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second, Token: "deliver.live"}
 	mustTakeHold(t, database.Pool, uuid.New(), opts)
-	if token, held, err := duty.HoldToken(ctx, database.Pool, holdName); err != nil || !held || token != "deliver.live" {
-		t.Fatalf("HoldToken of a live hold = %q, held %v, error %v; want %q, held", token, held, err, "deliver.live")
+	if token, remaining, err := duty.HoldToken(ctx, database.Pool, holdName); err != nil || remaining <= 0 || remaining > opts.TTL || token != "deliver.live" {
+		t.Fatalf("HoldToken of a live hold = %q with %s left, error %v; want %q with up to %s left", token, remaining, err, "deliver.live", opts.TTL)
 	}
 
 	if _, err := database.Pool.Exec(ctx, `update duty_holds set holder = $2, expires_at = now() - interval '1 second' where name = $1`,
 		holdName, uuid.New()); err != nil {
 		t.Fatalf("rewrite the row as lapsed: %v", err)
 	}
-	if token, held, err := duty.HoldToken(ctx, database.Pool, holdName); err != nil || held || token != "deliver.live" {
-		t.Fatalf("HoldToken of a lapsed row = %q, held %v, error %v; want %q, not held", token, held, err, "deliver.live")
+	if token, remaining, err := duty.HoldToken(ctx, database.Pool, holdName); err != nil || remaining > -time.Second || token != "deliver.live" {
+		t.Fatalf("HoldToken of a row lapsed a second ago = %q with %s left, error %v; want %q with -1s or less", token, remaining, err, "deliver.live")
 	}
 }
 

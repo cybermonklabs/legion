@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+    `envoy-listener`'s `/healthz` now answers 503 `starting` until the interest copy has completed
+    its first read of its bucket since the process started, as well as until `/v1` opens: the start
+    opens `/v1` when its 30 s wait for the interest watcher runs out, or once that watcher's first
+    scan timed out, and before it answered 200 then while `GET /v1/interests/` still answered its
+    refilling 503. Only that first read gates readiness: once the pod has been ready, a later read
+    of the copy, after a reconnect or a scan that timed out, leaves it ready, and the routes that
+    need the copy answer their own 503 `refilling`, so a NATS blip that makes every pod read its
+    buckets again at once does not leave the Service with no endpoints for every other route.
+time: 2026-11-19T23:11:33.000000000Z
+custom:
+    Issue: pr2404

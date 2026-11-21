@@ -69,7 +69,7 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	}
 	pullCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	pull, err := rig.consumers.Pull(pullCtx, sessionID)
+	pull, err := rig.consumers.Pull(pullCtx, sessionID, nil)
 	if err != nil {
 		t.Fatalf("pull the session's consumer: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	})
 	pullCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	again, err := rig.consumers.Pull(pullCtx, sessionID)
+	again, err := rig.consumers.Pull(pullCtx, sessionID, nil)
 	if err != nil {
 		t.Fatalf("pull the session's consumer after the loss: %v", err)
 	}

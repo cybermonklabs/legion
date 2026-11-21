@@ -4,13 +4,15 @@
 // that wait counts and holds off (deleteMu, deletes, deletesOff) stay where the type they
 // belong to is declared (sessionDelivery, session_delivery.go).
 //
-// Three callers reach deleteConsumer, and each gives it the consumer's info when it holds one:
+// Three callers reach deleteConsumer. Each gives it the consumer's info when it holds one, and
+// the two that run on the pod holding the machine's lease alone give it the relay set whose
+// receive term holds their delete (holderLoops, main.go):
 //   - the deregistration, through deleteAfterAnswer, off the goroutine that answered the client
-//     (deleteSessionHandler, api.go), holding no info;
+//     (deleteSessionHandler, api.go), holding no info and no term;
 //   - the sweep over the stream's consumer list, which holds the info that list answered
-//     (sessionConsumerSweep.pass, session_consumer_sweep.go);
-//   - the session reaper, for each record a pass deleted, holding no info
-//     (session.SessionReaper.DeleteConsumer, wired in main.go).
+//     (sessionConsumerSweep.pass, session_consumer_sweep.go), and its relays' term;
+//   - the session reaper, for each record a pass deleted, holding no info and the relays' term
+//     (session.SessionReaper.DeleteConsumer, deleteReaped, wired in main.go).
 //
 // Each delete confirms under the session's lock that the session bucket holds no record of the
 // session, records the consumer's resume floor and removes the consumer in one bus call
@@ -79,10 +81,35 @@ func (m *sessionDelivery) deleteAfterAnswer(ctx context.Context, d *listenerDeps
 	}
 	m.deletes.Add(1)
 	m.deleteMu.Unlock()
+	// The delete runs after the answer, so the order of the calls does not keep it ahead of the
+	// session's next registration: a plugin's deregistration (DELETE /v1/sessions/<id>,
+	// packages/envoy-client/src/transport.ts) is answered before this goroutine starts, and the
+	// daemon's clean stop of a role (notify.HTTPPublisher.DeleteSession in
+	// packages/daemon/internal/notify/notify.go) races the relaunch that registers the same
+	// session id from another process. What keeps the delete from taking a consumer the
+	// session created again is, on this pod, the session's lock and the read of the bucket's
+	// leader made under it (deleteConsumer): a registration holding the lock has written its
+	// entry before the read, which then keeps the consumer, and one waiting for it creates its
+	// consumer after the delete. Across pods a registration can create the consumer and write its
+	// entry between that read and the delete, which then takes the consumer; the delete's own
+	// repair (repairRegistered) and the registration's read of its consumer after its entry write
+	// (confirmRegistered) give it back. Two rows of session_consumer_restore_test.go build that
+	// cross-pod case: TestARegistrationRacedByAnotherListenersDeleteKeepsItsConsumer and
+	// TestARegistrationsOwnRepairDoesNotOfferTheAckedFramesAgain.
 	go func() {
 		defer m.deletes.Done()
-		m.deleteConsumer(ctx, d, sessionID, nil)
+		m.deleteConsumer(ctx, d, sessionID, nil, nil)
 	}()
+}
+
+// deleteReaped is the delete the session reaper makes of the consumer of each record a pass
+// deleted (session.SessionReaper.DeleteConsumer), as main wires it: deleteConsumer over the
+// listener's stores d, held to the receive term of relays, since the reaper runs on the pod
+// holding the machine's lease alone (holderLoops, main.go).
+func (m *sessionDelivery) deleteReaped(d *listenerDeps, relays *sessionRelays) func(context.Context, string) {
+	return func(ctx context.Context, sessionID string) {
+		m.deleteConsumer(ctx, d, sessionID, nil, relays)
+	}
 }
 
 // deleteConsumer removes sessionID's consumer once the session's registration is gone, so the
@@ -156,10 +183,26 @@ func (m *sessionDelivery) deleteAfterAnswer(ctx context.Context, d *listenerDeps
 // One budget covers the record read, the delete and the resume record it writes first, and the
 // record read and create that may follow them, as one budget covers a registration's whole pass.
 //
+// term is the relay set whose receive term holds a delete made by a loop that runs on the pod
+// holding the machine's lease alone (holderLoops, main.go): the sweep's and the session
+// reaper's. The deregistration's is nil, since every pod answers one and no term elects it. Just
+// before the delete the term is checked, as a relay's restart checks it just before its
+// RestartAtFloor, and the delete is sent on a context that ends with the term or at the lease's
+// loss deadline, whichever is first (sessionRelays.termContext). The lease ends a term a moment
+// before the receive loop hears it and cancels the context those loops run under, and a delete
+// sent in that moment, or once another pod may hold the lease, races that pod's own calls for
+// the session's consumer: a create its registration made before writing the session's entry,
+// which this delete's read of the bucket cannot see, and its relay's restart and pull. A term
+// that is over deletes nothing and leaves the consumer to the sweep of the pod holding the lease
+// next. A call already sent when the context ends can still land, which termContext's doc
+// bounds. The repair after a delete that went through runs on the delete's own budget and not
+// the term's: it is the registration's act (confirmRegistered), which every pod makes, and it
+// creates a consumer only for a session the bucket holds a record of.
+//
 // A listener whose NATS user may not manage session consumers deletes nothing while its refusal
 // episode stands (grantRefused): the delete would be refused, and the episode's one warning has
 // been logged already.
-func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, sessionID string, listed *jetstream.ConsumerInfo) bool {
+func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, sessionID string, listed *jetstream.ConsumerInfo, term *sessionRelays) bool {
 	if m == nil || m.consumers == nil || m.grantRefused() {
 		return false
 	}
@@ -184,9 +227,24 @@ func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, s
 			slog.String("session_id", sessionID))
 		return false
 	}
-	floor, err := m.consumers.Delete(ctx, sessionID, listed)
+	deleteCtx := ctx
+	if term != nil {
+		bounded, stop, current := term.termContext(ctx)
+		if !current {
+			m.logger.Info("session consumer kept: this pod's receive term is over, or another pod may hold the machine's lease; the sweep of the pod holding it next deletes the consumer",
+				slog.String("session_id", sessionID))
+			return false
+		}
+		defer stop()
+		deleteCtx = bounded
+	}
+	floor, err := m.consumers.Delete(deleteCtx, sessionID, listed)
 	if err != nil {
-		if !m.grantRefusal("delete a session consumer", sessionID, err) {
+		switch {
+		case deleteCtx.Err() != nil && ctx.Err() == nil:
+			m.logger.Info("session consumer delete cut off: this pod's receive term ended, or another pod may hold the machine's lease, before the delete was over; a call it had already sent can still land",
+				slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		case !m.grantRefusal("delete a session consumer", sessionID, err):
 			m.logger.Warn("session consumer delete failed", slog.String("session_id", sessionID), slog.String("error", err.Error()))
 		}
 		return false

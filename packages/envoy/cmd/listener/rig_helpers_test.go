@@ -88,6 +88,13 @@ func awaitDurableState(t *testing.T, client *bus.Client, durable string, pending
 // listener delete the consumer after it delivered or was acked - a deregistration, a delete and
 // its restore, a relay restart at the ack floor - once the server has taken every ack the test's
 // session sent: the wait sees only the state the server already holds.
+//
+// A relay's restart at the ack floor deletes the consumer and creates it again when a message it
+// delivered awaits an ack (bus.SessionConsumers.RestartAtFloor). So a row that leaves such a
+// message calls this before the step that leads to that restart. After a SIGKILL the call may
+// follow the kill. The killed pod changes the consumer no more, and its successor restarts the
+// consumer only once it takes the lease over, a lease TTL or more after the killed pod's last
+// renewal (leaseTTL).
 func awaitSessionConsumerStored(t *testing.T, conn *natsgo.Conn, sessionID string) {
 	t.Helper()
 	name, ok := bus.SessionConsumerName(sessionID)

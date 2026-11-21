@@ -1390,7 +1390,7 @@ func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
 	const refuser = "ses_claim_holder"
 	judged := func(holder string, cursor bus.KeptRoleCursor, at time.Duration) keptCopyVerdict {
 		return judgeKeptRoleCopy(listenerDeliveryHandlerConfig{}, "claimed-role", holder, session.SessionEntry{Capabilities: []string{"btw"}}, stored,
-			keptCopyClaimOf(cursor, stored.Sequence), func() time.Time { return stored.Time.Add(at) }, func(string, string) bool { return false })
+			keptCopyClaimOf(cursor, stored.Sequence), func() time.Time { return stored.Time.Add(at) })
 	}
 	// A mode claim taken over three hours on is the delivery mode drop it was, with no expired
 	// report.

@@ -34,7 +34,7 @@ import {
   type Envelope,
   legacyDispatchIssueSubject,
   type SessionAnswer,
-  uncapturedTopicRefusal,
+  uncapturedTopicWarning,
 } from "@legion/contracts";
 import {
   askgateState,
@@ -4394,8 +4394,8 @@ describe("envoy OMP extension", () => {
         return responseWithRegistration(input, init, {});
       }
       routes.push(path);
-      // The listener's 429 for a session past its sending limit (`senderRateLimitedAnswer`,
-      // packages/envoy/cmd/listener/sender_limit.go).
+      // The listener's 429 for a session past its sending limit (`listenerwire.SenderRateLimited`,
+      // built in packages/envoy/cmd/listener/sender_limit.go).
       return new Response(
         JSON.stringify({
           error: sentence,
@@ -12227,33 +12227,46 @@ console.log(JSON.stringify(args));
     ]);
   });
 
-  // A topic the stream captures nothing of is left out of every registration
-  // (`registrationTopics`), since the listener stores none: it drops such a topic from the row
-  // and names it in a warning (INFRA-771). It is followed all the same when it came back from
-  // the interest row or the transcript a restore reads, and refused by name when a caller named
-  // it itself, in the listener's own words.
-  test("never registers a topic no stream subject captures, however it was followed", async () => {
+  // No topic is judged uncaptured here on the stream subjects this build was compiled with: the
+  // listener judges that on the deployed stream's, which during a roll hold a newer build's too,
+  // so every followed topic is registered (`registrationTopics`). The caller is shown the
+  // listener's uncaptured-topic warning only for a topic it named in this call: not for the base an
+  // `X.>` adds (`expandSubscriptionTopics`), nor for another topic the session follows
+  // (`warningsForNamedTopics`). `notifications.x.y` stands for a topic only a newer build's
+  // subject captures (`notifications.x.>`, which this build does not compile).
+  test("registers a topic no compiled stream subject captures, however it was followed, and shows the listener's warning only for a topic the caller named", async () => {
+    const session = "ses_uncaptured";
+    // What the listener, reading the deployed stream, finds nothing captures yet.
+    const uncaptured = new Set([
+      "notifications.team",
+      "notifications.lxspec.probe",
+      "notifications.y.z",
+    ]);
     const registrations: string[][] = [];
-    const carried: string[] = [];
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
-      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
       if (url.pathname === "/v1/interests/subscribe") {
-        const topics: string[] = Array.isArray(body?.topics) ? body.topics : [];
-        registrations.push(topics);
-        // What the listener would drop from the row it stores and warn about (cmd/listener's
-        // subscribeHandler); none is expected to reach it at all.
-        carried.push(
-          ...topics.filter(
-            (topic) => topic === "notifications.team" || topic === "notifications.lxspec.probe"
-          )
-        );
-      }
-      if (url.pathname === "/v1/interests/ses_uncaptured") {
-        // The row an earlier build left: it expanded `notifications.team.>` to the bare base
-        // beside it, which this build's stream captures nothing of.
+        const body = JSON.parse(init?.body?.toString() ?? "{}") as {
+          readonly dir: string;
+          readonly topics: readonly string[];
+        };
+        registrations.push([...body.topics]);
         return response({
-          session_id: "ses_uncaptured",
+          session_id: session,
+          machine_id: "test",
+          dir: body.dir,
+          topics: body.topics,
+          warnings: body.topics
+            .filter((topic) => uncaptured.has(topic))
+            .map((topic) => uncapturedTopicWarning(topic, session)),
+          delivery: consumerDelivery(session, { streamID: TEST_STREAM_ID }),
+        });
+      }
+      if (url.pathname === `/v1/interests/${session}`) {
+        // The row an earlier build left: it expanded `notifications.team.>` to the bare base
+        // beside it, which no stream subject captures.
+        return response({
+          session_id: session,
           machine_id: "test",
           dir: "/tmp",
           topics: ["notifications.team", "notifications.team.deploys"],
@@ -12266,7 +12279,7 @@ console.log(JSON.stringify(args));
     envoyExtension(fixture.pi);
     // A resumed session, which is what reads its stored interest row again and follows what it
     // holds (`recoverRegisteredInterests`).
-    const base = sessionContext("ses_uncaptured");
+    const base = sessionContext(session);
     const context = {
       ...base,
       sessionManager: { ...base.sessionManager, getBranch: () => [{}] },
@@ -12275,36 +12288,100 @@ console.log(JSON.stringify(args));
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     if (subscribeTool === undefined) throw new Error("envoy_subscribe was not registered");
 
-    const refused = await subscribeTool.execute("", {
-      topics: ["notifications.lxspec.probe", "notifications.team.>"],
+    // A wildcard whose base no stream subject captures: the base is registered, and its warning,
+    // like the restored `notifications.team`'s, is not shown, since the caller named neither.
+    const wildcard = await subscribeTool.execute("", { topics: ["notifications.y.z.>"] });
+
+    expect(wildcard.isError).toBeFalsy();
+    expect(wildcard.details).toMatchObject({ added: ["notifications.y.z", "notifications.y.z.>"] });
+    expect(wildcard.details).not.toHaveProperty("warnings");
+    expect(wildcard.content[0]?.text).not.toContain("Warnings:");
+    expect(registrations.at(-1)).toEqual(
+      expect.arrayContaining(["notifications.team", "notifications.y.z", "notifications.y.z.>"])
+    );
+
+    const subscribed = await subscribeTool.execute("", {
+      topics: ["notifications.x.y", "notifications.lxspec.probe"],
     });
 
-    // The caller named the uncaptured topic itself, so the tool refuses it by name, in the one
-    // sentence the listener's own warning is generated from, and follows nothing of that call.
-    expect(refused.isError).toBe(true);
-    expect(refused.content[0]?.text).toContain(
-      uncapturedTopicRefusal("notifications.lxspec.probe", "ses_uncaptured")
-    );
-    expect(await followedTopics(fixture.tools, context)).not.toContain(
-      "notifications.lxspec.probe"
-    );
-
-    const subscribed = await subscribeTool.execute("", { topics: ["notifications.team.>"] });
-
+    // A topic the caller named itself still has its warning shown, and that one alone.
     expect(subscribed.isError).toBeFalsy();
-    expect(subscribed.details).toMatchObject({ added: ["notifications.team.>"] });
-    // The bare base the restore brought back is followed, and never carried to the listener.
+    expect(subscribed.details).toMatchObject({
+      added: ["notifications.x.y", "notifications.lxspec.probe"],
+      warnings: [uncapturedTopicWarning("notifications.lxspec.probe", session)],
+    });
+    expect(subscribed.content[0]?.text).toEndWith(
+      `\nWarnings: ${uncapturedTopicWarning("notifications.lxspec.probe", session)}`
+    );
     const followed = await followedTopics(fixture.tools, context);
-    expect(followed).toContain("notifications.team");
-    expect(carried).toEqual([]);
+    expect(followed).toEqual(
+      expect.arrayContaining([
+        "notifications.team",
+        "notifications.x.y",
+        "notifications.lxspec.probe",
+      ])
+    );
+    // Every registration carries the bare base the restore brought back, and the last one every
+    // topic the caller named.
     expect(registrations.length).toBeGreaterThan(0);
-    for (const topics of registrations) {
-      expect(topics).not.toContain("notifications.team");
-      expect(topics).not.toContain("notifications.lxspec.probe");
-    }
-    const registered = registrations.at(-1) ?? [];
-    expect(registered).toContain("notifications.team.>");
-    expect(registered).toContain("notifications.team.deploys");
+    for (const topics of registrations) expect(topics).toContain("notifications.team");
+    expect(registrations.at(-1)).toEqual(
+      expect.arrayContaining([
+        "notifications.team",
+        "notifications.team.deploys",
+        "notifications.x.y",
+        "notifications.lxspec.probe",
+      ])
+    );
+  });
+
+  // The tool registers on every call, also one that adds no topic, so a caller that names again an
+  // uncaptured topic its session already follows is shown that topic's warning again, as
+  // claude-envoy's `follow` shows it: the warning goes with each topic the caller names.
+  test("shows the listener's warning again for an uncaptured topic the caller names again", async () => {
+    const session = "ses_uncaptured_again";
+    const topic = "notifications.lxspec.probe";
+    const warning = uncapturedTopicWarning(topic, session);
+    const registrations: string[][] = [];
+    globalThis.fetch = async (input, init) => {
+      if (new URL(input.toString()).pathname !== "/v1/interests/subscribe") {
+        return responseWithRegistration(input, init, []);
+      }
+      const body = JSON.parse(init?.body?.toString() ?? "{}") as {
+        readonly dir: string;
+        readonly topics: readonly string[];
+      };
+      registrations.push([...body.topics]);
+      return response({
+        session_id: session,
+        machine_id: "test",
+        dir: body.dir,
+        topics: body.topics,
+        warnings: body.topics.includes(topic) ? [warning] : [],
+        delivery: consumerDelivery(session, { streamID: TEST_STREAM_ID }),
+      });
+    };
+    // A module instance of its own, as every row here loads one: the extension keeps its
+    // session's state.
+    const { default: envoyExtension } = await import("./envoy.ts?uncaptured-subscribe-again");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, sessionContext(session));
+    const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+    if (subscribeTool === undefined) throw new Error("envoy_subscribe was not registered");
+
+    const first = await subscribeTool.execute("", { topics: [topic] });
+    expect(first.details).toMatchObject({ added: [topic], warnings: [warning] });
+    const registered = registrations.length;
+
+    const again = await subscribeTool.execute("", { topics: [topic] });
+
+    expect(again.isError).toBeFalsy();
+    expect(again.details).toEqual({ added: [], already: [topic], warnings: [warning] });
+    expect(again.content[0]?.text).toBe(`Subscribed: (none new)\nWarnings: ${warning}`);
+    // The listener answered the warning because the call registered again.
+    expect(registrations).toHaveLength(registered + 1);
+    expect(registrations.at(-1)).toContain(topic);
   });
 
   test("unsubscribes role-shaped subscriptions locally without releasing the held role", async () => {
@@ -22841,6 +22918,16 @@ describe("consumer delivery", () => {
     readonly relaySubscribed: boolean;
   }
 
+  /** The listener's interest entry a row's sessions register with (`bootConsumer`'s `registry`). */
+  interface InterestEntry {
+    readonly topics: Set<string>;
+    /** The topics of every release a session asked for, landed or refused, in order. */
+    readonly releases: string[][];
+    /** While set, every release fails, as a listener that is down fails it, and the entry keeps
+     *  the topics. */
+    refusing: boolean;
+  }
+
   interface SentCard {
     readonly content: string;
     readonly customType?: string;
@@ -22884,6 +22971,15 @@ describe("consumer delivery", () => {
        *  does: the frame fails, and its third delivery is given up on, which is when the
        *  session is told what it was never shown (`@legion/envoy-client/consumer-delivery`). */
       readonly refuseCard?: (message: SentCard) => boolean;
+      /**
+       * The listener's interest entry for the session: a registration it accepts merges its
+       * topics in, a release takes them out, and a read of the interests answers it. Without it a
+       * read answers no topic and every release lands.
+       */
+      readonly registry?: InterestEntry;
+      /** The host refuses to append an entry of each custom type this answers true for, as a
+       *  session file that cannot be written refuses it. */
+      readonly refuseEntry?: (customType: string) => boolean;
     } = {}
   ) {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
@@ -22918,6 +23014,7 @@ describe("consumer delivery", () => {
             { status: refusing.status }
           );
         }
+        for (const topic of body.topics) options.registry?.topics.add(topic);
         return response({
           session_id: SESSION,
           machine_id: "test",
@@ -22929,11 +23026,27 @@ describe("consumer delivery", () => {
           }),
         });
       }
+      if (url.pathname === "/v1/interests/unsubscribe" && options.registry !== undefined) {
+        const body = JSON.parse(init?.body?.toString() ?? "{}") as {
+          readonly topics: readonly string[];
+        };
+        options.registry.releases.push([...body.topics]);
+        if (options.registry.refusing) {
+          return new Response(JSON.stringify({ error: "the listener is down" }), { status: 409 });
+        }
+        for (const topic of body.topics) options.registry.topics.delete(topic);
+        return response({});
+      }
       if (
         url.pathname.startsWith("/v1/interests/") &&
         url.pathname !== "/v1/interests/unsubscribe"
       ) {
-        return response({ session_id: SESSION, machine_id: "test", dir: "/tmp", topics: [] });
+        return response({
+          session_id: SESSION,
+          machine_id: "test",
+          dir: "/tmp",
+          topics: [...(options.registry?.topics ?? [])],
+        });
       }
       const read = await options.dispatch?.(url);
       if (read !== undefined) return read;
@@ -22981,6 +23094,12 @@ describe("consumer delivery", () => {
         events.push(`handed ${message.details?.event_id ?? message.content}`);
         if (turn === "idle") void write(message);
         else held.push(message);
+      },
+      appendEntry: (customType, data) => {
+        if (options.refuseEntry?.(customType) === true) {
+          throw new Error("the session file could not be written");
+        }
+        fixture.pi.appendEntry(customType, data);
       },
     });
     const prior = options.entries ?? [];
@@ -23089,6 +23208,11 @@ describe("consumer delivery", () => {
         fixture.tools
           .find((tool) => tool.name === "envoy_subscribe")
           ?.execute("", { topics: [topic] }),
+      /** The person unfollows `topics` (`envoy_unsubscribe`). */
+      unfollow: (topics: readonly string[]) =>
+        fixture.tools
+          .find((tool) => tool.name === "envoy_unsubscribe")
+          ?.execute("", { topics: [...topics] }),
       stop: () => fixture.handlers.get("session_shutdown")?.({}, context),
     };
     return session;
@@ -23259,6 +23383,113 @@ describe("consumer delivery", () => {
     expect(appended.filter((entry) => entry.customType === REPLAY_STATE_ENTRY)).toEqual([]);
     expect(JSON.stringify(appended)).not.toContain(kept);
     expect(JSON.stringify(appended)).not.toContain("notifications.team.moved-to");
+  });
+
+  /** An empty interest entry for a row's sessions (`bootConsumer`'s `registry`). */
+  const interestEntry = (): InterestEntry => ({ topics: new Set(), releases: [], refusing: false });
+
+  /** The person unfollows `topics` while the listener refuses every release, so the entry keeps
+   *  them; answers the tool's result, which names the refusal (`registrationError`). */
+  async function unfollowRefused(
+    session: Awaited<ReturnType<typeof bootConsumer>>,
+    registry: InterestEntry,
+    topics: readonly string[]
+  ) {
+    registry.refusing = true;
+    const answer = await session.unfollow(topics);
+    registry.refusing = false;
+    expect(answer?.details).toMatchObject({ registrationError: expect.any(String) });
+    return answer;
+  }
+
+  // A resume follows every topic the listener's entry holds but one the person unfollowed whose
+  // release at the listener failed, which it releases instead (`recoverRegisteredInterests`):
+  // `releasedOnResume` in @legion/envoy-client/delivery-ledger is the rule, and each row below
+  // holds one side of it. The person's unfollow is recorded in the newest ledger state; a topic
+  // that state does not name is no evidence, and it is followed again from the entry.
+  test("a resume releases a topic the person unfollowed whose release failed, and does not follow it again", async () => {
+    const base = "notifications.dispatch.issue.INFRA-557";
+    const topic = `${base}.>`;
+    const registry = interestEntry();
+    const first = await bootConsumer("resume-releases-a", { registry });
+    await first.follow(topic);
+    await settle();
+    await unfollowRefused(first, registry, [topic]);
+    // The process stops before anything released them: the entry still holds the topic and the
+    // base its follow derived.
+    expect([...registry.topics]).toEqual(expect.arrayContaining([topic, base]));
+    await first.stop();
+
+    const second = await bootConsumer("resume-releases-b", { registry, entries: first.entries() });
+    expect(second.registrations.at(-1)?.topics).not.toContain(topic);
+    expect(second.registrations.at(-1)?.topics).not.toContain(base);
+    expect([...registry.topics]).not.toContain(topic);
+    expect([...registry.topics]).not.toContain(base);
+    // The release landed, so the newest ledger state holds no record of the unfollow any more.
+    const states = second.fixture.entries.filter(
+      (entry) => entry.customType === REPLAY_STATE_ENTRY
+    );
+    expect(states.at(-1)?.data).not.toHaveProperty("unfollowed");
+  });
+
+  test("a resume follows again a topic whose follow the ledger never wrote, and releases the person's unfollow", async () => {
+    const unfollowed = "notifications.team.alpha";
+    const unwritten = "notifications.team.deploys";
+    const registry = interestEntry();
+    let refusingState = false;
+    const first = await bootConsumer("resume-unwritten-a", {
+      registry,
+      refuseEntry: (customType) => refusingState && customType === REPLAY_STATE_ENTRY,
+    });
+    await first.follow(unfollowed);
+    await settle();
+    await unfollowRefused(first, registry, [unfollowed]);
+    // From here the session file takes no ledger state, as one that cannot be written refuses it.
+    refusingState = true;
+    await first.follow(unwritten);
+    await settle();
+    // The registration took the follow; the ledger state did not.
+    expect([...registry.topics]).toContain(unwritten);
+    const states = first.fixture.entries.filter((entry) => entry.customType === REPLAY_STATE_ENTRY);
+    expect(JSON.stringify(states.at(-1)?.data)).not.toContain(unwritten);
+    await first.stop();
+
+    const releasesBefore = registry.releases.length;
+    const second = await bootConsumer("resume-unwritten-b", { registry, entries: first.entries() });
+    expect(second.registrations.at(-1)?.topics).toContain(unwritten);
+    expect([...registry.topics]).toContain(unwritten);
+    expect(second.registrations.at(-1)?.topics).not.toContain(unfollowed);
+    expect([...registry.topics]).not.toContain(unfollowed);
+    // The resume released the person's unfollow and nothing the state merely does not name.
+    expect(registry.releases.slice(releasesBefore).flat()).toEqual([unfollowed]);
+  });
+
+  test("a resume follows again the base an X.> follow derived after the person unfollowed it, and releases the person's unfollow", async () => {
+    const base = "notifications.dispatch.issue.INFRA-558";
+    const wildcard = `${base}.>`;
+    const unfollowed = "notifications.team.alpha";
+    const registry = interestEntry();
+    const first = await bootConsumer("resume-derived-a", { registry });
+    await first.follow(base);
+    await first.follow(unfollowed);
+    await settle();
+    const answer = await unfollowRefused(first, registry, [base, unfollowed]);
+    expect(answer?.details).toMatchObject({ removed: [base, unfollowed] });
+    // The `X.>` follow derives the base again: a follow after the person's unfollow of it.
+    await first.follow(wildcard);
+    await settle();
+    expect(first.registrations.at(-1)?.topics).toEqual(expect.arrayContaining([base, wildcard]));
+    await first.stop();
+
+    const releasesBefore = registry.releases.length;
+    const second = await bootConsumer("resume-derived-b", { registry, entries: first.entries() });
+    expect(second.registrations.at(-1)?.topics).toEqual(expect.arrayContaining([base, wildcard]));
+    expect([...registry.topics]).toEqual(expect.arrayContaining([base, wildcard]));
+    expect(second.registrations.at(-1)?.topics).not.toContain(unfollowed);
+    expect([...registry.topics]).not.toContain(unfollowed);
+    // The base was never released, not even for the registration to add it back: the resume
+    // released the person's unfollow alone.
+    expect(registry.releases.slice(releasesBefore).flat()).toEqual([unfollowed]);
   });
 
   // The acceptance line of dispatch://INFRA-771: no Envoy session receives from a plain NATS

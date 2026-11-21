@@ -205,7 +205,9 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	// count fall (requireConnectionCeiling, cmdtest.StartThen). StartThen closes the test's copy
 	// of the held socket once the server has started, so the server releases the port when it
 	// exits.
-	releaseConnections := requireConnectionCeiling(t, h.database.Pool.Config().ConnString())
+	releaseConnections, budget := requireConnectionCeiling(t, h.database.Pool.Config().ConnString())
+	requireProductionPools(t, budget, "a memory row measures one Dispatch process's resident memory against a "+
+		"bound stated for production's process, whose pools hold production's connections")
 	process := cmdtest.StartThen(t, "the Dispatch server", command, releaseConnections)
 	server := &memoryServer{command: command, base: "http://127.0.0.1:" + port, output: process.Output, exited: process.Exited, database: h.database}
 	// Registered after StartThen's own cleanup, so it runs first: the server is stopped with

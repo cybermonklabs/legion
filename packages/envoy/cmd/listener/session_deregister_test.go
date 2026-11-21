@@ -356,7 +356,7 @@ func TestTheConsumerDeleteReadsTheSessionBucketsLeader(t *testing.T) {
 	// The two reads above are the row's own; what the delete reads is counted from here.
 	directGets.Store(0)
 
-	gone := rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID, nil)
+	gone := rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID, nil, nil)
 
 	if gone {
 		t.Error("the delete reported the consumer gone; the bucket's leader holds this session's registration, so the consumer that delivers to it must stand")

@@ -144,11 +144,12 @@ type sessionRelay interface {
 // connection fails, and only a test builds a listener without one.
 type sessionDelivery struct {
 	consumers *bus.SessionConsumers
-	// stream is the client whose read of the deployed stream's subjects decides both which
-	// topics /v1/interests/subscribe stores (splitUncapturedTopics) and which stored topics a
-	// consumer's filter carries (sessionConsumerFilter), so a topic a registration stores is one
-	// its consumer filters on. main gives it the listener's own client. nil judges the subjects
-	// this build compiles (bus.Client.DeployedStreamCaptures), which only a test's listener does.
+	// stream is the client whose read of the deployed stream's subjects decides which topics
+	// /v1/interests/subscribe names in its warning that no stream subject captures them yet
+	// (uncapturedTopics). It decides neither the topics a registration stores nor those a
+	// consumer's filter carries (sessionConsumerFilter): neither asks the stream's subjects. main
+	// gives it the listener's own client. nil judges the subjects this build compiles
+	// (bus.Client.DeployedStreamCaptures), which only a test's listener does.
 	stream *bus.Client
 	logger *logging.Logger
 	// relay hears each registration that records consumer delivery. A sessionDelivery with
@@ -260,11 +261,12 @@ type sessionDelivery struct {
 // slog.Logger (logging.Logger.Slog) for the same reason, so the lines its creates write of a
 // start they lowered to a resume record or clamped from past the stream's end to its first
 // sequence are this listener's JSON, with its machine_id. stream is the listener's own client,
-// whose read of the deployed stream's subjects both a registration's stored topics and every
-// consumer filter are judged on (sessionDelivery.stream).
+// whose read of the deployed stream's subjects decides only which topics a registration's answer
+// warns that no stream subject captures (sessionDelivery.stream).
 //
-// Every session takes its messages from the consumer this connection manages, so a failure is
-// the whole start's: main ends the process with it, as it does for the live topics lane.
+// Every session takes its messages from the consumer this connection manages, so the start waits
+// until it opens: main tries it again, with the relay's reply subscription on it, by the start rule
+// (openStartConnection; cmd/listener/README.md, "Start").
 func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger) (*sessionDelivery, error) {
 	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog())
 	if err != nil {
@@ -317,6 +319,18 @@ func (m *sessionDelivery) close() {
 // consumer, and it holds the start of a create as it does for the delete's repair; a consumer the
 // stream holds keeps its own position whatever start the call names, so what a repair of it
 // changes is the filter.
+//
+// One gap is left open on purpose. nats-server v2.15.1 can refuse the create of a one-copy
+// consumer that the delete of a same-name consumer just preceded, with code 500 and err_code
+// 10012: a late state write of the deleted consumer's flusher renames away the o.dat.tmp that the
+// create wrote (testnats.AwaitConsumerStored). repairRegistered, which this call and
+// deleteConsumer both run, does not retry that create. The registration is answered 200 whatever
+// the repair did. The session's relay pauses until the session's next heartbeat creates the
+// consumer again, which comes within one heartbeat interval (contracts.SessionHeartbeat, 90 s,
+// unless the client's ENVOY_HEARTBEAT_MS sets another). dispatch://INFRA-4015 owns the server
+// race and its other outcome, a create that succeeds with the old consumer's state, and its child
+// dispatch://INFRA-4230 gives each creation a fresh consumer name, which removes the same-name
+// create.
 func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) {
 	if m == nil || m.consumers == nil {
 		return
@@ -531,7 +545,7 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	if ackFloor > 0 {
 		start = max(start, ackFloor+1)
 	}
-	return registeredConsumer{filter: m.storedRowFilter(d.registry, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
+	return registeredConsumer{filter: storedRowFilter(d.registry, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a
@@ -726,7 +740,7 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body listenerwire.Sub
 		startSeq = *resume.Seq + 1
 	}
 	unlock := m.locks.lock(body.SessionID)
-	start, err := m.consumers.Ensure(ctx, body.SessionID, m.sessionConsumerFilter(body.SessionID, topics), startSeq)
+	start, err := m.consumers.Ensure(ctx, body.SessionID, sessionConsumerFilter(body.SessionID, topics), startSeq)
 	if err != nil {
 		// A call the server answered - the grant it may not make, the stream's consumer cap, a
 		// consumer it refused - set no filter, and the registration settles nothing for it: a
@@ -972,31 +986,35 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 }
 
 // sessionConsumerFilter is the subjects sessionID's consumer filters on: its agent subject and
-// every one of topics the deployed stream stores, as m.stream last read its subjects
-// (bus.Client.DeployedStreamCaptures), a team topic among them. Those are the subjects
-// /v1/interests/subscribe judges a registration's topics on (m.splitUncapturedTopics), so a
-// topic only a newer build's subjects capture, which this build stores on the session's row
-// while the two builds run, is in the filter too, and a message stored on it is delivered. A
-// Legion controller's notice lane (notifications.legion.<project>.controller) is one of those
-// topics while the session holds that project's controller role, and this filter is the whole of
-// how it now reaches the controller: the lane's live core subscription, which handed the session
-// only what was published while it was subscribed, went with the rest of the core receive path
-// (INFRA-771), so a notice published while the controller was away is delivered from the stream
-// when it returns. A topic the stream does not store reaches the session on no path of its own: a
-// role lane reaches its holder as a forward on the holder's agent subject, and a topic an earlier
-// build's row still names, which /v1/interests/subscribe drops from a registration with a
-// warning now, reaches nothing.
-// SessionConsumers reduces the list to filters that do not overlap.
+// every one of topics, the topics its interest row stores, that a session consumer can filter on
+// (bus.CanFilterOn): a notification topic NATS accepts as a filter subject that is no role lane.
+// It asks nothing of the deployed stream's subjects, so a topic only a newer build's subjects
+// capture is in the filter, and so is one no stream subject captures yet, which
+// /v1/interests/subscribe stores with a warning (uncapturedTopics): nats-server takes a filter
+// subject no stream subject captures (bus.CanFilterOn states where), and once a later build's
+// subject captures the topic the consumer delivers what the stream stores on it. A topic left out
+// until then would be lost: the consumer keeps its position through a filter write and moves past
+// a message its filter does not match as soon as it looks for its next one, at a pull request or
+// a message on its agent subject (fenceFilterWrite's doc states that cost), so a message stored
+// before the next registration widened the filter would never be delivered. A Legion controller's
+// notice lane (notifications.legion.<project>.controller) is one of those topics while the session
+// holds that project's controller role, and this filter is the whole of how it now reaches the
+// controller: the lane's live core subscription, which handed the session only what was published
+// while it was subscribed, went with the rest of the core receive path (INFRA-771), so a notice
+// published while the controller was away is delivered from the stream when it returns. A role
+// lane reaches its holder as a forward on the holder's agent subject, and is no filter subject.
+// SessionConsumers filters on every form of each subject the list names, reduced to filters that
+// do not overlap (bus.SessionConsumerFilters).
 //
 // A topic the server would refuse as a filter subject (bus.CheckFilterSubject: an empty token, as
 // in a GitHub topic that spells a repository name with a dot, or a `>` before the last token) is
 // left out, though the row stores it: with it in the list the server refuses the whole call and
 // the session gets no consumer at all, and no message can reach such a subject anyway.
-func (m *sessionDelivery) sessionConsumerFilter(sessionID string, topics []string) []string {
+func sessionConsumerFilter(sessionID string, topics []string) []string {
 	filter := make([]string, 0, len(topics)+1)
 	filter = append(filter, contracts.LegacyAgentSubject(sessionID))
 	for _, topic := range topics {
-		if m.stream.DeployedStreamCaptures(topic) && bus.CheckFilterSubject(topic) == nil {
+		if bus.CanFilterOn(topic) {
 			filter = append(filter, topic)
 		}
 	}
@@ -1009,8 +1027,8 @@ func (m *sessionDelivery) sessionConsumerFilter(sessionID string, topics []strin
 // form for as long as the row holds one. Every read of a stored row into a filter comes through
 // here (registeredTarget, storedFilterStep, sessionRelays.storedFilter); a registration's own plan
 // does not, since the subscribe route counted its old forms as it took them.
-func (m *sessionDelivery) storedRowFilter(registry *store.Registry, sessionID string, topics []string) []string {
-	filter := m.sessionConsumerFilter(sessionID, topics)
+func storedRowFilter(registry *store.Registry, sessionID string, topics []string) []string {
+	filter := sessionConsumerFilter(sessionID, topics)
 	registry.CountStoredLegacyTopics(sessionID, filter)
 	return filter
 }

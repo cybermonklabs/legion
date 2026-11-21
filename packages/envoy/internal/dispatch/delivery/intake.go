@@ -118,7 +118,12 @@ type PushImports interface {
 // them. Routed rather than ignored because it is the only live-update path for the fork case,
 // which does reach it.
 func (in *Intake) Run(ctx context.Context) {
-	in.run(ctx, in.settings.Changed, func() bool { return in.settings.Load() != nil })
+	in.run(ctx, in.settings.Changed, in.ready)
+}
+
+// ready reports whether the intake has settings to route by: Run attempts the durable only then.
+func (in *Intake) ready() bool {
+	return in.settings.Load() != nil
 }
 
 // route dispatches one envelope payload by its kind field: a pull request to
@@ -254,17 +259,22 @@ func flatPayload(fields map[string]json.RawMessage) map[string]string {
 //
 // One subject rather than the set this once carried -- the wildcard pull-request subject
 // notifications.github.*.*.pr.* beside one notifications.github.<owner>.<repo>.workflow.<file>.>
-// per configured workflow file, through FilterSubjects -- because nats-server 2.10.29, the server
-// these tests ran before v2.15.1, does not hand that set's workflow messages over. Measured there
-// on one stream holding five pull-request and twelve workflow-run messages
-// (TestWhichFilterShapeDeliversAWorkflowSubject): a durable carrying the set reported all of them
-// in NumPending, then delivered the five pull requests and none of the runs, by pull fetch or push
-// subscription alike, in either order, while each filter alone delivered its own messages. A
-// withheld message was silent -- the consumer reported it pending and never errored -- which is
-// why the durable an earlier release left recorded no workflow run. v2.15.1 hands that set's
-// workflow messages over, as the same test now measures, so the one subject is no longer the only
-// shape that works; it stays because it is the simplest, and because the filter then does not
-// depend on the settings row, so a settings change needs no rebind.
+// per configured workflow file, through FilterSubjects -- because a nats-server below v2.15 does
+// not hand that set's workflow messages over. Measured on 2.10.29, on one stream holding five
+// pull-request and twelve workflow-run messages: a durable carrying the set reports all of them in
+// NumPending, then delivers the five pull requests and none of the runs, by pull fetch or push
+// subscription alike. Each filter alone delivers its own messages, and so do two workflow filters
+// together, or a concrete pull-request subject beside the workflow filter; only the wildcard
+// pull-request filter beside it withholds the workflow messages, in either order. A withheld
+// message is silent -- the consumer reports it pending and never errors -- so this takes the one
+// shape that delivers everything and filters in the handler. It also means the filter no longer
+// depends on the settings row, so a settings change needs no rebind.
+//
+// nats-server v2.15.1, the server the Go tests link from the release that requires v2.15.0 or
+// later, hands every one of those shapes every message, the whole old set included
+// (TestWhichFilterShapeDeliversAWorkflowSubject, which measures the table on the linked server).
+// The one subject stays: it is what a hub below v2.15 needs, it costs nothing on one at or above
+// it, and the durables this release replaces were created against the older servers.
 const githubIntakeSubject = "notifications.github.>"
 
 // intakeMessageTimeout bounds how long one envelope's own handling may take -- its GitHub calls

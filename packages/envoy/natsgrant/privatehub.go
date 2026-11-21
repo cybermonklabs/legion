@@ -37,7 +37,9 @@ const (
 	// PrivacyRequiredSuffix is the suffix a listener built in required privacy mode puts at the end
 	// of the NATS client name of every connection its credential opens; its leading space keeps it
 	// a word of its own. That is each of the listener's bus clients (the stream client, the role
-	// lane and the session consumers, all three of which internal/bus names today) and the renewal
+	// lane and the session consumers, all three of which internal/bus names today), the delivery
+	// lease's own connection (cmd/listener's openDeliveryLease, client name "envoy-listener-lease"
+	// and the instance), and the renewal
 	// probe natscred dials with a later token, whose name must keep the suffix last: today's probe
 	// name, the connection's name then " probe", does not, and changes before the auth service
 	// applies this rule. internal/bus and natscred cannot import this package, so the listener

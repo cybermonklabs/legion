@@ -1,22 +1,15 @@
 package bus
 
 import (
-	"bufio"
 	"context"
 	"errors"
-	"io"
-	"net"
-	"net/url"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // unansweredBucket is the bucket the handle-open rows below open a jetstream handle on, created
@@ -43,177 +36,16 @@ func updateSubject(bucket string) string { return "$JS.API.STREAM.UPDATE.KV_" + 
 // this connection asks the server for next, and only a row that makes one call may use it.
 func accountInfoSubject() string { return "$JS.API.INFO" }
 
-// unansweredRelay is a TCP relay between a client and a real NATS server that counts the requests
-// the client sends on one subject and drops the first drops of them: the request never reaches the
-// server, as a member of a metadata group younger than lostQuorumInterval, or one that has not
-// yet seen its leader go, leaves one unanswered (sentAgain), so no answer is ever published and
-// the caller's wait runs out with the deadline it held. Everything else both sides send is
-// relayed untouched, so the connection is a real one on a real server and every other request is
-// answered as it always is.
-//
-// The requests a start makes of a bucket are nats.go's own: the lookup and the create are sent
-// inside js.KeyValue and js.CreateKeyValue, and the jetstream handle wrapKeyValue opens is built
-// from the connection inside that function (jetstream.New(conn)), which takes the concrete
-// *nats.Conn. So no JetStream context a test passes in can reach any of those sends: the seam a
-// test has for them is the connection's own wire, which is this relay. The bucket's own name is
-// in openSubject and in createSubject, so a row dropping one of those touches only the requests
-// about its own bucket; accountInfoSubject holds no bucket name, so only a row that makes one
-// call may drop it. The sends a row's setup makes are counted apart from the sends of the call
-// it is about (arm).
-type unansweredRelay struct {
-	subject  string
-	url      string
-	listener net.Listener
-	mu       sync.Mutex
-	pass     int
-	drops    int
-	sends    int
-}
-
-// startUnansweredRelayOn relays to the NATS server at target, a client URL such as testnats.URL
-// returns, on a loopback port of its own until the test ends, counting and dropping the client's
-// sends on subject: openSubject or createSubject of the row's bucket, or accountInfoSubject,
-// which names no bucket and so is for a row that makes one call. Its own URL is that one with
-// the host and port it listens on, credentials included, as testnats.StartProxy builds its own. It
-// drops nothing until it is armed.
-func startUnansweredRelayOn(t *testing.T, target, subject string) *unansweredRelay {
-	t.Helper()
-	server, err := url.Parse(target)
-	if err != nil || server.Host == "" {
-		t.Fatalf("read the NATS URL %q the relay relays to: %v", target, err)
-		return nil
-	}
-	listener, err := testport.ListenLoopback()
-	if err != nil {
-		t.Fatalf("listen for the relay: %v", err)
-		return nil
-	}
-	relayed := *server
-	relayed.Host = listener.Addr().String()
-	relay := &unansweredRelay{
-		subject:  subject,
-		url:      relayed.String(),
-		listener: listener,
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	go relay.serve(server.Host)
-	return relay
-}
-
-// arm has the relay drop the next drops sends of its subject and counts the sends from now, so a
-// row counts the sends of the call it is about to make and not the ones that set it up.
-func (r *unansweredRelay) arm(drops int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.pass = 0
-	r.drops = drops
-	r.sends = 0
-}
-
-// passThenDrop lets the next pass sends of the subject through and drops the drops after them,
-// counting the sends from now. A row that drives a whole start needs this where arm does not:
-// EnsureKeyValue looks its bucket up with the same STREAM.INFO on the same subject as the handle
-// open, so a relay armed to drop the first send would drop the lookup instead of the open.
-func (r *unansweredRelay) passThenDrop(pass, drops int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.pass = pass
-	r.drops = drops
-	r.sends = 0
-}
-
-// sent is how many sends of its subject the client has made since the relay was armed.
-func (r *unansweredRelay) sent() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.sends
-}
-
-// send records one send of subject and reports whether it is dropped: it is while drops are left,
-// and each such send spends one.
-func (r *unansweredRelay) send(subject string) bool {
-	if subject != r.subject {
-		return false
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sends++
-	if r.pass > 0 {
-		r.pass--
-		return false
-	}
-	if r.drops > 0 {
-		r.drops--
-		return true
-	}
-	return false
-}
-
-// serve joins each connection the relay accepts to the server until the listener closes.
-func (r *unansweredRelay) serve(target string) {
-	for {
-		client, err := r.listener.Accept()
-		if err != nil {
-			return
-		}
-		server, err := net.Dial("tcp", target)
-		if err != nil {
-			_ = client.Close()
-			continue
-		}
-		go r.filter(server, client)
-		go func() {
-			_, _ = io.Copy(client, server)
-			_ = client.Close()
-			_ = server.Close()
-		}()
-	}
-}
-
-// filter relays what the client sends to the server, a protocol message at a time, leaving out the
-// publishes the relay drops. A client sends only CONNECT, SUB, UNSUB, PING, PONG and publishes, so
-// every line that is not a publish is passed on as it is, and a publish is passed on with the
-// payload its header counts.
-func (r *unansweredRelay) filter(server, client net.Conn) {
-	defer func() {
-		_ = client.Close()
-		_ = server.Close()
-	}()
-	reader := bufio.NewReader(client)
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return
-		}
-		fields := strings.Fields(line)
-		// `PUB <subject> [reply] <bytes>` and `HPUB <subject> [reply] <header bytes> <bytes>` are
-		// each followed by that many bytes and a CRLF. A line with fewer than three fields is
-		// neither, whatever its first word says.
-		if len(fields) < 3 || (!strings.EqualFold(fields[0], "PUB") && !strings.EqualFold(fields[0], "HPUB")) {
-			if _, err := io.WriteString(server, line); err != nil {
-				return
-			}
-			continue
-		}
-		size, err := strconv.Atoi(fields[len(fields)-1])
-		if err != nil {
-			return
-		}
-		payload := make([]byte, size+2)
-		if _, err := io.ReadFull(reader, payload); err != nil {
-			return
-		}
-		if r.send(fields[1]) {
-			continue
-		}
-		if _, err := io.WriteString(server, line); err != nil {
-			return
-		}
-		if _, err := server.Write(payload); err != nil {
-			return
-		}
-	}
-}
+// The rows below drop one request of a start through testnats.UnansweredRelay, which a member of a
+// metadata group younger than lostQuorumInterval, or one that has not yet seen its leader go,
+// leaves unanswered as the relay does (sentAgain). The requests a start makes of a bucket are
+// nats.go's own: the lookup and the create are sent inside js.KeyValue and js.CreateKeyValue, and
+// the jetstream handle wrapKeyValue opens is built from the connection inside that function
+// (jetstream.New(conn)), which takes the concrete *nats.Conn. So no JetStream context a test passes
+// in can reach any of those sends: the seam a test has for them is the connection's own wire,
+// which is the relay. The bucket's own name is in openSubject and in createSubject, so a row
+// dropping one of those touches only the requests about its own bucket; accountInfoSubject holds
+// no bucket name, so only a row that makes one call may drop it.
 
 // relayedJetStream is a connection through relay and the JetStream context a start is given,
 // opened with the MaxWait the listener and Dispatch open theirs with, so a request the relay drops
@@ -225,9 +57,9 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 // of it. The denied row holds the other half of that path, where the record names a refusal and
 // the send is not made again (TestADeniedBucketLookupIsNotSentAgain). A connection no client owns
 // returns refusedBy at its early exit, so a row on one would never reach the record at all.
-func relayedJetStream(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.JetStreamContext) {
+func relayedJetStream(t *testing.T, relay *testnats.UnansweredRelay) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
-	client, err := Connect([]string{relay.url})
+	client, err := Connect([]string{relay.URL()})
 	if err != nil {
 		t.Fatalf("connect the client whose connection the start opens the bucket on: %v", err)
 	}
@@ -246,7 +78,7 @@ func relayedJetStream(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.Je
 // the handle on it reads and writes keys.
 func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	const bucket = "envoy_unanswered_lookup"
-	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(bucket))
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), openSubject(bucket))
 	conn, js := relayedJetStream(t, relay)
 	// The bucket is there before the call, so the call under test takes the lookup path and not
 	// the create path.
@@ -255,7 +87,7 @@ func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
 
-	relay.arm(1)
+	relay.Arm(1)
 	// Replicas is left at one copy, so no raise is attempted and every send the relay counts from
 	// here is a read of the bucket's stream this call made.
 	handle, err := EnsureKeyValue(countedReads(t.Context()), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
@@ -277,7 +109,7 @@ func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	// read of the found bucket's stream for its leader (a start at one copy can find a stream
 	// another program has just raised), and the STREAM.INFO wrapKeyValue sends through its open
 	// to build the bucket's jetstream handle, each the same request on the same subject.
-	if sends := relay.sent(); sends != 4 {
+	if sends := relay.Sent(); sends != 4 {
 		t.Fatalf("lookups sent = %d, want 4: the lost lookup, the one that answered, the stream read, and the handle open", sends)
 	}
 }
@@ -289,9 +121,9 @@ func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 // that) and sent again, so the guard passes during the third send and cuts it (Bounded).
 func TestABucketLookupTheServerNeverAnswersEndsAtTheHangGuard(t *testing.T) {
 	const bucket = "envoy_unanswered_never"
-	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(bucket))
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), openSubject(bucket))
 	conn, js := relayedJetStream(t, relay)
-	relay.arm(1 << 30)
+	relay.Arm(1 << 30)
 
 	_, err := ensureKeyValue(context.Background(), 2*time.Second, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
@@ -302,7 +134,7 @@ func TestABucketLookupTheServerNeverAnswersEndsAtTheHangGuard(t *testing.T) {
 			t.Fatalf("a start whose lookup the server never answers = %v, want it to name %q", err, want)
 		}
 	}
-	if sends := relay.sent(); sends < 2 {
+	if sends := relay.Sent(); sends < 2 {
 		t.Fatalf("lookups sent = %d, want the lookup sent again after its read limit", sends)
 	}
 }
@@ -313,14 +145,14 @@ func TestABucketLookupTheServerNeverAnswersEndsAtTheHangGuard(t *testing.T) {
 // server, so the bucket is the second create's, and the handle on it is usable.
 func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	const bucket = "envoy_unanswered_create"
-	relay := startUnansweredRelayOn(t, testnats.URL(t), createSubject(bucket))
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), createSubject(bucket))
 	conn, js := relayedJetStream(t, relay)
 	// The bucket is not there, so the call under test takes the create path. It is deleted however
 	// the row ends, since a create whose send was lost leaves nothing behind but one that answered
 	// does.
 	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
 
-	relay.arm(1)
+	relay.Arm(1)
 	handle, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("a start whose first bucket create drew no answer = %v, want it to go on", err)
@@ -334,7 +166,7 @@ func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	}
 	// Two creates ride this subject: the one whose send was lost and the one that made the bucket.
 	// The handle open rides the lookup's subject, which this relay passes on.
-	if sends := relay.sent(); sends != 2 {
+	if sends := relay.Sent(); sends != 2 {
 		t.Fatalf("creates sent = %d, want 2: the lost one and the one that made the bucket", sends)
 	}
 }
@@ -348,13 +180,13 @@ func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
 func TestAnUnansweredRaiseIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	const bucket = "envoy_unanswered_raise"
 	cluster := testnats.StartCluster(t, 3)
-	relay := startUnansweredRelayOn(t, cluster.Servers[0].URL(), updateSubject(bucket))
+	relay := testnats.StartUnansweredRelayOn(t, cluster.Servers[0].URL(), updateSubject(bucket))
 	conn, js := relayedJetStream(t, relay)
 	if _, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
 		t.Fatalf("create the one-copy bucket the start raises: %v", err)
 	}
 
-	relay.arm(1)
+	relay.Arm(1)
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
 		t.Fatalf("a start whose first raise drew no answer = %v, want it to go on", err)
 	}
@@ -367,7 +199,7 @@ func TestAnUnansweredRaiseIsSentAgainAndTheStartGoesOn(t *testing.T) {
 		t.Fatalf("the raised stream has %d copies, want 3", info.Config.Replicas)
 	}
 	// Two raises ride this subject: the one whose send was lost and the one that landed.
-	if sends := relay.sent(); sends != 2 {
+	if sends := relay.Sent(); sends != 2 {
 		t.Fatalf("raises sent = %d, want 2: the lost one and the one that landed", sends)
 	}
 }
@@ -381,14 +213,14 @@ func TestAnUnansweredRaiseIsSentAgainAndTheStartGoesOn(t *testing.T) {
 // raise is dropped, so a single server serves: no raise reaches it.
 func TestARaiseTheServerNeverAnswersEndsAtTheHangGuardNamingNoSetting(t *testing.T) {
 	const bucket = "envoy_unanswered_raise_never"
-	relay := startUnansweredRelayOn(t, testnats.URL(t), updateSubject(bucket))
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), updateSubject(bucket))
 	conn, js := relayedJetStream(t, relay)
 	if _, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage}); err != nil {
 		t.Fatalf("create the one-copy bucket the start raises: %v", err)
 	}
 	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
 
-	relay.arm(1 << 30)
+	relay.Arm(1 << 30)
 	guard := RequestTimeout + 2*time.Second
 	_, err := ensureKeyValue(context.Background(), guard, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage, Replicas: 3})
 	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
@@ -400,7 +232,7 @@ func TestARaiseTheServerNeverAnswersEndsAtTheHangGuardNamingNoSetting(t *testing
 	if strings.Contains(err.Error(), ReplicasEnvVar) {
 		t.Fatalf("a start whose raise the server never answers = %v, want no setting named: the server refused nothing", err)
 	}
-	if sends := relay.sent(); sends != 2 {
+	if sends := relay.Sent(); sends != 2 {
 		t.Fatalf("raises sent = %d, want 2: the raise sent again after its own wait, and the guard passing during the second", sends)
 	}
 }
@@ -410,14 +242,14 @@ func TestARaiseTheServerNeverAnswersEndsAtTheHangGuardNamingNoSetting(t *testing
 // KV_envoy_unanswered_age max age: context deadline exceeded", which is what it did.
 func TestAnUnansweredMaxAgeUpdateIsSentAgain(t *testing.T) {
 	const bucket = "envoy_unanswered_age"
-	relay := startUnansweredRelayOn(t, testnats.URL(t), updateSubject(bucket))
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), updateSubject(bucket))
 	conn, js := relayedJetStream(t, relay)
 	if _, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage}); err != nil {
 		t.Fatalf("create the bucket whose age is set: %v", err)
 	}
 	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
 
-	relay.arm(1)
+	relay.Arm(1)
 	age, err := SetKeyValueMaxAge(t.Context(), conn, js, bucket, time.Hour)
 	if err != nil || age != time.Hour {
 		t.Fatalf("a setting of the age whose first update drew no answer = %s, %v, want 1h and nil", age, err)
@@ -429,7 +261,7 @@ func TestAnUnansweredMaxAgeUpdateIsSentAgain(t *testing.T) {
 	if info.Config.MaxAge != time.Hour {
 		t.Fatalf("the bucket's age = %s, want 1h", info.Config.MaxAge)
 	}
-	if sends := relay.sent(); sends != 2 {
+	if sends := relay.Sent(); sends != 2 {
 		t.Fatalf("updates sent = %d, want 2: the lost one and the one that landed", sends)
 	}
 }
@@ -443,14 +275,14 @@ func TestAnUnansweredMaxAgeUpdateIsSentAgain(t *testing.T) {
 // send's, and the handle on it is usable.
 func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	const bucket = "envoy_unanswered_info"
-	relay := startUnansweredRelayOn(t, testnats.URL(t), accountInfoSubject())
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), accountInfoSubject())
 	conn, js := relayedJetStream(t, relay)
 	// The bucket is not there, so the call under test takes the create path, the only path that
 	// asks for the account's info. It is deleted however the row ends, since a create whose
 	// account info was lost leaves nothing behind but one that answered does.
 	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
 
-	relay.arm(1)
+	relay.Arm(1)
 	handle, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("a start whose first account info drew no answer = %v, want it to go on", err)
@@ -467,7 +299,7 @@ func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	// lookup is a STREAM.INFO, the handle open is another, and the STREAM.CREATE of the first
 	// send was never reached, since js.CreateKeyValue returns the moment the account info draws
 	// no answer. Each of those rides a subject of its own, which this relay passes on.
-	if sends := relay.sent(); sends != 2 {
+	if sends := relay.Sent(); sends != 2 {
 		t.Fatalf("account infos sent = %d, want 2: the lost one and the one of the send that made the bucket", sends)
 	}
 }
@@ -477,7 +309,7 @@ func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
 // connection is relayedJetStream's, a client's, so a row that drives the whole of EnsureKeyValue
 // on it reads the refusal record that call reads (refusedBy, clientOwning) rather than the
 // early exit a connection no client owns takes.
-func unansweredKeyValue(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.JetStreamContext, nats.KeyValue) {
+func unansweredKeyValue(t *testing.T, relay *testnats.UnansweredRelay) (*nats.Conn, nats.JetStreamContext, nats.KeyValue) {
 	t.Helper()
 	conn, js := relayedJetStream(t, relay)
 	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: unansweredBucket, Storage: nats.MemoryStorage})
@@ -494,16 +326,16 @@ func unansweredKeyValue(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.
 // is the second one's, and it reads the bucket's stream. This is the start that created the
 // bucket.
 func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
-	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, _, kv := unansweredKeyValue(t, relay)
 
-	relay.arm(1)
+	relay.Arm(1)
 	handle, err := wrapKeyValue(countedReads(context.Background()), conn, kv, true, startSendsAgain)
 	if err != nil {
 		t.Fatalf("a start whose first handle open drew no answer = %v, want it to go on", err)
 	}
 
-	if sends := relay.sent(); sends != 2 {
+	if sends := relay.Sent(); sends != 2 {
 		t.Fatalf("handle opens sent = %d, want 2: the lost one and the one that answered", sends)
 	}
 	if handle.Bucket() != unansweredBucket {
@@ -519,16 +351,16 @@ func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
 // the resend missed while the create and not the caller chose it: EnsureKeyValue leaves created
 // false on that path, so one lost answer still ended the program.
 func TestAnUnansweredHandleOpenOfAFoundBucketIsSentAgainAndTheStartGoesOn(t *testing.T) {
-	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, _, kv := unansweredKeyValue(t, relay)
 
-	relay.arm(1)
+	relay.Arm(1)
 	handle, err := wrapKeyValue(countedReads(context.Background()), conn, kv, false, startSendsAgain)
 	if err != nil {
 		t.Fatalf("a start that found its bucket and lost its first handle open = %v, want it to go on", err)
 	}
 
-	if sends := relay.sent(); sends != 2 {
+	if sends := relay.Sent(); sends != 2 {
 		t.Fatalf("handle opens sent = %d, want 2: the lost one and the one that answered", sends)
 	}
 	if _, err := handle.ReadStreamState(context.Background()); err != nil {
@@ -539,15 +371,15 @@ func TestAnUnansweredHandleOpenOfAFoundBucketIsSentAgainAndTheStartGoesOn(t *tes
 // An answer the server gives ends the sending: a start sends the open once and is done, so
 // nothing a server answers is ever asked twice.
 func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
-	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, _, kv := unansweredKeyValue(t, relay)
 
-	relay.arm(0)
+	relay.Arm(0)
 	if _, err := wrapKeyValue(countedReads(context.Background()), conn, kv, true, startSendsAgain); err != nil {
 		t.Fatalf("a start whose handle open the server answered = %v, want it to go on", err)
 	}
 
-	if sends := relay.sent(); sends != 1 {
+	if sends := relay.Sent(); sends != 1 {
 		t.Fatalf("handle opens sent = %d, want 1: an answer is the server's and is not sent again", sends)
 	}
 }
@@ -557,16 +389,16 @@ func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
 // seconds for it, so an open that kept sending would leave that read and every one after it
 // unanswered instead of saving a start.
 func TestAnUnansweredHandleOpenOffAStartIsSentOnce(t *testing.T) {
-	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, _, kv := unansweredKeyValue(t, relay)
 
-	relay.arm(1)
+	relay.Arm(1)
 	_, err := WrapKeyValue(conn, kv)
 
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("an open the server left unanswered off a start = %v, want %v", err, context.DeadlineExceeded)
 	}
-	if sends := relay.sent(); sends != 1 {
+	if sends := relay.Sent(); sends != 1 {
 		t.Fatalf("handle opens sent = %d, want 1: this path is a request's, not a start's", sends)
 	}
 }
@@ -586,24 +418,24 @@ func TestAnUnansweredHandleOpenOffAStartIsSentOnce(t *testing.T) {
 // follows it, so the drop is placed behind what a clean start sends, and a step added to the
 // found-bucket path moves it along rather than landing it on another request.
 func TestAStartThatOpensAFoundBucketThroughEnsureKeyValueSendsTheOpenAgain(t *testing.T) {
-	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
+	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, js, _ := unansweredKeyValue(t, relay)
 	config := &nats.KeyValueConfig{Bucket: unansweredBucket, Storage: nats.MemoryStorage}
 
-	relay.arm(0)
+	relay.Arm(0)
 	if _, err := EnsureKeyValue(countedReads(t.Context()), conn, js, config); err != nil {
 		t.Fatalf("a start whose every request the server answered = %v, want it to go on", err)
 	}
-	answered := relay.sent()
+	answered := relay.Sent()
 	if answered < 1 {
 		t.Fatalf("a clean start sent %d requests on the bucket's stream, want at least the handle open itself", answered)
 	}
 
-	relay.passThenDrop(answered-1, 1)
+	relay.PassThenDrop(answered-1, 1)
 	if _, err := EnsureKeyValue(countedReads(t.Context()), conn, js, config); err != nil {
 		t.Fatalf("a start that found its bucket and lost its handle open = %v, want it to go on", err)
 	}
-	if sends := relay.sent(); sends != answered+1 {
+	if sends := relay.Sent(); sends != answered+1 {
 		t.Fatalf("the start sent %d requests on the bucket's stream, want %d: a clean start's %d with the lost open sent again",
 			sends, answered+1, answered)
 	}

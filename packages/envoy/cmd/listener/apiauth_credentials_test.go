@@ -51,7 +51,7 @@ func newGoogleStandIn(t *testing.T, accounts ...string) googleStandIn {
 	if err != nil {
 		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerGoogleAudience, err)
 	}
-	return googleStandIn{issuer: issuer, key: key, identities: &googleIdentities{audience: listenerGoogleAudience, verifier: verifier, accounts: accounts}}
+	return googleStandIn{issuer: issuer, key: key, identities: &googleIdentities{audience: listenerGoogleAudience, verifier: readyAPIVerifier(verifier), accounts: accounts}}
 }
 
 // token mints a Google identity token as a metadata server mints one with format=full: Google's
@@ -71,7 +71,7 @@ func (g googleStandIn) token(t *testing.T, account string, verified any, audienc
 type clusterIssuer struct {
 	issuer   *oidctest.Issuer
 	key      *oidctest.Key
-	verifier *oidc.Verifier
+	verifier *apiVerifier
 }
 
 func newClusterIssuer(t *testing.T) clusterIssuer {
@@ -82,7 +82,16 @@ func newClusterIssuer(t *testing.T) clusterIssuer {
 	if err != nil {
 		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
 	}
-	return clusterIssuer{issuer: issuer, key: key, verifier: verifier}
+	return clusterIssuer{issuer: issuer, key: key, verifier: readyAPIVerifier(verifier)}
+}
+
+// readyAPIVerifier is a /v1 verifier whose discovery has succeeded and produced verifier, as
+// apiVerifier.discover leaves it: a test that builds its oidc.Verifier itself hands it to apiAuth
+// through one.
+func readyAPIVerifier(verifier *oidc.Verifier) *apiVerifier {
+	ready := &apiVerifier{}
+	ready.verifier.Store(verifier)
+	return ready
 }
 
 func (c clusterIssuer) token(t *testing.T, subject string) string {
@@ -200,7 +209,7 @@ func TestGoogleIssuerAliasesReachTheGoogleBranch(t *testing.T) {
 	}
 	google := &googleIdentities{
 		audience: listenerGoogleAudience,
-		verifier: oidc.NewWithKeys(oidc.GoogleIssuer, listenerGoogleAudience, keys),
+		verifier: readyAPIVerifier(oidc.NewWithKeys(oidc.GoogleIssuer, listenerGoogleAudience, keys)),
 		accounts: []string{listenerGoogleAccount},
 	}
 	cluster := newClusterIssuer(t)
@@ -680,13 +689,13 @@ func TestGoogleIssuerOnAProjectedOnlyListener(t *testing.T) {
 		wantStatus int
 		wantReason string
 	}{
-		{name: "the cluster verifier refuses Google's issuer", verifier: cluster.verifier, wantStatus: http.StatusUnauthorized, wantReason: "issuer"},
+		{name: "the cluster verifier refuses Google's issuer", verifier: cluster.verifier.current(), wantStatus: http.StatusUnauthorized, wantReason: "issuer"},
 		{name: "a verifier configured for Google still admits it without a Google account list", verifier: oidc.NewWithKeys(oidc.GoogleIssuer, listenerTestAudience, keys), wantStatus: http.StatusNoContent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logged bytes.Buffer
 			recorder := httptest.NewRecorder()
-			apiAuth(listenerAPIAuth{verifier: tc.verifier, logger: logging.NewWithWriter("test-machine", &logged)}, served).
+			apiAuth(listenerAPIAuth{verifier: readyAPIVerifier(tc.verifier), logger: logging.NewWithWriter("test-machine", &logged)}, served).
 				ServeHTTP(recorder, bearerRequest("/v1/sessions", "Bearer "+raw))
 			if recorder.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d; log: %s", recorder.Code, tc.wantStatus, logged.String())

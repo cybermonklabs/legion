@@ -161,10 +161,9 @@ func secretChecksum(secret *corev1.Secret) pulumi.StringOutput {
 	return secret.Metadata.ResourceVersion().Elem()
 }
 
-// answersProbe is a startup or liveness probe of the HTTP server on the container's loopback port,
-// and the clustered hub listener's readiness probe too (clusteredHubListenerPod): it fails only
-// when the process does not answer at all. It asks /livez, which runs no dependency check:
-// envoy-dispatch and envoy-listener each answer it 204 with no I/O. curl without -f exits 0
+// answersProbe is a startup or liveness probe of the HTTP server on the container's loopback port:
+// it fails only when the process does not answer at all. It asks /livez, which runs no dependency
+// check: envoy-dispatch and envoy-listener each answer it 204 with no I/O. curl without -f exits 0
 // whatever the status, so any HTTP answer passes, and neither a dependency outage nor a slow
 // Postgres or NATS restarts every pod; --max-time 8 makes curl give up inside the probe's 9 s
 // timeout.

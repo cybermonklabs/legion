@@ -1392,6 +1392,9 @@ type dispatchProcess struct {
 	// it is healthy reads the server's connection ceiling through it when Postgres refused the
 	// process a connection for too many clients (connectionRefusalCause).
 	databaseURL string
+	// budget is the connection budget the start gave the process (DISPATCH_TEST_POOL_BUDGET), zero
+	// at production's pool sizes, which connectionRefusalCause names as what each process may open.
+	budget int
 }
 
 // dispatchOptions is what a test varies about the Dispatch process it starts. Its zero value is
@@ -1448,8 +1451,9 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 	t.Helper()
 	// The server must allow what this process and every other Dispatch process this test binary
 	// runs may open (connection_ceiling_test.go), since a server that allows fewer fails later and
-	// elsewhere.
-	releaseConnections := requireConnectionCeiling(t, databaseURL)
+	// elsewhere: on a server too small for production's pool sizes, the process is given a budget
+	// its pools scale to.
+	releaseConnections, budget := requireConnectionCeiling(t, databaseURL)
 	// The process's own database, for the events_start wait; a URL it cannot serve against is
 	// the test's own mistake, not a stall to wait out.
 	config, err := pgx.ParseConfig(databaseURL)
@@ -1460,6 +1464,10 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 	binary := options.Binary
 	if binary == "" {
 		binary = cmdtest.Build(t, "envoy-dispatch")
+	}
+	if budget > 0 && options.Binary != "" && !readsPoolBudget(t, binary) {
+		requireProductionPools(t, budget, "this start runs "+binary+", a build that does not read "+
+			"DISPATCH_TEST_POOL_BUDGET and opens its pools at its own production sizes whatever budget it is given")
 	}
 	webDist := options.WebDist
 	if webDist == "" {
@@ -1496,6 +1504,9 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 	if options.SettleDelay > 0 {
 		environment["DISPATCH_TEST_SETTLE_DELAY"] = options.SettleDelay.String()
 	}
+	if budget > 0 {
+		environment["DISPATCH_TEST_POOL_BUDGET"] = strconv.Itoa(budget)
+	}
 	maps.Copy(environment, options.Env)
 	for _, name := range options.Without {
 		delete(environment, name)
@@ -1515,7 +1526,7 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 	// waits on Exited and starts another process is counted with this one gone: a row that
 	// restarts a process one after another asks the server for one process's worth, not one per
 	// start. A start that fails leaves the count at the test's cleanup (requireConnectionCeiling).
-	return &dispatchProcess{Process: cmdtest.StartThen(t, "Dispatch", cmd, releaseConnections), port: held.Port, database: config.Database, databaseURL: databaseURL}
+	return &dispatchProcess{Process: cmdtest.StartThen(t, "Dispatch", cmd, releaseConnections), port: held.Port, database: config.Database, databaseURL: databaseURL, budget: budget}
 }
 
 func (p *dispatchProcess) url(path string) string {
@@ -1610,7 +1621,7 @@ func (p *dispatchProcess) exitCause() string {
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		if strings.Contains(line, tooManyConnections) {
-			return connectionRefusalCause(line, p.databaseURL)
+			return connectionRefusalCause(line, p.databaseURL, p.budget)
 		}
 	}
 	last := lines[max(0, len(lines)-exitCauseLines):]

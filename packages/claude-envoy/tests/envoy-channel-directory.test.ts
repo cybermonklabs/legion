@@ -10,8 +10,8 @@ import { SessionIdentity } from "../src/session-identity"
 const session: ChannelSession = {
   delivery: { enqueue: async () => true, inbox: () => [] },
   topics: () => [],
-  follow: async () => [],
-  unfollow: async () => [],
+  follow: async () => ({ added: [], warnings: [] }),
+  unfollow: async () => ({ removed: [] }),
   rememberRole: async () => undefined,
   onRoleRegained: () => undefined,
   capabilitiesChanged: () => undefined,

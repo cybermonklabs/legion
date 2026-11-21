@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // senderLimit is the operator's limit: perMinute messages a minute for each agent session, burst
@@ -21,8 +22,11 @@ import (
 // senderLimit is no limit, which is what an operator who sets nothing gets and what every test
 // that builds listenerDeps itself runs with, so every method is safe on nil.
 //
-// The counts are this process's own: no other listener shares them and a restart fills each one
-// again, since a session sends through the one listener its client names.
+// The limit is each listener pod's own: the counts live in this process's memory and no other pod
+// shares them, while every pod serves every route. So each pod counts the messages it serves, and
+// with N pods a session can send up to N times the limit in all; one pod can refuse a message
+// while another takes it; and a pod that restarts, or the new pod a roll starts, counts from full.
+// The docs site's Envoy page ("The sender limit") is the operator's statement of this.
 type senderLimit struct {
 	perMinute int
 	burst     int
@@ -252,27 +256,17 @@ type senderRefusal struct {
 	retryAfterSeconds int
 }
 
-// senderRateLimitedAnswer is the 429's body. Error is what the agent reads: each client shows
-// a refusal's error as it is written and sends nothing below 500 again
-// (packages/envoy-client/src/transport.ts), so the sentence alone tells the agent that its sending
-// is limited, that this message went nowhere, and when to send it again. Reason is the outcome the
-// request's log line records, and not apiauth.go's rate_limited, which refuses a broker token's
-// check rather than a session's sending.
-type senderRateLimitedAnswer struct {
-	Error             string         `json:"error"`
-	Reason            requestOutcome `json:"reason"`
-	RetryAfterSeconds int            `json:"retry_after_seconds"`
-	MessagesPerMinute int            `json:"messages_per_minute"`
-	Burst             int            `json:"burst"`
-}
-
-// answer is the 429 body that names r's limit and wait. Where a value of the sentence is 1 its noun
-// is singular, `1 message a minute` and `after 1 second`; the burst's `<burst> at once` has none.
-func (r *senderRefusal) answer() senderRateLimitedAnswer {
-	return senderRateLimitedAnswer{
+// answer is the 429 body that names r's limit and wait (listenerwire.SenderRateLimited). Its Error
+// is what the agent reads, so the sentence alone says that its sending is limited, that this
+// message went nowhere, and when to send it again; where a value of the sentence is 1 its noun is
+// singular, `1 message a minute` and `after 1 second`, and the burst's `<burst> at once` has none.
+// Its Reason is the outcome the request's log line records, and not apiauth.go's rate_limited,
+// which refuses a broker token's check rather than a session's sending.
+func (r *senderRefusal) answer() listenerwire.SenderRateLimited {
+	return listenerwire.SenderRateLimited{
 		Error: fmt.Sprintf("Your sending is rate limited. This message was not sent. This listener lets one session send %s a minute and %d at once. You can send it again after %s.",
 			quantity(r.perMinute, "message", "messages"), r.burst, quantity(r.retryAfterSeconds, "second", "seconds")),
-		Reason:            outcomeSenderRateLimited,
+		Reason:            string(outcomeSenderRateLimited),
 		RetryAfterSeconds: r.retryAfterSeconds,
 		MessagesPerMinute: r.perMinute,
 		Burst:             r.burst,

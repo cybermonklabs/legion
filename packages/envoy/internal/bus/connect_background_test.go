@@ -53,7 +53,7 @@ func TestAnOwningClientMadeWhileTheServerIsDownCreatesTheStreamOnItsFirstConnect
 // HookedConnectionEvents counts no connection event before an owning client that connects in the
 // background has connected, and at least one as soon as that client's first reconcile has
 // succeeded. The count rises only after a run of the hooks returned (rewatch), and the reconcile
-// is the first hook of such a client (ensureStreamOnce). A test that waits for this count waits
+// is the first hook of such a client (startKeeperOnce). A test that waits for this count waits
 // for this client's own work. The stream alone proves less: another writer can leave it holding
 // what the test asks of it.
 func TestHookedConnectionEventsCountsTheFirstReconcileOfABackgroundClient(t *testing.T) {

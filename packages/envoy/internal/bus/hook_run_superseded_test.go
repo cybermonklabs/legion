@@ -42,7 +42,8 @@ func awaitRunLost(ctx context.Context, conn *nats.Conn) error {
 	}
 }
 
-// markHooksDue counts a connection event, as onReconnect does, so the next rewatch runs the hooks.
+// markHooksDue counts a connection event, as countConnectionEvent does, so the next rewatch runs
+// the hooks.
 func markHooksDue(c *Client) {
 	c.mu.Lock()
 	c.markHooksDueLocked()
@@ -51,9 +52,9 @@ func markHooksDue(c *Client) {
 
 // A run of the reconnect hooks whose connection is lost while it runs is superseded, not failed:
 // rewatch returns errRunSuperseded and keeps no error for HookStall, which /healthz reports, and the
-// run afterReconnect makes after a reconnect logs it at INFO, with neither the WARN of a failed run
+// run onReconnect makes after a reconnect logs it at INFO, with neither the WARN of a failed run
 // nor the ERROR of a stall. The first run is the test's own (rewatch), the second the reconnect's
-// (afterReconnect), and both lose their connection to a stopped server; the third covers the
+// (onReconnect), and both lose their connection to a stopped server; the third covers the
 // reconnect that follows.
 func TestASupersededRunKeepsNoErrorAndLogsNoWarning(t *testing.T) {
 	srv, uri := testnats.Start(t)

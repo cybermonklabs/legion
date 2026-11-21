@@ -53,8 +53,22 @@ func requireSet(t *testing.T, want set, got natsgrant.Permissions, name string) 
 	require.Equal(t, want.Subscribe, got.Subscribe, "%s subscribe", name)
 }
 
+// withListenerState is want with the listener state bucket's subjects for machineID
+// (natsgrant.ListenerState) where listenerGrant puts them, just before the interest bucket's purge.
+// The fixture was written before that bucket joined the grant, and is never regenerated.
+func withListenerState(t *testing.T, want set, machineID string) set {
+	t.Helper()
+	purge := "$JS.API.STREAM.PURGE.KV_" + bus.InterestBucket
+	at := slices.Index(want.Publish, purge)
+	require.NotEqual(t, -1, at, "the fixture's publish list holds no %s", purge)
+	want.Publish = slices.Concat(want.Publish[:at], natsgrant.ListenerState(machineID), want.Publish[at:])
+	return want
+}
+
 // Every set this package builds is, element for element and in order, the set infra/core built at
-// the merge base, so moving them here rewrites no hub's rendered authorization.
+// the merge base, so moving them here rewrites no hub's rendered authorization; the one change
+// since is the listener state bucket's subjects, added to each set built on listenerGrant
+// (withListenerState).
 func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	var base mergeBase
 	readJSON(t, "testdata/merge-base-grants.json", &base)
@@ -64,10 +78,10 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 			want set
 			got  natsgrant.Permissions
 		}{
-			"Listener":     {base.Listener[id], natsgrant.Listener(id)},
-			"ListenerHost": {base.ListenerHost[id], natsgrant.ListenerHost(id)},
-			"Dispatch":     {base.Dispatch[id], natsgrant.Dispatch(id)},
-			"Host":         {base.Host[id], natsgrant.Host(id)},
+			"Listener":     {withListenerState(t, base.Listener[id], id), natsgrant.Listener(id)},
+			"ListenerHost": {withListenerState(t, base.ListenerHost[id], id), natsgrant.ListenerHost(id)},
+			"Dispatch":     {withListenerState(t, base.Dispatch[id], id), natsgrant.Dispatch(id)},
+			"Host":         {withListenerState(t, base.Host[id], id), natsgrant.Host(id)},
 		} {
 			requireSet(t, pair.want, pair.got, name+"("+strconv.Quote(id)+")")
 		}

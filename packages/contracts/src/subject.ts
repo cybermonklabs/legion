@@ -435,18 +435,21 @@ export type Subject =
   | WhatsappSubject;
 
 /**
- * What a caller that named `topic` is told when nothing would ever be delivered to `sessionID` on
- * it: a `notifications.` topic no stream subject captures and no role lane
- * (`bus.ReachesNoSession` in packages/envoy/internal/bus, `streamDeliversNothing` in
- * `@legion/envoy-client`). The listener leaves such a topic out of a registration and names it in
- * this warning (`splitUncapturedTopics` in packages/envoy/cmd/listener/api.go, which names it with
- * `contracts.UncapturedTopicRefusal` `scripts/gen-go.ts` emits from this builder), and each
- * plugin's explicit subscribe refuses such a topic in the same words (`envoy_subscribe` in
- * pi-envoy, `follow` in claude-envoy, both through `refuseUncapturedTopics` in
- * `@legion/envoy-client`). So a caller reads one sentence wherever it is told: a registration
- * carries topics nobody typed — a stored row, a restored transcript — and is answered with a
- * warning, where a tool call is a caller asking for this one topic by name.
+ * The warning the listener answers a registration with for each `topic` it stores for `sessionID`
+ * that no stream subject captures yet: a `notifications.` topic that is no role lane and reaches no
+ * private stream subject. The listener keeps such a topic in the session's row and names it in
+ * this warning (`uncapturedTopics` in
+ * packages/envoy/cmd/listener/api.go, through `listenerwire.UncapturedTopicWarning`, which
+ * `scripts/gen-go.ts` emits from this builder). Nothing is delivered on the topic until a stream
+ * subject captures it; a subject a newer build adds during a roll then does, and nothing stored
+ * on the topic in between is lost, because the filter held the topic the whole time. The plugins
+ * judge no topic on the stream subjects they were built with: they send every followed topic
+ * (`registrationTopics` in `@legion/envoy-client`). pi-envoy's `envoy_subscribe` and
+ * claude-envoy's `follow` show the caller this warning only for a topic it named, and not for one
+ * the plugin added, such as the base of a named `X.>` (`warningsForNamedTopics`). That filter
+ * reads a warning as this one only when it is the exact text this builder makes for its topic and
+ * the answer's `session_id`, so a plugin built on other words shows every such warning.
  */
-export function uncapturedTopicRefusal(topic: string, sessionID: string): string {
-  return `${topic} was not registered: no stream subject captures it, so nothing would be delivered to ${sessionID} on it; follow a notifications.team.<name> topic instead`;
+export function uncapturedTopicWarning(topic: string, sessionID: string): string {
+  return `${topic} is registered, but no stream subject captures it yet, so nothing is delivered to ${sessionID} on it until one does; to hear what agents publish, follow a notifications.team.<name> topic`;
 }

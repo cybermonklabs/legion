@@ -27,7 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// The live tests of the host grant: one nkey user holding HostPermissions, on the 2.10 image and on
+// The live tests of the host grant: one nkey user holding HostPermissions, on the plain image and on
 // the hub's, each run with the hub's own server arguments. This branch's listener connects as that
 // user with the environment host:Listener gives it, and a session connects as the same user, as
 // every session on a host does.
@@ -135,11 +135,12 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 					require.Equal(t, []string{"Publish", removed}, v[1:], "the server refused something else too: %s", v[0])
 				}
 				t.Logf("server violation (%d alike): %s", len(logged), logged[0][0])
-				// No retry gets past the grant, so the start ends at the refusal with the line the
-				// durable-refused alarm pages on, naming the subject, rather than polling the bind.
-				require.Contains(t, process.Output.String(), "subscribe refused, shutting down")
+				// The lease holder stays up and tries the create again, naming the grant's refusal
+				// at ERROR at each try with the refused subject and the server's text, so a grant
+				// that lacks the create is still loud; it no longer exits on it.
+				require.Contains(t, process.Output.String(), `"level":"ERROR","msg":"durable consumer refused by the NATS grant; retrying"`)
 				require.Contains(t, process.Output.String(), `bus: NATS denied the publish to \"`+removed)
-				require.NotContains(t, process.Output.String(), "subscribe failed, retrying")
+				require.NotContains(t, process.Output.String(), "subscribe refused, shutting down")
 			})
 		})
 	}
@@ -222,6 +223,58 @@ func TestListenerAndCredentialFreeSessionsOnRealServers(t *testing.T) {
 	}
 }
 
+// A user holding ListenerPermissions alone opens the listener state bucket as the listener does,
+// creating it on first use with one value per key and a 10 minute age, finds it on a second open,
+// and takes, renews and releases its machine's delivery lease there as the listener's lease does:
+// each write read back by key, a direct get on the key's subject, at the revision it wrote. It also
+// writes a session's last-seen record. A write to another machine's lease key is refused, on the
+// plain image and on the hub's. Every allowed operation comes first, so the refused publish after
+// them is the only violation the server logs.
+func TestListenerPermissionsOpenTheListenerStateBucketOnRealServers(t *testing.T) {
+	for _, image := range testnats.Images {
+		t.Run(image.Name, func(t *testing.T) {
+			t.Parallel()
+			seed, server, uri := startGrantServer(t, image.Ref, core.ListenerPermissions(liveMachineID))
+			conn, errs := connect(t, uri, seed)
+			js, err := conn.JetStream()
+			require.NoError(t, err)
+			config := &natsgo.KeyValueConfig{
+				Bucket: bus.ListenerStateBucket, History: 1, TTL: 10 * time.Minute, Storage: natsgo.FileStorage,
+			}
+			_, err = bus.EnsureKeyValue(t.Context(), conn, js, config)
+			require.NoError(t, err, "create the %s bucket", bus.ListenerStateBucket)
+			kv, err := bus.EnsureKeyValue(t.Context(), conn, js, config)
+			require.NoError(t, err, "open the existing %s bucket", bus.ListenerStateBucket)
+
+			lease := "lease." + bus.ListenerDurable(liveMachineID)
+			readBack := func(revision uint64, what string) {
+				t.Helper()
+				entry, err := kv.Get(lease)
+				require.NoError(t, err, "read back the lease after %s", what)
+				require.Equal(t, revision, entry.Revision(), "the lease read back after %s", what)
+			}
+			taken, err := kv.Create(lease, []byte(`{"holder":"box-a","boot":"0123456789abcdef"}`))
+			require.NoError(t, err, "take the lease")
+			readBack(taken, "taking it")
+			renewed, err := kv.Update(lease, []byte(`{"holder":"box-a","boot":"0123456789abcdef"}`), taken)
+			require.NoError(t, err, "renew the lease")
+			readBack(renewed, "renewing it")
+			released, err := kv.Update(lease, []byte(`{"holder":"box-a","boot":"0123456789abcdef","released":true}`), renewed)
+			require.NoError(t, err, "release the lease")
+			readBack(released, "releasing it")
+			_, err = kv.Put("seen."+liveSession, []byte(`{"at":1}`))
+			require.NoError(t, err, "record a session's last-seen time")
+
+			otherLease := "$KV." + bus.ListenerStateBucket + ".lease." + bus.ListenerDurable("example-host-b")
+			require.NoError(t, conn.Publish(otherLease, []byte(`{"holder":"box-a","boot":"0123456789abcdef"}`)))
+			requireViolation(t, conn, errs, `Publish to "`+otherLease+`"`)
+			for _, v := range violationsOnceLogged(t, server, otherLease) {
+				require.Equal(t, otherLease, v[2], "the server refused what the grant should allow: %s", v[0])
+			}
+		})
+	}
+}
+
 // The grant of a listener's own NATS user, which no session shares (ListenerHostPermissions, a
 // gcp:NatsHub user with listenerMachineId): the set that keeps a listener's sessions' consumers
 // under a user no session holds. The listener reaches healthy, answers a registration consumer
@@ -276,7 +329,7 @@ func TestListenerHostPermissionsOnRealServers(t *testing.T) {
 // its own relay subject, the subject the listener that owns the session publishes the session's
 // consumer messages on, and answers that frame on the inbox the listener named in it; the server
 // refuses it every notification topic beside that one, a subscribe to the reply inboxes and a
-// JetStream API request, on the 2.10 image and on the hub's. A session takes no message from a
+// JetStream API request, on the plain image and on the hub's. A session takes no message from a
 // notification subscription of its own: not notifications.>, not the agent subjects
 // (notifications.agent.*), not even its own agent subject. Request/reply from such a session is
 // refused by design, and it reads the stream through no call of its own.
@@ -682,7 +735,7 @@ func TestListenerPermissionsManageSessionConsumersOnRealServers(t *testing.T) {
 				TraceID:        "trace-evt-session-consumer",
 			}
 			require.NoError(t, owner.Publish(item))
-			pull, err := consumers.Pull(ctx, liveSession)
+			pull, err := consumers.Pull(ctx, liveSession, nil)
 			require.NoError(t, err)
 			msg, err := pull.Next(ctx)
 			require.NoError(t, err)
@@ -704,7 +757,7 @@ func TestListenerPermissionsManageSessionConsumersOnRealServers(t *testing.T) {
 			unacked.SourceEventID = unacked.EventID
 			unacked.DedupeKey = "permissions-live-test." + unacked.EventID
 			require.NoError(t, owner.Publish(unacked))
-			pull, err = consumers.Pull(ctx, liveSession)
+			pull, err = consumers.Pull(ctx, liveSession, nil)
 			require.NoError(t, err)
 			held, err := pull.Next(ctx)
 			require.NoError(t, err)

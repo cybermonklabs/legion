@@ -333,9 +333,9 @@ func TestASendReadsASessionWhoseConnectionClosedAsStopped(t *testing.T) {
 	t.Logf("the send to a session whose connection closed answered stopped after %s", stopped.elapsed)
 }
 
-// asListenerUser is uri with the credentials listenerGrant's configuration gives the listener's
-// NATS user. They are set through net/url rather than written into the string, so no literal of
-// the form scheme://user:password@host stands in the tree.
+// asListenerUser is uri with the credentials listenerGrantConfig's configuration gives the
+// listener's NATS user. They are set through net/url rather than written into the string, so no
+// literal of the form scheme://user:password@host stands in the tree.
 func asListenerUser(t *testing.T, uri string) string {
 	t.Helper()
 	parsed, err := url.Parse(uri)
@@ -356,7 +356,7 @@ func asListenerUser(t *testing.T, uri string) string {
 // probed, because the publish never leaves this listener, so connected here is the denial's
 // answer and not a reply's.
 func TestASendAnswersConnectedWhenTheListenerMayNotProbe(t *testing.T) {
-	_, uri := testnats.StartConfig(t, listenerGrant(bus.DeliverSubjectPrefix+">"), []string{"-js"}, false)
+	_, uri := testnats.StartConfig(t, listenerGrantConfig(bus.DeliverSubjectPrefix+">"), []string{"-js"}, false)
 	uri = asListenerUser(t, uri)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {

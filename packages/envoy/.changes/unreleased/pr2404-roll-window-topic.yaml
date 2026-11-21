@@ -1,0 +1,45 @@
+kind: Fixed
+body: |-
+    During a roll from one listener build to the next, a message could be lost for good. When the
+    newer build adds a stream subject, its pod puts that subject on the notification stream as it
+    starts. But the older pod, still the machine's active pod, reads the stream's subjects only
+    when it connects and once a minute after. Until that read, the older pod judged a topic under
+    the new subject as one that no stream captures. It left the topic out of the consumer filter of
+    a session whose relay it ran, and out of a registration made through it, with a warning. A
+    message on that topic published in that window was then never delivered to the session, and
+    the older pod's later read did not bring it back.
+
+    The listener now keeps a followed topic under the new subject in the session's interest record
+    and in its consumer's filter. It does so whatever subjects it last read from the stream. A role
+    lane, and a topic that is not a valid filter subject, stay out of the filter.
+    nats-server 2.15.1 accepts a consumer filter subject that no stream subject captures. When a
+    later subject captures the topic, the consumer delivers what the stream stores on it. A topic
+    that the listener left out and added again later would lose every message stored on it in
+    between. The consumer moves past a message that its filter does not match as soon as it looks
+    for its next message, and a filter update keeps that position.
+
+    In the same window, a message published through the older pod on such a topic was refused as
+    a topic that no session receives. The publish route now refuses such a publish only on a read
+    of the stream's subjects that started after the request asked. Within 250 ms of the pod's last
+    such read, it waits for the rest of that gap and then reads. Where it can make no such read (no
+    connection, the request's deadline ends first, or the read fails), it does not refuse the
+    publish. The one exception is a listener whose NATS user may not read the stream. It refuses on
+    the subjects it holds, because it can never read them again. Topics that no stream captures
+    cost the NATS server at most one extra read of the stream every 250 ms from each listener pod,
+    however many registrations and publishes through that pod name them.
+
+    Any other publish on such a topic from an older build now goes through JetStream once its
+    transport reads the stream's subjects again. It went over core NATS, where the stream still
+    stored it, but without the message id that keeps a repeat to one copy and without confirming
+    the store. The transport does not wait for a read that started less than 2 s ago, and it makes
+    no read within 250 ms of the last one. In those cases, and when its read fails, it judges the
+    topic on the subjects the pod holds. So a direct publish in the roll window can still go over
+    core NATS, stored, with no message id and no acknowledgement. A delivery exception about a
+    stored message on such a topic's exception lane is judged the same way before the listener
+    chooses the exception's message id. Outside those cases it is stored once, however many
+    listeners raise it. Judged on the older list, it could be stored twice, under two ids. And a
+    slow read of the stream's subjects that ends after a newer one no longer replaces the newer
+    list with the older one, including a read that ends while the listener sets up the stream.
+time: 2026-11-15T10:13:09.000000000Z
+custom:
+    Issue: pr2404

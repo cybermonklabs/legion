@@ -73,6 +73,8 @@ func TestTheOutboxLoadSteps(t *testing.T) {
 	t.Logf("runtime.NumCPU() = %d", report.CPUs)
 
 	pair := newPair(t)
+	requireProductionPools(t, serverPoolBudget(t, pair.databaseURL(t)),
+		"the outbox load steps measure the outbox's throughput and latency as production's processes run them")
 	rig := newSessionRig(t, pair.nats)
 
 	pair.a = pair.startProcess(t, nil)

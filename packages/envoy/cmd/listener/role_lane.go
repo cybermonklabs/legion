@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
 )
@@ -23,13 +24,18 @@ const roleForwardWaitLimit = 4096
 const roleLaneSlowConsumerInterval = 5 * time.Second
 
 // roleForward is one role message the role lane resolved to its holder, every guard passed: item is
-// the message as it arrived and sessionID its holder. resolvedAt is when the resolution that chose
-// that holder started, on the listener's clock, which the forward is judged by when its publish
-// starts (roleForwarder.publish, roles.ForwardFenceAge); the kept lane's walk, which reads the
-// role's claim before each copy, leaves it zero.
+// the message as it arrived, sessionID its holder, and attempt the pair's delivery-ledger attempt
+// the lane claimed for it (settled by finishRoleForward). Every forward it makes waits for the
+// stream's acknowledgement that it stored the message, at most roleForwardTimeout: a role message
+// is forwarded only to a holder that reads live (publishRole, roleTopicDelivery), and the holder's
+// own receipt is no longer waited for, since nothing answers one. resolvedAt is when the resolution
+// that chose that holder started, on the listener's clock, which the forward is judged by when its
+// publish starts (roleForwarder.publish, roles.ForwardFenceAge); the kept lane's walk, which reads
+// the role's claim before each copy, leaves it zero.
 type roleForward struct {
 	item       contracts.Envelope
 	sessionID  string
+	attempt    dedupe.Attempt
 	resolvedAt time.Time
 }
 
@@ -153,18 +159,21 @@ func (f *roleForwarder) publish(sessionID string) {
 // refreshStaleRoleForward resolves the holder of forward's role again, for a forward whose
 // resolution was roles.ForwardFenceAge old when its publish started, by the rules the lane's own
 // delivery resolves and judges by (resolveRoleForward), and reports the forward to make and
-// whether to make one. A role with no live holder now has the message kept as the lane keeps it,
-// and a holder beforeForward refuses has it refused as the lane refuses it, each with the lane's
-// own outcome, and no forward is made.
+// whether to make one. The forward's own ledger attempt is given up first (clearLedgerAttempt), so
+// the fresh resolution's ask for the pair is not skipped as this process's own attempt in flight;
+// the ask is a core lane's, since the role lane's message was settled when it was handed over. A
+// role with no live holder now has the message kept as the lane keeps it, and a holder
+// beforeForward refuses has it refused as the lane refuses it, each with the lane's own outcome,
+// and no forward is made.
 func refreshStaleRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward) (roleForward, bool) {
 	item := forward.item
-	cfg.attemptCache.Clear(item.DedupeKey, forward.sessionID)
+	clearLedgerAttempt(cfg, item, forward.attempt)
 	cfg.logger.LogEvent(slog.LevelInfo, "listener role forward resolves its role's holder again: its resolution is too old to forward on",
 		slog.String("event_id", item.EventID),
 		slog.String("session_id", forward.sessionID),
 		slog.String("topic", item.Topic),
 		slog.Duration("age", cfg.now().Sub(forward.resolvedAt)))
-	return resolveRoleForward(cfg, item)
+	return resolveRoleForward(cfg, deliveryMessage{mode: coreDelivery}, item)
 }
 
 // release frees the slot of a forward that ends with no publish and no outcome of its own to

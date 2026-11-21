@@ -27,8 +27,8 @@ import (
 )
 
 // relayRig is a listener's /v1 routes over the in-process server, its session consumers relayed as
-// main relays them, by a listener holding its machine's durable binding (relays, which a test that
-// orders the paths itself hands the binding to when it chooses).
+// main relays them, by a listener serving its machine's receive term (relays, which a test that
+// orders the paths itself gives the term to when it chooses).
 type relayRig struct {
 	*sessionConsumerRig
 	relays *sessionRelays
@@ -50,14 +50,22 @@ func newRelayRigReceipt(t *testing.T, first, max, receipt time.Duration) *relayR
 	t.Helper()
 	rig := newRelayRigUnowned(t, first, max)
 	rig.relays.receiptWait = receipt
-	rig.relays.setOwned(true)
+	rig.relays.setOwned(endlessTerm())
 	return rig
 }
 
-// newRelayRigUnowned bounds the same backoff, for a task that does not hold its machine's durable
-// binding yet: it relays nothing, and no relay starts, until the test calls
-// rig.relays.setOwned(true). A test that must run the durable path before any relay orders them
-// this way rather than by timing.
+// endlessTerm is a receive term that never ends and that no lease bounds: the term a rig with no
+// receive loop of its own gives its relays, whether it elects them with it (sessionRelays.setOwned)
+// or only holds it so that the restarts and pulls a row drives itself act under a live term
+// (newRelayRigUnownedOn).
+func endlessTerm() *relayTerm {
+	return &relayTerm{ctx: context.Background()}
+}
+
+// newRelayRigUnowned bounds the same backoff, for a task that does not serve its machine's receive
+// term yet: it relays nothing, and no relay starts, until the test calls
+// rig.relays.setOwned(endlessTerm()). A test that must run the durable path before any relay
+// orders them this way rather than by timing.
 func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 	t.Helper()
 	url := testnats.URL(t)
@@ -66,6 +74,22 @@ func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 		t.Fatalf("connect the listener: %v", err)
 	}
 	t.Cleanup(client.Close)
+	return newRelayRigUnownedOn(t, client, url, first, max)
+}
+
+// newRelayRigUnownedOn is newRelayRigUnowned over client, the listener's main connection, which
+// the test opened to the server at url, or to a proxy of it, while the session-consumer
+// connection goes to url itself: a test that takes the main connection off NATS while the
+// session-consumer connection stays opens client through a testnats.Proxy.
+//
+// No relay of the rig's own starts, but a restart a row drives itself (sessionRelays.restart), and
+// the pull it starts, act only under a live receive term (sessionRelays.termContext,
+// sessionRelays.pullBound). So the rig's relays hold an endless term without serving it: a row
+// that drives a restart reaches the consumer as the relay of a live term would, and a row may set
+// a term of its own in its place before it drives one. The term a row elects the rig with, and
+// its end, replace it (sessionRelays.setOwned).
+func newRelayRigUnownedOn(t *testing.T, client *bus.Client, url string, first, max time.Duration) *relayRig {
+	t.Helper()
 	rig := newSessionConsumerRigOn(t, client, url)
 	relays, err := startSessionRelays(rig.deps.consumers, rig.harness.config)
 	if err != nil {
@@ -76,8 +100,9 @@ func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 		defer cancel()
 		relays.stop(ctx)
 	})
-	// Set before the first relay starts, which gaining the binding is what does.
+	// Set before the first relay starts, which the term's start is what does.
 	relays.pauseFirst, relays.pauseMax = first, max
+	relays.term = endlessTerm()
 	return &relayRig{sessionConsumerRig: rig, relays: relays, url: url}
 }
 
@@ -552,6 +577,121 @@ func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
 	}
 }
 
+// newRestartableRun registers a session in consumer mode on a relay rig that does not serve its
+// machine's receive term, so no relay of the rig's own pulls the session's consumer, and returns
+// a run of that session's relay for the test to drive itself.
+func newRestartableRun(t *testing.T, prefix string) (*relayRig, *relayRun) {
+	t.Helper()
+	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	sessionID := prefix + id.New()
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	return rig, &relayRun{sessionID: sessionID, resume: make(chan struct{}, 1)}
+}
+
+// restartRun restarts run's consumer at its ack floor as the relay does (sessionRelays.restart)
+// and stops the pull it starts, as a pull that fails at once leaves it; a restart that starts no
+// pull fails the test.
+func (rig *relayRig) restartRun(t *testing.T, run *relayRun) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, pull, outcome := rig.relays.restart(ctx, run)
+	if pull == nil {
+		t.Fatalf("the restart started no pull (outcome %d):\n%s", outcome, rig.harness.logs.String())
+	}
+	pull.Stop()
+}
+
+// A wake the loop sent while a run relayed, before a restart of the run that started its pull,
+// costs the run no step of its retry backoff: that restart read the session's stored topics after
+// the registration, so the retry wait of a failure after it runs in full (relayRun.dropWake).
+// Kept, the wake ended that wait at once, the restart after it met the same failure, and the
+// session waited the doubled backoff: after a 2 s cut of a pod's links its sessions had their
+// messages 4 s after the cut rather than at the reconnect (TestTwoPodsShortDropKeepsTheActivePod).
+func TestRelayRunWakeFromBeforeARestartCostsNoRetryStep(t *testing.T) {
+	rig, run := newRestartableRun(t, "ses_wake_before_restart_")
+	if !run.wake() {
+		t.Fatal("a run that is not returning refused a wake")
+	}
+	rig.restartRun(t, run)
+	const backoff = 300 * time.Millisecond
+	started := time.Now()
+	if !run.waitRetry(context.Background(), backoff) {
+		t.Fatal("the retry wait reported the run stopped")
+	}
+	if waited := time.Since(started); waited < backoff {
+		t.Fatalf("the retry wait after a restart that started its pull ended after %s, want its whole %s backoff: the wake sent before that restart cut it short", waited.Round(time.Millisecond), backoff)
+	}
+}
+
+// A wake sent after a run's restart started its pull is a registration that restart did not
+// read, and it still ends the retry wait of a failure after the restart at once: the restart
+// drops only the wake waiting when its pull starts (relayRun.dropWake), not every wake.
+func TestRelayRunWakeAfterARestartEndsTheRetryWaitAtOnce(t *testing.T) {
+	rig, run := newRestartableRun(t, "ses_wake_after_restart_")
+	rig.restartRun(t, run)
+	if !run.wake() {
+		t.Fatal("a run that is not returning refused a wake")
+	}
+	goesOn := make(chan bool, 1)
+	go func() { goesOn <- run.waitRetry(context.Background(), time.Hour) }()
+	select {
+	case ok := <-goesOn:
+		if !ok {
+			t.Fatal("the retry wait reported the run stopped")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the retry wait did not end on the wake sent after the restart that started the run's pull")
+	}
+}
+
+// A paused run waits its whole pause backoff out even when a wake was sent before the pause
+// began: the pause drops that wake as it begins (relayRun.dropWake), so a registration heard
+// before the pause costs the session no step of its backoff, and only one heard during the pause
+// ends it. The pause below is 300 ms and must last at least that long with a wake sent before it;
+// an hour-long pause, with a wake sent before it too, must still be running 300 ms in and end
+// within 5 s of the wakes sent during it. Kept, the wake sent before ended each pause at once.
+func TestRelayRunPauseOutlastsAWakeSentBeforeIt(t *testing.T) {
+	run := &relayRun{resume: make(chan struct{}, 1)}
+	if !run.wake() {
+		t.Fatal("a run that is not returning refused a wake")
+	}
+	const pause = 300 * time.Millisecond
+	started := time.Now()
+	if !run.waitPause(context.Background(), pause) {
+		t.Fatal("the pause reported the run stopped")
+	}
+	if waited := time.Since(started); waited < pause {
+		t.Fatalf("the pause ended after %s, want its whole %s: the wake sent before it began cut it short", waited.Round(time.Millisecond), pause)
+	}
+
+	if !run.wake() {
+		t.Fatal("a run that is not returning refused a wake")
+	}
+	goesOn := make(chan bool, 1)
+	go func() { goesOn <- run.waitPause(context.Background(), time.Hour) }()
+	select {
+	case <-goesOn:
+		t.Fatalf("an hour-long pause ended within %s on the wake sent before it began", pause)
+	case <-time.After(pause):
+	}
+	// Woken again and again, so a wake lands after the pause has begun whenever it began.
+	ended := time.After(5 * time.Second)
+	for {
+		run.wake()
+		select {
+		case ok := <-goesOn:
+			if !ok {
+				t.Fatal("the pause reported the run stopped")
+			}
+			return
+		case <-ended:
+			t.Fatal("the pause did not end on the wakes sent during it")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 // A session that stops answering is taken for unreachable: within the receipt wait of the oldest
 // frame it has not answered the relay sends nothing more, and it logs that once. It resumes on its
 // own, with no registration: after its pause backoff it restarts at the ack floor and sends the
@@ -743,16 +883,16 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	requireFrames(t, standIn.collect(t, 1, 5*time.Second), stored)
 	awaitAckState(t, rig.consumers, sessionID, 1, 0)
 
-	// Losing the machine's durable binding cancels the run that holds the message
+	// The machine's receive term ending cancels the run that holds the message
 	// (sessionRelays.stopAll). A session moving to another listener cancels it through
 	// sessionRelays.apply instead; both end in the run's one deferred release, which is what this
 	// row exercises. The cancelled run returns the frame it holds, so the session's next owner --
 	// this pull, which stands in for the listener the session moved to -- is delivered that
 	// message again at once.
-	rig.relays.setOwned(false)
+	rig.relays.setOwned(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	pull, err := rig.consumers.Pull(ctx, sessionID)
+	pull, err := rig.consumers.Pull(ctx, sessionID, nil)
 	if err != nil {
 		t.Fatalf("pull the session's consumer as its next owner: %v", err)
 	}
@@ -788,7 +928,7 @@ func TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo(t *testing.T) {
 	// has: the nak of the frame the run holds and the drain of its pull both fail on it. The
 	// test reads the consumers through a connection of its own, which this leaves open.
 	rig.deps.consumers.close()
-	rig.relays.setOwned(false)
+	rig.relays.setOwned(nil)
 
 	const failed = "session relay stopped; it could not give the server back every message it held, and each one it did not is delivered again only after the consumer's ack wait"
 	const whole = "session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait"
@@ -866,16 +1006,16 @@ func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamO
 	// take some of them away from.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pull, err := rig.consumers.Pull(ctx, sessionID)
+	pull, err := rig.consumers.Pull(ctx, sessionID, nil)
 	if err != nil {
 		t.Fatalf("pull the session's consumer as its next owner: %v", err)
 	}
 	defer pull.Stop()
-	// Losing the machine's durable binding cancels the run that holds the frames
+	// The machine's receive term ending cancels the run that holds the frames
 	// (sessionRelays.stopAll), as a session moving to another listener does through
 	// sessionRelays.apply; both end in the run's one deferred hand-over, which is what this row
 	// exercises.
-	rig.relays.setOwned(false)
+	rig.relays.setOwned(nil)
 
 	// The 30 s of ctx is a hang guard, not the measurement: the hand-over is one nak per message
 	// on one connection. A message the relay failed to give back arrives only after
@@ -1006,7 +1146,7 @@ func bindTestDurable(t *testing.T, rig *relayRig, name, subject string) {
 	if _, err := rig.harness.client.JS().AddConsumer(bus.Stream, &config); err != nil {
 		t.Fatalf("create the listener's durable: %v", err)
 	}
-	subscription, err := rig.harness.client.Subscribe(subject, jetStreamDeliveryHandler(rig.harness.config), natsgo.Bind(bus.Stream, name), natsgo.ManualAck())
+	subscription, err := rig.harness.client.Subscribe(subject, uncancelled(jetStreamDeliveryHandler(rig.harness.config)), natsgo.Bind(bus.Stream, name), natsgo.ManualAck())
 	if err != nil {
 		t.Fatalf("bind the listener's durable: %v", err)
 	}
@@ -1153,40 +1293,62 @@ func TestSessionConsumerWithoutTheGrantProbesItOncePerTenMinutes(t *testing.T) {
 }
 
 // Every session takes its messages from a session consumer this listener manages on a connection
-// of its own, so a listener that cannot open that connection would refuse every registration: it
-// ends its start instead, exits 1 and says why, as the live topics lane's failure does
-// (TestAListenerWhoseGrantRefusesEveryTopicEndsItsStart). The connection is refused here by the
-// account's connection limit, two: the main client and the role lane take them both, and the
-// session consumers' is the third.
-func TestAListenerThatCannotOpenItsSessionConsumersEndsItsStart(t *testing.T) {
+// of its own, so a listener that cannot open that connection waits for it by the start rule
+// (openStartConnection) and serves nothing meanwhile. The connection is refused here by the
+// account's connection limit, four: the test's two connections and the listener's main client
+// and lease connection (openDeliveryLease) take them all, and the session consumers' is the
+// fifth. The server refuses each of its dials, a refusal of the server's and not of the
+// listener's settings, so the listener stays up and not ready, /livez 204 and /healthz 503
+// "starting", and logs the failure at ERROR at each try, after a wait of 1 s and then 2 s
+// (nextRefusedWait). Once the test closes its two connections, a later try connects, the role
+// lane after it, and the listener is ready. Before, the start exited 1 at the refusal.
+func TestAListenerWhoseAccountRefusesItsSessionConsumersConnectionWaitsForASlotThenServes(t *testing.T) {
 	config := `jetstream {}
 accounts {
   LISTENER: {
     jetstream: enabled
     users: [ { user: listener, password: listener } ]
-    limits: { max_connections: 2 }
+    limits: { max_connections: 4 }
   }
 }
 `
 	_, uri := testnats.StartConfig(t, config, []string{"-js"}, false)
 	uri = asListenerUser(t, uri)
+	var held []*natsgo.Conn
+	for range 2 {
+		conn, err := natsgo.Connect(uri)
+		if err != nil {
+			t.Fatalf("hold a connection of the account: %v", err)
+		}
+		t.Cleanup(conn.Close)
+		held = append(held, conn)
+	}
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "session-consumers-refused")
-	listener.WaitExit(t, "its start")
-	output := listener.Output.String()
-	if code := listener.Cmd.ProcessState.ExitCode(); code != 1 {
-		t.Fatalf("exit code = %d, want 1:\n%s", code, output)
+	const (
+		while = "its account refused the session consumers' connection"
+		line  = "session consumer connection failed; retrying"
+	)
+	failures := func() []map[string]any {
+		return linesIn(listener.Output.String(), line, map[string]any{"level": "ERROR"})
 	}
-	for line := range strings.SplitSeq(output, "\n") {
-		var record map[string]any
-		if json.Unmarshal([]byte(line), &record) != nil || record["level"] != "ERROR" {
-			continue
-		}
-		if strings.Contains(fmt.Sprint(record["msg"]), "session consumer connection failed") {
-			return
+	for deadline := time.Now().Add(60 * time.Second); len(failures()) < 2; time.Sleep(200 * time.Millisecond) {
+		requireLiveAndStarting(t, listener, while)
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener named the refused connection %d times at ERROR within 60 s, want it named at each try:\n%s",
+				len(failures()), listener.Output.String())
 		}
 	}
-	t.Fatalf("no ERROR says the session-consumer connection failed:\n%s", output)
+	for index, wait := range []string{"1s", "2s"} {
+		if record := failures()[index]; record["retry_in"] != wait || !strings.Contains(fmt.Sprint(record["error"]), "maximum account active connections exceeded") {
+			t.Fatalf("failure %d = %v, want retry_in %s and the server's refusal", index+1, record, wait)
+		}
+	}
+	requireLiveAndStarting(t, listener, while)
+	for _, conn := range held {
+		conn.Close()
+	}
+	listener.waitHealthy(t)
 }
 
 // nakLadderAcker is the acker of a frame whose naks are read rather than sent: it records the
@@ -1325,6 +1487,9 @@ func TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond(t *testing.T) {
 			t.Fatalf("frame %d carries %s = %q, want %d", i+1, relayHeaderDelivered, got, i+1)
 		}
 	}
+	// Each stamp (startSessionStandInOn's arrived) is taken in the callback before that callback sends
+	// the nak reply, and the server's delay starts at the nak, so a late stamp delays the next arrival as
+	// much: the floors below hold whatever the lateness (an 800 ms late first stamp passed 5 of 5).
 	first := frames[1].arrived.Sub(frames[0].arrived)
 	second := frames[2].arrived.Sub(frames[1].arrived)
 	t.Logf("the refused frame came back after %s and then %s", first, second)

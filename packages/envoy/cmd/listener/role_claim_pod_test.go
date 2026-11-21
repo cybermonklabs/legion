@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -98,14 +99,14 @@ func TestAPodClaimWithNoProcessGoesToThePodsFirstRegistration(t *testing.T) {
 
 		t.Run("a later registration stating another process changes nothing", func(t *testing.T) {
 			rig.register(secondProcess, rig.ownTopics())
-			if stood := rig.stored(); stood != adopted {
+			if stood := rig.stored(); !reflect.DeepEqual(stood, adopted) {
 				t.Fatalf("the claim after the second process's registration is %+v (revision %d), want it exactly as the adoption left it, %+v (revision %d)", stood, stood.Revision, adopted, adopted.Revision)
 			}
 		})
 
 		t.Run("a hand-back from that other process frees nothing", func(t *testing.T) {
 			rig.handBackAs(`{"session_id":"` + sessionID + `","topics":["` + lane + `"],"client_instance_id":"` + secondProcess + `"}`)
-			if stood := rig.stored(); stood != adopted {
+			if stood := rig.stored(); !reflect.DeepEqual(stood, adopted) {
 				t.Fatalf("the claim after the second process's hand-back is %+v (revision %d), want it exactly as the adoption left it, %+v (revision %d)", stood, stood.Revision, adopted, adopted.Revision)
 			}
 			if topics := rig.topics(); !slices.Contains(topics, lane) {
@@ -142,7 +143,7 @@ func TestAPodClaimWithNoProcessGoesToThePodsFirstRegistration(t *testing.T) {
 						t.Fatalf("the claim after the hand-back is %+v (revision %d), want %s's claim of %d marked handed back and naming no process", marked, marked.Revision, sessionID, claimed.ClaimedAt)
 					}
 					rig.register(holdingProcess, rig.ownTopics())
-					if stood := rig.stored(); stood != marked {
+					if stood := rig.stored(); !reflect.DeepEqual(stood, marked) {
 						t.Fatalf("the claim after the agent's next registration is %+v, want it exactly as the hand-back left it, %+v: no registration adopts or renews a marked claim", stood, marked)
 					}
 

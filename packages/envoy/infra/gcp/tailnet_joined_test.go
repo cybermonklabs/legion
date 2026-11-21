@@ -1,10 +1,13 @@
 package gcp_test
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -24,6 +27,11 @@ state=$(printf '%s\n' $STATES | sed -n "${n}p")
 printf '{"BackendState":"%s","Self":{}}\n' "$state"
 `
 
+// joinedDeadline bounds one run of the script. A run asks docker once per state it is given and
+// sleep is stubbed, so it ends well inside a second; a run still going at the deadline loops
+// without end, and would otherwise hold the test until go test's own timeout.
+const joinedDeadline = 30 * time.Second
+
 // joinedRun is one run of the script: the docker calls, the sleeps, and the marker and key file.
 type joinedRun struct {
 	docker, sleeps []string
@@ -39,6 +47,7 @@ type joinedHarness struct {
 
 func newJoinedHarness(t *testing.T) *joinedHarness {
 	t.Helper()
+	skipUnlessJqRunsTheScript(t)
 	var doc gcp.CloudConfig
 	require.NoError(t, yamlUnmarshalGolden(t, &doc))
 	h := &joinedHarness{
@@ -55,13 +64,38 @@ func newJoinedHarness(t *testing.T) *joinedHarness {
 	return h
 }
 
+// skipUnlessJqRunsTheScript skips the test unless this machine's jq can run the joined script: jq
+// 1.7 or later, as Container-Optimized OS ships (1.8.1). While the container is not up, docker
+// prints nothing and the script's `jq -e` reads empty input, which jq 1.7 and later fail (exit 4),
+// so the script asks again; jq 1.6 passes it (exit 0), so the script stops waiting at once. With no
+// jq, every ask fails and the script never ends.
+func skipUnlessJqRunsTheScript(t *testing.T) {
+	t.Helper()
+	jq, err := exec.LookPath("jq")
+	if err != nil {
+		t.Skipf("the tailnet-joined script needs jq 1.7 or later, and this machine has none: %v", err)
+	}
+	// Its stdin is /dev/null: empty input.
+	if exec.Command(jq, "-e", ".").Run() == nil {
+		version, err := exec.Command(jq, "--version").Output()
+		require.NoError(t, err)
+		t.Skipf("the tailnet-joined script needs jq 1.7 or later, and this machine's %s is %s, whose -e exits 0 on empty input",
+			jq, strings.TrimSpace(string(version)))
+	}
+}
+
 // run runs the script once, as one boot's tailnet-joined.service does, with docker answering the
 // states given, and returns what it printed and its error.
 func (h *joinedHarness) run(t *testing.T, states ...string) (string, error) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(filepath.Join(h.logs, "docker"), nil, 0o600))
 	require.NoError(t, os.RemoveAll(filepath.Join(h.logs, "sleeps")))
-	cmd := shellCommand(t, h.script, h.marker, h.key)
+	ctx, cancel := context.WithTimeout(context.Background(), joinedDeadline)
+	defer cancel()
+	cmd := shellCommandContext(t, ctx, h.script, h.marker, h.key)
+	// The deadline kills the shell alone; a stub it started can hold the output open after it, so
+	// the read of the output stops a second later.
+	cmd.WaitDelay = time.Second
 	cmd.Env = []string{
 		"PATH=" + h.bin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"DOCKER_LOG=" + filepath.Join(h.logs, "docker"),
@@ -69,6 +103,9 @@ func (h *joinedHarness) run(t *testing.T, states ...string) (string, error) {
 		"STATES=" + strings.Join(states, " "),
 	}
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("the script did not end within its deadline of %s; its output so far:\n%s", joinedDeadline, out)
+	}
 	return string(out), err
 }
 

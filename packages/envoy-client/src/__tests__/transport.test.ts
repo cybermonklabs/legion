@@ -362,6 +362,40 @@ describe("EnvoyClient", () => {
     });
   });
 
+  test("expands a wildcard to its base whatever the stream subjects this build compiles capture", async () => {
+    // `notifications.x.y` is under no stream subject this build compiles: only a newer build's
+    // `notifications.x.>` captures it, which the listener reads off the deployed stream and this
+    // client cannot. `notifications.team` is under none in any build. Both bases go: the listener
+    // judges them, keeps both, and warns about each one that no deployed subject captures.
+    const newer = "notifications.x.y.>";
+    const team = "notifications.team.>";
+    const recorded = recordFetch([
+      jsonResponse({
+        session_id: "ses_sender",
+        machine_id: "host-a",
+        dir: "/work",
+        topics: ["notifications.x.y", newer, "notifications.team", team],
+        delivery: CONSUMER,
+      }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    await client.subscribe({
+      sessionID: "ses_sender",
+      directory: "/work",
+      topics: [newer, team],
+      port: 0,
+      title: "",
+      driving: true,
+      delivery: DELIVERY_REQUEST,
+      plugin: PLUGIN,
+    });
+
+    expect(await recorded.requests[0]?.json()).toMatchObject({
+      topics: ["notifications.x.y", newer, "notifications.team", team],
+    });
+  });
+
   test("does not expand a trailing wildcard whose base contains a wildcard", async () => {
     const wildcard = "notifications.github.example-org.example-repo.pr.*.>";
     const recorded = recordFetch([
@@ -1858,7 +1892,7 @@ describe("EnvoyClient", () => {
     expect((error as Error).message).toBe("no live session ses_target");
   });
 
-  // The listener's 429 for a sender past its limit (`senderRateLimitedAnswer`,
+  // The listener's 429 for a sender past its limit (`listenerwire.SenderRateLimited`, built in
   // packages/envoy/cmd/listener/sender_limit.go): its sentence is what the agent reads, and its
   // wait is what a caller times a resend by.
   const RATE_LIMITED_SENTENCE =

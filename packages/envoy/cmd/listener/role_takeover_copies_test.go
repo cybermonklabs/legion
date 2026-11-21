@@ -133,7 +133,7 @@ func newCopiesRig(t *testing.T) *copiesRig {
 	})
 	// Set before the first relay starts, which gaining the binding is what does.
 	relays.pauseFirst, relays.pauseMax, relays.receiptWait = relayPauseFirst, relayPauseMax, relayReceiptWait
-	relays.setOwned(true)
+	relays.setOwned(endlessTerm())
 	return &copiesRig{
 		relayRig:      &relayRig{sessionConsumerRig: consumers, relays: relays, url: url},
 		sessionClock:  sessionClock,

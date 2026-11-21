@@ -72,10 +72,10 @@ func sessionTitle(set string, index, variant int) string {
 }
 
 // variantTopicPrefix begins every variant topic of set. The topics sit under notifications.team.,
-// which the listener's stream captures (internal/bus streamSubjects): a registration through the
-// listener stores only topics a stream subject captures, and leaves any other out of the interest
-// it writes (cmd/listener splitUncapturedTopics), so a variant topic anywhere else would vanish
-// from every registered session's row.
+// which the listener's stream captures (internal/bus streamSubjects), so a registration takes them
+// as it takes any captured topic: a registration through the listener keeps a topic no stream
+// subject captures in the interest it writes too, but answers it a warning and logs one at each
+// registration (listenerwire.UncapturedTopicWarning), and nothing is delivered on it.
 func variantTopicPrefix(set string) string {
 	return "notifications.team.refill." + set + ".v"
 }

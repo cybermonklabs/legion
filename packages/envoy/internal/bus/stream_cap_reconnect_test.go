@@ -21,7 +21,7 @@ import (
 // requests until the reconnect, to make that window exact. The reconnect hook's ensure
 // (ensureStreamOn) decides only on a version the connection reports, and it looks once rather than
 // wait out an outage that would keep the next reconnect's run behind it (rewatch), so on a
-// reconnecting connection it answers an error and writes nothing; the next run (afterReconnect,
+// reconnecting connection it answers an error and writes nothing; the next run (onReconnect,
 // recover) runs it again once the connection is back, and on the in-process v2.15.1 that run
 // raises the stream to streamMaxConsumers. The control is the empty reading itself:
 // serverDefaultsAnUnsetCap of what the reconnecting connection reports is false, the older

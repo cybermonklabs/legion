@@ -38,7 +38,7 @@ func (c *steppedClock) Advance(d time.Duration) {
 // run supersedes every run, so the hooks would stay uncovered for good with nothing but INFO lines,
 // and the paging alarm reads the stall's ERROR alone. Past the grace a superseded run writes that
 // ERROR, as a failed one does. Both callers that report a run are held to it: the run after a
-// reconnect (afterReconnect) and the recovery's (recoverUntilHealthy). The clock is the client's
+// reconnect (onReconnect) and the recovery's (recoverUntilHealthy). The clock is the client's
 // own (WithReconnectErrClock), which the hook moves past the grace while its run is under way.
 func TestSupersededRunsPastTheRepairGraceRaiseTheStallError(t *testing.T) {
 	const (
@@ -51,7 +51,7 @@ func TestSupersededRunsPastTheRepairGraceRaiseTheStallError(t *testing.T) {
 		// run starts a run of the hooks the hook below supersedes, on the caller's path.
 		run func(t *testing.T, srv *testnats.Server, client *Client)
 	}{
-		{name: "afterReconnect", run: func(t *testing.T, srv *testnats.Server, _ *Client) {
+		{name: "onReconnect", run: func(t *testing.T, srv *testnats.Server, _ *Client) {
 			srv.Stop(t)
 			srv.Start(t)
 		}},

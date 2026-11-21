@@ -1,0 +1,41 @@
+kind: Changed
+body: |-
+    `envoy-listener` no longer exits when NATS refuses or does not answer a step of its start: it
+    exits only on an error of its own settings, with a line that names it. Otherwise the pod is live
+    (`/livez` 204) and not ready (`/healthz` 503), `/v1` stays closed, and the start tries the step
+    again. Before, each refusal below ended the process, and with two pods an exit sent each pod
+    into a crash loop whose backoff delayed recovery by minutes after the cause was fixed. A refusal
+    by the NATS grant is logged at ERROR at each try, with the refused subject and the server's
+    text, and tried again after a wait that starts at 1 s and doubles to 30 s: the durable consumer
+    (`durable consumer refused by the NATS grant; retrying`), the spent-proof bucket (`spent-proof
+    bucket refused by the NATS grant; retrying`), a store bucket (`KV bucket refused by the NATS
+    grant; retrying`, with the bucket and the grant), the role lane in both its queue groups (`role
+    lane refused by the NATS grant; retrying`) and the session relay's reply subscription (`session
+    relay reply subscription refused by the NATS grant; retrying`). The one exception is the
+    listener state bucket, `envoy_listener`: a grant that refuses it does not keep the pod
+    unready. The pod logs one ERROR (`listener lease unavailable: the NATS user lacks the grant for
+    KV bucket envoy_listener; delivering without a lease`) and delivers without the lease, as the
+    machine's only deliverer with its state in its own process (`openDeliveryLease` in
+    `cmd/listener`), until a grant lets it open the bucket and it joins the lease. The
+    `ENVOY_NOTIFICATIONS`
+    stream's read and create are logged and tried again the same way (`notification stream
+    refused by the NATS grant; retrying`, with the stream and the grant), while a NATS credential
+    the server refuses still ends the start, as the listener's own setting that a restarted pod
+    reads again. Until the spent-proof bucket
+    opens, a request that presents a broker access token is answered 503 `service starting` with
+    `Retry-After: 1`, so no token is taken without its spent-proof check. A nats-server release
+    below the listener's floor is logged at ERROR at each try (`nats-server release below the
+    listener's floor; retrying`, with the server's release and the floor) and tried again with the
+    same wait, and meanwhile the pod delivers nothing: no role message is forwarded, no frame is
+    relayed, and `/v1` answers 503 `service starting`. A server that refuses the role lane's or the
+    session consumers' connection outright, as an account at its connection limit does, is logged
+    at ERROR (`role lane connection failed; retrying`, `session consumer connection failed;
+    retrying`) and tried again with the same wait. An answer from the NATS cluster's state is tried
+    again with the same wait: too few members for the `ENVOY_NATS_REPLICAS` copies, no meta leader,
+    or JetStream temporarily unavailable, as during a NATS rolling restart. Each such try logs
+    `start refused by the NATS cluster's state; retrying` with the stream or buckets, the setting,
+    the server's code and text, and `retry_in`, at ERROR from the first try except for codes 10008
+    and 10023, what a routine JetStream leader change answers, which are logged at WARN until they
+    have lasted 30 s and at ERROR at each try after. A NATS that does not answer is tried again
+    every 2 s with a WARN, the role lane's and the session consumers' connections included, where
+    ten failed dials of either used to end the start.

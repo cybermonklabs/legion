@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // setting is one row of envoy-dispatch's settings table: a Dispatch setting, an environment
@@ -222,6 +223,8 @@ var settings = []setting{
 		Description: "How often a test process's maintenance sweep runs - the Idempotency-Keys and spent DPoP proofs past their windows, and the deliveries a process that died left owed - in place of the minute a deployment runs it at; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_PROCESS_HEARTBEAT", Default: "`5s`", Required: "no",
 		Description: "How often a test process stamps its row in the registry of live server processes, in place of the five seconds a deployment runs it at; the live window a heartbeat is judged by stays three of it, so no run can set a window shorter than its own heartbeat, and a process refused at boot waits that window and one heartbeat for its refuser to lapse. A positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_POOL_BUDGET", Required: "no",
+		Description: fmt.Sprintf("How many connections a test process may open to Postgres in all, the test hooks' own listener among them: its pools are scaled to fit, each scaled down toward, never below, the smallest size that still serves its callers, so the processes a test suite starts fit a test server too small for production's pool sizes. A whole number, at least %d, the budget with every pool at its smallest; unset keeps production's sizes, which a deployment never changes. Set only with `DISPATCH_TEST_HOOKS=1`.", store.MinBudget())},
 }
 
 // removedSettings are the variables a release stopped reading, each with what replaced it. None is

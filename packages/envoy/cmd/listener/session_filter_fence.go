@@ -333,7 +333,7 @@ func (m *sessionDelivery) storedFilterStep(ctx context.Context, registry *store.
 	if m.afterStoredRowRead != nil {
 		m.afterStoredRowRead()
 	}
-	if err := m.consumers.UpdateFilter(ctx, sessionID, m.storedRowFilter(registry, sessionID, topics)); err != nil {
+	if err := m.consumers.UpdateFilter(ctx, sessionID, storedRowFilter(registry, sessionID, topics)); err != nil {
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
 			return 0, filterWriteSettled
 		}
@@ -355,11 +355,14 @@ func (m *sessionDelivery) storedFilterStep(ctx context.Context, registry *store.
 // (bus.ErrNoSessionConsumerName), which is refused before anything is sent.
 //
 // Every other failure leaves the call ambiguous: a request that timed out, a context that ended
-// under it, a connection that went are answers that did not come back, and the server may have
-// applied the call all the same. A fenced filter write treats one as a write that may stand
-// (fenceFilterWrite), because an older row's filter left on a consumer with nothing to read it
-// again is exactly what that fence is there to catch; the cost of being wrong is one bucket read
-// and one consumer call that changes nothing.
+// under it, a connection that went (bus.ErrRequestLostWithConnection among them) are answers that
+// did not come back, and the server may have applied the call all the same. A fenced filter write
+// treats one as a write that may stand (fenceFilterWrite), because an older row's filter left on
+// a consumer with nothing to read it again is exactly what that fence is there to catch. The cost
+// of being wrong, for a call that did not land, is one bucket read when the row has not moved
+// since the pass read it. When the row has moved, it is one more pass: a bucket read, the
+// consumer's read and an update that writes the newer row's filter, which the fence would
+// otherwise have left unwritten.
 func consumerCallAnswered(err error) bool {
 	var api *jetstream.APIError
 	return errors.As(err, &api) ||

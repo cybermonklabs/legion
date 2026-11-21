@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 const bearerPrefix = "Bearer "
@@ -54,7 +56,8 @@ const (
 // shared token and of the open /v1 is gated on: credential="shared_token" and credential="none"
 // must read zero on every deployed listener for 72 hours before they go, and
 // credential="none_broker_token" on every listener but the clustered session listeners, which the
-// removal begins to verify broker tokens on.
+// removal begins to verify broker tokens on. A pod counts only what it admits, so a machine's
+// listener reads zero only when each of its pods does, the active and every standby.
 func newListenerRequests(met *metrics.Registry) *metrics.Counter {
 	return met.NewCounter("envoy_listener_requests_total",
 		"Requests /v1 admitted, by the credential that admitted each (shared_token, none, none_broker_token, oidc, google, broker) and the route it reached")
@@ -65,8 +68,9 @@ func newListenerRequests(met *metrics.Registry) *metrics.Counter {
 type listenerAPIAuth struct {
 	// token is ENVOY_API_TOKEN, the shared bearer; empty takes none.
 	token string
-	// verifier is the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair's, nil when the pair is unset.
-	verifier *oidc.Verifier
+	// verifier is the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair's, nil when the pair is unset. It
+	// verifies nothing until its discovery succeeds (apiVerifier.ready).
+	verifier *apiVerifier
 	// accounts is ENVOY_OIDC_ACCOUNTS, the subjects the projected-token branch admits. Empty admits
 	// every subject verifier verifies, as the branch did before the list existed.
 	accounts []string
@@ -93,6 +97,17 @@ func (a listenerAPIAuth) requiresBearer() bool {
 	return a.token != "" || a.verifier != nil || a.google != nil
 }
 
+// verifiers are the identity-token verifiers /v1 waits for the discovery of: the projected-token
+// one and Google's, each nil when its bearer is not configured. main discovers each in the
+// background (apiVerifier.discover), and /v1 and /healthz answer that the listener is starting
+// until every one has succeeded (discovered), so no issuer that does not answer at start ends it.
+func (a listenerAPIAuth) verifiers() []*apiVerifier {
+	if a.google == nil {
+		return []*apiVerifier{a.verifier}
+	}
+	return []*apiVerifier{a.verifier, a.google.verifier}
+}
+
 // googleIdentities admits a caller by its own Google identity token, the credential of a caller
 // that runs on Google's platform and holds no Kubernetes token (the alert sink on Cloud Run): a
 // token Google signed for audience, naming an account accounts lists whose address Google
@@ -100,9 +115,9 @@ func (a listenerAPIAuth) requiresBearer() bool {
 type googleIdentities struct {
 	// audience is ENVOY_OIDC_GOOGLE_AUDIENCE, the audience the caller asks its metadata server for.
 	audience string
-	// verifier verifies a token Google (oidc.GoogleIssuer) signed for audience; apiAuth refuses
-	// Google identities without one.
-	verifier *oidc.Verifier
+	// verifier verifies a token Google (oidc.GoogleIssuer) signed for audience once its discovery
+	// succeeds (apiVerifier.ready); apiAuth refuses Google identities without one.
+	verifier *apiVerifier
 	// accounts is ENVOY_OIDC_GOOGLE_ACCOUNTS, each address in lower case.
 	accounts []string
 }
@@ -115,7 +130,7 @@ type googleIdentities struct {
 // and not_listed. Its error is the verifier's own, which matches oidc.ErrIssuerUnavailable when no
 // verdict was reached (refuseIdentityToken).
 func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.Logger) (string, error) {
-	claims, err := g.verifier.VerifyGoogleIdentity(r.Context(), raw)
+	claims, err := g.verifier.current().VerifyGoogleIdentity(r.Context(), raw)
 	account := fold.ASCII(claims.Email)
 	var reason string
 	switch {
@@ -146,7 +161,7 @@ func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.L
 // is the verifier's own, which matches oidc.ErrIssuerUnavailable when no verdict was reached
 // (refuseIdentityToken).
 func (a listenerAPIAuth) admitsServiceAccount(r *http.Request, raw string) (string, error) {
-	claims, err := a.verifier.Verify(r.Context(), raw)
+	claims, err := a.verifier.current().Verify(r.Context(), raw)
 	if err != nil {
 		a.logger.Warn("listener: service-account token rejected",
 			slog.String("reason", oidc.Reason(err)),
@@ -266,15 +281,17 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // scheme (brokers, brokerauth.go), when a verifier is configured with a projected service-account
 // token issued to its issuer and audience, of a subject ENVOY_OIDC_ACCOUNTS lists when it lists
 // any, and when Google identities are configured with a Google identity token of a listed account
-// (googleIdentities). Exempt paths pass in every configuration; /v1 is open only when no bearer
-// kind is configured, so an empty shared token beside a configured verifier requires a token
-// rather than opening the tree. An open /v1 serves only a request whose Host names this listener
-// (servesHost: a loopback name or address, or one of allowedHosts), so a page that rebinds its own
-// name to an address reaching the listener cannot use it; a listener that requires a bearer
-// checks no Host, since such a page holds no bearer. A bearer the verifier rejects is answered
-// 401 and never falls back to another authentication path; the failure class goes to the log and
-// never to the caller, since naming it would tell an unauthenticated client which credential the
-// listener is configured for.
+// (googleIdentities). Exempt paths pass in every configuration. Until the discovery of every
+// configured identity-token verifier has succeeded (listenerAPIAuth.verifiers), /v1 answers 503
+// "service starting", whatever the request carries, and logs the refusal as the starting gates
+// do. /v1 is open only when no bearer kind is configured, so an empty shared token beside a
+// configured verifier requires a token rather than opening the tree. An open /v1 serves only a
+// request whose Host names this listener (servesHost: a loopback name or address, or one of
+// allowedHosts), so a page that rebinds its own name to an address reaching the listener cannot
+// use it; a listener that requires a bearer checks no Host, since such a page holds no bearer. A
+// bearer the verifier rejects is answered 401 and never falls back to another authentication
+// path; the failure class goes to the log and never to the caller, since naming it would tell an
+// unauthenticated client which credential the listener is configured for.
 //
 // The two identity-token bearers are told apart by the token's own issuer
 // (oidc.Verifier.Issues), including Google's scheme-less issuer spelling: a token
@@ -286,7 +303,8 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // admitted it and the route it reached (route), and an admission on the shared token, on none at
 // all or on a broker token this listener does not verify also logs a warning once a minute
 // (admissionWarnings): those three are what the removal of the shared token and of the open /v1
-// is gated on. A request admitted on an identity token carries the principal that token proved to
+// is gated on. Each pod counts and warns of the requests it admits itself, so the census is every
+// pod's series, never one pod's. A request admitted on an identity token carries the principal that token proved to
 // the handler (withVerifiedPrincipal, verifiedPrincipal), which is how the send route tells
 // Dispatch's own sends from every other caller's.
 //
@@ -318,6 +336,9 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // credential a caller may hold rather than one this listener can require: every client of /v1
 // that holds none would be locked out by a setting whose purpose is to tell callers apart.
 //
+// Every pod of a machine runs this same chain, the active and each standby, so a caller signed
+// in with its machine's identity is answered alike wherever the machine's address takes it.
+//
 // An auth without its logger, or with Google identities that carry no verifier, is a programming
 // error, refused here at construction rather than at the first request that would reach either:
 // every refusal and every warned admission writes to the logger, and every identity token the
@@ -330,6 +351,7 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 		panic("listener API auth built with Google identities but no verifier for them")
 	}
 	open := !auth.requiresBearer()
+	verifiers := auth.verifiers()
 	warnings := newAdmissionWarnings(auth.now)
 	admit := func(w http.ResponseWriter, r *http.Request, credential string) {
 		path := r.Pattern
@@ -343,6 +365,15 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isAPIAuthExemptPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
+			return
+		}
+		if !discovered(verifiers) {
+			auth.logger.Warn("request refused while starting",
+				slog.String("gate", "oidc"),
+				slog.String("method", r.Method),
+				slog.String("path", r.URL.Path),
+			)
+			writeJSONError(w, http.StatusServiceUnavailable, listenerwire.ServiceStarting)
 			return
 		}
 		if open && !servesHost(r.Host, auth.allowedHosts) {
@@ -390,7 +421,7 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 
 		if raw, ok := strings.CutPrefix(authorization, bearerPrefix); ok && oidc.LooksLikeJWT(raw) {
 			switch {
-			case auth.google != nil && (auth.verifier == nil || auth.google.verifier.Issues(raw)):
+			case auth.google != nil && (auth.verifier == nil || auth.google.verifier.current().Issues(raw)):
 				account, err := auth.google.admits(r, raw, auth.logger)
 				if err == nil {
 					admit(w, r.WithContext(withVerifiedPrincipal(r.Context(), account)), credentialGoogle)
@@ -411,6 +442,88 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 	})
+}
+
+// apiVerifier verifies one of /v1's identity-token bearers: the projected service-account tokens
+// of a listener configured with an OIDC issuer and audience, or the Google identity tokens of one
+// configured with a Google audience; a nil *apiVerifier is a bearer not configured. Its verifier
+// is nil until the issuer's discovery succeeds (discover), and /v1 and /healthz answer that the
+// listener is starting until then, so an issuer that does not answer at start leaves the
+// listener up and unready rather than ending it.
+type apiVerifier struct {
+	issuer   string
+	audience string
+	verifier atomic.Pointer[oidc.Verifier]
+}
+
+// newAPIVerifier is the verifier of issuer and audience, nil when no issuer is configured. Nothing
+// is discovered yet.
+func newAPIVerifier(issuer, audience string) *apiVerifier {
+	if issuer == "" {
+		return nil
+	}
+	return &apiVerifier{issuer: issuer, audience: audience}
+}
+
+// ready reports whether /v1 can authenticate a request: no issuer is configured, or its discovery
+// has succeeded.
+func (v *apiVerifier) ready() bool {
+	return v == nil || v.verifier.Load() != nil
+}
+
+// current is the discovered verifier, nil before discovery succeeds.
+func (v *apiVerifier) current() *oidc.Verifier {
+	return v.verifier.Load()
+}
+
+// discovered reports whether every one of verifiers can authenticate a request: each is
+// unconfigured or its discovery has succeeded (apiVerifier.ready).
+func discovered(verifiers []*apiVerifier) bool {
+	for _, verifier := range verifiers {
+		if !verifier.ready() {
+			return false
+		}
+	}
+	return true
+}
+
+// The waits between the discovery reads of an issuer that fails them: oidcDiscoveryFirstRetry after
+// the first failure, twice the last wait after each next one, and never more than
+// oidcDiscoveryMaxRetry.
+const (
+	oidcDiscoveryFirstRetry = time.Second
+	oidcDiscoveryMaxRetry   = 30 * time.Second
+)
+
+// nextDiscoveryRetry is the wait after a failed discovery read that follows a wait of previous.
+func nextDiscoveryRetry(previous time.Duration) time.Duration {
+	return min(2*previous, oidcDiscoveryMaxRetry)
+}
+
+// discover reads the issuer's discovery document, each read bounded by oidc.DiscoveryTimeout,
+// until one succeeds or ctx ends, and then makes its verifier current. A failed read logs one
+// WARN and is retried after a wait that starts at oidcDiscoveryFirstRetry and doubles up to
+// oidcDiscoveryMaxRetry. The verifier's key set refreshes on its own background context, so ctx
+// ending later disables nothing.
+func (v *apiVerifier) discover(ctx context.Context, logger *logging.Logger) {
+	wait := oidcDiscoveryFirstRetry
+	for {
+		verifier, err := oidc.Discover(ctx, v.issuer, v.audience, oidc.DiscoveryTimeout)
+		if err == nil {
+			v.verifier.Store(verifier)
+			logger.Info("listener API oidc discovery succeeded", slog.String("issuer", v.issuer))
+			return
+		}
+		logger.Warn("listener API oidc discovery failed; retrying",
+			slog.String("issuer", v.issuer),
+			slog.String("retry_in", wait.String()),
+			slog.String("error", err.Error()),
+		)
+		if waitUnlessDone(ctx, wait) != nil {
+			return
+		}
+		wait = nextDiscoveryRetry(wait)
+	}
 }
 
 // refuseBrokerToken answers a DPoP presentation this listener did not admit, and logs the one
@@ -435,7 +548,7 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 	switch {
 	case errors.Is(err, errBrokerTokensStarting):
 		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "service starting")
+		writeJSONError(w, http.StatusServiceUnavailable, listenerwire.ServiceStarting)
 	case errors.Is(err, ciphertoken.ErrBrokerUnreachable):
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, "the secrets broker cannot be reached; try again in a minute")

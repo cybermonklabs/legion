@@ -1,0 +1,25 @@
+kind: Changed
+body: |-
+    A listener's pods share their delivery state through `envoy_listener`, so a pod that takes over,
+    or a standby answering `/v1`, answers as the active pod would. The delivery ledger
+    (`internal/dedupe`, `delivery.<durable>.<hash>.<session token>` keys, where the session token
+    is the session id itself when the id is 1 to 128 characters of ASCII letters, digits, `_` and
+    `-`, and otherwise `=` and a hash of the id) replaces the per-process attempt and dedupe caches
+    on the durable and role lanes: a pair another pod delivered is not delivered
+    again; an attempt by a former lease holder (`former_boots` in the lease record) is taken over
+    without the 35 s wait another pod's attempt earns: at once for a holder taken over by force
+    (killed, its node lost, its record left to expire), so a hard take-over keeps each session's
+    order, and 2.25 s after this pod took the lease for a holder that released it, whose role
+    lane may still be finishing the forward it had in flight; one a pod that still holds or renews
+    a lease, or a live pod's role lane, attempted less than 35 s ago is retried later; and an
+    older one is taken over. A ledger that cannot be read NAKs the durable message for
+    a retry, and the role lane delivers without it, logging `delivery ledger unavailable`.
+    A session's last-seen time is kept in `seen.<session token>` records, which every pod answers a
+    lapsed session's `last_seen` out of alone, for 20 minutes past the last write: the session
+    registry would report it for the session TTL and 2 hours, but the bucket's 20 minute `MaxAge`
+    drops the record first. A role claim's grace counts from the machine's service start
+    (`service_since` in the lease record) rather than each process's start, so every pod answers a
+    lapsed holder alike.
+time: 2026-10-28T10:25:04.166819217Z
+custom:
+    Issue: pr2404

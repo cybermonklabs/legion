@@ -46,13 +46,19 @@ type listenerPod struct {
 					} `json:"exec"`
 				} `json:"preStop"`
 			} `json:"lifecycle"`
-			StartupProbe *struct {
-				Exec *struct {
-					Command []string `json:"command"`
-				} `json:"exec"`
-			} `json:"startupProbe"`
+			StartupProbe   *listenerProbe `json:"startupProbe"`
+			LivenessProbe  *listenerProbe `json:"livenessProbe"`
+			ReadinessProbe *listenerProbe `json:"readinessProbe"`
 		} `json:"containers"`
 	} `json:"spec"`
+}
+
+// listenerProbe is as much of a rendered probe as this package's probe tests read: the command
+// its exec runs.
+type listenerProbe struct {
+	Exec *struct {
+		Command []string `json:"command"`
+	} `json:"exec"`
 }
 
 // readListenerPod reads the golden at read and parses the pod it records, failing the test when

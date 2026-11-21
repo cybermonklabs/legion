@@ -171,14 +171,14 @@ var listenerSignals = []struct {
 		filters: [][2]string{
 			{"durable-refused-filter", `{ $.level = "ERROR" && $.msg = "subscribe refused, shutting down" }`},
 		},
-		description: "An Envoy listener start refused its durable consumer (`subscribe refused, shutting down`), so every replacement task exits 1 while the old task keeps serving, until the circuit breaker rolls the deployment back and the apply fails. Read the line's `error` in /ecs/envoy-listener: a durable carrying an idle heartbeat or an ack policy other than explicit, which NATS cannot change in place, is recreated by the recipe in cybermonklabs/legion packages/envoy/deploy/README.md (Recreating a listener's durable), which keeps its cursor; `bus: NATS denied the publish to \"<subject>\"` is the listener's NATS grant refusing the durable's read, create or update, which the grant must allow.",
+		description: "An Envoy listener start refused its durable consumer (`subscribe refused, shutting down`): the durable carries an idle heartbeat or an ack policy other than explicit, which NATS cannot change in place, so every replacement task exits 1 while the old task keeps serving, until the circuit breaker rolls the deployment back and the apply fails. Read /ecs/envoy-listener for the durable and the setting, then recreate the durable by the recipe in cybermonklabs/legion packages/envoy/deploy/README.md (Recreating a listener's durable), which keeps its cursor.",
 	},
 	{
 		alarm: "subscribe-exhausted", metric: "SubscribesExhausted",
 		filters: [][2]string{
-			{"subscribe-exhausted-filter", `{ $.level = "ERROR" && $.msg = "subscribe failed after max attempts, shutting down" }`},
+			{"subscribe-exhausted-filter", `{ $.level = "ERROR" && $.msg = "lease holder cannot deliver from the durable" }`},
 		},
-		description: "An Envoy listener start gave up setting up its durable subscription 135 s after its first attempt (`subscribe failed after max attempts, shutting down`). ECS had already stopped the old task, so every replacement exits 1 the same way once its own bind gives up. Read the line's `error` in /ecs/envoy-listener: `consumer is already bound to a subscription` means something still holds the durable's push binding (find it with `nats consumer info ENVOY_NOTIFICATIONS listener-<machine id>`, push_bound, and stop it); any other error is JetStream failing the consumer lookup, create or update.",
+		description: "An Envoy listener holding its machine's delivery lease has gone 135 s or more without receiving from its durable consumer (`lease holder cannot deliver from the durable`), so nothing on the machine's durable reaches its sessions; read the line's `consumer`, `reason` and `waited_ms` in /ecs/envoy-listener. Reason `another subscriber holds the durable's push binding`: usually a listener build from before the delivery lease still running; the holder repeats the line every 5 min and never exits, so find the binding with `nats consumer info ENVOY_NOTIFICATIONS listener-<machine id>` (push_bound) and stop its process. Any other reason is a failed read, create, update or subscribe of the durable (a JetStream that does not answer, a grant refusing the consumer API): the holder gives the lease up to another task, and takes it back when none has, logging the line for each stuck term; one the grant refuses keeps the lease, names the refusal at each try (`durable consumer refused by the NATS grant; retrying`, with `subject` and `error`) and repeats this line every 5 min.",
 	},
 }
 

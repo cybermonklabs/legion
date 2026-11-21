@@ -3,15 +3,17 @@ package bus
 import "sync/atomic"
 
 // firstConnectGate holds the channel the first-connect callback of a client that connects in the
-// background waits on before it logs the connection and runs onConnect (connectInBackground). Only
-// tests set it (HoldFirstConnectForTest); it is nil otherwise, and the callback waits for nothing.
+// background waits on, once it has recorded the connection's report for the connected flag
+// (Client.noteConnection) and before it logs the connection and runs onConnect
+// (connectInBackground). Only tests set it (HoldFirstConnectForTest); it is nil otherwise, and the
+// callback waits for nothing.
 var firstConnectGate atomic.Pointer[<-chan struct{}]
 
 // HoldFirstConnectForTest makes the first-connect callback of every client that connects in the
 // background from here on wait until gate is closed, until the function it answers puts the gate
 // it found back. It is for tests alone: it holds the moment nats.go reports the connection
-// CONNECTED and the moment the client hears of it apart, so a test can land that callback inside
-// work it chooses.
+// CONNECTED, which the client's connected flag takes, and the moment the client hears of it
+// (onConnect) apart, so a test can land that callback inside work it chooses.
 func HoldFirstConnectForTest(gate <-chan struct{}) (restore func()) {
 	previous := firstConnectGate.Swap(&gate)
 	return func() { firstConnectGate.Store(previous) }

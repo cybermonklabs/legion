@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  The ledger state (`LedgerStateSchema`) has a new optional field, `unfollowed`. It lists each
+  topic that the person unfollowed, until the listener releases the topic or the session follows
+  it again. `DeliveryLedger.followedChanged` now takes the topics that the person unfollowed in
+  the change and records them, but never an agent subject or a role lane. The new
+  `DeliveryLedger.released` removes the records of the topics that the listener released, and
+  the new `DeliveryLedger.state` returns the state that the ledger holds.
+  `ReplayedRemovalHost.followedChanged` now receives the topics that the removal closed.
+
+  The new `releasedOnResume` is the rule by which both clients resume. A resume releases a topic
+  of the registry entry, and does not follow it, only when the state records an unfollow of the
+  topic after its last follow. It follows each other topic of the entry, because a topic that the
+  state does not name is no proof that the person unfollowed it. Before this change, a client
+  followed again each topic of the entry, also one that the person unfollowed when the listener
+  did not release it. A state without the field releases nothing, and a client of an earlier
+  release reads the state as before and ignores the field.
+time: 2026-11-18T05:10:02.000000000Z
+custom:
+    Issue: pr2404

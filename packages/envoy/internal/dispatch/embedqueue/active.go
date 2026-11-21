@@ -22,12 +22,21 @@ import (
 //   - the active identity stays active while any live process carries it, so a process that
 //     restarts, or a release that rolls one process after another, keeps it;
 //   - when none does, the identity of the earliest-started live process that carries one becomes
-//     active, and when no live process carries one (no process registered yet, or every live
-//     process of a build before the column), the identity of the process that looks, own;
+//     active, and when no live process carries one (every live process of a build before the
+//     column or one that runs with no embedder - search off, DISPATCH_TEST_EMBEDDER_OFF, or an
+//     embedder that could not be built - or none live at all), the identity of the process that
+//     looks, own;
 //   - with no row yet, the first process to look records own.
 //
-// The insert and the change are each a compare-and-set, so two processes that look at once agree:
-// one writes and the other reads what it wrote on its next turn of the loop.
+// The insert and the change are each a compare-and-set, so two processes that look at once over
+// the same live rows agree: one writes and the other reads what it wrote on its next turn of the
+// loop. Processes agree because each looks only once its own row is live: cmd/dispatch starts
+// the queue after its process has registered, so a server process that looks carries own in a
+// live row, never reaches the fallback to own while that row is live, and keeps the identity a
+// live process carries or takes the one earliest-started carrier's, as every other looker does.
+// Two processes that looked before they registered would be in no live row, and with different
+// embedders and no live carrier each would take its own identity, find it active, and drop the
+// other's vectors.
 func activeIdentity(ctx context.Context, pool *store.Pool, own string) (string, error) {
 	for range 3 {
 		var active string

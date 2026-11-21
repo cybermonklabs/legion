@@ -96,16 +96,18 @@ jobs:
       - name: Postgres service version
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
-      # Every image the tests here start: testnats.HubImage, which the natslive step below runs
-      # Envoy on, testnats.Image (nats:2.10), which only the tests of that server itself and of the
-      # listener's refusal of it start, and tests3.Image, pulled first for the reason the action
-      # gives.
+      # Every image the tests here start: testnats.Image and testnats.HubImage, which the
+      # natslive step below runs the two-image matrix on, testnats.LegacyImage, the copy of
+      # nats:2.10 which only the tests of that server itself (that step's two older-server rows of
+      # internal/bus) and of the listener's refusal of it start, and tests3.Image, pulled first for
+      # the reason the action gives.
       - name: Pull test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
+            packages/envoy/internal/testnats/nats.go LegacyImage
             packages/envoy/internal/tests3/seaweedfs.go Image
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
@@ -231,29 +233,31 @@ jobs:
         run: go vet -tags moto ./cmd/cipher/
         working-directory: packages/envoy
       # internal/testnats runs its server in the test process, so the untagged step above starts
-      # no container. The real-server tests, a rendered authorization on the image the hub runs
-      # among them, are the one thing an in-process server cannot reproduce: they sit behind the
-      # natslive tag, and this step is where they run (INFRA-250). internal/bus has tests of its own
-      # there. One is the consumer cap: the module links nats-server v2.15.1 in process, which caps
-      # a stream that sets no cap at a default of its own and takes a change of MaxConsumers on a
-      # stream that already exists, so the raise of an uncapped ENVOY_NOTIFICATIONS to the consumer
-      # cap this binary compiles and the keeper's restore of a cap an operator lowered or unset are
-      # proved in process. What is left for a real image is the pair of 2.10 cases - the stream with
-      # no cap the binary must leave alone, and the refusal of the raise of a lower cap, naming the
-      # field, the cap and the first server taking the change - and the hub's own reconcile on the
-      # nats:2.15.1-alpine image the deployment runs (INFRA-1384). The others are a session
-      # consumer's own messages behind other sessions' traffic on the hub's image, the listener's
-      # refusal of nats:2.10 (natsversion), and that refusal's control: on 2.10, stepped past, the
-      # consumer loses its old-form message. internal/cipher/natscallout has one too: that the
-      # image the hub runs lets a user with an empty publish allow list publish anywhere, the
-      # fail-open its guard refuses, so the guard is shown able to fail on the server production
-      # runs. Each package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run
-      # the package's untagged tests, which already run elsewhere - internal/testnats in the unit
-      # step above, and internal/bus and internal/cipher/natscallout in envoy-go-race, which the
-      # unit step's grep -Ev leaves out - so the -run comes from .github/scripts/go-tagged-tests.sh,
-      # which reads the names off the source at run time, and no test name is spelled here. Each
-      # assignment is a line of its own: under bash -e it carries the script's exit status, so an
-      # empty or refused list fails the step instead of running -run "", which matches every test.
+      # no container. The real-server tests, the two-image matrix that proves a rendered
+      # authorization on nats:2.15.1 and on the image the hub runs among them, are the one thing an
+      # in-process server cannot reproduce: they sit behind the natslive tag, and this step is where
+      # they run (INFRA-250). internal/bus has tests of its own there. One is the consumer cap: the
+      # module links nats-server v2.15.1 in process, which caps a stream that sets no cap at a
+      # default of its own and takes a change of MaxConsumers on a stream that already exists, so
+      # the raise of an uncapped ENVOY_NOTIFICATIONS to the consumer cap this binary compiles and
+      # the keeper's restore of a cap an operator lowered or unset are proved in process. What is
+      # left for a real image is the pair of 2.10 cases - the stream with no cap the binary must
+      # leave alone, and the refusal of the raise of a lower cap, naming the field, the cap and the
+      # first server taking the change, each on the copy of nats:2.10 (testnats.LegacyImage) - and
+      # the hub's own reconcile on the nats:2.15.1-alpine image the deployment runs (INFRA-1384).
+      # The others are a session consumer's own messages behind other sessions' traffic on the
+      # hub's image, the listener's refusal of nats:2.10 (natsversion), and that refusal's control:
+      # on 2.10, stepped past, the consumer loses its old-form message. internal/cipher/natscallout
+      # has one too: that the image the hub runs lets a user with an empty publish allow list
+      # publish anywhere, the fail-open its guard refuses, so the guard is shown able to fail on the
+      # server production runs. Each package runs only the tests its tag adds: `-tags natslive
+      # ./pkg` would re-run the package's untagged tests, which already run elsewhere -
+      # internal/testnats in the unit step above, and internal/bus and internal/cipher/natscallout
+      # in envoy-go-race, which the unit step's grep -Ev leaves out - so the -run comes from
+      # .github/scripts/go-tagged-tests.sh, which reads the names off the source at run time, and no
+      # test name is spelled here. Each assignment is a line of its own: under bash -e it carries
+      # the script's exit status, so an empty or refused list fails the step instead of running -run
+      # "", which matches every test.
       - name: Test the container-backed NATS matrix (natslive)
         run: |
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)

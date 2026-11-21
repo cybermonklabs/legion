@@ -1,0 +1,24 @@
+kind: Changed
+body: |-
+  `envoy_subscribe` no longer refuses a topic that the stream subjects of this build do not
+  capture. It follows the topic, registers it, and shows the warnings of the listener in its
+  result. Each registration also carries such a topic when the stored interest row or the
+  transcript brings it back. The listener judges capture on a new read of the deployed stream.
+  During a roll, that stream holds the subjects of a newer build too. Before this change, a topic
+  that only a newer subject captured did not get into the consumer filter of the session. Thus
+  the session lost each message that the stream stored on it.
+
+  Each `X.>` follow now also registers `X`. The tool does not show the warning that
+  `uncapturedTopicWarning` builds for a topic that the caller did not name in that call
+  (`warningsForNamedTopics`). Each call now registers, also a call that adds no topic. Thus a
+  caller that names a followed topic again sees its warning again. The listener still logs each
+  warning.
+
+  No listener that this plugin needs refuses such a registration. The oldest is the listener with
+  #2446, `legion-envoy-v27.1.0`, which stores the topic
+  (`packages/envoy/cmd/listener/api.go:1477-1497` at that tag). A listener from #2603
+  (`legion-envoy-v30.8.0`) until this change leaves the topic out with its own warning and stores
+  the other topics (`api.go:2683-2685` at `legion-envoy-v30.8.0`).
+time: 2026-11-17T02:00:02.000000000Z
+custom:
+    Issue: pr2404

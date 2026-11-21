@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+    The listener's wire package, `listenerwire`, now also declares the bodies this release adds or
+    changes outside the request and answer types it already held. `Health` is `GET /healthz`'s
+    answer, with the `role` (`active` or `standby`), `active_instance`, `receive`,
+    `receive_failing_ms` and `lease` fields that say which pod of a machine receives its durable,
+    and `RoleClaimRepair` is its `role_claim_repair` field. `SenderRateLimited` is the sender
+    limit's 429, and `ServiceStarting` is the error of the 503 a starting pod answers. The
+    uncaptured-topic warning is `listenerwire.UncapturedTopicWarning`. Each answer writes the same
+    bytes as before: `Health` declares its fields in the order in which `encoding/json` wrote the
+    keys of the map it replaces.
+time: 2026-11-19T00:00:00.000000000Z
+custom:
+    Issue: pr2404

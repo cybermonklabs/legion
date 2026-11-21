@@ -172,6 +172,11 @@ type Pool struct {
 	compaction   *pgxpool.Pool
 	textTrees    *pgxpool.Pool
 	horizon      *pgxpool.Pool
+	// sizes is how many connections the shared pool and each separate pool may hold:
+	// productionPoolSizes in every deployment, smaller only in a test process given a connection
+	// budget (OpenWithin). A Pool NewPool wraps, Outbox's and TextTrees' among them, carries
+	// productionPoolSizes whatever the pool it wraps holds, so its Shared is not that pool's size.
+	sizes PoolSizes
 	// closed refuses every separate pool but the health probe's from the moment Close begins
 	// (separate); healthClosed refuses that one too, once Close has closed every other pool
 	// (healthPool).
@@ -179,10 +184,16 @@ type Pool struct {
 	healthClosed bool
 }
 
-// NewPool wraps an open pgx pool.
+// NewPool wraps an open pgx pool, whose separate pools open at production's sizes.
 func NewPool(pool *pgxpool.Pool) *Pool {
-	return &Pool{pool: pool}
+	return &Pool{pool: pool, sizes: productionPoolSizes}
 }
+
+// Sizes is how many connections the shared pool and each separate pool may hold: production's,
+// unless a test process's connection budget scaled them (OpenWithin). On a Pool NewPool wraps,
+// Outbox's and TextTrees' among them, it is productionPoolSizes whatever the wrapped pool holds,
+// even in a process whose budget scaled that pool, so it states no wrapper's own limit.
+func (p *Pool) Sizes() PoolSizes { return p.sizes }
 
 // sharedPoolSize bounds the shared pool, deliberately and in code. pgx's default,
 // max(4, NumCPU), is four on production's one Fargate task at cpu="512", and a connection per
@@ -270,7 +281,7 @@ var ErrPoolClosed = errors.New("connection pool is closed")
 // the loads have their own, opened on demand and closed with this pool: one per store, not one
 // per caller who wants to read a document.
 func (p *Pool) Rooms() (*pgxpool.Pool, error) {
-	return p.separate(&p.rooms, RoomsPoolSize, "document rooms", roomsApplicationName)
+	return p.separate(&p.rooms, p.sizes.Rooms, "document rooms", roomsApplicationName)
 }
 
 // RoomAppends is where a document room stores its browser updates: a batch of one room's queued
@@ -279,7 +290,7 @@ func (p *Pool) Rooms() (*pgxpool.Pool, error) {
 // the appends wait for no request and hold no connection a request could use, and a request
 // waits for none of them.
 func (p *Pool) RoomAppends() (*pgxpool.Pool, error) {
-	return p.separate(&p.roomAppends, roomAppendsPoolSize, "document room appends", roomAppendsApplicationName)
+	return p.separate(&p.roomAppends, p.sizes.RoomAppends, "document room appends", roomAppendsApplicationName)
 }
 
 // Healthy reports the highest schema migration Postgres has applied, read within
@@ -465,7 +476,7 @@ const LeasePoolSize = 22
 // wires. Every call returns the one registry this pool keeps, so every caller counts in the same
 // place.
 func (p *Pool) Leases() (*LeaseCallers, error) {
-	leases, err := p.separate(&p.leases, LeasePoolSize, "loop leases", "")
+	leases, err := p.separate(&p.leases, p.sizes.Leases, "loop leases", "")
 	if err != nil {
 		return nil, err
 	}
@@ -524,7 +535,11 @@ func (c *LeaseCallers) Reserved() []string {
 // and names them when they are not. The server calls it once every reservation is taken and
 // before it starts any loop, and refuses to serve on its error: a caller short of a connection
 // waits for one for as long as the longest pass, which is minutes for the compaction, and a
-// connection short of a caller is one the process opens and nothing uses.
+// connection short of a caller is one the process counts (ConnectionsPerProcess) and nothing
+// uses: the pool sets no minimum and dials only on an acquire, so that connection is never
+// opened. It holds the callers to LeasePoolSize, production's size, in a test process whose
+// connection budget opened the pool smaller (ScaledPoolSizes) too: what it checks is the wiring a
+// deployment runs, and that process's callers take turns at the connections its budget left them.
 func (c *LeaseCallers) Complete() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -563,13 +578,135 @@ const registryPoolSize = 1
 // production never sets, so it is not counted here.
 const listenerConnections = 5
 
-// ConnectionsPerProcess is the most connections one Dispatch server process opens to Postgres:
-// every pool's size - the shared, rooms, room-appends, health, lease, outbox, compaction and
-// display-tree-fill pools, the registry's own pool (processes.Register) and the event horizon's
-// (Horizon) - and one
-// connection per listener it may hold at once, which the listener pool dials and hands off rather
-// than holds.
+// ConnectionsPerProcess is the most connections one Dispatch server process opens to Postgres at
+// production's pool sizes, which every deployment runs: every pool's size - the shared, rooms,
+// room-appends, health, lease, outbox, compaction and display-tree-fill pools, the registry's own
+// pool (processes.Register) and the event horizon's (Horizon) - and one connection per listener it
+// may hold at once, which the listener pool dials and hands off rather than holds. A test process
+// given a connection budget opens at most that budget instead (ScaledPoolSizes).
 const ConnectionsPerProcess = sharedPoolSize + RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + LeasePoolSize + outboxPoolSize + compactionPoolSize + textTreePoolSize + registryPoolSize + horizonPoolSize + listenerConnections
+
+// PoolSizes is how many connections each of a Dispatch process's own pools may hold: the shared
+// pool and the separate pools Pool opens on demand. Every deployment runs productionPoolSizes, the
+// constants above. Only a test process given a connection budget runs smaller ones (OpenWithin,
+// ScaledPoolSizes), so that the Dispatch processes a test suite starts fit a test server too small
+// for production's. The health probe's and the registry's pools, one connection each, and the
+// listener connections (listenerConnections) are the same in every process, so none of them is
+// here.
+type PoolSizes struct {
+	Shared      int32
+	Rooms       int32
+	RoomAppends int32
+	Leases      int32
+	Outbox      int32
+	Compaction  int32
+	TextTrees   int32
+	Horizon     int32
+}
+
+// productionPoolSizes is every pool at its constant: what Open and NewPool give, and so what every
+// deployment runs.
+var productionPoolSizes = PoolSizes{
+	Shared: sharedPoolSize, Rooms: RoomsPoolSize, RoomAppends: roomAppendsPoolSize, Leases: LeasePoolSize,
+	Outbox: outboxPoolSize, Compaction: compactionPoolSize, TextTrees: textTreePoolSize, Horizon: horizonPoolSize,
+}
+
+// minimumPoolSizes is the smallest size at which each pool still serves every caller without a
+// deadlock, the floor ScaledPoolSizes keeps it at. Each is the argument the pool's own constant
+// makes:
+//
+//   - Shared, 1: no caller asks for a second connection while it holds one (ErrNestedAcquire), so
+//     one connection serves every caller in turn.
+//   - Rooms, 1: a load takes no lock and always finishes (RoomsPoolSize).
+//   - RoomAppends, 1: a batch takes no other connection, and no holder of a document's lock waits
+//     for one of these (roomAppendsPoolSize).
+//   - Leases, 3: a delivery intake's take-over holds its lease's connection while its SetToken
+//     takes a second (LeasePoolSize), and the two intakes take their durables over independently,
+//     so two connections can be held while both take-overs wait for a third. Every other caller
+//     holds one at a time.
+//   - Outbox, 1: the scan and the hold's renewal take turns. Production's second connection is
+//     what keeps a renewal from waiting behind a batch's statement (outboxPoolSize).
+//   - Compaction, 1: one serves one compaction (compactionPoolSize).
+//   - TextTrees, 1: the fill never asks for a second connection while it holds one (Pool.TextTrees).
+//   - Horizon, 1: one connection serves every observation (horizonPoolSize).
+var minimumPoolSizes = PoolSizes{Shared: 1, Rooms: 1, RoomAppends: 1, Leases: 3, Outbox: 1, Compaction: 1, TextTrees: 1, Horizon: 1}
+
+// testHooksListenerConnections is the listener connection a process holds beyond
+// listenerConnections under DISPATCH_TEST_HOOKS: the test hooks' fan-out
+// (api/test_hooks_fanout.go). No deployment sets the hooks, so ConnectionsPerProcess leaves it out;
+// a connection budget is only ever a test process's, which runs with them, so a budget counts it.
+const testHooksListenerConnections = 1
+
+// ConnectionsPerTestProcess is the most connections one Dispatch process a test starts opens at
+// production's pool sizes: ConnectionsPerProcess and the test hooks' listener
+// (testHooksListenerConnections), which a process started with DISPATCH_TEST_HOOKS=1 holds. The
+// memory harness starts its processes without the hooks, so for them it is one more than they
+// open, an upper bound. It is the smallest connection budget that keeps production's sizes
+// (ScaledPoolSizes), and what internal/dispatch/testlimits sizes a test server by.
+const ConnectionsPerTestProcess = ConnectionsPerProcess + testHooksListenerConnections
+
+// unscaledConnections is what a process given a connection budget opens outside PoolSizes,
+// whatever its budget: the health probe's pool, the registry's, and one connection per listener
+// it may hold at once, the test hooks' included.
+const unscaledConnections = healthPoolSize + registryPoolSize + listenerConnections + testHooksListenerConnections
+
+// MinBudget is the fewest connections a test process can be given (OpenWithin): every pool at its
+// minimum (minimumPoolSizes) and the connections no budget scales (unscaledConnections).
+func MinBudget() int { return unscaledConnections + minimumPoolSizes.total() }
+
+// ScaledPoolSizes is the pool sizes of a test process that may open budget connections to Postgres
+// in all, the test hooks' listener among them. Every pool starts at its minimum
+// (minimumPoolSizes); what the budget leaves beyond the minimums and the connections no budget
+// scales (unscaledConnections) is shared among the pools in proportion to what each gives up from
+// its production size, rounded down, and the connections the rounding leaves go one each to the
+// pools it took most from, so the sizes use the whole budget. A budget that holds production's
+// sizes gets exactly them. A budget below MinBudget is refused.
+func ScaledPoolSizes(budget int) (PoolSizes, error) {
+	least := MinBudget()
+	if budget < least {
+		return PoolSizes{}, fmt.Errorf("a budget of %d connections is below the %d one Dispatch process opens with every pool at its smallest (store.MinBudget)",
+			budget, least)
+	}
+	givenUp := productionPoolSizes.total() - minimumPoolSizes.total()
+	spare := budget - least
+	if spare >= givenUp {
+		return productionPoolSizes, nil
+	}
+	sizes := minimumPoolSizes
+	scaled, production := sizes.fields(), productionPoolSizes.fields()
+	handed := 0
+	remainders := make([]int, len(scaled))
+	for i, size := range scaled {
+		share := spare * int(*production[i]-*size)
+		*size += int32(share / givenUp)
+		handed += share / givenUp
+		remainders[i] = share % givenUp
+	}
+	// The order the fields are in breaks a tie, so one budget always gives the same sizes.
+	order := make([]int, len(scaled))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int { return remainders[b] - remainders[a] })
+	for _, i := range order[:spare-handed] {
+		*scaled[i]++
+	}
+	return sizes, nil
+}
+
+// fields is every size in s, in the order PoolSizes declares them.
+func (s *PoolSizes) fields() []*int32 {
+	return []*int32{&s.Shared, &s.Rooms, &s.RoomAppends, &s.Leases, &s.Outbox, &s.Compaction, &s.TextTrees, &s.Horizon}
+}
+
+// total is the connections the pools of s may hold together.
+func (s PoolSizes) total() int {
+	total := 0
+	for _, size := range s.fields() {
+		total += int(*size)
+	}
+	return total
+}
 
 // Outbox is the pool the events outbox reads and records events through, reads the
 // followers and authors a publish routes to, and holds its publisher hold on. Under load the API's
@@ -577,7 +714,7 @@ const ConnectionsPerProcess = sharedPoolSize + RoomsPoolSize + roomAppendsPoolSi
 // holds back every event behind it, or lets the hold lapse; on a pool of its own it waits for none
 // of them, and holds no connection a request could use.
 func (p *Pool) Outbox() (*Pool, error) {
-	opened, err := p.separate(&p.outbox, outboxPoolSize, "events outbox", "")
+	opened, err := p.separate(&p.outbox, p.sizes.Outbox, "events outbox", "")
 	if err != nil {
 		return nil, err
 	}
@@ -598,7 +735,7 @@ const compactionPoolSize = 2
 // its own it takes neither. Like the rooms pool it is outside the nested-acquire guard, because a
 // separate pool cannot close the cycle the guard prevents.
 func (p *Pool) Compaction() (*pgxpool.Pool, error) {
-	return p.separate(&p.compaction, compactionPoolSize, "document compaction", compactionApplicationName)
+	return p.separate(&p.compaction, p.sizes.Compaction, "document compaction", compactionApplicationName)
 }
 
 // compactionApplicationName is how a connection of the compaction pool (Pool.Compaction) names
@@ -623,7 +760,7 @@ const textTreePoolSize = 2
 // through texttrees.Table, which takes a *Pool: the fill drains each batch's cursor before it
 // stores anything, so it never asks for a second connection while it holds one.
 func (p *Pool) TextTrees() (*Pool, error) {
-	opened, err := p.separate(&p.textTrees, textTreePoolSize, "display tree fill", "")
+	opened, err := p.separate(&p.textTrees, p.sizes.TextTrees, "display tree fill", "")
 	if err != nil {
 		return nil, err
 	}
@@ -649,7 +786,7 @@ const horizonPoolSize = 2
 // close the cycle the guard prevents: none of those statements (each one batch or one row) asks
 // for a second connection while it holds one.
 func (p *Pool) Horizon() (*pgxpool.Pool, error) {
-	return p.separate(&p.horizon, horizonPoolSize, "event horizon", "")
+	return p.separate(&p.horizon, p.sizes.Horizon, "event horizon", "")
 }
 
 // separate opens the pool held at field on demand (openSeparateLocked) and closes it with the

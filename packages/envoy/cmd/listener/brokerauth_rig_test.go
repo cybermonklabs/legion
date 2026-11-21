@@ -3,10 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
@@ -477,10 +483,11 @@ func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
 	}
 }
 
-// A listener configured to take broker access tokens on a bus with no JetStream refuses to start,
-// naming the setting that asked for it. The alternative — a spent-proof store in this process's
-// memory — would let a proof captured from one replica be presented to another, so there is no
-// fallback to refuse into.
+// A listener configured to take broker access tokens on a bus with no JetStream opens no
+// credential: the open fails, naming the setting that asked for it, and every presentation is the
+// starting 503 until an open succeeds (openSpentProofBucket). The alternative — a spent-proof
+// store in this process's memory — would let a proof captured from one replica be presented to
+// another, so there is no fallback to refuse into.
 func TestBrokerTokensRefuseABusWithNoJetStream(t *testing.T) {
 	// A server of this test's own with no -js, connected to directly: testnats.Connect waits for
 	// JetStream, which this one will never have.
@@ -518,4 +525,250 @@ func TestBrokerTokensRefuseABusWithNoJetStream(t *testing.T) {
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", recorder.Code)
 	}
+}
+
+// brokerProcessEnv is the variables that turn the broker-token credential on for a listener
+// binary a test starts: the stub broker's URL, this listener's own account token, and
+// listenerBrokerOrigin. A proof's 'htu' is checked against that origin and the request's path,
+// never against the port the request arrived on (ciphertoken.Verifier.atOrigin), so one signed
+// proof is the same presentation whichever listener of a machine it is sent to.
+func brokerProcessEnv(t *testing.T, broker *ciphertokentest.StubBroker) []string {
+	t.Helper()
+	accountFile := filepath.Join(t.TempDir(), "account-token")
+	if err := os.WriteFile(accountFile, []byte("listener-account-token\n"), 0o600); err != nil {
+		t.Fatalf("write the listener's own account token: %v", err)
+	}
+	return []string{
+		EnvBrokerURL + "=" + broker.Server.URL,
+		EnvBrokerAccountTokenFile + "=" + accountFile,
+		EnvPublicURL + "=" + listenerBrokerOrigin,
+	}
+}
+
+// signedListenerCall sends one POST to the listener binary serving on port, presenting token under
+// the DPoP scheme with a proof caller signs fresh for it, as a client holding a broker token does,
+// and returns the answer's status, its Retry-After and its body.
+func signedListenerCall(t *testing.T, port int, caller *ciphertokentest.Caller, token, path, body string) (int, string, string) {
+	t.Helper()
+	signed := caller.Signed(t, http.MethodPost, listenerBrokerOrigin+path, token)
+	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(port)+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", signed.Header.Get("Authorization"))
+	request.Header.Set("DPoP", signed.Header.Get("DPoP"))
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	defer response.Body.Close()
+	answer, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read the answer to POST %s: %v", path, err)
+	}
+	return response.StatusCode, response.Header.Get("Retry-After"), string(answer)
+}
+
+// requireLiveAndStarting fails the test unless listener is still running, answers /healthz 503
+// "starting" and answers /livez 204: a pod that is up and not ready, which nothing restarts.
+func requireLiveAndStarting(t *testing.T, listener *listenerProcess, while string) {
+	t.Helper()
+	select {
+	case <-listener.Exited:
+		// Exited closes only once the output is whole, so this read is final.
+		output := listener.Output.String()
+		t.Fatalf("the listener exited while %s, with %s; its last line was %q:\n%s",
+			while, listener.Cmd.ProcessState, lastOutputLine(output), output)
+	default:
+	}
+	if status, body := callListener(t, listener.port, http.MethodGet, "/healthz", ""); status != http.StatusServiceUnavailable || !strings.Contains(body, `"status":"starting"`) {
+		t.Fatalf("/healthz while %s = %d %s, want 503 starting:\n%s", while, status, body, listener.Output.String())
+	}
+	if status, body := callListener(t, listener.port, http.MethodGet, "/livez", ""); status != http.StatusNoContent {
+		t.Fatalf("/livez while %s = %d %s, want 204:\n%s", while, status, body, listener.Output.String())
+	}
+}
+
+// The spent-proof bucket's open follows the start's rule for a NATS that does not answer. A
+// listener configured to take broker access tokens whose open of the bucket draws no answer (the
+// lookup of its stream dropped by testnats.UnansweredRelay, as a member leaves it unanswered while
+// its leader changes) stays up past the start's hang guard, logs that the open failed and tries
+// it again (openSpentProofBucket), and answers /healthz 503 "starting" and /livez 204 throughout.
+// Once the relay passes the lookup, a later try opens the bucket and the listener is ready.
+// Before, the start exited 1 at the guard, which since #4343 ends the open after 36 s.
+func TestAListenerWhoseSpentProofBucketDoesNotAnswerWaitsForItThenServes(t *testing.T) {
+	t.Parallel()
+	const (
+		machineID = "box-dpop-unanswered"
+		// openGuard is the start's hang guard over one bus.EnsureKeyValue call (bus's
+		// startHangGuard): the open that draws no answer ends there, and its retry comes after.
+		openGuard = 36 * time.Second
+	)
+	stream := "KV_" + bus.DPoPProofBucket
+	_, uri := testnats.Start(t)
+	relay := testnats.StartUnansweredRelayOn(t, uri, "$JS.API.STREAM.INFO."+stream)
+	relay.Arm(1 << 30)
+	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), relay.URL(), machineID,
+		append(brokerProcessEnv(t, ciphertokentest.NewStubBroker(t)), "ENVOY_INSTANCE_ID=pod-dpop-unanswered")...)
+
+	const while = "its spent-proof bucket's open drew no answer"
+	failedOpen := func(record map[string]any) bool {
+		return record["level"] == "WARN" && record["bucket"] == bus.DPoPProofBucket && record["retry_in"] == startRetry.String() &&
+			strings.Contains(fmt.Sprint(record["error"]), stream+" STREAM.INFO")
+	}
+	for deadline := time.Now().Add(openGuard + 30*time.Second); countRecords(listener, "spent-proof bucket open failed; retrying", failedOpen) == 0; time.Sleep(500 * time.Millisecond) {
+		requireLiveAndStarting(t, listener, while)
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener logged no failed open of %s naming its unanswered lookup within %s:\n%s",
+				bus.DPoPProofBucket, openGuard+30*time.Second, listener.Output.String())
+		}
+	}
+	requireLiveAndStarting(t, listener, while)
+	if dropped := relay.Sent(); dropped == 0 {
+		t.Fatalf("the relay dropped no lookup of %s, so nothing left the open unanswered:\n%s", stream, listener.Output.String())
+	}
+
+	relay.Arm(0)
+	listener.waitHealthy(t)
+	conn, err := natsgo.Connect(uri)
+	if err != nil {
+		t.Fatalf("connect to the listener's NATS: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	if _, err := js.StreamInfo(stream); err != nil {
+		t.Fatalf("the listener is ready and the spent-proof bucket's stream %s answers %v, want it opened", stream, err)
+	}
+}
+
+// spentProofRefusedListener is a listener configured to take broker access tokens whose NATS grant
+// does not carry the spent-proof bucket (bus.DPoPProofBucket): every entry of its grant that
+// reaches the bucket goes, its stream's calls, its watchers' consumers and its keys
+// (natsgrant.KVWrite), so the start's open of the bucket is refused and never succeeds. The broker
+// admits token for sessionID, bound to caller's key, so only the listener's own refusal can keep
+// a presentation of token from being taken.
+type spentProofRefusedListener struct {
+	listener *listenerProcess
+	granted  *testnats.Granted
+	broker   *ciphertokentest.StubBroker
+	caller   *ciphertokentest.Caller
+	// lookup is the first request of the bucket's open, the one the grant refuses.
+	lookup string
+}
+
+// startSpentProofRefusedListener starts a spentProofRefusedListener for machineID.
+func startSpentProofRefusedListener(t *testing.T, machineID, sessionID, token string) *spentProofRefusedListener {
+	t.Helper()
+	stream := "KV_" + bus.DPoPProofBucket
+	rig := &spentProofRefusedListener{lookup: "$JS.API.STREAM.INFO." + stream}
+	seed, public := testnats.User(t)
+	grant := testnats.ListenerGrant(t, machineID)
+	if !slices.Contains(grant.Publish.Allow, rig.lookup) {
+		t.Fatalf("the listener's grant does not carry %s: %q", rig.lookup, grant.Publish.Allow)
+	}
+	grant.Publish.Allow = slices.DeleteFunc(grant.Publish.Allow, func(subject string) bool {
+		return strings.Contains(subject, stream) || strings.HasPrefix(subject, "$KV."+bus.DPoPProofBucket+".")
+	})
+	rig.granted = testnats.StartGranted(t, testnats.GrantedUser{Public: public, Grant: grant})
+	rig.broker = ciphertokentest.NewStubBroker(t)
+	rig.caller = ciphertokentest.NewCaller(t)
+	rig.broker.Says(token, sessionAnswer(sessionID, "ada@example.com", rig.caller.JKT()))
+	rig.listener = startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), rig.granted.URL(), machineID,
+		append(brokerProcessEnv(t, rig.broker), "NATS_NKEY_SEED="+seed, "ENVOY_INSTANCE_ID=pod-"+machineID)...)
+	return rig
+}
+
+// refusals are the ERROR lines the listener logged for a refused open of the spent-proof bucket,
+// each naming the bucket, the grant and the refused lookup.
+func (r *spentProofRefusedListener) refusals() []map[string]any {
+	return linesIn(r.listener.Output.String(), spentProofBucketRefusedLine,
+		map[string]any{"level": "ERROR", "bucket": bus.DPoPProofBucket, "grant": listenerGrant, "subject": r.lookup})
+}
+
+// The spent-proof bucket's open follows the rule a durable the grant refuses follows
+// (TestAListenerWhoseGrantRefusesItsDurablesCreateStaysLiveAndUnready). A listener configured to
+// take broker access tokens whose NATS grant does not carry the bucket stays up and not ready,
+// /livez 204 and /healthz 503 "starting", and tries the open again (openSpentProofBucket), naming
+// the refusal at ERROR at each try with the refused subject and the server's text, after a wait of
+// 1 s and then 2 s (nextRefusedWait). Before, #4343's start exited 1 at the refusal.
+func TestAListenerWhoseGrantRefusesItsSpentProofBucketStaysUnready(t *testing.T) {
+	t.Parallel()
+	rig := startSpentProofRefusedListener(t, "box-dpop-refused", "ses_dpop_refused", "access-token-the-refused-listener-never-sees")
+	const while = "the NATS grant refused its spent-proof bucket"
+	for deadline := time.Now().Add(30 * time.Second); len(rig.refusals()) < 2; time.Sleep(200 * time.Millisecond) {
+		requireLiveAndStarting(t, rig.listener, while)
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener named the refused open of %s %d times at ERROR within 30 s, want it named at each try:\n%s",
+				bus.DPoPProofBucket, len(rig.refusals()), rig.listener.Output.String())
+		}
+	}
+	for index, wait := range []string{"1s", "2s"} {
+		if record := rig.refusals()[index]; record["retry_in"] != wait || !strings.Contains(fmt.Sprint(record["error"]), `Permissions Violation for Publish to "`+rig.lookup+`"`) {
+			t.Fatalf("refusal %d = %v, want retry_in %s and the server's violation of %s", index+1, record, wait, rig.lookup)
+		}
+	}
+	requireLiveAndStarting(t, rig.listener, while)
+}
+
+// A broker-token request presented while the spent-proof bucket is not open is answered 503
+// "service starting" and is not taken. The listener's grant refuses the bucket, so the start waits
+// at its open (openSpentProofBucket), and a token the broker would admit, presented once the start
+// has named the refusal, is answered 503 "service starting" with Retry-After 1 as the credential
+// still opening (brokerTokens.verify): the broker is never asked about it, it reaches no /v1
+// route, and no spent proof is recorded, so no proof is accepted without the check that refuses
+// one another replica already spent.
+func TestABrokerTokenPresentedBeforeTheSpentProofBucketOpensIsAnsweredStartingAndNotTaken(t *testing.T) {
+	t.Parallel()
+	const (
+		sessionID = "ses_dpop_replay"
+		token     = "access-token-presented-while-the-bucket-is-refused"
+		path      = "/v1/interests/subscribe"
+	)
+	rig := startSpentProofRefusedListener(t, "box-dpop-replay", sessionID, token)
+	const while = "its spent-proof bucket was not open"
+	for deadline := time.Now().Add(30 * time.Second); len(rig.refusals()) == 0; time.Sleep(200 * time.Millisecond) {
+		requireLiveAndStarting(t, rig.listener, while)
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener named no refused open of %s within 30 s, so its bucket's state is not known:\n%s",
+				bus.DPoPProofBucket, rig.listener.Output.String())
+		}
+	}
+
+	status, retryAfter, body := signedListenerCall(t, rig.listener.port, rig.caller, token, path, `{"session_id":"`+sessionID+`","topics":[]}`)
+	if status != http.StatusServiceUnavailable || !strings.Contains(body, "service starting") {
+		t.Fatalf("a broker-token request while %s = %d %s, want 503 service starting:\n%s", while, status, body, rig.listener.Output.String())
+	}
+	if asked := rig.broker.Count(); asked != 0 {
+		t.Fatalf("the listener asked the broker %d times about a token presented while %s, want never: it took the token without the spent-proof check:\n%s",
+			asked, while, rig.listener.Output.String())
+	}
+	waitFor(t, 5*time.Second, "the listener to log the token's rejection as starting", func() bool {
+		return len(linesIn(rig.listener.Output.String(), "listener: broker token rejected", map[string]any{"reason": "starting", "path": path})) == 1
+	})
+	if reached := linesIn(rig.listener.Output.String(), "request refused while starting", map[string]any{"gate": "v1", "path": path}); len(reached) != 0 {
+		t.Fatalf("the broker-token request reached /v1's gate (%v), want it refused before any route", reached)
+	}
+	if retryAfter != "1" {
+		t.Fatalf("the starting 503's Retry-After = %q, want 1", retryAfter)
+	}
+	admin, err := natsgo.Connect(rig.granted.AdminURL)
+	if err != nil {
+		t.Fatalf("connect as the admin: %v", err)
+	}
+	t.Cleanup(admin.Close)
+	js, err := admin.JetStream()
+	if err != nil {
+		t.Fatalf("open JetStream as the admin: %v", err)
+	}
+	stream := "KV_" + bus.DPoPProofBucket
+	if info, err := js.StreamInfo(stream); err == nil && info.State.Msgs != 0 {
+		t.Fatalf("the spent-proof bucket holds %d records, want none: no proof was accepted", info.State.Msgs)
+	} else if err != nil && !errors.Is(err, natsgo.ErrStreamNotFound) {
+		t.Fatalf("read the spent-proof bucket's stream %s: %v", stream, err)
+	}
+	requireLiveAndStarting(t, rig.listener, while)
 }

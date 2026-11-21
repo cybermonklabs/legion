@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -591,6 +592,21 @@ func TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp(t
 	}
 }
 
+// A create at more copies than the cluster has servers fails the start, and the error names the
+// replica setting, as a refused raise to the same count does (TestARefusedRaiseNamesTheReplicaSetting).
+func TestACreateAtFiveCopiesOnThreeServersFailsNamingTheSetting(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	client, err := ConnectOwningStream(cluster.URLs(), WithReplicas(5))
+	if err == nil {
+		client.Close()
+		t.Fatal("a start created the stream at five copies on three servers")
+	}
+	var apiErr *nats.APIError
+	if !strings.HasPrefix(err.Error(), ReplicasEnvVar+"=5: ") || !errors.As(err, &apiErr) {
+		t.Fatalf("start error = %q, want the server's refusal naming %s=5", err, ReplicasEnvVar)
+	}
+}
+
 // A server's refusal of the stream names each setting the refused create or update carried, with
 // its value, and wraps the server's error (single server). A single nats-server v2.15.1 refuses a
 // create at more than one copy but takes an update to more, recording the count while it holds one
@@ -874,6 +890,39 @@ func TestTheServerVersionThatDefaultsAnUnsetConsumerCapIsReadFrom215Onwards(t *t
 		t.Run(fmt.Sprintf("nats-server %q", row.version), func(t *testing.T) {
 			if defaults := serverDefaultsAnUnsetCap(row.version); defaults != row.defaults {
 				t.Fatalf("serverDefaultsAnUnsetCap(%q) = %t, want %t", row.version, defaults, row.defaults)
+			}
+		})
+	}
+}
+
+// ClusterStateAnswer reads the server's answer by its JetStream code, through either package's
+// APIError and through any wrapping, and never by its text: an answer the cluster's state gives is
+// one, an answer about the request is not, and an error that only reads like the cluster's answer
+// is not either. A start that took a refused request for the cluster's state would retry a
+// configuration that never succeeds, and one that missed it would crash-loop through a rolling
+// restart of the hub.
+func TestClusterStateAnswerReadsTheCodeOfEitherPackagesAnswer(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		err  error
+		code int
+		ok   bool
+	}{
+		{"legacy no peers, wrapped", fmt.Errorf("raise KV_x: %w", &nats.APIError{Code: 500, ErrorCode: 10005, Description: "no suitable peers for placement"}), 10005, true},
+		{"legacy insufficient resources", &nats.APIError{Code: 503, ErrorCode: nats.JSErrCodeInsufficientResourcesErr}, int(nats.JSErrCodeInsufficientResourcesErr), true},
+		{"legacy not available", &nats.APIError{Code: 503, ErrorCode: nats.JSErrCodeJetStreamNotAvailable}, int(nats.JSErrCodeJetStreamNotAvailable), true},
+		{"legacy not leader", &nats.APIError{Code: 500, ErrorCode: 10009}, 10009, true},
+		{"jetstream replicas not supported, wrapped", fmt.Errorf("open bucket: %w", &jetstream.APIError{Code: 500, ErrorCode: 10074}), 10074, true},
+		{"jetstream no peers", &jetstream.APIError{Code: 500, ErrorCode: 10005}, 10005, true},
+		{"legacy stream name in use", &nats.APIError{Code: 400, ErrorCode: nats.JSErrCodeStreamNameInUse}, 0, false},
+		{"jetstream bad request", &jetstream.APIError{Code: 400, ErrorCode: jetstream.JSErrCodeBadRequest}, 0, false},
+		{"the text alone", errors.New("nats: no suitable peers for placement"), 0, false},
+		{"no answer", nats.ErrTimeout, 0, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			code, ok := ClusterStateAnswer(row.err)
+			if code != row.code || ok != row.ok {
+				t.Fatalf("ClusterStateAnswer(%v) = (%d, %t), want (%d, %t)", row.err, code, ok, row.code, row.ok)
 			}
 		})
 	}

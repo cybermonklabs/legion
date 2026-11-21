@@ -63,11 +63,17 @@ log=${LEGION_TESTPG_LOG:-$dir/server.log}
 superuser=$(id -un)
 
 # max_connections is what the server allows: testlimits.ServerConnections
-# (packages/envoy/internal/dispatch/testlimits), what a Dispatch test suite needs beyond the
-# superuser reserve, plus the 3 slots Postgres reserves for superusers by default, since this
-# script leaves superuser_reserved_connections at its default. A shell script cannot read the Go
-# constant, so it holds the sum, and packages/envoy/internal/dispatch/testlimits/testlimits_test.go
-# fails when the two differ.
+# (packages/envoy/internal/dispatch/testlimits), four Dispatch processes at production's pool
+# sizes and the suite's own clients, plus the 3 slots Postgres reserves for superusers by default,
+# since this script leaves superuser_reserved_connections at its default. A shell script cannot
+# read the Go constant, so it holds the sum, and
+# packages/envoy/internal/dispatch/testlimits/testlimits_test.go fails when the two differ.
+# A test process also holds the test hooks' listener, so the suite at production's sizes needs
+# testlimits.FullSizeServerConnections (4 more) beyond the reserve. On this server the test guard
+# therefore scales each test process's pools by one connection (testlimits.PoolBudget), and the
+# rows that need production's pool sizes refuse here by name and run in CI, whose servers are sized
+# to FullSizeServerConnections: every memory row, TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses,
+# TestTheOutboxLoadSteps, and a start of an earlier build that does not read DISPATCH_TEST_POOL_BUDGET.
 max_connections=475
 
 die() {

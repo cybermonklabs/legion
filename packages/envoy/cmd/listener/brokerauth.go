@@ -115,9 +115,13 @@ func resolveListenerBrokerConfig(getenv func(string) string) (listenerBrokerConf
 }
 
 // errBrokerTokensStarting is a DPoP presentation that arrives after /v1 is mounted and before the
-// spent-proof bucket is open, which is the window between the listening socket and NATS. It is
-// the starting gate's 503 rather than a 401: the credential is configured and the listener cannot
-// judge it yet, and a caller told its token was refused would discard a live one.
+// spent-proof bucket is open: the window between the listening socket and NATS, which lasts for as
+// long as NATS does not answer the bucket's open, answers it from its cluster's state or its grant
+// refuses it (openSpentProofBucket; cmd/listener/README.md, "Start"). It is the starting gate's
+// 503 rather than a 401: the credential is configured and the listener cannot judge it yet, and a
+// caller told its token was refused would discard a live one. It is also what holds a listener to
+// no token accepted without its spent-proof check: apiAuth, on /v1, is the one place a broker
+// token is read.
 var errBrokerTokensStarting = errors.New("the listener is still opening the store this credential needs")
 
 // brokerTokens is the listener's broker-token credential as apiAuth reads it: nil on a listener
@@ -140,9 +144,11 @@ func newBrokerTokens(config listenerBrokerConfig) *brokerTokens {
 
 // open builds the verifier over the spent-proof bucket on conn's JetStream, and is the listener's
 // refusal to serve this credential any other way: a listener configured to take broker tokens on
-// a bus with no JetStream fails here, naming EnvBrokerURL, rather than falling back to a store in
-// its own memory, which would let one replica accept a proof another replica had already spent.
-// ctx is the start's (bus.EnsureKeyValue).
+// a bus that does not open the bucket fails here, naming EnvBrokerURL. Its start tries again
+// when NATS does not answer, its grant refuses the bucket or the cluster's state refuses it, and
+// ends on any other failure (openSpentProofBucket), rather than falling back to a store in its own
+// memory, which would let one replica accept a proof another replica had already spent. ctx is
+// the start's (bus.EnsureKeyValue).
 func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) error {
 	if b == nil {
 		return nil
@@ -260,10 +266,10 @@ type spentProofs struct {
 // checked it, and every key here lives spentProofRetention, which is that window's longest.
 func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _, htu string, _ time.Time) (bool, error) {
 	key := sha256.Sum256([]byte(jti + "\x00" + htu))
-	// Bounded ends the wait with the request, as every other bucket call this listener makes
-	// does; the abandoned create may still land, which is the right way round for a record whose
-	// whole purpose is to be there.
-	_, _, err := bus.Bounded(ctx, func() (uint64, error) {
+	// BoundedOn ends the wait with the request, or with the connection the create went out on, as
+	// the session, interest and role-claim bucket calls a request makes do; the abandoned create
+	// may still land, which is the right way round for a record whose whole purpose is to be there.
+	_, _, err := bus.BoundedOn(ctx, s.kv, func() (uint64, error) {
 		return s.kv.Create(hex.EncodeToString(key[:]), nil)
 	})
 	if errors.Is(err, nats.ErrKeyExists) {

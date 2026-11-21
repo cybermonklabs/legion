@@ -264,7 +264,7 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		waitedFrom := time.Now()
 		for draining != nil && draining.IsValid() {
 			connected, answered := callNATS("read whether NATS is connected while the drain ends", func() (bool, error) {
-				return d.nats.Connected(), nil
+				return d.natsConnected(), nil
 			})
 			lost := !answered || !connected
 			if lost || d.handling.Err() != nil || time.Since(waitedFrom) >= time.Duration(intakeDrainWait.Load()) {
@@ -482,7 +482,7 @@ func (d *intakeDelivery) mayHandBack() bool {
 		return false
 	}
 	connected, answered := callNATS("read whether NATS is connected before a hand-back", func() (bool, error) {
-		return d.nats.Connected(), nil
+		return d.natsConnected(), nil
 	})
 	if answered && connected {
 		return true
@@ -491,6 +491,17 @@ func (d *intakeDelivery) mayHandBack() bool {
 	d.handBackAllowed = false
 	d.mu.Unlock()
 	return false
+}
+
+// natsConnected reads whether the client's connection is connected from nats.go itself
+// (nats.Conn.IsConnected), which waits for nats.go's connection lock, so that the stop's reads,
+// bounded by callNATS, take a lock held by a reconnect's handshake or by a write to a link that
+// does not move as NATS not answering: nats.go ends no drain under that lock. The client's own
+// Connected reads the flag its connection's events keep and waits on no lock (bus.Client.Connected),
+// so it answers connected while a write holds the lock.
+func (d *intakeDelivery) natsConnected() bool {
+	conn := d.nats.Connection()
+	return conn != nil && conn.IsConnected()
 }
 
 // acknowledge acknowledges msg, waiting for NATS at most bus.ConnLockWait (callNATS): the stop

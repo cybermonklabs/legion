@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    Two Dispatch processes that started at once with different embedders, while no running
+    process used an embedder, could each take the active role and drop the other's search
+    vectors, so meaning search lost what both had embedded until it was embedded again. A
+    process's embedding queue now starts only once the process has registered, so the
+    processes agree on one embedder and only its process drops vectors.
+time: 2026-11-15T17:28:43.116378452Z
+custom:
+    Issue: pr2404

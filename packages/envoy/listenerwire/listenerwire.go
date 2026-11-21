@@ -2,8 +2,10 @@
 // and read: the requests of POST /v1/interests/subscribe, POST /v1/messages/send, POST
 // /v1/messages/publish and POST /v1/interests/unsubscribe, the answers of those and of GET
 // /v1/sessions, GET /v1/registry/<session_id>, GET /v1/interests/, GET /v1/roles/<role>, the GET
-// routes of /v1/legion/agents and DELETE /v1/sessions/<session_id>, and the envelope and the
-// states they carry. The listener (cmd/listener) writes and reads these types, and so does each of
+// routes of /v1/legion/agents and DELETE /v1/sessions/<session_id>, the refusals those routes
+// share (the starting 503 and the sender limit's 429 among them), GET /healthz's readiness answer
+// and the subscribe answer's uncaptured-topic warning, and the envelope and the states they
+// carry. The listener (cmd/listener) writes and reads these types, and so does each of
 // its Go clients: the broker's wake (internal/cipher/wake), Dispatch's client
 // (internal/dispatch/envoy), the load-test harness's listener client (loadtest/listenerclient),
 // the refill rig (internal/testnats/cmd/refillrig), and the Legion daemon's publisher and
@@ -65,6 +67,27 @@ type APIError struct {
 	Code     string   `json:"code,omitempty"`
 	Error    string   `json:"error"`
 	Expected []string `json:"expected,omitempty"`
+}
+
+// ServiceStarting is the error of the 503 APIError a listener pod answers while it starts: every
+// /v1 and webhook route until the pod serves them, every /v1 route while an identity-token
+// verifier's discovery has not succeeded, and a broker access token's check until the pod can
+// introspect one. A caller sends the request again; a client classes it by its status alone.
+const ServiceStarting = "service starting"
+
+// SenderRateLimited is the 429 a send or a publish gets when the sending session's count on the
+// listener pod that took it is empty. Error is what the agent reads: each client shows a refusal's
+// error as it is written and sends nothing below 500 again (packages/envoy-client's transport), so
+// the sentence alone says that the session's sending is limited, that this message went nowhere,
+// and when to send it again. Reason is sender_rate_limited, the outcome the listener's request log
+// line records. RetryAfterSeconds is the whole seconds the Retry-After header names too, and
+// MessagesPerMinute and Burst are the pod's limit.
+type SenderRateLimited struct {
+	Error             string `json:"error"`
+	Reason            string `json:"reason"`
+	RetryAfterSeconds int    `json:"retry_after_seconds"`
+	MessagesPerMinute int    `json:"messages_per_minute"`
+	Burst             int    `json:"burst"`
 }
 
 // CodeMaybeStored is the code of a send's or a publish's 503 whose publish went out and was never
@@ -355,11 +378,13 @@ type Interest struct {
 }
 
 // InterestRow is one persisted interest as GET /v1/interests/ and GET /v1/interests/<session_id>
-// answer it: the stored record plus LastSeen, the session's last heartbeat (Unix ms) as the
-// listener's session cache knows it, zero when it does not know it (it lost it in a restart, or
-// predates the field). UpdatedAt, the row's last write, can lag that heartbeat by up to the
-// listener's interest refresh age (store.InterestRefreshAge), since an unchanged row is rewritten
-// only that often.
+// answer it: the stored record plus LastSeen, the session's last heartbeat (Unix ms), left out
+// when unknown. While the session is live it is the live entry's UpdatedAt, and once it has lapsed
+// the session's seen. record in the listener state bucket, which every pod of the machine answers
+// alike; a listener without that bucket keeps those records in its process, so one that restarted
+// since the session lapsed does not know it. UpdatedAt, the row's last write, can lag that
+// heartbeat by up to the listener's interest refresh age (store.InterestRefreshAge), since an
+// unchanged row is rewritten only that often.
 type InterestRow struct {
 	Interest
 	LastSeen int64 `json:"last_seen,omitempty"`
@@ -431,7 +456,10 @@ type SubscribeResume struct {
 }
 
 // SubscribeResponse is the answer to a registration the listener stored: the interest record it
-// wrote, the warnings naming each topic it left out, and the session's delivery.
+// wrote, its warnings, and the session's delivery. A topic reaching a private stream subject that
+// is not the session's own is left out of the record and named in a warning; a topic no stream
+// subject captures yet is kept in the record and in the consumer's filter and named in a warning
+// too (UncapturedTopicWarning), as is a GitHub topic the listener has a note on.
 type SubscribeResponse struct {
 	Interest
 	Warnings []string `json:"warnings,omitempty"`
@@ -635,4 +663,103 @@ type LegionAgentAnswer struct {
 // LegionAgentList is a listing's answer, `[]` when the registry holds no entry.
 type LegionAgentList struct {
 	Entries []LegionAgentAnswer `json:"entries"`
+}
+
+// The values of Health.Status. A probe that takes any 200 keeps a healthy or degraded pod in
+// service and takes a starting or unhealthy one out.
+const (
+	// HealthStarting (503): the pod does not serve yet.
+	HealthStarting = "starting"
+	// HealthHealthy (200): every dependency answers.
+	HealthHealthy = "healthy"
+	// HealthDegraded (200): the pod serves, and Error names what it reports.
+	HealthDegraded = "degraded"
+	// HealthUnhealthy (503): a fault the pod does not repair by serving, named in Error.
+	HealthUnhealthy = "unhealthy"
+)
+
+// The values of Health.Role: every pod of a machine id serves /v1, the webhooks and the role
+// lane, and only the active one receives the machine's durable consumer.
+const (
+	// RoleActive is the pod that receives the durable: it holds the delivery lease and is
+	// subscribed, or it runs without a lease and receives.
+	RoleActive = "active"
+	// RoleStandby is every other pod, the lease's holder while it does not receive yet among them.
+	RoleStandby = "standby"
+)
+
+// Health is the body of every GET /healthz answer, the readiness answer of each listener pod of a
+// machine id. A 503 starting answer carries Status alone, and an answer about one failed
+// dependency Status and Error alone; every other answer carries the pod's Role and the fields
+// below that apply to it. The fields are declared in the alphabetical order of their JSON names,
+// which is the order encoding/json wrote the keys of the map this answer was before it was a
+// struct, so the answer's bytes did not change; a new field keeps that order. A group of fields
+// some answers carry at their zero values is an embedded pointer, set on every answer that carries
+// the group.
+type Health struct {
+	// ActiveInstance is the instance the delivery lease names as its holder, on a standby's answer
+	// when the lease names one.
+	ActiveInstance string `json:"active_instance,omitempty"`
+	// CICache is not_applicable on a listener that mounts no GitHub webhook route, which keeps no
+	// CI cache.
+	CICache string `json:"ci_cache,omitempty"`
+	// Error names what made the answer degraded or unhealthy, each report a degraded answer
+	// carries after the one before it.
+	Error string `json:"error,omitempty"`
+	// Lease says that the listener's NATS user may not use the listener state bucket, so it
+	// delivers without a lease.
+	Lease string `json:"lease,omitempty"`
+	// DurableLag is the active pod's durable consumer lag, when its read answered.
+	*DurableLag
+	// Receive is what a pod that holds the lease and does not receive yet waits for.
+	Receive string `json:"receive,omitempty"`
+	// ReceiveFailingMS is how long a pod that holds the lease, or runs without one, has failed to
+	// read, create, correct or subscribe to the durable.
+	ReceiveFailingMS *int64 `json:"receive_failing_ms,omitempty"`
+	// Role is RoleActive or RoleStandby.
+	Role string `json:"role,omitempty"`
+	// RoleClaimRepair is the role claim copy's last whole read, on every 200 answer that carries
+	// the pod's role.
+	RoleClaimRepair *RoleClaimRepair `json:"role_claim_repair,omitempty"`
+	// SessionCache is the session cache's state, on every answer that carries the pod's role but
+	// an active pod's unsubscribed one.
+	*SessionCache
+	// Status is one of the Health constants.
+	Status string `json:"status"`
+}
+
+// DurableLag is the active pod's durable consumer as its last info read gave it: the messages it
+// has not delivered and those it delivered and waits on an acknowledgement for.
+type DurableLag struct {
+	NumAckPending int    `json:"num_ack_pending"`
+	NumPending    uint64 `json:"num_pending"`
+}
+
+// SessionCache is the session cache as GET /healthz reports it, read in memory with no bucket call.
+type SessionCache struct {
+	SessionCacheReady bool `json:"session_cache_ready"`
+	SessionCacheSize  int  `json:"session_cache_size"`
+	// SessionMaxAge is the maximum age the session bucket carries, which the registry reads back
+	// after it writes the deployment's own, so it shows whether a record stands long enough for
+	// the gone horizon to be reached.
+	SessionMaxAge string `json:"session_max_age"`
+	// SessionWatchError is the session watcher's error, empty while it watches.
+	SessionWatchError string `json:"session_watch_error"`
+}
+
+// RoleClaimRepair is the role_claim_repair field of a GET /healthz answer: the role claim
+// watcher's last whole read of the role bucket that completed, which repairs the copy every claim
+// view answers from, beside the bound its age is held to. The two fields that name that read are
+// null until one has completed, so a reader never takes the zero time for a read; the counts are 0
+// then, as they are for the first read of an epoch, which fills the copy rather than repairing it.
+type RoleClaimRepair struct {
+	// CompletedAt is when the read completed, RFC 3339 in UTC.
+	CompletedAt *string `json:"completed_at"`
+	// AgeSeconds is how long before the answer the read completed, on the listener's clock.
+	AgeSeconds *float64 `json:"age_seconds"`
+	// BoundSeconds is the age past which the answer is degraded.
+	BoundSeconds float64 `json:"bound_seconds"`
+	// PutBack and TookOut are the claims the read put back into the copy and took out of it.
+	PutBack int `json:"put_back"`
+	TookOut int `json:"took_out"`
 }

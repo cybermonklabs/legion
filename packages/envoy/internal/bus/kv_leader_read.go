@@ -1,5 +1,6 @@
 // The leader-answered read of one key of a KV bucket (KeyValue.GetFromLeader), beside its test:
 // the one read of this package that may not be a direct get, because what it decides is a delete.
+// The read of a key's newest message it makes (newestMessage) is GetLatest's marker read too.
 
 package bus
 
@@ -13,15 +14,36 @@ import (
 )
 
 // kvOperationHeader is the header nats.go marks a KV delete or a KV purge marker with, and
-// kvDeleteMarker and kvPurgeMarker are the two values it writes (nats.go@v1.55.0 kv.go:291-316).
-// A read that takes a key's newest message from the bucket's stream itself (GetFromLeader) reads
-// them for itself, where nats.go's Get reads them on its caller's behalf and reports either
-// marker as a key that is not there.
+// kvDeleteMarker and kvPurgeMarker are the two values it writes (nats.go@v1.55.0 kv.go:304-306).
+// A read that takes a key's newest message from the bucket's stream itself (GetFromLeader, and
+// the marker read of KeyValue.GetLatest) reads them for itself, where nats.go's Get reads them on
+// its caller's behalf and reports either marker as a key that is not there.
 const (
 	kvOperationHeader = "KV-Operation"
 	kvDeleteMarker    = "DEL"
 	kvPurgeMarker     = "PURGE"
 )
+
+// newestMessage is key's newest message in the bucket's stream, the one GetLastMsg sent with opts
+// answers for the key's subject `$KV.<bucket>.<key>`, and whether it is a delete or purge marker:
+// the read GetFromLeader and GetLatest's marker read (newestMarker) both make. It goes out on the
+// legacy JetStream context of the connection this handle reads the bucket's stream through;
+// building one sends nothing, so each read builds its own rather than keep one on the handle. A
+// subject that holds no message answers nats.ErrMsgNotFound, and every error is nats.go's own,
+// which each caller names.
+func (kv KeyValue) newestMessage(key string, opts ...nats.JSOpt) (*nats.RawStreamMsg, bool, error) {
+	js, err := kv.streams.Conn().JetStream()
+	if err != nil {
+		return nil, false, err
+	}
+	bucket := kv.Bucket()
+	message, err := js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, opts...)
+	if err != nil {
+		return nil, false, err
+	}
+	operation := message.Header.Get(kvOperationHeader)
+	return message, operation == kvDeleteMarker || operation == kvPurgeMarker, nil
+}
 
 // leaderEntry is a key's newest message, read from the bucket's own stream (GetFromLeader), as
 // the nats.KeyValueEntry Get answers for that key: the bucket, the key, the value, the stream
@@ -88,30 +110,19 @@ func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValue
 		defer cancel()
 	}
 	bucket := kv.Bucket()
-	named := func(err error) error {
-		return fmt.Errorf("read key %s of KV bucket %s from its stream's leader: %w", key, bucket, err)
-	}
-	// The legacy JetStream context of the connection this handle reads the bucket's stream
-	// through: building one sends nothing, and this read is the only caller, so it is built here
-	// rather than kept on the handle.
-	js, err := kv.streams.Conn().JetStream()
-	if err != nil {
-		return nil, named(err)
-	}
 	// A read the grant refuses draws no answer; the record names the refusal after the read's own
 	// wait (refusedAfter), which costs a read the leader answers nothing.
+	var marker bool
 	message, err := refusedAfter(kv.owner, func() []string { return []string{jsAPI("STREAM.MSG.GET", "KV_"+bucket)} }, func() (*nats.RawStreamMsg, error) {
-		return js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(ctx))
+		message, isMarker, err := kv.newestMessage(key, nats.Context(ctx))
+		marker = isMarker
+		return message, err
 	})
-	if errors.Is(err, nats.ErrMsgNotFound) {
+	if errors.Is(err, nats.ErrMsgNotFound) || marker {
 		return nil, nats.ErrKeyNotFound
 	}
 	if err != nil {
-		return nil, named(err)
-	}
-	switch message.Header.Get(kvOperationHeader) {
-	case kvDeleteMarker, kvPurgeMarker:
-		return nil, nats.ErrKeyNotFound
+		return nil, fmt.Errorf("read key %s of KV bucket %s from its stream's leader: %w", key, bucket, err)
 	}
 	return leaderEntry{
 		bucket:   bucket,

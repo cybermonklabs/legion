@@ -1,0 +1,29 @@
+kind: Changed
+body: |-
+    `envoy-infra`'s `ListenerPermissions`, `DispatchPermissions` and `HostPermissions`, and the
+    NATS auth service's answer to a listener or Dispatch connection, grant the `envoy_listener`
+    bucket the eleven subjects the listener's own calls on it send, with `<u>` the machine's
+    durable `listener-<machine id>`: `$JS.API.STREAM.INFO.KV_envoy_listener` (the open's reads,
+    the copy and leader waits, and the reads before a raise), `STREAM.CREATE` (the create of an
+    absent bucket) and `STREAM.UPDATE` (the age raise and the copy raise, at start and by the
+    keeper); and a direct get
+    (`$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.<key>`) and a write
+    (`$KV.envoy_listener.<key>`) of each of four keys: `lease.<u>` (the lease's read, create,
+    renewal and release), `handback.<u>.*` (the clean-hand-back mark a stopping pod writes and the
+    pod that took its lease reads), `delivery.<u>.*.*` (the delivery ledger's attempt, record and
+    clear) and `seen.*` (every session's last-seen record, written at each registration and read
+    for a lapsed session). It grants no stream message get, watch, consumer create or delete, or
+    flow-control reply on the bucket, so one machine's user cannot write or delete another
+    machine's lease, hand-back marks or delivery ledger by a key write, nor request a read of one
+    by a direct get. That is a subject's reach and does not make the bucket a machine's own: what
+    every listener user of the fleet can still do to the whole bucket, and so the trust the bucket
+    places in them, is in `packages/envoy/infra/README.md` ("Permission sets"). The listener
+    reads every write back by key, which a grant
+    rendered before this scoping allows too. Deploy the grant before a second listener pod of a
+    machine id: a listener whose grant refuses the bucket does not exit but logs one ERROR, `listener
+    lease unavailable: the NATS user lacks the grant for KV bucket envoy_listener; delivering without
+    a lease`, delivers as the machine's only deliverer with its state in its own process, and says
+    so in `/healthz` (`"lease":"unavailable: missing NATS grant for KV bucket envoy_listener"`).
+time: 2026-10-28T10:25:24.137022881Z
+custom:
+    Issue: pr2404

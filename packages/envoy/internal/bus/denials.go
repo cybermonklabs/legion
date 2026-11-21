@@ -13,7 +13,7 @@ import (
 )
 
 // publishRefusal reads the subject of the server's refusal of a publish: `Permissions Violation
-// for Publish to "<subject>"` (nats-server v2.10.29 client.go:4947-4951), which it reports on the
+// for Publish to "<subject>"` (nats-server v2.15.1 client.go:5906), which it reports on the
 // connection and never in the publish's own answer. The server writes the subject with %q, as it
 // writes the names of a refused subscription (subscriptionRefusal), so it is matched as a whole
 // Go-quoted string, escapes included, and unquoted before it is recorded: a subject holding a
@@ -209,8 +209,11 @@ func (c *Client) signalRefusal() {
 
 // clearPublishDenials drops every recorded violation, because they were the previous session's:
 // the grant the server applies to the session a reconnect opened is its own, and a publish on it
-// is answered by it. Its caller holds c.mu, where it learns of the reconnect (onReconnect) or
-// installs the constructor's connection (install), where the record is still empty.
+// is answered by it. Its caller holds c.mu: countConnectionEvent, where it learns of the reconnect
+// on nats.go's callback goroutine (queueReconnect), before the event's work (onReconnect) is
+// queued, or install, where it installs the constructor's connection and the record holds at most
+// what the stream's ensure on it left unread (recordPublishDenial records for the connection being
+// installed too).
 func (c *Client) clearPublishDenials() {
 	clear(c.deniedPublishes)
 }

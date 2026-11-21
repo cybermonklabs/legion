@@ -26,12 +26,15 @@ import (
 // tests cross - a minute live, a two-minute gone horizon, and a bucket whose maximum age outlives
 // both, which is the deployed shape - and a clock the test moves rather than waits out. consumers
 // is the test's own view of the session consumers, so what it reads of them is what the server
-// holds and not what the listener believes.
+// holds and not what the listener believes. relays holds the receive term the reaper's consumer
+// delete is held to (sessionDelivery.deleteReaped): an endless one, which a row may replace with
+// a term of its own.
 type sessionConsumerReapRig struct {
 	sessions  *session.SessionRegistry
 	delivery  *sessionDelivery
 	deps      *listenerDeps
 	consumers *bus.SessionConsumers
+	relays    *sessionRelays
 	mux       *http.ServeMux
 	now       *stateClock
 }
@@ -77,7 +80,7 @@ func newSessionConsumerReapRig(t *testing.T) *sessionConsumerReapRig {
 	mux := http.NewServeMux()
 	deps := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: delivery}
 	registerV1Routes(mux, deps, "test-machine", logger)
-	return &sessionConsumerReapRig{sessions: sessions, delivery: delivery, deps: deps, consumers: consumers, mux: mux, now: now}
+	return &sessionConsumerReapRig{sessions: sessions, delivery: delivery, deps: deps, consumers: consumers, relays: &sessionRelays{term: endlessTerm()}, mux: mux, now: now}
 }
 
 // register posts sessionID's registration as its plugin's heartbeat does, so the listener creates
@@ -132,17 +135,15 @@ func (rig *sessionConsumerReapRig) requireConsumer(t *testing.T, sessionID, when
 	}
 }
 
-// reap runs one pass of the session reaper wired as main wires it (main.go hands the pass a
-// delete over the listener's own session consumers and stores) and returns the records it
-// deleted.
+// reap runs one pass of the session reaper wired as main wires it (sessionDelivery.deleteReaped,
+// a delete over the listener's own session consumers and stores held to the rig's receive term)
+// and returns the records it deleted.
 func (rig *sessionConsumerReapRig) reap(t *testing.T) int {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return rig.sessions.ReapSessions(ctx, session.SessionReaper{
-		DeleteConsumer: func(ctx context.Context, sessionID string) {
-			rig.delivery.deleteConsumer(ctx, rig.deps, sessionID, nil)
-		},
+		DeleteConsumer: rig.delivery.deleteReaped(rig.deps, rig.relays),
 	})
 }
 
@@ -221,5 +222,58 @@ func TestARegistrationThatRacesTheReapOfItsRecordKeepsItsConsumer(t *testing.T) 
 	rig.requireConsumer(t, "ses_back", "after the pass that deleted the record it was registering over")
 	if _, state := rig.sessions.Lookup("ses_back"); state != session.Live {
 		t.Fatalf("ses_back is %s after the registration that raced the pass, want %s", state, session.Live)
+	}
+}
+
+// A reaper pass whose consumer delete comes after this pod's lease stepped down sends nothing,
+// so the session's consumer stands, the pod that holds the lease next being the one to act on
+// it. The reaper runs on the lease holder alone (holderLoops, main.go), under the context the
+// receive loop cancels once it hears the term has ended, and the lease ends the term a moment
+// before that: here the step-down lands between the pass's delete of the record and its delete
+// of the consumer, with that context still live. The delete checks the term just before it is
+// sent (sessionDelivery.deleteConsumer, sessionRelays.termContext). The lease is on a fake clock
+// and stepped by hand, as the relay's rows step theirs (relay_ownership_test.go).
+func TestAReaperDeleteReachedAfterTheLeaseSteppedDownLeavesTheConsumer(t *testing.T) {
+	rig := newSessionConsumerReapRig(t)
+	kv := leaseBucket(t)
+	clock := newFakeLeaseClock()
+	held := testLease(kv, "pod-a", productionLeaseConfig(), clock.now)
+	held.step()
+	status := held.Status()
+	if !status.Holding {
+		t.Fatalf("pod-a did not take the lease: %+v", status)
+	}
+	rig.relays.term = &relayTerm{ctx: context.Background(), untilLoss: func() time.Duration { return held.UntilLoss(status.Term) }}
+	const sessionID = "ses_reaped_after_step_down"
+	rig.register(t, sessionID)
+	// Past the two-minute gone horizon, so the pass below reaps the record.
+	rig.now.advance(3 * time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	before, err := rig.consumers.Info(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("the consumer of %s after its registration: %v", sessionID, err)
+	}
+
+	deleteReaped := rig.delivery.deleteReaped(rig.deps, rig.relays)
+	steppedDown := false
+	reaped := rig.sessions.ReapSessions(ctx, session.SessionReaper{
+		DeleteConsumer: func(passCtx context.Context, reapedID string) {
+			steppedDown = stepLeaseDown(t, kv, held)
+			deleteReaped(passCtx, reapedID)
+		},
+	})
+	if reaped != 1 {
+		t.Fatalf("the pass reaped %d records, want the one past the gone horizon", reaped)
+	}
+	if !steppedDown {
+		t.Fatal("pod-a's lease did not step down between the pass's record delete and its consumer delete")
+	}
+	after, err := rig.consumers.Info(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("a reaper pass whose consumer delete came after pod-a's lease stepped down deleted the consumer of %s (%v): two pods act on one session's consumer at once", sessionID, err)
+	}
+	if !after.Created.Equal(before.Created) {
+		t.Fatalf("the consumer of %s was created again at %s after the pass, want the one created at %s standing untouched", sessionID, after.Created, before.Created)
 	}
 }

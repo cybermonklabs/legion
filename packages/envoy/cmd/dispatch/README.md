@@ -555,7 +555,8 @@ Turning the store off takes a restore before the release that unsets the setting
 a server without it serves a row still holding bytes and answers `503 FILE_STORE_UNAVAILABLE` for every row written while the bucket was set, an upload's as much as a cleared one's;
 and an image from before the store serves a cleared row as an empty `200` under the file's own `ETag`, which a browser then caches.
 While that release rolls, the processes that still have the bucket keep each new upload's bytes in its row too, since each new process registers that it has none.
-Restore first, then roll the release out.
+Restore first, then roll the release out, and run `backfill-files --restore` again once every process without the bucket has registered:
+a process with the bucket keeps an upload's bytes in its row only while a live process has none, and a new process counts only once it has registered, so an upload made in the window before then keeps its bytes in the bucket alone, and a process without the bucket answers `503 FILE_STORE_UNAVAILABLE` for that file until the second restore writes the bytes into its row.
 
 ```bash
 envoy-dispatch backfill-files                 # move every row still holding bytes; prints each one and a total; exit 1 if any failed
@@ -1009,7 +1010,7 @@ What the two processes share, and what each keeps to itself:
 
 - The two delivery durables keep their shape, and each delivers to one process at a time:
   the process that holds that durable's hold (`duty.Hold`, migration `20261101143201_duty_holds`, a row with a 15-second lease on the database's clock, renewed every five seconds).
-  The other processes stand by and try for the hold every two seconds.
+  The other processes stand by and try for the hold every two seconds, and again the moment a hold they found live lapses.
   A process that stops hands back every message it was delivered and did not handle and releases the hold, so another process takes the durable over at once and is redelivered those messages within seconds;
   a process that dies is replaced within the hold's 15 seconds and one try.
   A take-over recreates the durable at its ack floor on a fresh deliver subject, which fences the old holder off:
@@ -1269,6 +1270,9 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 | Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
 Two processes at their ceiling hold 226, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+
+Those sizes are every deployment's.
+Only a test process given `DISPATCH_TEST_POOL_BUDGET`, which is refused without `DISPATCH_TEST_HOOKS=1`, runs smaller ones: it opens no more connections than that budget, each pool scaled toward the smallest size that still serves its callers (`store.ScaledPoolSizes`), so that the processes a test suite starts fit a test server smaller than production's sizes need (`cmd/dispatch/connection_ceiling_test.go`).
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.
@@ -1551,10 +1555,11 @@ A process that finds it held tries again
 — every 2 s for the excerpts, every 5 s for the edit notices, plus up to a tenth again
 — until a pass of its own runs, because the other process's pass may have read before the change that woke this one.
 
-**Boot passes** run once at start:
+**Boot passes** run at start, and again only as each item below states:
 
-- The embedding coverage pass (`embedqueue.Cover`, Search below) runs once, with no lease.
-  Its identity steps and the step that records each issue's inputs (`recordIssueSources`) run again after it:
+- The embedding coverage pass (`embedqueue.Cover`, Search below) runs at start, with no lease, on a process with an embedder.
+  A boot pass that fails runs again whole every `identityRecheckInterval` until it succeeds.
+  After a boot pass that succeeds, only its identity steps and the step that records each issue's inputs (`recordIssueSources`) run again:
   at once when this process's queue first embeds successfully after the pass skipped the identity steps for a canary the embedder did not answer, and every `identityRecheckInterval` (10 minutes, plus up to a tenth again) for as long as the process runs, so a vector an old-configuration process commits during a roll is dropped, and the inputs of an issue edited since the run before are recorded and the coverage report stops building its text.
   Only the process whose embedder has the active identity drops or re-admits anything;
   a process whose identity is not active sends no canary and looks again on the timer, since the identity it is configured with becomes active once no live process carries the one before it.
@@ -3400,17 +3405,19 @@ So a write holds its owner's lock for its own rows alone, and a comment's and a 
 A window holds at most 1,200 characters of block text, a heading starts a new one, and its text is the context that gives those blocks their meaning - the document's title and the heading above, the issue's title for a comment or a message, the question for an ask's part - and then the blocks themselves, so a passage at the end of a long document carries a vector of its own.
 The block-index tick (Background loops, above) writes the windows of every owner whose blocks a write recorded since it last windowed it, gives windows to every owner that holds blocks and no window of them, and, once an owner's window carries a vector of its current text, deletes that owner's whole-text embeddings row.
 An issue's text is its title and its spec, the latest version of its primary document (its title alone while that is blank), and a new version of the spec queues the issue again through `0140`'s trigger on `artifact_versions`, so meaning search, and the related-item check below, find an issue with a terse title by what its spec says.
-The server also runs a coverage pass (`embedqueue.Cover`) once when it starts, so a deployment runs nothing by hand to embed what it already holds:
+A server with an embedder also runs a coverage pass (`embedqueue.Cover`) when it starts, as soon as its process has registered (below), so a deployment runs nothing by hand to embed what it already holds:
 the pass adds a row for every searchable issue that has none (one written before the trigger existed, or with it off, as a restore or a replication writes), points a row whose issue's text changed with the trigger off at the current text, records, for every issue whose row then holds its current text, the inputs that text was built from (`recordIssueSources`), takes every vector another identity made out of the index and queues its item again, gives a row that died under another identity this identity's attempts once, and settles a dead row whose text has nothing to embed (empty or only white space) with no vector, as the queue settles a pending one.
 The window kinds take those last three steps alone:
 which windows exist is the block index's to say, so a row the pass invented would be embedded for ever at a text no reader can reach.
+A server with no embedder (search off, or an embedder that could not be built) runs no pass.
 The two steps that act on another identity's rows wait until the configured embedder has answered:
 an embedding this process's queue made has succeeded, or, when none has yet and such rows exist, the pass embeds a short fixed canary text and it succeeds.
 Until then the pass leaves those vectors and dead rows as they are and logs one WARN naming the identity, the canary's error and how many of each it left, so a misnamed Azure deployment (which answers `404 DeploymentNotFound`) or a refused credential drops nothing, and a throttled canary waits too;
 a pass with no such rows calls the embedder not at all.
-After the boot pass those two steps run again, and so does the step that records issues' inputs (Background loops, above):
+After the boot pass succeeds, those two steps run again, and so does the step that records issues' inputs (Background loops, above):
 at once when this process's queue first embeds successfully after the pass skipped the two, and every `identityRecheckInterval` (10 minutes, plus up to a tenth again) for as long as the process runs, a canary first when the queue has not proved the embedder.
-The rest of the pass runs again only at the next start:
+A boot pass that fails runs again whole every `identityRecheckInterval` until it succeeds.
+Otherwise the rest of the pass runs again only at the next start:
 a live write enqueues its own text through its trigger or through the block-index tick that windows its blocks, and what is written with the trigger off waits for that start.
 Each step is a statement of at most 500 rows in its own short transaction, repeated until it changes nothing, and is safe beside a live write and beside another process's pass, so the pass takes no lease.
 `GET /api/v1/search/coverage` reports what that leaves:
@@ -3448,6 +3455,8 @@ One embedder identity is active at a time, the one row of `embedder_active` (mig
 Each process registers its embedder's identity in `server_processes` (`embedder_identity`), and the active identity stays active while any live process carries it, so a restart or a roll of the processes that carry it keeps it.
 When no live process carries it, the identity of the earliest-started live process that carries one becomes active (a compare-and-set, logged at INFO with both identities);
 with none, the identity of the process that looks, and with no row yet, the first process to look records its own.
+A process's embedding queue, and so its coverage pass, starts only once the process has registered, so every process that looks carries its own identity in a live row, and two processes that start at once with different embedders keep the identity a live process carries or both take the earliest-started one's.
+A process that looked before it registered would be in no live row, so two of them starting at once with different embedders, while no live process carried an identity, would each find its own active and drop the other's vectors.
 Only a process whose identity is active drops other identities' vectors, re-admits rows dead under another identity, embeds queue rows and reserves tokens;
 any other process leaves every row as it is, and its coverage pass logs `identityStepsSkipped=true` with the `activeIdentity`.
 Its meaning search embeds the query with its own identity and finds no vector of it, so it answers with its text matches only, not degraded and not an error, and its coverage route counts for its own identity.
@@ -4327,9 +4336,11 @@ Each item below names a path with its method and identity, then its purpose.
   `advances=none&status=in_progress&status=testing&status=needs_review&status=retro` and `advances=any&status=backlog&status=icebox` are the two fault lists of `GET /api/v1/priorities` whole and uncut.
   `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the parked fault of `GET /api/v1/priorities` reads them;
   a summary standing elsewhere, or whose events do not reach back to the move, carries neither field, and a listing without `moved=true` reads no event and carries neither on any summary.
-  `route_status` (`live`, `no_holder` or `unknown`;
-  anything else is `400 INVALID_ROUTE_STATUS`) keeps the open issues whose route is in that state, whatever their priority;
-  `live` or `no_holder` is `503 ENVOY_REFILLING` with the listener's `Retry-After` while the listener refuses its list as refilling, and `503 ENVOY_UNAVAILABLE` when it does not answer.
+
+  - `route_status` (`live`, `holder_unresponsive`, `no_holder` or `unknown`;
+    anything else is `400 INVALID_ROUTE_STATUS`) keeps the open issues whose route is in that state, whatever their priority;
+    `live`, `holder_unresponsive` or `no_holder` is `503 ENVOY_REFILLING` with a `Retry-After` (the listener's, else `5`) while the listener refuses its list as refilling, and `503 ENVOY_UNAVAILABLE` when it does not answer.
+    The listener's list is read only when an issue the other filters keep has a route, so a listing with no routed issue answers an empty list, never a `503`.
 
   - Summaries contain `key`, `title`, `status`, `priority`, `parent`, `assignee`, `route`, `route_status`, `route_holder`, `route_status_reason`, `updated_at`, `closed_at` (when the issue was closed, null while it is open), `last_seq`, and `open_asks`.
     Every issue read (this list, `?pinned=true`, and `GET /api/v1/issues/{key}`) resolves `route_status` against the process's one copy of the listener's `GET /v1/sessions`, stored in no table:

@@ -24,10 +24,7 @@ const (
 
 // InterestReapAllowance is the age past which Reap deletes a dead session's interest: grace, the
 // window the row's session is given after its last write, plus InterestRefreshAge, the most that
-// write may lag the session's last heartbeat. A row exactly that old is kept. The session cache
-// keeps a departed session's last heartbeat for session.LastSeenMemory (2 hours) unless the
-// listener sets another retention (session.WithLastSeenRetention), which outlasts this allowance,
-// so every row the reaper can still hold has one.
+// write may lag the session's last heartbeat. A row exactly that old is kept.
 func InterestReapAllowance(grace time.Duration) time.Duration {
 	return grace + InterestRefreshAge
 }
@@ -96,7 +93,7 @@ func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow t
 
 // reapInterest deletes sessionID's interest, which this pass judged past its allowance at
 // judged, its UpdatedAt when the pass collected it, and reports whether the bucket took the
-// delete; each bucket call waits no longer than ctx (bus.Bounded). A delete the bucket took is
+// delete; each bucket call waits no longer than ctx (bus.BoundedOn). A delete the bucket took is
 // one row off the pass's count (Reap's reaped); a delete it refused, and a row this call keeps,
 // are counted nowhere, and the next pass judges whatever the bucket holds then. An error is the
 // pass's: Reap returns it with no count at all, since a bucket that failed this call fails the
@@ -154,9 +151,10 @@ type RoleClaimSweep struct {
 // interest reaper must not tear down a role during a listener restart grace window. A
 // claim this build cannot read (one stored under a key NATS refuses, too long or
 // outside its key alphabet, which bus.KeyValue.RefusesRead answers for the key
-// the scan handed over) no build can resolve or write again, so it is deleted
-// too; one it cannot delete either (a key outside the alphabet) is passed
-// over, uncounted, and the sweep goes on.
+// the scan handed over) no build can resolve, so it is deleted too, at the
+// revision the sweep's scan saw, which keeps a claim an earlier build without
+// the key check wrote there in the meantime; one it cannot delete either (a key
+// outside the alphabet) is passed over, uncounted, and the sweep goes on.
 //
 // What a pass weighs is the liveness of the session id a claim's holder registered under,
 // exactly as it did before a claim named the process holding it: a claim whose holder answered
@@ -197,27 +195,24 @@ type RoleClaimSweep struct {
 // the scan carried, so no test costs the pass a bucket call of its own.
 //
 // Every bucket call the pass makes after its scan - each release, and the delete of a key this
-// build cannot read - waits no longer than ctx (bus.Bounded), which is the reaper loop's own
-// context (StartRoleClaimReaper): the listener's shutdown ends that context and then waits for
-// this loop to return, up to its shared 10 s shutdown bound, before it drains the bus, so a pass
-// that returns inside that bound fails each call it has left on the ended context alone, against
-// a bus that is still answering. The scan itself (roleClaimsUntil) is not under bus.Bounded: it
+// build cannot read - waits no longer than ctx (bus.BoundedOn), which is the reaper loop's own
+// context (StartRoleClaimReaper): the end of the listener's receive term, which its shutdown
+// makes, ends that context and then waits for this loop to return up to five seconds from that
+// end (cmd/listener's holderLoopsStopWait), inside the shared 10 s shutdown bound. A pass that
+// returns inside those five seconds fails each call it has left on the ended context alone,
+// against a bus that is still answering; past them the shutdown goes on to drain the bus with the
+// pass still running. The scan itself (roleClaimsUntil) is not under bus.BoundedOn: it
 // reads ctx at each record delivered to it and ends at the first one after ctx has ended, so a
 // scan the bucket delivers nothing to ends at its own idle bound (kvwatch.ScanIdleTimeout) instead.
 //
-// The delete of a key this build cannot read is the tree's one unconditional abandoned delete,
-// and it argues from the key what every other caller argues from the revision it deletes at.
-// bus.Bounded's contract is that a call ctx abandoned runs on to its own end, so the delete may
-// land after this pass has answered; releaseReadRoleClaim and releaseReadExpiredRoleClaim each
-// say that is safe because the delete carries nats.LastRevision and so can take nothing but the
-// record their caller read. This one carries no revision, and is safe because nothing else can
-// ever be stored under that key: a key past the bound a direct get is refused at is past the
-// bound a write is refused at too, since a write must leave the key watchable and a watcher's
-// create request is the longest subject nats.go builds from a key (bus.KeyValue.write,
-// watchOverhead > getOverhead), so no build of this listener can write that key again and a
-// delete that lands late lands on the record the scan read or on nothing. The other kind of
-// refused key, one outside nats.go's key alphabet, is refused locally before anything is sent,
-// so its delete leaves nothing in flight to land at all.
+// The delete of a key this build cannot read carries nats.LastRevision, the revision the pass's
+// scan saw the record at, as releaseReadRoleClaim and releaseReadExpiredRoleClaim do.
+// bus.BoundedOn's contract is that a call ctx abandoned runs on to its own end, so the delete may
+// land after this pass has answered, and the revision is what makes that safe: it can take
+// nothing but the record the scan read, and a claim an earlier build without the key check wrote
+// there in the meantime is kept, which the server reports as nats.ErrKeyExists and the pass logs.
+// The other kind of refused key, one outside nats.go's key alphabet, is refused locally before
+// anything is sent, so its delete leaves nothing in flight to land at all.
 //
 // A pass is that one streamed read of the role bucket, which carries each record's value and
 // revision, and then nothing per role but the deletes it owes: no Get of its own per key. One
@@ -244,13 +239,16 @@ type RoleClaimSweep struct {
 //
 // The release and the delete of a key this build cannot read are the arms that read ctx, because
 // they are the only calls an ended context can fail, and each ends the pass where it failed on an
-// ended ctx rather than writing a line for its role and going on. A bus.Bounded that did not
-// answer (answered false) is that call failing on ctx alone: it would otherwise be counted the
-// way any other failed delete of an unreadable key is, Skipped and logged, which is exactly what
-// the ctx.Err() check is there to stop at the first such role. A record this build cannot decode
-// is no call at all - the scan carried it, and the decode of bytes already in hand reads the same
-// whatever ctx says - so its WARN is one per malformed record in the bucket however the pass
-// ends, never one per role left, and the pass stops at the first bucket call behind it anyway.
+// ended ctx rather than writing a line for its role and going on. A bus.BoundedOn that did not
+// answer (answered false) on an ended ctx is that call failing on ctx alone: it would otherwise be
+// counted the way any other failed delete of an unreadable key is, Skipped and logged, which is
+// exactly what the ctx.Err() check is there to stop at the first such role. A delete lost with
+// its connection (bus.ErrRequestLostWithConnection) is not answered either, but ctx still holds:
+// it is that ordinary failed delete, Skipped and logged, and the next pass sends it again. A
+// record this build cannot decode is no call at all - the scan carried it, and the decode of bytes
+// already in hand reads the same whatever ctx says - so its WARN is at most one per malformed
+// record in the bucket, never one per role left: a pass that ends early on an ended ctx warns for
+// none of the malformed records past the point where it ended.
 //
 // An expired claim costs one bucket call of its own, the conditional delete, on top of the
 // pass's one scan: the release is handed the claim that scan carried
@@ -271,7 +269,9 @@ func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool
 	for _, scanned := range claims {
 		role := scanned.Role
 		if roles := r.roles(); roles.RefusesRead(role) != nil {
-			_, _, err := bus.Bounded(ctx, func() (struct{}, error) { return struct{}{}, roles.Delete(role) })
+			_, _, err := bus.BoundedOn(ctx, roles, func() (struct{}, error) {
+				return struct{}{}, roles.Delete(role, nats.LastRevision(scanned.Claim.Revision))
+			})
 			if ended := ctx.Err(); err != nil && ended != nil {
 				return sweep, ended
 			}
@@ -279,6 +279,8 @@ func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool
 			case err == nil:
 				r.logger().Warn("role reaper deleted a claim it cannot read", slog.Int("key_bytes", len(role)))
 				sweep.Reaped++
+			case errors.Is(err, nats.ErrKeyExists):
+				r.logger().Warn("role reaper kept a claim it cannot read, rewritten since its scan", slog.Int("key_bytes", len(role)))
 			case errors.Is(err, bus.ErrRefused):
 				r.logger().Warn("role reaper skipped a claim it cannot delete", slog.Int("key_bytes", len(role)), slog.String("error", err.Error()))
 			default:

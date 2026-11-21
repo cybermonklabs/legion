@@ -1772,7 +1772,9 @@ notice comes once per handoff commit, from whichever read finds it first.
   publish line and the drop lines also name the snapshot, so a drop line matches the publish line
   of the same settlement. Each line is written once for each record state or settlement while the
   listener or the daemon runs, and again after a restart of it, or once the daemon has kept 4,096
-  dropped settlements since: each remembers in memory what it logged.
+  dropped settlements since: each remembers in memory what it logged. The listener's lines are
+  also written again whenever a pod takes the delivery lease, since each receive term runs a
+  summary loop of its own.
   - The listener writes `checks held a head` for a head's record that it has
     not settled after 10 minutes with no event. The line names what holds the record: `running`
     names each check run that has not finished, `suites` names each check suite that is not

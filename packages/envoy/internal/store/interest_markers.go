@@ -13,6 +13,23 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
+// interestMarkerPurgeAge is the youngest a delete marker may be when a pass purges it
+// (interestMarkerCollector). A marker is what refuses a late interest write: every interest write
+// is one Update at the revision its plan read (putInterestAt), and one planned over a key that
+// held no row writes at revision 0, which the bucket refuses while the key's newest message is a
+// marker and takes once that marker is purged, storing again a row a delete after the plan
+// removed. Its caller waits for that Update within its request's store budget, 3.5 s
+// (sendRequestBudget, cmd/listener/api.go: the registration's plan and write, the role claim's
+// and the unsubscribe's), and nats.go waits for it no longer than the MaxWait of the handle it
+// goes out on, whatever the caller's context: 10 s (bus.RequestTimeout; the watcher's handle,
+// kvwatch.go). That is the longest any interest write runs, and the only bound of one whose
+// caller's context never ends (Upsert, SetRole). The purge age is ten times it, so a write sent
+// late is refused by the marker for the whole time it can still land. The floor alone would
+// purge a marker at the first pass after every live key had been written past it, however young
+// the marker: a pass runs as each term starts and every five minutes after, on each machine's
+// lease holder.
+const interestMarkerPurgeAge = 10 * bus.RequestTimeout
+
 // interestMarkerCollector removes the delete markers the interest bucket accumulates, one pass at
 // a time.
 //
@@ -32,21 +49,27 @@ import (
 //     which the cache evicts (interestCache.Apply) while its message stays in the stream -- is
 //     protected exactly like any other, and a cache short of the bucket cannot raise the floor;
 //   - a put or a delete after the scan is given a higher sequence than anything the scan saw, so it
-//     lands above the floor and survives.
+//     lands above the floor and survives;
+//   - every message below the floor was stored before the floor's own write, so a pass that purges
+//     only once that write is interestMarkerPurgeAge older than the newest write its scan saw, on
+//     the server's clock, which stamped both, purges no marker younger than that age.
 //
 // A pass reads the stream (read 1), scans the bucket, reads the stream again (read 2), and purges
 // only when the scan reached the end of the bucket, it saw at least one live key, read 2 is the
-// stream read 1 read, that stream's sequence space only moved forward between the two reads, and the
-// floor sits inside it (FirstSeq < floor <= LastSeq). The creation time bounds the stream's
-// identity and the sequences bound its space, and neither alone bounds both. A bucket deleted and
-// created again is a new stream with a new creation time, and it does not always lower a sequence:
-// when the original's first sequence was still 1 (a young bucket), a replacement written as far as
-// the original moves neither. A JetStream restore keeps the snapshot's creation time, so only a
-// sequence space that moved backward shows it. A creation time can also move with no replacement --
-// nats-server 2.10 re-stamps it after an in-place config update and a restart
-// (nats-io/nats-server#8471) -- which refuses that one pass; a refusal costs only the next five
-// minutes, so the gate errs that way. A floor above LastSeq is the one value that makes the server's
-// unfiltered purge compact the whole stream.
+// stream read 1 read, that stream's sequence space only moved forward between the two reads, the
+// floor sits inside it (FirstSeq < floor <= LastSeq), and the floor's write is at least the purge
+// age older than the newest live write. The newest live write stands for the server's clock now
+// and is never later than it, so a bucket written seldom keeps its markers longer, never shorter.
+//
+// The creation time bounds the stream's identity and the sequences bound its space, and neither
+// alone bounds both. A bucket deleted and created again is a new stream with a new creation time,
+// and it does not always lower a sequence: when the original's first sequence was still 1 (a young
+// bucket), a replacement written as far as the original moves neither. A JetStream restore keeps
+// the snapshot's creation time, so only a sequence space that moved backward shows it. A creation
+// time can also move with no replacement -- nats-server 2.10 re-stamps it after an in-place config
+// update and a restart (nats-io/nats-server#8471) -- which refuses that one pass; a refusal costs
+// only the next five minutes, so the gate errs that way. A floor above LastSeq is the one value
+// that makes the server's unfiltered purge compact the whole stream.
 //
 // One window cannot be guarded: STREAM.PURGE at 2.10 takes no expected-stream precondition (its
 // request carries a subject, a sequence and a keep count, and nothing else), so a bucket deleted and
@@ -63,6 +86,10 @@ type interestMarkerCollector struct {
 	// scanIdle is how long a pass's scan of the bucket waits for its next entry before it gives up
 	// (kvwatch.ScanExistingKeys): kvwatch.ScanIdleTimeout, or less in the package's own tests.
 	scanIdle time.Duration
+	// purgeAge is how much older than the newest live write the floor's own write must be before
+	// a pass purges below it: interestMarkerPurgeAge, or none in the package's own tests, whose
+	// markers are seconds old.
+	purgeAge time.Duration
 	// purgeRefused is set once a purge the server refused has been logged, so a NATS user without
 	// STREAM.PURGE on the interest bucket says so once per process rather than every pass. Passes
 	// run one at a time on the collector's goroutine, so it needs no lock.
@@ -71,15 +98,18 @@ type interestMarkerCollector struct {
 
 // interestPass is what one pass has read so far: read 1 and read 2 (bus.KeyValue.ReadStreamState,
 // the STREAM.INFO the listener already sends on this bucket before every watcher and on every
-// health check, so a pass adds no new capability by reading it), the floor its scan computed, and
-// what that scan saw once it completed. A read or scan the pass has not taken is nil. Only the
-// package's own tests reach it, through pass's hook, to stand in for what a concurrent writer or a
-// replaced stream does at exactly that moment.
+// health check, so a pass adds no new capability by reading it), the floor its scan computed with
+// the time the server stored the floor's write and the newest live write it saw, and what that
+// scan saw once it completed. A read or scan the pass has not taken is nil. Only the package's own
+// tests reach it, through pass's hook, to stand in for what a concurrent writer or a replaced
+// stream does at exactly that moment.
 type interestPass struct {
-	read1 *bus.StreamState
-	floor uint64
-	scan  *kvwatch.KeyScan
-	read2 *bus.StreamState
+	read1        *bus.StreamState
+	floor        uint64
+	floorWritten time.Time
+	newest       time.Time
+	scan         *kvwatch.KeyScan
+	read2        *bus.StreamState
 }
 
 // StartInterestMarkerCollector runs a collection pass now and then every interval, on the JetStream
@@ -93,7 +123,7 @@ func (r *Registry) StartInterestMarkerCollector(ctx context.Context, js func() n
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		(&interestMarkerCollector{registry: r, interval: interval, log: r.logger(), scanIdle: kvwatch.ScanIdleTimeout}).run(ctx, js)
+		(&interestMarkerCollector{registry: r, interval: interval, log: r.logger(), scanIdle: kvwatch.ScanIdleTimeout, purgeAge: interestMarkerPurgeAge}).run(ctx, js)
 	}()
 	return done
 }
@@ -131,7 +161,10 @@ func (c *interestMarkerCollector) pass(js nats.JetStreamContext, afterScan func(
 	pass.read1 = &read1
 	scan, err := kvwatch.ScanExistingKeys(context.Background(), kv, jetstream.AllKeys, "interest markers", c.scanIdle, c.log, func(entry kvwatch.Entry) error {
 		if pass.floor == 0 || entry.Revision < pass.floor {
-			pass.floor = entry.Revision
+			pass.floor, pass.floorWritten = entry.Revision, entry.Created
+		}
+		if entry.Created.After(pass.newest) {
+			pass.newest = entry.Created
 		}
 		return nil
 	}, jetstream.MetaOnly())
@@ -168,6 +201,11 @@ func (c *interestMarkerCollector) pass(js nats.JetStreamContext, afterScan func(
 		return 0, nil
 	case pass.floor <= pass.read2.FirstSeq:
 		c.refuse(slog.LevelDebug, "the bucket holds nothing below the floor", &pass)
+		return 0, nil
+	case pass.newest.Sub(pass.floorWritten) < c.purgeAge:
+		// Every marker below the floor may be as young as the floor's own write, and one younger
+		// than the purge age may still be what refuses a late write (interestMarkerPurgeAge).
+		c.refuse(slog.LevelDebug, "the oldest live key was written less than the purge age before the newest", &pass)
 		return 0, nil
 	}
 	if err := js.PurgeStream(pass.read2.Name, &nats.StreamPurgeRequest{Sequence: pass.floor}); err != nil {
@@ -207,9 +245,10 @@ func (c *interestMarkerCollector) pass(js nats.JetStreamContext, afterScan func(
 }
 
 // refuse logs one pass that purged nothing, and why. A normal refusal (no live key, nothing below
-// the floor) is DEBUG. Everything else is WARN: a read of the stream that failed, a scan that did
-// not complete, a replaced stream, a sequence space that moved backward, and a floor above the
-// stream's last sequence.
+// the floor, a floor written less than the purge age before the newest live write) is DEBUG.
+// Everything else is WARN: a read of the stream that failed, a scan that did not complete, a
+// replaced stream, a sequence space that moved backward, and a floor above the stream's last
+// sequence.
 func (c *interestMarkerCollector) refuse(level slog.Level, reason string, pass *interestPass, extra ...slog.Attr) {
 	c.logPass(level, "interest marker collection refused", pass, append([]slog.Attr{slog.String("reason", reason)}, extra...)...)
 }
@@ -229,6 +268,9 @@ func (c *interestMarkerCollector) logPass(level slog.Level, msg string, pass *in
 	if pass.scan != nil {
 		attrs = append(attrs,
 			slog.Uint64("floor", pass.floor),
+			slog.Time("floor_written", pass.floorWritten),
+			slog.Time("newest_written", pass.newest),
+			slog.Duration("purge_age", c.purgeAge),
 			slog.Int("live", pass.scan.Puts),
 			slog.Int("delete_markers", pass.scan.Markers),
 		)

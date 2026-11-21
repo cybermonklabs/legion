@@ -15,9 +15,9 @@ import (
 )
 
 // Cluster is n nats-servers in this test process, routed to each other with JetStream clustered
-// across them, as a replicated hub runs. Each member is a Server start made, so Stop and Start work
-// on one member as on a lone server: a restart keeps the member's store, its client URL and its
-// route URL.
+// across them, as a replicated hub runs. Each member is a Server newServer made, so Stop and Start
+// work on one member as on a lone server: a restart keeps the member's store, its client URL and
+// its route URL, and Start starts a member StartClusterPart left unstarted.
 type Cluster struct {
 	Servers []*Server
 	// routes are the relays of the members' route ports, member i's at i, which a test in this
@@ -49,8 +49,33 @@ func StartCluster(t testing.TB, n int) *Cluster {
 // a no_auth_user whose account has JetStream.
 func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	t.Helper()
+	return startCluster(t, n, n, config)
+}
+
+// StartClusterPart runs the first running of n members as a hub of their own, and leaves the
+// others configured to join it and not started, as a hub that grows: it returns once JetStream is
+// ready on the running members (AwaitReady), and Start on another member joins it to the hub. The
+// running members' configurations route to each other only, so their meta group is sized running
+// and elects its leader with all of them up (nats-server v2.15.1 makes a group whose members hold
+// no log yet elect a leader only with every member's vote, server/raft.go:4404-4414), and a member
+// not yet joined is no peer of it: a stream of more copies than the running members is refused
+// "no suitable peers for placement" (JSClusterNoPeersErrF, selectPeerGroup at
+// server/jetstream_cluster.go:10630) until enough others have joined. Every other member's
+// configuration routes to every member, and the meta leader adds it as a peer once it joins.
+func StartClusterPart(t testing.TB, n, running int) *Cluster {
+	t.Helper()
+	return startCluster(t, n, running, "")
+}
+
+// startCluster is StartClusterConfig with only the first running of the n members started, their
+// configurations routing to each other only (StartClusterPart).
+func startCluster(t testing.TB, n, running int, config string) *Cluster {
+	t.Helper()
 	if n < 2 {
 		t.Fatalf("a cluster needs at least 2 servers, not %d", n)
+	}
+	if running < 2 || running > n {
+		t.Fatalf("start %d of %d members: a hub needs 2 to %d of them", running, n, n)
 	}
 	members := make([]atomic.Pointer[Server], n)
 	routes := make([]string, n)
@@ -76,8 +101,15 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	}
 	cluster := &Cluster{Servers: make([]*Server, n), routes: relays}
 	for i := range n {
-		server := start(t, clusterConfig(i, routes, listeners[i].Addr().(*net.TCPAddr).IP.String())+config, []string{"-js"})
+		hub := routes
+		if i < running {
+			hub = routes[:running]
+		}
+		server := newServer(t, clusterConfig(i, hub, listeners[i].Addr().(*net.TCPAddr).IP.String())+config, []string{"-js"})
 		server.name = memberName(i)
+		if i < running {
+			server.launch(t)
+		}
 		members[i].Store(server)
 		cluster.Servers[i] = server
 	}

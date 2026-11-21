@@ -60,7 +60,14 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	// After the client's Close in registration, so it runs first: a row that fails before the
 	// bind does not leave the callback held.
 	t.Cleanup(openGate)
-	if !client.Connected() || !client.AwaitingConnectionForTest() {
+	// The client's connected flag is moved only by the connection's own callbacks
+	// (bus.Client.Connected, noteConnection), and nats.go runs ConnectedCB asynchronously after
+	// Connect returns, so the connection reads connected only once that callback has run; the held
+	// gate sits after it, so the flag rises while onConnect is held. The wait is bounded, and the
+	// row's point is unchanged: the holder keeps the durable through a first-connect callback that
+	// lands inside its bind.
+	connected := testwait.Holds(5*time.Second, time.Millisecond, client.Connected)
+	if !connected || !client.AwaitingConnectionForTest() {
 		t.Fatalf("the intake's client reports connected = %t and awaiting its first-connect callback = %t before the intake starts, want both true: the row needs a connection nats.go reports CONNECTED whose callback has not run",
 			client.Connected(), client.AwaitingConnectionForTest())
 	}

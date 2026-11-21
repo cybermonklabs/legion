@@ -1,0 +1,25 @@
+kind: Fixed
+body: |-
+    An `envoy-listener` pod started before its NATS grant carried the `envoy_listener` bucket now
+    joins its machine's delivery lease once the grant is applied, with no restart. Before, it ran
+    without a lease for the rest of its life: a pod started later took the lease, found the durable
+    push-bound and waited the binding out as a pre-lease build's, while the first pod went on
+    delivering and the standby never took over. The pod without a lease now tries the bucket again
+    on its lease connection, logging `listener state bucket refused by the NATS grant; delivering
+    without a lease and retrying` at ERROR at each try with the bucket, the grant, the refused
+    subject, the server's text and `retry_in`, which starts at 1 s and doubles up to 30 s; the
+    start's own ERROR carries the first `retry_in`. Once the bucket opens, the pod tries to take the
+    lease before it gives anything up. A record that is absent or released it takes, keeping its
+    durable subscription, its queue and the message in hand as the holder's, so no message waits
+    for the switch; `/healthz` drops `lease` and names it `active`. A record another pod holds ends
+    its delivering at once: nothing its handler takes from then is forwarded or acknowledged, so
+    the holder delivers it once after the ack wait, the message in hand settles with its ack, its
+    session relays stop and get 1 s to settle the frames they sent, and then its subscription goes,
+    which ends the holder's wait for the binding at its next poll; the pod stands by. Either way
+    the bucket is kept at the deployment's copies, last-seen times are recorded in the bucket, the
+    role-claim grace counts from the lease's `service_since`, and the delivery ledger becomes the
+    machine's shared one, still answering from the pod's own records each pair it delivered or
+    attempted before the join for as long as that record stops a delivery.
+time: 2026-11-20T16:00:25.893817402Z
+custom:
+    Issue: pr2404

@@ -176,8 +176,9 @@ func (noLock) Unlock() {}
 func unwrappedKV(kv jetstream.KeyValue) jetstream.KeyValue { return kv }
 
 // listRig is an in-process listener over its own NATS server: the interest and session stores, the
-// /v1 routes behind the start gate main opens, the list gauges on /metrics, and the connection
-// hooks main registers, with the stores' watchers on clock.
+// /v1 routes behind the start gate main opens, the list gauges on /metrics, the connection hooks
+// main registers, and /healthz on a rig that receives (listRigOptions.receiving), with the stores'
+// watchers on clock.
 type listRig struct {
 	server   *testnats.Server
 	client   *bus.Client
@@ -192,10 +193,13 @@ type listRig struct {
 
 // listRigOptions shapes newListRig: release, when not nil, holds each store's first read until it
 // is closed (heldScanKV), keyed "interest" and "session"; hookCaches, when not nil, is what the
-// connection hooks get in place of the rig's caches.
+// connection hooks get in place of the rig's caches; receiving, when not "", is the machine id
+// whose durable the rig receives, as the pod that holds that machine's delivery lease
+// (startReceiverRig), and the rig then serves /healthz over its deps too, as main mounts it.
 type listRigOptions struct {
 	release    map[string]<-chan struct{}
 	hookCaches func([]listenerCache) []listenerCache
+	receiving  string
 }
 
 func newListRig(t *testing.T, options listRigOptions) *listRig {
@@ -262,10 +266,21 @@ func newListRig(t *testing.T, options listRigOptions) *listRig {
 	registerListGauges(met, &served)
 	gate := newStartingGate("v1", logger)
 	deps := &listenerDeps{client: client, registry: registry, sessions: sessions, caches: rig.caches, streamName: bus.Stream}
+	if options.receiving != "" {
+		receiving := startReceiverRig(t, uri, options.receiving, "pod-a", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() }, testReceiveTiming(), testLeaseTiming())
+		receiving.awaitState(t, receiveActive, 10*time.Second)
+		deps.receiver = receiving.receiver
+	}
 	openV1Routes(gate, deps, &served, "test-machine", logger, time.Now())
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", met.Handler())
 	mux.Handle("/v1/", gate)
+	if deps.receiver != nil {
+		// main publishes what /healthz reads once /v1 is open and the receive loop has started.
+		var published atomic.Pointer[listenerDeps]
+		published.Store(deps)
+		mux.Handle("/healthz", healthzHandler(&published))
+	}
 	rig.handler = mux
 	return rig
 }
@@ -639,7 +654,7 @@ func TestListsRefuseAfterTheBoundWhileNATSIsDown(t *testing.T) {
 			func(err error) bool { return isUnrecoverableSelfHealthFailure(err, rig.client, rig.caches) },
 			rig.client.Connected,
 			func() error {
-				return rebuildListenerDependencies(context.Background(), rig.client, rig.caches, nil, "", nil, nil)
+				return rebuildListenerDependencies(context.Background(), rig.client, rig.caches, nil, nil)
 			},
 		)
 		rig.awaitServed(t, 10*time.Second, "both lists once the monitor read the buckets again")

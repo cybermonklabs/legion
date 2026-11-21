@@ -108,6 +108,77 @@ func TestKnownSessionsTouchKeepsTheRecordAndMovesLastSeen(t *testing.T) {
 	}
 }
 
+// A record a newer build wrote carries a key this build does not name, and each rewrite of it
+// through this build keeps that key with its value (KnownSessions.unknown): the registration's and
+// the interest change's (RecordWithin) and the clean stop's (TouchWithin) alike. Every listener
+// pod writes the records of the sessions it serves, so during a roll pods of two builds take
+// turns writing one session's record, and a rewrite that dropped the newer build's field would
+// take it from that build's readers until its own next write.
+func TestARewriteOfAKnownSessionRecordKeepsANewerBuildsKeys(t *testing.T) {
+	clock := time.Now()
+	known := openKnown(t, func() time.Time { return clock })
+	const sessionID = "ses_newer_build"
+	const field, value = "newer_build_field", `{"kept":["by","both"]}`
+	kv := watchHandle(known)
+	// storeNewer puts the record as a newer build writes it, its own field among the others, and
+	// waits for the store's copy to hold that write.
+	storeNewer := func(title string) {
+		t.Helper()
+		raw := fmt.Sprintf(`{"session_id":%q,"title":%q,"capabilities":["aside"],"topics":["notifications.team.newer"],"last_seen":%d,%q:%s}`,
+			sessionID, title, clock.UnixMilli(), field, value)
+		if _, err := kv.Put(sessionID, []byte(raw)); err != nil {
+			t.Fatalf("put the newer build's record: %v", err)
+		}
+		awaitKnown(t, 5*time.Second, "the store's copy held the newer build's record", func() bool {
+			record, ok := known.Get(sessionID)
+			return ok && record.Title == title
+		})
+	}
+	// requireKept reads the record the rewrite stored, from the bucket, and fails unless the
+	// rewrite stored it (its last_seen is the rewrite's) and kept the newer build's key with its
+	// value.
+	requireKept := func(rewrite string) {
+		t.Helper()
+		entry, err := kv.Get(sessionID)
+		if err != nil {
+			t.Fatalf("read the record %s stored: %v", rewrite, err)
+		}
+		var stored map[string]json.RawMessage
+		if err := json.Unmarshal(entry.Value(), &stored); err != nil {
+			t.Fatalf("the record %s stored is no JSON object: %v: %s", rewrite, err, entry.Value())
+		}
+		if got := string(stored["last_seen"]); got != fmt.Sprint(clock.UnixMilli()) {
+			t.Fatalf("the record's last_seen is %s, want %s's %d: the rewrite stored nothing: %s", got, rewrite, clock.UnixMilli(), entry.Value())
+		}
+		got, ok := stored[field]
+		if !ok {
+			t.Fatalf("%s dropped the newer build's key %q from the record: %s", rewrite, field, entry.Value())
+		}
+		if string(got) != value {
+			t.Fatalf("%s rewrote the newer build's key %q as %s, want %s", rewrite, field, got, value)
+		}
+	}
+
+	storeNewer("written by a newer build")
+	clock = clock.Add(time.Second)
+	if err := known.RecordWithin(context.Background(), KnownSession{
+		SessionID:    sessionID,
+		Title:        "registered through this build",
+		Capabilities: []string{"aside"},
+		Topics:       []string{"notifications.team.newer"},
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	requireKept("RecordWithin")
+
+	storeNewer("written by a newer build again")
+	clock = clock.Add(time.Second)
+	if err := known.TouchWithin(context.Background(), sessionID); err != nil {
+		t.Fatalf("touch: %v", err)
+	}
+	requireKept("TouchWithin")
+}
+
 // observedKnown is openKnown with the store's watcher feeding its cache through a holdingCache, so
 // a test can wait for the watcher to deliver back a record the store wrote through (holdApply on
 // the record's key, opened at once). Once the first read has completed it ends the store's watcher

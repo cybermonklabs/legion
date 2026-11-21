@@ -59,12 +59,12 @@ type AuthCallout struct {
 // survived. The Legion daemon (its own natsauth.detectSilentCuts, on every connection its Connect
 // opens), and Dispatch's server and the session listener's stream connection (envoy's
 // bus.WithSilentCutDetection), ping the server every 1 s, and the TS plugins every 10 s, so the
-// server does not ping those connections while they are up. The listener's role-lane and
-// session-consumer connections, and other Go clients, keep nats.go's 2-minute ping, so the server
-// pings each of them when it is idle for a whole interval: every 20 s instead of every 2 minutes.
-// Apart from that, the server pings every client once an hour to measure its round trip (:5966,
-// const.go:224). The first PING to a new client stays at 2 s (client.go:7128-7142), so the
-// callout's 1.5 s answer budget is unchanged.
+// server does not ping those connections while they are up. The listener's role-lane,
+// session-consumer and delivery-lease connections, and other Go clients, keep nats.go's 2-minute
+// ping, so the server pings each of them when it is idle for a whole interval: every 20 s instead
+// of every 2 minutes. Apart from that, the server pings every client once an hour to measure its
+// round trip (:5966, const.go:224). The first PING to a new client stays at 2 s
+// (client.go:7128-7142), so the callout's 1.5 s answer budget is unchanged.
 //
 // It does not catch a replica whose request handler deadlocks while its process runs: nats.go
 // answers a PING from its read loop (nats.go v1.55.0 processPing at nats.go:4278, called at parser.go:324), not

@@ -1149,8 +1149,8 @@ test("a tool call the listener refused because its sender is rate limited answer
     const configDirectory = join(home, "claude-config")
     await mkdir(configDirectory)
     const calls: string[] = []
-    // The listener's 429 for a session past its sending limit (`senderRateLimitedAnswer`,
-    // packages/envoy/cmd/listener/sender_limit.go), to every call.
+    // The listener's 429 for a session past its sending limit (`listenerwire.SenderRateLimited`,
+    // built in packages/envoy/cmd/listener/sender_limit.go), to every call.
     listener = Bun.serve({
       port: 0,
       fetch: (request) => {

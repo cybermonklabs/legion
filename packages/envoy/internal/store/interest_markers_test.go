@@ -1,7 +1,9 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -43,7 +45,8 @@ func captureJSONLogs(t *testing.T) func() []map[string]any {
 }
 
 // collectorOf is the collector StartInterestMarkerCollector runs, without its ticker, so a test
-// drives its passes one at a time.
+// drives its passes one at a time, and without its purge age (interestMarkerPurgeAge), so the
+// markers a test seeds, seconds old, are collected at once. A row on the purge age sets one.
 func collectorOf(registry *Registry) *interestMarkerCollector {
 	return &interestMarkerCollector{registry: registry, log: registry.logger(), scanIdle: kvwatch.ScanIdleTimeout}
 }
@@ -229,6 +232,68 @@ func TestAPassCollectsTheDeleteMarkersAndKeepsEveryLiveKey(t *testing.T) {
 	again, err := collector.pass(js, nil)
 	if err != nil || again != 0 {
 		t.Fatalf("a second pass purged %d messages (%v), want 0: the purge must be idempotent", again, err)
+	}
+}
+
+// A late interest write planned before a delete stays refused while the delete's marker is
+// younger than the purge age (interestMarkerPurgeAge). An interest write is one Update at the
+// revision its plan read (putInterestAt): a plan over a key that held no row writes at 0, which
+// the bucket refuses while the key's newest message is the marker, and takes once the marker is
+// purged, storing again the row the delete removed. Here every live key is written after the
+// marker, so the floor alone would purge it at the first pass, as the collector did before it
+// held a purge age. Once the oldest live key's write is the purge age older than the newest, a
+// pass purges the marker after all, shown on an age the row can wait out.
+func TestALateWritePlannedBeforeADeleteStaysRefusedWhileTheMarkerIsYoungerThanThePurgeAge(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	js, kv := rawInterestBucket(t, conn)
+	registry := openRegistry(t, conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	const key = "ses_late_write"
+	// The plan: the key holds no row, so the write it plans is at revision 0.
+	if _, revision, err := registry.getLatest(ctx, key, true); !errors.Is(err, natsgo.ErrKeyNotFound) || revision != 0 {
+		t.Fatalf("the plan's read of %s answered revision %d (%v), want no row at all", key, revision, err)
+	}
+	// Before that write lands, another writer stores the row and a delete removes it, and a live
+	// key is written after the delete, so the marker is below the floor.
+	if _, err := kv.Put(key, []byte(`{"session_id":"`+key+`"}`)); err != nil {
+		t.Fatalf("put %s: %v", key, err)
+	}
+	if err := kv.Delete(key); err != nil {
+		t.Fatalf("delete %s: %v", key, err)
+	}
+	seedLive(t, kv, 1)
+
+	collector := collectorOf(registry)
+	collector.purgeAge = interestMarkerPurgeAge
+	purged, err := collector.pass(js, nil)
+	if err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	late := []byte(`{"session_id":"` + key + `","machine_id":"late"}`)
+	if _, _, stored, err := registry.putInterestAt(ctx, key, late, 0); err != nil || stored {
+		t.Fatalf("the late write of %s planned before its delete answered stored=%v (%v), want it refused: the pass purged %d messages, the delete's marker among them, though it was younger than the purge age (%s), so the row the delete removed is back", key, stored, err, purged, interestMarkerPurgeAge)
+	}
+	if purged != 0 {
+		t.Fatalf("a pass purged %d messages with every marker younger than the purge age, want none", purged)
+	}
+	if _, err := kv.Get(key); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("%s reads %v after the late write, want its row still deleted", key, err)
+	}
+
+	// An age the row can wait out: once the oldest live key's write is that much older than the
+	// newest, the pass purges the marker below it.
+	collector.purgeAge = 200 * time.Millisecond
+	time.Sleep(2 * collector.purgeAge)
+	if _, err := kv.Put("ses_newer", []byte(`{"session_id":"ses_newer","machine_id":"m1"}`)); err != nil {
+		t.Fatalf("put ses_newer: %v", err)
+	}
+	if purged, err := collector.pass(js, nil); err != nil || purged != 1 {
+		t.Fatalf("a pass whose oldest live key was written %s before the newest purged %d messages (%v), want the one marker", 2*collector.purgeAge, purged, err)
+	}
+	if op, ok := bucketOps(t, kv)[key]; ok {
+		t.Fatalf("%s still has a message (%v) after the pass, want its marker purged", key, op)
 	}
 }
 

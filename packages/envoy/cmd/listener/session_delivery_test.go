@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // sessionConsumerRig is a listener's /v1 routes and durable handler over the in-process server,
@@ -73,6 +74,7 @@ func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessi
 // subscribeAnswer is what a test reads of a registration's answer.
 type subscribeAnswer struct {
 	raw      string
+	Warnings []string `json:"warnings"`
 	Delivery *struct {
 		Mode          string `json:"mode"`
 		Subject       string `json:"subject"`
@@ -329,7 +331,7 @@ func TestSessionConsumerKeepsTheControllerNoticeLaneAHeartbeatOmits(t *testing.T
 	}
 	// The row holds the session's own agent subject, which sessionConsumerFilter names anyway,
 	// and the consumer keeps each subject once, in every form (bus.SessionConsumerFilters).
-	want := bus.SessionConsumerFilters(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))
+	want := bus.SessionConsumerFilters(sessionConsumerFilter(sessionID, stored.Topics))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: the filter and the stored row must name one set after a heartbeat that omits the lane", got, want)
 	}
@@ -383,7 +385,7 @@ func TestSessionConsumerFiltersAgainWhenItsWriteLosesTheCompareAndSwap(t *testin
 	if !slices.Contains(stored.Topics, added) {
 		t.Fatalf("stored topics %v, want the topic %s the second registration was answered 200 for", stored.Topics, added)
 	}
-	want := bus.SessionConsumerFilters(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))
+	want := bus.SessionConsumerFilters(sessionConsumerFilter(sessionID, stored.Topics))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: a registration that re-plans after a lost compare-and-swap must filter on the plan it stores", got, want)
 	}
@@ -448,7 +450,7 @@ func TestSessionConsumerCarriesTheGapAndTheUnsubscribeAcrossARefusedWrite(t *tes
 	if slices.Contains(stored.Topics, dropped) {
 		t.Fatalf("stored topics %v; the unsubscribe removed %s, so the registration must not write it back", stored.Topics, dropped)
 	}
-	want := bus.SessionConsumerFilters(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))
+	want := bus.SessionConsumerFilters(sessionConsumerFilter(sessionID, stored.Topics))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: the filter is the plan that was stored", got, want)
 	}
@@ -930,7 +932,7 @@ func followWhileLocked(t *testing.T, rig *sessionConsumerRig, sessionID, topic s
 	if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{topic}); err != nil {
 		t.Fatalf("store %s's interest in %s: %v", sessionID, topic, err)
 	}
-	if err := rig.deps.consumers.consumers.UpdateFilter(context.Background(), sessionID, rig.deps.consumers.sessionConsumerFilter(sessionID, []string{topic})); err != nil {
+	if err := rig.deps.consumers.consumers.UpdateFilter(context.Background(), sessionID, sessionConsumerFilter(sessionID, []string{topic})); err != nil {
 		t.Fatalf("set the filter of %s's consumer: %v", sessionID, err)
 	}
 }
@@ -1117,7 +1119,8 @@ func TestSessionConsumerMessageRaisesNoExceptionOnTheDurablePath(t *testing.T) {
 }
 
 // listenerGrantBeforeSessionConsumers is the listener's grant as a hub carries it before session
-// consumers (infra/core ListenerPermissions without their entries) for machine test-machine.
+// consumers, for machine test-machine: natsgrant.listenerGrant, the part of natsgrant.Listener
+// without the session consumers' calls, over the buckets a hub carried then (bucketGrant).
 func listenerGrantBeforeSessionConsumers() []string {
 	durable := bus.ListenerDurable("test-machine")
 	allow := []string{
@@ -1134,6 +1137,11 @@ func listenerGrantBeforeSessionConsumers() []string {
 	for _, bucket := range []string{bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket, bus.CIStateBucket} {
 		allow = append(allow, bucketGrant(bucket)...)
 	}
+	// The listener state bucket is part of every listener's grant, before session consumers as
+	// after: the machine's delivery lease, its pods' clean-hand-back marks, its delivery ledger
+	// and every session's last-seen record, as the eleven subjects natsgrant.ListenerState builds,
+	// so this grant is no wider there than a rendered one.
+	allow = append(allow, natsgrant.ListenerState("test-machine")...)
 	return append(allow, "$JS.API.STREAM.PURGE.KV_"+bus.InterestBucket)
 }
 
@@ -1166,7 +1174,7 @@ func TestSessionConsumerWithoutTheGrantIsRefusedAndWritesNothing(t *testing.T) {
 	// the deregistration's and the sweep's, writes no line of its own while the backoff stands
 	// (sessionDelivery.deleteConsumer), where one per delete is what a hub whose user may not
 	// manage session consumers at all would otherwise carry.
-	if rig.deps.consumers.deleteConsumer(context.Background(), rig.deps, "ses_ungranted_gone", nil) {
+	if rig.deps.consumers.deleteConsumer(context.Background(), rig.deps, "ses_ungranted_gone", nil, nil) {
 		t.Fatal("the delete of ses_ungranted_gone's consumer reported the consumer gone; this user may make no session consumer call at all")
 	}
 	if lines := strings.Count(rig.harness.logs.String(), "every registration is refused until the grant carries them"); lines != 1 {

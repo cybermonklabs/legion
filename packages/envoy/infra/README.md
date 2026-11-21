@@ -349,18 +349,15 @@ component cannot refuse an older image itself: `<l>.image` is a digest, and no i
 version it reads says which release built it, so this line is the guard. A listener with no
 credential, a `tailnet.listener` with no `clientNamespaces`, runs on any release.
 
-The component writes the pod count, one, and no input changes it. Two copies would contend for the
-one durable `listener-<l.machineId>`: until cybermonklabs/legion#2404 gives the
-listener a delivery lease, the second copy waits the listener's bind deadline
+The component writes the pod count, one, and no input changes it. A second copy of a listener that
+carries cybermonklabs/legion#2404's delivery lease, which this release's does, stands by,
+delivering nothing, and takes the one durable `listener-<l.machineId>` over within seconds of the
+first copy's stop. A listener from before that change instead waits its bind deadline
 (`durableBindDeadline`, 135 seconds) for the durable the first copy holds, then exits, and is
-restarted over and over. The rolling update's surge is the one window where two copies exist, and
-with `maxUnavailable: 0` and `maxSurge: 1` it is longer than the old pod's stop: the new pod's
-listener contends for the durable from the moment its `/v1` opens, right after which it starts
-its bind, and the old pod is sent SIGTERM only once the new pod is Ready. The contention therefore
-lasts the startup probe's lag behind that open, at most one 10-second period (below), plus the old
-pod's 33 seconds, its 5-second preStop wait and its 28-second stop, and what has to hold it is the
-new pod's own 135-second bind deadline, counted from its `/v1` open. A new pod that never becomes
-Ready leaves the old one serving while the new one restarts on its bind deadline.
+restarted over and over. The rolling update's surge is the one window where two copies exist:
+with `maxUnavailable: 0` and `maxSurge: 1` the old pod is sent SIGTERM only once the new pod is
+Ready (below), so the new pod stands by through the old pod's stop and takes the durable over
+once it ends.
 
 Three more objects carry that pod:
 
@@ -411,29 +408,28 @@ How `/v1` admits a caller depends on who reaches the listener:
 
 Three probes read the pod's own loopback, two routes between them:
 
-- startup, `/bin/sh -c` of
-  `curl -fsS --max-time 5 http://127.0.0.1:9020/metrics | grep -q '^envoy_active_interests '`
-  every 10 seconds, with a 6-second timeout and 60 failures allowed: ten minutes for `/v1` to
-  open, after which the kubelet restarts the container. `/v1` answers 503 `service starting`
-  until its gate opens, and a listener that requires a credential refuses it to the probe, which
-  holds none, while `/metrics` takes none. The listener writes the sample line
-  `envoy_active_interests <n>` there only once that gate is open and the interest list can be
-  served; the pattern matches that line and never the gauge's `# HELP` or `# TYPE` line, which
-  every scrape carries. The kubelet runs neither of the other two probes, and the pod is not
-  Ready, until this one has passed, so a new pod stays out of the Service until its `/v1`
-  serves, and the rolling update keeps the old pod serving until then. `/v1` opens without
-  waiting for the durable consumer, which the old pod holds until it stops, so the gate cannot
-  wait on the old pod. The listener writes the sample this way since `legion-envoy-v29.15.0`; an
-  older listener writes it from its first answer, so there the probe passes at that answer, as
-  the `/livez` startup probe before it did;
-- liveness, `curl -sS -o /dev/null --max-time 8` of `http://127.0.0.1:9020/livez` every 10
-  seconds, 6 failures allowed. The listener answers `/livez` 204 and reads no bus for it, and
-  without `-f` curl exits 0 whatever the HTTP status, so any answer keeps the container running
-  and only a minute of no answer at all restarts it;
-- readiness, the same `curl -sS` of `/livez` every 10 seconds, 3 failures allowed, so only 30
-  seconds of no answer at all takes the pod out of the Service. Readiness and liveness are
-  status-blind, so a fault of the hub, which every pod shares, neither takes the one pod out of
-  the Service nor restarts it.
+- startup, `curl -sS -o /dev/null --max-time 8` of `http://127.0.0.1:9020/livez` every 5 seconds,
+  24 failures allowed: two minutes for the first answer;
+- liveness, the same `curl -sS` of `/livez` every 10 seconds, 6 failures allowed. The listener
+  answers `/livez` 204 and reads no bus for it, and without `-f` curl exits 0 whatever the HTTP
+  status, so any answer keeps the container running and only a minute of no answer at all
+  restarts it. A listener whose NATS does not answer, answers from its cluster's state or refuses
+  a grant at its start stays up and not ready for as long as that lasts (the start rule,
+  `cmd/listener/README.md`), and neither probe restarts it, so no restart backoff delays it once
+  its NATS lets it start;
+- readiness, `curl -fsS` of `http://127.0.0.1:9020/healthz` every 5 seconds, with a 6-second
+  timeout and 2 failures allowed, and the pod's gate into the Service. It reads the HTTP status
+  and never the body. A pod answers 503 (`"starting"`) until its `/v1` serves and its interest
+  copy has completed its first read of the bucket, which `/v1` does not wait for once the start's
+  30-second wait for it has run out, so a new pod stays out of the Service until then and the
+  rolling update keeps the old pod serving. Only that first read gates: a later read of the copy,
+  after a reconnect, keeps a pod that has been ready in the Service while `GET /v1/interests/`
+  answers its own 503 `refilling`. `/v1` opens without waiting for the delivery lease, which the
+  old pod holds until it stops, and the new pod then answers 200 as a standby
+  (`"role": "standby"`) while it waits for the lease, so a standby is ready and the rolling update
+  never waits for the lease. A listener from before cybermonklabs/legion#2404 answers 200
+  (`"starting"`) from its first answer, before its `/v1` opens, so its pod is Ready before it
+  serves.
 
 The pod's preStop waits 5 seconds, the time its removal from the Service's endpoints takes to
 reach every node's proxy, so a connection a node still forwards is still answered. That wait and
@@ -441,11 +437,15 @@ the listener's own stop of 28 seconds are 33 seconds together, inside the pod's 
 40 seconds, which leaves a margin of 7 seconds (`listenerGraceMargin`). The margin covers the
 kubelet's own latency between the preStop hook's return and SIGTERM, the container's teardown
 and a late tick on a loaded node. It does not cover a listener that runs over its own deadlines.
-A hung pod holds its durable for the whole grace. The replacement's 135-second bind deadline
-(`durableBindDeadline` in `cmd/listener/durable.go`) counts from its `/v1` open, right after
-which the listener starts the bind, so what has to stay under it is the startup probe's lag
-behind that open plus the old pod's stop. At a grace of 40 seconds that lag may be up to 95
-seconds, and the probe's 10-second period keeps it at most 10.
+A hung pod holds its durable for the whole grace, and the replacement pod waits that out however
+long it is: it stands by for the machine's delivery lease for as long as it runs
+(`packages/envoy/cmd/listener/lease.go`), so no deadline of its own bounds the grace. What bounds
+the grace is the old pod's stop alone, the preStop wait and the listener's 28-second stop with the
+margin above. The listener's 135-second `durableTakeoverAlarmAfter` (`cmd/listener/receive.go`)
+bounds no stop either: it times how long a listener has waited on a binding that a listener from
+before the lease holds, during the first roll onto the lease, and how long its reads, creations,
+policy corrections or subscribes of the durable have failed, after which a lease holder gives the
+lease up.
 
 One pod has one cost: while that pod is unready or restarting, the listener's port 9020 refuses
 connections, the Tailscale Service's included. Port 4222 stays up through it, which is what the
@@ -733,9 +733,9 @@ waits for an instance: the component never changes that instance, so nothing of 
 restarts it. The Serve ConfigMap and the front door's Deployment are registered
 after the Tailscale Service, since a node that advertises a Service before it exists is not
 approved when the Service appears. Without `natsInCluster` the listener's Deployment waits for the
-front door's pods and its SOCKS5 Service, because `envoy-listener` exits when its first bus
-connection fails (`packages/envoy/cmd/listener/main.go`), so a listener pod started before the
-proxy exists never goes ready and the rollout waits it out. The app's Deployment does not wait for
+front door's pods and its SOCKS5 Service, because `envoy-listener` cannot connect its bus before
+the proxy exists: it stays up and not ready, trying again (the start rule,
+`packages/envoy/cmd/listener/README.md`), so the rollout waits it out. The app's Deployment does not wait for
 the front door: `envoy-dispatch` serves without the bus — its `/healthz` readiness reads Postgres
 alone, reporting `nats` false meanwhile, and its bus clients connect in the background once the
 proxy answers — and during a cutover the front door is deliberately away while the availability
@@ -1276,8 +1276,8 @@ have them dial themselves. Point it at the hub's own Service, such as
 `natsInCluster`: with no proxy the pods resolve the URL with their cluster's own DNS, which answers
 no tailnet name unless the cluster forwards it to Tailscale's. The hub must also admit the
 namespace the pods run in to its client port before that apply (for `gcp:ClusteredNatsHub`, list
-it in `clientNamespaces`): otherwise `envoy-listener` exits on its failed first connect and its
-rollout stalls, while `envoy-dispatch` goes ready and serves without the bus. Unset, the SOCKS5
+it in `clientNamespaces`): otherwise `envoy-listener` stays up and not ready, trying to connect
+again, and its rollout stalls, while `envoy-dispatch` goes ready and serves without the bus. Unset, the SOCKS5
 path renders exactly as it always did, for a deployment whose NATS hub is outside this cluster.
 
 `natsReplicas` and `streamMaxBytes` are the two JetStream settings both NATS clients carry:
@@ -1290,7 +1290,8 @@ limit is never lowered, so programs carrying different limits leave the largest.
 by name before the component registers a resource: `natsReplicas` below 1 or above 5, the most
 copies NATS keeps, and `streamMaxBytes` below 1. Set no more copies than the hub has servers
 (`gcp:ClusteredNatsHub` runs three): JetStream refuses a stream with more copies than that, and
-`envoy-listener` then exits at start, naming `ENVOY_NATS_REPLICAS`, rather than keeping fewer.
+`envoy-listener` then stays up and not ready, trying again until the hub has that many servers,
+rather than keeping fewer.
 Each unset renders nothing, and the binaries then keep one copy and set no byte limit, a deployed
 stream keeping the one it has. Both are independent of `natsInCluster`: a hub outside
 this cluster can be clustered too.
@@ -1300,10 +1301,9 @@ this cluster can be clustered too.
 and `ENVOY_SENDER_MESSAGE_BURST`, each rendered only when its input is set, on the listener's
 `envoy-listener` container alone, since the app does not read them. The rate is from 1 to 60000,
 and the burst is at least 1 and only with a rate. Unset, the rate sets no limit and the burst
-equals the rate. Each of the `listenerReplicas` pods keeps its own count for each session, so a
-session whose requests reach more than one pod can send more than the rate in all. The component
-refuses a rate outside 1 to 60000, a burst below 1 and a burst with no rate, each by name, before
-it registers a resource, and `clusterOnly` refuses both inputs by name.
+equals the rate. The limit is each of the `listenerReplicas` pods' own, as that section says. The
+component refuses a rate outside 1 to 60000, a burst below 1 and a burst with no rate, each by
+name, before it registers a resource, and `clusterOnly` refuses both inputs by name.
 
 `signingKeyGenerations`, `[0]` by default, is the ordered key set `DISPATCH_SIGNING_KEY` holds:
 the first generation in the list signs every new session cookie and seals every new refresh
@@ -1767,8 +1767,10 @@ cannot recover from, a certificate cache it cannot read.
 Readiness is the other question. `envoy-dispatch` is ready while `curl -fsS` of its `/healthz`
 succeeds (every 10 seconds, three failures), which Postgres alone decides: the server serves while
 NATS is down. `envoy-listener` is ready while `curl -fsS` of its `/healthz` succeeds every 5
-seconds, two failures in a row taking it out; that endpoint answers within 5 seconds, so the probe
-allows 6. A front-door pod is ready while it hosts the Service ([The front door](#the-front-door)).
+seconds, two failures in a row taking it out; that endpoint answers `503` `starting` until the pod
+serves `/v1` and its interest copy has completed its first read, then `200` with `"role"` `active` on the lease holder or `standby` on every other
+pod, so a standby is ready too, and it answers within 5 seconds, so the probe allows 6. A
+front-door pod is ready while it hosts the Service ([The front door](#the-front-door)).
 Without `natsInCluster` the app and the listener reach NATS only through the front door's SOCKS5
 proxy, so with no front-door pod ready the listener fails readiness within its probe's window (10
 seconds) and leaves its Service, while the app stays ready, and the in-cluster `allowedNamespaces`
@@ -2474,15 +2476,16 @@ envoy-infra:gcp:Dispatch needs a "random" provider in its providers option
 
 By default the docker provider waits up to 90 seconds for the container's health check to pass,
 and `pulumi up` fails if it does not. The check passes once `/healthz` answers `200`, which it does
-from `starting` on, before the listener has connected to NATS. A listener is connected when
-`/healthz` answers `"status":"healthy"` or `"status":"degraded"`: a degraded answer is a
-dependency that repairs itself, such as a role claim view whose first scan has not delivered every
-claim, and the listener behind it is connected and serving. The answers are listed under
+once the listener serves: NATS connected, its caches loaded and `/v1` open, as its machine's
+active listener or as a standby (`"role"` in the body). Until then `/healthz` answers `503`
+`starting`. A `200` is `"status":"healthy"` or `"status":"degraded"`: a degraded answer is a
+dependency that repairs itself, such as a role claim view whose first scan has not delivered
+every claim, and the pod behind it is connected and serving. The answers are listed under
 [Health and readiness](https://cybermonklabs.github.io/legion/dispatch/envoy/#health-and-readiness).
 
 `waitForHealthy: false` creates the container without waiting on its health check. Use it for a
-listener that cannot reach its NATS server when the stack is applied: Docker restarts the listener
-until it connects.
+listener that cannot reach its NATS server when the stack is applied: the listener stays up and
+keeps trying to connect, answering `503` `starting` until it does.
 
 ### The watchdog
 
@@ -2751,8 +2754,11 @@ The log group, the Cloud Map service, the task definition, the service and the a
 `baseTags` and `service: <N>`; the policies and the filters carry none.
 
 The container, `envoy-listener`, runs `/usr/local/bin/envoy-listener` from `image` on port 9020.
-Its health check fetches `/healthz` on the task's own address, the one the target group probes. Its
-environment, in this order:
+Its health check fetches `/healthz` on the task's own address, the one the target group probes. A
+task passes it once it serves `/v1`, as its machine's active listener or as a standby, and answers
+`503` `starting` before that; so during a deployment ECS stops the old task only once the new one
+serves, and the new one takes over the old one's deliveries when the old one's stop releases the
+delivery lease (`packages/envoy/cmd/listener/README.md`). Its environment, in this order:
 
 | Variable | Value |
 | --- | --- |
@@ -2774,21 +2780,24 @@ ECS injects its secrets from their ARNs: `ENVOY_GITHUB_WEBHOOK_SECRET` with `git
 Each alarm pages `alarmTopicArn` on one matching line in five minutes (`Sum` over 300 s at least 1,
 missing data not breaching) and sends the OK transition there too, so the channel sees the signal
 stop: `<N>-publish-failure` (a JetStream publish that did not complete), `<N>-webhook-refused` (a
-delivery NATS can never take, answered 422), `<N>-reconnect-hooks-stalled` (a KV watch rebuild that
-has not succeeded for a minute after a NATS reconnect, so the listener's caches serve what they
+delivery NATS can never take, answered 422), `<N>-reconnect-hooks-stalled` (a KV watch rebuild
+that has not succeeded for a minute after a NATS reconnect, so the pod's caches serve what they
 last held and `/healthz` answers 200 `degraded`), `<N>-stream-subject-dropped` (a start that
 dropped another deployment's overlapping stream subject), `<N>-durable-refused` (a start that
-refused its durable consumer, or whose NATS grant refused the durable's read, create or update)
-and `<N>-subscribe-exhausted` (a start that gave up binding its durable subscription).
-`<N>-publish-failure` and `<N>-webhook-refused` count a GitHub delivery's
-first failure or refusal in each listener task: a later one of the same delivery, such as each of
-the redeliveries Dispatch's sweep asks for over 72 hours, is logged
-`redelivery <delivery>: <action> refused` (or `failed`), which no filter counts, so one delivery
-pages once per task, and again after a restart. Each description names `logGroupName` as the log
-to read, and assumes the wiring of the deployment the alarms were written for: that GitHub
-deliveries come from Dispatch's GitHub App (`legion-envoy`), whose redelivery sweep retries them,
-and that Slack retries an event three times.
-A listener fed otherwise pages the same way, with descriptions that overstate what is retried.
+refused its durable consumer) and `<N>-subscribe-exhausted` (a listener that has waited 135 s or
+more on another subscriber's push binding of its durable, usually a build from before the lease
+still running, or whose reads, creations, policy corrections or subscribes of the durable have
+failed for that long: a lease holder gives the lease up for the failures, unless the NATS grant
+refuses the durable, and a holder the grant refuses, like a listener without a lease, logs the
+line again every five minutes). `<N>-publish-failure` and
+`<N>-webhook-refused` count a GitHub delivery's first failure or refusal in each listener task: a
+later one of the same delivery, such as each of the redeliveries Dispatch's sweep asks for over 72
+hours, is logged `redelivery <delivery>: <action> refused` (or `failed`), which no filter counts,
+so one delivery pages once per task, and again after a restart. Each description names
+`logGroupName` as the log to read, and assumes the wiring of the deployment the alarms were
+written for: that GitHub deliveries come from Dispatch's GitHub App (`legion-envoy`), whose
+redelivery sweep retries them, and that Slack retries an event three times. A listener fed
+otherwise pages the same way, with descriptions that overstate what is retried.
 
 Its outputs are `serviceArn`, `serviceName`, `logGroupName`, `taskDefinitionArn` and
 `internalUrl`, `http://<cloudMapServiceName>.<cloudMapNamespaceName>:9020`.
@@ -3238,9 +3247,10 @@ boots`:
   starts.
 
 The listener keeps one count for each sending session. The count starts at the burst and gains
-one message every 60 seconds divided by the rate, up to the burst. The counts are the listener
-process's own. So each listener keeps its own counts, each of `gcp:Dispatch`'s `listenerReplicas`
-pods included, and a restart fills each count again.
+one message every 60 seconds divided by the rate, up to the burst. The limit is each listener
+pod's own, each of `gcp:Dispatch`'s `listenerReplicas` pods included: what that lets a session
+send with more than one pod, and when a pod's counts are full again, is stated on the docs site's
+Envoy page ("The sender limit").
 
 The sender is the session that a secrets-broker token proves, else the request's
 `source_session`. The listener does not count a message with another `source`, such as
@@ -3281,10 +3291,10 @@ first forward. The listener does not tell a `504` that forwarded nothing from on
 the stream may hold. A refusal before any store or wake report, such as a `400`, `403`, `413` or
 a `503` before the listener sent anything (one while it waits for NATS to reconnect), costs
 nothing. A repeat the listener recognises costs nothing too: the stream's `duplicate` answer, a
-repeat of a role message kept for the role's next holder, and a repeat of a role forward the route
-made in the last 10 minutes. So does an echo, a role message from the session that holds the role.
-A `duplicate` that answers the listener's own second send, made after its connection to NATS
-closed under the first, costs one, since the first may have stored the message. A role send's
+repeat of a role message kept for the role's next holder, and a repeat of a role forward the same
+pod's route made in the last 10 minutes. So does an echo, a role message from the session that holds
+the role. A `duplicate` that answers the listener's own second send, made after its connection to
+NATS closed under the first, costs one, since the first may have stored the message. A role send's
 echo, repeat or `403` costs nothing only while the send has made no forward, since an earlier
 forward may have stored the message. A repeat that finds the count at 0 is refused as a new
 message is. The listener's own two settings are on the documentation site's
@@ -3794,10 +3804,11 @@ session listener's stream connection, through `bus.WithSilentCutDetection`
 (`packages/envoy-client/src/nats-connection.ts`, `NATS_PING_INTERVAL_MS`). Each client PING sets
 the server's `lastIn`, so while these connections are up the server skips the 20 s PING. The 1 s
 ping is opt-in: the listener's role-lane connection (`bus.ConnectRoleLane`, opened in the
-listener's `main.go`) and session-consumer connection (`bus.ConnectSessionConsumers`, opened in
-`connectSessionDelivery`, `packages/envoy/cmd/listener/session_delivery.go`) and other Go clients
-keep nats.go's 2-minute default, so the server pings each of them when it is idle for a whole
-interval: `envoy-mcp` (`main` in `packages/envoy/cmd/mcp/main.go`), `natstail` (`tail` in
+listener's `main.go`), session-consumer connection (`bus.ConnectSessionConsumers`, opened in
+`connectSessionDelivery`, `packages/envoy/cmd/listener/session_delivery.go`) and delivery-lease
+connection (`bus.Dial`, opened in `openDeliveryLease`, the listener's `main.go`) and other Go
+clients keep nats.go's 2-minute default, so the server pings each of them when it is idle for a
+whole interval: `envoy-mcp` (`main` in `packages/envoy/cmd/mcp/main.go`), `natstail` (`tail` in
 `packages/envoy/cmd/natstail/main.go`) and Dispatch's `redeliver-webhooks` (`redeliverWebhooks` in
 `packages/envoy/cmd/dispatch/redeliver.go`). Apart from that, the server pings every client
 once an hour to measure the round trip (`client.go:5966`, `const.go:224`). An idle client
@@ -3878,18 +3889,18 @@ It publishes to:
 - for each key-value bucket, `envoy_interests`, `envoy_roles`, `envoy_sessions`,
   `envoy_known_sessions`, `legion_agents` (the Legion agent registry), `envoy_ci_state` and
   `envoy_dpop_proofs`, the calls nats.go's key-value store makes: the info, create and update of
-  the bucket's stream `KV_<bucket>`, its direct and stream message gets, `$KV.<bucket>.>`, and its
-  watchers' consumer create and delete and their flow-control replies.
-  The update is the raise a
-  start, or the listener's keeper every 30 seconds after, sends when it finds a bucket with fewer
-  copies than `ENVOY_NATS_REPLICAS` (for `envoy_known_sessions` the keeper alone, since a start
-  opens that bucket as it finds it); neither writes fewer copies than it found, and a grant without
-  it makes that raise time out after 10 seconds with
-  `raise KV_<bucket>: ENVOY_NATS_REPLICAS=<n>: context deadline exceeded`. A listener whose grant
-  lacks `legion_agents`, one whose image is newer than the release that applied its grant, serves
-  everything else and answers 503 on the registry routes (`/v1/legion/agents`) while it retries
-  the open in the background (1 s doubling to 1 min, and at once after each NATS reconnect), so
-  the routes serve once the grant reaches it, by a reload or a reconnect, without a restart.
+  the bucket's stream `KV_<bucket>`, its direct and stream message gets, writes to its keys
+  `$KV.<bucket>.>`, and its watchers' consumer create and delete and their flow-control replies.
+  The update is the raise a start, or the listener's keeper every 30 seconds after, sends when it
+  finds a bucket with fewer copies than `ENVOY_NATS_REPLICAS` (for `envoy_known_sessions` the
+  keeper alone, since a start opens that bucket as it finds it); neither writes fewer copies than
+  it found, and a grant without it makes that raise time out after 10 seconds with
+  `raise KV_<bucket>: ENVOY_NATS_REPLICAS=<n>: context deadline exceeded`.
+  A listener whose grant lacks `legion_agents`, an image newer than the release that applied
+  its grant, serves everything else and answers 503 on the registry routes (`/v1/legion/agents`)
+  while it retries the open in the background (1 s doubling to 1 min, and at once after each NATS
+  reconnect), so the routes serve once the grant reaches it, by a reload or a reconnect, without
+  a restart.
   A listener whose grant lacks `envoy_known_sessions` logs one WARN naming that bucket and serves
   everything else: a publish answers no recipient count, and a send to a session with no registry
   entry answers 404.
@@ -3899,11 +3910,55 @@ It publishes to:
   callback, `internal/bus/connect.go`).
   It retries the open in the background (1 s doubling to 5 min, and at once after each NATS
   reconnect), so it takes the grant without a restart;
+- for the bucket `envoy_listener` (the machine's delivery lease and the delivery state its
+  listeners share, `packages/envoy/cmd/listener/README.md`), the eleven subjects the listener's
+  own calls on it send and no wider one (`natsgrant.ListenerState`, whose doc names the function
+  behind each call), where `<u>` is `listener-<m>`:
+  - `$JS.API.STREAM.INFO.KV_envoy_listener`: the open's lookups and its read of a found bucket,
+    the copy and leader waits, the age raise's read (`bus.RaiseMaxAge`) and the keeper's raise;
+  - `$JS.API.STREAM.CREATE.KV_envoy_listener`: the create of an absent bucket;
+  - `$JS.API.STREAM.UPDATE.KV_envoy_listener`: the copy raise, the age raise, the keeper's raise
+    and nats.go's update of a bucket another pod created first;
+  - `$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.<u>` and
+    `$KV.envoy_listener.lease.<u>`: the lease's reads (`Get`) and its create, renewal and release
+    (`Create`, `Update`);
+  - `$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.handback.<u>.*` and
+    `$KV.envoy_listener.handback.<u>.*`: the clean-hand-back mark a stopping pod writes (`Put`)
+    and the pod that took its lease reads (`Get`), one token after the prefix, the revision the
+    mark vouches for;
+  - `$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.delivery.<u>.*.*` and
+    `$KV.envoy_listener.delivery.<u>.*.*`: its delivery ledger's attempt (`Create`, `Get`,
+    `Update`), record (`Put`) and clear (`Delete`), two tokens after the prefix, the digest and
+    the session token;
+  - `$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.seen.*` and
+    `$KV.envoy_listener.seen.*`: every session's last-seen record, written at each registration
+    (`Put`) and read for a lapsed session (`Get`), one token after the prefix, the session token.
+
+  A read is a direct get of the key's own subject, which a `Get` sends, and so does nats.go's
+  `Create` after a write that failed. The listener makes no other call on the bucket: no get by
+  revision, history, key list or watch, so this bucket's entry holds no stream message get, no
+  consumer create or delete and no flow-control reply, and one machine's user cannot write or
+  delete another machine's lease, hand-back marks or ledger by a key write, nor request a read of
+  one by a direct get.
+  That is a subject's reach, and it does not make the bucket a machine's own: NATS grants act on
+  subjects, not on headers or stream configuration. Every listener user of the fleet can purge
+  the shared bucket through a rollup header (a write to its own key carrying `Nats-Rollup: all`,
+  which the bucket's stream takes and answers by purging every machine's keys), change its
+  configuration, its limits included, through `$JS.API.STREAM.UPDATE.KV_envoy_listener`, which
+  the raises need, and read every reply through `_INBOX.>`, another machine's direct-get answer
+  included. So the bucket trusts all listener users of the fleet, as their shared `_INBOX.>`
+  subscription already trusts them with every reply.
+  The last-seen keys are not scoped to the reading or writing machine because they are read across
+  machines: a role claim names its holder session and no machine, and
+  `GET /v1/roles/<role>` on any listener answers a lapsed holder's `last_seen` out of that
+  session's record, whichever machine it registered through.
+  A listener whose grant lacks `envoy_listener` logs an ERROR naming it and delivers without a
+  lease, as its machine's only deliverer;
 - `$JS.API.STREAM.PURGE.KV_envoy_interests`, which the interest bucket's delete-marker collection
   sends.
 
-Each bucket in that list is granted to every user built on this set: the listener's own, the host
-user a host's sessions share (`HostPermissions`) and Dispatch's.
+Each bucket in those two entries is granted to every user built on this set: the listener's own,
+the host user a host's sessions share (`HostPermissions`) and Dispatch's.
 So every session on a host can write another session's record in any of those buckets, its
 session entry in `envoy_sessions` and its known-session record in `envoy_known_sessions` among
 them.
@@ -3969,12 +4024,11 @@ the host, holds the whole grant above, host sessions included, since sessions ru
 that already reads the host's seed. This repository's listener and a session, connected as one
 user holding `HostPermissions`, and connected as a user holding `ListenerPermissions` beside a
 credential-free session user holding `SessionPermissions`, are checked against real nats-server
-2.10 and 2.15.1 servers, the session user's refusal of the stream's stored-message get included,
-as are a
-session consumer the listener's user creates, pulls, acks, restarts and deletes, both of its role
-lane queue groups, and the session user's refusal of a consumer create, in
-`core/permissions_live_test.go` under the `natslive` tag; "Changing the module", below, gives the
-command that runs it.
+2.15.1 servers, the plain image and the hub's alpine one (`internal/testnats.Images`), the
+session user's refusal of the stream's stored-message get included, as are a session consumer the
+listener's user creates, pulls, acks, restarts and deletes, both of its role lane queue groups,
+and the session user's refusal of a consumer create, in `core/permissions_live_test.go` under the
+`natslive` tag; "Changing the module", below, gives the command that runs it.
 
 `ListenerHostPermissions(machineID)` is the grant of a listener's own NATS user, one no session
 shares: `ListenerPermissions(machineID)`, the session consumers' calls included, then a plain
@@ -4018,7 +4072,7 @@ that durable on any filter, so it can read any retained notification; and, since
 push consumer's deliver subject against a grant, a consumer it creates can deliver any payload onto
 a session's frames. Its `_INBOX.>` subscription, the base grant's, receives every reply any
 client on the server gets, other listeners' durable push deliveries included. The real
-`envoy-dispatch` runs under that grant against nats-server 2.10 and 2.15.1 in
+`envoy-dispatch` runs under that grant against those same nats-server 2.15.1 servers in
 `core/dispatch_permissions_live_test.go`, which also checks Dispatch's own user is refused a
 publish to a session's frames.
 

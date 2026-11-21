@@ -1067,7 +1067,7 @@ func TestSenderLimitCost(t *testing.T) {
 		lost.requireCount(t, sender, false)
 	})
 
-	t.Run("role send whose receipt times out (504) costs one", func(t *testing.T) {
+	t.Run("role send whose window ends with its forward unacknowledged (504) costs one", func(t *testing.T) {
 		frozen, server := newSenderLimitRigOnServer(t)
 		frozen.limit(4, 1)
 		const sender, holder, role = "ses_cost_timed_out", "ses_cost_timed_out_holder", "cost-timed-out"
@@ -1275,4 +1275,42 @@ func TestSenderLimitSenders(t *testing.T) {
 			rig.requireCount(t, sender, true)
 		})
 	}
+}
+
+// The limit is each listener pod's own (senderLimit). Two listeners of one machine, each with deps
+// of its own under the same limit, as two pods of a deployment that both serve every route, each
+// give one sender the whole burst and refuse its next message: with two pods the sender sends
+// twice the burst. A pod that restarts, fresh deps for the same machine, gives the burst again,
+// while the pod that did not restart still refuses. Every rig registers its routes as the machine
+// test-machine (newSessionConsumerRigOn), and its clock stands still, so no count refills by itself.
+func TestSenderLimitCountsPerPod(t *testing.T) {
+	const perMinute, burst, sender = 4, 2, "ses_sender_limit_per_pod"
+	// A minute divided by the rate: the wait a refusal names once the burst is spent.
+	const refusedFor = 60 / perMinute
+	pod := func() *senderLimitRig {
+		t.Helper()
+		rig := newSenderLimitRig(t)
+		rig.limit(perMinute, burst)
+		return rig
+	}
+	topic := "notifications.team.sender-limit-per-pod-" + id.New()
+	refused := func(which string, rig *senderLimitRig) {
+		t.Helper()
+		rig.publishFrom(t, sender, topic, nil).requireRefused(t, which+": the message past the burst", sender, perMinute, burst, refusedFor)
+	}
+	givesTheBurst := func(which string, rig *senderLimitRig) {
+		t.Helper()
+		for i := range burst {
+			rig.publishFrom(t, sender, topic, nil).requireStatus(t, fmt.Sprintf("%s: message %d of the burst", which, i+1), http.StatusOK)
+		}
+		refused(which, rig)
+	}
+
+	first, second := pod(), pod()
+	givesTheBurst("the first pod", first)
+	givesTheBurst("the second pod", second)
+
+	restarted := pod()
+	givesTheBurst("the first pod, restarted", restarted)
+	refused("the second pod, which did not restart", second)
 }

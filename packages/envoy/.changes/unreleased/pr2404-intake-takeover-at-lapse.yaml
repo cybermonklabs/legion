@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    Dispatch's GitHub intake promises to replace a process that died within 17 s - its hold's 15 s
+    and one 2 s try - and missed that by a few tens of milliseconds when the process died just after
+    renewing its hold and the standby's try came just before the hold lapsed: the next try came 2 s
+    later, and the take-over's own work ran past 17 s (17.014 s to 17.033 s over twenty runs). A
+    standby that finds the hold held now also tries again the moment it lapses, so the same case is
+    replaced 15.021 s to 15.041 s after the death.
+time: 2026-11-15T17:15:48.000000000Z
+custom:
+    Issue: pr2404

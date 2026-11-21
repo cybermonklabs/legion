@@ -257,8 +257,8 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 // lasts. It returns the first answer that is not that, and once ctx ends the last miss with ctx's
 // cause wrapped beside it, so its caller wraps one error however the wait ended: between two reads,
 // or during a read that ctx cut. Any other error, a refusal included, is returned at once: only a
-// member that has not caught up is waited out. The first miss is logged, as bindListenerDurable
-// logs its first refusal, so a start that waited says which bucket it waited for.
+// member that has not caught up is waited out. The first miss is logged, so a start that waited
+// says which bucket it waited for.
 func awaitBucketApplied[T any](ctx context.Context, bucket string, missing func(error) bool, read func() (T, error)) (T, error) {
 	var lastMiss error
 	for attempt := 1; ; attempt++ {
@@ -431,4 +431,47 @@ func SetKeyValueMaxAge(ctx context.Context, conn *nats.Conn, js nats.JetStreamCo
 		return 0, fmt.Errorf("set %s max age: %w", stream, err)
 	}
 	return maxAge, nil
+}
+
+// RaiseMaxAge raises the stream of the existing bucket to keep a key's latest value for age when
+// it keeps it for less. A bucket EnsureKeyValue creates is created with the age in its config;
+// this is for one an earlier build created with a shorter one, since a create that finds the
+// bucket there changes nothing. A bucket that keeps values as long or longer is left alone, and
+// so is one that keeps them forever, which JetStream writes as a MaxAge of 0: an operator's
+// longer age stands, unlimited included. As SetKeyValueMaxAge does, the update writes back the
+// stream's deployed configuration with only its MaxAge changed, so the bucket's replicas,
+// history, discard policy, direct get, rollup, delete settings, metadata and the rest stay as
+// they are; an age an answer never came for succeeds when the stream, read again, keeps values as
+// long, and is sent again, raised from that read, while it does not (updateStream). Its error
+// names the bucket's stream: `raise KV_envoy_listener's max age: ...`.
+//
+// A start makes this call right after it opens the bucket, so it waits on the cluster as
+// SetKeyValueMaxAge does: the read is sent again while the server leaves it unanswered (readAgain),
+// a request the grant refuses ends it at once (readsRefusals), and the read and the update end
+// when ctx ends or the start's hang guard passes (startHangGuard), the update in flight then
+// abandoned.
+func RaiseMaxAge(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string, age time.Duration) error {
+	ctx, cancel := hangGuard(ctx, startHangGuard)
+	defer cancel()
+	ctx = withReadLimit(ctx)
+	js = readsRefusals(conn, js)
+	stream := "KV_" + bucket
+	read := stream + " STREAM.INFO"
+	enough := func(config *nats.StreamConfig) bool { return config.MaxAge == 0 || config.MaxAge >= age }
+	info, err := readAgain(ctx, read, readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
+	if err != nil {
+		return fmt.Errorf("raise %s's max age: %w", stream, namedRequest(read, err))
+	}
+	if enough(&info.Config) {
+		return nil
+	}
+	raise := func(current *nats.StreamInfo) (nats.StreamConfig, bool) {
+		raised := current.Config
+		raised.MaxAge = age
+		return raised, true
+	}
+	if _, err := updateStream(ctx, js, info, raise, func(again *nats.StreamInfo) bool { return enough(&again.Config) }); err != nil {
+		return fmt.Errorf("raise %s's max age: %w", stream, err)
+	}
+	return nil
 }

@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+    The worker image's `legion-testpg` keeps `max_connections=475`, but that is no longer the
+    number at which the Dispatch test suite runs at production's pool sizes: each test process also
+    holds the test hooks' listener, so the suite at full sizes needs 479. On 475 the test guard now
+    scales each test process's pools by one connection, and the rows that need production's pool
+    sizes (the memory rows, `TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses` and a start of
+    an earlier build that does not read `DISPATCH_TEST_POOL_BUDGET`) refuse there by name. CI runs
+    them on servers sized for full sizes. `TestTheOutboxLoadSteps` also needs production's pool
+    sizes, but it runs only when `DISPATCH_OUTBOX_LOAD_STEPS=1` is set, and no CI job sets it.
+    Without that variable the row skips. With it, the row refuses a server of 475 by name.
+time: 2026-11-16T01:57:49.000000000Z
+custom:
+    Issue: pr2404

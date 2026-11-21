@@ -28,12 +28,15 @@ recomputes those sets and fails naming each file a filter misses.
 dorny/paths-filter v4.0.3's `some-with-excludes` quantifier matches a change to a filter
 when one of its patterns without `!` matches and none of its `!` patterns does.
 worker_image's drop what the .dockerignore keeps out of the
-worker image's build context. envoy_e2e_local and ci_images each end in '!**/*.md': no
-step of either job reads a Markdown file, so a guide written under a directory pattern
-of theirs (patches/**, packages/cipher-client/**, .github/actions/install-crane/**)
-starts neither. No Markdown file of the repository matches either filter today, so the
-pattern holds no run back now; it keeps the next guide from riding in, which is what a
-week of Markdown-only pull requests cost 1,504 runner-minutes (dispatch://INFRA-1413).
+worker image's build context. ci_images ends in '!**/*.md': no step of that job reads a
+Markdown file, so a guide written under a directory pattern of its
+(.github/actions/install-crane/**) does not start it. envoy_e2e_local reads one, the
+listener's README.md beside the package it builds, so its exclusion names the trees
+outside the listener's packages instead (patches/**, packages/cipher-client/**, and
+the rest its own section below lists). No other Markdown file of the repository matches either
+filter today, so the patterns hold no run back now; they keep the next guide from
+riding in, which is what a week of Markdown-only pull requests cost 1,504 runner-minutes
+(dispatch://INFRA-1413).
 Every other filter of this file was tried with that pattern
 and refused by rule 1 of .github/scripts/check-ci-filters.sh, which fails a filter that
 stops matching a file its gate reads: those jobs read an embedded prompt, a README
@@ -690,6 +693,16 @@ What cmd/listener's test binary compiles that `go list -deps ./cmd/listener` doe
 not, so listener_command, which is that build closure, leaves them to the jobs
 that run the tests: the chat client and the router.
 
+## listener_multiprocess: The two-process and two-build tests (listener-multiprocess)
+
+The two-process and two-build tests (listener-multiprocess): `go test -tags multiprocess
+./cmd/listener`, whose rows build real listener binaries, one of them under the envoy_twobuild
+tag, which adds only a file of internal/bus. The listener's own packages, and what its test
+binary compiles beyond them - the in-process NATS and Postgres helpers, the builder of the
+binaries it starts, and the Dispatch packages cmd/listener's tests drive. A dependency's own
+testdata is no input of this job, as for listener_server_change: the tests that read it are that
+package's, and this job runs cmd/listener's alone; testnats' is, since that package embeds it.
+
 ## airlock_lean: The Lean model of the airlock and the Go code it covers
 
 The Lean model of the airlock and the Go code it covers (airlock-lean): `lake build`
@@ -737,11 +750,14 @@ of its modules, and at runtime, which is what this job's bun scripts do,
 transport.ts's own closure holds two of them (delivery.ts's holds none), so the
 pattern is needed through transport.ts (ci_job_reads.py's envoy_client_dep).
 
-## envoy_e2e_local: The job reads no Markdown file: the listener, the renderer
+## envoy_e2e_local: The job reads no Markdown file but one beside a package it builds
 
-The job reads no Markdown file: the listener, the renderer and the contracts
-between them are its whole input, so a guide written under one of the directory
-patterns of the envoy_e2e_local filter (`'packages/envoy-client/src/**'`, `'packages/cipher-client/**'` and the rest) would start it for nothing.
+The job reads no Markdown file but one beside a package it builds - the listener's
+README.md, which ci_filter_coverage.py's directory_reads counts with that directory's source -
+so a guide written under one of the other trees of the envoy_e2e_local filter (the patches, the
+two clients' trees, the contracts' sources, the fixtures, the actions) would start it for
+nothing, and the filter's `!` patterns name those trees alone, as go_notices' names
+packages/envoy/internal.
 
 ## worker_image: Every file packages/daemon/docker/worker.Dockerfile builds
 
@@ -921,7 +937,7 @@ not among them. No bun_install anchor: no test of these packages runs bun.
 
 listener-server-change takes its -run from this script, and this is the job that
 runs cmd/listener's untagged tests, so it must run whenever the script changes -
-and whenever that job's own definition does, for the same reason
+and whenever that job's own definition or listener-multiprocess's does, for the same reason
 (check-ci-filters.sh's rule 15).
 
 ## envoy_go_race_api: The API race job. Not packages/envoy/**, as envoy_go_race has: that
@@ -1047,8 +1063,8 @@ ci-ok job's `needs:`, without which the verdict is reached before that job ends 
 nothing about it, and a gate in
 .github/scripts/ci_job_reads.py. An output an event must force is written in `changes`' outputs
 rather than left to its filter, as every output's workflow_dispatch case is, and so is one an
-event must hold back, as the ten slow suites' pull-request case is
-(.github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the).
+event must hold back, as the eleven slow suites' pull-request case is
+(.github/ci-notes/ci.md#the-eleven-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the).
 The ci-filters job's .github/scripts/check-ci-filters.sh holds the filter to that gate,
 CI_OK_SELECTED_BY to the `if:`s, the report step to every job, the ci-ok job's `needs:` to
 every job of the file but the exempt ones, and the re-run term to every job but `ci-ok` and
@@ -1309,9 +1325,9 @@ a pull request is held to. The `full-ci` label no longer decides whether this su
 only which lane it runs: that job's `lane:` input reads the label, and
 .github/ci-notes/ci.md#what-the-lane-input-reads says what each event gets.
 
-## The ten slow suites, whose runner time dwarfs every other job's. The
+## The eleven slow suites, whose runner time dwarfs every other job's. The
 
-The ten slow suites, whose runner time dwarfs every other job's. The merge queue runs
+The eleven slow suites, whose runner time dwarfs every other job's. The merge queue runs
 them on the tree the change lands as, and that is where their result normally comes from;
 a pull request runs them only when it carries the label `full-ci`. Each is false on a
 pull-request run without that label, so the skip is one `changes` chose: ci-ok reads it as
@@ -1351,8 +1367,8 @@ and so reads the same files.
 ## The paths filter's own verdict for every filter, before the `full-ci` term
 
 The paths filter's own verdict for every filter, before the `full-ci` term (`(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci'))`) rewrites
-the nine outputs the ten slow suites run behind. On a pull request without that
-label each of those nine is `false` whether its paths matched or not, so a reader of the
+the ten outputs the eleven slow suites run behind. On a pull request without that
+label each of those ten is `false` whether its paths matched or not, so a reader of the
 outputs alone cannot tell "the filter said no" from "the label is absent"; with this
 beside them ci-ok's report tells the two apart and says which
 (.github/scripts/ci-ok.jq's `selection`). It gates no job and needs no plumbing of its
@@ -1637,7 +1653,7 @@ service on a job whose other thirty-odd steps would start it for nothing.
 The dashboard's and the proof editor's lint, typecheck, unit tests, build and asset checks.
 They were split out of the browser suite (the dispatch-browser job), whose full lane - the one
 the merge queue, the nightly and a pull request labelled `full-ci` run - is as slow as the
-ten suites that label holds back, while these checks must come back on every push.
+eleven suites that label holds back, while these checks must come back on every push.
 No Postgres service and no Go, but contracts is built
 before the suites: one case of the dashboard's test run spawns Playwright, whose own
 resolution reads contracts' built dist/ (the comment on the step "Build contracts for the
@@ -1705,7 +1721,7 @@ them out), the architecture-note check over this repository's own .dispatch/arch
 through the composite action .github/actions/architecture-check, and the spec-file check over
 its .dispatch/spec through the composite action .github/actions/spec-check, both of which
 other repositories can call. The slow half, the envoy-go job (the module's unit tests, the
-container-backed NATS matrix and the integration suite), is one of the ten slow suites,
+container-backed NATS matrix and the integration suite), is one of the eleven slow suites,
 which run in the merge queue and on a pull request labelled `full-ci`, while these checks
 must come back on every push. No Postgres service: nothing here opens a database. It
 restores go-envoy rather than go-envoy-test, the family of the slow half (the test binary of
@@ -1877,6 +1893,28 @@ tests a second time, envoy-go's unit step having run them already, so the -run c
 .github/scripts/go-tagged-tests.sh, which reads the names off the source at run time. The
 assignment is a line of its own: under bash -e it carries the script's exit status, so an
 empty or refused list fails the step instead of running -run "", which matches every test.
+
+## The listener's two-process and two-build tests
+
+The two-process and two-build tests of the listener (packages/envoy/cmd/listener/
+multiprocess_*_test.go and twobuild_test.go, INFRA-557): each row starts real cmd/listener
+binaries for one machine id - an active pod and a standby, which is what a machine runs once
+it has more than one - against one NATS, each behind a relay that can cut, freeze or slow its
+link, and drives them over real HTTP, the bus and their own logs. They take the delivery lease
+over through a reconnect in place, a SIGKILL, a lost node and a SIGTERM, check that no message is
+delivered twice or lost across each, that both pods answer registrations, sends and role lookups
+alike, and run a build with a stream subject more (the envoy_twobuild tag) beside the plain one.
+
+They build only under the `multiprocess` tag, so envoy-go's unit run leaves them out, and they
+could not run there in any case: that step runs under go test's default ten-minute package
+deadline, which the memory tests already took red at 600 s (run 37116639565), and the rows here
+wait out a lease, an ack wait, a 35 s attempt take-over and a 140 s standby, tens of seconds to
+minutes each. A job of their own rather than a step in dispatch-multiprocess, for the reason
+broker-multiprocess is: the listener rows compile their own import closure, so they get their
+own job and their own filter, `listener_multiprocess`, which gates this one. The run names the
+rows (TestTwoPods*, TestTwoBuilds*): the package's untagged tests are envoy-go's, and one of
+them needs the Postgres this job does not start. Each row's NATS runs in its own test process
+(internal/testnats), so neither a container runtime nor a Postgres service is here.
 
 ## The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts
 

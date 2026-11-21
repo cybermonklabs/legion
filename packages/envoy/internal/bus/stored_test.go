@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -288,6 +289,38 @@ func TestReachesPrivateStreamSubjectBoundsInterests(t *testing.T) {
 	for _, tc := range cases {
 		if got := ReachesPrivateStreamSubject(tc.SessionID, tc.Topic, tc.Roles); got != tc.Want {
 			t.Errorf("ReachesPrivateStreamSubject(%q, %q, %v) = %v, want %v", tc.SessionID, tc.Topic, tc.Roles, got, tc.Want)
+		}
+	}
+}
+
+// Every private stream subject of the listener has a shared case of its own: a literal subject
+// under it that the rule answers private. @legion/envoy-client's mirror runs the same file, so a
+// private subject the listener adds without a case fails here, and one whose case the client's
+// list does not reach fails there. Its client list once named itself the listener's own while it
+// lacked the kept and resume lanes, and no case under either lane said so.
+func TestEveryPrivateStreamSubjectHasALiteralSharedCase(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "private-stream-subjects.json"))
+	if err != nil {
+		t.Fatalf("read the shared cases: %v", err)
+	}
+	var cases []struct {
+		Topic string `json:"topic"`
+		Want  bool   `json:"want"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatalf("read the shared cases: %v", err)
+	}
+	for _, private := range privateStreamSubjects {
+		covered := false
+		for _, tc := range cases {
+			literal := !strings.ContainsAny(tc.Topic, "*>")
+			if tc.Want && literal && SubjectContains(private, tc.Topic) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			t.Errorf("testdata/private-stream-subjects.json holds no literal subject under %q that the rule answers private: add one, so the client's mirror is checked on it", private)
 		}
 	}
 }

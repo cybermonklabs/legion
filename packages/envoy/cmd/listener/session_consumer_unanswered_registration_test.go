@@ -216,13 +216,21 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheBucketsRowWhereTheFenc
 
 // refusingEntryKV is a session bucket whose writes all fail, after before has run: the write of
 // a registration's session entry, and the window before it where another writer's interest row
-// lands.
+// lands. The registry writes an entry by compare-and-set (session.SessionRegistry.PutWithin), a
+// Create for a session the bucket holds no entry for and an Update at its revision otherwise, so
+// those are refused along with Put.
 type refusingEntryKV struct {
 	nats.KeyValue
 	before func()
 }
 
-func (kv refusingEntryKV) Put(string, []byte) (uint64, error) {
+func (kv refusingEntryKV) Put(string, []byte) (uint64, error) { return kv.refuse() }
+
+func (kv refusingEntryKV) Create(string, []byte) (uint64, error) { return kv.refuse() }
+
+func (kv refusingEntryKV) Update(string, []byte, uint64) (uint64, error) { return kv.refuse() }
+
+func (kv refusingEntryKV) refuse() (uint64, error) {
 	kv.before()
 	return 0, fmt.Errorf("injected session entry write failure")
 }
@@ -236,7 +244,7 @@ func requireFilteredOnStoredRow(t *testing.T, rig *sessionConsumerRig, sessionID
 	if err != nil {
 		t.Fatalf("read the stored interest row of %s: %v", sessionID, err)
 	}
-	want := bus.SessionConsumerFilters(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))
+	want := bus.SessionConsumerFilters(sessionConsumerFilter(sessionID, stored.Topics))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("the consumer of %s filters on %v, want %v, the topics of the row the bucket holds", sessionID, got, want)
 	}

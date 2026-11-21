@@ -144,6 +144,12 @@ describe("envoyToolSpecs", () => {
     expect(publish?.description).toContain(
       "A notifications. topic no stream subject captures is refused by name: nothing would store it."
     );
+    // A subscribe is never refused for a topic no stream subject captures: the listener judges
+    // capture on the deployed stream's subjects and answers a warning, which the tool shows.
+    expect(subscribe?.description).not.toContain("refused by name");
+    expect(subscribe?.description).toContain(
+      "If no stream subject captures a notifications. topic yet, the listener returns a warning for it. The warning tells if the listener registered the topic."
+    );
   });
 
   test("tells an agent the three answers a role message has, the kept one as a success", () => {

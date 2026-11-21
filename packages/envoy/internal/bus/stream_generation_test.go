@@ -293,12 +293,7 @@ func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 				t.Fatalf("%s takes JetStream before any stream captures it", topic)
 			}
 
-			newer := current
-			newer.Subjects = append(slices.Clone(streamCarriedSubjects), "notifications.x.>")
-			newer.Metadata = map[string]string{generationKey: "2"}
-			if _, err := js.UpdateStream(&newer); err != nil {
-				t.Fatalf("the newer build adds its subject: %v", err)
-			}
+			addNewerSubject(t, js)
 			deadline := time.Now().Add(10 * time.Second)
 			for client.UsesCoreTransport(topic) {
 				if time.Now().After(deadline) {

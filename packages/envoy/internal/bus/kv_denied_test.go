@@ -32,12 +32,12 @@ func TestADeniedBucketLookupIsNotSentAgain(t *testing.T) {
 	grant := testnats.StartNkeyGranted(t, public,
 		accountInfoSubject(), createSubject(bucket), "$JS.API.STREAM.UPDATE.KV_"+bucket, "_INBOX.>")
 	t.Setenv("NATS_NKEY_SEED", seed)
-	relay := startUnansweredRelayOn(t, grant.URL, openSubject(bucket))
+	relay := testnats.StartUnansweredRelayOn(t, grant.URL, openSubject(bucket))
 	// The call under test reads the record of the refusal through the client that owns the
 	// connection (clientOwning), so the connection is a client's and not a bare one.
 	conn, js := relayedJetStream(t, relay)
 
-	relay.arm(0)
+	relay.Arm(0)
 	started := time.Now()
 	_, err := EnsureKeyValue(countedReads(t.Context()), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	took := time.Since(started)
@@ -49,7 +49,7 @@ func TestADeniedBucketLookupIsNotSentAgain(t *testing.T) {
 		t.Fatalf("the refused lookup was reported as %q, which does not carry the server's violation of %s",
 			err, openSubject(bucket))
 	}
-	if sends := relay.sent(); sends != 1 {
+	if sends := relay.Sent(); sends != 1 {
 		t.Fatalf("lookups sent = %d, want 1: a request the server refused is not sent again", sends)
 	}
 	if took > refusalAnswerBound {
@@ -264,8 +264,8 @@ func (c *Client) holdsRefusal(subject string, sentAt time.Time) bool {
 // A read of a key takes only the refusal of a subject it sends: when a Get draws no answer and the
 // record holds a refusal of the bare direct get of the bucket's stream, which only a read by
 // revision sends, the Get reports its own silence, and the refusal stays in the record for the
-// read that earned it. The grant is shaped as the listener's bucket grant is (infra/core
-// bucketPermissions), every direct get by subject, the leader get and the keys, without the bare
+// read that earned it. The grant is shaped as the listener's bucket grant is (natsgrant.KVWrite),
+// every direct get by subject, the leader get and the keys, without the bare
 // direct get.
 func TestARefusalOfASubjectAReadDoesNotSendAnswersItNothing(t *testing.T) {
 	const bucket = "envoy_denied_cross"
@@ -354,7 +354,7 @@ func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 	grant := testnats.StartNkeyGranted(t, public, openSubject(bucket), createSubject(bucket),
 		accountInfoSubject(), "$JS.API.STREAM.UPDATE.KV_"+bucket, "_INBOX.>")
 	t.Setenv("NATS_NKEY_SEED", seed)
-	relay := startUnansweredRelayOn(t, grant.URL, openSubject(bucket))
+	relay := testnats.StartUnansweredRelayOn(t, grant.URL, openSubject(bucket))
 	conn, js := relayedJetStream(t, relay)
 	owner := clientOwning(conn)
 	if owner == nil {
@@ -363,7 +363,7 @@ func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 
 	// Every send of the lookup is dropped, so the step sends until its hang guard passes: each
 	// send a read waited for up to its read limit (readAgain), sent again after it.
-	relay.arm(1 << 30)
+	relay.Arm(1 << 30)
 	recorded := make(chan error, 1)
 	go func() { recorded <- refusalOfAnotherSubject(t, relay, owner, conn, deleteSubject) }()
 	_, err := ensureKeyValue(context.Background(), refusalGuard, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
@@ -375,13 +375,13 @@ func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 	}
 	if errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("a start whose lookup nothing answered ended after %d sends with %v, want no ErrPublishDenied: the refusal beside it, %v, is of a subject the lookup never published to",
-			relay.sent(), err, denial)
+			relay.Sent(), err, denial)
 	}
 	if err == nil || !strings.Contains(err.Error(), lookup) || !errors.Is(err, errHangGuard) {
 		t.Fatalf("a start whose lookup nothing answered = %v, want %q and the start's hang guard: a send another subject's refusal does not answer ends on the wait it held",
 			err, lookup)
 	}
-	if sends := relay.sent(); sends < 2 {
+	if sends := relay.Sent(); sends < 2 {
 		t.Fatalf("lookups sent = %d, want at least 2: a send a refusal of another subject does not answer is sent again", sends)
 	}
 	if strings.Contains(err.Error(), deleteSubject) {
@@ -427,12 +427,12 @@ func awaitRefusal(done func() bool) bool {
 // the client recorded of it, nil when none was recorded in time. Its caller reads that answer
 // before it judges the step: a refusal that was never recorded is one the step could not have
 // read either.
-func refusalOfAnotherSubject(t *testing.T, relay *unansweredRelay, owner *Client, conn *nats.Conn, subject string) error {
+func refusalOfAnotherSubject(t *testing.T, relay *testnats.UnansweredRelay, owner *Client, conn *nats.Conn, subject string) error {
 	t.Helper()
 	// The refusal is published once the step's first send is on the wire, so it is recorded at
 	// or after the moment that send began and deniedPublish's sentAt guard cannot skip it as an
 	// earlier publish's.
-	if !awaitRefusal(func() bool { return relay.sent() >= 1 }) {
+	if !awaitRefusal(func() bool { return relay.Sent() >= 1 }) {
 		return nil
 	}
 	sentAt := time.Now()

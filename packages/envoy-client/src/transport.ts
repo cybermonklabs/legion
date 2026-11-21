@@ -17,7 +17,6 @@ import { credentialDeadline, type RequestCredential } from "./bearer";
 import { messageFor, reachedNothing } from "./errors";
 import { bodyForText, redirectOrigin, SentTokens, type Tokens } from "./excerpt";
 import { machineID } from "./machine";
-import { streamDeliversNothing } from "./stream-topics";
 import type { TmuxPlace } from "./tmux-place";
 
 /** What names the listener's URL in a text where the URL does not parse (`requestForText`). The
@@ -170,8 +169,8 @@ const ErrorWireSchema = z.object({
   code: z.string().optional(),
   // Why the listener refused. This list is the one every other comment in these packages points
   // at, and it is the listener's own (`cmd/listener/session_delivery.go`'s delivery reason
-  // constants and the refusals that carry them, and `cmd/listener/sender_limit.go`'s
-  // `senderRateLimitedAnswer`). A registration it can give the session no consumer: 503
+  // constants and the refusals that carry them, and `listenerwire.SenderRateLimited`, which
+  // `cmd/listener/sender_limit.go` builds). A registration it can give the session no consumer: 503
   // `consumer_error` (a consumer call that failed, or a listener holding no session-consumer
   // connection), 503 `no_grant` (the listener's NATS user may not manage session consumers), 503
   // `consumer_limit` (the stream holds as many consumers as its `max_consumers` allows, so the
@@ -514,10 +513,11 @@ export type UnsubscribeInput = {
 
 /**
  * The concrete subjects a registration carries for each topic: a `<base>.>` wildcard, and its
- * base as a subject of its own when the stream stores a publish to that base. A base no stream
- * subject captures is left out: nothing can be published on it, and the listener would leave it
- * out of the row it stores and warn about it at every registration
- * (`streamDeliversNothing`).
+ * base as a subject of its own, since `<base>.>` matches nothing published on the base itself.
+ * The base is carried whether or not the stream subjects this build was compiled with capture it:
+ * the listener judges that on a fresh read of the deployed stream's subjects, which a newer build
+ * may have widened, and keeps a base nothing captures yet in the session's row and consumer filter
+ * with a warning (`registrationTopics` in `stream-topics.ts`).
  */
 export function expandSubscriptionTopics(topics: readonly string[]): readonly string[] {
   const expanded = new Set<string>();
@@ -533,7 +533,7 @@ export function expandSubscriptionTopics(topics: readonly string[]): readonly st
         `cannot expand Envoy wildcard topic "${topic}": its concrete base must have at least two non-empty segments`
       );
     }
-    if (!streamDeliversNothing(base)) expanded.add(base);
+    expanded.add(base);
     expanded.add(topic);
   }
   return [...expanded];

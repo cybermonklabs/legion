@@ -240,5 +240,40 @@
     "sessionID": "ses_a",
     "topic": "notifications.exceptions.agent.ses_b",
     "want": false
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.envoy.kept.role.reviewer",
+    "want": true
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.envoy.kept.cursor.reviewer",
+    "want": true
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.envoy.kept.>",
+    "want": true
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.envoy.resume.ses_b",
+    "want": true
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.envoy.resume.ses_a",
+    "want": true
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.envoy.resume.>",
+    "want": true
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.envoy.takeover.reviewer.ses_b.attempt1",
+    "want": true
   }
 ]

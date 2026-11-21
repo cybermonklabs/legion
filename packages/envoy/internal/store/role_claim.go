@@ -5,7 +5,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -127,19 +126,23 @@ func (r *Registry) SetRole(sessionID, machineID, role string, soft bool, superse
 // the very process that handed it back is that process's to renew from this write on, which is
 // how a holder takes back a role it gave up without waiting out the role claim reaper.
 //
-// Each bucket call waits no longer than ctx (bus.Bounded): POST /v1/roles/set passes its request's
-// own context. A call ctx abandoned may still land after this answer. Every claim writes with the
-// revision of the record it read (a create where it read none), so the record it writes over is
-// the one it read. A hard claim that names no IfClaimRevision is not refused for a conflict: it
-// reads the record again and writes again, until ctx ends, and the last write still wins, so two
-// honest concurrent claimants both land, the later write holding the role; one that meets a
-// conflict at every try until ctx ends writes nothing and is ErrRoleClaimContended. A soft
-// claim's write is one try, so it lands only if no other claim did since; the loser of that race
-// is answered *ErrRoleHeld for the holder it then reads, never a storage failure. A claim that
-// names an IfClaimRevision is one try too, hard or soft, since that revision is the precondition
-// described below. Either way the claim that lands makes req.SessionID the holder it asked to be;
-// the interest write is UpsertWithin's. req.BeforeTry runs before each try, on the record that
-// try read.
+// Each bucket call waits no longer than ctx (bus.BoundedOn): POST /v1/roles/set passes its request's
+// own context. A call ctx abandoned may still land after this answer. Every claim's write is
+// conditional on the entry its claim was read at (roleClaimToWrite): the claim's own revision, the
+// marker of the release that ended the last claim, or no entry at all. So the record it writes over
+// is the one it read, a claim released again since its read among those it refuses, and an
+// abandoned write landing late lands over nothing that came after its read. A hard claim that names
+// no IfClaimRevision is not refused for a conflict: it reads the record again and writes again,
+// until ctx ends, and the last write still wins, so two honest concurrent claimants both land, the
+// later write holding the role; one that meets a conflict at every try until ctx ends writes
+// nothing and is ErrRoleClaimContended. A soft claim's write is one try, so it lands only if no
+// other claim did since; the loser of that race is answered *ErrRoleHeld for the holder it then
+// reads, and the write's own refusal (an error matching nats.ErrKeyExists) where the claim that
+// beat it was released again before that read, so no holder is left to name. A claim that names an
+// IfClaimRevision is one try too, hard or soft, since that revision is the precondition described
+// below. Either way the claim that lands makes req.SessionID the holder it asked to be; the
+// interest write is UpsertWithin's. req.BeforeTry runs before each try, on the record that try
+// read.
 //
 // The claim alone says who holds the role (RolesHeldBy, and role delivery), so the two cleanups
 // that follow are best-effort tidying of interest topics, within ctx like the rest: the rollback of
@@ -167,7 +170,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 	// a claim whose tries ran to their end is answered inside ctx's deadline, rollback included.
 	tries, cancelTries := claimTriesContext(ctx)
 	defer cancelTries()
-	oldClaim, err := r.RoleClaim(tries, req.Role)
+	oldClaim, oldRevision, err := r.roleClaimToWrite(tries, req.Role)
 	if err != nil {
 		return Interest{}, err
 	}
@@ -205,26 +208,32 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 				return Interest{}, hookErr
 			}
 		}
+		// The claim replaces the stored one at its revision, keeping the fields a newer build stored
+		// in it that this build does not know.
 		now := r.now().UnixMilli()
 		claim := RoleClaim{
 			HolderSessionID:   req.SessionID,
 			ClaimedAt:         now,
 			PreviousSessionID: "",
+			unknown:           oldClaim.unknown,
 			ClientInstanceID:  req.ClientInstanceID,
 			RenewedAt:         now,
 		}
 		if req.Soft {
 			claim.PreviousSessionID = req.PreviousSessionID
 		}
-		data, err := json.Marshal(claim)
+		data, err := encodeRoleClaim(claim)
 		if err != nil {
 			return Interest{}, err
 		}
 		epoch = r.roleViewEpoch()
-		// Every claim writes with the revision of the record it read: a create where it read
-		// none, an update of that revision where it read one. So the record a claim writes over
-		// is the record it read, and the holder it read - the one whose takeover record BeforeTry
-		// published - is the holder it really replaced.
+		// Every claim writes with the revision of the entry it read: the claim's own where a claim
+		// record stands, the revision of the release marker it read where none does, or 0 where the
+		// key held no entry (roleClaimToWrite), never through Create: a create refused over a marker
+		// updates at that marker's revision (nats.go@v1.55.0 kv.go:729-739), so it would land over a
+		// claim and release made after this read. So the record a claim writes over is the record it
+		// read, and the holder it read - the one whose takeover record BeforeTry published - is the
+		// holder it really replaced.
 		//
 		// A soft claim and a claim carrying IfClaimRevision make one try, because their refusal is
 		// the point: a soft claim read a holder it was allowed to take the role from, and a claim
@@ -239,11 +248,8 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		// route's budget. A claim that meets a conflict at every try until its tries end writes
 		// nothing and is ErrRoleClaimContended, which its client meets as a 503 to retry.
 		var answered bool
-		revision, answered, err = bus.Bounded(tries, func() (uint64, error) {
-			if oldClaim.Revision == 0 {
-				return roles.Create(req.Role, data)
-			}
-			return roles.Update(req.Role, data, oldClaim.Revision)
+		revision, answered, err = bus.BoundedOn(tries, roles, func() (uint64, error) {
+			return roles.Update(req.Role, data, oldRevision)
 		})
 		if !answered {
 			err = fmt.Errorf("write role %s's claim: %w", req.Role, err)
@@ -254,9 +260,12 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		if answered && !req.Soft && req.IfClaimRevision == nil && errors.Is(err, nats.ErrKeyExists) {
 			var readErr error
 			if tries.Err() == nil {
-				var next RoleClaim
-				if next, readErr = r.RoleClaim(tries, req.Role); readErr == nil {
-					oldClaim = next
+				var (
+					next         RoleClaim
+					nextRevision uint64
+				)
+				if next, nextRevision, readErr = r.roleClaimToWrite(tries, req.Role); readErr == nil {
+					oldClaim, oldRevision = next, nextRevision
 					continue
 				}
 			}
@@ -384,7 +393,13 @@ const claimCleanupWindow = time.Second
 // claimTriesContext is the context a claim's own reads, merge, hooks and writes run under: ctx
 // ending claimCleanupWindow before ctx's deadline, or a third of the time left when that is less,
 // so the work after the tries (claimCleanupContext) still has ctx's budget left. A ctx with no
-// deadline is used as it is.
+// deadline is used as it is. Under it a claim that meets no conflict makes five NATS round trips
+// on a role no claim has held: the claim read and its delete-marker read (roleClaimToWrite), the
+// interest record's read and write (UpsertWithin) and the claim write. On a role another session's
+// claim holds, the claim read finds that claim and the marker read is not made; the claim route's
+// BeforeTry writes that holder's takeover record in its place. The claim route counts these with
+// its own reads before them, and names the latency a round trip may take for all of them to fit
+// (cmd/listener's roleSetHandler).
 func claimTriesContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	deadline, ok := ctx.Deadline()
 	if !ok {

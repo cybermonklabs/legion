@@ -234,8 +234,10 @@ an empty id; leading or trailing whitespace; `.`, `*`, `>`, `/` or `\`; a contro
 any whitespace other than an ordinary space; and any id over 246 bytes, so `listener-<id>` fits
 NATS's 255-byte consumer-name limit. An ordinary space is accepted only inside the id and becomes a hyphen in both names. The refusal names the field itself, as
 `users[1].dispatchMachineId contains '.', which the listener's NATS names or the hub's grant entries cannot carry`. Two ids that give one durable name, of any kind
-(`a b` and `a-b` collide), or one giving the hub's own listener's (the `hostname`'s), would put
-two listeners on one durable and queue group, so the later one is refused, as
+(`a b` and `a-b` collide), or one giving the hub's own listener's (the `hostname`'s), would make
+two machines one: their listeners would share one durable, one queue group and one delivery lease
+(`lease.listener-<id>` in the `envoy_listener` bucket), so one listener would silently become the
+other's standby rather than deliver for its own machine. The later one is refused, as
 `users[2]: dispatchMachineId gives the same durable name as users[0].machineId` or
 `… as the hub's own listener`. Every `dispatchMachineId` user also binds Dispatch's fixed durables
 `delivery-events` and `delivery-jobs`, so a second one is refused the same way, as
@@ -393,6 +395,21 @@ secret and writes the seed with `envoy-infra seed generate`, whose printed key i
 `NATS_NKEY_SEED` through `docker run --env-file`, which Docker reads as root, since the listener's
 image runs as an unprivileged user.
 
+The hub runs one listener for machine `<h>`, so `<h>` has no standby: while the listener restarts,
+or while a new VM boots, `<h>`'s durable holds its deliveries until the listener is back. The
+listener's user grants the `envoy_listener` bucket, where a listener keeps its machine's delivery
+lease and the delivery state every listener of the machine shares (`ListenerPermissions`, from the
+envoy-infra release that added it; see `packages/envoy/cmd/listener/README.md`). Each user may write
+only its own machine's lease and delivery ledger there, and the sessions' last-seen records. A hub
+whose users an earlier envoy-infra rendered lacks the bucket: a listener image that uses it then
+logs one ERROR naming it and delivers without a lease, as the machine's only deliverer, keeping
+that state in its own process, which for the hub's one listener changes nothing but that a restart
+forgets it. The grant reaches the hub with the update that renders its users again, which replaces
+the VM. A hub rendered with the bucket's writes not yet scoped to each machine's keys runs this
+listener as it is; the update narrows them.
+A listener elsewhere started with `ENVOY_MACHINE_ID=<h>` would share the hub listener's lease and
+become its standby, or its deliverer, so no other listener takes the hub's `hostname` as its id.
+
 ### The listener's broker check
 
 `listener.agentSecretsUrl`, `listener.agentSecretsAudience` and `listener.publicUrl` are what
@@ -430,12 +447,14 @@ and unset it sets no limit. The burst is at least 1 and only with a rate, and un
 rate.
 
 The listener keeps one count for each sending session. The count starts at the burst and gains
-one message every 60 seconds divided by the rate, up to the burst. The counts are the listener
-process's own, so a restart of the listener, or a new VM, fills each count again. The sender is
-the session that a secrets-broker token proves, else the request's `source_session`. A message
-with another `source`, such as `dispatch` or `envoy`, is not counted, with a secrets-broker token
-or without one. Neither is a message with no sender, which is how the Legion daemon sends its
-notices.
+one message every 60 seconds divided by the rate, up to the burst.
+The limit is each listener pod's own: what that lets a session send with more than one pod, and
+when a pod's counts are full again, is stated on the docs site's Envoy page ("The sender limit").
+The sender is the session that a secrets-broker token proves, else the request's
+`source_session`.
+A message with another `source`, such as `dispatch` or `envoy`, is not counted, with a
+secrets-broker token or without one.
+Neither is a message with no sender, which is how the Legion daemon sends its notices.
 
 A message that finds its sender's count at 0 is answered HTTP `429`. The listener does not store
 it, keep it for a later holder of a role or report a wake for it. `Retry-After` gives the whole
@@ -455,10 +474,10 @@ first forward. The listener does not tell a `504` that forwarded nothing from on
 the stream may hold. A refusal before any store or wake report, such as a `400`, `403`, `413` or
 a `503` before the listener sent anything (one while it waits for NATS to reconnect), costs
 nothing. A repeat the listener recognises costs nothing too: the stream's `duplicate` answer, a
-repeat of a role message kept for the role's next holder, and a repeat of a role forward the route
-made in the last 10 minutes. So does an echo, a role message from the session that holds the role.
-A `duplicate` that answers the listener's own second send, made after its connection to NATS
-closed under the first, costs one, since the first may have stored the message. A role send's
+repeat of a role message kept for the role's next holder, and a repeat of a role forward the same
+pod's route made in the last 10 minutes. So does an echo, a role message from the session that holds
+the role. A `duplicate` that answers the listener's own second send, made after its connection to
+NATS closed under the first, costs one, since the first may have stored the message. A role send's
 echo, repeat or `403` costs nothing only while the send has made no forward, since an earlier
 forward may have stored the message. A repeat that finds the count at 0 is refused as a new
 message is. The clients show the sentence and do not send the message again by themselves, except
@@ -755,7 +774,7 @@ The release that adds `listener.senderMessagesPerMinute` and `listener.senderMes
 neither variable for a hub that sets neither input, so such a hub keeps its VM. Setting, changing
 or removing either input changes the listener's `docker run` command in the cloud-config, so it
 replaces the VM once, with the outage below, and the new VM's listener starts with every sender's
-count full.
+count full (the docs site's Envoy page, "The sender limit").
 The cloud-config is the instance
 template's `user-data`, and a template cannot change. The group then replaces its VM at once
 (`PROACTIVE`, minimal action `REPLACE`), deleting it before it creates the next (`RECREATE`, no
@@ -1136,9 +1155,11 @@ seconds of it.
 
 The session listener runs in a workload of its own, the Deployment `<n>-listener`, and in no host
 pod. One pod runs it, as its `machineId`, and no input changes that count.
-Two copies would contend for the one durable `listener-<machine id>`: the second waits 135
-seconds for it (`cmd/listener/durable.go`, `durableBindDeadline`), then exits, and is restarted
-again and again. That holds until cybermonklabs/legion#2404 gives the listener a delivery lease.
+Two copies would contend for the one durable `listener-<machine id>`: with a listener from
+before cybermonklabs/legion#2404 the second waits 135 seconds for it (`cmd/listener/durable.go`,
+`durableBindDeadline`), then exits, and is restarted again and again. With one that carries that
+change's delivery lease, which this release's listener does, the second stands by and takes the
+durable over within seconds of the first pod's stop.
 The module's README lists the five objects the listener's name carries
 ([The session listener](../README.md#the-session-listener)).
 
@@ -1175,42 +1196,48 @@ The hub's own NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the host
 
 How it is updated. A change of the listener's image, size or environment rolls the one pod with
 `maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old one stops. The new pod
-is Ready only once its `/v1` serves, since its startup probe passes only then (below), and `/v1`
-opens without waiting for the durable, which the old pod holds until it stops, so the new pod's
-`/v1` cannot wait on the old pod. The new pod's listener starts its bind of the durable right
-after its `/v1` opens, and the old pod is sent SIGTERM only once the new pod is Ready, at most one
-10-second period of the startup probe after that open. The old pod's stop then takes 33 seconds
-in all: it keeps answering for 5 seconds, the time its removal from the Service's endpoints takes
-to reach every node's proxy, and then stops in 28 seconds, inside its grace period of 40. That is
-a margin of 7 seconds (`listenerGraceMargin`), which covers the kubelet's own latency between the
-preStop hook's return and SIGTERM, the container's teardown and a late tick on a loaded node. It
-does not cover a listener that runs over its own deadlines. What has to fit under the new pod's
-135-second bind deadline (`durableBindDeadline`), counted from its `/v1` open, is the startup
-probe's lag behind that open plus the old pod's stop. A hung old pod holds its durable for all 40
-seconds, so that lag may be up to 95 seconds, and the probe's period keeps it at most 10. A new
-pod that never becomes Ready leaves the old one serving: nothing stops it, and the new one restarts
-on its bind deadline, or on its startup probe when its `/v1` never opens. The Tailscale Service's
-port 9020 refuses connections while no listener pod is ready, and its port 4222 serves through
-it. Setting, changing or removing the listener's `senderMessagesPerMinute` or `senderMessageBurst`
-is a change of the listener's environment, so it rolls the pod the same way. The new pod's listener
-starts with every sender's count full, as any restart of the listener does.
+is Ready only once its `/v1` serves and its interest copy has completed its first read of the
+bucket, since its readiness probe passes only then (below), and `/v1` opens without waiting for
+the delivery lease or the durable, which the old pod holds until it stops, so the new pod's `/v1`
+cannot wait on the old pod: the new pod is ready as a standby while
+it waits for the lease, and the rolling update never waits for the lease. The old pod is sent
+SIGTERM only once the new pod is Ready, and its stop then takes 33 seconds in all: it keeps
+answering for 5 seconds, the time its removal from the Service's endpoints takes to reach every
+node's proxy, and then stops in 28 seconds, inside its grace period of 40. That is a margin of 7
+seconds (`listenerGraceMargin`), which covers the kubelet's own latency between the preStop hook's
+return and SIGTERM, the container's teardown and a late tick on a loaded node. It does not cover a
+listener that runs over its own deadlines. No deadline of the new pod's own bounds that stop: it
+stands by for the machine's delivery lease for as long as it runs
+(`packages/envoy/cmd/listener/lease.go`), so a hung old pod that holds its durable for all 40
+seconds delays the new pod's take-over and fails nothing, and what bounds the grace is the old
+pod's stop alone. The listener's 135-second `durableTakeoverAlarmAfter` (`cmd/listener/receive.go`)
+bounds no stop either: it times how long a listener has waited on a binding that a listener from
+before the lease holds, during the first roll onto the lease, and how long its reads, creations,
+policy corrections or subscribes of the durable have failed, after which a lease holder gives the
+lease up. A new pod that never becomes Ready leaves the old one serving: nothing stops it, and the
+new one stays up and not ready for as long as what holds its start lasts (below). The Tailscale
+Service's port 9020 refuses connections while no listener pod is ready, and its port 4222 serves
+through it. Setting, changing or removing the listener's `senderMessagesPerMinute` or
+`senderMessageBurst` is a change of the listener's environment, so it rolls the pod the same way.
+The new pod's listener starts with every sender's count full (the docs site's Envoy page, "The
+sender limit").
 
-What is watched. The startup probe runs `/bin/sh -c` of
-`curl -fsS --max-time 5 http://127.0.0.1:9020/metrics | grep -q '^envoy_active_interests '` every
-10 seconds, with a 6-second timeout and 60 failures allowed: ten minutes for `/v1` to open, after
-which the kubelet restarts the container. `/metrics` takes no credential, and the listener writes
-the sample line `envoy_active_interests <n>` there only once its `/v1` gate is open and its
-interest list can be served; the pattern never matches the gauge's `# HELP` or `# TYPE` line,
-which every scrape carries. The kubelet runs neither of the other two probes, and the pod is not
-Ready, until this one has passed. A listener older than `legion-envoy-v29.15.0` writes the sample
-from its first answer, so there the probe passes at that answer. Readiness and liveness read
-`/livez` with `curl -sS`, which the listener answers 204 without reading the bus, and which exits
-0 whatever the HTTP status, so both are status-blind: a NATS outage or any other fault of the
-hub, which every pod shares, neither takes the one pod out of the Service nor restarts it. Only
-30 seconds of no answer at all takes the pod out of the Service (readiness, every 10 seconds, 3
-failures allowed), and a minute of it restarts the container (liveness, every 10 seconds, 6
-failures allowed). No probe reads `/healthz`, which the listener answers 200 `starting` from its
-first answer, before its `/v1` opens.
+What is watched. The startup and liveness probes read `/livez` with `curl -sS`, which the
+listener answers 204 from its first answer without reading the bus, and which exits 0 whatever
+the HTTP status, so a NATS outage or a cache warm-up restarts nothing. The listener gets two
+minutes for its first answer, and a minute of no answer at all restarts the container. A listener
+whose NATS does not answer, answers from its cluster's state or refuses a grant at its start
+stays up and not ready for as long as that lasts (the start rule, `cmd/listener/README.md`), and
+no probe restarts it, so no restart backoff delays it once its NATS lets it start. Only the
+readiness probe reads `/healthz`, whose HTTP status is what tells a starting pod from a serving
+one: the listener answers it 503 `starting` until its `/v1` gate is open, its receive loop has
+started and its interest copy has completed its first read of the bucket, which `/v1` does not
+wait for once the start's 30-second wait for it has run out; 200 to the active pod and to a
+standby; and 503 while its NATS is down, which takes the pod out of the Service without
+restarting it. Only the first read gates: a later read of the copy, after a reconnect, keeps a pod
+that has been ready in the Service while `GET /v1/interests/` answers its own 503 `refilling`. A
+listener from before cybermonklabs/legion#2404 answers `/healthz` 200 `starting` from its first
+answer, before its `/v1` opens, so its pod is Ready before it serves.
 The PodDisruptionBudget `<n>-listener` allows one unavailable pod, so a node drain or an
 Autopilot upgrade moves the pod rather than stalling on it. The pod-down alert below names this
 pod and its container.

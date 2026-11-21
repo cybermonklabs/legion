@@ -19,8 +19,8 @@ import (
 // does every disconnect callback (AddDisconnectHook, the KV caches' among them), so an ensure that
 // waited for that request's answer held the second disconnect's callback for the request's whole
 // wait (the JetStream context's MaxWait, 10 s) while the connection was already down. The run is
-// now off that goroutine (bus.Client.afterReconnect) and under a context its connection's loss
-// ends (whileConnected).
+// now off that goroutine (bus.Client.onReconnect, which queueReconnect hands it to) and under a
+// context its connection's loss ends (whileConnected).
 //
 // Seen on the real surface at 3be3907a48: an Envoy listener behind a proxy that dropped its "envoy"
 // connection the moment a reconnect completed logged that second disconnect 10 s after the drop,

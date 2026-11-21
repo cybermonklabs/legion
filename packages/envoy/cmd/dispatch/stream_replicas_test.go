@@ -213,14 +213,24 @@ func startDispatchNATS(t *testing.T, urls []string, overrides map[string]string)
 	return err
 }
 
-// A Dispatch start whose first reconcile fails on a cluster with no quorum waits that failure out:
-// the bus runs the reconnect hooks again, the start's own log line for the first failure is the
-// retried WARN, and an operator who starts the missing members again finds the start's stream at
-// the three copies the settings ask of it, once the cluster is ready again. Two of three members
-// are stopped, since nats-server v2.15.1 places a three-copy stream with one member down (one
-// offline peer assigned) and the start would succeed. Every step runs on the test's own
-// goroutine, because testnats.Server.Start, testnats.Server.Stop and testnats.Cluster.AwaitReady
-// call t.Fatal, which Go forbids off the test goroutine.
+// A Dispatch start whose first reconcile fails on a cluster that has lost its quorum waits that
+// failure out: with two of the three members stopped no majority is left to commit the stream's
+// assignment, so JetStream refuses the reconcile, the bus runs the reconnect hooks again, the
+// start's own log line for the first failure is the retried WARN, and an operator who starts the
+// missing members again finds the start's stream at the three copies the settings ask of it, once
+// the cluster is ready again.
+//
+// A lost quorum is what both nats-server v2.10.29 and v2.15.1 refuse. One member of three down is
+// no longer such a refusal: v2.15 places a copy on the stopped peer and the create comes up
+// (internal/bus, TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp), where
+// v2.10.29 refused it. A count the cluster has no servers for refuses on both too, and is no use
+// here, because an operator cannot clear it (internal/bus,
+// TestACreateAtFiveCopiesOnThreeServersFailsNamingTheSetting).
+//
+// Every step runs on the test's own goroutine, because testnats.Server.Start, testnats.Server.Stop
+// and testnats.Cluster.AwaitReady call t.Fatal, which Go forbids off the test goroutine. Nothing
+// waits on the cluster while its quorum is gone: AwaitReady waits for a meta leader, which the one
+// running member cannot elect.
 func TestADispatchStartWaitsOutAReconcileFailureTheBusRetries(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	cluster.Servers[1].Stop(t)

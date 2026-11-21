@@ -82,9 +82,10 @@ stream's end only when it holds none, so a message stored for it before it regis
 A registration answer that reports a gap
 or names another stream, and a frame that carries `Envoy-Gap`, call the host's `gap` once. `close`
 answers every unsettled frame, and every later one, `nak`.
-`streamStores` (`@legion/envoy-client/stream-topics`) says whether the stream stores a topic; the
-listener refuses to register a `notifications.` topic it does not, so every followed topic is one
-the relay carries.
+No client judges whether the stream stores a topic: the subjects a client was built with can be
+older than the deployed stream's, which during a roll hold a newer build's too. The listener judges
+each topic on a fresh read of the deployed stream's subjects, and keeps a topic nothing captures
+yet in the session's row and its consumer's filter, with a warning.
 
 ## The delivery ledger
 
@@ -117,7 +118,12 @@ the host, so a caller told `false` - the host moved while the write waited behin
 before it, or the write failed - reports the loss rather than settling the frame in silence.
 
 The state holds the topics the session follows, so a host can follow them again after the
-listener reaped its interests;
+listener reaped its interests, and the person's unfollows whose release the listener has not
+confirmed: `followedChanged(unfollowed)` records them, and `released(topics)` or a follow again
+forgets them.
+A resume releases such a topic by `releasedOnResume(entry, state, followedNow)` rather than follow
+it from the listener's entry.
+An older client ignores the added `unfollowed` field.
 `restore(snapshot)` loads what a host persisted, dropping expired ledger entries and keeping the
 state at any age. A write carries the state only when it changed. A frame the host fails to show is answered `nak` and sent again, and
 on its third delivery the host shows a notice naming it instead (`showFailureNotice`); a host whose
@@ -140,20 +146,26 @@ what a restart follows again: its own agent subject and every topic it follows b
 subject it holds for a role, and a topic reaching a private stream subject.
 `reachesPrivateStreamSubject(ownAgentSubject, topic, roles?)` is the listener's own rule,
 `privateStreamSubjects` and `ReachesPrivateStreamSubject` in
-`packages/envoy/internal/bus/stream.go`, which a host's registration applies too: another session's
-agent subject, a failed-delivery lane on an agent subject or a team topic, a controller notice lane
-of a project whose controller role `roles` does not name, or a wildcard reaching one. A session
-holding that role registers its own project's lane, since its consumer is the only way the notice
-reaches it (`controllerNoticeRole` names the role a lane is for). `rememberedTopics(topics)` is what
-a restore follows again from a persisted state: every subject but agent subjects and role lanes.
-`streamDeliversNothing(topic)` is the topic a registration must not carry: a `notifications.` topic
-no stream subject captures and no role lane, which the listener leaves out of the row it stores,
-naming it in a warning. `refuseUncapturedTopics(sessionID, ownAgentSubject, topics)` throws that
-warning's own wording for every topic a caller named by hand that a host's subscribe tool refuses,
-which is such a topic unless it reaches a private stream subject, where the listener's own warning
-says so instead. The sentence is `@legion/contracts`'s `uncapturedTopicRefusal`:
-`packages/contracts/scripts/gen-go.ts` emits it as the `contracts.UncapturedTopicRefusal` the
-listener's warning returns, so a reword reaches both languages from one place.
+`packages/envoy/internal/bus/stream.go`, which a host's registration applies too; `roles` names
+the controller roles the session holds.
+A session holding a project's controller role registers that project's lane, since its consumer
+is the only way the notice reaches it (`controllerNoticeRole` names the role a lane is for).
+`rememberedTopics(topics)` is what a restore follows again from a persisted state: every subject
+but agent subjects and role lanes.
+`registrationTopics(ownAgentSubject, followed, roles?)` is what every registration carries: the
+session's own agent subject and every followed topic but one reaching a private stream subject.
+It leaves out no topic for being outside the stream subjects this build was compiled with, and
+`expandSubscriptionTopics` (`@legion/envoy-client/transport`) carries the base of every `<base>.>`
+it expands for the same reason. For a topic no deployed stream subject captures yet, the listener
+answers a warning in the words of `@legion/contracts`'s `uncapturedTopicWarning`, which
+`packages/contracts/scripts/gen-go.ts` emits as `listenerwire.UncapturedTopicWarning`. A host's
+subscribe tool shows its caller the listener's warnings through
+`warningsForNamedTopics(answer, named)`: every warning but the uncaptured-topic warning of a
+topic the caller did not name in this call, such as the base a named `X.>` adds or another topic
+the session follows. That topic stays registered, and the listener still logs its warning. The
+function reads a warning as the uncaptured-topic warning only when it is the exact text
+`uncapturedTopicWarning` builds for its topic and the answer's `session_id`. A host registers on
+every subscribe call, so a caller that names a followed topic again is shown its warning again.
 
 ## NATS connection
 

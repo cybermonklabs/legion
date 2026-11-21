@@ -53,7 +53,7 @@
 # servers of dispatch-two-builds.sh and of dispatch-search-two-builds.sh,
 # verification-results.sh:252 and dispatch-claimant-delivery.sh:169 give Dispatch the caller's
 # raw DSN, and Dispatch opens its pool from that text with pgxpool.ParseConfig
-# (packages/envoy/internal/dispatch/store/store.go:58). Two facts keep those four safe. The
+# (packages/envoy/internal/dispatch/store/store.go). Two facts keep those four safe. The
 # pinned pgx reads these shapes as libpq does, because pgx v5.11.0's own pgconn/parse_url.go is
 # written to match libpq's URI parser and says so in its first comment. And all four run
 # Dispatch with DISPATCH_DEV_SIGNIN=1, whose boot reads the host again with pgx and refuses one

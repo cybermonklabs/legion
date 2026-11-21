@@ -27,6 +27,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
@@ -273,8 +274,9 @@ func (c *roleKeepLaneCursor) write(ctx context.Context, cursor bus.KeptRoleCurso
 }
 
 // confirm writes cursor as write does, for the last write of a copy this walk claimed and then
-// forwarded or sent the dead letter of, and reports whether the stream holds that write - whether
-// the copy is this walk's to report - with the error that ends the walk, if any.
+// forwarded, sent the dead letter of, or passed over as one the delivery ledger says its holder
+// already took (keptRolePassOver), and reports whether the stream holds that write - whether the
+// copy is this walk's to report - with the error that ends the walk, if any.
 //
 // A write the stream refused because the cursor moved (bus.ErrCursorMoved) did not land, as write
 // says. Every other failure is read back once, because a publish can be stored with its answer
@@ -295,7 +297,7 @@ func (c *roleKeepLaneCursor) write(ctx context.Context, cursor bus.KeptRoleCurso
 //     wrapping bus.ErrCursorMoved, which ends the walk as roleKeepLaneBusy (roleKeepWriteFailed).
 //   - a read that failed, and a cursor short of cursor.Kept, which still holds this walk's claim,
 //     did not land: the answer is the write's own error, and the copy is the next walk's to
-//     forward or send the dead letter of again.
+//     judge again.
 func (c *roleKeepLaneCursor) confirm(ctx context.Context, cursor bus.KeptRoleCursor) (bool, error) {
 	err := c.write(ctx, cursor)
 	if err == nil {
@@ -772,8 +774,10 @@ type roleKeepDrainResult struct {
 	// hour, from which the sweep reads for a copy that wakes the role (raiseKeptRoleWake).
 	waiting uint64
 	// unconfirmed is a copy this walk forwarded, or sent the dead letter of, and could not confirm
-	// (roleKeepLaneCursor.confirm), which the next walk forwards or sends again, so this walk's
-	// failure is worth reporting however the walk ended (handOverKeptRole).
+	// (roleKeepLaneCursor.confirm), which the next walk sends the dead letter of again, or
+	// forwards again where the delivery ledger holds no record of this walk's forward
+	// (walkKeptRole), so this walk's failure is worth reporting however the walk ended
+	// (handOverKeptRole).
 	unconfirmed bool
 }
 
@@ -1140,11 +1144,16 @@ func readKeptLaneHead(ctx context.Context, client *bus.Client, role string) (kep
 // a forward that failed, a context that ran out - because the walk starts at kept + 1, so a copy
 // claimed and never confirmed is simply the next copy a walk reads: the next one of all, where
 // the walk released its claim on its way out (roleKeepLaneCursor.release), and the next one past
-// bus.KeptRoleClaimWindow where nothing was left to release it. What that costs is one more copy
-// when a walk ends between its forward and its confirm, which the walk reports
-// (roleKeepDrainResult): the repeat carries the same stable id (bus.ForwardMsgID of the
-// forward's dedupe key and the agent subject), so for the same holder the stream's duplicate
-// window keeps one stored copy and the holder's own dedupe_key drops the second.
+// bus.KeptRoleClaimWindow where nothing was left to release it. A walk that ends between its
+// forward and its confirm costs the holder no second copy for it: the forward is settled
+// delivered in the delivery ledger the machine's pods share before the confirm is written
+// (finishRoleForward), and the next walk asks that ledger before it forwards a copy
+// (keptRoleForwardAttempt), so it passes this one over. The walk still reports the copy
+// unconfirmed (roleKeepDrainResult). Only a copy the ledger holds no delivered record of - a pod
+// killed before it settled - is forwarded once more, and the repeat carries the same stable id
+// (bus.ForwardMsgID of the forward's dedupe key and the agent subject), so for the same holder
+// the stream's duplicate window keeps one stored copy and the holder's own dedupe_key drops the
+// second.
 //
 // A copy owed a dead letter takes three writes the same way (endKeptCopyWithDeadLetter), its
 // claim naming why the copy gets one (bus.KeptRoleCursor.DeadLetter). A claim another walk left,
@@ -1161,12 +1170,15 @@ func readKeptLaneHead(ctx context.Context, client *bus.Client, role string) (kep
 // after this one sends the dead letter that says so too.
 //
 // The last write of those three is a confirm (roleKeepLaneCursor.confirm), whether the copy was
-// forwarded or ended with a dead letter. A confirm the stream stored with its answer lost is read
-// back rather than taken for one that failed: a cursor that holds it is this walk's, so the walk
-// reports the copy and goes on from it, or, where another walk has gone on from it already,
-// reports the copy and ends as one that found the lane busy. Only a confirm the cursor does not
-// hold leaves the copy to the next walk, unreported here, which forwards it or sends its dead
-// letter again.
+// forwarded or ended with a dead letter, and so is the one write that ends a copy this walk
+// claimed and then found the holder already took (keptRolePassOver). A confirm the stream stored
+// with its answer lost is read back rather than taken for one that failed: a cursor that holds it
+// is this walk's, so the walk goes on from it, or, where another walk has gone on from it
+// already, ends as one that found the lane busy, the copy reported either way. Only a confirm the
+// cursor does not hold leaves the copy to the next walk: a forwarded copy was reported and
+// settled in the delivery ledger before its confirm, so that walk forwards it again only where
+// the ledger holds no record of it (above), and a copy ended with a dead letter or passed over,
+// unreported here, is sent its dead letter again or passed over again.
 //
 // Before each copy a walk for a holder reads the role's claim record and goes on only while that
 // record names the session it forwards to (roleKeepDrainHolds): this walk forwards to the session
@@ -1207,12 +1219,10 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 	keptSubject := bus.KeptRoleSubject(role)
 	lane := &roleKeepLaneCursor{cfg: cfg, role: role, holder: holder, subject: bus.KeptRoleCursorSubject(role), seq: head.cursorSeq}
 	subject := contracts.LegacyAgentSubject(holder)
-	// The record the role lane judges a forward against, read the same way here: what the holder
-	// already took, and what is already on its way to it. A walk with no holder judges nothing
-	// against it.
-	seen := func(key, recipient string) bool {
-		return cfg.dedupeCache.Seen(key, recipient) || cfg.attemptCache.Seen(key, recipient)
-	}
+	// What the role lane judges a forward against is the delivery ledger every pod of the
+	// machine shares, which this walk asks for each copy it is about to forward
+	// (keptRoleForwardAttempt) rather than beforehand, so beforeForward below reads no record of
+	// its own (roleTopicDelivery reads none either).
 	result := roleKeepDrainResult{}
 	kept := head.cursor.Kept
 	for scanned := 0; ; scanned++ {
@@ -1243,7 +1253,7 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 			result.end = roleKeepDrainFailed
 			return result, fmt.Errorf("read role %s's kept lane after %d: %w", role, kept, err)
 		}
-		judged := judgeKeptRoleCopy(cfg, role, holder, entry, stored, keptCopyClaimOf(head.cursor, stored.Sequence), now, seen)
+		judged := judgeKeptRoleCopy(cfg, role, holder, entry, stored, keptCopyClaimOf(head.cursor, stored.Sequence), now)
 		switch judged.step {
 		case keptCopyWait:
 			result.end, result.waiting = roleKeepCopyWaits, stored.Sequence
@@ -1276,35 +1286,77 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 			result.end, err = roleKeepWriteFailed(err)
 			return result, err
 		}
-		handed := roleForward{item: item, sessionID: holder}
+		// The attempt is taken under this walk's claim of the copy, so a claim write that failed
+		// leaves no attempt of this walk's in flight for the next walk to defer to.
+		attempt, passedOver, end := keptRoleForwardAttempt(cfg, role, holder, item)
+		switch end {
+		case keptRolePassOver:
+			// The holder has this message already, so the lane is finished with the copy as it
+			// is with one the judgement above ends. The write is the last of a copy this walk
+			// claimed, so it is a confirm, as a forward's is: a write stored with its answer lost
+			// still has the copy reported here rather than by no walk at all.
+			landed, err := lane.confirm(ctx, bus.KeptRoleCursor{Kept: stored.Sequence})
+			if !landed {
+				result.end, err = roleKeepWriteFailed(err)
+				return result, err
+			}
+			kept = stored.Sequence
+			result.ended++
+			passedOver()
+			if err != nil {
+				result.end, err = roleKeepWriteFailed(err)
+				return result, err
+			}
+			continue
+		case keptRoleHeldElsewhere:
+			// A forward of this very message to this holder is outstanding somewhere on the
+			// machine - the role's live lane, or another pod's walk - so this walk neither
+			// forwards the copy a second time nor moves the lane past it: it releases its claim
+			// and leaves the lane as it leaves one another walk holds a claim of, and the walk
+			// after the pause reads this copy again, by when that forward has been recorded,
+			// cleared or taken over.
+			lane.release(ctx, kept)
+			result.end = roleKeepLaneBusy
+			return result, nil
+		}
+		handed := roleForward{item: item, sessionID: holder, attempt: attempt}
 		// The copy goes under the envelope the lane's own forward of it carries
 		// (roleForward.forwarded), with the time the stream stored it beside it.
-		forward := handed.forwarded()
+		sent := handed.forwarded()
 		keptAt := stored.Time.UnixMilli()
-		forward.KeptAt = &keptAt
-		// The copy is on its way to this holder, which the record the lane's own forward keeps
-		// says the same way (roleTopicDelivery), so a role message under this key is not sent to
-		// it twice while this forward is outstanding. A forward that failed clears it again, as
-		// the lane's failure does (finishRoleForward), since the copy stays on the lane and the
-		// next walk must offer it rather than pass it over as one the holder already took.
-		cfg.attemptCache.Record(item.DedupeKey, holder)
+		sent.KeptAt = &keptAt
 		// The forward is named as the lane's own forward of this message to this holder is
 		// (roleForward.msgID), so the stream keeps one copy of it for this holder however many
 		// walks forward it; a takeover's copy carries a dedupe key of its own
 		// (takenFrameDedupeKey), so its forward takes no id an earlier forward took.
-		msgID := handed.msgID(subject)
-		forwarded := cfg.forwardAndWait(subject, forward, msgID, roleForwardTimeout)
+		forwarded := cfg.forwardAndWait(subject, sent, handed.msgID(subject), roleForwardTimeout)
 		if forwarded != nil {
 			// This walk is ending with the copy claimed and unforwarded, so it releases the
 			// claim: the cursor goes back to what it was before the claim, and the role's next
 			// walk reads this copy again at once rather than waiting the claim out. A release
 			// that cannot be written leaves the claim, which the next walk takes over once it
-			// is older than bus.KeptRoleClaimWindow; either way the copy is not lost.
-			cfg.attemptCache.Clear(item.DedupeKey, holder)
+			// is older than bus.KeptRoleClaimWindow; either way the copy is not lost. The
+			// ledger attempt goes with it, as the lane's own failure gives its attempt up
+			// (finishRoleForward), since the next walk must offer this copy rather than pass it
+			// over as one the holder already took.
+			clearLedgerAttempt(cfg, item, attempt)
 			lane.release(ctx, kept)
 			result.end = roleKeepDrainFailed
 			return result, fmt.Errorf("forward role %s's kept message %s to %s: %w", role, item.EventID, holder, forwarded)
 		}
+		// The copy reached the role's holder, the stream's acknowledgement of the forward being
+		// the whole of that outcome (startRoleForward), so it is reported where every role
+		// forward's outcome is reported (finishRoleForward): counted in
+		// envoy_messages_delivered_total, settled in the delivery ledger, and logged on the role
+		// forward's own line, with the role, the copy's sender and the time the copy was kept
+		// beside it. The outcome is settled before the confirm below, so a walk that ends between
+		// the two has still said what became of the forward it made, and the ledger answers for
+		// the copy the next walk reads: taken by the holder, or to be forwarded once more.
+		finishRoleForward(cfg, handed, forwarded,
+			slog.String("role", role),
+			slog.String("source_session", item.SourceSession),
+			slog.String("dedupe_key", sent.DedupeKey),
+			slog.Int64("kept_at", keptAt))
 		landed, err := lane.confirm(ctx, bus.KeptRoleCursor{Kept: stored.Sequence})
 		if !landed {
 			result.unconfirmed = true
@@ -1313,19 +1365,8 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 		}
 		kept = stored.Sequence
 		result.forwarded++
-		// The copy reached the role's holder, the stream's acknowledgement of the forward being
-		// the whole of that outcome (startRoleForward), so it is reported where every role
-		// forward's outcome is reported (finishRoleForward): counted in
-		// envoy_messages_delivered_total, recorded in the dedupe cache, and logged on the role
-		// forward's own line, with the role, the copy's sender and the time the copy was kept
-		// beside it.
-		finishRoleForward(cfg, handed, forwarded,
-			slog.String("role", role),
-			slog.String("source_session", item.SourceSession),
-			slog.String("dedupe_key", forward.DedupeKey),
-			slog.Int64("kept_at", keptAt))
-		// A confirm another walk has gone on from is reported above all the same, and ends this
-		// walk as one that found the lane busy (roleKeepLaneCursor.confirm).
+		// A confirm another walk has gone on from ends this walk as one that found the lane busy
+		// (roleKeepLaneCursor.confirm).
 		if err != nil {
 			result.end, err = roleKeepWriteFailed(err)
 			return result, err
@@ -1532,9 +1573,11 @@ type keptCopyVerdict struct {
 //     instead.
 //  4. A walk with no holder stops at every other copy.
 //  5. A walk for a holder applies beforeForward (keptRoleForwardAllowed): an allowed copy is
-//     forwarded; an echo or a repeat is passed over; and a copy whose delivery mode the holder
-//     does not take is dropped as the lane refuses it, and owed a dead letter naming that holder
-//     when the listener kept it and its publish named a sender session.
+//     forwarded, unless the delivery ledger the machine's pods share says the holder already
+//     took it, which the walk asks once it has claimed the copy (keptRoleForwardAttempt); an
+//     echo is passed over; and a copy whose delivery mode the holder does not take is dropped as
+//     the lane refuses it, and owed a dead letter naming that holder when the listener kept it
+//     and its publish named a sender session.
 //
 // Every copy owed a dead letter, by rule 2, 3 or 5, is dropped as a copy whose forward may have
 // reached the holder (keptRoleDrop.forwarded) when the claim this walk takes over is a forward's
@@ -1547,7 +1590,7 @@ type keptCopyVerdict struct {
 // copy, and the walk claims it again, for the forward or for the dead letter that judgement gives
 // it. Nor is a dead letter's claim on a copy owed no dead letter, which no walk writes. now is
 // called once per copy that decodes, whatever the verdict.
-func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, stored bus.StoredMessage, claim keptCopyClaim, now func() time.Time, seen func(key, recipient string) bool) keptCopyVerdict {
+func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, stored bus.StoredMessage, claim keptCopyClaim, now func() time.Time) keptCopyVerdict {
 	var item contracts.Envelope
 	if err := json.Unmarshal(stored.Data, &item); err != nil {
 		return keptCopyVerdict{step: keptCopyEnd, report: func() {
@@ -1585,7 +1628,7 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 	if holder == "" {
 		return keptCopyVerdict{step: keptCopyWait, item: item}
 	}
-	verdict, report := keptRoleForwardAllowed(cfg, role, holder, entry, item, takenFrameOriginal(item, stored.MsgID, role), seen)
+	verdict, report := keptRoleForwardAllowed(cfg, role, holder, entry, item, takenFrameOriginal(item, stored.MsgID, role))
 	switch verdict.kind {
 	case forwardAllowed:
 		return keptCopyVerdict{step: keptCopyForward, item: item}
@@ -1857,19 +1900,21 @@ var keptRoleRefusalLines = roleForwardRefusalLines{
 // keptRoleForwardAllowed judges one copy to the role's new holder, whose session entry is entry,
 // by beforeForward - the rule the role lane and the publish route both apply before they forward -
 // and returns the verdict and, for a copy the walk may not forward, what it is owed. The drain is
-// the third forward path and reads the same record of what the holder already took as the lane
-// does (seen), so an echo of a message the holder itself sent, a copy it already took and a
-// payload its delivery modes do not take are refused here as they are there, each counted and
-// answered as the lane counts and answers it (refusedRoleForwardOutcome) under the drain's own
-// lines, which name the copy's sender beside the role. The copy is ended, and the report is the
+// the third forward path and judges a copy as the lane judges a message: an echo of a message the
+// holder itself sent and a payload its delivery modes do not take are refused here as they are
+// there, each counted and answered as the lane counts and answers it (refusedRoleForwardOutcome)
+// under the drain's own lines, which name the copy's sender beside the role. What the holder
+// already took is the delivery ledger's answer, not this one's, so the record beforeForward reads
+// here answers no, as it does on the lane (roleTopicDelivery): the walk asks the ledger for the
+// copy it is about to forward (keptRoleForwardAttempt). The copy is ended, and the report is the
 // walk's to run once its last cursor write has moved the lane past the copy, so no later walk
 // offers it again and no walk that lost that write reports it.
 //
 // reported is item as the refusal's exception names it: item itself, or for a takeover's copy the
 // envelope under the message's own dedupe key (takenFrameOriginal), which a reader of the
 // exception, such as the Legion daemon's re-hold, identifies the message by.
-func keptRoleForwardAllowed(cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, item, reported contracts.Envelope, seen func(key, recipient string) bool) (forwardVerdict, func()) {
-	verdict := beforeForward(item, holder, entry, seen)
+func keptRoleForwardAllowed(cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, item, reported contracts.Envelope) (forwardVerdict, func()) {
+	verdict := beforeForward(item, holder, entry, func(string, string) bool { return false })
 	if verdict.kind == forwardAllowed {
 		return verdict, nil
 	}
@@ -1877,4 +1922,69 @@ func keptRoleForwardAllowed(cfg listenerDeliveryHandlerConfig, role, holder stri
 		slog.String("role", role),
 		slog.String("source_session", item.SourceSession))
 	return verdict, func() { applyDeliveryOutcome(cfg, reported, outcome) }
+}
+
+// keptRoleAttemptEnd is what the delivery ledger's answer for a copy this walk has claimed asks
+// the walk to do with it (keptRoleForwardAttempt).
+type keptRoleAttemptEnd uint8
+
+const (
+	// keptRoleForwardIt: the walk holds the pair's attempt and forwards the copy, then settles
+	// that attempt (finishRoleForward, clearLedgerAttempt).
+	keptRoleForwardIt keptRoleAttemptEnd = iota
+	// keptRolePassOver: the holder has this message already, so the copy is passed over and the
+	// lane's cursor moves past it.
+	keptRolePassOver
+	// keptRoleHeldElsewhere: a forward of this message to this holder is outstanding, on this
+	// pod or another of the machine's, so the copy is neither forwarded nor passed over: it is
+	// left on the lane for a later walk, which reads it once that forward has been settled or
+	// is old enough to take over.
+	keptRoleHeldElsewhere
+)
+
+// keptRoleForwardAttempt takes the delivery ledger's attempt for one copy of role's kept lane and
+// its new holder, which is what decides whether this walk forwards the copy at all: the ledger is
+// every pod of the machine's record of what that holder has been sent and what is on its way to
+// it, so a copy the lane, the publish route or another pod's walk has delivered under this dedupe
+// key is passed over here rather than forwarded a second time, and one such a forward is
+// outstanding for is left where it is (dedupe.InFlight and dedupe.Deferred alike), since a copy
+// moved past for a forward that then failed would be a message answered 202 kept and lost. It
+// returns the attempt the forward settles, what a copy it passes over is owed - the drain's own
+// dedupe line and counter, run once the walk's cursor write has moved the lane past the copy -
+// and which of the three the walk does.
+//
+// A ledger that cannot be read forwards the copy under the zero attempt, which settles nothing:
+// the drain has no durable lane to retry on, as a core lane has none (ledgerAttempt), and a kept
+// copy the role's new holder is waiting for is worth the repeat the stream's duplicate window and
+// the holder's own dedupe key would drop anyway.
+func keptRoleForwardAttempt(cfg listenerDeliveryHandlerConfig, role, holder string, item contracts.Envelope) (dedupe.Attempt, func(), keptRoleAttemptEnd) {
+	attempt, err := cfg.ledger.Attempt(item.DedupeKey, holder)
+	if err != nil {
+		cfg.logger.Warn(ledgerUnavailableLine,
+			slog.String("operation", "attempt"),
+			slog.String("role", role),
+			slog.String("session_id", holder),
+			slog.String("topic", item.Topic),
+			slog.String("event_id", item.EventID),
+			slog.Bool("retry", false),
+			slog.String("error", err.Error()))
+		return dedupe.Attempt{}, nil, keptRoleForwardIt
+	}
+	switch attempt.Verdict {
+	case dedupe.Proceed:
+		return attempt, nil, keptRoleForwardIt
+	case dedupe.Delivered:
+		outcome := refusedRoleForwardOutcome(forwardVerdict{kind: forwardRepeat}, item, holder, keptRoleRefusalLines,
+			slog.String("role", role),
+			slog.String("source_session", item.SourceSession),
+			slog.String("ledger", attempt.Verdict.String()))
+		return attempt, func() { applyDeliveryOutcome(cfg, item, outcome) }, keptRolePassOver
+	}
+	cfg.logger.LogEvent(slog.LevelDebug, "listener kept role drain left the lane to the forward already in flight for its copy",
+		slog.String("role", role),
+		slog.String("session_id", holder),
+		slog.String("event_id", item.EventID),
+		slog.String("dedupe_key", item.DedupeKey),
+		slog.String("ledger", attempt.Verdict.String()))
+	return attempt, nil, keptRoleHeldElsewhere
 }
