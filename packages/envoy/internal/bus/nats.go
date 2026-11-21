@@ -208,16 +208,15 @@ func WithSilentCutDetection() DialOption {
 // (promptRedialWait). It is for the one client a hub's other clients wait on: the NATS auth
 // service (internal/cipher/natscallout), which is itself a client of the hub it admits
 // connections to, so a restart drops its connection too and every client that comes back before
-// it is refused until it returns. So the cap is short: however long the hub was away, the
-// service's next dial starts at most 2 s after the hub is back, and after a sub-second outage
-// about 2 s at worst too (waits of 0, 125, 250 and 500 ms, then one of up to 2 s); a dial in
-// flight when the hub returns adds what is left of it, up to its 5 s timeout when it hangs
-// (connectTimeout). The backoff is for a hub that refuses the service's own user, as one whose
-// auth_callout does not list it yet does: redialling within 50 ms each time, a replica connected
-// to it 35 times a second for as long as it refused (1,055 times in 30 s against an in-process
-// nats-server 2.15.1); with the backoff it connects 24 times in its first 30 s and at most once
-// in any second after its first, which for two replicas is nothing to the hub. The jitter keeps
-// two replicas from dialling in the same instant.
+// it is refused until it returns. So the cap is short: it bounds each wait at 2 s, whatever the
+// outage's length, and a dial follows each wait; that dial, like one already in flight when the
+// hub returns, takes its own time, up to its 5 s timeout when it hangs (connectTimeout). The
+// backoff is for a hub that refuses the service's own user, as one whose auth_callout does not
+// list it yet does: redialling within 50 ms each time, a replica connected to it 35 times a second
+// for as long as it refused (1,055 times in 30 s against an in-process nats-server 2.15.1); with
+// the backoff it connects 24 times in its first 30 s and at most once in any second after its
+// first, for one URL (each wait is followed by a dial of every URL of the pool), which for two
+// replicas is nothing to the hub. The jitter keeps two replicas from dialling in the same instant.
 func WithPromptReconnect() DialOption {
 	return func(o *connectOpts) { o.promptReconnect = true }
 }

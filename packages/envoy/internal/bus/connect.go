@@ -98,13 +98,9 @@ func promptRedialWait(pass int, draw func(n int64) int64) time.Duration {
 		return time.Duration(draw(int64(promptRedialJitter)))
 	}
 	bound := promptRedialBase
-	for range pass - 2 {
-		if bound >= promptRedialCap {
-			break
-		}
-		bound *= 2
+	for round := 2; round < pass && bound < promptRedialCap; round++ {
+		bound = min(bound*2, promptRedialCap)
 	}
-	bound = min(bound, promptRedialCap)
 	return bound/2 + time.Duration(draw(int64(bound/2)))
 }
 
