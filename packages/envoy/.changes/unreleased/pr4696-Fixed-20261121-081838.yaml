@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The broker's check of its sign-in client now reads the issuer's OAuth error only from an answer
+  of 400 or 401, as a refresh does: an answer of 429 or 5xx is now `issuer_unreachable`, whatever
+  error its body names. Before, such an answer naming `invalid_grant` read as `ready` and one
+  naming `invalid_client` as `client_rejected`, so the broker published a verdict on its client
+  from an issuer that could not answer.
+time: 2026-11-21T08:18:38Z
+custom:
+    Issue: pr4696

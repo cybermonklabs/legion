@@ -2,9 +2,11 @@ package oidc
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -80,6 +82,46 @@ func TestCheckClientReadsTheIssuersAnswerAboutTheClient(t *testing.T) {
 				check, err, ClientCheckIssuerUnreachable)
 		}
 	})
+}
+
+// TestCheckClientReadsTheOAuthErrorOnlyFromARefusal pins that a check reads the OAuth error of the
+// token endpoint's answer only under the statuses an issuer refuses a grant or a client with, 400
+// and 401 (RFC 6749 section 5.2), as Refresh does: invalid_grant there is ready, and
+// invalid_client client_rejected. A 429 or a 5xx is an issuer that cannot answer now, whatever its
+// body names, so the check is issuer_unreachable, with an error naming the status, and says nothing
+// about the client.
+func TestCheckClientReadsTheOAuthErrorOnlyFromARefusal(t *testing.T) {
+	issuer := oidctest.New(t)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), checkClientID, checkClientSecret)
+	for _, c := range []struct {
+		status int
+		code   string
+		want   ClientCheck
+	}{
+		{http.StatusBadRequest, "invalid_grant", ClientCheckReady},
+		{http.StatusUnauthorized, "invalid_grant", ClientCheckReady},
+		{http.StatusBadRequest, "invalid_client", ClientCheckRejected},
+		{http.StatusUnauthorized, "invalid_client", ClientCheckRejected},
+		{http.StatusTooManyRequests, "invalid_grant", ClientCheckIssuerUnreachable},
+		{http.StatusTooManyRequests, "invalid_client", ClientCheckIssuerUnreachable},
+		{http.StatusInternalServerError, "invalid_grant", ClientCheckIssuerUnreachable},
+		{http.StatusInternalServerError, "invalid_client", ClientCheckIssuerUnreachable},
+		{http.StatusServiceUnavailable, "invalid_grant", ClientCheckIssuerUnreachable},
+		{http.StatusServiceUnavailable, "invalid_client", ClientCheckIssuerUnreachable},
+	} {
+		t.Run(fmt.Sprintf("%d %s", c.status, c.code), func(t *testing.T) {
+			issuer.FailToken(c.status, c.code)
+			t.Cleanup(func() { issuer.FailToken(0, "") })
+			check, err := CheckClient(context.Background(), issuer.URL(), checkClientID, checkClientSecret)
+			if check != c.want || (err == nil) != (c.want == ClientCheckReady) {
+				t.Fatalf("CheckClient against a token endpoint answering %d %s = (%q, %v), want %q with an error: %t",
+					c.status, c.code, check, err, c.want, c.want != ClientCheckReady)
+			}
+			if c.want == ClientCheckIssuerUnreachable && !strings.Contains(err.Error(), strconv.Itoa(c.status)) {
+				t.Fatalf("the check's error for a token endpoint answering %d does not name the status: %v", c.status, err)
+			}
+		})
+	}
 }
 
 // TestCheckClientIsOneTokenRequest pins that a check asks the token endpoint once, the way the

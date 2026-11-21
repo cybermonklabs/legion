@@ -964,12 +964,13 @@ deployment whose sign-in broke. What an operator reads from each field:
   endpoint to redeem an invalid code with the broker's client credentials. `ready` is the provider
   accepting the client, `client_rejected` is the provider refusing it (nobody can sign in: the
   client id, its secret or its registration is wrong), and `issuer_unreachable` is a provider that
-  could not be asked, which says nothing about the client. A check neither answers a person nor
-  stops the broker: it writes this row, and it logs only a change. When it finds `client_rejected`
-  or `issuer_unreachable` and its pod did not log that state last, it logs `broker: the sign-in
-  client check`. When it finds `ready` after such a line, it logs `broker: the sign-in client
-  check finds the client ready again` ([Health and logs](#health-and-logs)). So a provider that
-  stays away for a day is one line, not one each hour.
+  could not be asked, or answered `429` or a `5xx` whatever OAuth error its body named, which says
+  nothing about the client. A check neither answers a person nor stops the broker: it writes this
+  row, and it logs only a change. When it finds `client_rejected` or `issuer_unreachable` and its
+  pod did not log that state last, it logs `broker: the sign-in client check`. When it finds
+  `ready` after such a line, it logs `broker: the sign-in client check finds the client ready
+  again` ([Health and logs](#health-and-logs)). So a provider that stays away for a day is one
+  line, not one each hour.
 - `last_sign_in_at`: when a person last finished signing in. Long silence on a deployment people
   use is the signal, read beside `last_decision_at`.
 - `last_failed_sign_in_at` and `last_failed_sign_in_reason`: when a sign-in last failed at the code
