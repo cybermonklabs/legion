@@ -2162,7 +2162,7 @@ test("the state golden carries each issue's repository and the repositories its 
 // never absent from a state. `installed` left the status set at contract 25: it was codegraph's
 // until LEGION-629, and no row has carried it since. Each deployment row carries `source`
 // (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured),
-// or, on `repository-cache-room`, `caches` (contract 209), what the repository caches' last health
+// or, on `repository-cache-room`, `caches` (contract 213), what the repository caches' last health
 // reads said of their room: the golden's one cache ran out of room, so that row is open too. A
 // live row carries none.
 test("the state golden carries the deployment's capability report", () => {
@@ -2232,7 +2232,7 @@ test("the state golden carries the deployment's capability report", () => {
 });
 
 // `source` is a finite set, so the schema names its three words and no other: a fourth word is
-// refused with the whole state, as `caches` was before it joined the enum at contract 209.
+// refused with the whole state, as `caches` was before it joined the enum at contract 213.
 test("a capability row whose source is a word the schema does not name is refused", () => {
   const unknownSource = fixture("state.json") as { capabilities: { source?: string }[] };
   unknownSource.capabilities = [{ ...unknownSource.capabilities[0], source: "volume" }];
@@ -2588,7 +2588,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
   // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
   // no other key. One value strip stands above 199 as well: `caches`, the source of the
-  // repository-cache-room row, arrived at contract 209, so that row is served here without its
+  // repository-cache-room row, arrived at contract 213, so that row is served here without its
   // `source`, every other field of it and every other row as the state golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })

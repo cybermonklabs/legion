@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -35,10 +36,21 @@ func natsSeeds(t *testing.T) (user, account, curve string, seeds []string) {
 	return write("user.seed", nkeys.CreateUser), write("issuer.seed", nkeys.CreateAccount), write("xkey.seed", nkeys.CreateCurveKeys), seeds
 }
 
-// The NATS auth service's settings: none set is no service; any set needs the hub's URLs and the
-// three seed files, each holding a seed of its own kind; an audience for a kind of platform token
-// needs that kind's issuer; and the shared Envoy bearer is gone, its variables refused naming the
-// account token file that replaces it.
+// entryTexts is each parsed entry's text, as the setting gave it, joined by single spaces.
+func entryTexts(services []NATSService) string {
+	texts := make([]string, len(services))
+	for index, entry := range services {
+		texts[index] = entry.Text
+	}
+	return strings.Join(texts, " ")
+}
+
+// The NATS auth service's settings: none set is no service, and neither is BROKER_NATS_SERVICES
+// alone holding only edge listeners' entries; any other set needs the hub's URLs and the three
+// seed files, each holding a seed of its own kind; an audience for a kind of platform token needs
+// that kind's issuer, and an edge listener's account the issuer its identity token comes from;
+// and the shared Envoy bearer is gone, its variables refused naming the account token file that
+// replaces it.
 func TestNATSCalloutSettings(t *testing.T) {
 	user, account, curve, seeds := natsSeeds(t)
 	full := func() map[string]string {
@@ -71,14 +83,92 @@ func TestNATSCalloutSettings(t *testing.T) {
 		}
 		want := NATSCallout{
 			URLs: []string{"nats://hub-a:4222", "nats://hub-b:4222"}, SeedFile: user, IssuerSeedFile: account, XKeySeedFile: curve,
-			Services: e["BROKER_NATS_SERVICES"], K8sAudience: "envoy-nats", GoogleAudience: "envoy-nats-google",
+			K8sAudience: "envoy-nats", GoogleAudience: "envoy-nats-google",
 		}
 		if !cfg.NATS.Enabled() || strings.Join(cfg.NATS.URLs, " ") != strings.Join(want.URLs, " ") ||
 			cfg.NATS.SeedFile != want.SeedFile || cfg.NATS.IssuerSeedFile != want.IssuerSeedFile || cfg.NATS.XKeySeedFile != want.XKeySeedFile ||
-			cfg.NATS.Services != want.Services || cfg.NATS.K8sAudience != want.K8sAudience || cfg.NATS.GoogleAudience != want.GoogleAudience {
-			t.Fatalf("read %+v, want %+v", cfg.NATS, want)
+			entryTexts(cfg.NATS.Services) != e["BROKER_NATS_SERVICES"] || cfg.NATS.K8sAudience != want.K8sAudience || cfg.NATS.GoogleAudience != want.GoogleAudience {
+			t.Fatalf("read %+v, want %+v with the services %s", cfg.NATS, want, e["BROKER_NATS_SERVICES"])
 		}
 	})
+	// BROKER_NATS_SERVICES alone runs no auth service, and is read for the edge listeners its
+	// entries name (GET /v1/project-repositories): with every entry an edge-listener one, it loads
+	// as it was given and the service stays off.
+	t.Run("only edge-listener services is no service", func(t *testing.T) {
+		e := validEnv()
+		e["BROKER_K8S_OIDC_ISSUER"], e["BROKER_K8S_OIDC_AUDIENCE"] = "https://issuer.example", "broker"
+		e["BROKER_NATS_SERVICES"] = "edge-listener/edge-a/PRIV=system:serviceaccount:example-ns:example-edge-listener"
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.NATS.Enabled() || entryTexts(cfg.NATS.Services) != e["BROKER_NATS_SERVICES"] || len(cfg.NATS.URLs) != 0 || cfg.NATS.SeedFile != "" {
+			t.Fatalf("an environment naming only edge-listener services configured %+v, want them read and no service", cfg.NATS)
+		}
+	})
+	// An edge listener is a caller of the broker's API, so its entry needs the issuer whose
+	// identity token its account presents, as a BROKER_API_ACCOUNTS entry of the same kind does.
+	// A Google entry is a Google caller: it alone lets BROKER_GOOGLE_OIDC_AUDIENCE be set, and it
+	// is refused without that audience. A Kubernetes entry is refused without the cluster issuer.
+	t.Run("a Google edge listener is the audience's Google caller", func(t *testing.T) {
+		e := validEnv()
+		e["BROKER_GOOGLE_OIDC_AUDIENCE"] = "https://broker.example/machines"
+		e["BROKER_NATS_SERVICES"] = "edge-listener/edge-g/PRIV=google:example-edge@example-project.iam.gserviceaccount.com"
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.GoogleOIDCAudience != e["BROKER_GOOGLE_OIDC_AUDIENCE"] || entryTexts(cfg.NATS.Services) != e["BROKER_NATS_SERVICES"] || cfg.NATS.Enabled() {
+			t.Fatalf("a Google edge listener with its audience configured audience %q and %+v", cfg.GoogleOIDCAudience, cfg.NATS)
+		}
+	})
+	for name, row := range map[string]struct {
+		edit  map[string]string
+		names string
+	}{
+		"a Google edge listener with no Google audience": {map[string]string{
+			"BROKER_NATS_SERVICES": "edge-listener/edge-g/PRIV=google:example-edge@example-project.iam.gserviceaccount.com",
+		}, "BROKER_GOOGLE_OIDC_AUDIENCE"},
+		"a Kubernetes edge listener with no cluster issuer": {map[string]string{
+			"BROKER_NATS_SERVICES": "edge-listener/edge-a/PRIV=system:serviceaccount:example-ns:example-edge-listener",
+		}, "BROKER_K8S_OIDC_ISSUER"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := validEnv()
+			for key, value := range row.edit {
+				e[key] = value
+			}
+			_, err := Load(env(e))
+			if err == nil || !strings.Contains(err.Error(), row.names) || !strings.Contains(err.Error(), "edge-listener") {
+				t.Fatalf("want a refusal naming %s and the edge-listener entry, got %v", row.names, err)
+			}
+		})
+	}
+	// An entry is parsed once, at load, and every rule that reads an entry's kind or account reads
+	// that parse, so a malformed entry is refused for its form before any of them. An edge
+	// listener's entry with no account, with no cluster issuer set, is refused as no entry, never
+	// as a Kubernetes edge listener that needs the cluster's issuer; and a malformed entry beside the
+	// auth service's settings is refused at load too, where it used to wait for the boot.
+	for name, row := range map[string]struct {
+		env   func() map[string]string
+		entry string
+	}{
+		"an edge listener's entry with no account, and no cluster issuer": {validEnv, "edge-listener/edge-a/PRIV"},
+		"a listener's entry with no account, beside the auth service":     {full, "listener/dev-stack/*"},
+		"an edge listener's entry with two machine ids":                   {validEnv, "edge-listener/edge-a/edge-b/PRIV=system:serviceaccount:example-ns:example-edge-listener"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := row.env()
+			e["BROKER_NATS_SERVICES"] = row.entry
+			_, err := Load(env(e))
+			if err == nil || !strings.Contains(err.Error(), "BROKER_NATS_SERVICES must be <kind>/") || !strings.Contains(err.Error(), strconv.Quote(row.entry)) {
+				t.Fatalf("want the entry form's refusal quoting %q, got %v", row.entry, err)
+			}
+			if strings.Contains(err.Error(), "BROKER_K8S_OIDC_ISSUER") {
+				t.Fatalf("the refusal of an entry that names no account asks for the cluster issuer: %v", err)
+			}
+		})
+	}
 
 	refusals := []struct {
 		name  string
@@ -93,6 +183,18 @@ func TestNATSCalloutSettings(t *testing.T) {
 			for _, name := range []string{"BROKER_NATS_URLS", "BROKER_NATS_SEED_FILE", "BROKER_NATS_ISSUER_SEED_FILE", "BROKER_NATS_XKEY_SEED_FILE"} {
 				delete(e, name)
 			}
+		}, "BROKER_NATS_URLS"},
+		{"only the services, an edge listener among them", func(e map[string]string) {
+			for _, name := range []string{"BROKER_NATS_URLS", "BROKER_NATS_SEED_FILE", "BROKER_NATS_ISSUER_SEED_FILE", "BROKER_NATS_XKEY_SEED_FILE"} {
+				delete(e, name)
+			}
+			e["BROKER_NATS_SERVICES"] = "edge-listener/edge-a/PRIV=system:serviceaccount:example-ns:example-edge-listener " + e["BROKER_NATS_SERVICES"]
+		}, "BROKER_NATS_URLS"},
+		{"edge-listener services and a seed file", func(e map[string]string) {
+			for _, name := range []string{"BROKER_NATS_URLS", "BROKER_NATS_ISSUER_SEED_FILE", "BROKER_NATS_XKEY_SEED_FILE"} {
+				delete(e, name)
+			}
+			e["BROKER_NATS_SERVICES"] = "edge-listener/edge-a/PRIV=system:serviceaccount:example-ns:example-edge-listener"
 		}, "BROKER_NATS_URLS"},
 		{"a user seed in the issuer file", func(e map[string]string) { e["BROKER_NATS_ISSUER_SEED_FILE"] = user }, "BROKER_NATS_ISSUER_SEED_FILE"},
 		{"a user seed in the xkey file", func(e map[string]string) { e["BROKER_NATS_XKEY_SEED_FILE"] = user }, "BROKER_NATS_XKEY_SEED_FILE"},

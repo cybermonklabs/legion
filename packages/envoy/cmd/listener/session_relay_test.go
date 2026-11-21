@@ -116,22 +116,30 @@ type relayedFrame struct {
 }
 
 // listener is the reply inbox the frame is to be answered on, which names the listener that relayed
-// it.
+// it: the frame's reply subject without the session id and the token after it
+// (bus.SessionReplySubject).
 func (f relayedFrame) listener() string {
-	return f.msg.Reply[:strings.LastIndex(f.msg.Reply, ".")]
+	session := f.msg.Reply[:strings.LastIndex(f.msg.Reply, ".")]
+	return session[:strings.LastIndex(session, ".")]
 }
 
 // sessionStandIn takes a session's relay frames on a NATS connection of its own, as a plugin in
 // consumer mode does, and answers each at once with the replies answer names for it, unless it is
 // silent. A message carrying the connection probe's header (bus.ConnectionProbeHeader) is no frame:
 // it is answered done before anything is decoded, as the plugins' shared consumer delivery
-// answers it, unless the stand-in is silent, and counted in probed rather than collected.
+// answers it, unless the stand-in is silent, and counted in probed rather than collected; the last
+// probe's reply subject is kept in probeReply. Once it is closed (close), by its test's cleanup or
+// by a test that stops the session early, it reports no answer the closed connection cut short: a
+// frame the listener delivers just as the test ends meets that close, and its reply has no session
+// left to reach (closedUnder).
 type sessionStandIn struct {
-	t      *testing.T
-	conn   *natsgo.Conn
-	frames chan relayedFrame
-	silent atomic.Bool
-	probed atomic.Int32
+	t          *testing.T
+	conn       *natsgo.Conn
+	frames     chan relayedFrame
+	silent     atomic.Bool
+	closed     atomic.Bool
+	probed     atomic.Int32
+	probeReply atomic.Pointer[string]
 }
 
 // answerDone answers a frame received and done at once: the session wrote it.
@@ -147,12 +155,13 @@ func startSessionStandIn(t *testing.T, url, sessionID string, answer func(relaye
 func startSessionStandInOn(t *testing.T, conn *natsgo.Conn, sessionID string, answer func(relayedFrame) []string) *sessionStandIn {
 	t.Helper()
 	standIn := &sessionStandIn{t: t, conn: conn, frames: make(chan relayedFrame, 256)}
-	t.Cleanup(standIn.conn.Close)
+	t.Cleanup(standIn.close)
 	if _, err := standIn.conn.Subscribe(bus.DeliverSubject(sessionID), func(msg *natsgo.Msg) {
 		if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
+			standIn.probeReply.Store(&msg.Reply)
 			standIn.probed.Add(1)
 			if !standIn.silent.Load() {
-				if err := msg.Respond([]byte(relayReplyDone)); err != nil {
+				if err := msg.Respond([]byte(relayReplyDone)); err != nil && !standIn.closedUnder(err) {
 					t.Errorf("answer the connection probe of %s: %v", sessionID, err)
 				}
 			}
@@ -183,11 +192,28 @@ func startSessionStandInOn(t *testing.T, conn *natsgo.Conn, sessionID string, an
 	return standIn
 }
 
+// close marks the stand-in closed and closes its connection, as its test's cleanup does and as a
+// test does that stops the session's plugin early. Marked first, so a reply the close cuts short
+// finds it marked.
+func (s *sessionStandIn) close() {
+	s.closed.Store(true)
+	s.conn.Close()
+}
+
+// closedUnder reports whether err is the closed connection of a stand-in that was closed (close):
+// its test is over, or stopped the session, and the answer has no session left to reach. Any
+// other failure to answer is the test's.
+func (s *sessionStandIn) closedUnder(err error) bool {
+	return s.closed.Load() && errors.Is(err, natsgo.ErrConnectionClosed)
+}
+
+// reply sends word as the answer to frame, and fails the test when it cannot, unless the stand-in
+// was closed under it (closedUnder).
 func (s *sessionStandIn) reply(frame relayedFrame, word string) {
-	if err := s.conn.Publish(frame.msg.Reply, []byte(word)); err != nil {
+	if err := s.conn.Publish(frame.msg.Reply, []byte(word)); err != nil && !s.closedUnder(err) {
 		s.t.Errorf("reply %s to a frame: %v", word, err)
 	}
-	if err := s.conn.Flush(); err != nil {
+	if err := s.conn.Flush(); err != nil && !s.closedUnder(err) {
 		s.t.Errorf("flush the reply %s: %v", word, err)
 	}
 }
@@ -259,7 +285,7 @@ func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T)
 	requireFrames(t, first.collect(t, 1, 5*time.Second), before)
 	awaitAcked(t, rig.consumers, sessionID, beforeSeq)
 
-	first.conn.Close()
+	first.close()
 	var away []contracts.Envelope
 	for range 3 {
 		item, _ := rig.storeEvent(t, agent)
@@ -403,7 +429,7 @@ func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t 
 	// Everything but the held frame is written and acked; the held one waits, in progress.
 	awaitAckState(t, rig.consumers, sessionID, 1, e0Seq)
 
-	first.conn.Close()
+	first.close()
 	ledgerMu.Lock()
 	held = ""
 	ledgerMu.Unlock()
@@ -1215,7 +1241,7 @@ func TestTheNakDelayClimbsWithTheMessagesDeliveryCount(t *testing.T) {
 		relays.frames[token] = frame
 		run.outstanding[token] = frame
 		relays.framesMu.Unlock()
-		relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + token, Data: []byte(relayReplyNak)})
+		relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + run.sessionID + "." + token, Data: []byte(relayReplyNak)})
 		return acker.last()
 	}
 

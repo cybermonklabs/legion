@@ -616,7 +616,7 @@ var capabilityStatuses = valuesFrom(ServingFloor,
 // capabilitySources is every source a deployment row's decision can come from. The field is
 // older than the floor (version.go's 25), and `configuration` and `boot` came with it. Its list
 // grew once: `caches`, what the repository caches' last health reads said of their room, the
-// source of the row `repository-cache-room`, arrived at cachesSourceContract (version.go's 209,
+// source of the row `repository-cache-room`, arrived at cachesSourceContract (version.go's 213,
 // capabilities.SourceCaches). So it is written out value by value, sorted by value, as
 // waitAnswers is, and a row of that source is served without its `source` to a caller below that
 // contract (shaping.go's withoutUnadmittedCapabilitySources).

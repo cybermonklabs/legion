@@ -502,7 +502,7 @@ takes `--content` once it ends in `.md`.
 An upload over a document the owner already holds under that name replaces every word of it, so it names the token of the version it replaces.
 That token is the one `dispatch doc-read` prints as `Document token: sha256:…`, and it travels in `--precondition-json '{"document":"sha256:…"}'`, beside the `--force` that asks the command for the document's next version.
 A token behind the live document is refused `409 PRECONDITION_FAILED` and nothing is written: the refusal tells you to read the document again with `dispatch doc-read`, which prints the token the document carries now, and to upload again naming that token.
-An upload that names no token at all is refused `400 PRECONDITION_REQUIRED`, by every server and under no setting.
+An upload that names no token is taken for now, unchecked, since older `dispatch` commands cannot name one; Dispatch will refuse it `400 PRECONDITION_REQUIRED` again once every deployed command sends one, so name the token.
 A first upload of a name replaces no version, so it names no token.
 
 `dispatch handoff-write --issue <KEY> --phase <phase> --body-file <path>` records a Legion phase
