@@ -34,9 +34,9 @@ source "$script_dir/test-lib.sh"
 # script's `python3` is this interpreter and the gh its Python runs is the stub beside that link.
 # The first python3 on the caller's PATH can be a version manager's shim that starts the
 # interpreter with a PATH of its own: mise 2026.10.11's python3 shim, in a mise-activated
-# environment, started it without the entries the caller had put in front, so the script's Python
-# ran the caller's gh, against GitHub, and not the stub. disk_watch.test.sh links its interpreter
-# the same way.
+# environment, put that environment's PATH in front of the entries the caller had put first, so
+# the script's Python ran that environment's gh, against GitHub, and not the stub.
+# disk_watch.test.sh links its interpreter the same way.
 if ! python=$(python3 -I -c 'import sys; print(sys.executable)'); then
   echo "could not resolve the python3 interpreter" >&2
   exit 1
@@ -624,11 +624,13 @@ check "names the missing history entry" \
   "$(contains "$out" 'declares daemon API contract 8, but its history has no `// 8:` entry')"
 
 echo "case: a python3 after the stub that starts the interpreter with a PATH of its own"
-# What a version manager's shim can do, as the comment on $python above says mise's did: this
-# python3 starts the interpreter with the PATH this harness had, without the fixture's bin
-# directory, so a script whose `python3` were this one would read the base with this harness's
-# own gh, not the stub. The fixture's link comes first, so the script never meets it. The two
-# checks before the case show the resetting python3 does what the row needs, so the row can fail.
+# A stricter form of what mise's shim did (the comment on $python above): this python3 starts the
+# interpreter with the PATH this harness had and leaves the fixture's bin directory out, where mise
+# put it behind its environment's own entries. So a script whose `python3` were this one would read
+# the base with this harness's own gh, or with none, and never through the stub, whether or not
+# this harness's PATH holds a gh. The fixture's link comes first, so the script never meets it. The
+# two checks before the case show the resetting python3 does what the row needs, so the row can
+# fail.
 # The case is "a tree above its base" above, in a merge group, whose one GitHub read is the base.
 resetting=$work/resetting-python
 mkdir -p "$resetting/probe"

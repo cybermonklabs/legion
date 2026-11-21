@@ -269,8 +269,9 @@ jq '{name, version}' "$root/packages/pi-envoy/package.json" >"$plugins/pi-envoy/
 # PATH is handed over by value, as the other e2e scripts hand theirs to the services they start
 # through held-port.py: start_kept runs `python3` by name (lib/rig.sh), and the first python3 can
 # be a version manager's shim that starts the interpreter with a PATH of its own. mise 2026.10.11's
-# python3 shim, in a mise-activated environment, started it without the entries put in front, so
-# the daemon held-port.py starts would inherit a PATH without the real tmux put first above.
+# python3 shim, in a mise-activated environment, put that environment's PATH in front of the
+# entries put first, so the daemon held-port.py starts would find that environment's tmux before
+# the real one put first above.
 pane_home=(env -u OMP_PROFILE -u PI_PROFILE HOME="$work/home" PATH="$PATH")
 
 # Beyond what boot needs, the file plants what the state's `settings` must show and must not

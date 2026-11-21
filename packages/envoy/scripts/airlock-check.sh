@@ -488,8 +488,8 @@ psql_stack() { psql "$STACK_DB_URL" -Atq -v ON_ERROR_STOP=1 "$@"; }
 # answer is the stack's own build, first on this script's PATH once start_stack has evaluated the
 # banner's `export PATH`. The first python3 on PATH can be a version manager's shim that starts the
 # interpreter with a PATH of its own: mise 2026.10.11's python3 shim, in a mise-activated
-# environment, started it without the entries put in front of it, so the scanner would run an
-# installed agent-secrets and not this checkout's.
+# environment, put that environment's PATH in front of the entries put first, so the scanner would
+# run an installed agent-secrets and not this checkout's.
 k1_python() {
 	local python
 	python="$(python3 -I -c 'import sys; print(sys.executable)')" || return 1
