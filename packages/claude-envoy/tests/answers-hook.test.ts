@@ -334,8 +334,8 @@ function procState(pid: number): { state: string; started: string } | undefined 
  *  nor the pending signal in /proc. So each read here is a wait (`processEnded`), never one look.
  *  With no /proc (macOS): `kill(pid, 0)` failing with ESRCH, at once. `ps` would read the start
  *  there, but procps `ps -p` reads every process (0.76 to 0.98 s unloaded on the dev box, up to
- *  8.2 s on a loaded CPU pair), and rows read processes while a token command waits on their
- *  gate, which envoy-config ends at 10 s, so `ps`'s time would decide them. A zombie not yet reaped,
+ *  8.2 s on a loaded CPU pair), and rows read processes again and again while a token command
+ *  waits on their gate, so `ps`'s time would spend the row's minute. A zombie not yet reaped,
  *  or a pid given to another process within the row, makes such a wait longer, never shorter. */
 function ended(known: StartedProcess): boolean {
   if (!PROC) {

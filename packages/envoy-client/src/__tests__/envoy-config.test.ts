@@ -23,6 +23,7 @@ import {
 import type * as EnvoyConfigModule from "../envoy-config";
 import {
   askgateSetting,
+  commandTimeoutMs,
   type EnvoyConfig,
   type EnvoyHarness,
   envoyConfigPath,
@@ -1319,27 +1320,52 @@ describe("a ! command in envoy.json", () => {
 
   // A test that holds a command on its own gate while it waits on other processes sets the bound
   // to its own timeout (claude-envoy's answers-hook rows); any other value keeps the 10 s.
-  test("runs for as long as ENVOY_COMMAND_TIMEOUT_MS says, a whole number of ms, when it is set", () => {
+  test("runs for as long as ENVOY_COMMAND_TIMEOUT_MS says, whole ms from 1 to 2^31 - 1, when it is set", () => {
+    const bounds: [string | undefined, number][] = [
+      [undefined, 10_000],
+      ["300", 300],
+      ["1", 1],
+      ["2147483647", 2_147_483_647],
+      // Bun 1.4.4's spawnSync wraps a timeout of 2^31 ms or more.
+      ["2147483648", 10_000],
+      ["99999999999999999999", 10_000],
+      // In Bun, `timeout: 0` is no limit at all.
+      ["0", 10_000],
+      ["", 10_000],
+      ["-1", 10_000],
+      ["1.5", 10_000],
+      ["0300", 10_000],
+      ["1e3", 10_000],
+      [" 300", 10_000],
+      ["300 ", 10_000],
+      ["0x12c", 10_000],
+      ["soon", 10_000],
+    ];
+    expect(
+      bounds.map(([bound]) => [bound, commandTimeoutMs({ ENVOY_COMMAND_TIMEOUT_MS: bound })])
+    ).toEqual(bounds);
+
     const home = tempDir();
-    const file = writeFile(path.join(home, "envoy.json"), {
-      dispatch: { ...dispatchOn, token: `!sleep 5 # ${home}` },
-    });
-    const read = (bound: string) => {
-      const env = { ...commandEnvironment(home), ENVOY_COMMAND_TIMEOUT_MS: bound };
-      return dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }));
-    };
-    expect(read("300")).toEqual({
-      enabled: false,
-      notice: null,
-      error: `${file}: dispatch.token's command did not finish within 0.3 s, and does not run again in this process`,
-    });
-    // A file of its own for each value, since a command's outcome is kept by command and file.
-    for (const bound of ["0", "-1", "1.5", "soon"]) {
-      const quick = writeFile(path.join(tempDir(), "envoy.json"), {
-        dispatch: { ...dispatchOn, token: `!sleep 0.5; printf ${USER_TOKEN}` },
+    const read = (bound: string, command: string) => {
+      // A file of its own for each read, since a command's outcome is kept by command and file.
+      const file = writeFile(path.join(tempDir(), "envoy.json"), {
+        dispatch: { ...dispatchOn, token: `!${command}` },
       });
       const env = { ...commandEnvironment(home), ENVOY_COMMAND_TIMEOUT_MS: bound };
-      expect(dispatchSettings(env, readEnvoyConfig(quick, env, { cwd: tempDir() }))).toMatchObject({
+      return {
+        file,
+        settings: dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() })),
+      };
+    };
+    const short = read("300", `sleep 5 # ${home}`);
+    expect(short.settings).toEqual({
+      enabled: false,
+      notice: null,
+      error: `${short.file}: dispatch.token's command did not finish within 0.3 s, and does not run again in this process`,
+    });
+    // The longest bound Bun keeps, and the first it would wrap, both let a 0.5 s command finish.
+    for (const bound of ["2147483647", "2147483648"]) {
+      expect(read(bound, `sleep 0.5; printf ${USER_TOKEN}`).settings).toMatchObject({
         enabled: true,
         token: USER_TOKEN,
       });
