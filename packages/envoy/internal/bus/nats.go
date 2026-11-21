@@ -268,10 +268,19 @@ type recoverableSubscription struct {
 	binding chan struct{}
 	// refused is set when the server refused the subscription the client last sent for this
 	// registration on its current connection (onAsyncError), and cleared each time it is sent
-	// again: by a bind, and by nats.go itself on a reconnect in place (onReconnect). nats.go keeps
-	// a refused subscription valid, so without it a lane the server will not deliver to would read
-	// as subscribed. Only the core registration is ever marked.
+	// again: by the bind of a registration or of a restore, and by nats.go itself on a reconnect in
+	// place (onReconnect). ResendRefusedCore clears it only once the server has accepted what it
+	// sent. nats.go keeps a refused subscription valid, so without it a lane the server will not
+	// deliver to would read as subscribed. Only the core registration is ever marked.
 	refused bool
+	// sentOn and sentReconnects name the connection session the subscription was last sent on: the
+	// connection and its reconnect count (nats.Conn.Stats) at that send. Each bind records them, and
+	// so does each reconnect in place (onReconnect), where nats.go sends every subscription again.
+	// ResendRefusedCore answers only a refusal on that session. Once nats.go has reconnected, and
+	// until onReconnect runs, the mark it would read is the previous session's, of a subscription
+	// nats.go has already sent again to the new server.
+	sentOn         *nats.Conn
+	sentReconnects uint64
 	// pendingMsgs and pendingBytes, when set, are the pending limits of a core subscription,
 	// applied on every bind: the role lane's are far above any backlog its handler can build
 	// (ConnectRoleLane), so nats.go queues what the server delivers rather than dropping it as a
@@ -396,6 +405,11 @@ type Client struct {
 	// slowConsumers counts the slow-consumer errors the client's connections reported
 	// (SlowConsumers).
 	slowConsumers atomic.Uint64
+	// coreQueues, set by ConnectRoleLane, are the queue groups the core subscription may be sent in,
+	// in the order ResendRefusedCore tries them: the shared group first, then the machine's, as the
+	// lane's start does. It is nil on any other client, whose core subscription keeps the queue group
+	// it registered.
+	coreQueues []string
 
 	// recovery state
 	recovering int32
@@ -1020,6 +1034,7 @@ func (c *Client) registerSubscription(next recoverableSubscription, conn *nats.C
 	// next is unrefused: the bind below sends its subscription anew, and a refusal of it arrives
 	// only after the send.
 	*subscription = next
+	subscription.sentOn, subscription.sentReconnects = conn, reconnectsOf(conn)
 	subscription.binding = make(chan struct{})
 	c.subscriptionsMu.Unlock()
 	if replaced != nil {
@@ -1269,6 +1284,136 @@ func (c *Client) SubOK() bool {
 // is read from the server's own report of it (onAsyncError) until the subscription is sent again.
 func (c *Client) CoreSubOK() bool {
 	return c.subscriptionOK(coreSubscription)
+}
+
+// ResendRefusedCore sends the client's core subscription to the server again when the server has
+// refused it on the connection the client holds and that connection is connected. Nothing else
+// does. A reload of the server's configuration that takes the grant away revokes the subscription
+// and keeps the connection, and a later reload that gives the grant back does not restore it: the
+// server keeps no record of a subscription it refused, and nats.go sends a subscription again only
+// when it reconnects. Without a new send the subscription stays refused for the life of the
+// connection, whatever grant the server holds now.
+//
+// It sends the subscription in each queue group of coreQueues in turn, or in the registration's
+// own when the client has none, and waits for the server's answer to each one (sendCore). It
+// stops at the first group the server accepts. The new subscription replaces the refused one,
+// which it then unsubscribes; the server holds no subscription under that sid, so it ignores the
+// UNSUB. Each subscription the server refused before the last group is unsubscribed at once. The
+// mark stays set until the server has accepted a send, so CoreSubOK never reads true for a
+// subscription the server refuses. A send whose answer does not come back leaves the refused
+// subscription in place.
+//
+// It sends nothing in four cases. While a bind of the registration is in flight, that bind sends
+// the subscription again itself. While the refused subscription still holds messages that the
+// server delivered before the revocation, the unsubscribe would drop them, and its handler takes
+// them first. On a connection that is not connected, the reconnect sends every subscription again.
+// And when the refusal is of an earlier session of the connection (sentOn, sentReconnects):
+// nats.go has reconnected and sent the subscription again, and onReconnect has not run yet.
+func (c *Client) ResendRefusedCore() error {
+	c.mu.Lock()
+	conn, js := c.Conn, c.js
+	reconnects := reconnectsOf(conn)
+	c.subscriptionsMu.Lock()
+	subscription := &c.subscriptions[coreSubscription]
+	refused := subscription.active
+	send := !c.stopped() && conn != nil && conn.Status() == nats.CONNECTED && subscription.refused &&
+		subscription.binding == nil && refused != nil && refused.IsValid() &&
+		subscription.sentOn == conn && subscription.sentReconnects == reconnects
+	if send {
+		pending, _, err := refused.Pending()
+		send = err == nil && pending == 0
+	}
+	if !send {
+		c.subscriptionsMu.Unlock()
+		c.mu.Unlock()
+		return nil
+	}
+	subscription.binding = make(chan struct{})
+	registration := *subscription
+	c.subscriptionsMu.Unlock()
+	c.mu.Unlock()
+
+	queues := c.coreQueues
+	if len(queues) == 0 {
+		queues = []string{registration.queue}
+	}
+	var (
+		sub      *nats.Subscription
+		queue    string
+		accepted bool
+		err      error
+	)
+	for _, queue = range queues {
+		if sub != nil {
+			// The server refused the subscription in the previous group.
+			_ = sub.Unsubscribe()
+		}
+		attempt := registration
+		attempt.queue = queue
+		if sub, accepted, err = sendCore(attempt, conn, js); err != nil || accepted {
+			break
+		}
+	}
+	if err := c.endBind(subscription, sub, err, false); err != nil {
+		// A send that failed leaves the refused subscription as the one the client holds, still
+		// marked. A bind that ended after Drain or Close stopped the client leaves both to them.
+		return err
+	}
+	c.mu.Lock()
+	c.subscriptionsMu.Lock()
+	if subscription.active == sub {
+		subscription.queue = queue
+		// A reconnect during the send has cleared the mark (onReconnect), and the new server's
+		// answer to the subscriptions nats.go sent it again is the one that counts.
+		if c.Conn == conn && reconnectsOf(conn) == reconnects {
+			subscription.refused = !accepted
+		}
+	}
+	c.subscriptionsMu.Unlock()
+	c.mu.Unlock()
+	if accepted && queue != registration.queue {
+		slog.Warn("envoy nats core subscription sent again in another queue group, since the server refused it in its own",
+			slog.String("name", c.name),
+			slog.String("subject", registration.subject),
+			slog.String("queue", queue),
+			slog.String("refused_queue", registration.queue))
+	}
+	// The new subscription is the one the client holds now. The unsubscribe can only fail on a
+	// connection that closed meanwhile, which the recovery replaces with every subscription bound.
+	_ = refused.Unsubscribe()
+	return nil
+}
+
+// coreSendAnswerWait bounds sendCore's wait for the server's answer to a subscription it sends.
+const coreSendAnswerWait = 2 * time.Second
+
+// sendCore binds registration on conn and waits, within coreSendAnswerWait, until the server has
+// read the subscription, and reports whether it accepted it. The server answers a flush only after
+// every line the client sent before it, and nats.go records a refusal as the connection's last
+// error as it reads the -ERR (processTransientError), before the PONG that ends the flush. So the
+// server accepted the subscription when that error is still the one the connection held before
+// the bind (sameError); any other error, a refusal among them, counts as not accepted. A flush
+// that fails leaves the answer unknown: the subscription is unsubscribed and the failure returned.
+func sendCore(registration recoverableSubscription, conn *nats.Conn, js nats.JetStreamContext) (*nats.Subscription, bool, error) {
+	before := conn.LastError()
+	sub, err := bind(registration, conn, js)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := conn.FlushTimeout(coreSendAnswerWait); err != nil {
+		_ = sub.Unsubscribe()
+		return nil, false, err
+	}
+	return sub, sameError(conn.LastError(), before), nil
+}
+
+// reconnectsOf is conn's reconnect count, 0 for no connection: the session of a subscription's
+// send (recoverableSubscription.sentReconnects).
+func reconnectsOf(conn *nats.Conn) uint64 {
+	if conn == nil {
+		return 0
+	}
+	return conn.Stats().Reconnects
 }
 
 func (c *Client) subscriptionOK(transport subscriptionTransport) bool {

@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+  The listener's self-health check now covers the role lane. When the NATS server refused or
+  revoked the role lane's subscription, the server reported it once, `/healthz` answered `503
+  role lane subscription inactive` for as long as it lasted, and the check logged nothing, so an
+  alert on `self-health probe failed` did not fire or did not stay open. Now the check logs that
+  line with the same error every 30 seconds while the lane forwards nothing, and logs
+  `self-health recovered` once it is back. A role lane fault never restarts the listener.
+
+  The lane also comes back after a configuration reload gives its grant back. Such a reload keeps
+  the connection, and nothing sent the refused subscription again: only a reconnect or a restart
+  of the listener did. Now, while the server refuses the lane's subscription on a connection that
+  stays up, each check sends it again (`bus.Client.ResendRefusedCore`), in the shared queue group
+  and then in the machine's, as the lane's start does. So a reload that takes away only the shared
+  group's grant leaves the lane in the machine's group, as a restart would. The lane reads
+  inactive until the server has accepted a send, and a send never answers the refusal of the
+  session before a reconnect. While the grant stays missing, each check costs one subscription,
+  one refusal from the server and one `envoy nats async error` line in each of the two groups,
+  every 30 seconds.
+time: 2026-11-21T10:02:41Z
+custom:
+    Issue: fix-envoy-listener-health-covers-role-lane
