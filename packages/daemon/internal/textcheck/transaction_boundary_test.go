@@ -235,25 +235,19 @@ func pgxTx(loaded []*packages.Package) (*types.Interface, error) {
 	return nil, errors.New("no loaded package imports pgx, so the guard cannot tell a transaction from a pool")
 }
 
-// boundaryFunctions are the store's functions that run a body in a transaction, the body their
-// last argument: each body's context is the transaction's commit scope.
-var boundaryFunctions = []string{"Transact", "TransactWith", "ReadOnly", "transactUntilCommitted"}
-
-// mixedContexts is every call inside a transaction body of the store's boundary whose context
-// argument is not the body's own context (R4): a variable declared outside the body, a local that
-// holds one, or any other expression, such as r.Context() (bodyContexts). Such a call runs outside
-// the commit scope, so a hook it registers panics, a wake it sends comes before the commit, and a
-// transaction it opens is its own. A function literal inside a body is not walked: a hook runs
-// once the commit is over, and a literal that is itself a body is checked as one.
+// mixedContexts is every call inside a transaction body whose context argument is not the body's
+// own context (R4): a variable declared outside the body, a local that holds one, or any other
+// expression, such as r.Context() (bodyContexts). Such a call runs outside the commit scope, so a
+// hook it registers panics, a wake it sends comes before the commit, and a transaction it opens is
+// its own. A body is every function literal of a transaction body's type (isBody), whatever
+// function it is passed to: store.Transact, a wrapper such as serializedTx, or a variable. A
+// function literal inside a body is not walked: a hook runs once the commit is over, and a literal
+// that is itself a body is checked as one.
 func mixedContexts(info *types.Info, decl ast.Decl) []token.Pos {
 	var found []token.Pos
 	ast.Inspect(decl, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok || len(call.Args) == 0 || !boundaryCall(info, call) {
-			return true
-		}
-		body, ok := call.Args[len(call.Args)-1].(*ast.FuncLit)
-		if !ok {
+		body, ok := node.(*ast.FuncLit)
+		if !ok || !isBody(info, body) {
 			return true
 		}
 		contexts := newBodyContexts(info, body)
@@ -273,27 +267,16 @@ func mixedContexts(info *types.Info, decl ast.Decl) []token.Pos {
 	return found
 }
 
-// boundaryCall reports whether call calls one of the store's boundaryFunctions.
-func boundaryCall(info *types.Info, call *ast.CallExpr) bool {
-	fun := call.Fun
-	switch indexed := fun.(type) {
-	case *ast.IndexExpr:
-		fun = indexed.X
-	case *ast.IndexListExpr:
-		fun = indexed.X
-	}
-	var name *ast.Ident
-	switch fun := fun.(type) {
-	case *ast.Ident:
-		name = fun
-	case *ast.SelectorExpr:
-		name = fun.Sel
-	default:
+// isBody reports whether lit has a transaction body's type, the one store.TransactWith runs:
+// func(context.Context, pgx.Tx) error.
+func isBody(info *types.Info, lit *ast.FuncLit) bool {
+	signature, ok := info.TypeOf(lit).(*types.Signature)
+	if !ok || signature.Params().Len() != 2 || signature.Results().Len() != 1 {
 		return false
 	}
-	function, ok := info.Uses[name].(*types.Func)
-	return ok && function.Pkg() != nil && function.Pkg().Path() == modulePath+"/internal/store" &&
-		slices.Contains(boundaryFunctions, function.Name())
+	return signature.Params().At(0).Type().String() == "context.Context" &&
+		signature.Params().At(1).Type().String() == pgxPath+".Tx" &&
+		signature.Results().At(0).Type().String() == "error"
 }
 
 // takesContextFirst reports whether call's callee takes a context.Context first.
@@ -575,8 +558,9 @@ func plantedDotOwner(ctx context.Context, raw *pgxpool.Pool) error {
 }
 `
 
-// plantedContextTransaction is a third overlay file of package daemon, whose transaction body
-// passes contexts from outside the body to calls inside it (R4), beside the forms R4 admits.
+// plantedContextTransaction is a third overlay file of package daemon, whose transaction bodies,
+// one passed straight to store.Transact and one a wrapper runs, pass contexts from outside the
+// body to calls inside it (R4), beside the forms R4 admits.
 const plantedContextTransaction = `package daemon
 
 import (
@@ -589,8 +573,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
+// plantedWrapper runs write in a transaction, as serializedTx does: write is a body all the same.
+func plantedWrapper(ctx context.Context, pool *store.Pool, write func(context.Context, pgx.Tx) error) error {
+	return store.Transact(ctx, pool, write)
+}
+
 func plantedMixed(ctx context.Context, pool *store.Pool, r *http.Request) error {
 	listing := ctx
+	if err := plantedWrapper(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(listing, "select 1") // L19 reported: R4, a context from outside a body a wrapper runs
+		return err
+	}); err != nil {
+		return err
+	}
 	return store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(r.Context(), "select 1"); err != nil { // L16 reported: R4, the request's context
 			return err
@@ -646,12 +641,13 @@ var plantedMark = regexp.MustCompile(`// (L[0-9]+) reported: (R[0-9])`)
 
 // TestNoTransactionOrStatementBypassesTheBoundary runs the guard over the module with the planted
 // files added. The production code must add no line; the planted files must add exactly their
-// eighteen marked lines. A real call outside the boundary fails by being listed, a guard blind to
+// nineteen marked lines. A real call outside the boundary fails by being listed, a guard blind to
 // a receiver kind, a method, a method value, a method expression, a context of another type,
 // database/sql, a dot import, a context from outside a transaction's body, a local that holds one,
-// or a package fails by a missing marked line, and a guard that reaches into the boundary fails
-// by listing the TransactWith body, the savepoint, the statement in a transaction, a context the
-// body derived, a nested body's own context, a deferred literal or a hook.
+// a body a wrapper runs, or a package fails by a missing marked line, and a guard that reaches into
+// the boundary fails by listing the TransactWith body, the savepoint, the statement in a
+// transaction, a context the body derived, a nested body's own context, a deferred literal or a
+// hook.
 func TestNoTransactionOrStatementBypassesTheBoundary(t *testing.T) {
 	dir := moduleDir(t)
 	overlay := map[string][]byte{}
@@ -670,8 +666,8 @@ func TestNoTransactionOrStatementBypassesTheBoundary(t *testing.T) {
 			want = append(want, "internal/daemon/"+file.name+":"+strconv.Itoa(number+1)+" "+mark[2]+" in daemon."+file.function(mark[1]))
 		}
 	}
-	if len(want) != 18 {
-		t.Fatalf("the planted files mark %d lines, want 18", len(want))
+	if len(want) != 19 {
+		t.Fatalf("the planted files mark %d lines, want 19", len(want))
 	}
 	slices.Sort(want)
 
