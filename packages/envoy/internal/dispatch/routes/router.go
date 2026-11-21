@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -179,6 +180,10 @@ type AppContextOptions struct {
 	OutboxPublishes bool
 	// Metrics is the process's metrics registry (cmd/dispatch's /metrics); see api.Deps.Metrics.
 	Metrics *metrics.Registry
+	// AnswersLatency times the answers reads this process serves for the keyword fill's pause,
+	// which cmd/dispatch gives the fill too (textversions.Config.Latency); nil times none. See
+	// api.Deps.AnswersLatency.
+	AnswersLatency *sessionanswers.Latency
 	// DevSignIn mounts GET /auth/_dev/signin, which issues the session cookie for any person
 	// named with no sign-in issuer exchange, and makes the whole router refuse a request whose Host
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
@@ -244,6 +249,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		ListenerRosterUncached: opts.ListenerRosterUncached,
 		OutboxPublishes:        opts.OutboxPublishes,
 		Metrics:                opts.Metrics,
+		AnswersLatency:         opts.AnswersLatency,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
 	})
@@ -410,7 +416,9 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // carrying the nonce the cookie bound the sign-in to. An exchange that meets an issuer this
 // process has not discovered (another process started the sign-in), or a token endpoint that
 // cannot answer it (a 5xx, a 408 or a 429, or no answer: oidc.ErrIssuerUnavailable), is answered
-// 503 SIGNIN_UNAVAILABLE; an exchange the token endpoint refuses, and any other failure, 502.
+// 503 SIGNIN_UNAVAILABLE. Every other answer of the token endpoint - a 4xx with or without an
+// OAuth error, a 2xx that names an error or holds no token, a 3xx - and every other failure of the
+// sign-in is answered 502.
 func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)

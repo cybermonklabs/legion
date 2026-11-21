@@ -158,8 +158,9 @@ func TestGoogleLoginMintNamesARateLimitAsUpstream(t *testing.T) {
 
 // TestGoogleLoginMintReadsInvalidGrantOnlyFromARefusal: a login that needs a new sign-in is read
 // from Google's invalid_grant only when the answer's status is a refusal (oauthrefusal.Refuses):
-// a 400 or a 403 naming it is refused. A 5xx naming it is Google's own failure, upstream, which
-// points the broker's operator at Google rather than at the login.
+// a 400 or a 403 naming it is refused. A 5xx naming it is Google's own failure, and a 408 Google
+// timing the request out: both are upstream, which points the broker's operator at Google rather
+// than at the login.
 func TestGoogleLoginMintReadsInvalidGrantOnlyFromARefusal(t *testing.T) {
 	value := `{"type":"authorized_user","client_id":"client-id","cli` + `ent_secret":"client-secret","ref` + `resh_token":"refresh-token"}`
 	for _, tc := range []struct {
@@ -171,6 +172,7 @@ func TestGoogleLoginMintReadsInvalidGrantOnlyFromARefusal(t *testing.T) {
 		{http.StatusForbidden, `{"error":"invalid_grant","error_subtype":"invalid_rapt"}`, "refused"},
 		{http.StatusInternalServerError, `{"error":"invalid_grant"}`, "upstream"},
 		{http.StatusServiceUnavailable, `{"error":"invalid_grant","error_subtype":"invalid_rapt"}`, "upstream"},
+		{http.StatusRequestTimeout, `{"error":"invalid_grant"}`, "upstream"},
 	} {
 		t.Run(fmt.Sprintf("%d %s", tc.status, tc.body), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

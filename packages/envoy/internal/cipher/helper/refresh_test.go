@@ -184,8 +184,9 @@ func TestARefreshKeepsTheLoginUnlessTheBrokerEndsItsGrant(t *testing.T) {
 
 // TestARefreshTheBrokerDidNotAnswerIsRetriedEvery15sForAsLongAsItLasts: a refresh with no answer
 // from the broker (a refused dial, a DNS failure, no route, a timeout, a lost answer, a cancelled
-// request) or a 5xx waits the fixed 15 s retry every time, however long the run, with no switch to
-// backoff past the broker's five-minute grace. The schedule's answers are computed, with no clock.
+// request), a 5xx or a 408, the outage set but 429 (oauthrefusal.Outage), waits the fixed 15 s
+// retry every time, however long the run, with no switch to backoff past the broker's five-minute
+// grace. The schedule's answers are computed, with no clock.
 func TestARefreshTheBrokerDidNotAnswerIsRetriedEvery15sForAsLongAsItLasts(t *testing.T) {
 	post := func(err error) error {
 		return &url.Error{Op: "Post", URL: "https://broker.internal.example/v1/oauth/token", Err: err}
@@ -199,6 +200,7 @@ func TestARefreshTheBrokerDidNotAnswerIsRetriedEvery15sForAsLongAsItLasts(t *tes
 		"a cancelled request": post(context.Canceled),
 		"a 502":               &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusBadGateway, Header: http.Header{}}},
 		"a 503":               &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusServiceUnavailable, Header: http.Header{}}},
+		"a 408":               &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusRequestTimeout, Header: http.Header{}}},
 	}
 	for name, err := range noAnswer {
 		s := (&Broker{}).newRetrySchedule()
