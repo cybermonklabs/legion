@@ -297,7 +297,7 @@ func TestTheHoldJournal(t *testing.T) {
 		}
 	})
 
-	t.Run("every command but hold release and hub-restore's hold abort needs hold set's done entry", func(t *testing.T) {
+	t.Run("every command but hold release and hold abort needs hold set's done entry", func(t *testing.T) {
 		r := newRig(t)
 		c := r.client(t)
 		for i, w := range []holdrecord.Workflow{holdrecord.WorkflowCutover, holdrecord.WorkflowRollback,
@@ -310,8 +310,10 @@ func TestTheHoldJournal(t *testing.T) {
 			if err := c.AppendStop(ctx, holdID, holdrecord.CommandSet, "a step of 2 to 6 failed"); err != nil {
 				t.Fatalf("%s: hold set's stop entry: %v", w, err)
 			}
+			sawAbort := false
 			for _, command := range holdrecord.Commands(w) {
-				if w == holdrecord.WorkflowHubRestore && command == holdrecord.CommandAbort {
+				if command == holdrecord.CommandAbort {
+					sawAbort = true
 					// Decide is Admit's decision; an admitted abort's intent would keep hold release
 					// out below, since only a complete record or one holding hold set's entries alone
 					// admits it.
@@ -323,6 +325,9 @@ func TestTheHoldJournal(t *testing.T) {
 				}
 				_, err := c.Admit(ctx, holdID, cmd(command), nil)
 				refused(t, string(w)+": Admit of "+command, err, holdrecord.ErrOutOfOrder, holdrecord.CommandSet)
+			}
+			if !sawAbort {
+				t.Fatalf("%s's table does not name hold abort, which every workflow admits as its way out", w)
 			}
 			// With no entry but hold set's, nothing changed, and hold release is admitted.
 			release(t, c, holdID)
@@ -773,5 +778,132 @@ func TestTheHoldJournal(t *testing.T) {
 		}
 		run(t, c, "h-oneclaim", cmd("streams census"), nil, nil)
 		release(t, c, "h-oneclaim")
+	})
+
+	// A buckets command that fails for good after its intent must not wedge the hold: its stop
+	// ends the intent and records what it left, and hold abort ends the hold with that record.
+	t.Run("a buckets restore cut after its intent stops on its rerun, and hold abort ends the hold recording what it left", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-wayout", holdrecord.WorkflowBucketsRestore, nil)
+		// The first run is cut after its intent: its process is gone, the intent pending.
+		if _, err := c.Admit(ctx, "h-wayout", cmd("buckets restore"), nil); err != nil {
+			t.Fatal(err)
+		}
+		_, err := c.Admit(ctx, "h-wayout", cmd(holdrecord.CommandAbort), nil)
+		refused(t, "hold abort with the cut restore's intent pending", err, holdrecord.ErrBusy, "buckets restore")
+		// Its rerun fails for good after deleting the bucket, and its stop names what it left.
+		if _, err := c.Admit(ctx, "h-wayout", cmd("buckets restore"), nil); err != nil {
+			t.Fatalf("the restore's rerun: %v", err)
+		}
+		const left = "changed: envoy_sessions deleted and not restored"
+		if err := c.AppendStopLeft(ctx, "h-wayout", "buckets restore", "the snapshot's chunks never arrive", left); err != nil {
+			t.Fatalf("the rerun's stop: %v", err)
+		}
+		d, _ := journal(t, c, "h-wayout")
+		if e := last(t, d); e.State != "stop" || e.Outputs["left"] != left || e.Outputs["reason"] != "the snapshot's chunks never arrive" {
+			t.Fatalf("the journal ends %+v, want the restore's stop with its reason and what it left", e)
+		}
+		if _, err := c.Admit(ctx, "h-wayout", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("hold abort after the restore's stop: %v", err)
+		}
+		d, _ = journal(t, c, "h-wayout")
+		abort, carried := last(t, d), false
+		for _, v := range abort.Inputs {
+			carried = carried || v == "buckets restore: "+left
+		}
+		if abort.Command != holdrecord.CommandAbort || abort.State != "intent" || !carried {
+			t.Fatalf("the journal ends %+v, want hold abort's intent carrying the stop's record %q", abort, "buckets restore: "+left)
+		}
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, "h-wayout", "aborted"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendDone(ctx, "h-wayout", holdrecord.CommandAbort, nil); err != nil {
+			t.Fatal(err)
+		}
+		if d, _ := journal(t, c, "h-wayout"); !d.Complete {
+			t.Fatal("hold abort's done entry did not complete the record")
+		}
+		if after := row(t, c); after.Phase != natsgrant.OperatorPhaseReleased {
+			t.Fatalf("after hold abort the row is %s", after.Phase)
+		}
+	})
+
+	t.Run("hold release is refused after a stop that left changes, or that recorded nothing", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		for _, s := range []struct {
+			holdID, left string
+		}{{"h-changed", "changed: envoy_roles recreated empty"}, {"h-unrecorded", ""}} {
+			hold(t, c, s.holdID, holdrecord.WorkflowBucketsRecreate, nil)
+			if _, err := c.Admit(ctx, s.holdID, cmd("buckets recreate"), nil); err != nil {
+				t.Fatal(err)
+			}
+			var stop error
+			if s.left != "" {
+				stop = c.AppendStopLeft(ctx, s.holdID, "buckets recreate", "the create is refused", s.left)
+			} else {
+				stop = c.AppendStop(ctx, s.holdID, "buckets recreate", "the create is refused")
+			}
+			if stop != nil {
+				t.Fatalf("%s: the recreate's stop: %v", s.holdID, stop)
+			}
+			_, err := c.Admit(ctx, s.holdID, cmd(holdrecord.CommandRelease), nil)
+			refused(t, s.holdID+": hold release after the stop", err, holdrecord.ErrOutOfOrder, "not complete")
+			// The way out is hold abort, which ends the hold.
+			if _, err := c.Admit(ctx, s.holdID, cmd(holdrecord.CommandAbort), nil); err != nil {
+				t.Fatalf("%s: hold abort after the stop: %v", s.holdID, err)
+			}
+			current := row(t, c)
+			if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, s.holdID, "aborted"); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.AppendDone(ctx, s.holdID, holdrecord.CommandAbort, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+
+	t.Run("hold release follows a stop that left nothing changed", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-unchanged", holdrecord.WorkflowBucketsCreate, nil)
+		if _, err := c.Admit(ctx, "h-unchanged", cmd("buckets create"), nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendStopLeft(ctx, "h-unchanged", "buckets create", "a stop that names nothing it left", ""); err == nil {
+			t.Fatal("AppendStopLeft with an empty left answered no error")
+		}
+		if err := c.AppendStopLeft(ctx, "h-unchanged", "buckets create", "the bucket's config is not the build's",
+			holdrecord.LeftUnchanged); err != nil {
+			t.Fatalf("the create's stop: %v", err)
+		}
+		release(t, c, "h-unchanged")
+		if after := row(t, c); after.Phase != natsgrant.OperatorPhaseReleased {
+			t.Fatalf("after hold release the row is %s", after.Phase)
+		}
+	})
+
+	t.Run("hold abort is refused while a command's intent is pending, and admitted in any workflow once it stops", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-abortbusy", holdrecord.WorkflowCutover, nil)
+		run(t, c, "h-abortbusy", cmd("create-bucket"), nil, nil)
+		if _, err := c.Admit(ctx, "h-abortbusy", cmd("convert"), nil); err != nil {
+			t.Fatal(err)
+		}
+		writes := r.RecordWrites()
+		_, err := c.Admit(ctx, "h-abortbusy", cmd(holdrecord.CommandAbort), nil)
+		refused(t, "hold abort with convert's intent pending", err, holdrecord.ErrBusy, "convert")
+		if r.RecordWrites() != writes {
+			t.Fatalf("the refused abort wrote %d records", r.RecordWrites()-writes)
+		}
+		if err := c.AppendStop(ctx, "h-abortbusy", "convert", "no safe start for K"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Admit(ctx, "h-abortbusy", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("hold abort in cutover after convert's stop: %v", err)
+		}
 	})
 }
