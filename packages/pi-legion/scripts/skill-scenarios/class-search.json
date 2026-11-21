@@ -1,0 +1,430 @@
+{
+  "residuals": [
+    {
+      "name": "remote.origin.vcs",
+      "check": "reads: a remote helper key on the world's clone",
+      "at": "rig\\.sh:\\d+ .*remote\\.origin\\.vcs",
+      "ruled": "2026-11-17 (round 26, about 18:10Z; held in rig.test.ts by the ruling of 2026-11-18)",
+      "words": "`remote.origin.vcs`, the key that carries the world's remote. No production clone has it. The world's remote is the run's own, so a clone of it needs a transport of the world's.",
+      "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\""
+    },
+    {
+      "name": "a review's url past gh's 100th review",
+      "check": "reads: production's pinned answers the world does not give",
+      "at": "^production-shapes\\.json: \\.reviews\\[\\]\\.url ",
+      "ruled": "2026-11-18 (about 04:00Z)",
+      "words": "A review's `url`, which gh asks for only past a pull request's 100th review. No world's pull request holds 100 reviews.",
+      "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\""
+    },
+    {
+      "name": "gh auth status -t (--show-token) and gh auth token",
+      "check": "reads: a credential production prints that the world holds none of",
+      "at": "^gh auth (?:status (?:-t|--show-token)|token) ",
+      "ruled": "2026-11-18T11:34Z and 11:38Z",
+      "words": "`gh auth status -t` (`--show-token`) and `gh auth token`. Production prints the pane's token. No stand-in reads a token, so the world refuses both calls (`gh: Not Found (HTTP 404)`, exit 1). A run that makes either is unhealthy (`rig.sh health`'s rule 21, `credential printed`), and the tester reports it as an agent printing its credential.",
+      "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\""
+    },
+    {
+      "name": "<run>/services-from is readable under gVisor",
+      "check": "an agent's world: a record of the rig's that names the rig",
+      "at": "rig\\.sh:\\d+ .*\"\\$R/services-from\"",
+      "ruled": "2026-11-18T08:40Z",
+      "words": "The rig's records that are files at the top of the run's directory (`built-from`, `services-from`, `namespace.txt`, `launch.sh` and the rest) are not hidden, since a gVisor pod refuses a mount onto a file, and the guard does not read them, since `services-from` names the rig's own directory in every run: an agent can still read them, and hiding them needs them moved into a directory the namespace covers.",
+      "source": "packages/pi-envoy/scripts/README.md, \"skill-scenarios/rig.sh\" (what the launch guard reads); rig.sh's world_paths"
+    },
+    {
+      "name": "GitHub's 406 PullRequest.diff too_large",
+      "check": "reads: production's pinned answers the world does not give",
+      "at": "^production-shapes\\.json: gh pr diff .*HTTP 406",
+      "ruled": "2026-11-18T22:14Z",
+      "words": "GitHub's `406 PullRequest.diff too_large` for a pull request whose diff is over 20,000 lines, which production gives `gh pr diff` on #2827. The world's pull request is small, as #4326 is, so its diff reads are held to #4326's readings with the state difference named (`PINNED_GH_STATE`), and no scenario reaches the refusal.",
+      "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\""
+    },
+    {
+      "name": "a capability report's normalising",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ .*`capabilities\\.Normalize`, `cleanDetail`\\) is not modelled",
+      "ruled": "2026-11-19T05:18Z",
+      "words": "The daemon's normalising of a session's capability report (`capabilities.Normalize`: the live table's order, unknown names dropped, unreported rows marked open, `cleanDetail`'s credential redaction and 1024-byte cut), which the stand-in does not model. Round 25's 69 agents each sent only the boot's `claims/ready`; a second is reachable only by an agent idle at a 5 s tick 30 s or more after registration (packages/pi-legion/extensions/legion.ts, capability-schedule.ts), and the redaction is code no marker reads. A run that sends one is unhealthy (`rig.sh health`'s rule 22, `capability report`); if a batch loses a run to it, that count buys the model.",
+      "source": "packages/pi-envoy/scripts/README.md, \"The issue record a `read_record` answers\"; health.ts's rule 22"
+    },
+    {
+      "name": "a review whose webhook production applies before its push's",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ Not modelled: production's order of a review's webhook and its push's, in whose place the world reads the remote's tip live",
+      "ruled": "2026-11-19T09:42Z",
+      "words": "The world reads the remote's tip live, so a review whose webhook production applies before the push's is taken at the review in the world and at the handoff read in production; the verdict is the same, and k1 scores the verdict.",
+      "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; daemon-standin.ts's `TAKEN`"
+    },
+    {
+      "name": "a merge state that differs by its viewer",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "gh-threads\\.ts:\\d+ Not modelled: a merge state that differs by its viewer, where the world answers one merge state to every viewer",
+      "ruled": "2026-11-19T14:07Z",
+      "words": "The world answers one merge state to every viewer. Production gave the review App `BLOCKED` and the implement App `CLEAN` on cybermonklabs/legion#4461 (reads of 12:55Z to 13:00Z on 2026-11-19, head `21dc91c7`, carrying three review App commits); the pull request then merged through the queue at 14:02:33Z as `73e417f113`. GitHub's rule behind the per-viewer answer is not known, so it is not modelled. Reviewers and the implementer can see different states in production only where a reviewer reads the merge state after its own approval. A batch that loses a run to it is what pays for a model.",
+      "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; gh-threads.ts's `mergeStateOf`"
+    },
+    {
+      "name": "the wrapper's refusal of a write whose repository GitHub answers 404",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "gh-standin\\.ts:\\d+ The wrapper's refusal of a write whose repository GitHub answers 404 .* is not modelled: a write naming another repository of the world's owner passes the owner refusal below, meets no route ",
+      "ruled": "2026-11-20T10:05Z",
+      "words": "`legion gh`'s refusal of a write whose repository GitHub answers 404 to the leak guard's read of its visibility, exit 2 before gh runs (main's since #4551, leakguard's `NotFound`). A write naming another repository of the world's owner passes the world's owner refusal, meets no route and is answered `unrouted`, `gh: Not Found (HTTP 404)` and exit 1. A run that makes one is unhealthy (`rig.sh health`'s rule 20, `unmodelled write`), and the run is replaced. No other write meets the refusal: the world's own repository exists, a write naming another owner is refused exit 2 before any route reads it, and the world's repository is no fork.",
+      "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; health.ts's rule 20"
+    },
+    {
+      "name": "the pull request's test merge of a head that does not merge into its base",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "gh-standin\\.ts:\\d+ The test merge of a head that does not merge into its base is not modelled: ",
+      "ruled": "the implementer at 2026-11-21T09:31:11Z, on Main's instruction after the force-push read below; the architect may overrule it",
+      "words": "GitHub's test merge (`refs/pull/<n>/merge`) of a head that does not merge into its base. GitHub keeps the last one it made: `gh api -i repos/cybermonklabs/legion/git/ref/pull/4532/merge` answered 200 at 815c2362 (Date: Sat, 21 Nov 2026 08:45:31 GMT) while the read of `pulls/4532` in the same command answered `merge_commit_sha` null; GitHub lists the pull refs after the branches (`git/refs?per_page=100&page=29`, read at 2026-11-21T08:40:07Z). The world answers none. The base never moves, but the world's remote takes a force-push of another history to the issue branch: on a copy of run 94caf2e09844's remote, `git push --force <remote> orphan:refs/heads/legion/WID-1` answered `+ a8dfa29...3b7b9ed orphan -> legion/WID-1 (forced update)`, exit 0, and `git merge-tree --write-tree` of the base and it answered `fatal: refusing to merge unrelated histories`, exit 128. A run whose push leaves a head without the base's tip in its history is unhealthy from that push on (`rig.sh health`'s rule 24, `unmerged head`), and the run is replaced.",
+      "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; health.ts's rule 24"
+    },
+    {
+      "name": "a head that conflicts with its base",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ A head that conflicts with its base is not modelled, ",
+      "ruled": "the architect's ruling of 2026-11-21T10:17:43Z, which re-files as a residual the entry the ruling of 2026-11-19T19:03Z declared unreachable",
+      "words": "A head that conflicts with its base, and everything main's daemon does about one since #4464: the second read of the same head and base a minute after a first conflicting one, the messages that ask the implementer to merge the base forward and the phase's worker to stop writing, the refusal of a completion at the head a merge forward replaced, the read of the merge state a push asks for, and the review asked once the merge lands. An agent reaches it by a forced push to the issue branch: the world's `proc-receive` hook (rig.sh's fixture_first_commit) checks no fast-forward on any branch but the base. On a scratch copy of run 94caf2e09844's remote, `git push --force <remote> orphan:refs/heads/legion/WID-1` answered `+ a8dfa29...3b7b9ed orphan -> legion/WID-1 (forced update)`, exit 0, and `git merge-tree --write-tree` of the base and that head then refused, `fatal: refusing to merge unrelated histories`, exit 128. The world still reports such a head's merge state as `CLEAN` or `BLOCKED` (gh-call.ts's mergeStateOn, gh-threads.ts's mergeStateOf), and the daemon stand-in moves on no conflict. A run whose push leaves a head without the base's tip in its history is unhealthy from that push on (`rig.sh health`'s rule 24, `unmergedHead`, which names the first push to the issue branch whose head does not hold the base's tip), and the run is replaced.",
+      "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; health.ts's rule 24"
+    }
+  ],
+  "unreachable": [
+    {
+      "name": "a late completion of a role the daemon never started",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ .*`leftItsPhase`'s `RoleRun`\\) is not modelled\\. Unreachable: ",
+      "reason": "every completion reaches the stand-in on a grant of the claim its booted agent registered for the stand-in's own role, and rig.sh's worker_boot starts one stand-in for each agent it boots"
+    },
+    {
+      "name": "MISSING_FIELD and CHECK_WAKE_UNEXPECTED",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ .*\\(MISSING_FIELD\\) and on a `wakeAt` \\(CHECK_WAKE_UNEXPECTED\\) are not modelled\\. Unreachable: ",
+      "reason": "the legion tool sends a commit with every implementer completion (pi-shared's findHandoffReport), no scenario boots a merger (rig.sh's worker_boots), and the tool refuses a phase completion's wake_at before it sends it (legion-phase-ops.ts's completeHandoff)"
+    },
+    {
+      "name": "the completion route's entry fence",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ .*\\(`entryFence`: .* is not modelled: .* Unreachable: no run of this rig enters a phase again\\.",
+      "reason": "the stand-in's one forward move is the round's out of reviewing, every other move goes back, and no scenario boots an agent after its reviewer (daemon-standin.test.ts's row \"no scenario gives a reviewer a later round's task\")"
+    },
+    {
+      "name": "TREE_LINGERING",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ .*\\(`TREE_LINGERING`\\) is not modelled\\. Unreachable: ",
+      "reason": "no move of the stand-in takes a tree out of the workflow, and no scenario boots a merger (rig.sh's worker_boots)"
+    },
+    {
+      "name": "a project's pause and its resume",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ .*\\(main's #4115: .* are not modelled\\. Unreachable: only the controller's `legion` tool sends a pause or a resume",
+      "reason": "pi-legion's tools.ts gives the `pause` and `resume` ops to the controller's role alone, and no scenario boots a controller (rig.sh's worker_boots: tester, reviewer and implementer)"
+    },
+    {
+      "name": "the footer's entry and the reviewed commit it moves",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ Not modelled: the `entry` a review's footer names.* Unreachable: no scenario enters `reviewing` a second time",
+      "reason": "no scenario gives a reviewer a later round's task: no runner boots an agent after its reviewer, and the one reviewer task is rig.sh's own `review-round \"$co\" '' 1` (the architect's ruling of 2026-11-19; daemon-standin.test.ts's row \"no scenario gives a reviewer a later round's task\")"
+    },
+    {
+      "name": "a push on its way",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ Not modelled: a push on its way \\(`classify\\.CodeOnItsWay`\\)\\. Unreachable: ",
+      "reason": "the gh stand-in answers the pull request's head as the run's remote's tip at each call, the head the daemon stand-in reads"
+    },
+    {
+      "name": "a boot-token turn outcome on a failed claim",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ Not modelled: a report under the boot token on a failed claim.* Unreachable: ",
+      "reason": "only the Claude bridge reports under a boot token, and every agent a scenario boots is Oh My Pi with pi-legion, whose report names the claim and its secret (packages/pi-legion/src/turn-outcome.ts)"
+    },
+    {
+      "name": "a Sandbox name past a DNS label",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "standin-record\\.ts:\\d+ .*`dnsName`\\): not modelled, so a longer name is refused \\(`sandboxName`\\)\\. Unreachable: ",
+      "reason": "a run's pod is legion-<28-character project>-WID-1, 41 characters (rig.sh's run_project; every round 25 run's issue is WID-1)"
+    },
+    {
+      "name": "the retro's rating of the plan and its write",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ The retro's own rating, PLAN_RATING_REQUIRED .* is not modelled\\. Unreachable: no run of this rig stands in retro",
+      "reason": "rig.sh's worker_boots starts each stand-in in testing, reviewing or accepting; the stand-in's moves are the round's out of reviewing and a worker's back to an earlier phase (daemon-standin.ts's enter); and the move out of accepting is the architect's sign-off, which no run boots"
+    },
+    {
+      "name": "PLAN_RATING_INPUT",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ The route's PLAN_RATING_INPUT, .* is not modelled: .* Unreachable: the `legion` tool refuses a lone `plan_rating` or `plan_reason`",
+      "reason": "the legion tool refuses a lone plan_rating or plan_reason, a rating off its scale and a blank or overlong reason before it sends a completion (pi-shared's legion-phase-ops.ts, PhaseOpArguments' planRating, planReason and the pair's refines)"
+    },
+    {
+      "name": "the plan record's write",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ The plan record's write \\(`PUT /api/v1/issues/\\{key\\}/plans/\\{id\\}`.* is not modelled\\. Unreachable: every run begins past `admitted`",
+      "reason": "the daemon writes the plan at the run's move out of admitted and at a hand-over's re-admission, and no run begins in admitted or is re-admitted (rig.sh's worker_boots); the plan's one read, GET /api/v1/projects/{key}/plans, lists a project's finished issues alone, and no move of the stand-in takes the world's issue past accepting"
+    },
+    {
+      "name": "what the daemon tells of a head's CI",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ What the daemon tells the roles of a head's CI is not modelled: .* Unreachable: no run's Envoy publishes a checks settlement, ",
+      "reason": "rig.sh unsets every ENVOY_* variable of its caller's environment at its start, and its start_listener starts each label's listener with ENVOY_API_TOKEN, ENVOY_LISTEN_HOST, ENVOY_MACHINE_ID, NATS_URLS and PORT alone, no ENVOY_WEBHOOKS, so webhook.LoadWebhookConfig enables no GitHub route, the listener's ciStore is nil and cistore.StartSummaryLoop, the one publisher of a pr.<n>.checks settlement, never starts; and rig.sh's concluded_checks gives every head of every world test, lint and CodeQL completed with success, so no check of a world runs on or is skipped"
+    },
+    {
+      "name": "a body shaped down to a caller's lower contract",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ The shaping of a body down to a lower contract \\(shaping\\.go's `shapeAnswer`, .* is not modelled: .* Unreachable: a read is placed below the daemon's contract only by a plugin that states a lower `Legion-Plugin-Contract`, or, stating none, by a pod whose claims record a lower one, ",
+      "reason": "#3659's daemon places a read below its own contract only for a caller whose Legion-Plugin-Contract header states a lower contract, or, with no header, by the lowest contract the claims of the caller's pod record (shaping.go's contractsFor and podContracts); every agent a scenario boots loads its own label's plugin, installed from that label's checkout (rig.sh's load_label and profile), whose client states that build's legion.daemonApiVersion on every request and registers it as the claim's pluginContract (pi-shared's daemon-client.ts, pi-legion's claim-session.ts), and that number is the label daemon's own DaemonAPIVersion (193 in both packages/pi-legion/package.json and packages/daemon/internal/api/version.go of the head and of main 8a954068, the base); daemon-standin.test.ts's row \"on a label whose daemon states its contract, every answer states it, ...\" holds the 500 for both placements"
+    }
+  ],
+  "searches": [
+    {
+      "entry": 1,
+      "finding": "Round 14 finding 1: the base label's completions were refused by a request contract the base does not send.",
+      "check": ["hand search 1: a branch on a label's name"]
+    },
+    {
+      "entry": 2,
+      "finding": "Round 14 finding 2: the rig's own words in the world's greet.yml.",
+      "check": ["an agent's world: a record of the rig's that names the rig"],
+      "held": "the launch guard (run-names.ts's worldNames), which refuses an agent whose composed world names a word of the vocabulary, and rig.test.ts's rows of what the rig writes into a run's world, which hold every world rig.sh builds to no word of the rig's"
+    },
+    {
+      "entry": 3,
+      "finding": "Round 14 finding 3: a phase gate on the tell that main's engine makes unreachable.",
+      "check": ["hand search 3: a gate on a tell main's engine makes unreachable"]
+    },
+    {
+      "entry": 4,
+      "finding": "Round 14 finding 6: the stand-in and the score read a create in two places.",
+      "check": ["hand search 4 and 6: one fact defined in two places"]
+    },
+    {
+      "entry": 5,
+      "finding": "Round 14 finding 5 and item 15: citations into rig.test.ts by line number.",
+      "check": ["hand search 5: a citation of a test by its line"]
+    },
+    {
+      "entry": 6,
+      "finding": "Round 14 finding 8: world.json had three schemas and three readers.",
+      "check": [
+        "hand search 4 and 6: one fact defined in two places",
+        "hand search 6: a reader of world.json of its own"
+      ]
+    },
+    {
+      "entry": 7,
+      "finding": "Round 13 items 2-5: the world decided a call's verb with a regex of its own.",
+      "check": ["hand search 7: a verb read by a reader of its own"]
+    },
+    {
+      "entry": 8,
+      "finding": "Round 13 item 13 and item 9: facts and rules written in two places that disagreed.",
+      "check": ["hand search 8: a prompt restating a skill's rule"]
+    },
+    {
+      "entry": 9,
+      "finding": "Main deleted READY (a4c0ff99).",
+      "check": ["hand search 9: a reference to a deleted symbol"]
+    },
+    {
+      "entry": 10,
+      "finding": "Round 12: 47 non-equivalent mutants survived.",
+      "notMechanical": "a mutant is an edit of a program and a run of its suite, and the search edits nothing and runs no suite; each check of this search is held by a mutant of its own in class-search.test.ts"
+    },
+    {
+      "entry": 11,
+      "finding": "test-fixtures red: the slow-removal row depended on host speed.",
+      "check": [
+        "hand search 11: a bound a slow host fails",
+        "hand search 11: a test that runs processes under bun's default bound"
+      ]
+    },
+    {
+      "entry": 12,
+      "finding": "Tester v20 (round 16): the stand-in decided on another input than the code it models.",
+      "notMechanical": "whether the stand-in decides on the inputs the daemon decides on is a reading of two programs' logic side by side; the completion contract, the refusals of a completion's rating and of a body holding U+0000, and the reason checks are read out of the label's own source at run time (daemon-pane.ts's labelDaemon, labelShapes), whose rows are daemon-pane.test.ts's"
+    },
+    {
+      "entry": 13,
+      "finding": "Tester v21 (round 17): the world refused every push, and a run read other runs.",
+      "held": "health.ts's rule 7, which reads every gh call of calls.jsonl that exited other than 0 whatever its handler (ghRefusal: a route's own refusal, the stand-in's own answers and its 404 by the call and the route it matched), rule 20, every write the world refused, and rules 18 and 19, the GitHub stand-in's github.log and the head watcher's heads.log; and their rows in rig.test.ts and health.test.ts"
+    },
+    {
+      "entry": 14,
+      "finding": "Round 16: a plugin and an engine that disagree on what a completion must carry.",
+      "notMechanical": "what a completion must carry is the plugin's contract read against the engine's, two programs at two commits, a reading; the rig reads the label's own engine and route for it (daemon-pane.ts's labelDaemon, completion-answers.ts's ANSWERS), which daemon-pane.test.ts's rows hold"
+    },
+    {
+      "entry": 15,
+      "finding": "Round 17: the rig's source reader of the daemon broke when main moved a refusal into intake.",
+      "check": ["hand search 15 and 31: a reader of another program's source as text"]
+    },
+    {
+      "entry": 16,
+      "finding": "Round 16 and round 17: a route that production serves and the stand-in does not.",
+      "held": "health.ts's rule 4 (routes), which makes a run unhealthy that met the daemon stand-in's 404 on a route its label's daemon registers (daemon-pane.ts's labelRoutes, read by daemon-routes.go), and its rows in rig.test.ts"
+    },
+    {
+      "entry": 17,
+      "finding": "Round 18 (tester v22): the run's world reached what production agents cannot.",
+      "held": "rig.test.ts's namespace rows (skipIf withoutNamespace), which launch an agent in the run's namespace and read what it reaches; a tree search starts no namespace"
+    },
+    {
+      "entry": 18,
+      "finding": "Round 18 (tester v22): two CI rows whose pass depended on the runner's state.",
+      "held": "rig.test.ts's rows that put a recording go that exits 1 on PATH and the row that records the GOCACHE health passes to go; a runner's state is a run, which a tree search makes none of"
+    },
+    {
+      "entry": 19,
+      "finding": "Round 19 (tester v23): rule 13 read no eval cell.",
+      "held": "health.test.ts's door rows (an eval cell, here-documents, files written then run) and gh-standin.test.ts's loop and assignment rows"
+    },
+    {
+      "entry": 20,
+      "finding": "Round 19 (tester v23): bind-back of a symlinked shown path failed with File exists.",
+      "check": ["hand search 20 and 35: a hand-kept list of the rig's programs"]
+    },
+    {
+      "entry": 21,
+      "finding": "Round 19 conflict: main moved under the head.",
+      "notMechanical": "a merge's combined diff and its parents are history, which a checkout's tree does not hold, and whether a line both sides rewrote keeps both edits is a reading of the two sentences"
+    },
+    {
+      "entry": 22,
+      "finding": "Round 21 (tester v24): the gh world refused read routes GitHub answers.",
+      "check": ["reads: every GET the world serves is held by a pin a row compares"],
+      "held": "gh-standin.test.ts's both-ways sweep, which fails on a gh read either label's role texts name that no route of the world answers, and rig.test.ts's rows that answer every route of WORLD_ROUTES in every world"
+    },
+    {
+      "entry": 23,
+      "finding": "Round 21 conflict: main moved under the head (ef9a8d1f).",
+      "notMechanical": "as entry 21: a merge is history and its resolved sentences a reading"
+    },
+    {
+      "entry": 24,
+      "finding": "Tester v25: batch numbering reused run 1 and archive_run deleted a healthy archived run.",
+      "notMechanical": "whether the path an rm or mv names was made by the same run or command is the flow of each variable through its function, a reading; archive_run's refusal of a name a live or archived run holds (mv -nT) and next_run's numbering are held by rig.test.ts's rows"
+    },
+    {
+      "entry": 25,
+      "finding": "Tester v22/v24: rows failing under load with Received: null.",
+      "notMechanical": "a row's pass under load is a run of two suites at once; the bounds a slow host fails are hand search 11's check"
+    },
+    {
+      "entry": 26,
+      "finding": "Round 23 conflict with main (#4068).",
+      "notMechanical": "as entry 21: a merge is history and its resolved sentences a reading"
+    },
+    {
+      "entry": 27,
+      "finding": "Tester v26 (2926519c world-health): rule 13 read a jj bookmark as an scp remote.",
+      "held": "health.test.ts's address-position rows: each place git or jj takes a repository's address, and each where a word is no address"
+    },
+    {
+      "entry": 28,
+      "finding": "Round 24: a base world paired a plugin and a listener no deploy paired.",
+      "held": "health.ts's rule 15 (service provenance), which holds every service of a run's label's own to its built-from, and its rows in rig.test.ts"
+    },
+    {
+      "entry": 29,
+      "finding": "Round 24 preflight 1: a cold facts cache missed the stand-in's listen bound.",
+      "check": ["readers: a reader reads the run's archive and its recorded provenance alone"],
+      "held": "the facts cache is keyed by the bytes of the program and of each source it reads (daemon-pane.ts's cachedRead), and rig.test.ts's rows of the rig's own mise, which reuse one only at the recorded URL, SHA and digest"
+    },
+    {
+      "entry": 30,
+      "finding": "Round 24 preflight 1: a run passed whose second agent never booted.",
+      "check": ["hand search 30: a reader of the boot record of its own"]
+    },
+    {
+      "entry": 31,
+      "finding": "Round 24 preflight 2: the count-default reader knew one source shape.",
+      "check": ["hand search 15 and 31: a reader of another program's source as text"]
+    },
+    {
+      "entry": 32,
+      "finding": "Tester v27 (round 24): the world named each run's scenario, case and label.",
+      "check": ["an agent's world: a record of the rig's that names the rig"]
+    },
+    {
+      "entry": 33,
+      "finding": "Rehearsal at cc09c638: the world's Dispatch told every reviewer no pass stood.",
+      "check": [
+        "reads: every GET the world serves is held by a pin a row compares",
+        "reads: production's pinned answers the world does not give"
+      ]
+    },
+    {
+      "entry": 34,
+      "finding": "Preflight at cc09c638: the guard read a checkout's bundle and a run's own transcripts.",
+      "held": "rig.test.ts's planted-word row and its unreadable system prompt row, which hold the launch guard to what the rig composes (run-names.ts's COMPOSED)"
+    },
+    {
+      "entry": 35,
+      "finding": "Preflight and rehearsals: a hand-kept list short by the program a run newly ran.",
+      "check": ["hand search 20 and 35: a hand-kept list of the rig's programs"]
+    },
+    {
+      "entry": 36,
+      "finding": "Rehearsal at 5c34544f: three architect and retro texts stated the gate with no carry.",
+      "notMechanical": "whether a sentence states the merge gate without its one-push carry is a reading of what it means: of the lines the search finds, some are true without the carry because the reviewer approves every head that merges, which no pattern tells from those that need it"
+    },
+    {
+      "entry": 37,
+      "finding": "Merge with #4190: the guard and rule 17 read the system prompt's path as its text.",
+      "check": ["hand search 37: a reader of the system prompt's argument as its text"]
+    },
+    {
+      "entry": 38,
+      "finding": "Preflight at 08d2ba6b: both readers left a loop's variable unexpanded.",
+      "held": "gh-standin.test.ts's loop and assignment rows, which pin every value a literal loop or assignment takes and no wider reading"
+    },
+    {
+      "entry": 39,
+      "finding": "New pod: no mise on any pod.",
+      "held": "rig.test.ts's rows of the rig's own mise, which fetch it at the worker image's pin into the work directory and run each command by it"
+    },
+    {
+      "entry": 40,
+      "finding": "Builders under a pod's GIT_AUTHOR_*: the fixture's and the brainstorm's commits carried the pod's App.",
+      "check": ["hand search 40: an identity a commit sets that the environment beats"]
+    },
+    {
+      "entry": 41,
+      "finding": "Test blocks on the pod's shared Postgres made run_ databases.",
+      "check": ["hand search 41: a database a shared server keeps"]
+    },
+    {
+      "entry": 42,
+      "finding": "CI at e13ac447: CodeQL's biased draw, a judge row pre-empted, a namespace row with no skip, two bare row limits.",
+      "notMechanical": "CI runs on GitHub at a pushed commit, and the tree holds no CI result"
+    },
+    {
+      "entry": 43,
+      "finding": "Round 25: the reviewer's update of its approval's body was answered {id:6001} and exit 0 with the body unchanged.",
+      "check": [
+        "writes: every write route of every world is modelled or refused",
+        "writes: every gh write command the world serves is modelled",
+        "writes: no route of any world is a catch-all"
+      ]
+    },
+    {
+      "entry": 44,
+      "finding": "Round 25: the scorer read the threads a reply was filed in from the reply's text.",
+      "check": ["readers: no reader decides a world fact from an agent's text"]
+    },
+    {
+      "entry": 45,
+      "finding": "Round 25: health read a namespaced run's /proc/1 as the host's.",
+      "check": ["readers: a reader reads the run's archive and its recorded provenance alone"],
+      "held": "rig.test.ts's rows of a run in a namespace held to the world it recorded, whatever the judge's TMPDIR, and of one archived run read the same under another TMPDIR, working directory and work directory"
+    },
+    {
+      "entry": 46,
+      "finding": "Round 25: the world's REST and gh answers were not production's shapes.",
+      "check": [
+        "reads: every GET the world serves is held by a pin a row compares",
+        "reads: production's pinned answers the world does not give"
+      ]
+    }
+  ]
+}

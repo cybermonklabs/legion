@@ -829,3 +829,86 @@ done
     slow
   );
 });
+
+// procs_naming, the walk of every process under the stage proofs' sweeps and the skill-scenario
+// rig's stop_env_processes, reads xargs's status as its substitution ends with it. A driver's exit
+// handler runs the walk from the EXIT trap, after the `exit 1` of a failed run, and a substitution
+// forked while that trap runs takes a bare `exit` for that 1 (bash 5.2.37): the walk read xargs's
+// 123 as 1, failed with 2 and named nothing, and the handler stopped no process of the run. Each
+// row walks a proc root of the process it started (lib/proc-root.ts), made in the shell, outside a
+// trap and from the EXIT trap of a shell of its own that runs after `exit 1`, under the drivers'
+// `set -Eeuo pipefail` and an ERR trap that prints. The root also holds an environ grep cannot read,
+// as every machine's /proc holds another user's, so xargs exits 123: a directory, which no user
+// reads as a file, at a pid above the kernel's pid_max, which no process can hold.
+const procsNamingRun = `cat >"$scratch/in-trap.sh" <<'EOF'
+set -Eeuo pipefail
+trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR
+. "$1/scripts/e2e/lib/process-tree.sh"
+trap 'st=0; named=$(procs_naming "$2" PROCS_NAMING_ROW) || st=$?; echo "in a trap after exit 1: [$named] status $st"' EXIT
+exit 1
+EOF
+mkdir "$scratch/run" "$scratch/proc"
+PROCS_NAMING_ROW=$scratch/run/state "$program" 600 </dev/null >/dev/null 2>&1 &
+named=$!
+started+=("$named")
+until_true 10 "the run's process to run its program" sh -c '[ "$(readlink /proc/$1/exe)" = "$2" ]' sh "$named" "$program"
+ln -s "/proc/$named" "$scratch/proc/$named"
+mkdir -p "$scratch/proc/999999999/environ"
+export proc_root=$scratch/proc
+echo "scratch: $scratch"
+echo "named: $named $(start_of "$named")"
+`;
+describe.skipIf(skip)("procs_naming", () => {
+  test(
+    "names a process of the run, with its start time, from an EXIT trap after `exit 1` as it does outside one",
+    () => {
+      const r = run(`${procsNamingRun}
+echo "outside a trap: [$(procs_naming "$scratch/run" PROCS_NAMING_ROW)]"
+st=0
+bash "$scratch/in-trap.sh" "$root" "$scratch/run" || st=$?
+echo "the trap's shell exited $st"
+`);
+      expect(r.err).toBe("");
+      const lines = r.out.trimEnd().split("\n");
+      const named = /^named: (\d+ \d+)$/.exec(lines[1] ?? "")?.[1];
+      expect(named).toBeDefined();
+      expect(lines.slice(2)).toEqual([
+        `outside a trap: [${named}]`,
+        `in a trap after exit 1: [${named}] status 0`,
+        "the trap's shell exited 1",
+      ]);
+    },
+    slow
+  );
+
+  // The grep each batch of xargs runs is one a signal ends, so xargs exits 125 of its own: the walk
+  // fails with 2 and names that 125, from the trap as outside one, and never the trap's 1.
+  test(
+    "fails with 2, naming xargs's own status, when the grep xargs runs is ended by a signal, from an EXIT trap after `exit 1` as outside one",
+    () => {
+      const r = run(`${procsNamingRun}
+mkdir "$scratch/bin"
+printf '#!/bin/sh\\nkill -KILL $$\\n' >"$scratch/bin/grep"
+chmod +x "$scratch/bin/grep"
+st=0
+PATH="$scratch/bin:$PATH" procs_naming "$scratch/run" PROCS_NAMING_ROW >"$scratch/outside.out" 2>"$scratch/outside.err" || st=$?
+echo "outside a trap: [$(<"$scratch/outside.out")] status $st"
+st=0
+PATH="$scratch/bin:$PATH" bash "$scratch/in-trap.sh" "$root" "$scratch/run" 2>"$scratch/trap.err" || st=$?
+echo "the trap's shell exited $st"
+`);
+      expect(r.err).toBe("");
+      const scratch = /^scratch: (.+)$/m.exec(r.out)?.[1] ?? "";
+      expect(r.out.trimEnd().split("\n").slice(2)).toEqual([
+        "outside a trap: [] status 2",
+        "in a trap after exit 1: [] status 2",
+        "the trap's shell exited 1",
+      ]);
+      const said = `procs_naming: xargs exited 125 reading ${scratch}/proc/<pid>/environ, so the processes naming ${scratch}/run were not read`;
+      const outside = readFileSync(join(scratch, "outside.err"), "utf8");
+      expect(outside.split("\n")).toContain(said);
+      expect(readFileSync(join(scratch, "trap.err"), "utf8")).toBe(outside);
+    },
+    slow
+  );
+});

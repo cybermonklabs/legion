@@ -328,6 +328,48 @@ st=0; run_processes >/dev/null 2>"$work/rp.err" || st=$?; echo "run_processes $s
   }
 );
 
+// A driver's exit handler runs after the driver's `exit N`, and a substitution forked while the EXIT
+// trap runs takes a bare `exit` for that N (bash 5.2.37): listening_holders read a failed find's
+// status as N. The find here is the one every walk of a busy machine runs, which exits 1 for an
+// entry of another user's process, and the trap runs after `exit 3`, which the walk read as a find
+// a signal ended. From such a trap the find's own status decides: the socket's holder is named as
+// outside one, and a find a signal ends is reported with its own 137.
+test.skipIf(skip)(
+  "from an EXIT trap after `exit 3` listening_holders names the socket's holder as outside one, and reports a find a signal ends with that find's 137",
+  () => {
+    const work = join(dir, "holders-trap");
+    mkdirSync(work);
+    const busy = join(dir, "holders-trap-busy");
+    mkdirSync(busy);
+    writeFileSync(
+      join(busy, "find"),
+      `#!/bin/sh\n/usr/bin/find "$@"\necho "find: '$proc_root/1/fd': Permission denied" >&2\nexit 1\n`,
+      { mode: 0o755 }
+    );
+    const killed = join(dir, "holders-trap-killed");
+    mkdirSync(killed);
+    writeFileSync(join(killed, "find"), "#!/bin/sh\nkill -KILL $$\n", { mode: 0o755 });
+    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    try {
+      const root = rowRoot();
+      const call = `st=0; listening_holders ${listener.port} 2>"$work/lh.err" || st=$?; echo "listening_holders $st"; cat "$work/lh.err"`;
+      const outside = harness(work, call, busy, root);
+      expect(outside).toEqual({ code: 0, out: `${process.pid}\nlistening_holders 0\n`, err: "" });
+      expect(harness(work, `trap '${call}' EXIT\nexit 3`, busy, root)).toEqual({
+        ...outside,
+        code: 3,
+      });
+      expect(harness(work, `trap '${call}' EXIT\nexit 3`, killed, root)).toEqual({
+        code: 3,
+        out: `listening_holders 2\nlistening_holders: find exited 137 reading ${root}: find ended with status 137 and printed nothing\n`,
+        err: "",
+      });
+    } finally {
+      listener.stop(true);
+    }
+  }
+);
+
 test.skipIf(skip)(
   "a run that has not marked itself has no processes to read: run_processes and stop_marked_processes exit 2",
   () => {

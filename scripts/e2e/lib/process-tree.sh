@@ -416,7 +416,7 @@ kill_frozen() {
 # while it is still the process that started at START and its environment still gives one of the
 # NAMEs the value DIR or a path under it (names_dir). A pid that passed to another process since
 # the walk gets no signal, and a blank line is skipped. The run's sweep (stop_marked_processes, with
-# run_marks) and the skill-scenario rig's stop_env_processes (with SKILL_SCENARIO_RUN) end their
+# run_marks) and the skill-scenario rig's stop_env_processes (with HOME, under the run) end their
 # walks' processes through it, so the loop and its rows are written once. It fails with 2 when a
 # tree's processes could not all be read (kill_frozen).
 kill_held() {
@@ -500,9 +500,12 @@ procs_naming() {
     return 2
   }
   for name in "${names[@]}"; do naming_patterns+=(-e "$name=$dir"); done
-  # `|| exit` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`) from
-  # firing inside the substitution for the batches every walk has with no match.
-  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | xargs -0 grep -lzsF "${naming_patterns[@]}" || exit)
+  # `|| exit "$?"` ends the substitution with xargs's status, which the wait below reads, and keeps a
+  # caller's ERR trap (`set -E`) from firing inside the substitution for the batches every walk has
+  # with no match. A bare `exit` would not keep it: in a substitution forked while an EXIT trap runs,
+  # as a driver's sweep is, bash (5.2.37) exits with the status the shell is exiting with, the
+  # `exit 1` of a failed run, not with xargs's.
+  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | xargs -0 grep -lzsF "${naming_patterns[@]}" || exit "$?")
   wait "$!" || status=$?
   case $status in
     0 | 123) ;;

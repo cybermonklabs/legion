@@ -1,9 +1,20 @@
-import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { expect, setDefaultTimeout, test } from "bun:test";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { isYes, main, QUESTIONS } from "./label-comments";
+
+// The gateway rows run the key command as a real process (label-comments.ts's runKeyCommand),
+// which a loaded pod slows past bun's 5 s default, so each row gets a minute, as rig.test.ts's do.
+setDefaultTimeout(60_000);
 
 const scratch = temporaryDirectory("label-comments", { real: true });
 
@@ -406,7 +417,7 @@ test("a 429, a 5xx or a reply that skips a question is asked again", async () =>
   ]);
 });
 
-test("a comment with no label fails the run, and an earlier labels.jsonl keeps its bytes", async () => {
+test("a comment with no label fails the run and writes no file, and an earlier labels.jsonl is refused and keeps its bytes", async () => {
   const failing = (answer: () => Response) =>
     world((comment) => (comment === "That is wrong." ? answer() : answerWith(comment))).fetch;
   const notWritten = (out: string) =>
@@ -424,20 +435,37 @@ test("a comment with no label fails the run, and an earlier labels.jsonl keeps i
   const before = readFileSync(path.join(out, "labels.jsonl"));
   expect(before.length).toBeGreaterThan(0);
 
-  // A rerun in which one model call never succeeds: every try answers 529.
-  const rerun = io(failing(() => new Response("overloaded", { status: 529 })));
+  // A rerun is refused before any read, naming the file: the run once renamed its own over it.
+  const again = world();
+  const rerun = io(again.fetch);
   const code = await main(
     ["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()],
     rerun.io
   );
-  expect(code).toBe(1);
+  expect(code).toBe(2);
   expect(rerun.stdout).toEqual([]);
   expect(rerun.stderr).toEqual([
-    "label-comments: no label for ACME-2 comment c4: the model answered 529, on each of 8 tries",
-    notWritten(out),
+    `label-comments: ${path.join(out, "labels.jsonl")} from an earlier run; this one removes and replaces none of it: move it aside to label again`,
   ]);
+  expect(again.sent).toEqual([]);
   expect(readFileSync(path.join(out, "labels.jsonl")).equals(before)).toBe(true);
   expect(readdirSync(out)).toEqual(["labels.jsonl"]);
+
+  // A run in which one model call never succeeds (every try answers 529) leaves no file.
+  const failed = path.join(dir("rerun-fail"), "labels");
+  const overloaded = io(failing(() => new Response("overloaded", { status: 529 })));
+  expect(
+    await main(
+      ["--since", SINCE, "--until", UNTIL, "--out", failed, "--key-file", keyFile()],
+      overloaded.io
+    )
+  ).toBe(1);
+  expect(overloaded.stdout).toEqual([]);
+  expect(overloaded.stderr).toEqual([
+    "label-comments: no label for ACME-2 comment c4: the model answered 529, on each of 8 tries",
+    notWritten(failed),
+  ]);
+  expect(readdirSync(failed)).toEqual([]);
 
   // With no earlier file, a run that fails at once (a 400 is not tried again) leaves no file.
   const fresh = path.join(dir("fresh-fail"), "labels");
@@ -457,6 +485,40 @@ test("a comment with no label fails the run, and an earlier labels.jsonl keeps i
     notWritten(fresh),
   ]);
   expect(readdirSync(fresh)).toEqual([]);
+});
+
+// A labels.jsonl that appears after the check, while the run reads, is not replaced: the rows are
+// linked as labels.jsonl, which a rename would have put over it.
+test("a labels.jsonl that appears while the run reads is kept, and the run fails naming it", async () => {
+  const out = path.join(dir("appeared"), "labels");
+  const file = path.join(out, "labels.jsonl");
+  const { fetch } = world();
+  const appearing: typeof fetch = async (input, init) => {
+    if (!existsSync(file)) writeFileSync(file, "appeared\n");
+    return await fetch(input, init);
+  };
+  const run = io(appearing);
+  expect(
+    await main(["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()], run.io)
+  ).toBe(1);
+  expect(run.stderr.join("\n")).toContain(file);
+  expect(readFileSync(file, "utf8")).toBe("appeared\n");
+  expect(readdirSync(out)).toEqual(["labels.jsonl"]);
+});
+
+// The temporary file is this run's own, so the removal at the end removes nothing else: a file of
+// the name another run of this pid would have used (here, this test process's) is kept.
+test("the run's temporary file is its own, and a file another run left beside it is kept", async () => {
+  const out = path.join(dir("own-temporary"), "labels");
+  mkdirSync(out, { recursive: true });
+  const other = path.join(out, `.labels.jsonl.${process.pid}.tmp`);
+  writeFileSync(other, "another run's rows\n");
+  const run = io(world().fetch);
+  expect(
+    await main(["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()], run.io)
+  ).toBe(0);
+  expect(readFileSync(other, "utf8")).toBe("another run's rows\n");
+  expect(readdirSync(out).toSorted()).toEqual([path.basename(other), "labels.jsonl"]);
 });
 
 test("a model answer whose body fails after its headers is asked again", async () => {

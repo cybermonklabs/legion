@@ -3,6 +3,7 @@ package prompts
 import (
 	"embed"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -57,7 +58,8 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 		{"tester", claim.RoleTester, false, []string{"core/common.md", "core/tester.md", "mechanics/headless.md", "tester.md"}, []string{"tester.md", "worker-common.md"}, []string{`op: "handoff_complete"`, `verdict: "pass"`, `verdict: "fail"`,
 			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
 		{"reviewer", claim.RoleReviewer, false, []string{"core/common.md", "core/reviewer.md", "mechanics/headless.md", "reviewer.md"}, []string{"reviewer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
-			"Retro commits nothing, so nothing of retro's sits above your approved head", "`pullRequest.head` is the commit the pull request stands on"}},
+			"Retro commits nothing, so nothing of retro's sits above your approved head", "`pullRequest.head` is the commit the pull request stands on",
+			"Your approval of the head the implementer's later push that changes only text makes is read by no daemon check"}},
 		// The merge the merger is told to run names the head GitHub must match, on a queue base and
 		// off it, and carries the message it writes itself; its completion is an ordinary phase
 		// completion, refused only on the grounds every phase worker's is (dispatch://INFRA-714, R2).
@@ -644,6 +646,49 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 		if strings.Contains(text, headRead) {
 			t.Errorf("the composed %s prompt (root %t) says %q", claim.RoleArchitect, isRoot, headRead)
 		}
+	}
+}
+
+// The carry rule (dispatch://INFRA-764 R2) is stated twice, word for word: in the core every phase
+// worker but the merger composes, roles/core/common.md, and in the part every architect composes,
+// go/architect-common.md, since no prompt file is composed for both (Compose). Every other part
+// names "the carry rule" and states none of it, so an edit to one statement that leaves the other,
+// or a third copy, is a rule read twice and followed once. A part restates the rule when it holds
+// the statement's opening or its own clause, "stays current across".
+func TestTheCarryRuleIsStatedTwiceWordForWordAndOnlyNamedElsewhere(t *testing.T) {
+	const opening, clause = "The carry rule: ", "stays current across"
+	stated := map[string]string{}
+	visit := func(dir string) func(string, []byte) error {
+		return func(name string, body []byte) error {
+			file := dir + "/" + name
+			text := foldWhitespace(string(body))
+			at := strings.Index(text, opening)
+			if at < 0 {
+				if strings.Contains(text, clause) {
+					t.Errorf("%s restates the carry rule rather than naming it", file)
+				}
+				return nil
+			}
+			sentence, _, _ := strings.Cut(text[at:], ". ")
+			stated[file] = strings.TrimSuffix(sentence, ".")
+			if strings.Count(text, opening) != 1 || strings.Count(text, clause) != 1 {
+				t.Errorf("%s states the carry rule more than once", file)
+			}
+			return nil
+		}
+	}
+	if err := eachPart(roleParts, "roles", visit("roles")); err != nil {
+		t.Fatal(err)
+	}
+	if err := eachPart(goParts, "go", visit("go")); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"go/architect-common.md", "roles/core/common.md"}; !reflect.DeepEqual(slices.Sorted(maps.Keys(stated)), want) {
+		t.Fatalf("the carry rule is stated in %v, want %v", slices.Sorted(maps.Keys(stated)), want)
+	}
+	if stated["roles/core/common.md"] != stated["go/architect-common.md"] {
+		t.Errorf("the two statements of the carry rule differ:\nroles/core/common.md:   %q\ngo/architect-common.md: %q",
+			stated["roles/core/common.md"], stated["go/architect-common.md"])
 	}
 }
 

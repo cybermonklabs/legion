@@ -121,7 +121,8 @@ hold its role, which the daemon's `holdsRole` decides, the child's notices come 
 The reviewer's approval moves this child to `accepting`, where no worker runs and the acceptance
 is yours (`skill://legion-architect`, section 6): read the tester's handoff,
 `dispatch results --issue <issue>` at the approved head and the reviewer's approval of the head
-by SHA
+by SHA, and, where that head carries a reviewer's text commit, that commit and the implementer's
+accepting comment, or its push and the reviewer's approval of that head
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4).
@@ -130,9 +131,14 @@ requirement of its spec, the plan, the body and the diff; `wait` for its report,
 each `unmet` finding there.
 Then accept with `sign_off`, which moves the child to retro, or
 send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`).
+Where the approved head carries a reviewer's text commit, hold `sign_off` until the implementer's
+answer has come, and ask the implementer on its role topic for it if the issue reached `accepting`
+without one; if it still does not answer, read the reviewer's commit yourself and accept or send
+the issue back on that read, saying so on the issue.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
-`dispatch results --issue <issue>` shows. A result one of its children recorded against one of
+`dispatch results --issue <issue>` shows, or one carried to it under the carry rule your daemon
+part below states. A result one of its children recorded against one of
 its checks proves nothing for it, and a child that carries part of its requirement proves that
 part with a check on the child's own Verification document whose `serves` names the requirement.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap

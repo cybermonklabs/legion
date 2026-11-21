@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   AGENT_STREAM_LIMITS,
   type DispatchEvent,
@@ -32,12 +33,15 @@ export function baseUrlOf(env: NodeJS.ProcessEnv = process.env): string {
 export const baseUrl = baseUrlOf();
 /** The origin the server compares every cookie-authenticated write against (enforceCookieOrigin). */
 export const dashboardOrigin = new URL(baseUrl).origin;
-// A deployed server has its own agent token; the local harness pins `e2e-token` in
-// e2e/run-server.sh, so an E2E_AGENT_TOKEN left in the shell from a deployed run would only
-// make every bearer-seeded call 401 against it.
+// A deployed server has its own agent token; the local harness's is the one e2e/run-server.sh
+// gives its server, the contents of DISPATCH_E2E_AGENT_TOKEN_FILE where the caller that started it
+// names one and `e2e-token` otherwise, so an E2E_AGENT_TOKEN left in the shell from a deployed run
+// would only make every bearer-seeded call 401 against it.
 export const e2eAgentToken = process.env.PLAYWRIGHT_BASE_URL
   ? (process.env.E2E_AGENT_TOKEN ?? "e2e-token")
-  : "e2e-token";
+  : process.env.DISPATCH_E2E_AGENT_TOKEN_FILE
+    ? readFileSync(process.env.DISPATCH_E2E_AGENT_TOKEN_FILE, "utf8").replace(/\n+$/, "")
+    : "e2e-token";
 const seedActor: Actor = { kind: "session", id: "e2e-seed" };
 
 interface ApiOptions {

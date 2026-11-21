@@ -339,6 +339,26 @@ if [ "$stacks" -gt 1 ]; then
   gomaxprocs_env=(GOMAXPROCS="$gomaxprocs")
 fi
 
+# The agent bearer the server accepts (DISPATCH_AGENT_TOKEN), read before the sweep below: the
+# contents of the file DISPATCH_E2E_AGENT_TOKEN_FILE names, where a caller names one, and
+# otherwise `e2e-token`, the bearer every row, acceptance script and e2e/api.ts default to. A
+# caller whose agents read the bearer names a file of its own (the skill-scenario rig, whose
+# agents `cat` their DISPATCH_TOKEN_FILE), so the harness's name does not reach them; e2e/api.ts
+# reads the same file, and the file, not a variable, carries the value, as DISPATCH_TOKEN_FILE
+# does. `$(<file)` drops the line feed a file ends with.
+agent_token=e2e-token
+if [ -n "${DISPATCH_E2E_AGENT_TOKEN_FILE:-}" ]; then
+  if [ ! -r "$DISPATCH_E2E_AGENT_TOKEN_FILE" ]; then
+    echo "run-server.sh: DISPATCH_E2E_AGENT_TOKEN_FILE=$DISPATCH_E2E_AGENT_TOKEN_FILE cannot be read" >&2
+    exit 2
+  fi
+  agent_token="$(<"$DISPATCH_E2E_AGENT_TOKEN_FILE")"
+  if [ -z "$agent_token" ]; then
+    echo "run-server.sh: DISPATCH_E2E_AGENT_TOKEN_FILE=$DISPATCH_E2E_AGENT_TOKEN_FILE holds no token" >&2
+    exit 2
+  fi
+fi
+
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
@@ -386,7 +406,7 @@ exec "${listen[@]}" env \
   "${fake_embedder_env[@]}" \
   "${signin_env[@]}" \
   DATABASE_URL="$database_url" \
-  DISPATCH_AGENT_TOKEN=e2e-token \
+  DISPATCH_AGENT_TOKEN="$agent_token" \
   DISPATCH_APP_CLIENT_ID=Iv1.e2efake \
   DISPATCH_APP_PEM_B64="$app_pem" \
   DISPATCH_GITHUB_API_BASE="http://127.0.0.1:$fake_github_port" \

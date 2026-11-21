@@ -452,6 +452,13 @@ harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.t
 and harness-signin.ts), so the directory is named rather than the two it reached
 when this entry was written.
 
+## pi_legion: The one file of scripts/e2e this job compiles
+
+The one file of scripts/e2e this job compiles, scripts/e2e/plan-pointer-drive.ts: no
+tsconfig of the repository covers that directory, so scripts/skill-scenarios/rig.test.ts's
+row "plan-pointer-drive.ts typechecks, claim and all" typechecks this drive, which composes
+a worker pane through the rig's own composer.
+
 ## dispatch_ui: The dashboard's and the proof editor's fast checks (dispatch-ui)
 
 The dashboard's and the proof editor's fast checks (dispatch-ui): what their lint,

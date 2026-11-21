@@ -1,0 +1,1353 @@
+{
+  "made_by": "gh-writes.ts (bun gh-writes.ts <archive>), from gh's source at the tag the worker image pins, read by gh-writes.go",
+  "source": "cli/cli",
+  "tag": "v2.98.0",
+  "commit": "a255baf71d13fe5947a4eb7ad521ffd412d64cee",
+  "commands": {
+    "accessibility": {
+      "file": "pkg/cmd/accessibility/accessibility.go",
+      "aliases": ["a11y"],
+      "hidden": true,
+      "runs": true,
+      "writes": false
+    },
+    "actions": {
+      "file": "pkg/cmd/actions/actions.go",
+      "hidden": true,
+      "runs": false,
+      "writes": false
+    },
+    "agent-task": {
+      "file": "pkg/cmd/agent-task/agent_task.go",
+      "aliases": ["agent", "agent-tasks", "agents"],
+      "runs": true,
+      "writes": false
+    },
+    "agent-task create": {
+      "file": "pkg/cmd/agent-task/create/create.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/agent-task/capi/job.go:89 an HTTP POST, reached by NewCmdCreate → createRun → CAPIClient.CreateJob"
+    },
+    "agent-task list": {
+      "file": "pkg/cmd/agent-task/list/list.go",
+      "runs": true,
+      "writes": false
+    },
+    "agent-task view": {
+      "file": "pkg/cmd/agent-task/view/view.go",
+      "runs": true,
+      "writes": false
+    },
+    "alias": {
+      "file": "pkg/cmd/alias/alias.go",
+      "runs": false,
+      "writes": false
+    },
+    "alias delete": {
+      "file": "pkg/cmd/alias/delete/delete.go",
+      "runs": true,
+      "writes": false
+    },
+    "alias import": {
+      "file": "pkg/cmd/alias/imports/import.go",
+      "runs": true,
+      "writes": false
+    },
+    "alias list": {
+      "file": "pkg/cmd/alias/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "alias set": {
+      "file": "pkg/cmd/alias/set/set.go",
+      "runs": true,
+      "writes": false
+    },
+    "api": {
+      "file": "pkg/cmd/api/api.go",
+      "runs": true,
+      "byRequest": true,
+      "writes": false
+    },
+    "attestation": {
+      "file": "pkg/cmd/attestation/attestation.go",
+      "aliases": ["at"],
+      "runs": false,
+      "writes": false
+    },
+    "attestation download": {
+      "file": "pkg/cmd/attestation/download/download.go",
+      "runs": true,
+      "writes": false
+    },
+    "attestation inspect": {
+      "file": "pkg/cmd/attestation/inspect/inspect.go",
+      "hidden": true,
+      "runs": true,
+      "writes": false
+    },
+    "attestation trusted-root": {
+      "file": "pkg/cmd/attestation/trustedroot/trustedroot.go",
+      "runs": true,
+      "writes": false
+    },
+    "attestation verify": {
+      "file": "pkg/cmd/attestation/verify/verify.go",
+      "runs": true,
+      "writes": false
+    },
+    "auth": {
+      "file": "pkg/cmd/auth/auth.go",
+      "runs": false,
+      "writes": false
+    },
+    "auth git-credential": {
+      "file": "pkg/cmd/auth/gitcredential/helper.go",
+      "hidden": true,
+      "runs": true,
+      "writes": false
+    },
+    "auth login": {
+      "file": "pkg/cmd/auth/login/login.go",
+      "runs": true,
+      "writes": true,
+      "write": "internal/authflow/flow.go:37 the OAuth flow of github.com/cli/oauth (`oauth.NewGitHubHost`), reached by NewCmdLogin → loginRun → Login → AuthFlow"
+    },
+    "auth logout": {
+      "file": "pkg/cmd/auth/logout/logout.go",
+      "runs": true,
+      "writes": false
+    },
+    "auth refresh": {
+      "file": "pkg/cmd/auth/refresh/refresh.go",
+      "runs": true,
+      "writes": true,
+      "write": "internal/authflow/flow.go:37 the OAuth flow of github.com/cli/oauth (`oauth.NewGitHubHost`), reached by NewCmdRefresh → AuthFlow"
+    },
+    "auth setup-git": {
+      "file": "pkg/cmd/auth/setupgit/setupgit.go",
+      "runs": true,
+      "writes": false
+    },
+    "auth status": {
+      "file": "pkg/cmd/auth/status/status.go",
+      "runs": true,
+      "writes": false
+    },
+    "auth switch": {
+      "file": "pkg/cmd/auth/switch/switch.go",
+      "runs": true,
+      "writes": false
+    },
+    "auth token": {
+      "file": "pkg/cmd/auth/token/token.go",
+      "runs": true,
+      "writes": false
+    },
+    "browse": {
+      "file": "pkg/cmd/browse/browse.go",
+      "runs": true,
+      "writes": false
+    },
+    "cache": {
+      "file": "pkg/cmd/cache/cache.go",
+      "runs": false,
+      "writes": false
+    },
+    "cache delete": {
+      "file": "pkg/cmd/cache/delete/delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/cache/delete/delete.go:210 an HTTP DELETE, reached by NewCmdDelete → deleteRun → deleteCaches → deleteCacheByID"
+    },
+    "cache list": {
+      "file": "pkg/cmd/cache/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "codespace": {
+      "file": "pkg/cmd/codespace/root.go",
+      "aliases": ["cs"],
+      "runs": false,
+      "writes": false
+    },
+    "codespace code": {
+      "file": "pkg/cmd/codespace/code.go",
+      "runs": true,
+      "writes": false
+    },
+    "codespace cp": {
+      "file": "pkg/cmd/codespace/ssh.go",
+      "runs": true,
+      "writes": true,
+      "write": "internal/codespaces/api/api.go:593 an HTTP POST, reached by newCpCmd → App.Copy → App.SSH → GetCodespaceConnection → waitUntilCodespaceConnectionReady → API.StartCodespace"
+    },
+    "codespace create": {
+      "file": "pkg/cmd/codespace/create.go",
+      "runs": true,
+      "writes": true,
+      "write": "internal/codespaces/api/api.go:986 an HTTP POST, reached by newCreateCmd → App.Create → API.CreateCodespace → API.startCreate"
+    },
+    "codespace delete": {
+      "file": "pkg/cmd/codespace/delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "internal/codespaces/api/api.go:1067 an HTTP DELETE, reached by newDeleteCmd → App.Delete → API.DeleteCodespace"
+    },
+    "codespace edit": {
+      "file": "pkg/cmd/codespace/edit.go",
+      "runs": true,
+      "writes": true,
+      "write": "internal/codespaces/api/api.go:1172 an HTTP PATCH, reached by newEditCmd → App.Edit → API.EditCodespace"
+    },
+    "codespace jupyter": {
+      "file": "pkg/cmd/codespace/jupyter.go",
+      "runs": true,
+      "writes": true,
+      "write": "internal/codespaces/api/api.go:593 an HTTP POST, reached by newJupyterCmd → App.Jupyter → GetCodespaceConnection → waitUntilCodespaceConnectionReady → API.StartCodespace"
+    },
+    "codespace list": {
+      "file": "pkg/cmd/codespace/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "codespace logs": {
+      "file": "pkg/cmd/codespace/logs.go",
+      "runs": true,
+      "writes": true,
+      "write": "internal/codespaces/api/api.go:593 an HTTP POST, reached by newLogsCmd → App.Logs → GetCodespaceConnection → waitUntilCodespaceConnectionReady → API.StartCodespace"
+    },
+    "codespace ports": {
+      "file": "pkg/cmd/codespace/ports.go",
+      "runs": true,
+      "writes": true,
+      "write": "internal/codespaces/api/api.go:593 an HTTP POST, reached by newPortsCmd → App.ListPorts → GetCodespaceConnection → waitUntilCodespaceConnectionReady → API.StartCodespace"
+    },
+    "codespace ports forward": {
+      "file": "pkg/cmd/codespace/ports.go",
+      "runs": true,
+      "writes": true,
+      "write": "internal/codespaces/api/api.go:593 an HTTP POST, reached by newPortsForwardCmd → App.ForwardPorts → GetCodespaceConnection → waitUntilCodespaceConnectionReady → API.StartCodespace"
+    },
+    "codespace ports visibility": {
+      "file": "pkg/cmd/codespace/ports.go",
+      "runs": true,
+      "writes": true,
+      "write": "internal/codespaces/api/api.go:593 an HTTP POST, reached by newPortsVisibilityCmd → App.UpdatePortVisibility → GetCodespaceConnection → waitUntilCodespaceConnectionReady → API.StartCodespace"
+    },
+    "codespace rebuild": {
+      "file": "pkg/cmd/codespace/rebuild.go",
+      "runs": true,
+      "writes": true,
+      "write": "internal/codespaces/api/api.go:593 an HTTP POST, reached by newRebuildCmd → App.Rebuild → GetCodespaceConnection → waitUntilCodespaceConnectionReady → API.StartCodespace"
+    },
+    "codespace select": {
+      "file": "pkg/cmd/codespace/select.go",
+      "hidden": true,
+      "runs": true,
+      "writes": false
+    },
+    "codespace ssh": {
+      "file": "pkg/cmd/codespace/ssh.go",
+      "runs": true,
+      "writes": true,
+      "write": "internal/codespaces/api/api.go:593 an HTTP POST, reached by newSSHCmd → App.printOpenSSHConfig → GetCodespaceConnection → waitUntilCodespaceConnectionReady → API.StartCodespace"
+    },
+    "codespace stop": {
+      "file": "pkg/cmd/codespace/stop.go",
+      "runs": true,
+      "writes": true,
+      "write": "internal/codespaces/api/api.go:635 an HTTP POST, reached by newStopCmd → API.StopCodespace"
+    },
+    "codespace view": {
+      "file": "pkg/cmd/codespace/view.go",
+      "runs": true,
+      "writes": false
+    },
+    "completion": {
+      "file": "pkg/cmd/completion/completion.go",
+      "runs": true,
+      "writes": false
+    },
+    "config": {
+      "file": "pkg/cmd/config/config.go",
+      "runs": false,
+      "writes": false
+    },
+    "config clear-cache": {
+      "file": "pkg/cmd/config/clear-cache/clear_cache.go",
+      "runs": true,
+      "writes": false
+    },
+    "config get": {
+      "file": "pkg/cmd/config/get/get.go",
+      "runs": true,
+      "writes": false
+    },
+    "config list": {
+      "file": "pkg/cmd/config/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "config set": {
+      "file": "pkg/cmd/config/set/set.go",
+      "runs": true,
+      "writes": false
+    },
+    "copilot": {
+      "file": "pkg/cmd/copilot/copilot.go",
+      "runs": true,
+      "writes": false
+    },
+    "credits": {
+      "file": "pkg/cmd/repo/credits/credits.go",
+      "hidden": true,
+      "runs": true,
+      "writes": false
+    },
+    "discussion": {
+      "file": "pkg/cmd/discussion/discussion.go",
+      "runs": false,
+      "writes": false
+    },
+    "discussion comment": {
+      "file": "pkg/cmd/discussion/comment/comment.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/discussion/client/client.go:1229 a GraphQL mutation (`Mutate`), reached by NewCmdComment → commentRun → runDelete → discussionClient.DeleteComment"
+    },
+    "discussion create": {
+      "file": "pkg/cmd/discussion/create/create.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/discussion/client/client.go:995 a GraphQL mutation (`Mutate`), reached by NewCmdCreate → createRun → discussionClient.Create"
+    },
+    "discussion edit": {
+      "file": "pkg/cmd/discussion/edit/edit.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/discussion/client/client.go:1066 a GraphQL mutation (`Mutate`), reached by NewCmdEdit → editRun → discussionClient.Update"
+    },
+    "discussion list": {
+      "file": "pkg/cmd/discussion/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "discussion view": {
+      "file": "pkg/cmd/discussion/view/view.go",
+      "runs": true,
+      "writes": false
+    },
+    "extension": {
+      "file": "pkg/cmd/extension/command.go",
+      "aliases": ["ext", "extensions"],
+      "runs": false,
+      "writes": false
+    },
+    "extension browse": {
+      "file": "pkg/cmd/extension/command.go",
+      "runs": true,
+      "writes": false
+    },
+    "extension create": {
+      "file": "pkg/cmd/extension/command.go",
+      "runs": true,
+      "writes": false
+    },
+    "extension exec": {
+      "file": "pkg/cmd/extension/command.go",
+      "runs": true,
+      "writes": false
+    },
+    "extension install": {
+      "file": "pkg/cmd/extension/command.go",
+      "runs": true,
+      "writes": false
+    },
+    "extension list": {
+      "file": "pkg/cmd/extension/command.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "extension remove": {
+      "file": "pkg/cmd/extension/command.go",
+      "aliases": ["uninstall"],
+      "runs": true,
+      "writes": false
+    },
+    "extension search": {
+      "file": "pkg/cmd/extension/command.go",
+      "runs": true,
+      "writes": false
+    },
+    "extension upgrade": {
+      "file": "pkg/cmd/extension/command.go",
+      "runs": true,
+      "writes": false
+    },
+    "gist": {
+      "file": "pkg/cmd/gist/gist.go",
+      "runs": false,
+      "writes": false
+    },
+    "gist clone": {
+      "file": "pkg/cmd/gist/clone/clone.go",
+      "runs": true,
+      "writes": false
+    },
+    "gist create": {
+      "file": "pkg/cmd/gist/create/create.go",
+      "aliases": ["new"],
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/gist/create/create.go:280 an HTTP POST, reached by NewCmdCreate → createRun → createGist"
+    },
+    "gist delete": {
+      "file": "pkg/cmd/gist/delete/delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/gist/delete/delete.go:150 an HTTP DELETE, reached by NewCmdDelete → deleteRun → deleteGist"
+    },
+    "gist edit": {
+      "file": "pkg/cmd/gist/edit/edit.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/gist/edit/edit.go:412 an HTTP POST, reached by NewCmdEdit → editRun → updateGist"
+    },
+    "gist list": {
+      "file": "pkg/cmd/gist/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "gist rename": {
+      "file": "pkg/cmd/gist/rename/rename.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/gist/rename/rename.go:137 an HTTP POST, reached by NewCmdRename → renameRun → updateGist"
+    },
+    "gist view": {
+      "file": "pkg/cmd/gist/view/view.go",
+      "runs": true,
+      "writes": false
+    },
+    "gpg-key": {
+      "file": "pkg/cmd/gpg-key/gpg_key.go",
+      "runs": false,
+      "writes": false
+    },
+    "gpg-key add": {
+      "file": "pkg/cmd/gpg-key/add/add.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/gpg-key/add/http.go:45 an HTTP POST, reached by NewCmdAdd → runAdd → gpgKeyUpload"
+    },
+    "gpg-key delete": {
+      "file": "pkg/cmd/gpg-key/delete/delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/gpg-key/delete/http.go:23 an HTTP DELETE, reached by NewCmdDelete → deleteRun → deleteGPGKey"
+    },
+    "gpg-key list": {
+      "file": "pkg/cmd/gpg-key/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "issue": {
+      "file": "pkg/cmd/issue/issue.go",
+      "runs": false,
+      "writes": false
+    },
+    "issue close": {
+      "file": "pkg/cmd/issue/close/close.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/issue/close/close.go:207 a GraphQL mutation (`Mutate`), reached by NewCmdClose → closeRun → apiClose"
+    },
+    "issue comment": {
+      "file": "pkg/cmd/issue/comment/comment.go",
+      "runs": true,
+      "writes": true,
+      "write": "api/queries_comments.go:119 a GraphQL mutation (`Mutate`), reached by NewCmdComment → CommentableRun → deleteComment → CommentDelete"
+    },
+    "issue create": {
+      "file": "pkg/cmd/issue/create/create.go",
+      "aliases": ["new"],
+      "runs": true,
+      "writes": true,
+      "write": "api/queries_issue.go:324 a GraphQL mutation (its text), reached by NewCmdCreate → createRun → IssueCreate"
+    },
+    "issue delete": {
+      "file": "pkg/cmd/issue/delete/delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/issue/delete/delete.go:135 a GraphQL mutation (`Mutate`), reached by NewCmdDelete → deleteRun → apiDelete"
+    },
+    "issue develop": {
+      "file": "pkg/cmd/issue/develop/develop.go",
+      "runs": true,
+      "writes": true,
+      "write": "api/queries_branch_issue_reference.go:43 a GraphQL mutation (`Mutate`), reached by NewCmdDevelop → developRun → developRunCreate → CreateLinkedBranch"
+    },
+    "issue edit": {
+      "file": "pkg/cmd/issue/edit/edit.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/pr/shared/editable_http.go:166 a GraphQL mutation (`Mutate`), reached by NewCmdEdit → editRun → UpdateIssue → addLabels"
+    },
+    "issue list": {
+      "file": "pkg/cmd/issue/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "issue lock": {
+      "file": "pkg/cmd/issue/lock/lock.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/issue/lock/lock.go:325 a GraphQL mutation (`Mutate`), reached by NewCmdLock → lockRun → lockLockable"
+    },
+    "issue pin": {
+      "file": "pkg/cmd/issue/pin/pin.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/issue/pin/pin.go:132 a GraphQL mutation (`Mutate`), reached by NewCmdPin → pinRun → pinIssue"
+    },
+    "issue reopen": {
+      "file": "pkg/cmd/issue/reopen/reopen.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/issue/reopen/reopen.go:138 a GraphQL mutation (`Mutate`), reached by NewCmdReopen → reopenRun → apiReopen"
+    },
+    "issue status": {
+      "file": "pkg/cmd/issue/status/status.go",
+      "runs": true,
+      "writes": false
+    },
+    "issue transfer": {
+      "file": "pkg/cmd/issue/transfer/transfer.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/issue/transfer/transfer.go:131 a GraphQL mutation (`Mutate`), reached by NewCmdTransfer → transferRun → issueTransfer"
+    },
+    "issue unlock": {
+      "file": "pkg/cmd/issue/lock/lock.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/issue/lock/lock.go:325 a GraphQL mutation (`Mutate`), reached by NewCmdUnlock → lockRun → lockLockable"
+    },
+    "issue unpin": {
+      "file": "pkg/cmd/issue/unpin/unpin.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/issue/unpin/unpin.go:133 a GraphQL mutation (`Mutate`), reached by NewCmdUnpin → unpinRun → unpinIssue"
+    },
+    "issue view": {
+      "file": "pkg/cmd/issue/view/view.go",
+      "runs": true,
+      "writes": false
+    },
+    "label": {
+      "file": "pkg/cmd/label/label.go",
+      "runs": false,
+      "writes": false
+    },
+    "label clone": {
+      "file": "pkg/cmd/label/clone.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/label/create.go:144 an HTTP POST, reached by newCmdClone → cloneRun → cloneLabels → createLabel"
+    },
+    "label create": {
+      "file": "pkg/cmd/label/create.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/label/create.go:144 an HTTP POST, reached by newCmdCreate → createRun → createLabel"
+    },
+    "label delete": {
+      "file": "pkg/cmd/label/delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/label/delete.go:103 an HTTP DELETE, reached by newCmdDelete → deleteRun → deleteLabel"
+    },
+    "label edit": {
+      "file": "pkg/cmd/label/edit.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/label/create.go:182 an HTTP PATCH, reached by newCmdEdit → editRun → updateLabel"
+    },
+    "label list": {
+      "file": "pkg/cmd/label/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "licenses": {
+      "file": "pkg/cmd/licenses/licenses.go",
+      "runs": true,
+      "writes": false
+    },
+    "org": {
+      "file": "pkg/cmd/org/org.go",
+      "runs": false,
+      "writes": false
+    },
+    "org list": {
+      "file": "pkg/cmd/org/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "pr": {
+      "file": "pkg/cmd/pr/pr.go",
+      "runs": false,
+      "writes": false
+    },
+    "pr checkout": {
+      "file": "pkg/cmd/pr/checkout/checkout.go",
+      "aliases": ["co"],
+      "runs": true,
+      "writes": false
+    },
+    "pr checks": {
+      "file": "pkg/cmd/pr/checks/checks.go",
+      "runs": true,
+      "writes": false
+    },
+    "pr close": {
+      "file": "pkg/cmd/pr/close/close.go",
+      "runs": true,
+      "writes": true,
+      "write": "api/queries_pr.go:758 a GraphQL mutation (`Mutate`), reached by NewCmdClose → closeRun → PullRequestClose"
+    },
+    "pr comment": {
+      "file": "pkg/cmd/pr/comment/comment.go",
+      "runs": true,
+      "writes": true,
+      "write": "api/queries_comments.go:119 a GraphQL mutation (`Mutate`), reached by NewCmdComment → CommentableRun → deleteComment → CommentDelete"
+    },
+    "pr create": {
+      "file": "pkg/cmd/pr/create/create.go",
+      "aliases": ["new"],
+      "runs": true,
+      "writes": true,
+      "write": "api/queries_repo.go:616 an HTTP POST, reached by NewCmdCreate → createRun → handlePush → ForkRepo"
+    },
+    "pr diff": {
+      "file": "pkg/cmd/pr/diff/diff.go",
+      "runs": true,
+      "writes": false
+    },
+    "pr edit": {
+      "file": "pkg/cmd/pr/edit/edit.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/pr/shared/editable_http.go:166 a GraphQL mutation (`Mutate`), reached by NewCmdEdit → editRun → updatePullRequest → UpdateIssue → addLabels"
+    },
+    "pr list": {
+      "file": "pkg/cmd/pr/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "pr lock": {
+      "file": "pkg/cmd/issue/lock/lock.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/issue/lock/lock.go:325 a GraphQL mutation (`Mutate`), reached by NewCmdLock → lockRun → lockLockable"
+    },
+    "pr merge": {
+      "file": "pkg/cmd/pr/merge/merge.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/pr/merge/http.go:118 a GraphQL mutation (`Mutate`), reached by NewCmdMerge → mergeRun → disableAutoMerge"
+    },
+    "pr ready": {
+      "file": "pkg/cmd/pr/ready/ready.go",
+      "runs": true,
+      "writes": true,
+      "write": "api/queries_pr.go:844 a GraphQL mutation (`Mutate`), reached by NewCmdReady → readyRun → ConvertPullRequestToDraft"
+    },
+    "pr reopen": {
+      "file": "pkg/cmd/pr/reopen/reopen.go",
+      "runs": true,
+      "writes": true,
+      "write": "api/queries_pr.go:777 a GraphQL mutation (`Mutate`), reached by NewCmdReopen → reopenRun → PullRequestReopen"
+    },
+    "pr revert": {
+      "file": "pkg/cmd/pr/revert/revert.go",
+      "runs": true,
+      "writes": true,
+      "write": "api/queries_pr.go:815 a GraphQL mutation (`Mutate`), reached by NewCmdRevert → revertRun → PullRequestRevert"
+    },
+    "pr review": {
+      "file": "pkg/cmd/pr/review/review.go",
+      "runs": true,
+      "writes": true,
+      "write": "api/queries_pr_review.go:273 a GraphQL mutation (`Mutate`), reached by NewCmdReview → reviewRun → AddReview"
+    },
+    "pr status": {
+      "file": "pkg/cmd/pr/status/status.go",
+      "runs": true,
+      "writes": false
+    },
+    "pr unlock": {
+      "file": "pkg/cmd/issue/lock/lock.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/issue/lock/lock.go:325 a GraphQL mutation (`Mutate`), reached by NewCmdUnlock → lockRun → lockLockable"
+    },
+    "pr update-branch": {
+      "file": "pkg/cmd/pr/update-branch/update_branch.go",
+      "runs": true,
+      "writes": true,
+      "write": "api/queries_pr.go:728 a GraphQL mutation (`Mutate`), reached by NewCmdUpdateBranch → updateBranchRun → updatePullRequestBranch → UpdatePullRequestBranch"
+    },
+    "pr view": {
+      "file": "pkg/cmd/pr/view/view.go",
+      "runs": true,
+      "writes": false
+    },
+    "preview": {
+      "file": "pkg/cmd/preview/preview.go",
+      "runs": false,
+      "writes": false
+    },
+    "preview prompter": {
+      "file": "pkg/cmd/preview/prompter/prompter.go",
+      "runs": true,
+      "writes": false
+    },
+    "project": {
+      "file": "pkg/cmd/project/project.go",
+      "runs": false,
+      "writes": false
+    },
+    "project close": {
+      "file": "pkg/cmd/project/close/close.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/close/close.go:100 a GraphQL mutation (`Mutate`), reached by NewCmdClose → runClose"
+    },
+    "project copy": {
+      "file": "pkg/cmd/project/copy/copy.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/copy/copy.go:110 a GraphQL mutation (`Mutate`), reached by NewCmdCopy → runCopy"
+    },
+    "project create": {
+      "file": "pkg/cmd/project/create/create.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/create/create.go:82 a GraphQL mutation (`Mutate`), reached by NewCmdCreate → runCreate"
+    },
+    "project delete": {
+      "file": "pkg/cmd/project/delete/delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/delete/delete.go:93 a GraphQL mutation (`Mutate`), reached by NewCmdDelete → runDelete"
+    },
+    "project edit": {
+      "file": "pkg/cmd/project/edit/edit.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/edit/edit.go:107 a GraphQL mutation (`Mutate`), reached by NewCmdEdit → runEdit"
+    },
+    "project field-create": {
+      "file": "pkg/cmd/project/field-create/field_create.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/field-create/field_create.go:110 a GraphQL mutation (`Mutate`), reached by NewCmdCreateField → runCreateField"
+    },
+    "project field-delete": {
+      "file": "pkg/cmd/project/field-delete/field_delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/field-delete/field_delete.go:67 a GraphQL mutation (`Mutate`), reached by NewCmdDeleteField → runDeleteField"
+    },
+    "project field-list": {
+      "file": "pkg/cmd/project/field-list/field_list.go",
+      "runs": true,
+      "writes": false
+    },
+    "project item-add": {
+      "file": "pkg/cmd/project/item-add/item_add.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/item-add/item_add.go:104 a GraphQL mutation (`Mutate`), reached by NewCmdAddItem → runAddItem"
+    },
+    "project item-archive": {
+      "file": "pkg/cmd/project/item-archive/item_archive.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/item-archive/item_archive.go:106 a GraphQL mutation (`Mutate`), reached by NewCmdArchiveItem → runArchiveItem"
+    },
+    "project item-create": {
+      "file": "pkg/cmd/project/item-create/item_create.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/item-create/item_create.go:100 a GraphQL mutation (`Mutate`), reached by NewCmdCreateItem → runCreateItem"
+    },
+    "project item-delete": {
+      "file": "pkg/cmd/project/item-delete/item_delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/item-delete/item_delete.go:97 a GraphQL mutation (`Mutate`), reached by NewCmdDeleteItem → runDeleteItem"
+    },
+    "project item-edit": {
+      "file": "pkg/cmd/project/item-edit/item_edit.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/item-edit/item_edit.go:431 a GraphQL mutation (`Mutate`), reached by NewCmdEditItem → runEditItem → clearItemFieldValue"
+    },
+    "project item-list": {
+      "file": "pkg/cmd/project/item-list/item_list.go",
+      "runs": true,
+      "writes": false
+    },
+    "project link": {
+      "file": "pkg/cmd/project/link/link.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/shared/queries/queries.go:1671 a GraphQL mutation (`Mutate`), reached by NewCmdLink → runLink → linkRepo → Client.LinkProjectToRepository"
+    },
+    "project list": {
+      "file": "pkg/cmd/project/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "project mark-template": {
+      "file": "pkg/cmd/project/mark-template/mark_template.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/mark-template/mark_template.go:104 a GraphQL mutation (`Mutate`), reached by NewCmdMarkTemplate → runMarkTemplate"
+    },
+    "project unlink": {
+      "file": "pkg/cmd/project/unlink/unlink.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/project/shared/queries/queries.go:1697 a GraphQL mutation (`Mutate`), reached by NewCmdUnlink → runUnlink → unlinkRepo → Client.UnlinkProjectFromRepository"
+    },
+    "project view": {
+      "file": "pkg/cmd/project/view/view.go",
+      "runs": true,
+      "writes": false
+    },
+    "release": {
+      "file": "pkg/cmd/release/release.go",
+      "runs": false,
+      "writes": false
+    },
+    "release create": {
+      "file": "pkg/cmd/release/create/create.go",
+      "aliases": ["new"],
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/release/create/http.go:202 an HTTP PATCH, reached by NewCmdCreate → createRun → publishRelease"
+    },
+    "release delete": {
+      "file": "pkg/cmd/release/delete/delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/release/delete/delete.go:128 an HTTP DELETE, reached by NewCmdDelete → deleteRun → deleteRelease"
+    },
+    "release delete-asset": {
+      "file": "pkg/cmd/release/delete-asset/delete_asset.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/release/delete-asset/delete_asset.go:119 an HTTP DELETE, reached by NewCmdDeleteAsset → deleteAssetRun → deleteAsset"
+    },
+    "release download": {
+      "file": "pkg/cmd/release/download/download.go",
+      "runs": true,
+      "writes": false
+    },
+    "release edit": {
+      "file": "pkg/cmd/release/edit/edit.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/release/edit/http.go:29 an HTTP PATCH, reached by NewCmdEdit → editRun → editRelease"
+    },
+    "release list": {
+      "file": "pkg/cmd/release/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "release upload": {
+      "file": "pkg/cmd/release/upload/upload.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/release/shared/upload.go:210 an HTTP DELETE, reached by NewCmdUpload → uploadRun → ConcurrentUpload → uploadWithDelete → deleteAsset"
+    },
+    "release verify": {
+      "file": "pkg/cmd/release/verify/verify.go",
+      "runs": true,
+      "writes": false
+    },
+    "release verify-asset": {
+      "file": "pkg/cmd/release/verify-asset/verify_asset.go",
+      "runs": true,
+      "writes": false
+    },
+    "release view": {
+      "file": "pkg/cmd/release/view/view.go",
+      "runs": true,
+      "writes": false
+    },
+    "repo": {
+      "file": "pkg/cmd/repo/repo.go",
+      "runs": false,
+      "writes": false
+    },
+    "repo archive": {
+      "file": "pkg/cmd/repo/archive/archive.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/repo/archive/http.go:26 a GraphQL mutation (`Mutate`), reached by NewCmdArchive → archiveRun → archiveRepo"
+    },
+    "repo autolink": {
+      "file": "pkg/cmd/repo/autolink/autolink.go",
+      "runs": false,
+      "writes": false
+    },
+    "repo autolink create": {
+      "file": "pkg/cmd/repo/autolink/create/create.go",
+      "aliases": ["new"],
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/repo/autolink/create/http.go:41 an HTTP POST, reached by NewCmdCreate → createRun → AutolinkCreator.Create"
+    },
+    "repo autolink delete": {
+      "file": "pkg/cmd/repo/autolink/delete/delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/repo/autolink/delete/http.go:26 an HTTP DELETE, reached by NewCmdDelete → deleteRun → AutolinkDeleter.Delete"
+    },
+    "repo autolink list": {
+      "file": "pkg/cmd/repo/autolink/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "repo autolink view": {
+      "file": "pkg/cmd/repo/autolink/view/view.go",
+      "runs": true,
+      "writes": false
+    },
+    "repo clone": {
+      "file": "pkg/cmd/repo/clone/clone.go",
+      "runs": true,
+      "writes": false
+    },
+    "repo create": {
+      "file": "pkg/cmd/repo/create/create.go",
+      "aliases": ["new"],
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/repo/create/create.go:693 a `git push`, reached by NewCmdCreate → createRun → createFromLocal"
+    },
+    "repo credits": {
+      "file": "pkg/cmd/repo/credits/credits.go",
+      "hidden": true,
+      "runs": true,
+      "writes": false
+    },
+    "repo delete": {
+      "file": "pkg/cmd/repo/delete/delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/repo/delete/http.go:24 an HTTP DELETE, reached by NewCmdDelete → deleteRun → deleteRepo"
+    },
+    "repo deploy-key": {
+      "file": "pkg/cmd/repo/deploy-key/deploy-key.go",
+      "runs": false,
+      "writes": false
+    },
+    "repo deploy-key add": {
+      "file": "pkg/cmd/repo/deploy-key/add/add.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/repo/deploy-key/add/http.go:39 an HTTP POST, reached by NewCmdAdd → addRun → uploadDeployKey"
+    },
+    "repo deploy-key delete": {
+      "file": "pkg/cmd/repo/deploy-key/delete/delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/repo/deploy-key/delete/http.go:19 an HTTP DELETE, reached by NewCmdDelete → deleteRun → deleteDeployKey"
+    },
+    "repo deploy-key list": {
+      "file": "pkg/cmd/repo/deploy-key/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "repo edit": {
+      "file": "pkg/cmd/repo/edit/edit.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/repo/edit/edit.go:318 an HTTP PATCH, reached by NewCmdEdit → editRun"
+    },
+    "repo fork": {
+      "file": "pkg/cmd/repo/fork/fork.go",
+      "runs": true,
+      "writes": true,
+      "write": "api/queries_repo.go:616 an HTTP POST, reached by NewCmdFork → forkRun → ForkRepo"
+    },
+    "repo garden": {
+      "file": "pkg/cmd/repo/garden/garden.go",
+      "hidden": true,
+      "runs": true,
+      "writes": false
+    },
+    "repo gitignore": {
+      "file": "pkg/cmd/repo/gitignore/gitignore.go",
+      "runs": false,
+      "writes": false
+    },
+    "repo gitignore list": {
+      "file": "pkg/cmd/repo/gitignore/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "repo gitignore view": {
+      "file": "pkg/cmd/repo/gitignore/view/view.go",
+      "runs": true,
+      "writes": false
+    },
+    "repo license": {
+      "file": "pkg/cmd/repo/license/license.go",
+      "runs": false,
+      "writes": false
+    },
+    "repo license list": {
+      "file": "pkg/cmd/repo/license/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "repo license view": {
+      "file": "pkg/cmd/repo/license/view/view.go",
+      "runs": true,
+      "writes": false
+    },
+    "repo list": {
+      "file": "pkg/cmd/repo/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "repo read-dir": {
+      "file": "pkg/cmd/repo/read-dir/read_dir.go",
+      "runs": true,
+      "writes": false
+    },
+    "repo read-file": {
+      "file": "pkg/cmd/repo/read-file/read_file.go",
+      "runs": true,
+      "writes": false
+    },
+    "repo rename": {
+      "file": "pkg/cmd/repo/rename/rename.go",
+      "runs": true,
+      "writes": true,
+      "write": "api/queries_repo.go:656 an HTTP PATCH, reached by NewCmdRename → renameRun → RenameRepo"
+    },
+    "repo set-default": {
+      "file": "pkg/cmd/repo/setdefault/setdefault.go",
+      "runs": true,
+      "writes": false
+    },
+    "repo sync": {
+      "file": "pkg/cmd/repo/sync/sync.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/repo/sync/http.go:60 an HTTP POST, reached by NewCmdSync → syncRun → syncRemoteRepo → executeRemoteRepoSync → triggerUpstreamMerge"
+    },
+    "repo unarchive": {
+      "file": "pkg/cmd/repo/unarchive/unarchive.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/repo/unarchive/http.go:26 a GraphQL mutation (`Mutate`), reached by NewCmdUnarchive → unarchiveRun → unarchiveRepo"
+    },
+    "repo view": {
+      "file": "pkg/cmd/repo/view/view.go",
+      "runs": true,
+      "writes": false
+    },
+    "ruleset": {
+      "file": "pkg/cmd/ruleset/ruleset.go",
+      "aliases": ["rs"],
+      "runs": false,
+      "writes": false
+    },
+    "ruleset check": {
+      "file": "pkg/cmd/ruleset/check/check.go",
+      "runs": true,
+      "writes": false
+    },
+    "ruleset list": {
+      "file": "pkg/cmd/ruleset/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "ruleset view": {
+      "file": "pkg/cmd/ruleset/view/view.go",
+      "runs": true,
+      "writes": false
+    },
+    "run": {
+      "file": "pkg/cmd/run/run.go",
+      "runs": false,
+      "writes": false
+    },
+    "run cancel": {
+      "file": "pkg/cmd/run/cancel/cancel.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/run/cancel/cancel.go:157 an HTTP POST, reached by NewCmdCancel → runCancel → cancelWorkflowRun"
+    },
+    "run delete": {
+      "file": "pkg/cmd/run/delete/delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/run/delete/delete.go:146 an HTTP DELETE, reached by NewCmdDelete → runDelete → deleteWorkflowRun"
+    },
+    "run download": {
+      "file": "pkg/cmd/run/download/download.go",
+      "runs": true,
+      "writes": false
+    },
+    "run list": {
+      "file": "pkg/cmd/run/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "run rerun": {
+      "file": "pkg/cmd/run/rerun/rerun.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/run/rerun/rerun.go:228 an HTTP POST, reached by NewCmdRerun → runRerun → rerunJob"
+    },
+    "run view": {
+      "file": "pkg/cmd/run/view/view.go",
+      "runs": true,
+      "writes": false
+    },
+    "run watch": {
+      "file": "pkg/cmd/run/watch/watch.go",
+      "runs": true,
+      "writes": false
+    },
+    "search": {
+      "file": "pkg/cmd/search/search.go",
+      "runs": false,
+      "writes": false
+    },
+    "search code": {
+      "file": "pkg/cmd/search/code/code.go",
+      "runs": true,
+      "writes": false
+    },
+    "search commits": {
+      "file": "pkg/cmd/search/commits/commits.go",
+      "runs": true,
+      "writes": false
+    },
+    "search issues": {
+      "file": "pkg/cmd/search/issues/issues.go",
+      "runs": true,
+      "writes": false
+    },
+    "search prs": {
+      "file": "pkg/cmd/search/prs/prs.go",
+      "runs": true,
+      "writes": false
+    },
+    "search repos": {
+      "file": "pkg/cmd/search/repos/repos.go",
+      "runs": true,
+      "writes": false
+    },
+    "secret": {
+      "file": "pkg/cmd/secret/secret.go",
+      "runs": false,
+      "writes": false
+    },
+    "secret delete": {
+      "file": "pkg/cmd/secret/delete/delete.go",
+      "aliases": ["remove"],
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/secret/delete/delete.go:147 an HTTP DELETE, reached by NewCmdDelete → removeRun"
+    },
+    "secret list": {
+      "file": "pkg/cmd/secret/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "secret set": {
+      "file": "pkg/cmd/secret/set/set.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/secret/set/http.go:82 an HTTP PUT, reached by NewCmdSet → setRun → setSecret → putOrgSecret → putSecret"
+    },
+    "send-telemetry": {
+      "file": "pkg/cmd/send-telemetry/send_telemetry.go",
+      "hidden": true,
+      "runs": true,
+      "writes": true,
+      "write": "internal/barista/observability/telemetry.twirp.go:700 an HTTP POST, reached by newCmdSendTelemetry → runSendTelemetry → telemetryAPIProtobufClient.RecordEvents → telemetryAPIProtobufClient.callRecordEvents → doProtobufRequest → newRequest"
+    },
+    "skill": {
+      "file": "pkg/cmd/skills/skills.go",
+      "aliases": ["skills"],
+      "runs": false,
+      "writes": false
+    },
+    "skill install": {
+      "file": "pkg/cmd/skills/install/install.go",
+      "aliases": ["add"],
+      "runs": true,
+      "writes": false
+    },
+    "skill list": {
+      "file": "pkg/cmd/skills/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "skill preview": {
+      "file": "pkg/cmd/skills/preview/preview.go",
+      "aliases": ["show"],
+      "runs": true,
+      "writes": false
+    },
+    "skill publish": {
+      "file": "pkg/cmd/skills/publish/publish.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/skills/publish/publish.go:627 an HTTP POST, reached by NewCmdPublish → publishRun → runPublishRelease"
+    },
+    "skill search": {
+      "file": "pkg/cmd/skills/search/search.go",
+      "runs": true,
+      "writes": false
+    },
+    "skill update": {
+      "file": "pkg/cmd/skills/update/update.go",
+      "runs": true,
+      "writes": false
+    },
+    "ssh-key": {
+      "file": "pkg/cmd/ssh-key/ssh_key.go",
+      "runs": false,
+      "writes": false
+    },
+    "ssh-key add": {
+      "file": "pkg/cmd/ssh-key/add/add.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/ssh-key/add/http.go:115 an HTTP POST, reached by NewCmdAdd → runAdd → SSHSigningKeyUpload → keyUpload"
+    },
+    "ssh-key delete": {
+      "file": "pkg/cmd/ssh-key/delete/delete.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/ssh-key/delete/http.go:22 an HTTP DELETE, reached by NewCmdDelete → deleteRun → deleteSSHKey"
+    },
+    "ssh-key list": {
+      "file": "pkg/cmd/ssh-key/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "status": {
+      "file": "pkg/cmd/status/status.go",
+      "runs": true,
+      "writes": false
+    },
+    "variable": {
+      "file": "pkg/cmd/variable/variable.go",
+      "runs": false,
+      "writes": false
+    },
+    "variable delete": {
+      "file": "pkg/cmd/variable/delete/delete.go",
+      "aliases": ["remove"],
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/variable/delete/delete.go:117 an HTTP DELETE, reached by NewCmdDelete → removeRun"
+    },
+    "variable get": {
+      "file": "pkg/cmd/variable/get/get.go",
+      "runs": true,
+      "writes": false
+    },
+    "variable list": {
+      "file": "pkg/cmd/variable/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "variable set": {
+      "file": "pkg/cmd/variable/set/set.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/variable/set/http.go:93 an HTTP POST, reached by NewCmdSet → setRun → setVariable → postOrgVariable → postVariable"
+    },
+    "version": {
+      "file": "pkg/cmd/version/version.go",
+      "hidden": true,
+      "runs": true,
+      "writes": false
+    },
+    "workflow": {
+      "file": "pkg/cmd/workflow/workflow.go",
+      "runs": false,
+      "writes": false
+    },
+    "workflow disable": {
+      "file": "pkg/cmd/workflow/disable/disable.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/workflow/disable/disable.go:93 an HTTP PUT, reached by NewCmdDisable → runDisable"
+    },
+    "workflow enable": {
+      "file": "pkg/cmd/workflow/enable/enable.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/workflow/enable/enable.go:93 an HTTP PUT, reached by NewCmdEnable → runEnable"
+    },
+    "workflow list": {
+      "file": "pkg/cmd/workflow/list/list.go",
+      "aliases": ["ls"],
+      "runs": true,
+      "writes": false
+    },
+    "workflow run": {
+      "file": "pkg/cmd/workflow/run/run.go",
+      "runs": true,
+      "writes": true,
+      "write": "pkg/cmd/workflow/run/run.go:365 an HTTP POST, reached by NewCmdRun → runRun"
+    },
+    "workflow view": {
+      "file": "pkg/cmd/workflow/view/view.go",
+      "runs": true,
+      "writes": false
+    }
+  }
+}

@@ -2,18 +2,69 @@
 // left there. DISPATCH_E2E_PORT names the server, which e2e/api.ts addresses. e2e/api.ts addresses
 // PLAYWRIGHT_BASE_URL instead, with E2E_AGENT_TOKEN as its bearer, whenever it is set, so seed.ts
 // refuses to run while either is set. Each mode is also an exported function, which seed.test.ts
-// calls against a stubbed fetch.
+// calls against a stubbed fetch; the four handoff modes are seed-handoffs.ts's, and this file
+// runs them.
 //
-//   seed.ts project                        project LWEVAL, which each run's own issue is filed in;
-//                                          the world of every scenario but brainstorm
-//   seed.ts tester-proof <file>            one run's own issue, the greet() issue the tester's world
-//                                          implements; writes {issue} to <file>
+//   seed.ts project                        project WORLD_PROJECT (run-names.ts), which each run's own
+//                                          issue is filed in, with WORLD_REPO (world-issue.ts) as its
+//                                          default repository, so every issue of it resolves to the
+//                                          repository the world is on; the world of every scenario
+//                                          but brainstorm
+//   seed.ts tester-proof <file> [no-name]  one run's own issue, the greet() issue a phase worker's
+//                                          world implements (world-issue.ts's words), handed to
+//                                          Legion as production hands it: `todo` by the person,
+//                                          then `in_progress` and the `legion` label by the daemon,
+//                                          then the person's approval of its spec, the design gate
+//                                          a root's work waits behind; writes {issue, covers} to
+//                                          <file>. `no-name` gives its check the words that miss
+//                                          R2's blank name (the world whose CLI dropped the
+//                                          blank-name guard); without it the check covers R2
+//   seed.ts plan <file> <implement body file> <base commit>
+//                                          the issue's plan.md, its plan review's approval of
+//                                          version 1 and its plan handoff at <base commit>, all
+//                                          under the session PLANNER; plan: {id, version} in <file>
+//   seed.ts pull-request <file> <gh answers file> <remote>
+//                                          the pull request the world's gh answers name, at the
+//                                          commit its branch is at on <remote>, as Dispatch's
+//                                          intake stores its head, attributed to the issue <file>
+//                                          names, written to the database $SEED_DATABASE_URL
+//                                          names (seed-handoffs.ts says why); a later call after a
+//                                          push moves it, as the push's own event does
 //   seed.ts implement-handoff <file> <body file> <commit>
 //                                          records <body file>, one JSON object, as the implement
 //                                          handoff of the issue <file> names, under the session
 //                                          IMPLEMENTER (never the run's), records its passing
-//                                          result on check k1 at <commit>, and writes {issue,
-//                                          implement: {id, version}} to <file>
+//                                          result on check k1 at <commit>, writes `testing` as the
+//                                          daemon, and writes {issue, implement: {id, version}} to
+//                                          <file>
+//   seed.ts tester-result <file> <body file> <commit>
+//                                          the same for the tester: <body file> as the issue's
+//                                          test handoff under the session TESTER, the tester's own
+//                                          passing result on check k1 at <commit>, which a
+//                                          reviewer's approval gate reads, since a reviewer
+//                                          refuses an approval while a `before_merge` check of the
+//                                          issue has no passing result current at the head it
+//                                          reads, and `needs_review` as the daemon (test: {id,
+//                                          version} in <file>). reviewer-text-findings and
+//                                          threads-closed seed it beside the implementer's, so
+//                                          that no agent of theirs reads a gate of its own as open;
+//                                          tester-proof seeds neither, since its tester records
+//                                          both itself
+//   seed.ts review-handoff <file> <body file>
+//                                          <body file> as the issue's review handoff under the
+//                                          session REVIEWER, and no result, since a review round
+//                                          records none (review: {id, version} in <file>). The
+//                                          agents of threads-closed read it at the version their
+//                                          tasks name
+//   seed.ts steps <file> <project> <phase> [model]
+//                                          the record of each run of a step the issue <file>
+//                                          names has run, as the label's daemon writes it onto
+//                                          Dispatch (seed-handoffs.ts's stepsSeed): each seeded
+//                                          phase's run, started and ended, and the run of <phase>,
+//                                          which the issue stands in, left open; under the claims
+//                                          of the Legion project <project>, naming [model] at each
+//                                          end where it is given; none for a label whose daemon
+//                                          writes none
 //   seed.ts capture-handoffs <file> <run dir>
 //                                          every handoff record of the issue <file> names, newest
 //                                          first as Dispatch lists them, each with the body it
@@ -39,7 +90,7 @@
 //                                          <run dir>); <file> is unread, kept for dispatch_session's
 //                                          one capture call shape
 //   seed.ts spec-writing <file> <source dir>
-//                                          one run's own issue in LWEVAL, filed by the person alice
+//                                          one run's own issue in WORLD_PROJECT, filed by the person alice
 //                                          with the source's title.txt and an empty spec. Then the
 //                                          source's input in time order: each entry of messages.md
 //                                          as a message by alice, and each answered question of
@@ -77,23 +128,15 @@
 //                                          the asks and documents on the issue <file> names, as
 //                                          score.ts's askgateReview reads them (asks.json,
 //                                          artifacts.json in <run dir>)
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type {
-  Actor,
-  ArtifactBlock,
-  Ask,
-  AskOption,
-  Handoff,
-  HandoffSummary,
-} from "@legion/contracts";
+import type { Actor, ArtifactBlock, Ask, AskOption } from "@legion/contracts";
 import { z } from "zod";
 import {
   answerAsk,
   baseUrl,
   createAsk,
   createComment,
-  createHandoff,
   createIssue,
   createIssueArtifact,
   createMessage,
@@ -108,10 +151,30 @@ import {
   listComments,
   listIssueAsks,
   listIssueMessages,
+  patchIssue,
+  putRepoProject,
+  reviewArtifact,
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { parseInstant } from "./production-dispatch";
+import { WORLD_PROJECT } from "./run-names";
+import {
+  captureHandoffs,
+  daemonStatus,
+  phaseHandoff,
+  planSeed,
+  pullRequestHead,
+  stepsSeed,
+  type TesterFixture,
+} from "./seed-handoffs";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
+import {
+  type CheckCovers,
+  WORLD_REPO,
+  WORLD_SPEC,
+  WORLD_TITLE,
+  worldVerification,
+} from "./world-issue";
 
 /** What `ask-on-message` writes and `capture` reads. */
 const Fixture = z.object({ issue: z.string(), message: z.string() });
@@ -127,17 +190,16 @@ const EVENT_PAGE = 200;
 /** What `spec-writing` and `spec-rewrite` write, and every later spec mode reads. */
 const SpecFixture = z.object({ issue: z.string(), spec_artifact: z.string() });
 type SpecFixture = z.infer<typeof SpecFixture>;
-/** The session a seeded ask is opened as: another agent's, never the run's own. */
-export const SEED_ASKER = { kind: "session", id: "spec-source-agent" } as const;
-/** What `tester-proof` writes, and `implement-handoff` and `capture-handoffs` read: the run's issue,
- * and once `implement-handoff` recorded it, the implementer's record. */
-const TesterFixture = z.object({
-  issue: z.string(),
-  implement: z.object({ id: z.string(), version: z.number().int() }).optional(),
-});
-/** The session the tester's predecessor wrote its implement handoff as: the implementer's, never
- * the run's own. */
-export const IMPLEMENTER = { kind: "session", id: "rig-implementer" } as const;
+/** The session a seeded ask is opened as: another agent's, never the run's own, with the shape of
+ * any agent's session id (a UUIDv7). */
+export const SEED_ASKER = { kind: "session", id: "01a1b0d7-4e21-7b93-a5f8-6c3e9d0b2f47" } as const;
+/** The session every other agent-bearer write of a seed is made as: the architect's that files a
+ * phase worker's issue, a session id of the same shape. Without one, e2e/api.ts writes as its own
+ * seeding session, `e2e-seed`, which the issue's events show every agent that reads them. */
+export const FILER = {
+  as: "agent",
+  actor: { kind: "session", id: "01a1ad55-2b8c-7f04-9e61-3a7d5c0e8b29" },
+} as const;
 /** The person who files the run's issue, posts the source's input and answers every ask. */
 const PERSON = "alice";
 /** Dispatch's approval answer (packages/envoy/internal/dispatch/docs/approval_review.go). */
@@ -254,7 +316,7 @@ async function seedSpecIssue(file: string, source: string, spec?: string): Promi
   const asksFile = path.join(source, "asks.json");
   const asks = z.array(SourceAsk).parse(JSON.parse(readFileSync(asksFile, "utf8")));
   const issue = await createIssue(
-    { project: "LWEVAL", force: true, title, ...(spec === undefined ? {} : { spec }) },
+    { project: WORLD_PROJECT, force: true, title, ...(spec === undefined ? {} : { spec }) },
     { login: PERSON }
   );
   const person = { as: "user", login: PERSON } as const;
@@ -469,10 +531,27 @@ interface AgentText {
   created_at: string;
 }
 
-/** `capture-spec <file> <run dir>`: what the run left on its issue, for judge.ts and score.ts. */
+/** `capture-spec <file> <run dir>`: what the run left on its issue, for judge.ts and score.ts.
+ * Each path it writes in the run directory that is already there (an earlier capture's, or a file
+ * the run's agent wrote there) is refused before any read, naming each, and never removed or
+ * replaced. */
 export async function captureSpec(file: string, runDir: string): Promise<void> {
   const fixture = loadSpecFixture(file);
   const reader = { as: "agent" } as const;
+  const writes = [
+    "spec.md",
+    "spec-versions",
+    "spec-versions.json",
+    "agent-asks.json",
+    "agent-texts.json",
+    "documents",
+    "plan.md",
+  ].map((name) => path.join(runDir, name));
+  const taken = writes.filter((one) => lstatSync(one, { throwIfNoEntry: false }) !== undefined);
+  if (taken.length > 0)
+    throw new Error(
+      `capture-spec: ${taken.join(", ")} already in the run directory; the capture removes and replaces none of it`
+    );
   const out = (name: string, text: string) => writeFileSync(path.join(runDir, name), text);
   const json = (name: string, value: unknown) => out(name, `${JSON.stringify(value)}\n`);
 
@@ -548,8 +627,6 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
   );
 
   // Every other markdown document: plan.md on its own, the rest under documents/.
-  rmSync(path.join(runDir, "documents"), { recursive: true, force: true });
-  rmSync(path.join(runDir, "plan.md"), { force: true });
   mkdirSync(path.join(runDir, "documents"));
   const documents = ((await getIssue(fixture.issue, reader)).artifacts ?? []).filter(
     (artifact) => artifact.kind === "doc" && artifact.id !== fixture.spec_artifact
@@ -566,136 +643,46 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
   );
 }
 
-async function seedProject(): Promise<void> {
-  await createProject({ key: "LWEVAL", name: "skill scenarios" });
-  console.log("seeded LWEVAL");
+/** `project`: the world's project, with the repository the world is on as its default, as a
+ * person maps it on the Settings page. Every issue of the project then resolves to that
+ * repository, as an issue of a project with one repository does in production: the issue read
+ * names it (`Repository:`), and a check's results are read against it. */
+export async function seedProject(): Promise<void> {
+  await createProject({ key: WORLD_PROJECT, name: "Widgets" });
+  await putRepoProject(WORLD_REPO, { project: WORLD_PROJECT, default: true }, PERSON);
+  console.log(`seeded ${WORLD_PROJECT} on ${WORLD_REPO}`);
 }
 
-/** `tester-proof <file>`: the run's own greet() issue, whose spec marks what rig.sh's
- * worker_fixture meets as `requirement` blocks, and whose Verification document holds the one
- * `check` block the implementer's result and the tester's own run are recorded against. The check
- * names no `serves`, since a pointer must name a block of a document this seed has not read back;
- * the pointer rules are the Dispatch suites' to prove, not this fixture's. Each run's records go
- * on its own issue alone, and `force` passes Dispatch's duplicate check should the issue be filed
- * again. */
-export async function testerProofIssue(file: string): Promise<void> {
+/** `tester-proof <file> [no-name]`: the run's own greet() issue (world-issue.ts), whose spec
+ * marks what rig.sh's worker_fixture meets as `requirement` blocks, and whose Verification
+ * document holds the one `check` block the implementer's result and every role's own run are
+ * recorded against, serving those requirements, in the words `covers` names. Then the issue is
+ * handed to Legion as production hands it: the person moves it to `todo`, the daemon writes
+ * `in_progress` with the `legion` label, which hands it the issue's status, and the person
+ * approves the spec, version 1, from its header. The issue is its tree's own root, and a root's
+ * work waits behind its design gate until a person approves the spec the gate is on
+ * (packages/daemon/internal/classify's `DesignGateOpen`), so an issue whose plan, code and tests
+ * are in is one whose spec was approved: without the approval the run's Dispatch said no person
+ * had reviewed the spec of an issue already under test, and the record its daemon stand-in
+ * answers, which reads the gate from that Dispatch (daemon-standin.ts's `gateNow`), would name a
+ * gate no production issue past `admitted` has. Each run's records go on its own issue alone,
+ * and `force` passes Dispatch's duplicate check should the issue be filed again. */
+export async function testerProofIssue(file: string, covers: CheckCovers = "r2"): Promise<void> {
   const issue = await createIssue(
-    {
-      project: "LWEVAL",
-      force: true,
-      title: "greet(): a greeting helper for the widgets CLI",
-      spec: [
-        "## Goal",
-        "",
-        "`greet(name)` returns `Hello, <name>!`, and `bun greet.ts <name>` prints it.",
-        "",
-        "## Requirements",
-        "",
-        ":::requirement{#r1}",
-        "**R1.** `bun greet.ts Ada` prints `Hello, Ada!` and exits 0. From: the issue.",
-        ":::",
-        "",
-        ":::requirement{#r2}",
-        "**R2.** `bun greet.ts` with no name, or a blank one, exits 2 and prints `usage: greet.ts <name>` to stderr. From: the issue.",
-        ":::",
-        "",
-        ":::requirement{#r3}",
-        "**R3.** Surrounding whitespace in the name is trimmed. From: the issue.",
-        ":::",
-      ].join("\n"),
-    },
-    { as: "agent" }
+    { project: WORLD_PROJECT, force: true, title: WORLD_TITLE, spec: WORLD_SPEC },
+    FILER
   );
   await createIssueArtifact(
     issue.key,
-    {
-      name: "verification.md",
-      content: [
-        "# Verification",
-        "",
-        ':::check{#k1 surface="cli" run="bun greet.ts Ada" when="before_merge" negative_control="bun greet.ts with no name exits 2 and prints the usage line to stderr."}',
-        "`bun greet.ts <name>` prints the greeting, trims the name, and exits 2 with a usage line when no name is given.",
-        ":::",
-      ].join("\n"),
-    },
-    { as: "agent" }
+    { name: "verification.md", content: worldVerification(issue.key, covers) },
+    FILER
   );
-  const fixture: z.infer<typeof TesterFixture> = { issue: issue.key };
+  await patchIssue(issue.key, { status: "todo" }, { login: PERSON });
+  await daemonStatus(issue.key, "in_progress", ["legion"]);
+  await reviewArtifact(issue.primary_artifact_id, { state: "approved" }, { login: PERSON });
+  const fixture: z.input<typeof TesterFixture> = { issue: issue.key, covers };
   writeFileSync(file, `${JSON.stringify(fixture)}\n`);
   console.log(`seeded ${issue.key}`);
-}
-
-/** `implement-handoff <file> <body file> <commit>`: the implementer's handoff on the run's issue,
- * as `dispatch handoff-write` records it under the implementer's session, and its passing result
- * against the issue's check `k1` at `<commit>`, as `dispatch result` records it. A body that is no
- * JSON object is the fixture's fault, refused before anything is written. */
-export async function implementHandoff(
-  file: string,
-  bodyFile: string,
-  commit: string
-): Promise<void> {
-  const { issue } = TesterFixture.parse(JSON.parse(readFileSync(file, "utf8")));
-  const body: unknown = JSON.parse(readFileSync(bodyFile, "utf8"));
-  if (typeof body !== "object" || body === null || Array.isArray(body))
-    throw new Error(`${bodyFile} holds no JSON object, which a handoff body is`);
-  const recorded = await createHandoff(issue, "implement", body, IMPLEMENTER);
-  await agentPost(`/api/v1/issues/${encodeURIComponent(issue)}/results`, {
-    check: "k1",
-    role: "implementer",
-    verdict: "pass",
-    commit,
-    surface: "cli",
-    run: "bun greet.ts Ada",
-    observed: "prints Hello, Ada! and exits 0",
-    negative_control: "bun greet.ts → exit 2, usage: greet.ts <name> on stderr",
-    actor: IMPLEMENTER,
-  });
-  const fixture: z.infer<typeof TesterFixture> = {
-    issue,
-    implement: { id: recorded.id, version: recorded.version },
-  };
-  writeFileSync(file, `${JSON.stringify(fixture)}\n`);
-  console.log(`seeded ${issue}'s implement handoff, version ${recorded.version} (${recorded.id})`);
-}
-
-/** `GET route` as the agent bearer, its JSON answer; a refusal names the route and Dispatch's answer. */
-async function agentGet<T>(route: string): Promise<T> {
-  const response = await fetch(new URL(route, baseUrl), {
-    headers: { Authorization: `Bearer ${e2eAgentToken}` },
-  });
-  if (!response.ok)
-    throw new Error(`GET ${route} failed: ${response.status} ${await response.text()}`);
-  return (await response.json()) as T;
-}
-
-/** `POST route` as the agent bearer, with `input` as its JSON body; a refusal names the route and
- * Dispatch's answer. */
-async function agentPost(route: string, input: unknown): Promise<void> {
-  const response = await fetch(new URL(route, baseUrl), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${e2eAgentToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(input),
-  });
-  if (!response.ok)
-    throw new Error(`POST ${route} failed: ${response.status} ${await response.text()}`);
-}
-
-/** `capture-handoffs <file> <run dir>`: every handoff record of the run's issue, the seeded
- * implement record among them, newest first as `GET …/handoffs` lists them, each read whole by id
- * (`GET /api/v1/handoffs/{id}`) for its body. */
-export async function captureHandoffs(file: string, runDir: string): Promise<void> {
-  const { issue } = TesterFixture.parse(JSON.parse(readFileSync(file, "utf8")));
-  const summaries = await agentGet<HandoffSummary[]>(
-    `/api/v1/issues/${encodeURIComponent(issue)}/handoffs`
-  );
-  const records: Handoff[] = [];
-  for (const summary of summaries)
-    records.push(await agentGet<Handoff>(`/api/v1/handoffs/${encodeURIComponent(summary.id)}`));
-  writeFileSync(path.join(runDir, "handoffs.json"), `${JSON.stringify(records)}\n`);
-  console.log(`captured ${issue}: ${records.length} handoff records`);
 }
 
 async function askOnMessage(file: string): Promise<void> {
@@ -705,7 +692,7 @@ async function askOnMessage(file: string): Promise<void> {
   const owner = { as: "agent", actor: { kind: "session", id: "dispatch-owner" } } as const;
   const issue = await createIssue(
     {
-      project: "LWEVAL",
+      project: WORLD_PROJECT,
       force: true,
       title: "Make the Architecture page tell the truth: every issue attached to its components",
       spec: [
@@ -761,7 +748,7 @@ async function measureBeforeAsk(file: string): Promise<void> {
   const owner = { as: "agent", actor: { kind: "session", id: "dispatch-owner" } } as const;
   const issue = await createIssue(
     {
-      project: "LWEVAL",
+      project: WORLD_PROJECT,
       force: true,
       title: "Re-home the issues the retired billing-api component left stranded",
       spec: [
@@ -831,7 +818,7 @@ async function seedBrainstorm(): Promise<void> {
   ]) {
     const issue = await createIssue(
       { project: "TODO", force: true, title, spec: `## Problem\n\n${problem}` },
-      { as: "agent" }
+      FILER
     );
     console.log(`seeded ${issue.key}`);
   }
@@ -843,8 +830,8 @@ async function seedAskgate(file: string): Promise<void> {
   // branch and the comment's nightly export, so no case's write is off-topic for the issue. Every
   // run seeds the same issue, so `force` passes Dispatch's duplicate check.
   const issue = await createIssue(
-    { project: "LWEVAL", force: true, title: "Release and nightly job settings", spec: "" },
-    { as: "agent" }
+    { project: WORLD_PROJECT, force: true, title: "Release and nightly job settings", spec: "" },
+    FILER
   );
   const comment = await createComment(
     issue.key,
@@ -895,7 +882,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> [no-name] | plan <file> <implement body file> <base commit> | pull-request <file> <gh answers file> <remote> | implement-handoff <file> <body file> <commit> | tester-result <file> <body file> <commit> | review-handoff <file> <body file> | steps <file> <project> <phase> [model] | capture-handoffs <file> <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -928,6 +915,24 @@ async function main(argv: string[]): Promise<boolean> {
     await captureAskgate(file, second);
   else if (command === "tester-proof" && file !== undefined && n === 2)
     await testerProofIssue(file);
+  else if (command === "tester-proof" && file !== undefined && second === "no-name" && n === 3)
+    await testerProofIssue(file, "no-name");
+  else if (
+    command === "plan" &&
+    file !== undefined &&
+    second !== undefined &&
+    third !== undefined &&
+    n === 4
+  )
+    await planSeed(file, second, third);
+  else if (
+    command === "pull-request" &&
+    file !== undefined &&
+    second !== undefined &&
+    third !== undefined &&
+    n === 4
+  )
+    await pullRequestHead(file, second, third);
   else if (
     command === "implement-handoff" &&
     file !== undefined &&
@@ -935,7 +940,25 @@ async function main(argv: string[]): Promise<boolean> {
     third !== undefined &&
     n === 4
   )
-    await implementHandoff(file, second, third);
+    await phaseHandoff(file, second, "implement", third);
+  else if (
+    command === "tester-result" &&
+    file !== undefined &&
+    second !== undefined &&
+    third !== undefined &&
+    n === 4
+  )
+    await phaseHandoff(file, second, "test", third);
+  else if (command === "review-handoff" && file !== undefined && second !== undefined && n === 3)
+    await phaseHandoff(file, second, "review");
+  else if (
+    command === "steps" &&
+    file !== undefined &&
+    second !== undefined &&
+    third !== undefined &&
+    (n === 4 || n === 5)
+  )
+    await stepsSeed(file, second, third, argv[4] ?? "");
   else if (command === "capture-handoffs" && file !== undefined && second !== undefined && n === 3)
     await captureHandoffs(file, second);
   else return false;

@@ -2975,7 +2975,7 @@ GATES = [
 
     gate("pi_legion", "pi-legion", runs=[
         script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
-                   'const result = Bun.spawnSync(["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args], {',
+                   '["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args],',
                    f"daemon-pane.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="build",
                    overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
     ], reads=reads(
@@ -2998,7 +2998,7 @@ GATES = [
         ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/seed.ts:111 imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
         ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:20"),
         ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:8-19 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),
-        ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:44 stages them and :204-208 reads the roots at :194-202; scripts/skill-scenarios/rig.test.ts:954,1170; prepack stages skills"),
+        ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:44 stages them and :204-208 reads the roots at :194-202; scripts/skill-scenarios/rig.test.ts's \"judge-omp\" rows run rig.sh judge-omp over the checkout's skills/asd-ste100, which \"ste runs omp in the directory on its prompt, no plugins, asd-ste100 alone, the pinned model\" reads back and \"fails, naming the rig's root, when the root is no checkout\" copies; prepack stages skills"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion', 'Pack pi-legion')}); packages/pi-shared/test/skills-guard.ts:17,34"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100"),
         (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:204-208 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of the list at :197"),
@@ -3007,9 +3007,14 @@ GATES = [
         ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :199"),
         ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :200"),
         ("README.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :201"),
-        ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:275 sources scripts/e2e/lib/rig.sh"),
-        (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1168-1170 copies .omp-pin"),
-        ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:29-30)"),
+        ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts imports scripts/e2e/lib/script-functions, its \"a setup that fails after install_model_route\" rows copy install-key-file-model-route.sh and model-endpoint.sh from it, and its \"judge-omp\" row \"fails, naming the rig's root, when the root is no checkout\" copies the directory; rig.sh sources scripts/e2e/lib/rig.sh (its `. \"$root/scripts/e2e/lib/rig.sh\"` line)"),
+        ("scripts/e2e/plan-pointer-drive.ts", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts's row \"plan-pointer-drive.ts typechecks, claim and all\" typechecks it: no tsconfig of this repository covers scripts/e2e, and that drive composes a worker pane through this rig's own composer, so the row compiles the one file of the directory the rig's modules reach"),
+        (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts's \"judge-omp\" rows run rig.sh judge-omp, which copies the checkout's .omp-pin, and its row \"fails, naming the rig's root, when the root is no checkout\" copies .omp-pin"),
+        (f"{ENVOY}/internal/testnats/nats.go", "packages/pi-legion/scripts/skill-scenarios/rig.sh's read_nats_image sources scripts/e2e/lib/nats-image.sh, which reads "
+                                                "const HubImage from it, and rig.test.ts's services_up rows run that function"),
+        ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (runDaemonPane), or the build "
+                                                                       "SKILL_SCENARIOS_DAEMON_PANE names, which rig.sh's daemon_pane_binary makes with the same overlay; "
+                                                                       "daemon-routes.go, which runRoutes runs with GOWORK=off, imports the standard library alone"),
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                          "import @legion/envoy-client/*")
       + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")

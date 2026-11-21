@@ -57,12 +57,15 @@ function dockerListingNone(): string {
 }
 // check runs refuse_leftovers PREFIX over ROOT, with PATH's front directory BIN when given, and
 // answers its status and what its `fail` said (a driver's fail, here one that prints and returns).
-function check(root: string, bin = "") {
+// With EXIT it runs refuse_leftovers from the EXIT trap of a shell that runs `exit EXIT`, as a
+// driver's exit handler runs after the driver's `exit`.
+function check(root: string, bin = "", exit?: number) {
+  const call = `refuse_leftovers ${prefix}; echo "status $?"`;
   const ran = Bun.spawnSync(
     [
       "bash",
       "-c",
-      `set -u\nfail() { printf '%s\\n' "$*"; return 1; }\n. ${JSON.stringify(leftovers)}\nrefuse_leftovers ${prefix}; echo "status $?"`,
+      `set -u\nfail() { printf '%s\\n' "$*"; return 1; }\n. ${JSON.stringify(leftovers)}\n${exit === undefined ? call : `trap '${call}' EXIT\nexit ${exit}`}`,
     ],
     {
       env: {
@@ -169,5 +172,36 @@ test.skipIf(skip)(
       findStub(`/usr/bin/find "$@"\necho "find: '$proc_root/1/cwd': Permission denied" >&2\nexit 1`)
     );
     expect(unreadable).toEqual({ out: "status 0\n", err: "" });
+  }
+);
+
+// A driver's exit handler runs after the driver's `exit N`, and a substitution forked while the EXIT
+// trap runs takes a bare `exit` for that N (bash 5.2.37): the walk read a failed find's status as N.
+// The find here is the one every walk of a busy machine runs, which exits 1 for an entry of another
+// user's process, and the trap runs after `exit 3`, which the walk read as a find a signal ended.
+// From such a trap the find's own status decides: the leftover a working directory names is named
+// as outside one, and a find a signal ends is reported with its own 137.
+test.skipIf(skip)(
+  "from an EXIT trap after `exit 3` it names the leftover a working directory names as outside one, and reports a find a signal ends with that find's 137",
+  async () => {
+    const runDir = mkdtempSync(`/tmp/${prefix}.${goneDriver()}.`);
+    try {
+      const byCwd = await sleeper({ cwd: runDir });
+      const root = procRootOf(dir, [byCwd]);
+      const busy = findStub(
+        `/usr/bin/find "$@"\necho "find: '$proc_root/1/cwd': Permission denied" >&2\nexit 1`
+      );
+      const outside = check(root, busy);
+      expect(outside.err).toBe("");
+      expect(outside.out).toContain(`process ${byCwd}, `);
+      expect(outside.out).toEndWith("status 1\n");
+      expect(check(root, busy, 3)).toEqual(outside);
+      expect(check(root, findStub("kill -KILL $$"), 3)).toEqual({
+        out: `refuse_leftovers: find exited 137 reading the working directories under ${root}: find ended with status 137 and printed nothing\nstatus 2\n`,
+        err: "",
+      });
+    } finally {
+      Bun.spawnSync(["rm", "-rf", runDir]);
+    }
   }
 );

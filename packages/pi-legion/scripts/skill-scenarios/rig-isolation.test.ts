@@ -4,6 +4,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   symlinkSync,
   writeFileSync,
@@ -12,6 +13,10 @@ import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
+import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
+import { leakCheckEnv } from "./leak-check-env";
+import { WORLD_PROJECT } from "./run-names";
+import { spawnChecked } from "./test-programs";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
 // `rig.sh run askgate on <n> <index> <start>`. The rig.sh under test is this one, copied into a
@@ -34,7 +39,30 @@ setDefaultTimeout(120_000);
 const withoutPerl = skipWithout("perl");
 
 const root = path.resolve(import.meta.dir, "../../../..");
-const scratch = temporaryDirectory("skill-scenarios-isolation", { real: true });
+// A name of no measurement: every path a run's agent reads is built on it, and the rig starts no
+// agent whose world names the rig (run-names.ts's guard).
+const scratch = temporaryDirectory("isolation", { real: true });
+
+// Every row whose run starts an agent needs the namespace each agent runs in (rig.sh's launch),
+// and a host that refuses it refuses every run (require_namespace): rig.sh's own probe, read
+// once, says which host refuses it and in its words, as the perl rows' warning does. The row
+// of a refused run, and the one refused before the namespace, run everywhere.
+const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
+const probe = spawnChecked(
+  [
+    "bash",
+    "-c",
+    `${/^namespace_path=.*$/m.exec(readFileSync(path.join(import.meta.dir, "rig.sh"), "utf8"))?.[0]}\n${fn("system_gitconfig")}\n${fn("namespace_probe")}\nnamespace_probe`,
+  ],
+  { env: { PATH: process.env.PATH ?? "" } }
+);
+const withoutNamespace = probe.exitCode !== 0;
+if (withoutNamespace)
+  console.warn(
+    `Skipped the namespace rows in ${import.meta.path}. This host refuses the namespace every run's agent starts in (rig.sh's namespace_probe): ${probe.stdout.toString().trim()}`
+  );
+/** The rows that read the two runs the hook starts, and every other row that starts an agent. */
+const withoutRuns = withoutPerl || withoutNamespace;
 
 /**
  * Every write this file's body asks for, as a function the `beforeAll` at the end calls. The
@@ -55,24 +83,40 @@ function put(file: string, text: string, mode = 0o644) {
   });
 }
 
-// The checkout: this rig.sh and the e2e helpers it sources, with the two Dispatch stand-ins.
+// The checkout: this rig.sh and the e2e helpers it sources, with the two Dispatch stand-ins, and
+// every program of the rig's directory, with the root's node_modules for zod. The programs are
+// read off the directory itself (RIG_PROGRAMS), never named here: a run runs what rig.sh finds
+// beside itself ($here) — run-names.ts's guard, the gh stand-in and the modules its bundle takes
+// in, the GitHub stand-in and its routes, the head watcher, the seeds — and three times a list
+// kept here was short by the one program the rig had newly started to run (gh-threads.ts, then
+// github-standin.ts with four more), so every run of the rows died. The rig's provenance
+// (services_from) is read off rig.sh and its programs' imports too (run-programs.ts), but the
+// copy takes the directory whole, so no reading of what a run runs can leave a run of the rows
+// short. Left out: the directory's tests (`*.test.ts`), which no run runs, and its
+// subdirectories (github-head-fixture/, the tester's fixture, which only a test reads). seed.ts
+// is copied and then replaced by the stand-in below.
 const co = path.join(scratch, "checkout");
 const rig = path.join(co, "packages/pi-legion/scripts/skill-scenarios/rig.sh");
 const stub = path.join(scratch, "stub");
+const RIG_PROGRAMS = readdirSync(import.meta.dir, { withFileTypes: true })
+  .filter((entry) => entry.isFile() && !entry.name.endsWith(".test.ts"))
+  .map((entry) => entry.name);
 stagings.push(() => {
   mkdirSync(path.dirname(rig), { recursive: true });
-  copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
-  for (const lib of [
-    "rig.sh",
-    "process-tree.sh",
-    "loopback-dsn.sh",
-    "loopback-dsn.py",
-    "port-file.sh",
-    "held-port.py",
-  ]) {
-    mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
-    copyFileSync(path.join(root, "scripts/e2e/lib", lib), path.join(co, "scripts/e2e/lib", lib));
-  }
+  for (const program of RIG_PROGRAMS)
+    copyFileSync(path.join(import.meta.dir, program), path.join(path.dirname(rig), program));
+  symlinkSync(path.join(root, "node_modules"), path.join(co, "node_modules"));
+  // Every file of scripts/e2e/lib, read off the directory as RIG_PROGRAMS is, since rig.sh sources
+  // what it needs from there by name (rig.sh, the loopback and port helpers), and a list kept here
+  // fell short the day it began to source nats-image.sh. The nats.go of
+  // packages/envoy/internal/testnats, out of which nats-image.sh reads the hub's image, stays
+  // behind: only a batch that starts a NATS container reads that image (rig.sh's
+  // read_nats_image), and a run never does.
+  const libs = path.join(root, "scripts/e2e/lib");
+  mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
+  for (const entry of readdirSync(libs, { withFileTypes: true }))
+    if (entry.isFile())
+      copyFileSync(path.join(libs, entry.name), path.join(co, "scripts/e2e/lib", entry.name));
   mkdirSync(stub);
 });
 put(
@@ -120,7 +164,7 @@ put(
     'if (command === "askgate")',
     "  writeFileSync(",
     '    file ?? "",',
-    '    JSON.stringify({ issue: "LWEVAL-2", comment: "c1", comment_ref: "dispatch://LWEVAL-2/comment/c1" })',
+    `    JSON.stringify({ issue: "${WORLD_PROJECT}-2", comment: "c1", comment_ref: "dispatch://${WORLD_PROJECT}-2/comment/c1" })`,
     "  );",
     'if (command === "capture-askgate")',
     '  for (const name of ["asks.json", "artifacts.json"]) writeFileSync(path.join(runDir ?? "", name), "[]\\n");',
@@ -167,11 +211,9 @@ put(
 );
 put(
   path.join(bin, "pin", "bin", "omp"),
-  [
-    "#!/usr/bin/env bash",
-    'env | grep "^DISPATCH_" | sort >"$SKILL_SCENARIO_RUN/agent-env.txt"',
-    "",
-  ].join("\n"),
+  ["#!/usr/bin/env bash", 'env | grep "^DISPATCH_" | sort >"$HOME/../agent-env.txt"', ""].join(
+    "\n"
+  ),
   0o755
 );
 // bun: the Bun that runs this file, so the rig's `bun` (load_label's read of the profile settings,
@@ -192,17 +234,24 @@ put(
   0o755
 );
 
-// The work directory: the label's profile, and the batch's services file and Dispatch token.
+// The work directory: the label's profile, installed under an id of its own (rig.sh's
+// cmd_profile), the batch's services file and provenance for it, its Dispatch token, and the
+// Dispatch server the batch built from the label's checkout, which is the rig's own here
+// (rig.sh's go_binary, under build_dir), which the run-server.sh stand-in is given and does not
+// run.
 const work = path.join(scratch, "work");
 /** A label's built profile, with its Oh My Pi settings `settings` (the model route installers'). */
 function label(name: string, settings: string) {
   const dir = path.join(work, "profiles", name);
-  put(path.join(dir, `home/.omp/profiles/skills-${name}/agent/config.yml`), settings);
+  const install = new Bun.CryptoHasher("sha256").update(name).digest("hex").slice(0, 12);
+  put(path.join(work, "installs", install, "home/.omp/profiles/legion/agent/config.yml"), settings);
   stagings.push(() => {
+    mkdirSync(dir, { recursive: true });
     for (const [file, text] of [
       ["checkout", co],
       ["pin", "omp@stub"],
-      ["profile", `skills-${name}`],
+      ["profile", "legion"],
+      ["install", install],
       ["built-from", `checkout ${co}`],
       ["ready", ""],
     ])
@@ -215,15 +264,44 @@ label(
 );
 // A profile built before the installers raised the handler limit.
 label("stale", "modelRoles:\n  default: anthropic/m\n");
-put(path.join(work, "services/env"), "ENVOY_URL=http://127.0.0.1:1\n");
-put(path.join(work, "services/dispatch-token"), "e2e-token\n");
+put(path.join(work, "services/env-on"), "ENVOY_URL=http://127.0.0.1:1\n");
+put(path.join(work, "services/services-from-on"), `envoy-listener label ${co} sha256:00\n`);
+put(path.join(work, "services/tokens/dispatch-token"), "e2e-token\n");
+put(
+  path.join(
+    work,
+    "builds",
+    new Bun.CryptoHasher("sha256").update(co).digest("hex").slice(0, 16),
+    "dispatch-e2e"
+  ),
+  "#!/bin/sh\nexit 1\n",
+  0o755
+);
 /** The tag rig.sh names the work directory's containers with. */
-const tag = `skill-scenarios-${new Bun.CryptoHasher("sha256").update(work).digest("hex").slice(0, 8)}`;
+const tag = `legion-${new Bun.CryptoHasher("sha256").update(work).digest("hex").slice(0, 8)}`;
+
+/** The directory of the run whose record names it `name` (rig.sh's cmd_run), live or archived,
+ * or undefined for none: a run's directory is named by an id, and its record beside it says
+ * which run it is. */
+function namedRun(name: string): string | undefined {
+  for (const runs of [path.join(work, "runs"), path.join(work, "archive", "runs")])
+    for (const file of existsSync(runs) ? readdirSync(runs) : [])
+      if (
+        file.endsWith(".json") &&
+        JSON.parse(readFileSync(path.join(runs, file), "utf8")).name === name
+      )
+        return path.join(runs, file.slice(0, -".json".length));
+  return undefined;
+}
 
 /** The caller's PATH behind the stand-ins, a HOME of the test's own, and the caller's mise data
  * and config directories when the caller names them: jq is a mise shim on a devbox, which finds
  * nothing under a fresh HOME without them. A caller that names neither gets neither, so the
- * developer's own home decides nothing here. */
+ * developer's own home decides nothing here. The caller's PUBLIC_LEAK_CHECK goes through where it
+ * names one (leak-check-env.ts): on a Legion pod the `git` on PATH is the leak-check wrapper, and
+ * rig.sh refuses a run whose wrapper has no check to run (its push_guard). And RIG_TMUX_CHECKED
+ * names the tmux stand-in, as a batch hands each of its runs the tmux it checked (rig.sh's
+ * tmux_ready), so a run here, a batch's, does not check it again. */
 const miseData =
   process.env.MISE_DATA_DIR ??
   (process.env.XDG_DATA_HOME === undefined
@@ -238,7 +316,9 @@ const env = {
   ...(process.env.XDG_CONFIG_HOME === undefined
     ? {}
     : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
+  ...leakCheckEnv(),
   STUB_DIR: stub,
+  RIG_TMUX_CHECKED: path.join(bin, "tmux"),
   SKILL_SCENARIOS_WORK: work,
   SKILL_SCENARIOS_ASKGATE_CASE: "facts",
 };
@@ -300,10 +380,13 @@ beforeAll(async () => {
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
   mkdirSync(env.HOME);
   start = String(Math.floor(Date.now() / 1000));
+  // The two runs start agents, which a host that refuses their namespace starts none of.
+  if (withoutNamespace) return;
   runs = await Promise.all(
     [1, 2].map(async (n) => {
       const { code, stderr } = await runRig(["run", "askgate", "on", String(n), String(n), start]);
-      return { n, code, stderr, dir: path.join(work, "runs", `askgate-facts-on-${n}`) };
+      // A run that has ended is in the archive (rig.sh's archive_run), under its id.
+      return { n, code, stderr, dir: namedRun(`askgate-facts-on-${n}`) ?? "" };
     })
   );
   servers = lines(path.join(stub, "servers.log")).map((line) => {
@@ -312,39 +395,70 @@ beforeAll(async () => {
   });
 });
 
-test.skipIf(withoutPerl)("both runs finish", () => {
+test.skipIf(withoutRuns)("both runs finish", () => {
   for (const { code, stderr } of runs) expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
 });
 
-test.skipIf(withoutPerl)("each run makes a database of its own in the batch's Postgres", () => {
+// Catches: a run's directory named for its scenario, case or label, which every path its agent
+// reads is built on (16 of the 36 runs of the batch at c273084d reasoned from it), a run with no
+// record of what it is, a record that says another run, and the case left in the run's directory.
+test.skipIf(withoutRuns)(
+  "each run's directory is an id of no meaning, and its record beside it says what the run is",
+  () => {
+    for (const { n, dir } of runs) {
+      const id = path.basename(dir);
+      expect(id).toMatch(/^[0-9a-f]{12}$/);
+      expect(path.dirname(dir)).toBe(path.join(work, "archive", "runs"));
+      expect(JSON.parse(readFileSync(`${dir}.json`, "utf8"))).toEqual({
+        run: id,
+        scenario: "askgate",
+        case: "facts",
+        label: "on",
+        n,
+        name: `askgate-facts-on-${n}`,
+        batch: `${tag}-${start}`,
+        ran: path.join(work, "runs", id),
+      });
+      expect(existsSync(path.join(dir, "case.txt"))).toBe(false);
+    }
+  }
+);
+
+// Catches: a run that carries no record of what its services came from, which health refuses.
+test.skipIf(withoutRuns)("each run carries its label's service provenance", () => {
+  for (const { dir } of runs)
+    expect(readFileSync(path.join(dir, "services-from"), "utf8")).toBe(
+      `envoy-listener label ${co} sha256:00\n`
+    );
+});
+
+test.skipIf(withoutRuns)("each run makes a database of its own in the batch's Postgres", () => {
   const made = lines(path.join(stub, "docker.log")).filter((line) =>
     line.includes("CREATE DATABASE")
   );
   for (const line of made) expect(line).toStartWith(`exec ${tag}-pg psql `);
-  expect(made.map((line) => /CREATE DATABASE (\w+)/.exec(line)?.[1]).sort()).toEqual([
-    "run_askgate_facts_on_1",
-    "run_askgate_facts_on_2",
-  ]);
+  expect(made.map((line) => /CREATE DATABASE (\w+)/.exec(line)?.[1]).sort()).toEqual(
+    runs.map(({ dir }) => `run_${path.basename(dir)}`).sort()
+  );
 });
 
-test.skipIf(withoutPerl)(
+test.skipIf(withoutRuns)(
   "each run starts a Dispatch server of its own, on its own database and port",
   () => {
-    expect(servers.map((server) => server.database).sort()).toEqual([
-      "run_askgate_facts_on_1",
-      "run_askgate_facts_on_2",
-    ]);
+    expect(servers.map((server) => server.database).sort()).toEqual(
+      runs.map(({ dir }) => `run_${path.basename(dir)}`).sort()
+    );
     expect(new Set(servers.map((server) => server.port)).size).toBe(2);
   }
 );
 
-test.skipIf(withoutPerl)(
+test.skipIf(withoutRuns)(
   "each run's agent, seeds and capture reach the run's own Dispatch and no other",
   () => {
     const seeds = lines(path.join(stub, "seeds.log")).map((line) => JSON.parse(line));
     const urls = new Set<string>();
-    for (const { n, dir } of runs) {
-      const database = `run_askgate_facts_on_${n}`;
+    for (const { dir } of runs) {
+      const database = `run_${path.basename(dir)}`;
       const server = servers.find((s) => s.database === database);
       const url = `http://127.0.0.1:${server?.port}`;
       urls.add(url);
@@ -371,7 +485,7 @@ test.skipIf(withoutPerl)(
 
 // The run's exit handler kills its server's whole tree before the run exits, so a server's pid is
 // gone or a zombie by the time its run has ended.
-test.skipIf(withoutPerl)("each run stops its Dispatch server when it ends", () => {
+test.skipIf(withoutRuns)("each run stops its Dispatch server when it ends", () => {
   expect(servers.length).toBe(2);
   const running = servers.filter(
     ({ pid }) =>
@@ -386,11 +500,47 @@ test.skipIf(withoutPerl)("each run stops its Dispatch server when it ends", () =
 test.skipIf(withoutPerl)(
   "a run on a profile whose settings leave the handler limit at its default is refused, naming the key",
   async () => {
+    const databases = lines(path.join(stub, "docker.log")).filter((line) =>
+      line.includes("CREATE DATABASE")
+    ).length;
     const { code, stderr } = await runRig(["run", "askgate", "stale", "1", "3", start]);
     expect(code).toBe(1);
     expect(stderr).toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
-    expect(existsSync(path.join(work, "runs", "askgate-facts-stale-1"))).toBe(false);
-    expect(lines(path.join(stub, "docker.log")).join("\n")).not.toContain("stale");
+    expect(namedRun("askgate-facts-stale-1")).toBeUndefined();
+    expect(
+      lines(path.join(stub, "docker.log")).filter((line) => line.includes("CREATE DATABASE"))
+    ).toHaveLength(databases);
+  }
+);
+
+// A host that refuses the namespace every agent runs in (a GitHub runner answers the unshare
+// below) must start no run in the shared world instead: the run is refused before anything of it
+// is built, naming the host's refusal, with no directory, no database, no Dispatch server, no
+// agent and no session. The unshare first on PATH is the one the rig probes with and launches by.
+test.skipIf(withoutPerl)(
+  "a run on a host that refuses the agent's namespace starts nothing and names the refusal",
+  async () => {
+    const refusal = "unshare: write failed /proc/self/uid_map: Operation not permitted";
+    const refusing = path.join(scratch, "refusing-bin");
+    mkdirSync(refusing, { recursive: true });
+    writeFileSync(path.join(refusing, "unshare"), `#!/bin/sh\necho "${refusal}" >&2\nexit 1\n`);
+    chmodSync(path.join(refusing, "unshare"), 0o755);
+    const servers = lines(path.join(stub, "servers.log")).length;
+    const databases = lines(path.join(stub, "docker.log")).filter((line) =>
+      line.includes("CREATE DATABASE")
+    ).length;
+    const { code, stderr } = await runRig(["run", "askgate", "on", "7", "7", start], {
+      PATH: `${refusing}:${env.PATH}`,
+    });
+    expect(code).toBe(1);
+    expect(stderr).toContain(
+      `this host refuses the namespace every agent of a run starts in (unshare -Urm -p --fork --mount-proc), so nothing starts: ${refusal}`
+    );
+    expect(namedRun("askgate-facts-on-7")).toBeUndefined();
+    expect(
+      lines(path.join(stub, "docker.log")).filter((line) => line.includes("CREATE DATABASE"))
+    ).toHaveLength(databases);
+    expect(lines(path.join(stub, "servers.log"))).toHaveLength(servers);
   }
 );
 
@@ -412,7 +562,7 @@ test.skipIf(withoutPerl)(
       expect(stderr).toContain(`label ${name}: bun could not read the profile settings`);
       expect(stderr).toContain("No version is set for shim: bun");
       expect(stderr).not.toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
-      expect(existsSync(path.join(work, "runs", `askgate-facts-${name}-9`))).toBe(false);
+      expect(namedRun(`askgate-facts-${name}-9`)).toBeUndefined();
     }
   }
 );
@@ -420,14 +570,14 @@ test.skipIf(withoutPerl)(
 // The link case's ask states the reindex time from a file, for AskGate's content 9 (an unsourced
 // claim about what we run today): the run's working directory must hold that file, with the line
 // the prompt quotes.
-test.skipIf(withoutPerl)(
+test.skipIf(withoutRuns)(
   "a link run's working directory holds the crontab its prompt cites, with the line it quotes",
   async () => {
     const { code, stderr } = await runRig(["run", "askgate", "on", "1", "4", start], {
       SKILL_SCENARIOS_ASKGATE_CASE: "link",
     });
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
-    const dir = path.join(work, "runs", "askgate-link-on-1");
+    const dir = namedRun("askgate-link-on-1") ?? "";
     const prompt = readFileSync(path.join(dir, "prompt.txt"), "utf8");
     const quoted = /export-host\.crontab runs .*\(its line (\d+): `([^`]+)`\)/.exec(prompt);
     const [, line = "", text = ""] = quoted ?? [];

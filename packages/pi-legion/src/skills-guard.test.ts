@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -548,8 +548,8 @@ test("every prompt and agent that may write says to make its own scratch and del
 // commit gets no checks. The daemon's worker prompt holds the step, each sentence counted once, so
 // the pinned sentences cannot drift. The carve-out that names the step's reads as the one sleep
 // the "never sleep in a loop" rule allows is held in the implementer's prompt part, and the
-// reviewer's rule that it pushes nothing keeps the step from falling to it. This shows the text
-// ships, never that a role follows it.
+// reviewer's text commit goes out by the same push, so the step falls to it too
+// (dispatch://INFRA-764 R1). This shows the text ships, never that a role follows it.
 test("the worker prompt tells a role to read the pull request's head after its own push", () => {
   const workerPrompt = ["packages/daemon/internal/prompts/go/worker-common.md"];
   const step = [
@@ -557,7 +557,7 @@ test("the worker prompt tells a role to read the pull request's head after its o
     "about ten seconds after your push, again about ten seconds later, and a last time about thirty seconds after that, with a read that gives the pushed commit ending the step there and only the last read deciding a mismatch",
     "This read is of the pull request's own head and of no check, so the wait it makes is not a wait on CI",
     "an empty one when your work is complete",
-    "A new head is a different commit, so record each `before_merge` check again at the new head. A check carrying `ci_check` is CI's, so skip it.",
+    "A new head is a different commit, so record each `before_merge` check again at the new head, unless the carry rule keeps its pass current across that push. A check carrying `ci_check` is CI's, so skip it.",
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
     "The push you make to answer an update message is the exception: that message has you push, let your subagents and background jobs finish or stop them, push what they made, answer the daemon and end the turn, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
@@ -578,9 +578,183 @@ test("the worker prompt tells a role to read the pull request's head after its o
     '`jj -R "$LEGION_WORKSPACE" log -r legion/<issue>@origin --no-graph -T commit_id`',
     workerPrompt
   );
-  countedOncePerFile("Create no commit and push nothing, a prose fix included", [
+  countedOncePerFile(
+    "Push it once, with the push your daemon part below gives, wait for CI at it, and then approve the head that carries it",
+    ["packages/daemon/internal/prompts/roles/reviewer.md"]
+  );
+  countedOncePerFile("Your text commit is the only commit you make", [
     "packages/daemon/internal/prompts/roles/reviewer.md",
   ]);
+});
+
+// dispatch://INFRA-764's rules live in the role prompts, each written once per part that carries
+// it (R4): a copy that disagrees with another is read twice and followed once. Each pin fails when
+// an edit drops the sentence from a part or writes it twice; none shows that an agent follows it,
+// which the issue's rig scenarios measure.
+const prompt = (part: string) => `packages/daemon/internal/prompts/${part}`;
+
+// R1: a reviewer asks for changes only over a behavioural finding and fixes a text finding in one
+// commit of its own, and R4's search finds no copy of the rule it reverses.
+test("one verdict rule for the reviewer, in every copy", () => {
+  countedOncePerFile(
+    "A reviewer submits `REQUEST_CHANGES` only when a behavioural finding stands, one whose closing changes code that runs; when every finding that stands is text, it fixes each one it can in one commit of its own and approves the head that carries that commit, by SHA.",
+    [prompt("roles/reviewer.md"), prompt("roles/core/reviewer.md"), prompt("go/reviewer.md")]
+  );
+  countedOncePerFile(
+    "A text finding you cannot push stays the inline review thread you write: one in a workflow file, since the review App holds no `workflows` permission, and every one on a base whose rules require the last push to be approved by someone other than its pusher",
+    [prompt("roles/reviewer.md")]
+  );
+  const retired = [
+    "prose-only",
+    "push no fix",
+    "a prose fix included",
+    "refuses it `resolveReviewThread`",
+  ];
+  const parts = ["roles", "go"].flatMap((dir) =>
+    readdirSync(path.join(REPO_ROOT, prompt(dir)), { recursive: true, encoding: "utf8" })
+      .filter((name) => name.endsWith(".md"))
+      .map((name) => prompt(`${dir}/${name}`))
+  );
+  expect(parts.length).toBeGreaterThan(10);
+  expect(
+    parts.flatMap((file) =>
+      retired
+        .filter((phrase) => collapsed(path.join(REPO_ROOT, file)).includes(phrase))
+        .map((phrase) => `${file}: ${phrase}`)
+    )
+  ).toEqual([]);
+});
+
+// R2: the implementer's last chance at the reviewer's commit, the reviewer's approval of the head
+// that last chance pushes, the thread resolution that moved to the reviewer, and the architect's
+// hold on `sign_off` until the implementer has answered.
+test("one last chance at the reviewer's text commit for each role, in every copy", () => {
+  countedOncePerFile(
+    "When a reviewer names its text commit to you, that is your last chance to change the text: read the commit in this session, in no phase, and check that it changes no code that runs; where it left you no thread and you change nothing, accept it in a pull-request comment naming the commit (`gh pr comment <n> --repo <owner>/<repo> --body …`) and a message to the architect, and push nothing; otherwise push one commit that changes only text, with a comment naming that commit, and tell the reviewer and the architect.",
+    [
+      prompt("roles/implementer.md"),
+      prompt("roles/core/implementer.md"),
+      prompt("go/implementer.md"),
+    ]
+  );
+  countedOncePerFile(
+    "When the implementer then pushes its one commit that changes only text, read it, resolve each thread you opened, one call per thread, and approve the head it made, by SHA: its text stands, so where you disagree you approve it all the same, or tell the architect when your finding is behavioural.",
+    [prompt("roles/reviewer.md")]
+  );
+  countedOncePerFile(
+    "You resolve each thread you opened, and each bot thread you adjudicate, once you have read what closed it",
+    [prompt("roles/reviewer.md"), prompt("roles/core/reviewer.md")]
+  );
+  countedOncePerFile(
+    "Where the approved head carries a reviewer's text commit, hold `sign_off` until the implementer's answer has come, and ask the implementer on its role topic for it if the issue reached `accepting` without one; if it still does not answer, read the reviewer's commit yourself and accept or send the issue back on that read, saying so on the issue.",
+    [prompt("roles/architect.md"), prompt("roles/architect-root.md")]
+  );
+});
+
+// R2's route for a thread no text fix closes: the implementer that finds it must change code that
+// runs tells the architect, and the architect moves the issue back, to `implementing`, or to
+// `testing` for a push that has landed and changes code that runs. Each half is pinned in the
+// part that carries it for its role: the implementer's core, which every implementer prompt
+// composes, and the part every architect composes. The reviewer's half, telling the architect of
+// a behavioural finding, is in its last-chance sentence above.
+test("a change to code that runs goes to the architect, which moves the issue back", () => {
+  countedOncePerFile(
+    "a change you find you must make in code that runs is no text fix: tell the architect, which moves the issue back.",
+    [prompt("roles/core/implementer.md")]
+  );
+  countedOncePerFile(
+    "A change the implementer finds it must make in code that runs goes back to `implementing`, and a push that has landed and changes code that runs goes back to `testing`, each by your `request_backward_move`.",
+    [prompt("go/architect-common.md")]
+  );
+});
+
+// R2's carry rule, stated once for the phase workers and once for the architects, and every gate
+// text that a carried result meets pointing at it rather than writing a gate at one head alone. A
+// merge of the base is the one push the rule reads otherwise: its diff holds every file the base
+// brought in, so the rule's own clause limits a carry across it to a check the merge cannot reach.
+test("every text stating a gate a carried result meets points at the one carry rule", () => {
+  countedOncePerFile(
+    "The carry rule: a passing result stays current across every push since the head it was recorded at, while each of those pushes changes no code that runs, and across a merge of the base only to a check that neither the files the base brought in nor the merge's resolution can reach.",
+    [prompt("roles/core/common.md"), prompt("go/architect-common.md")]
+  );
+  for (const [part, pointer] of [
+    [
+      "roles/reviewer.md",
+      "nor one carried to it under the carry rule: `REQUEST_CHANGES` naming each such check",
+    ],
+    [
+      "roles/reviewer.md",
+      "nor one carried to it under the carry rule, naming each by its block id",
+    ],
+    [
+      "roles/core/reviewer.md",
+      "at that head, or carried to it under the carry rule, from the implementer",
+    ],
+    ["roles/core/reviewer.md", "carries to it only under the carry rule"],
+    [
+      "roles/architect.md",
+      "or one carried to it under the carry rule your daemon part below states.",
+    ],
+    [
+      "roles/architect-root.md",
+      "or one carried to it under the carry rule your daemon part below states.",
+    ],
+    ["go/architect-common.md", "at the approved head or carried to it under the carry rule below"],
+    ["go/worker-common.md", "unless the carry rule keeps its pass current across that push"],
+  ] as const) {
+    countedOncePerFile(pointer, [prompt(part)]);
+  }
+});
+
+// Two writes stand outside a phase once #4464's merge forward joins the implementer's last-chance
+// push, and the worker prompt's read-only paragraph states both; the headless hook paragraph
+// points at it. One that still counts a single write would forbid the other.
+test("the read-only paragraph names both writes that stand outside a phase, and its pointer counts two", () => {
+  countedOncePerFile("Two writes stand outside a phase, and only two, both the implementer's", [
+    prompt("go/worker-common.md"),
+  ]);
+  countedOncePerFile(
+    "the two writes that stand outside a phase are the two your daemon part names",
+    [prompt("roles/mechanics/headless.md")]
+  );
+});
+
+// R3: nothing in Legion holds the merge for an open thread, the reviewer's part says where that
+// gate lives, and the merger reports GitHub's refusal to the role that resolves the threads.
+test("nothing in Legion holds the merge for an open thread, and the merger reports GitHub's refusal", () => {
+  countedOncePerFile(
+    "Nothing in Legion holds the merge for an open thread either: a repository that wants that gate sets GitHub's `required_review_thread_resolution` on its base",
+    [prompt("roles/reviewer.md")]
+  );
+  countedOncePerFile(
+    "A merge GitHub refuses for an unresolved conversation, on a base whose rules require it: merge nothing, and tell the reviewer and the architect, quoting GitHub's refusal",
+    [prompt("roles/merger.md")]
+  );
+  countedOncePerFile("Nothing here holds the merge for an open review thread", [
+    prompt("go/merger.md"),
+  ]);
+});
+
+// R3's first clause, which no reading of prose can keep true: nothing in Legion holds the merge
+// for an open review thread. The daemon reads no thread state at all, so a Go file of it that
+// names GitHub's thread API is the clause going quietly false.
+test("no Go file of the daemon reads a review thread's state", () => {
+  // grep exits 1 when it matches nothing, which is this test's passing case, so the status is
+  // read rather than thrown: 0 names files, 1 names none, anything else is grep itself failing.
+  const search = (pattern: string) => {
+    const grep = Bun.spawnSync({
+      cmd: ["grep", "-rlE", pattern, "--include=*.go", "."],
+      cwd: path.join(REPO_ROOT, "packages/daemon"),
+    });
+    expect(grep.exitCode, grep.stderr.toString()).toBeLessThan(2);
+    return grep.stdout.toString().split("\n").filter(Boolean);
+  };
+  expect(search("reviewThreads|isResolved|resolveReviewThread")).toEqual([]);
+  // An absence a broken search also satisfies is no evidence: a wrong path, a renamed directory
+  // or a pattern that cannot compile prints nothing and reads as a pass. The same search over
+  // the same paths must find what the daemon does read of a review — its decision — so the
+  // empty list above is an absence and not a search that reached nothing.
+  expect(search("ReviewDecision").length).toBeGreaterThan(0);
 });
 
 // A check carrying `ci_check` is proved by the CI run it names, so no role runs it or records its

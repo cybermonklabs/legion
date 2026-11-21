@@ -8,10 +8,15 @@
 //
 //   worker-pane.ts <run dir> <base env file> <daemon port> <profile> <project> <issue> <role>
 //                  <checkout>
+//
+// The repository the pane's addressing names and the branch it gives as the default are the run's
+// own world's, read from <run dir>/world.json through the one reader every program of the run
+// reads it with (gh-call.ts's `worldOf`; rig.sh's worker world comment).
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { isLegionRole } from "@legion/contracts";
 import { workerPane } from "./daemon-pane";
+import { worldOf } from "./gh-call";
 
 const [runDir, baseEnvFile, port, profile, project, issue, role, checkout] = Bun.argv.slice(2);
 if (
@@ -43,10 +48,11 @@ for (const line of readFileSync(baseEnvFile, "utf8").split("\n")) {
   }
   base[line.slice(0, equals)] = line.slice(equals + 1);
 }
+const world = worldOf(runDir, "worker-pane.ts");
 const pane = workerPane(
   { rig: runDir, port: Number(port), profile },
   base,
-  { project, issue, role },
+  { project, issue, role, repository: world.repo, defaultBranch: world.base },
   // The pane's real gh is the recording stand-in rig.sh's standins writes to $R/bin/gh, named as
   // an operator names one with LEGION_GH_PATH: it is a script, which the daemon's own resolution
   // on PATH refuses.

@@ -718,9 +718,14 @@ DATABASE_URL=<a PostgreSQL this run may truncate> bash e2e/acceptance/with-harne
 The `curl` is the harness's dev sign-in (`/auth/_dev/signin`), which records `alice` as a person
 who has signed in, so the project may name her.
 
-`e2e-token` is the agent bearer the harness pins. Until cybermonklabs/legion#3435 the same thing
-was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
-stacks through Playwright's own global setup now, which no shell driver can reach.
+`e2e-token` is the agent bearer the harness pins, unless the caller that starts `e2e/run-server.sh`
+names a file holding another in `DISPATCH_E2E_AGENT_TOKEN_FILE`: the server then accepts that
+file's token, and `e2e/api.ts` sends it. The skill-scenario rig does that, since its agents read
+their bearer and the harness's name is no part of the world they are shown.
+
+Until cybermonklabs/legion#3435 the same thing was written `bun e2e/run.ts -- <command>`; that
+program is gone, and the browser suite starts its stacks through Playwright's own global setup
+now, which no shell driver can reach.
 
 All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`

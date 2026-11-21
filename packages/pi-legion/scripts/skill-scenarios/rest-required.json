@@ -1,0 +1,4480 @@
+{
+  "source": "github/rest-api-description",
+  "commit": "c9c95fe34ced05fe076001f5c55704742bc8e7f8",
+  "file": "descriptions/api.github.com/api.github.com.json",
+  "routes": {
+    "GET /repos/{owner}/{repo}": "GET /repos/{owner}/{repo}",
+    "GET /repos/{owner}/{repo}/commits/{sha}": "GET /repos/{owner}/{repo}/commits/{ref} application/vnd.github.sha",
+    "GET /repos/{owner}/{repo}/commits/{sha}/pulls": "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls",
+    "GET /repos/{owner}/{repo}/installation": "GET /repos/{owner}/{repo}/installation",
+    "GET /repos/{owner}/{repo}/pulls/{number}": "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+    "GET repos/{owner}/{repo}": "GET /repos/{owner}/{repo}",
+    "GET repos/{owner}/{repo}/actions/runs": "GET /repos/{owner}/{repo}/actions/runs",
+    "GET repos/{owner}/{repo}/actions/runs/{run_id}/jobs": "GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
+    "GET repos/{owner}/{repo}/branches": "GET /repos/{owner}/{repo}/branches",
+    "GET repos/{owner}/{repo}/branches/{branch+}": "GET /repos/{owner}/{repo}/branches/{branch}",
+    "GET repos/{owner}/{repo}/branches/{branch}/protection": "GET /repos/{owner}/{repo}/branches/{branch}/protection",
+    "GET repos/{owner}/{repo}/commits": "GET /repos/{owner}/{repo}/commits",
+    "GET repos/{owner}/{repo}/commits/{ref+}": "GET /repos/{owner}/{repo}/commits/{ref}",
+    "GET repos/{owner}/{repo}/commits/{ref}/check-runs": "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
+    "GET repos/{owner}/{repo}/commits/{ref}/status": "GET /repos/{owner}/{repo}/commits/{ref}/status",
+    "GET repos/{owner}/{repo}/compare/{basehead+}": "GET /repos/{owner}/{repo}/compare/{basehead}",
+    "GET repos/{owner}/{repo}/contents/{path+}": "GET /repos/{owner}/{repo}/contents/{path}",
+    "GET repos/{owner}/{repo}/git/commits/{sha}": "GET /repos/{owner}/{repo}/git/commits/{commit_sha}",
+    "GET repos/{owner}/{repo}/git/ref/{ref+}": "GET /repos/{owner}/{repo}/git/ref/{ref}",
+    "GET repos/{owner}/{repo}/git/refs": "GET /repos/{owner}/{repo}/git/matching-refs/{ref}",
+    "GET repos/{owner}/{repo}/git/refs/{ref+}": "GET /repos/{owner}/{repo}/git/ref/{ref}",
+    "GET repos/{owner}/{repo}/git/trees/{sha+}": "GET /repos/{owner}/{repo}/git/trees/{tree_sha}",
+    "GET repos/{owner}/{repo}/issues/{number}/comments": "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
+    "GET repos/{owner}/{repo}/pulls/{number}": "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+    "GET repos/{owner}/{repo}/pulls/{number}/comments": "GET /repos/{owner}/{repo}/pulls/{pull_number}/comments",
+    "GET repos/{owner}/{repo}/pulls/{number}/commits": "GET /repos/{owner}/{repo}/pulls/{pull_number}/commits",
+    "GET repos/{owner}/{repo}/pulls/{number}/files": "GET /repos/{owner}/{repo}/pulls/{pull_number}/files",
+    "GET repos/{owner}/{repo}/pulls/{number}/reviews": "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews",
+    "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}": "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}",
+    "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}/comments": "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/comments",
+    "GET repos/{owner}/{repo}/rules/branches/{branch+}": "GET /repos/{owner}/{repo}/rules/branches/{branch}",
+    "GET repos/{owner}/{repo}/rulesets": "GET /repos/{owner}/{repo}/rulesets",
+    "GET repos/{owner}/{repo}/rulesets/{id}": "GET /repos/{owner}/{repo}/rulesets/{ruleset_id}",
+    "GET repos/{owner}/{repo}/tags": "GET /repos/{owner}/{repo}/tags",
+    "GET user": "GET /user",
+    "PATCH repos/{owner}/{repo}/pulls/{number}": "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+    "POST /app/installations/{id}/access_tokens": "POST /app/installations/{installation_id}/access_tokens",
+    "POST repos/{owner}/{repo}/issues/{number}/comments": "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
+    "POST repos/{owner}/{repo}/pulls/{number}/comments": "POST /repos/{owner}/{repo}/pulls/{pull_number}/comments",
+    "POST repos/{owner}/{repo}/pulls/{number}/comments/{id}/replies": "POST /repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies",
+    "POST repos/{owner}/{repo}/pulls/{number}/reviews": "POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews",
+    "POST repos/{owner}/{repo}/pulls/{number}/reviews/{id}/events": "POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/events",
+    "PUT repos/{owner}/{repo}/pulls/{number}/reviews/{id}": "PUT /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}"
+  },
+  "operations": {
+    "GET /repos/{owner}/{repo}": {
+      "operation_id": "repos/get",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "full-repository"
+      }
+    },
+    "GET /repos/{owner}/{repo}/actions/runs": {
+      "operation_id": "actions/list-workflow-runs-for-repo",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "required": ["total_count", "workflow_runs"],
+        "keys": ["total_count", "workflow_runs"],
+        "properties": {
+          "workflow_runs": {
+            "items": {
+              "ref": "workflow-run"
+            }
+          }
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs": {
+      "operation_id": "actions/list-jobs-for-workflow-run",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "required": ["total_count", "jobs"],
+        "keys": ["total_count", "jobs"],
+        "properties": {
+          "jobs": {
+            "items": {
+              "ref": "job"
+            }
+          }
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/branches": {
+      "operation_id": "repos/list-branches",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "short-branch"
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/branches/{branch}": {
+      "operation_id": "repos/get-branch",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "branch-with-protection"
+      }
+    },
+    "GET /repos/{owner}/{repo}/branches/{branch}/protection": {
+      "operation_id": "repos/get-branch-protection",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "branch-protection"
+      }
+    },
+    "GET /repos/{owner}/{repo}/commits": {
+      "operation_id": "repos/list-commits",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "commit"
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls": {
+      "operation_id": "repos/list-pull-requests-associated-with-commit",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "pull-request-simple"
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/commits/{ref}": {
+      "operation_id": "repos/get-commit",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "commit"
+      }
+    },
+    "GET /repos/{owner}/{repo}/commits/{ref} application/vnd.github.sha": {
+      "operation_id": "repos/get-commit",
+      "status": 200,
+      "media": "application/vnd.github.sha",
+      "schema": {}
+    },
+    "GET /repos/{owner}/{repo}/commits/{ref}/check-runs": {
+      "operation_id": "checks/list-for-ref",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "required": ["total_count", "check_runs"],
+        "keys": ["total_count", "check_runs"],
+        "properties": {
+          "check_runs": {
+            "items": {
+              "ref": "check-run"
+            }
+          }
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/commits/{ref}/status": {
+      "operation_id": "repos/get-combined-status-for-ref",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "combined-commit-status"
+      }
+    },
+    "GET /repos/{owner}/{repo}/compare/{basehead}": {
+      "operation_id": "repos/compare-commits",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "commit-comparison"
+      }
+    },
+    "GET /repos/{owner}/{repo}/contents/{path}": {
+      "operation_id": "repos/get-content",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "oneOf": [
+          {
+            "ref": "content-directory"
+          },
+          {
+            "ref": "content-file"
+          },
+          {
+            "ref": "content-symlink"
+          },
+          {
+            "ref": "content-submodule"
+          }
+        ]
+      }
+    },
+    "GET /repos/{owner}/{repo}/git/commits/{commit_sha}": {
+      "operation_id": "git/get-commit",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "git-commit"
+      }
+    },
+    "GET /repos/{owner}/{repo}/git/matching-refs/{ref}": {
+      "operation_id": "git/list-matching-refs",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "git-ref"
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/git/ref/{ref}": {
+      "operation_id": "git/get-ref",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "git-ref"
+      }
+    },
+    "GET /repos/{owner}/{repo}/git/trees/{tree_sha}": {
+      "operation_id": "git/get-tree",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "git-tree"
+      }
+    },
+    "GET /repos/{owner}/{repo}/installation": {
+      "operation_id": "apps/get-repo-installation",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "installation"
+      }
+    },
+    "GET /repos/{owner}/{repo}/issues/{issue_number}/comments": {
+      "operation_id": "issues/list-comments",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "issue-comment"
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}": {
+      "operation_id": "pulls/get",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "pull-request"
+      }
+    },
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}/comments": {
+      "operation_id": "pulls/list-review-comments",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "pull-request-review-comment"
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}/commits": {
+      "operation_id": "pulls/list-commits",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "commit"
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}/files": {
+      "operation_id": "pulls/list-files",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "diff-entry"
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews": {
+      "operation_id": "pulls/list-reviews",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "pull-request-review"
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}": {
+      "operation_id": "pulls/get-review",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "pull-request-review"
+      }
+    },
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/comments": {
+      "operation_id": "pulls/list-comments-for-review",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "review-comment"
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/rules/branches/{branch}": {
+      "operation_id": "repos/get-branch-rules",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "repository-rule-detailed"
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/rulesets": {
+      "operation_id": "repos/get-repo-rulesets",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "repository-ruleset"
+        }
+      }
+    },
+    "GET /repos/{owner}/{repo}/rulesets/{ruleset_id}": {
+      "operation_id": "repos/get-repo-ruleset",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "repository-ruleset"
+      }
+    },
+    "GET /repos/{owner}/{repo}/tags": {
+      "operation_id": "repos/list-tags",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "tag"
+        }
+      }
+    },
+    "GET /user": {
+      "operation_id": "users/get-authenticated",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "oneOf": [
+          {
+            "ref": "private-user"
+          },
+          {
+            "ref": "public-user"
+          }
+        ]
+      }
+    },
+    "PATCH /repos/{owner}/{repo}/pulls/{pull_number}": {
+      "operation_id": "pulls/update",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "pull-request"
+      }
+    },
+    "POST /app/installations/{installation_id}/access_tokens": {
+      "operation_id": "apps/create-installation-access-token",
+      "status": 201,
+      "media": "application/json",
+      "schema": {
+        "ref": "installation-token"
+      }
+    },
+    "POST /repos/{owner}/{repo}/issues/{issue_number}/comments": {
+      "operation_id": "issues/create-comment",
+      "status": 201,
+      "media": "application/json",
+      "schema": {
+        "ref": "issue-comment"
+      }
+    },
+    "POST /repos/{owner}/{repo}/pulls/{pull_number}/comments": {
+      "operation_id": "pulls/create-review-comment",
+      "status": 201,
+      "media": "application/json",
+      "schema": {
+        "ref": "pull-request-review-comment"
+      }
+    },
+    "POST /repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies": {
+      "operation_id": "pulls/create-reply-for-review-comment",
+      "status": 201,
+      "media": "application/json",
+      "schema": {
+        "ref": "pull-request-review-comment"
+      }
+    },
+    "POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews": {
+      "operation_id": "pulls/create-review",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "pull-request-review"
+      }
+    },
+    "POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/events": {
+      "operation_id": "pulls/submit-review",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "pull-request-review"
+      }
+    },
+    "PUT /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}": {
+      "operation_id": "pulls/update-review",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "pull-request-review"
+      }
+    }
+  },
+  "schemas": {
+    "app-permissions": {
+      "keys": [
+        "actions",
+        "administration",
+        "artifact_metadata",
+        "attestations",
+        "checks",
+        "code_quality",
+        "codespaces",
+        "contents",
+        "dependabot_secrets",
+        "deployments",
+        "discussions",
+        "environments",
+        "issues",
+        "merge_queues",
+        "metadata",
+        "packages",
+        "pages",
+        "pull_requests",
+        "repository_custom_properties",
+        "repository_hooks",
+        "repository_projects",
+        "secret_scanning_alerts",
+        "secrets",
+        "security_events",
+        "single_file",
+        "statuses",
+        "vulnerability_alerts",
+        "workflows",
+        "custom_properties_for_organizations",
+        "members",
+        "organization_administration",
+        "organization_custom_roles",
+        "organization_custom_org_roles",
+        "organization_custom_properties",
+        "organization_copilot_seat_management",
+        "organization_copilot_agent_settings",
+        "organization_copilot_requests",
+        "organization_external_properties_for_repos",
+        "organization_announcement_banners",
+        "organization_events",
+        "organization_hooks",
+        "organization_personal_access_tokens",
+        "organization_personal_access_token_requests",
+        "organization_plan",
+        "organization_projects",
+        "organization_packages",
+        "organization_secrets",
+        "organization_self_hosted_runners",
+        "organization_user_blocking",
+        "email_addresses",
+        "followers",
+        "git_ssh_keys",
+        "gpg_keys",
+        "interaction_limits",
+        "profile",
+        "starring",
+        "enterprise_custom_properties_for_organizations"
+      ]
+    },
+    "auto-merge": {
+      "required": ["enabled_by", "merge_method", "commit_title", "commit_message"],
+      "keys": ["enabled_by", "merge_method", "commit_title", "commit_message"],
+      "properties": {
+        "enabled_by": {
+          "ref": "simple-user"
+        }
+      }
+    },
+    "branch-protection": {
+      "keys": [
+        "url",
+        "enabled",
+        "required_status_checks",
+        "enforce_admins",
+        "required_pull_request_reviews",
+        "restrictions",
+        "required_linear_history",
+        "allow_force_pushes",
+        "allow_deletions",
+        "block_creations",
+        "required_conversation_resolution",
+        "name",
+        "protection_url",
+        "required_signatures",
+        "lock_branch",
+        "allow_fork_syncing"
+      ],
+      "properties": {
+        "required_status_checks": {
+          "ref": "protected-branch-required-status-check"
+        },
+        "enforce_admins": {
+          "ref": "protected-branch-admin-enforced"
+        },
+        "required_pull_request_reviews": {
+          "ref": "protected-branch-pull-request-review"
+        },
+        "restrictions": {
+          "ref": "branch-restriction-policy"
+        },
+        "required_linear_history": {
+          "keys": ["enabled"]
+        },
+        "allow_force_pushes": {
+          "keys": ["enabled"]
+        },
+        "allow_deletions": {
+          "keys": ["enabled"]
+        },
+        "block_creations": {
+          "keys": ["enabled"]
+        },
+        "required_conversation_resolution": {
+          "keys": ["enabled"]
+        },
+        "required_signatures": {
+          "required": ["url", "enabled"],
+          "keys": ["url", "enabled"]
+        },
+        "lock_branch": {
+          "keys": ["enabled"]
+        },
+        "allow_fork_syncing": {
+          "keys": ["enabled"]
+        }
+      }
+    },
+    "branch-restriction-policy": {
+      "required": ["url", "users_url", "teams_url", "apps_url", "users", "teams", "apps"],
+      "keys": ["url", "users_url", "teams_url", "apps_url", "users", "teams", "apps"],
+      "properties": {
+        "users": {
+          "items": {
+            "keys": [
+              "login",
+              "id",
+              "node_id",
+              "avatar_url",
+              "gravatar_id",
+              "url",
+              "html_url",
+              "followers_url",
+              "following_url",
+              "gists_url",
+              "starred_url",
+              "subscriptions_url",
+              "organizations_url",
+              "repos_url",
+              "events_url",
+              "received_events_url",
+              "type",
+              "site_admin",
+              "user_view_type"
+            ]
+          }
+        },
+        "teams": {
+          "items": {
+            "ref": "team"
+          }
+        },
+        "apps": {
+          "items": {
+            "keys": [
+              "id",
+              "slug",
+              "node_id",
+              "owner",
+              "name",
+              "client_id",
+              "description",
+              "external_url",
+              "html_url",
+              "created_at",
+              "updated_at",
+              "permissions",
+              "events"
+            ],
+            "properties": {
+              "owner": {
+                "keys": [
+                  "login",
+                  "id",
+                  "node_id",
+                  "url",
+                  "repos_url",
+                  "events_url",
+                  "hooks_url",
+                  "issues_url",
+                  "members_url",
+                  "public_members_url",
+                  "avatar_url",
+                  "description",
+                  "gravatar_id",
+                  "html_url",
+                  "followers_url",
+                  "following_url",
+                  "gists_url",
+                  "starred_url",
+                  "subscriptions_url",
+                  "organizations_url",
+                  "received_events_url",
+                  "type",
+                  "site_admin",
+                  "user_view_type"
+                ]
+              },
+              "permissions": {
+                "keys": ["metadata", "contents", "issues", "single_file"]
+              }
+            }
+          }
+        }
+      }
+    },
+    "branch-with-protection": {
+      "required": ["name", "commit", "_links", "protection", "protected", "protection_url"],
+      "keys": [
+        "name",
+        "commit",
+        "_links",
+        "protected",
+        "protection",
+        "protection_url",
+        "pattern",
+        "required_approving_review_count"
+      ],
+      "properties": {
+        "commit": {
+          "ref": "commit"
+        },
+        "_links": {
+          "required": ["html", "self"],
+          "keys": ["html", "self"]
+        },
+        "protection": {
+          "ref": "branch-protection"
+        }
+      }
+    },
+    "check-run": {
+      "required": [
+        "id",
+        "node_id",
+        "head_sha",
+        "name",
+        "url",
+        "html_url",
+        "details_url",
+        "status",
+        "conclusion",
+        "started_at",
+        "completed_at",
+        "external_id",
+        "check_suite",
+        "output",
+        "app",
+        "pull_requests"
+      ],
+      "keys": [
+        "id",
+        "head_sha",
+        "node_id",
+        "external_id",
+        "url",
+        "html_url",
+        "details_url",
+        "status",
+        "conclusion",
+        "started_at",
+        "completed_at",
+        "output",
+        "name",
+        "check_suite",
+        "app",
+        "pull_requests",
+        "deployment"
+      ],
+      "properties": {
+        "output": {
+          "required": ["title", "summary", "text", "annotations_count", "annotations_url"],
+          "keys": ["title", "summary", "text", "annotations_count", "annotations_url"]
+        },
+        "check_suite": {
+          "required": ["id"],
+          "keys": ["id"]
+        },
+        "app": {
+          "ref": "nullable-integration"
+        },
+        "pull_requests": {
+          "items": {
+            "ref": "pull-request-minimal"
+          }
+        },
+        "deployment": {
+          "ref": "deployment-simple"
+        }
+      }
+    },
+    "code-of-conduct": {
+      "required": ["url", "html_url", "key", "name"],
+      "keys": ["key", "name", "url", "body", "html_url"]
+    },
+    "code-of-conduct-simple": {
+      "required": ["url", "key", "name", "html_url"],
+      "keys": ["url", "key", "name", "html_url"]
+    },
+    "combined-commit-status": {
+      "required": ["state", "sha", "total_count", "statuses", "repository", "commit_url", "url"],
+      "keys": ["state", "statuses", "sha", "total_count", "repository", "commit_url", "url"],
+      "properties": {
+        "statuses": {
+          "items": {
+            "ref": "simple-commit-status"
+          }
+        },
+        "repository": {
+          "ref": "minimal-repository"
+        }
+      }
+    },
+    "commit": {
+      "required": [
+        "url",
+        "sha",
+        "node_id",
+        "html_url",
+        "comments_url",
+        "commit",
+        "author",
+        "committer",
+        "parents"
+      ],
+      "keys": [
+        "url",
+        "sha",
+        "node_id",
+        "html_url",
+        "comments_url",
+        "commit",
+        "author",
+        "committer",
+        "parents",
+        "stats",
+        "files"
+      ],
+      "properties": {
+        "commit": {
+          "required": ["author", "committer", "comment_count", "message", "tree", "url"],
+          "keys": [
+            "url",
+            "author",
+            "committer",
+            "message",
+            "comment_count",
+            "tree",
+            "verification"
+          ],
+          "properties": {
+            "author": {
+              "ref": "nullable-git-user"
+            },
+            "committer": {
+              "ref": "nullable-git-user"
+            },
+            "tree": {
+              "required": ["sha", "url"],
+              "keys": ["sha", "url"]
+            },
+            "verification": {
+              "ref": "verification"
+            }
+          }
+        },
+        "parents": {
+          "items": {
+            "required": ["sha", "url"],
+            "keys": ["sha", "url", "html_url"]
+          }
+        },
+        "stats": {
+          "keys": ["additions", "deletions", "total"]
+        },
+        "files": {
+          "items": {
+            "ref": "diff-entry"
+          }
+        }
+      }
+    },
+    "commit-comparison": {
+      "required": [
+        "url",
+        "html_url",
+        "permalink_url",
+        "diff_url",
+        "patch_url",
+        "base_commit",
+        "merge_base_commit",
+        "status",
+        "ahead_by",
+        "behind_by",
+        "total_commits",
+        "commits"
+      ],
+      "keys": [
+        "url",
+        "html_url",
+        "permalink_url",
+        "diff_url",
+        "patch_url",
+        "base_commit",
+        "merge_base_commit",
+        "status",
+        "ahead_by",
+        "behind_by",
+        "total_commits",
+        "commits",
+        "files"
+      ],
+      "properties": {
+        "base_commit": {
+          "ref": "commit"
+        },
+        "merge_base_commit": {
+          "ref": "commit"
+        },
+        "commits": {
+          "items": {
+            "ref": "commit"
+          }
+        },
+        "files": {
+          "items": {
+            "ref": "diff-entry"
+          }
+        }
+      }
+    },
+    "content-directory": {
+      "items": {
+        "required": [
+          "_links",
+          "git_url",
+          "html_url",
+          "download_url",
+          "name",
+          "path",
+          "sha",
+          "size",
+          "type",
+          "url"
+        ],
+        "keys": [
+          "type",
+          "size",
+          "name",
+          "path",
+          "content",
+          "sha",
+          "url",
+          "git_url",
+          "html_url",
+          "download_url",
+          "_links"
+        ],
+        "properties": {
+          "_links": {
+            "required": ["git", "html", "self"],
+            "keys": ["git", "html", "self"]
+          }
+        }
+      }
+    },
+    "content-file": {
+      "required": [
+        "_links",
+        "git_url",
+        "html_url",
+        "download_url",
+        "name",
+        "path",
+        "sha",
+        "size",
+        "type",
+        "url",
+        "content",
+        "encoding"
+      ],
+      "keys": [
+        "type",
+        "encoding",
+        "size",
+        "name",
+        "path",
+        "content",
+        "sha",
+        "url",
+        "git_url",
+        "html_url",
+        "download_url",
+        "_links",
+        "target",
+        "submodule_git_url"
+      ],
+      "properties": {
+        "_links": {
+          "required": ["git", "html", "self"],
+          "keys": ["git", "html", "self"]
+        }
+      }
+    },
+    "content-submodule": {
+      "required": [
+        "_links",
+        "git_url",
+        "html_url",
+        "download_url",
+        "name",
+        "path",
+        "sha",
+        "size",
+        "type",
+        "url",
+        "submodule_git_url"
+      ],
+      "keys": [
+        "type",
+        "submodule_git_url",
+        "size",
+        "name",
+        "path",
+        "sha",
+        "url",
+        "git_url",
+        "html_url",
+        "download_url",
+        "_links"
+      ],
+      "properties": {
+        "_links": {
+          "required": ["git", "html", "self"],
+          "keys": ["git", "html", "self"]
+        }
+      }
+    },
+    "content-symlink": {
+      "required": [
+        "_links",
+        "git_url",
+        "html_url",
+        "download_url",
+        "name",
+        "path",
+        "sha",
+        "size",
+        "type",
+        "url",
+        "target"
+      ],
+      "keys": [
+        "type",
+        "target",
+        "size",
+        "name",
+        "path",
+        "sha",
+        "url",
+        "git_url",
+        "html_url",
+        "download_url",
+        "_links"
+      ],
+      "properties": {
+        "_links": {
+          "required": ["git", "html", "self"],
+          "keys": ["git", "html", "self"]
+        }
+      }
+    },
+    "deployment-simple": {
+      "required": [
+        "id",
+        "node_id",
+        "task",
+        "environment",
+        "description",
+        "statuses_url",
+        "repository_url",
+        "url",
+        "created_at",
+        "updated_at"
+      ],
+      "keys": [
+        "url",
+        "id",
+        "node_id",
+        "task",
+        "original_environment",
+        "environment",
+        "description",
+        "created_at",
+        "updated_at",
+        "statuses_url",
+        "repository_url",
+        "transient_environment",
+        "production_environment",
+        "performed_via_github_app"
+      ],
+      "properties": {
+        "performed_via_github_app": {
+          "ref": "nullable-integration"
+        }
+      }
+    },
+    "diff-entry": {
+      "required": [
+        "additions",
+        "blob_url",
+        "changes",
+        "contents_url",
+        "deletions",
+        "filename",
+        "raw_url",
+        "sha",
+        "status"
+      ],
+      "keys": [
+        "sha",
+        "filename",
+        "status",
+        "additions",
+        "deletions",
+        "changes",
+        "blob_url",
+        "raw_url",
+        "contents_url",
+        "patch",
+        "previous_filename"
+      ]
+    },
+    "enterprise": {
+      "required": [
+        "id",
+        "node_id",
+        "name",
+        "slug",
+        "html_url",
+        "created_at",
+        "updated_at",
+        "avatar_url"
+      ],
+      "keys": [
+        "description",
+        "html_url",
+        "website_url",
+        "id",
+        "node_id",
+        "name",
+        "slug",
+        "created_at",
+        "updated_at",
+        "avatar_url"
+      ]
+    },
+    "full-repository": {
+      "required": [
+        "archive_url",
+        "assignees_url",
+        "blobs_url",
+        "branches_url",
+        "collaborators_url",
+        "comments_url",
+        "commits_url",
+        "compare_url",
+        "contents_url",
+        "contributors_url",
+        "deployments_url",
+        "description",
+        "downloads_url",
+        "events_url",
+        "fork",
+        "forks_url",
+        "full_name",
+        "git_commits_url",
+        "git_refs_url",
+        "git_tags_url",
+        "hooks_url",
+        "html_url",
+        "id",
+        "node_id",
+        "issue_comment_url",
+        "issue_events_url",
+        "issues_url",
+        "keys_url",
+        "labels_url",
+        "languages_url",
+        "merges_url",
+        "milestones_url",
+        "name",
+        "notifications_url",
+        "owner",
+        "private",
+        "pulls_url",
+        "releases_url",
+        "stargazers_url",
+        "statuses_url",
+        "subscribers_url",
+        "subscription_url",
+        "tags_url",
+        "teams_url",
+        "trees_url",
+        "url",
+        "clone_url",
+        "default_branch",
+        "forks",
+        "forks_count",
+        "git_url",
+        "has_issues",
+        "has_projects",
+        "has_wiki",
+        "has_pages",
+        "has_discussions",
+        "homepage",
+        "language",
+        "archived",
+        "disabled",
+        "mirror_url",
+        "open_issues",
+        "open_issues_count",
+        "license",
+        "pushed_at",
+        "size",
+        "ssh_url",
+        "stargazers_count",
+        "svn_url",
+        "watchers",
+        "watchers_count",
+        "created_at",
+        "updated_at",
+        "network_count",
+        "subscribers_count"
+      ],
+      "keys": [
+        "id",
+        "node_id",
+        "name",
+        "full_name",
+        "owner",
+        "private",
+        "html_url",
+        "description",
+        "fork",
+        "url",
+        "archive_url",
+        "assignees_url",
+        "blobs_url",
+        "branches_url",
+        "collaborators_url",
+        "comments_url",
+        "commits_url",
+        "compare_url",
+        "contents_url",
+        "contributors_url",
+        "deployments_url",
+        "downloads_url",
+        "events_url",
+        "forks_url",
+        "git_commits_url",
+        "git_refs_url",
+        "git_tags_url",
+        "git_url",
+        "issue_comment_url",
+        "issue_events_url",
+        "issues_url",
+        "keys_url",
+        "labels_url",
+        "languages_url",
+        "merges_url",
+        "milestones_url",
+        "notifications_url",
+        "pulls_url",
+        "releases_url",
+        "ssh_url",
+        "stargazers_url",
+        "statuses_url",
+        "subscribers_url",
+        "subscription_url",
+        "tags_url",
+        "teams_url",
+        "trees_url",
+        "clone_url",
+        "mirror_url",
+        "hooks_url",
+        "svn_url",
+        "homepage",
+        "language",
+        "forks_count",
+        "stargazers_count",
+        "watchers_count",
+        "size",
+        "default_branch",
+        "open_issues_count",
+        "is_template",
+        "topics",
+        "has_issues",
+        "has_projects",
+        "has_wiki",
+        "has_pages",
+        "has_downloads",
+        "has_discussions",
+        "has_pull_requests",
+        "pull_request_creation_policy",
+        "archived",
+        "disabled",
+        "visibility",
+        "pushed_at",
+        "created_at",
+        "updated_at",
+        "permissions",
+        "allow_rebase_merge",
+        "template_repository",
+        "temp_clone_token",
+        "allow_squash_merge",
+        "allow_auto_merge",
+        "delete_branch_on_merge",
+        "allow_merge_commit",
+        "allow_update_branch",
+        "use_squash_pr_title_as_default",
+        "squash_merge_commit_title",
+        "squash_merge_commit_message",
+        "merge_commit_title",
+        "merge_commit_message",
+        "allow_forking",
+        "web_commit_signoff_required",
+        "subscribers_count",
+        "network_count",
+        "license",
+        "organization",
+        "parent",
+        "source",
+        "forks",
+        "master_branch",
+        "open_issues",
+        "watchers",
+        "anonymous_access_enabled",
+        "code_of_conduct",
+        "security_and_analysis",
+        "custom_properties"
+      ],
+      "properties": {
+        "owner": {
+          "ref": "simple-user"
+        },
+        "permissions": {
+          "required": ["admin", "pull", "push"],
+          "keys": ["admin", "maintain", "push", "triage", "pull"]
+        },
+        "template_repository": {
+          "ref": "nullable-repository"
+        },
+        "license": {
+          "ref": "nullable-license-simple"
+        },
+        "organization": {
+          "ref": "nullable-simple-user"
+        },
+        "parent": {
+          "ref": "repository"
+        },
+        "source": {
+          "ref": "repository"
+        },
+        "code_of_conduct": {
+          "ref": "code-of-conduct-simple"
+        },
+        "security_and_analysis": {
+          "ref": "security-and-analysis"
+        }
+      }
+    },
+    "git-commit": {
+      "required": [
+        "sha",
+        "node_id",
+        "url",
+        "html_url",
+        "author",
+        "committer",
+        "tree",
+        "message",
+        "parents",
+        "verification"
+      ],
+      "keys": [
+        "sha",
+        "node_id",
+        "url",
+        "author",
+        "committer",
+        "message",
+        "tree",
+        "parents",
+        "verification",
+        "html_url"
+      ],
+      "properties": {
+        "author": {
+          "required": ["email", "name", "date"],
+          "keys": ["date", "email", "name"]
+        },
+        "committer": {
+          "required": ["email", "name", "date"],
+          "keys": ["date", "email", "name"]
+        },
+        "tree": {
+          "required": ["sha", "url"],
+          "keys": ["sha", "url"]
+        },
+        "parents": {
+          "items": {
+            "required": ["sha", "url", "html_url"],
+            "keys": ["sha", "url", "html_url"]
+          }
+        },
+        "verification": {
+          "required": ["verified", "reason", "signature", "payload", "verified_at"],
+          "keys": ["verified", "reason", "signature", "payload", "verified_at"]
+        }
+      }
+    },
+    "git-ref": {
+      "required": ["ref", "node_id", "url", "object"],
+      "keys": ["ref", "node_id", "url", "object"],
+      "properties": {
+        "object": {
+          "required": ["type", "sha", "url"],
+          "keys": ["type", "sha", "url"]
+        }
+      }
+    },
+    "git-tree": {
+      "required": ["sha", "tree", "truncated"],
+      "keys": ["sha", "url", "truncated", "tree"],
+      "properties": {
+        "tree": {
+          "items": {
+            "required": ["path", "mode", "type", "sha"],
+            "keys": ["path", "mode", "type", "sha", "size", "url"]
+          }
+        }
+      }
+    },
+    "installation": {
+      "required": [
+        "id",
+        "app_id",
+        "app_slug",
+        "target_id",
+        "target_type",
+        "single_file_name",
+        "repository_selection",
+        "access_tokens_url",
+        "html_url",
+        "repositories_url",
+        "events",
+        "account",
+        "permissions",
+        "created_at",
+        "updated_at",
+        "suspended_by",
+        "suspended_at"
+      ],
+      "keys": [
+        "id",
+        "account",
+        "repository_selection",
+        "access_tokens_url",
+        "repositories_url",
+        "html_url",
+        "app_id",
+        "client_id",
+        "target_id",
+        "target_type",
+        "permissions",
+        "events",
+        "created_at",
+        "updated_at",
+        "single_file_name",
+        "has_multiple_single_files",
+        "single_file_paths",
+        "app_slug",
+        "suspended_by",
+        "suspended_at",
+        "contact_email"
+      ],
+      "properties": {
+        "account": {
+          "anyOf": [
+            {
+              "ref": "simple-user"
+            },
+            {
+              "ref": "enterprise"
+            }
+          ]
+        },
+        "permissions": {
+          "ref": "app-permissions"
+        },
+        "suspended_by": {
+          "ref": "nullable-simple-user"
+        }
+      }
+    },
+    "installation-token": {
+      "required": ["token", "expires_at"],
+      "keys": [
+        "token",
+        "expires_at",
+        "permissions",
+        "repository_selection",
+        "repositories",
+        "single_file",
+        "has_multiple_single_files",
+        "single_file_paths"
+      ],
+      "properties": {
+        "permissions": {
+          "ref": "app-permissions"
+        },
+        "repositories": {
+          "items": {
+            "ref": "repository"
+          }
+        }
+      }
+    },
+    "integration": {
+      "required": [
+        "id",
+        "node_id",
+        "owner",
+        "name",
+        "description",
+        "external_url",
+        "html_url",
+        "created_at",
+        "updated_at",
+        "permissions",
+        "events"
+      ],
+      "keys": [
+        "id",
+        "slug",
+        "node_id",
+        "client_id",
+        "owner",
+        "name",
+        "description",
+        "external_url",
+        "html_url",
+        "created_at",
+        "updated_at",
+        "permissions",
+        "events",
+        "installations_count"
+      ],
+      "properties": {
+        "owner": {
+          "oneOf": [
+            {
+              "ref": "simple-user"
+            },
+            {
+              "ref": "enterprise"
+            }
+          ]
+        }
+      }
+    },
+    "issue-comment": {
+      "required": [
+        "id",
+        "node_id",
+        "html_url",
+        "issue_url",
+        "user",
+        "url",
+        "created_at",
+        "updated_at"
+      ],
+      "keys": [
+        "id",
+        "node_id",
+        "url",
+        "body",
+        "body_text",
+        "body_html",
+        "html_url",
+        "user",
+        "created_at",
+        "updated_at",
+        "issue_url",
+        "author_association",
+        "performed_via_github_app",
+        "reactions",
+        "pin",
+        "minimized"
+      ],
+      "properties": {
+        "user": {
+          "ref": "nullable-simple-user"
+        },
+        "performed_via_github_app": {
+          "ref": "nullable-integration"
+        },
+        "reactions": {
+          "ref": "reaction-rollup"
+        },
+        "pin": {
+          "ref": "nullable-pinned-issue-comment"
+        },
+        "minimized": {
+          "ref": "nullable-issue-comment-minimized"
+        }
+      }
+    },
+    "job": {
+      "required": [
+        "id",
+        "node_id",
+        "run_id",
+        "run_url",
+        "head_sha",
+        "workflow_name",
+        "head_branch",
+        "name",
+        "url",
+        "html_url",
+        "status",
+        "conclusion",
+        "started_at",
+        "completed_at",
+        "check_run_url",
+        "labels",
+        "runner_id",
+        "runner_name",
+        "runner_group_id",
+        "runner_group_name",
+        "created_at"
+      ],
+      "keys": [
+        "id",
+        "run_id",
+        "run_url",
+        "run_attempt",
+        "node_id",
+        "head_sha",
+        "url",
+        "html_url",
+        "status",
+        "conclusion",
+        "created_at",
+        "started_at",
+        "completed_at",
+        "name",
+        "steps",
+        "check_run_url",
+        "labels",
+        "runner_id",
+        "runner_name",
+        "runner_group_id",
+        "runner_group_name",
+        "workflow_name",
+        "head_branch"
+      ],
+      "properties": {
+        "steps": {
+          "items": {
+            "required": ["name", "status", "conclusion", "number"],
+            "keys": ["status", "conclusion", "name", "number", "started_at", "completed_at"]
+          }
+        }
+      }
+    },
+    "link": {
+      "required": ["href"],
+      "keys": ["href"]
+    },
+    "minimal-repository": {
+      "required": [
+        "archive_url",
+        "assignees_url",
+        "blobs_url",
+        "branches_url",
+        "collaborators_url",
+        "comments_url",
+        "commits_url",
+        "compare_url",
+        "contents_url",
+        "contributors_url",
+        "deployments_url",
+        "description",
+        "downloads_url",
+        "events_url",
+        "fork",
+        "forks_url",
+        "full_name",
+        "git_commits_url",
+        "git_refs_url",
+        "git_tags_url",
+        "hooks_url",
+        "html_url",
+        "id",
+        "node_id",
+        "issue_comment_url",
+        "issue_events_url",
+        "issues_url",
+        "keys_url",
+        "labels_url",
+        "languages_url",
+        "merges_url",
+        "milestones_url",
+        "name",
+        "notifications_url",
+        "owner",
+        "private",
+        "pulls_url",
+        "releases_url",
+        "stargazers_url",
+        "statuses_url",
+        "subscribers_url",
+        "subscription_url",
+        "tags_url",
+        "teams_url",
+        "trees_url",
+        "url"
+      ],
+      "keys": [
+        "id",
+        "node_id",
+        "name",
+        "full_name",
+        "owner",
+        "private",
+        "html_url",
+        "description",
+        "fork",
+        "url",
+        "archive_url",
+        "assignees_url",
+        "blobs_url",
+        "branches_url",
+        "collaborators_url",
+        "comments_url",
+        "commits_url",
+        "compare_url",
+        "contents_url",
+        "contributors_url",
+        "deployments_url",
+        "downloads_url",
+        "events_url",
+        "forks_url",
+        "git_commits_url",
+        "git_refs_url",
+        "git_tags_url",
+        "git_url",
+        "issue_comment_url",
+        "issue_events_url",
+        "issues_url",
+        "keys_url",
+        "labels_url",
+        "languages_url",
+        "merges_url",
+        "milestones_url",
+        "notifications_url",
+        "pulls_url",
+        "releases_url",
+        "ssh_url",
+        "stargazers_url",
+        "statuses_url",
+        "subscribers_url",
+        "subscription_url",
+        "tags_url",
+        "teams_url",
+        "trees_url",
+        "clone_url",
+        "mirror_url",
+        "hooks_url",
+        "svn_url",
+        "homepage",
+        "language",
+        "forks_count",
+        "stargazers_count",
+        "watchers_count",
+        "size",
+        "default_branch",
+        "open_issues_count",
+        "is_template",
+        "topics",
+        "has_issues",
+        "has_projects",
+        "has_wiki",
+        "has_pages",
+        "has_downloads",
+        "has_discussions",
+        "has_pull_requests",
+        "pull_request_creation_policy",
+        "archived",
+        "disabled",
+        "visibility",
+        "pushed_at",
+        "created_at",
+        "updated_at",
+        "permissions",
+        "role_name",
+        "temp_clone_token",
+        "delete_branch_on_merge",
+        "subscribers_count",
+        "network_count",
+        "code_of_conduct",
+        "license",
+        "forks",
+        "open_issues",
+        "watchers",
+        "allow_forking",
+        "web_commit_signoff_required",
+        "security_and_analysis",
+        "custom_properties"
+      ],
+      "properties": {
+        "owner": {
+          "ref": "simple-user"
+        },
+        "permissions": {
+          "keys": ["admin", "maintain", "push", "triage", "pull"]
+        },
+        "code_of_conduct": {
+          "ref": "code-of-conduct"
+        },
+        "license": {
+          "keys": ["key", "name", "spdx_id", "url", "node_id"]
+        },
+        "security_and_analysis": {
+          "ref": "security-and-analysis"
+        }
+      }
+    },
+    "nullable-git-user": {
+      "keys": ["name", "email", "date"]
+    },
+    "nullable-integration": {
+      "required": [
+        "id",
+        "node_id",
+        "owner",
+        "name",
+        "description",
+        "external_url",
+        "html_url",
+        "created_at",
+        "updated_at",
+        "permissions",
+        "events"
+      ],
+      "keys": [
+        "id",
+        "slug",
+        "node_id",
+        "client_id",
+        "owner",
+        "name",
+        "description",
+        "external_url",
+        "html_url",
+        "created_at",
+        "updated_at",
+        "permissions",
+        "events",
+        "installations_count"
+      ],
+      "properties": {
+        "owner": {
+          "oneOf": [
+            {
+              "ref": "simple-user"
+            },
+            {
+              "ref": "enterprise"
+            }
+          ]
+        }
+      }
+    },
+    "nullable-issue-comment-minimized": {
+      "required": ["reason"],
+      "keys": ["reason"]
+    },
+    "nullable-license-simple": {
+      "required": ["key", "name", "url", "spdx_id", "node_id"],
+      "keys": ["key", "name", "url", "spdx_id", "node_id", "html_url"]
+    },
+    "nullable-milestone": {
+      "required": [
+        "closed_issues",
+        "creator",
+        "description",
+        "due_on",
+        "closed_at",
+        "id",
+        "node_id",
+        "labels_url",
+        "html_url",
+        "number",
+        "open_issues",
+        "state",
+        "title",
+        "url",
+        "created_at",
+        "updated_at"
+      ],
+      "keys": [
+        "url",
+        "html_url",
+        "labels_url",
+        "id",
+        "node_id",
+        "number",
+        "state",
+        "title",
+        "description",
+        "creator",
+        "open_issues",
+        "closed_issues",
+        "created_at",
+        "updated_at",
+        "closed_at",
+        "due_on"
+      ],
+      "properties": {
+        "creator": {
+          "ref": "nullable-simple-user"
+        }
+      }
+    },
+    "nullable-pinned-issue-comment": {
+      "required": ["pinned_at", "pinned_by"],
+      "keys": ["pinned_at", "pinned_by"],
+      "properties": {
+        "pinned_by": {
+          "ref": "nullable-simple-user"
+        }
+      }
+    },
+    "nullable-repository": {
+      "required": [
+        "archive_url",
+        "assignees_url",
+        "blobs_url",
+        "branches_url",
+        "collaborators_url",
+        "comments_url",
+        "commits_url",
+        "compare_url",
+        "contents_url",
+        "contributors_url",
+        "deployments_url",
+        "description",
+        "downloads_url",
+        "events_url",
+        "fork",
+        "forks_url",
+        "full_name",
+        "git_commits_url",
+        "git_refs_url",
+        "git_tags_url",
+        "hooks_url",
+        "html_url",
+        "id",
+        "node_id",
+        "issue_comment_url",
+        "issue_events_url",
+        "issues_url",
+        "keys_url",
+        "labels_url",
+        "languages_url",
+        "merges_url",
+        "milestones_url",
+        "name",
+        "notifications_url",
+        "owner",
+        "private",
+        "pulls_url",
+        "releases_url",
+        "stargazers_url",
+        "statuses_url",
+        "subscribers_url",
+        "subscription_url",
+        "tags_url",
+        "teams_url",
+        "trees_url",
+        "url",
+        "clone_url",
+        "default_branch",
+        "forks",
+        "forks_count",
+        "git_url",
+        "has_downloads",
+        "has_issues",
+        "has_projects",
+        "has_wiki",
+        "has_pages",
+        "homepage",
+        "language",
+        "archived",
+        "disabled",
+        "mirror_url",
+        "open_issues",
+        "open_issues_count",
+        "license",
+        "pushed_at",
+        "size",
+        "ssh_url",
+        "stargazers_count",
+        "svn_url",
+        "watchers",
+        "watchers_count",
+        "created_at",
+        "updated_at"
+      ],
+      "keys": [
+        "id",
+        "node_id",
+        "name",
+        "full_name",
+        "license",
+        "forks",
+        "permissions",
+        "owner",
+        "private",
+        "html_url",
+        "description",
+        "fork",
+        "url",
+        "archive_url",
+        "assignees_url",
+        "blobs_url",
+        "branches_url",
+        "collaborators_url",
+        "comments_url",
+        "commits_url",
+        "compare_url",
+        "contents_url",
+        "contributors_url",
+        "deployments_url",
+        "downloads_url",
+        "events_url",
+        "forks_url",
+        "git_commits_url",
+        "git_refs_url",
+        "git_tags_url",
+        "git_url",
+        "issue_comment_url",
+        "issue_events_url",
+        "issues_url",
+        "keys_url",
+        "labels_url",
+        "languages_url",
+        "merges_url",
+        "milestones_url",
+        "notifications_url",
+        "pulls_url",
+        "releases_url",
+        "ssh_url",
+        "stargazers_url",
+        "statuses_url",
+        "subscribers_url",
+        "subscription_url",
+        "tags_url",
+        "teams_url",
+        "trees_url",
+        "clone_url",
+        "mirror_url",
+        "hooks_url",
+        "svn_url",
+        "homepage",
+        "language",
+        "forks_count",
+        "stargazers_count",
+        "watchers_count",
+        "size",
+        "default_branch",
+        "open_issues_count",
+        "is_template",
+        "topics",
+        "has_issues",
+        "has_projects",
+        "has_wiki",
+        "has_pages",
+        "has_downloads",
+        "has_discussions",
+        "has_pull_requests",
+        "pull_request_creation_policy",
+        "archived",
+        "disabled",
+        "visibility",
+        "pushed_at",
+        "created_at",
+        "updated_at",
+        "allow_rebase_merge",
+        "temp_clone_token",
+        "allow_squash_merge",
+        "allow_auto_merge",
+        "delete_branch_on_merge",
+        "allow_update_branch",
+        "use_squash_pr_title_as_default",
+        "squash_merge_commit_title",
+        "squash_merge_commit_message",
+        "merge_commit_title",
+        "merge_commit_message",
+        "allow_merge_commit",
+        "allow_forking",
+        "web_commit_signoff_required",
+        "open_issues",
+        "watchers",
+        "master_branch",
+        "starred_at",
+        "anonymous_access_enabled",
+        "code_search_index_status"
+      ],
+      "properties": {
+        "license": {
+          "ref": "nullable-license-simple"
+        },
+        "permissions": {
+          "required": ["admin", "pull", "push"],
+          "keys": ["admin", "pull", "triage", "push", "maintain"]
+        },
+        "owner": {
+          "ref": "simple-user"
+        },
+        "code_search_index_status": {
+          "keys": ["lexical_search_ok", "lexical_commit_sha"]
+        }
+      }
+    },
+    "nullable-simple-commit": {
+      "required": ["id", "tree_id", "message", "timestamp", "author", "committer"],
+      "keys": ["id", "tree_id", "message", "timestamp", "author", "committer"],
+      "properties": {
+        "author": {
+          "required": ["name", "email"],
+          "keys": ["name", "email"]
+        },
+        "committer": {
+          "required": ["name", "email"],
+          "keys": ["name", "email"]
+        }
+      }
+    },
+    "nullable-simple-user": {
+      "required": [
+        "avatar_url",
+        "events_url",
+        "followers_url",
+        "following_url",
+        "gists_url",
+        "gravatar_id",
+        "html_url",
+        "id",
+        "node_id",
+        "login",
+        "organizations_url",
+        "received_events_url",
+        "repos_url",
+        "site_admin",
+        "starred_url",
+        "subscriptions_url",
+        "type",
+        "url"
+      ],
+      "keys": [
+        "name",
+        "email",
+        "login",
+        "id",
+        "node_id",
+        "avatar_url",
+        "gravatar_id",
+        "url",
+        "html_url",
+        "followers_url",
+        "following_url",
+        "gists_url",
+        "starred_url",
+        "subscriptions_url",
+        "organizations_url",
+        "repos_url",
+        "events_url",
+        "received_events_url",
+        "type",
+        "site_admin",
+        "starred_at",
+        "user_view_type"
+      ]
+    },
+    "nullable-team-simple": {
+      "required": [
+        "id",
+        "node_id",
+        "url",
+        "members_url",
+        "name",
+        "description",
+        "permission",
+        "html_url",
+        "repositories_url",
+        "slug",
+        "type"
+      ],
+      "keys": [
+        "id",
+        "node_id",
+        "url",
+        "members_url",
+        "name",
+        "description",
+        "permission",
+        "privacy",
+        "notification_setting",
+        "html_url",
+        "repositories_url",
+        "slug",
+        "ldap_dn",
+        "type",
+        "organization_id",
+        "enterprise_id"
+      ]
+    },
+    "org-ruleset-conditions": {
+      "oneOf": [
+        {
+          "allOf": [
+            {
+              "ref": "repository-ruleset-conditions"
+            },
+            {
+              "ref": "repository-ruleset-conditions-repository-name-target"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-ruleset-conditions"
+            },
+            {
+              "ref": "repository-ruleset-conditions-repository-id-target"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-ruleset-conditions"
+            },
+            {
+              "ref": "repository-ruleset-conditions-repository-property-target"
+            }
+          ]
+        }
+      ]
+    },
+    "private-user": {
+      "required": [
+        "avatar_url",
+        "events_url",
+        "followers_url",
+        "following_url",
+        "gists_url",
+        "gravatar_id",
+        "html_url",
+        "id",
+        "node_id",
+        "login",
+        "organizations_url",
+        "received_events_url",
+        "repos_url",
+        "site_admin",
+        "starred_url",
+        "subscriptions_url",
+        "type",
+        "url",
+        "bio",
+        "blog",
+        "company",
+        "email",
+        "followers",
+        "following",
+        "hireable",
+        "location",
+        "name",
+        "public_gists",
+        "public_repos",
+        "created_at",
+        "updated_at",
+        "collaborators",
+        "disk_usage",
+        "owned_private_repos",
+        "private_gists",
+        "total_private_repos",
+        "two_factor_authentication"
+      ],
+      "keys": [
+        "login",
+        "id",
+        "user_view_type",
+        "node_id",
+        "avatar_url",
+        "gravatar_id",
+        "url",
+        "html_url",
+        "followers_url",
+        "following_url",
+        "gists_url",
+        "starred_url",
+        "subscriptions_url",
+        "organizations_url",
+        "repos_url",
+        "events_url",
+        "received_events_url",
+        "type",
+        "site_admin",
+        "name",
+        "company",
+        "blog",
+        "location",
+        "email",
+        "notification_email",
+        "hireable",
+        "bio",
+        "twitter_username",
+        "public_repos",
+        "public_gists",
+        "followers",
+        "following",
+        "created_at",
+        "updated_at",
+        "private_gists",
+        "total_private_repos",
+        "owned_private_repos",
+        "disk_usage",
+        "collaborators",
+        "two_factor_authentication",
+        "plan",
+        "business_plus",
+        "ldap_dn"
+      ],
+      "properties": {
+        "plan": {
+          "required": ["collaborators", "name", "space", "private_repos"],
+          "keys": ["collaborators", "name", "space", "private_repos"]
+        }
+      }
+    },
+    "protected-branch-admin-enforced": {
+      "required": ["url", "enabled"],
+      "keys": ["url", "enabled"]
+    },
+    "protected-branch-pull-request-review": {
+      "required": ["dismiss_stale_reviews", "require_code_owner_reviews"],
+      "keys": [
+        "url",
+        "dismissal_restrictions",
+        "bypass_pull_request_allowances",
+        "dismiss_stale_reviews",
+        "require_code_owner_reviews",
+        "required_approving_review_count",
+        "require_last_push_approval"
+      ],
+      "properties": {
+        "dismissal_restrictions": {
+          "keys": ["users", "teams", "apps", "url", "users_url", "teams_url"],
+          "properties": {
+            "users": {
+              "items": {
+                "ref": "simple-user"
+              }
+            },
+            "teams": {
+              "items": {
+                "ref": "team"
+              }
+            },
+            "apps": {
+              "items": {
+                "ref": "integration"
+              }
+            }
+          }
+        },
+        "bypass_pull_request_allowances": {
+          "keys": ["users", "teams", "apps"],
+          "properties": {
+            "users": {
+              "items": {
+                "ref": "simple-user"
+              }
+            },
+            "teams": {
+              "items": {
+                "ref": "team"
+              }
+            },
+            "apps": {
+              "items": {
+                "ref": "integration"
+              }
+            }
+          }
+        }
+      }
+    },
+    "protected-branch-required-status-check": {
+      "required": ["contexts", "checks"],
+      "keys": ["url", "enforcement_level", "contexts", "checks", "contexts_url", "strict"],
+      "properties": {
+        "checks": {
+          "items": {
+            "required": ["context", "app_id"],
+            "keys": ["context", "app_id"]
+          }
+        }
+      }
+    },
+    "public-user": {
+      "required": [
+        "avatar_url",
+        "events_url",
+        "followers_url",
+        "following_url",
+        "gists_url",
+        "gravatar_id",
+        "html_url",
+        "id",
+        "node_id",
+        "login",
+        "organizations_url",
+        "received_events_url",
+        "repos_url",
+        "site_admin",
+        "starred_url",
+        "subscriptions_url",
+        "type",
+        "url",
+        "bio",
+        "blog",
+        "company",
+        "email",
+        "followers",
+        "following",
+        "hireable",
+        "location",
+        "name",
+        "public_gists",
+        "public_repos",
+        "created_at",
+        "updated_at"
+      ],
+      "keys": [
+        "login",
+        "id",
+        "user_view_type",
+        "node_id",
+        "avatar_url",
+        "gravatar_id",
+        "url",
+        "html_url",
+        "followers_url",
+        "following_url",
+        "gists_url",
+        "starred_url",
+        "subscriptions_url",
+        "organizations_url",
+        "repos_url",
+        "events_url",
+        "received_events_url",
+        "type",
+        "site_admin",
+        "name",
+        "company",
+        "blog",
+        "location",
+        "email",
+        "notification_email",
+        "hireable",
+        "bio",
+        "twitter_username",
+        "public_repos",
+        "public_gists",
+        "followers",
+        "following",
+        "created_at",
+        "updated_at",
+        "plan",
+        "private_gists",
+        "total_private_repos",
+        "owned_private_repos",
+        "disk_usage",
+        "collaborators"
+      ],
+      "properties": {
+        "plan": {
+          "required": ["collaborators", "name", "space", "private_repos"],
+          "keys": ["collaborators", "name", "space", "private_repos"]
+        }
+      }
+    },
+    "pull-request": {
+      "required": [
+        "_links",
+        "assignee",
+        "labels",
+        "base",
+        "body",
+        "closed_at",
+        "comments_url",
+        "commits_url",
+        "created_at",
+        "diff_url",
+        "head",
+        "html_url",
+        "id",
+        "node_id",
+        "issue_url",
+        "merge_commit_sha",
+        "merged_at",
+        "milestone",
+        "number",
+        "patch_url",
+        "review_comment_url",
+        "review_comments_url",
+        "statuses_url",
+        "state",
+        "locked",
+        "title",
+        "updated_at",
+        "url",
+        "user",
+        "author_association",
+        "auto_merge",
+        "additions",
+        "changed_files",
+        "comments",
+        "commits",
+        "deletions",
+        "mergeable",
+        "mergeable_state",
+        "merged",
+        "maintainer_can_modify",
+        "merged_by",
+        "review_comments"
+      ],
+      "keys": [
+        "url",
+        "id",
+        "node_id",
+        "html_url",
+        "diff_url",
+        "patch_url",
+        "issue_url",
+        "commits_url",
+        "review_comments_url",
+        "review_comment_url",
+        "comments_url",
+        "statuses_url",
+        "number",
+        "state",
+        "locked",
+        "title",
+        "user",
+        "body",
+        "labels",
+        "milestone",
+        "active_lock_reason",
+        "created_at",
+        "updated_at",
+        "closed_at",
+        "merged_at",
+        "merge_commit_sha",
+        "assignee",
+        "assignees",
+        "requested_reviewers",
+        "requested_teams",
+        "head",
+        "base",
+        "_links",
+        "author_association",
+        "auto_merge",
+        "stack",
+        "draft",
+        "merged",
+        "mergeable",
+        "rebaseable",
+        "mergeable_state",
+        "merged_by",
+        "comments",
+        "review_comments",
+        "maintainer_can_modify",
+        "commits",
+        "additions",
+        "deletions",
+        "changed_files"
+      ],
+      "properties": {
+        "user": {
+          "ref": "simple-user"
+        },
+        "labels": {
+          "items": {
+            "required": [
+              "id",
+              "node_id",
+              "url",
+              "name",
+              "description",
+              "color",
+              "default",
+              "archived_at",
+              "archived_by"
+            ],
+            "keys": [
+              "id",
+              "node_id",
+              "url",
+              "name",
+              "description",
+              "color",
+              "default",
+              "archived_by"
+            ],
+            "properties": {
+              "archived_by": {
+                "allOf": [
+                  {
+                    "ref": "simple-user"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "milestone": {
+          "ref": "nullable-milestone"
+        },
+        "assignee": {
+          "ref": "nullable-simple-user"
+        },
+        "assignees": {
+          "items": {
+            "ref": "simple-user"
+          }
+        },
+        "requested_reviewers": {
+          "items": {
+            "ref": "simple-user"
+          }
+        },
+        "requested_teams": {
+          "items": {
+            "ref": "team-simple"
+          }
+        },
+        "head": {
+          "required": ["label", "ref", "repo", "sha", "user"],
+          "keys": ["label", "ref", "repo", "sha", "user"],
+          "properties": {
+            "repo": {
+              "ref": "repository"
+            },
+            "user": {
+              "ref": "simple-user"
+            }
+          }
+        },
+        "base": {
+          "required": ["label", "ref", "repo", "sha", "user"],
+          "keys": ["label", "ref", "repo", "sha", "user"],
+          "properties": {
+            "repo": {
+              "ref": "repository"
+            },
+            "user": {
+              "ref": "simple-user"
+            }
+          }
+        },
+        "_links": {
+          "required": [
+            "comments",
+            "commits",
+            "statuses",
+            "html",
+            "issue",
+            "review_comments",
+            "review_comment",
+            "self"
+          ],
+          "keys": [
+            "comments",
+            "commits",
+            "statuses",
+            "html",
+            "issue",
+            "review_comments",
+            "review_comment",
+            "self"
+          ],
+          "properties": {
+            "comments": {
+              "ref": "link"
+            },
+            "commits": {
+              "ref": "link"
+            },
+            "statuses": {
+              "ref": "link"
+            },
+            "html": {
+              "ref": "link"
+            },
+            "issue": {
+              "ref": "link"
+            },
+            "review_comments": {
+              "ref": "link"
+            },
+            "review_comment": {
+              "ref": "link"
+            },
+            "self": {
+              "ref": "link"
+            }
+          }
+        },
+        "auto_merge": {
+          "ref": "auto-merge"
+        },
+        "stack": {
+          "ref": "pull-request-stack"
+        },
+        "merged_by": {
+          "ref": "nullable-simple-user"
+        }
+      }
+    },
+    "pull-request-minimal": {
+      "required": ["id", "number", "url", "head", "base"],
+      "keys": ["id", "number", "url", "head", "base"],
+      "properties": {
+        "head": {
+          "required": ["ref", "sha", "repo"],
+          "keys": ["ref", "sha", "repo"],
+          "properties": {
+            "repo": {
+              "required": ["id", "url", "name"],
+              "keys": ["id", "url", "name"]
+            }
+          }
+        },
+        "base": {
+          "required": ["ref", "sha", "repo"],
+          "keys": ["ref", "sha", "repo"],
+          "properties": {
+            "repo": {
+              "required": ["id", "url", "name"],
+              "keys": ["id", "url", "name"]
+            }
+          }
+        }
+      }
+    },
+    "pull-request-review": {
+      "required": [
+        "id",
+        "node_id",
+        "user",
+        "body",
+        "state",
+        "commit_id",
+        "html_url",
+        "pull_request_url",
+        "_links",
+        "author_association"
+      ],
+      "keys": [
+        "id",
+        "node_id",
+        "user",
+        "body",
+        "state",
+        "is_copilot_code_review",
+        "copilot_code_review_effort",
+        "html_url",
+        "pull_request_url",
+        "_links",
+        "submitted_at",
+        "commit_id",
+        "body_html",
+        "body_text",
+        "author_association"
+      ],
+      "properties": {
+        "user": {
+          "ref": "nullable-simple-user"
+        },
+        "_links": {
+          "required": ["html", "pull_request"],
+          "keys": ["html", "pull_request"],
+          "properties": {
+            "html": {
+              "required": ["href"],
+              "keys": ["href"]
+            },
+            "pull_request": {
+              "required": ["href"],
+              "keys": ["href"]
+            }
+          }
+        }
+      }
+    },
+    "pull-request-review-comment": {
+      "required": [
+        "url",
+        "id",
+        "node_id",
+        "pull_request_review_id",
+        "diff_hunk",
+        "path",
+        "commit_id",
+        "original_commit_id",
+        "user",
+        "body",
+        "created_at",
+        "updated_at",
+        "html_url",
+        "pull_request_url",
+        "author_association",
+        "_links"
+      ],
+      "keys": [
+        "is_copilot_code_review",
+        "copilot_code_review_sources",
+        "url",
+        "pull_request_review_id",
+        "id",
+        "node_id",
+        "diff_hunk",
+        "path",
+        "position",
+        "original_position",
+        "commit_id",
+        "original_commit_id",
+        "in_reply_to_id",
+        "user",
+        "body",
+        "created_at",
+        "updated_at",
+        "html_url",
+        "pull_request_url",
+        "author_association",
+        "_links",
+        "start_line",
+        "original_start_line",
+        "start_side",
+        "line",
+        "original_line",
+        "side",
+        "subject_type",
+        "reactions",
+        "body_html",
+        "body_text"
+      ],
+      "properties": {
+        "copilot_code_review_sources": {
+          "items": {
+            "required": ["kind", "name"],
+            "keys": ["kind", "name", "path"]
+          }
+        },
+        "user": {
+          "ref": "nullable-simple-user"
+        },
+        "_links": {
+          "required": ["self", "html", "pull_request"],
+          "keys": ["self", "html", "pull_request"],
+          "properties": {
+            "self": {
+              "required": ["href"],
+              "keys": ["href"]
+            },
+            "html": {
+              "required": ["href"],
+              "keys": ["href"]
+            },
+            "pull_request": {
+              "required": ["href"],
+              "keys": ["href"]
+            }
+          }
+        },
+        "reactions": {
+          "ref": "reaction-rollup"
+        }
+      }
+    },
+    "pull-request-simple": {
+      "required": [
+        "_links",
+        "assignee",
+        "labels",
+        "base",
+        "body",
+        "closed_at",
+        "comments_url",
+        "commits_url",
+        "created_at",
+        "diff_url",
+        "head",
+        "html_url",
+        "id",
+        "node_id",
+        "issue_url",
+        "merge_commit_sha",
+        "merged_at",
+        "milestone",
+        "number",
+        "patch_url",
+        "review_comment_url",
+        "review_comments_url",
+        "statuses_url",
+        "state",
+        "locked",
+        "title",
+        "updated_at",
+        "url",
+        "user",
+        "author_association",
+        "auto_merge"
+      ],
+      "keys": [
+        "url",
+        "id",
+        "node_id",
+        "html_url",
+        "diff_url",
+        "patch_url",
+        "issue_url",
+        "commits_url",
+        "review_comments_url",
+        "review_comment_url",
+        "comments_url",
+        "statuses_url",
+        "number",
+        "state",
+        "locked",
+        "title",
+        "user",
+        "body",
+        "labels",
+        "milestone",
+        "active_lock_reason",
+        "created_at",
+        "updated_at",
+        "closed_at",
+        "merged_at",
+        "merge_commit_sha",
+        "assignee",
+        "assignees",
+        "requested_reviewers",
+        "requested_teams",
+        "head",
+        "base",
+        "_links",
+        "author_association",
+        "auto_merge",
+        "stack",
+        "draft"
+      ],
+      "properties": {
+        "user": {
+          "ref": "nullable-simple-user"
+        },
+        "labels": {
+          "items": {
+            "required": [
+              "id",
+              "node_id",
+              "url",
+              "name",
+              "description",
+              "color",
+              "default",
+              "archived_at",
+              "archived_by"
+            ],
+            "keys": [
+              "id",
+              "node_id",
+              "url",
+              "name",
+              "description",
+              "color",
+              "default",
+              "archived_by"
+            ],
+            "properties": {
+              "archived_by": {
+                "allOf": [
+                  {
+                    "ref": "simple-user"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "milestone": {
+          "ref": "nullable-milestone"
+        },
+        "assignee": {
+          "ref": "nullable-simple-user"
+        },
+        "assignees": {
+          "items": {
+            "ref": "simple-user"
+          }
+        },
+        "requested_reviewers": {
+          "items": {
+            "ref": "simple-user"
+          }
+        },
+        "requested_teams": {
+          "items": {
+            "ref": "team"
+          }
+        },
+        "head": {
+          "required": ["label", "ref", "repo", "sha", "user"],
+          "keys": ["label", "ref", "repo", "sha", "user"],
+          "properties": {
+            "repo": {
+              "ref": "repository"
+            },
+            "user": {
+              "ref": "nullable-simple-user"
+            }
+          }
+        },
+        "base": {
+          "required": ["label", "ref", "repo", "sha", "user"],
+          "keys": ["label", "ref", "repo", "sha", "user"],
+          "properties": {
+            "repo": {
+              "ref": "repository"
+            },
+            "user": {
+              "ref": "nullable-simple-user"
+            }
+          }
+        },
+        "_links": {
+          "required": [
+            "comments",
+            "commits",
+            "statuses",
+            "html",
+            "issue",
+            "review_comments",
+            "review_comment",
+            "self"
+          ],
+          "keys": [
+            "comments",
+            "commits",
+            "statuses",
+            "html",
+            "issue",
+            "review_comments",
+            "review_comment",
+            "self"
+          ],
+          "properties": {
+            "comments": {
+              "ref": "link"
+            },
+            "commits": {
+              "ref": "link"
+            },
+            "statuses": {
+              "ref": "link"
+            },
+            "html": {
+              "ref": "link"
+            },
+            "issue": {
+              "ref": "link"
+            },
+            "review_comments": {
+              "ref": "link"
+            },
+            "review_comment": {
+              "ref": "link"
+            },
+            "self": {
+              "ref": "link"
+            }
+          }
+        },
+        "auto_merge": {
+          "ref": "auto-merge"
+        },
+        "stack": {
+          "ref": "pull-request-stack"
+        }
+      }
+    },
+    "pull-request-stack": {
+      "required": ["base"],
+      "keys": ["base", "size", "position", "id", "number"],
+      "properties": {
+        "base": {
+          "required": ["ref", "sha"],
+          "keys": ["ref", "sha"]
+        }
+      }
+    },
+    "reaction-rollup": {
+      "required": [
+        "url",
+        "total_count",
+        "+1",
+        "-1",
+        "laugh",
+        "confused",
+        "heart",
+        "hooray",
+        "eyes",
+        "rocket"
+      ],
+      "keys": [
+        "url",
+        "total_count",
+        "+1",
+        "-1",
+        "laugh",
+        "confused",
+        "heart",
+        "hooray",
+        "eyes",
+        "rocket"
+      ]
+    },
+    "referenced-workflow": {
+      "required": ["path", "sha"],
+      "keys": ["path", "sha", "ref"]
+    },
+    "repository": {
+      "required": [
+        "archive_url",
+        "assignees_url",
+        "blobs_url",
+        "branches_url",
+        "collaborators_url",
+        "comments_url",
+        "commits_url",
+        "compare_url",
+        "contents_url",
+        "contributors_url",
+        "deployments_url",
+        "description",
+        "downloads_url",
+        "events_url",
+        "fork",
+        "forks_url",
+        "full_name",
+        "git_commits_url",
+        "git_refs_url",
+        "git_tags_url",
+        "hooks_url",
+        "html_url",
+        "id",
+        "node_id",
+        "issue_comment_url",
+        "issue_events_url",
+        "issues_url",
+        "keys_url",
+        "labels_url",
+        "languages_url",
+        "merges_url",
+        "milestones_url",
+        "name",
+        "notifications_url",
+        "owner",
+        "private",
+        "pulls_url",
+        "releases_url",
+        "stargazers_url",
+        "statuses_url",
+        "subscribers_url",
+        "subscription_url",
+        "tags_url",
+        "teams_url",
+        "trees_url",
+        "url",
+        "clone_url",
+        "default_branch",
+        "forks",
+        "forks_count",
+        "git_url",
+        "has_downloads",
+        "has_issues",
+        "has_projects",
+        "has_wiki",
+        "has_pages",
+        "homepage",
+        "language",
+        "archived",
+        "disabled",
+        "mirror_url",
+        "open_issues",
+        "open_issues_count",
+        "license",
+        "pushed_at",
+        "size",
+        "ssh_url",
+        "stargazers_count",
+        "svn_url",
+        "watchers",
+        "watchers_count",
+        "created_at",
+        "updated_at"
+      ],
+      "keys": [
+        "id",
+        "node_id",
+        "name",
+        "full_name",
+        "license",
+        "forks",
+        "permissions",
+        "owner",
+        "private",
+        "html_url",
+        "description",
+        "fork",
+        "url",
+        "archive_url",
+        "assignees_url",
+        "blobs_url",
+        "branches_url",
+        "collaborators_url",
+        "comments_url",
+        "commits_url",
+        "compare_url",
+        "contents_url",
+        "contributors_url",
+        "deployments_url",
+        "downloads_url",
+        "events_url",
+        "forks_url",
+        "git_commits_url",
+        "git_refs_url",
+        "git_tags_url",
+        "git_url",
+        "issue_comment_url",
+        "issue_events_url",
+        "issues_url",
+        "keys_url",
+        "labels_url",
+        "languages_url",
+        "merges_url",
+        "milestones_url",
+        "notifications_url",
+        "pulls_url",
+        "releases_url",
+        "ssh_url",
+        "stargazers_url",
+        "statuses_url",
+        "subscribers_url",
+        "subscription_url",
+        "tags_url",
+        "teams_url",
+        "trees_url",
+        "clone_url",
+        "mirror_url",
+        "hooks_url",
+        "svn_url",
+        "homepage",
+        "language",
+        "forks_count",
+        "stargazers_count",
+        "watchers_count",
+        "size",
+        "default_branch",
+        "open_issues_count",
+        "is_template",
+        "topics",
+        "has_issues",
+        "has_projects",
+        "has_wiki",
+        "has_pages",
+        "has_downloads",
+        "has_discussions",
+        "has_pull_requests",
+        "pull_request_creation_policy",
+        "archived",
+        "disabled",
+        "visibility",
+        "pushed_at",
+        "created_at",
+        "updated_at",
+        "allow_rebase_merge",
+        "temp_clone_token",
+        "allow_squash_merge",
+        "allow_auto_merge",
+        "delete_branch_on_merge",
+        "allow_update_branch",
+        "use_squash_pr_title_as_default",
+        "squash_merge_commit_title",
+        "squash_merge_commit_message",
+        "merge_commit_title",
+        "merge_commit_message",
+        "allow_merge_commit",
+        "allow_forking",
+        "web_commit_signoff_required",
+        "open_issues",
+        "watchers",
+        "master_branch",
+        "starred_at",
+        "anonymous_access_enabled",
+        "code_search_index_status"
+      ],
+      "properties": {
+        "license": {
+          "ref": "nullable-license-simple"
+        },
+        "permissions": {
+          "required": ["admin", "pull", "push"],
+          "keys": ["admin", "pull", "triage", "push", "maintain"]
+        },
+        "owner": {
+          "ref": "simple-user"
+        },
+        "code_search_index_status": {
+          "keys": ["lexical_search_ok", "lexical_commit_sha"]
+        }
+      }
+    },
+    "repository-rule": {
+      "oneOf": [
+        {
+          "ref": "repository-rule-creation"
+        },
+        {
+          "ref": "repository-rule-update"
+        },
+        {
+          "ref": "repository-rule-deletion"
+        },
+        {
+          "ref": "repository-rule-required-linear-history"
+        },
+        {
+          "ref": "repository-rule-merge-queue"
+        },
+        {
+          "ref": "repository-rule-required-deployments"
+        },
+        {
+          "ref": "repository-rule-required-signatures"
+        },
+        {
+          "ref": "repository-rule-pull-request"
+        },
+        {
+          "ref": "repository-rule-required-status-checks"
+        },
+        {
+          "ref": "repository-rule-non-fast-forward"
+        },
+        {
+          "ref": "repository-rule-commit-message-pattern"
+        },
+        {
+          "ref": "repository-rule-commit-author-email-pattern"
+        },
+        {
+          "ref": "repository-rule-committer-email-pattern"
+        },
+        {
+          "ref": "repository-rule-branch-name-pattern"
+        },
+        {
+          "ref": "repository-rule-tag-name-pattern"
+        },
+        {
+          "ref": "repository-rule-workflows"
+        },
+        {
+          "ref": "repository-rule-code-scanning"
+        },
+        {
+          "ref": "repository-rule-code-quality"
+        },
+        {
+          "ref": "repository-rule-code-coverage"
+        },
+        {
+          "ref": "repository-rule-copilot-code-review"
+        },
+        {
+          "ref": "repository-rule-license-compliance-scanning"
+        },
+        {
+          "ref": "repository-rule-file-path-restriction"
+        },
+        {
+          "ref": "repository-rule-max-file-path-length"
+        },
+        {
+          "ref": "repository-rule-file-extension-restriction"
+        },
+        {
+          "ref": "repository-rule-max-file-size"
+        }
+      ]
+    },
+    "repository-rule-branch-name-pattern": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["operator", "pattern"],
+          "keys": ["name", "negate", "operator", "pattern"]
+        }
+      }
+    },
+    "repository-rule-code-coverage": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "keys": ["max_coverage_drop", "minimum_coverage"]
+        }
+      }
+    },
+    "repository-rule-code-quality": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["severity"],
+          "keys": ["severity"]
+        }
+      }
+    },
+    "repository-rule-code-scanning": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["code_scanning_tools"],
+          "keys": ["code_scanning_tools"],
+          "properties": {
+            "code_scanning_tools": {
+              "items": {
+                "ref": "repository-rule-params-code-scanning-tool"
+              }
+            }
+          }
+        }
+      }
+    },
+    "repository-rule-commit-author-email-pattern": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["operator", "pattern"],
+          "keys": ["name", "negate", "operator", "pattern"]
+        }
+      }
+    },
+    "repository-rule-commit-message-pattern": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["operator", "pattern"],
+          "keys": ["name", "negate", "operator", "pattern"]
+        }
+      }
+    },
+    "repository-rule-committer-email-pattern": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["operator", "pattern"],
+          "keys": ["name", "negate", "operator", "pattern"]
+        }
+      }
+    },
+    "repository-rule-copilot-code-review": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "keys": ["review_draft_pull_requests", "review_on_push"]
+        }
+      }
+    },
+    "repository-rule-creation": {
+      "required": ["type"],
+      "keys": ["type"]
+    },
+    "repository-rule-deletion": {
+      "required": ["type"],
+      "keys": ["type"]
+    },
+    "repository-rule-detailed": {
+      "oneOf": [
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-creation"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-update"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-deletion"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-required-linear-history"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-merge-queue"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-required-deployments"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-required-signatures"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-pull-request"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-required-status-checks"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-non-fast-forward"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-commit-message-pattern"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-commit-author-email-pattern"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-committer-email-pattern"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-branch-name-pattern"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-tag-name-pattern"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-workflows"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-code-scanning"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-code-quality"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-code-coverage"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-copilot-code-review"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-license-compliance-scanning"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-file-path-restriction"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-max-file-path-length"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-file-extension-restriction"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "ref": "repository-rule-max-file-size"
+            },
+            {
+              "ref": "repository-rule-ruleset-info"
+            }
+          ]
+        }
+      ]
+    },
+    "repository-rule-file-extension-restriction": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["restricted_file_extensions"],
+          "keys": ["restricted_file_extensions"]
+        }
+      }
+    },
+    "repository-rule-file-path-restriction": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["restricted_file_paths"],
+          "keys": ["ignored_file_paths", "restricted_file_paths"]
+        }
+      }
+    },
+    "repository-rule-license-compliance-scanning": {
+      "required": ["type"],
+      "keys": ["type"]
+    },
+    "repository-rule-max-file-path-length": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["max_file_path_length"],
+          "keys": ["max_file_path_length"]
+        }
+      }
+    },
+    "repository-rule-max-file-size": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["max_file_size"],
+          "keys": ["ignored_file_paths", "max_file_size"]
+        }
+      }
+    },
+    "repository-rule-merge-queue": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": [
+            "check_response_timeout_minutes",
+            "grouping_strategy",
+            "max_entries_to_build",
+            "max_entries_to_merge",
+            "merge_method",
+            "min_entries_to_merge",
+            "min_entries_to_merge_wait_minutes"
+          ],
+          "keys": [
+            "check_response_timeout_minutes",
+            "grouping_strategy",
+            "max_entries_to_build",
+            "max_entries_to_merge",
+            "merge_method",
+            "min_entries_to_merge",
+            "min_entries_to_merge_wait_minutes"
+          ]
+        }
+      }
+    },
+    "repository-rule-non-fast-forward": {
+      "required": ["type"],
+      "keys": ["type"]
+    },
+    "repository-rule-params-actor": {
+      "required": ["id", "type"],
+      "keys": ["id", "type"]
+    },
+    "repository-rule-params-code-scanning-tool": {
+      "required": ["alerts_threshold", "security_alerts_threshold", "tool"],
+      "keys": ["alerts_threshold", "security_alerts_threshold", "tool"]
+    },
+    "repository-rule-params-dismissal-restriction": {
+      "required": ["enabled"],
+      "keys": ["allowed_actors", "enabled"],
+      "properties": {
+        "allowed_actors": {
+          "items": {
+            "ref": "repository-rule-params-actor"
+          }
+        }
+      }
+    },
+    "repository-rule-params-required-reviewer-configuration": {
+      "required": ["file_patterns", "minimum_approvals", "reviewer"],
+      "keys": ["file_patterns", "minimum_approvals", "reviewer"],
+      "properties": {
+        "reviewer": {
+          "ref": "repository-rule-params-reviewer"
+        }
+      }
+    },
+    "repository-rule-params-reviewer": {
+      "required": ["id", "type"],
+      "keys": ["id", "type"]
+    },
+    "repository-rule-params-status-check-configuration": {
+      "required": ["context"],
+      "keys": ["context", "integration_id"]
+    },
+    "repository-rule-params-workflow-file-reference": {
+      "required": ["path", "repository_id"],
+      "keys": ["path", "ref", "repository_id", "sha"]
+    },
+    "repository-rule-pull-request": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": [
+            "dismiss_stale_reviews_on_push",
+            "require_code_owner_review",
+            "require_last_push_approval",
+            "required_approving_review_count",
+            "required_review_thread_resolution"
+          ],
+          "keys": [
+            "allowed_merge_methods",
+            "dismiss_stale_reviews_on_push",
+            "dismissal_restriction",
+            "require_code_owner_review",
+            "require_extra_approval_for_unattributed_changes",
+            "require_last_push_approval",
+            "required_approving_review_count",
+            "required_review_thread_resolution",
+            "required_reviewers"
+          ],
+          "properties": {
+            "dismissal_restriction": {
+              "ref": "repository-rule-params-dismissal-restriction"
+            },
+            "required_reviewers": {
+              "items": {
+                "ref": "repository-rule-params-required-reviewer-configuration"
+              }
+            }
+          }
+        }
+      }
+    },
+    "repository-rule-required-deployments": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["required_deployment_environments"],
+          "keys": ["required_deployment_environments"]
+        }
+      }
+    },
+    "repository-rule-required-linear-history": {
+      "required": ["type"],
+      "keys": ["type"]
+    },
+    "repository-rule-required-signatures": {
+      "required": ["type"],
+      "keys": ["type"]
+    },
+    "repository-rule-required-status-checks": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["required_status_checks", "strict_required_status_checks_policy"],
+          "keys": [
+            "do_not_enforce_on_create",
+            "required_status_checks",
+            "strict_required_status_checks_policy"
+          ],
+          "properties": {
+            "required_status_checks": {
+              "items": {
+                "ref": "repository-rule-params-status-check-configuration"
+              }
+            }
+          }
+        }
+      }
+    },
+    "repository-rule-ruleset-info": {
+      "keys": ["ruleset_source_type", "ruleset_source", "ruleset_id"]
+    },
+    "repository-rule-tag-name-pattern": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["operator", "pattern"],
+          "keys": ["name", "negate", "operator", "pattern"]
+        }
+      }
+    },
+    "repository-rule-update": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["update_allows_fetch_and_merge"],
+          "keys": ["update_allows_fetch_and_merge"]
+        }
+      }
+    },
+    "repository-rule-workflows": {
+      "required": ["type"],
+      "keys": ["type", "parameters"],
+      "properties": {
+        "parameters": {
+          "required": ["workflows"],
+          "keys": ["do_not_enforce_on_create", "workflows"],
+          "properties": {
+            "workflows": {
+              "items": {
+                "ref": "repository-rule-params-workflow-file-reference"
+              }
+            }
+          }
+        }
+      }
+    },
+    "repository-ruleset": {
+      "required": ["id", "name", "source", "enforcement"],
+      "keys": [
+        "id",
+        "name",
+        "target",
+        "source_type",
+        "source",
+        "enforcement",
+        "bypass_actors",
+        "current_user_can_bypass",
+        "node_id",
+        "_links",
+        "conditions",
+        "rules",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "bypass_actors": {
+          "items": {
+            "ref": "repository-ruleset-bypass-actor"
+          }
+        },
+        "_links": {
+          "keys": ["self", "html"],
+          "properties": {
+            "self": {
+              "keys": ["href"]
+            },
+            "html": {
+              "keys": ["href"]
+            }
+          }
+        },
+        "conditions": {
+          "anyOf": [
+            {
+              "ref": "repository-ruleset-conditions"
+            },
+            {
+              "ref": "org-ruleset-conditions"
+            }
+          ]
+        },
+        "rules": {
+          "items": {
+            "ref": "repository-rule"
+          }
+        }
+      }
+    },
+    "repository-ruleset-bypass-actor": {
+      "required": ["actor_type"],
+      "keys": ["actor_id", "actor_type", "bypass_mode"]
+    },
+    "repository-ruleset-conditions": {
+      "keys": ["ref_name"],
+      "properties": {
+        "ref_name": {
+          "keys": ["include", "exclude"]
+        }
+      }
+    },
+    "repository-ruleset-conditions-repository-id-target": {
+      "required": ["repository_id"],
+      "keys": ["repository_id"],
+      "properties": {
+        "repository_id": {
+          "keys": ["repository_ids"]
+        }
+      }
+    },
+    "repository-ruleset-conditions-repository-name-target": {
+      "required": ["repository_name"],
+      "keys": ["repository_name"],
+      "properties": {
+        "repository_name": {
+          "keys": ["include", "exclude", "protected"]
+        }
+      }
+    },
+    "repository-ruleset-conditions-repository-property-spec": {
+      "required": ["name", "property_values"],
+      "keys": ["name", "property_values", "source"]
+    },
+    "repository-ruleset-conditions-repository-property-target": {
+      "required": ["repository_property"],
+      "keys": ["repository_property"],
+      "properties": {
+        "repository_property": {
+          "keys": ["include", "exclude"],
+          "properties": {
+            "include": {
+              "items": {
+                "ref": "repository-ruleset-conditions-repository-property-spec"
+              }
+            },
+            "exclude": {
+              "items": {
+                "ref": "repository-ruleset-conditions-repository-property-spec"
+              }
+            }
+          }
+        }
+      }
+    },
+    "review-comment": {
+      "required": [
+        "id",
+        "node_id",
+        "url",
+        "body",
+        "diff_hunk",
+        "path",
+        "position",
+        "original_position",
+        "commit_id",
+        "original_commit_id",
+        "user",
+        "pull_request_review_id",
+        "html_url",
+        "pull_request_url",
+        "_links",
+        "author_association",
+        "created_at",
+        "updated_at"
+      ],
+      "keys": [
+        "is_copilot_code_review",
+        "copilot_code_review_sources",
+        "url",
+        "pull_request_review_id",
+        "id",
+        "node_id",
+        "diff_hunk",
+        "path",
+        "position",
+        "original_position",
+        "commit_id",
+        "original_commit_id",
+        "in_reply_to_id",
+        "user",
+        "body",
+        "created_at",
+        "updated_at",
+        "html_url",
+        "pull_request_url",
+        "author_association",
+        "_links",
+        "body_text",
+        "body_html",
+        "reactions",
+        "side",
+        "start_side",
+        "line",
+        "original_line",
+        "start_line",
+        "original_start_line",
+        "subject_type"
+      ],
+      "properties": {
+        "copilot_code_review_sources": {
+          "items": {
+            "required": ["kind", "name"],
+            "keys": ["kind", "name", "path"]
+          }
+        },
+        "user": {
+          "ref": "nullable-simple-user"
+        },
+        "_links": {
+          "required": ["self", "html", "pull_request"],
+          "keys": ["self", "html", "pull_request"],
+          "properties": {
+            "self": {
+              "ref": "link"
+            },
+            "html": {
+              "ref": "link"
+            },
+            "pull_request": {
+              "ref": "link"
+            }
+          }
+        },
+        "reactions": {
+          "ref": "reaction-rollup"
+        }
+      }
+    },
+    "security-and-analysis": {
+      "keys": [
+        "advanced_security",
+        "code_security",
+        "dependabot_security_updates",
+        "secret_scanning",
+        "secret_scanning_push_protection",
+        "secret_scanning_non_provider_patterns",
+        "secret_scanning_ai_detection",
+        "secret_scanning_delegated_alert_dismissal",
+        "secret_scanning_delegated_bypass",
+        "secret_scanning_delegated_bypass_options"
+      ],
+      "properties": {
+        "advanced_security": {
+          "keys": ["status"]
+        },
+        "code_security": {
+          "keys": ["status"]
+        },
+        "dependabot_security_updates": {
+          "keys": ["status"]
+        },
+        "secret_scanning": {
+          "keys": ["status"]
+        },
+        "secret_scanning_push_protection": {
+          "keys": ["status"]
+        },
+        "secret_scanning_non_provider_patterns": {
+          "keys": ["status"]
+        },
+        "secret_scanning_ai_detection": {
+          "keys": ["status"]
+        },
+        "secret_scanning_delegated_alert_dismissal": {
+          "keys": ["status"]
+        },
+        "secret_scanning_delegated_bypass": {
+          "keys": ["status"]
+        },
+        "secret_scanning_delegated_bypass_options": {
+          "keys": ["reviewers"],
+          "properties": {
+            "reviewers": {
+              "items": {
+                "required": ["reviewer_id", "reviewer_type"],
+                "keys": ["reviewer_id", "reviewer_type", "mode"]
+              }
+            }
+          }
+        }
+      }
+    },
+    "short-branch": {
+      "required": ["name", "commit", "protected"],
+      "keys": ["name", "commit", "protected", "protection", "protection_url"],
+      "properties": {
+        "commit": {
+          "required": ["sha", "url"],
+          "keys": ["sha", "url"]
+        },
+        "protection": {
+          "ref": "branch-protection"
+        }
+      }
+    },
+    "simple-commit-status": {
+      "required": [
+        "description",
+        "id",
+        "node_id",
+        "state",
+        "context",
+        "target_url",
+        "avatar_url",
+        "url",
+        "created_at",
+        "updated_at"
+      ],
+      "keys": [
+        "description",
+        "id",
+        "node_id",
+        "state",
+        "context",
+        "target_url",
+        "required",
+        "avatar_url",
+        "url",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "simple-user": {
+      "required": [
+        "avatar_url",
+        "events_url",
+        "followers_url",
+        "following_url",
+        "gists_url",
+        "gravatar_id",
+        "html_url",
+        "id",
+        "node_id",
+        "login",
+        "organizations_url",
+        "received_events_url",
+        "repos_url",
+        "site_admin",
+        "starred_url",
+        "subscriptions_url",
+        "type",
+        "url"
+      ],
+      "keys": [
+        "name",
+        "email",
+        "login",
+        "id",
+        "node_id",
+        "avatar_url",
+        "gravatar_id",
+        "url",
+        "html_url",
+        "followers_url",
+        "following_url",
+        "gists_url",
+        "starred_url",
+        "subscriptions_url",
+        "organizations_url",
+        "repos_url",
+        "events_url",
+        "received_events_url",
+        "type",
+        "site_admin",
+        "starred_at",
+        "user_view_type"
+      ]
+    },
+    "tag": {
+      "required": ["name", "node_id", "commit", "zipball_url", "tarball_url"],
+      "keys": ["name", "commit", "zipball_url", "tarball_url", "node_id"],
+      "properties": {
+        "commit": {
+          "required": ["sha", "url"],
+          "keys": ["sha", "url"]
+        }
+      }
+    },
+    "team": {
+      "required": [
+        "id",
+        "node_id",
+        "url",
+        "members_url",
+        "name",
+        "description",
+        "permission",
+        "html_url",
+        "repositories_url",
+        "slug",
+        "parent",
+        "type"
+      ],
+      "keys": [
+        "id",
+        "node_id",
+        "name",
+        "slug",
+        "description",
+        "privacy",
+        "notification_setting",
+        "permission",
+        "permissions",
+        "url",
+        "html_url",
+        "members_url",
+        "repositories_url",
+        "type",
+        "access_source",
+        "organization_id",
+        "enterprise_id",
+        "parent"
+      ],
+      "properties": {
+        "permissions": {
+          "required": ["pull", "triage", "push", "maintain", "admin"],
+          "keys": ["pull", "triage", "push", "maintain", "admin"]
+        },
+        "parent": {
+          "ref": "nullable-team-simple"
+        }
+      }
+    },
+    "team-simple": {
+      "required": [
+        "id",
+        "node_id",
+        "url",
+        "members_url",
+        "name",
+        "description",
+        "permission",
+        "html_url",
+        "repositories_url",
+        "slug",
+        "type"
+      ],
+      "keys": [
+        "id",
+        "node_id",
+        "url",
+        "members_url",
+        "name",
+        "description",
+        "permission",
+        "privacy",
+        "notification_setting",
+        "html_url",
+        "repositories_url",
+        "slug",
+        "ldap_dn",
+        "type",
+        "organization_id",
+        "enterprise_id"
+      ]
+    },
+    "verification": {
+      "required": ["verified", "reason", "payload", "signature", "verified_at"],
+      "keys": ["verified", "reason", "payload", "signature", "verified_at"]
+    },
+    "workflow-run": {
+      "required": [
+        "id",
+        "node_id",
+        "head_branch",
+        "run_number",
+        "display_title",
+        "event",
+        "status",
+        "conclusion",
+        "head_sha",
+        "path",
+        "workflow_id",
+        "url",
+        "html_url",
+        "created_at",
+        "updated_at",
+        "head_commit",
+        "head_repository",
+        "repository",
+        "jobs_url",
+        "logs_url",
+        "check_suite_url",
+        "cancel_url",
+        "rerun_url",
+        "artifacts_url",
+        "workflow_url",
+        "pull_requests"
+      ],
+      "keys": [
+        "id",
+        "name",
+        "node_id",
+        "check_suite_id",
+        "check_suite_node_id",
+        "head_branch",
+        "head_sha",
+        "path",
+        "run_number",
+        "run_attempt",
+        "referenced_workflows",
+        "event",
+        "status",
+        "conclusion",
+        "workflow_id",
+        "url",
+        "html_url",
+        "pull_requests",
+        "created_at",
+        "updated_at",
+        "actor",
+        "triggering_actor",
+        "run_started_at",
+        "jobs_url",
+        "logs_url",
+        "check_suite_url",
+        "artifacts_url",
+        "cancel_url",
+        "rerun_url",
+        "previous_attempt_url",
+        "workflow_url",
+        "head_commit",
+        "repository",
+        "head_repository",
+        "head_repository_id",
+        "display_title"
+      ],
+      "properties": {
+        "referenced_workflows": {
+          "items": {
+            "ref": "referenced-workflow"
+          }
+        },
+        "pull_requests": {
+          "items": {
+            "ref": "pull-request-minimal"
+          }
+        },
+        "actor": {
+          "ref": "simple-user"
+        },
+        "triggering_actor": {
+          "ref": "simple-user"
+        },
+        "head_commit": {
+          "ref": "nullable-simple-commit"
+        },
+        "repository": {
+          "ref": "minimal-repository"
+        },
+        "head_repository": {
+          "ref": "minimal-repository"
+        }
+      }
+    }
+  }
+}

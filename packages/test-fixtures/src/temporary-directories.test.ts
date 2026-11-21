@@ -4,6 +4,7 @@ import {
   existsSync,
   linkSync,
   mkdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   statfsSync,
@@ -354,6 +355,136 @@ describe("the removal", () => {
     expect(existsSync(treeWithHardLink)).toBe(false);
     expect(statSync(linkedFile).mode & 0o777).toBe(0o444);
   });
+});
+
+/**
+ * A removal is work that grows with what a suite made, and the hooks of this file take a bound
+ * of their own in place of Bun's five-second default for that reason (`HOOK_BOUND_MS`). What
+ * that bound buys is read here: a `bun test` of its own, whose rows make trees the fixture's own
+ * hook removes, growing until one removal takes longer than five seconds. The run must pass,
+ * every tree must be gone, and the last removal must have taken longer than Bun's default, which
+ * is what says the bound is the reason the hook finished.
+ *
+ * It reads a run of its own because a hook Bun kills fails with no name: the kill is reported as
+ * `a beforeEach/afterEach hook timed out for this test`, which names neither the hook nor the
+ * directory, and the rows after it in that scope do not run, so a pair of rows in this file
+ * would report the dropped bound through a failure with no assertion in it (the architect's
+ * ruling on F308a: a pin whose failure has no name is not a pin). Here the kill is the child
+ * run's, and this row's own assertions name it.
+ *
+ * Catches: the bound dropped back to Bun's default, which is how the kill reads in the suites
+ * that meet it (`packages/pi-legion/scripts/skill-scenarios/score.test.ts`, whose run
+ * directories each hold a bare clone).
+ */
+describe("a removal larger than Bun's own hook default allows", () => {
+  const makeDirectory = temporaryDirectories("test-fixtures-slow");
+
+  test("the fixture's own bound is what lets a hook finish a removal of more than five seconds", () => {
+    const work = makeDirectory("run");
+    const root = join(work, "root");
+    mkdirSync(root);
+    const measurement = join(work, "removals.json");
+    // How long a removal must outlast Bun's five-second default before the trees stop growing:
+    // half as long again, so what the row reads is no hair above five seconds that a timer
+    // started a little late could account for. And the most the last removal may take: half the
+    // fixture's 120-second hook bound, the margin that says the bound holds this host's tree with
+    // room to spare rather than by luck.
+    const OUTLAST_MS = 7_500;
+    const MARGIN_MS = 60_000;
+    const STEPS = 12;
+    writeFileSync(
+      join(work, "slow.test.ts"),
+      `import { afterEach, test } from "bun:test";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { temporaryDirectories } from ${JSON.stringify(join(import.meta.dir, "temporary-directories"))};
+
+const make = temporaryDirectories("slow", { root: ${JSON.stringify(root)} });
+/** Each step's tree, measured: the count it aimed for, the count it made, how long the fixture's
+ * removal of it took and whether that removal left it gone. The fixture's own afterEach,
+ * registered at the call above, is the removal, and the hook below was registered after it, so
+ * it runs after that removal and times it (Bun runs a scope's hooks in the order they were
+ * registered). */
+const steps: { target: number; made: number; removalMs: number; removed: boolean }[] = [];
+let tree = "";
+let target = 0;
+let made = 0;
+let startedAt = 0;
+afterEach(() => {
+  if (tree === "") return;
+  steps.push({ target, made, removalMs: Date.now() - startedAt, removed: !existsSync(tree) });
+  writeFileSync(${JSON.stringify(measurement)}, JSON.stringify(steps));
+  tree = "";
+});
+
+// The tree is measured at its full size, on this host, by the removal the row is about: every
+// step makes a tree of the one shape (one directory holding \`count\` directories of one file
+// each), doubling the count, and the fixture's own hook removes it and is timed. The steps stop
+// after the first removal that took more than ${OUTLAST_MS} ms. Nothing is extrapolated. The row
+// before this one sized a single tree from a calibration: plain rmSync of a 2,000-directory tree,
+// scaled up to fifteen seconds. On CI run 43612603343 the fixture's removal of that tree outran
+// the 120-second hook bound: the fixture's removal walks the tree to chmod it before rmSync,
+// which on a Legion pod made it 2.3 times the rmSync alone the calibration timed, and a removal
+// rate read off a small tree need not hold at full size (a removal that grows faster than its
+// count, or caches the small tree fits in and the large one does not).
+//
+// The invariant: the last step is a measured removal by the fixture's own hook of more than
+// ${OUTLAST_MS} ms, and every step before it a measured removal of no more than ${OUTLAST_MS} ms of a tree
+// half the size of the next, so the last tree is the first this host takes longer than that to
+// remove and the caller holds its measured removal to the margin under the hook bound.
+//
+// What bounds the disk is the time the making may take, MAKE_BOUND_MS, across every step: a host
+// that cannot make its trees in four minutes stops there, and the caller fails by name on the
+// count a step made against the count it aimed for. Four minutes of making, eleven removals of
+// at most ${OUTLAST_MS} ms and a last one under the caller's margin fit the caller's ten minutes.
+const MAKE_BOUND_MS = 240_000;
+const began = performance.now();
+for (let step = 0; step < ${STEPS}; step += 1) {
+  test(\`step \${step + 1}: a tree of \${2_000 * 2 ** step} directories, made unless an earlier removal took more than ${OUTLAST_MS} ms\`, () => {
+    const last = steps.at(-1);
+    if (step > 0 && (last === undefined || last.removalMs > ${OUTLAST_MS} || last.made < last.target)) return;
+    target = 2_000 * 2 ** step;
+    tree = make("tree");
+    made = 0;
+    while (made < target && performance.now() - began < MAKE_BOUND_MS) {
+      const held = join(tree, "d" + made);
+      mkdirSync(held);
+      writeFileSync(join(held, "held.txt"), "x");
+      made += 1;
+    }
+    startedAt = Date.now();
+  }, 600_000);
+}
+`
+    );
+    const run = Bun.spawnSync([process.execPath, "test", "./slow.test.ts"], {
+      cwd: work,
+      env: { ...process.env },
+    });
+    const output = `${run.stdout.toString()}${run.stderr.toString()}`;
+    // A step whose hook was killed part-way writes no measurement, since Bun runs no later hook
+    // of a scope once one of them is killed; a run that wrote none fails the assertions below on
+    // an empty list and on a last step that took no time.
+    const steps = existsSync(measurement)
+      ? (JSON.parse(readFileSync(measurement, "utf8")) as {
+          target: number;
+          made: number;
+          removalMs: number;
+          removed: boolean;
+        }[])
+      : [];
+    const last = steps.at(-1) ?? { removalMs: 0 };
+    rmSync(root, { recursive: true, force: true });
+
+    expect(output).toContain(`${STEPS} pass`);
+    expect(run.exitCode).toBe(0);
+    // Every tree is the size its step asked for: a host that could not make it inside the making
+    // bound fails here, by name, rather than on a removal too small to outlast five seconds.
+    expect(steps.map((step) => step.made)).toEqual(steps.map((step) => step.target));
+    expect(steps.filter((step) => !step.removed)).toEqual([]);
+    expect(last.removalMs).toBeGreaterThan(OUTLAST_MS);
+    expect(last.removalMs).toBeLessThan(MARGIN_MS);
+  }, 600_000);
 });
 
 /**

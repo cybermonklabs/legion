@@ -29,12 +29,15 @@
  *
  * It writes <out>/labels.jsonl: one row for each comment, oldest first. Stdout gets the counts.
  * Stdout names no person and quotes no comment, so a pull request can carry it as printed. The
- * file is written only when every comment has a label: the rows go to a temporary file in <out>,
- * which is renamed to labels.jsonl, so a failed run leaves an earlier labels.jsonl as it was. A
- * comment that gets no label fails the run (exit 1) and stderr names it. Exit 2 is a refusal
- * before any read: a bad argument, an --out inside a git or jj checkout, or no Dispatch.
+ * file is written only when every comment has a label: the rows go to a temporary file of this
+ * run's own in <out>, which is linked as labels.jsonl and then removed, so labels.jsonl appears
+ * whole or not at all. A comment that gets no label fails the run (exit 1) and stderr names it.
+ * Exit 2 is a refusal before any read: a bad argument, an --out inside a git or jj checkout, no
+ * Dispatch, or a labels.jsonl an earlier run left in <out>, which is named and never removed or
+ * replaced.
  */
-import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { linkSync, lstatSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Comment } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -504,8 +507,13 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
 
   const out = path.resolve(args.out);
   const file = path.join(out, "labels.jsonl");
-  // In the same directory as labels.jsonl, so the rename replaces it in one step.
-  const partial = path.join(out, `.labels.jsonl.${process.pid}.tmp`);
+  if (lstatSync(file, { throwIfNoEntry: false }) !== undefined)
+    return refuse(
+      `${file} from an earlier run; this one removes and replaces none of it: move it aside to label again`
+    );
+  // In the same directory as labels.jsonl, so the link names the whole file in one step, and named
+  // by this run alone, so the removal below removes this run's file and no other.
+  const partial = path.join(out, `.labels.jsonl.${process.pid}.${randomUUID()}.tmp`);
   try {
     // Made before any read, so a directory that cannot be made stops the run before the model calls.
     mkdirSync(out, { recursive: true });
@@ -553,14 +561,16 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       return 1;
     }
     writeFileSync(partial, rows.map((row) => `${JSON.stringify(row)}\n`).join(""));
-    renameSync(partial, file);
+    // A link refuses a labels.jsonl that appeared since the check above, where a rename would
+    // replace it.
+    linkSync(partial, file);
     for (const line of summary(rows)) io.out(line);
     return 0;
   } catch (error) {
     io.err(`label-comments: ${messageFor(error)}`);
     return 1;
   } finally {
-    // Gone after a rename. Left only by a write or rename that failed.
+    // This run's own temporary file, linked as labels.jsonl or left by a write or link that failed.
     rmSync(partial, { force: true });
   }
 }

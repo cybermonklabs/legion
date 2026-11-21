@@ -225,9 +225,11 @@ listening_holders() {
     return 2
   }
   # shellcheck disable=SC2185 # find reads its paths from stdin (-files0-from -), not from argv
-  # `|| exit` keeps find's status and keeps a caller's ERR trap (`set -E`) from firing inside the
-  # substitution for the unreadable entries every walk meets.
-  mapfile -t holders < <(printf '%s\0' "${entries[@]}" | LC_ALL=C find -files0-from - -maxdepth 1 -lname "socket:\\[$inodes\\]" 2>"$err" || exit)
+  # `|| exit "$?"` ends the substitution with find's status, which the wait below reads, and keeps a
+  # caller's ERR trap (`set -E`) from firing inside the substitution for the unreadable entries
+  # every walk meets. A bare `exit` would not keep it: in a substitution forked while an EXIT trap
+  # runs, bash (5.2.37) exits with the status the shell is exiting with, not with find's.
+  mapfile -t holders < <(printf '%s\0' "${entries[@]}" | LC_ALL=C find -files0-from - -maxdepth 1 -lname "socket:\\[$inodes\\]" 2>"$err" || exit "$?")
   wait "$!" || status=$?
   complaint=
   [ "$status" = 0 ] || complaint=$(proc_walk_complaint "$err" "$proc") || complaint=
