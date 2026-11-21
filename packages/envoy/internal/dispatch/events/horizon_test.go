@@ -574,6 +574,113 @@ func TestHorizonIsHeldByASessionOnlyOnceItWritesAnEvent(t *testing.T) {
 	}
 }
 
+// An observation reads the event writers after the mark, in the same transaction: an event write
+// that opens between the two reads takes its transaction id after the observer's, and so draws
+// its event id after the mark's snapshot, above the mark's newest id. Read the other way round,
+// the writers' read would find no writer, and the mark would then see an event committed above
+// the write's open id and prove it at once, so a reader would pass the open id for good. Here the
+// observation waits between its two reads on an advisory lock the test holds, while the test opens
+// an event write and commits a higher event; the horizon must stay below the open id.
+func TestAnObservationReadsTheEventWritersAfterItsMark(t *testing.T) {
+	database := storetest.Open(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	before := commitHorizonEvent(ctx, t, database)
+	gate, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the gate: %v", err)
+	}
+	t.Cleanup(func() { _ = gate.Rollback(context.Background()) })
+	if _, err := gate.Exec(ctx, `select pg_advisory_xact_lock($1)`, pausedObservationLock); err != nil {
+		t.Fatalf("take the gate's lock: %v", err)
+	}
+	db := &pausedHorizonDB{HorizonDB: database.Pool}
+	db.armed.Store(true)
+	horizon := NewHorizon(db)
+	type answer struct {
+		safe int64
+		err  error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		safe, err := horizon.Safe(ctx)
+		answered <- answer{safe, err}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for waiting := false; !waiting; {
+		if err := database.Pool.QueryRow(ctx, `select exists (select 1 from pg_locks where locktype = 'advisory' and not granted)`).Scan(&waiting); err != nil {
+			t.Fatalf("read whether the observation waits on the gate: %v", err)
+		}
+		if !waiting && time.Now().After(deadline) {
+			t.Fatal("the observation did not reach the gate between its two reads within 10 s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	writer, _ := openEventWriter(ctx, t, database)
+	open := insertHorizonEvent(ctx, t, writer)
+	committed := commitHorizonEvent(ctx, t, database)
+	if err := gate.Rollback(ctx); err != nil {
+		t.Fatalf("release the gate: %v", err)
+	}
+	got := <-answered
+	if got.err != nil || got.safe >= open {
+		t.Fatalf("Safe of an observation whose two reads an event write opened between = %d, %v; want below the open event %d (the log stood at %d)",
+			got.safe, got.err, open, before)
+	}
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatalf("commit the open event: %v", err)
+	}
+	if safe, err := horizon.Await(ctx); err != nil || safe < committed {
+		t.Fatalf("Await once the write committed = %d, %v; want at least %d", safe, err, committed)
+	}
+}
+
+// pausedObservationLock is the advisory lock key a pausedHorizonDB's observation waits on.
+const pausedObservationLock = 4913
+
+// pausedHorizonDB, once armed, adds one statement to the next observation between its two reads,
+// which waits on the advisory lock pausedObservationLock, and passes every other batch through.
+type pausedHorizonDB struct {
+	HorizonDB
+	armed atomic.Bool
+}
+
+func (db *pausedHorizonDB) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
+	if len(batch.QueuedQueries) != 5 || !db.armed.CompareAndSwap(true, false) {
+		return db.HorizonDB.SendBatch(ctx, batch)
+	}
+	paused := &pgx.Batch{}
+	for index, query := range batch.QueuedQueries {
+		if index == 3 {
+			paused.Queue(`select pg_advisory_xact_lock($1)`, pausedObservationLock)
+		}
+		paused.Queue(query.SQL, query.Arguments...)
+	}
+	return &pausedResults{BatchResults: db.HorizonDB.SendBatch(ctx, paused)}
+}
+
+// pausedResults reads past the added statement's result before the observation's fourth.
+type pausedResults struct {
+	pgx.BatchResults
+	read int
+}
+
+func (r *pausedResults) next() {
+	if r.read++; r.read == 4 {
+		_, _ = r.BatchResults.Exec()
+	}
+}
+
+func (r *pausedResults) Exec() (pgconn.CommandTag, error) {
+	r.next()
+	return r.BatchResults.Exec()
+}
+
+func (r *pausedResults) QueryRow() pgx.Row {
+	r.next()
+	return r.BatchResults.QueryRow()
+}
+
 // The xmax hole on a real Postgres. T2 takes its transaction id first; T takes a higher one
 // and draws the lower event id; T2 draws the higher id and commits. A snapshot taken then has its
 // xmax one past T2's id, the newest completed one, so T's id is not below it and T is missing

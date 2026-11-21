@@ -73,11 +73,18 @@
 // Await whose every observation has failed for ten seconds returns that error to its caller
 // rather than wait on.
 //
-// Each observation consumes one transaction id, which brings anti-wraparound vacuum sooner, and
-// reads pg_locks, which holds each lock-manager partition's lock in shared mode while it copies
-// the lock table. A Horizon observes only when a caller asks it to (Safe, Await) and runs no timer
-// of its own, so a process whose readers are idle observes nothing, and concurrent callers share
-// one observation.
+// Each observation consumes one transaction id, which brings anti-wraparound vacuum sooner. Its
+// read of the event writers (oldestEventWriterSQL) first reads pg_stat_activity, one row per
+// backend of the instance, for the transaction ids this database's backends hold; when none is
+// older than the observer, which is the case whenever no write of this database has been open
+// since before the observation, that is the whole read. Only when one is older does it read
+// pg_locks, once: that copies the whole instance's lock table, each lock-manager partition's lock
+// held in shared mode while it does, so its cost grows with every lock held on the instance. A
+// Horizon observes only when a caller asks it to (Safe, Await): the relay on each dispatch_events
+// notification and, while a gap is open, at once (GapUnproven) or every 10 to 250 ms (GapHeld);
+// a references read since a cursor, the suggestion outcome sweep and the keyword fill on their
+// own reads. It runs no timer of its own, so a process whose readers are idle observes nothing,
+// and concurrent callers share one observation.
 //
 // # Primary only
 //
@@ -165,15 +172,21 @@ const persistedHorizonSQL = `
 // insert takes (RowExclusiveLock or stronger), each with a transaction id it holds, read from its
 // granted ExclusiveLock on that id: one row for each id, so a backend whose insert ran in a
 // savepoint is listed with its top-level id and the savepoint's. The backend reading it is left
-// out. pg_locks shows every backend's locks to every role, which pg_stat_activity's backend_xid
-// does not.
+// out. It reads pg_locks once, so both locks of a backend come from one copy of the lock table:
+// that copy reads each backend's fast-path locks before the main table, and a fast-path lock only
+// ever moves into the main table, so a lock held throughout is never missed. pg_locks shows every
+// backend's locks to every role.
 const eventWritersSQL = `
-	select t.pid, x.transactionid
-	from pg_locks t
-	join pg_locks x on x.pid = t.pid and x.locktype = 'transactionid' and x.mode = 'ExclusiveLock' and x.granted
-	where t.locktype = 'relation' and t.database = (select oid from pg_database where datname = current_database())
-		and t.relation = 'events'::regclass and t.granted and t.pid <> pg_backend_pid()
-		and t.mode in ('RowExclusiveLock', 'ShareUpdateExclusiveLock', 'ShareLock', 'ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock')
+	select pid, transactionid from (
+		select pid, locktype, transactionid, bool_or(locktype = 'relation') over (partition by pid) as writes
+		from pg_locks
+		where granted and pid <> pg_backend_pid() and (
+			locktype = 'transactionid' and mode = 'ExclusiveLock'
+			or locktype = 'relation' and database = (select oid from pg_database where datname = current_database())
+				and relation = 'events'::regclass
+				and mode in ('RowExclusiveLock', 'ShareUpdateExclusiveLock', 'ShareLock', 'ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock'))
+	) l
+	where writes and locktype = 'transactionid'
 `
 
 // StallHolderSQL names the oldest event writer of this database, a backend's or a prepared
@@ -582,24 +595,60 @@ func (h *Horizon) Mark(ctx context.Context) (Mark, error) {
 // transaction, a write to another table, an operator's open session, a transaction in another
 // database) holds no event id: any it draws later is drawn after this read's snapshot, above
 // every id that snapshot sees. That is what lets an observation (take) and WriterFloor pass such a
-// transaction. pg_locks gives the 32-bit id; it is widened against the snapshot's xmax, which no
+// transaction.
+//
+// $1 is the highest transaction id its caller compares the answer with (as text, or null for the
+// observer's own id, pg_current_xact_id_if_assigned). The read first takes the oldest transaction
+// id any backend of this database holds, from pg_stat_activity's backend_xid, which every role
+// can read, and any prepared transaction of this database. Every event writer holds an id at or
+// above it, so when it is above $1 it answers that: every comparison the caller makes with it then
+// comes out as it would with the oldest event writer's own id. Only otherwise does it read the
+// event writers (eventWritersSQL), and pg_locks with them, the one part of the read whose cost
+// grows with the locks held on the whole instance. pg_stat_activity is read fresh here: a
+// transaction caches its first read of it, and neither caller reads it earlier in the transaction.
+// A backend that has taken its transaction id has stored it where pg_stat_activity reads it before
+// any later transaction id is handed out, so an event writer whose id is below the observer's is
+// listed. Ids are 32-bit in both views; each is widened against the snapshot's xmax, which no
 // running id is more than 2^31 from.
 const oldestEventWriterSQL = `
 	with next as (
 		select pg_snapshot_xmax(pg_current_snapshot())::text::numeric as nx
-	), held as (
-		select writer.transactionid::text::numeric as x from (` + eventWritersSQL + `) writer
-		union all
-		select transaction::text::numeric from pg_prepared_xacts where database = current_database()
+	), prepared as (
+		select transaction::text::numeric as x from pg_prepared_xacts where database = current_database()
+	), holder as (
+		select min(` + xidWidenedSQL + `) as oldest
+		from (
+			select backend_xid::text::numeric as x from pg_stat_activity
+			where datid = (select oid from pg_database where datname = current_database())
+				and pid <> pg_backend_pid() and backend_xid is not null
+			union all
+			select x from prepared
+		) held, next
+	), writer as (
+		select min(` + xidWidenedSQL + `) as oldest
+		from (
+			select w.transactionid::text::numeric as x from (` + eventWritersSQL + `) w
+			union all
+			select x from prepared
+		) held, next
 	)
-	select min(x + 4294967296 * (floor(nx / 4294967296)
+	select (case
+		when holder.oldest is null
+			or holder.oldest > coalesce($1::text::numeric, pg_current_xact_id_if_assigned()::text::numeric)
+			then holder.oldest
+		else (select oldest from writer)
+	end)::text
+	from holder
+`
+
+// xidWidenedSQL widens x, a 32-bit transaction id, to the 64-bit id it stands for, against nx, the
+// 64-bit xmax of the statement's snapshot.
+const xidWidenedSQL = `x + 4294967296 * (floor(nx / 4294967296)
 		+ case
 			when x - mod(nx, 4294967296) > 2147483648 then -1
 			when mod(nx, 4294967296) - x > 2147483648 then 1
 			else 0
-		end))::text
-	from held, next
-`
+		end)`
 
 // noEventWriter is what parseOldestEventWriter answers when no event writer is open: above every
 // transaction id, so "every event writer is newer than x" reads oldest > x either way.
@@ -633,8 +682,16 @@ func parseOldestEventWriter(text *string) (uint64, error) {
 // when it stands above the first mark's Newest, which only a reset the horizon has not yet
 // forgotten (Reset) leaves it: the first mark is the newest, and ids only grow until a reset.
 func (h *Horizon) WriterFloor(ctx context.Context, marks ...Mark) (floor int64, ok bool, err error) {
+	var newestMark uint64
+	for _, mark := range marks {
+		newestMark = max(newestMark, mark.Xid)
+	}
+	var compared any
+	if newestMark > 0 {
+		compared = strconv.FormatUint(newestMark, 10)
+	}
 	var oldestText *string
-	if err := h.db.QueryRow(ctx, oldestEventWriterSQL).Scan(&oldestText); err != nil {
+	if err := h.db.QueryRow(ctx, oldestEventWriterSQL, compared).Scan(&oldestText); err != nil {
 		return 0, false, fmt.Errorf("read the oldest transaction that can write the event log: %w", err)
 	}
 	oldest, err := parseOldestEventWriter(oldestText)
@@ -781,7 +838,7 @@ func (h *Horizon) take(ctx context.Context) (horizonObservation, uint64, error) 
 	batch.Queue(`begin`)
 	batch.Queue(`set local synchronous_commit = off`)
 	batch.Queue(markSQL)
-	batch.Queue(oldestEventWriterSQL)
+	batch.Queue(oldestEventWriterSQL, nil)
 	batch.Queue(`commit`)
 	results := h.db.SendBatch(ctx, batch)
 	var newest int64
