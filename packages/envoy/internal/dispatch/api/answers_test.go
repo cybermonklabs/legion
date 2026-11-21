@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 type myAnswerRowRead struct {
@@ -150,6 +151,75 @@ func TestListMyAnswersReturnsOwnAnswersAndRepliesNewestFirst(t *testing.T) {
 	}
 }
 
+// TestListMyAnswersListsAnAnswerStoredInAnotherCase holds both halves of
+// GET /api/v1/me/answers to the one canonicalisation of who a person is (R14) on a row an
+// earlier build stored: such a row keeps the case its login was written in, and no backfill
+// rewrites it, so the read compares the stored login through user_threads_login, as
+// model.CanonicalLogin reads the caller. Alice answers one ask and replies on another, and both
+// rows are then restated under "Alice", in case only, as a build before sign-in lower-cased
+// every login stored them: the answer's ask.answered event in its actor and its answer, and the
+// reply's author. Alice's page lists both.
+func TestListMyAnswersListsAnAnswerStoredInAnotherCase(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Answers stored in another case", "A spec")
+	answeredAsk := createAnswerListAsk(t, handler, issue.Key, "Answered under another case")
+	repliedAsk := createAnswerListAsk(t, handler, issue.Key, "Replied to under another case")
+	if answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+answeredAsk.ID+"/answer",
+		map[string]string{"text": "Alice's answer, stored as an earlier build spelled her login."}, "alice"); answered.Code != http.StatusOK {
+		t.Fatalf("answer the ask: status=%d body=%s", answered.Code, answered.Body.String())
+	}
+	replied := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]string{
+		"ask_id": repliedAsk.ID,
+		"body":   "Alice's reply, stored as an earlier build spelled her login.",
+	}, "alice")
+	if replied.Code != http.StatusCreated {
+		t.Fatalf("write ask reply: status=%d body=%s", replied.Code, replied.Body.String())
+	}
+	reply := decodeBody[model.Comment](t, replied)
+
+	moved, err := database.Pool.Exec(context.Background(),
+		`update events set actor = jsonb_set(actor, '{id}', '"Alice"'),
+		        payload = jsonb_set(payload, '{answer,user}', '"Alice"')
+		 where type = 'ask.answered' and payload->>'id' = $1`, answeredAsk.ID)
+	if err != nil {
+		t.Fatalf("store the answer under \"Alice\": %v", err)
+	}
+	if moved.RowsAffected() != 1 {
+		t.Fatalf("restated %d ask.answered event(s) of ask %s, want the one the answer appended", moved.RowsAffected(), answeredAsk.ID)
+	}
+	if moved, err := database.Pool.Exec(context.Background(),
+		`update comments set author = jsonb_set(author, '{id}', '"Alice"') where id = $1`, reply.ID); err != nil {
+		t.Fatalf("store the reply under \"Alice\": %v", err)
+	} else if moved.RowsAffected() != 1 {
+		t.Fatalf("restated %d comment(s) with id %s, want the reply", moved.RowsAffected(), reply.ID)
+	}
+
+	answers := getMyAnswers(t, handler, "alice", "")
+	var replies, answersToAsk int
+	for _, row := range answers.Rows {
+		switch {
+		case row.Kind == "reply" && row.Reply != nil && row.Reply.ID == reply.ID:
+			replies++
+		case row.Kind == "answer" && row.AskID == answeredAsk.ID:
+			answersToAsk++
+		}
+	}
+	// Each half is held on its own, so a read that drops one half's rows names that half, and the
+	// counts are held apart from both: the total, and the rows the page lists.
+	if replies != 1 {
+		t.Errorf("alice's answers = %#v, want her one reply %s, stored under \"Alice\" by an earlier build", answers, reply.ID)
+	}
+	if answersToAsk != 1 {
+		t.Errorf("alice's answers = %#v, want her one answer to ask %s, stored under \"Alice\" by an earlier build", answers, answeredAsk.ID)
+	}
+	if answers.Total != 2 {
+		t.Errorf("alice's answers hold %d row(s) in total, want 2: her one reply and her one answer", answers.Total)
+	}
+	if len(answers.Rows) != 2 {
+		t.Errorf("alice's answers list %d row(s) on the page, want 2: her one reply and her one answer", len(answers.Rows))
+	}
+}
+
 func TestListMyAnswersIncludesDocumentAnswers(t *testing.T) {
 	handler := newTestHandler(t)
 	if created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -263,5 +333,27 @@ func TestListMyAnswersMarksAChangedAnswerAsNoLongerCurrent(t *testing.T) {
 	}
 	if earlier.Answer == nil || earlier.Answer.Selected[0] != "Ship" || earlier.Current {
 		t.Fatalf("earlier answer row = %#v, want replaced Ship", earlier)
+	}
+}
+
+// TestUserThreadsLoginReadsALoginAsCanonicalLoginDoes holds the one canonicalisation of who a
+// person is (R14) on the SQL side: user_threads_login, which both halves of
+// GET /api/v1/me/answers compare a stored author by (api/answers.go), lowercases a login and
+// trims the ASCII white space around it, as model.CanonicalLogin reads the caller in Go. Every
+// sign-in path stores a login in that form already (identity.HeaderIdentity, the dev sign-in and
+// the sign-in rules), so no writer stores "Alice " and the answers tests above write the logins
+// people sign in with, TestListMyAnswersListsAnAnswerStoredInAnotherCase restating its rows in
+// the case alone, as an earlier build stored them; the trim is the function's own, and it is held
+// here, on the function alone.
+func TestUserThreadsLoginReadsALoginAsCanonicalLoginDoes(t *testing.T) {
+	database := storetest.Open(t)
+	for _, login := range []string{"alice", "Alice ", " ALICE@Example.COM\t", "\n\v\f\ralice\r\n"} {
+		var read string
+		if err := database.Pool.QueryRow(context.Background(), `select user_threads_login($1)`, login).Scan(&read); err != nil {
+			t.Fatalf("user_threads_login(%q): %v", login, err)
+		}
+		if want := model.CanonicalLogin(login); read != want {
+			t.Errorf("user_threads_login(%q) = %q, want %q, the login model.CanonicalLogin reads", login, read, want)
+		}
 	}
 }

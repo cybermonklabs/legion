@@ -25,7 +25,7 @@ import (
 
 func newInteractionHandler(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database, _ := newInteractionDeps(t, makeDocs)
+	handler, database, _, _ := newInteractionServer(t, makeDocs)
 	return handler, database
 }
 
