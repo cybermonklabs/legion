@@ -474,6 +474,38 @@ func TestAFailedDialIsLabelledConnect(t *testing.T) {
 	}
 }
 
+// A dial of a fresh name's connection is bounded by the caller's context, even when the dialer
+// ignores it, as natsauth's connect does: the boot stops when its context ends, names op connect,
+// and the connection that arrives late is closed, never kept.
+func TestADialEndsWithItsContext(t *testing.T) {
+	pool := migratedPool(t)
+	cutover(t, pool, consumernames.CutoverDone)
+	js, _, _ := freshJetStream(t)
+	logs := &lockedBuffer{}
+	spec := freshSpec(t, logs, js)
+	late := make(chan *nats.Conn, 1)
+	connect := spec.Connect
+	spec.Connect = func(_ context.Context, name string) (*nats.Conn, error) {
+		time.Sleep(2 * time.Second)
+		conn, err := connect(context.Background(), name)
+		late <- conn
+		return conn, err
+	}
+	bounded, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	began := time.Now()
+	_, err := OpenConsumers(bounded, js, pool, spec)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("OpenConsumers with a dial slower than its context = %v, want the context's deadline", err)
+	}
+	if waited := time.Since(began); waited > time.Second {
+		t.Fatalf("OpenConsumers returned after %s, want it at its context's deadline, not the dial's end", waited)
+	}
+	oneErrorLine(t, logs, dispatchConsumerName(spec.Project), operationConnect)
+	conn := <-late
+	testwait.Eventually(t, "the late connection closed", func() bool { return conn != nil && conn.IsClosed() })
+}
+
 // The fixed-name spy (`TestNoConsumerNameIsCreatedTwice`): across a project's first boot, a second
 // boot, a repositories change, a consumer deleted outside the daemon and the boot that makes it
 // again, and two daemons booting at once on one database and stream, the server is sent no create

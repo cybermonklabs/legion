@@ -216,7 +216,8 @@ type ConsumerSpec struct {
 	// URLs, its user and its reconnect policy). On fresh names every call on a physical consumer
 	// name goes on a connection of that name's own, named GenerationConnection(physical), which the
 	// auth service may grant exactly that consumer (durable_names.go); fresh names refuse a spec
-	// with none. Fixed names never call it.
+	// with none. Connect may ignore ctx: the consumers stop waiting for a dial when their context
+	// ends and close the connection it makes late. Fixed names never call it.
 	Connect func(ctx context.Context, name string) (*nats.Conn, error)
 }
 

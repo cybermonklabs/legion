@@ -185,7 +185,7 @@ func (d *durableNames) on(ctx context.Context, physical string) (jetstream.JetSt
 		return nil, fmt.Errorf("consumer %s is no fresh name, which no generation's connection is granted", physical)
 	}
 	name := GenerationConnection(physical)
-	conn, err := d.connect(ctx, name)
+	conn, err := d.dial(ctx, name)
 	if err != nil {
 		return nil, &readFailure{op: operationConnect, physical: physical, err: fmt.Errorf("connect %s: %w", name, err)}
 	}
@@ -202,6 +202,32 @@ func (d *durableNames) on(ctx context.Context, physical string) (jetstream.JetSt
 	}
 	d.generations[physical] = js
 	return js, nil
+}
+
+// dial opens the connection named name with ConsumerSpec.Connect, and stops waiting for it when
+// ctx ends, since a dialer may ignore its context (natsauth's connect is bounded only by nats.go's
+// own timeout): a connection that arrives after that is closed, never kept.
+func (d *durableNames) dial(ctx context.Context, name string) (*nats.Conn, error) {
+	type dialled struct {
+		conn *nats.Conn
+		err  error
+	}
+	done := make(chan dialled, 1)
+	go func() {
+		conn, err := d.connect(ctx, name)
+		done <- dialled{conn, err}
+	}()
+	select {
+	case got := <-done:
+		return got.conn, got.err
+	case <-ctx.Done():
+		go func() {
+			if late := <-done; late.conn != nil {
+				late.conn.Close()
+			}
+		}()
+		return nil, ctx.Err()
+	}
 }
 
 // keep closes the connection of every name of logical but current's.
