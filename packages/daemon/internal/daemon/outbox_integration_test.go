@@ -3,8 +3,6 @@ package daemon
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -219,15 +217,6 @@ func outboxRows(t *testing.T, pool *store.Pool) int {
 func isolatedOutboxPool(t *testing.T) *store.Pool {
 	t.Helper()
 	return store.NewPool(testpg.ClonePool(t, "legion_outbox_test"))
-}
-
-func outboxSuffix(t *testing.T) string {
-	t.Helper()
-	var bytes [8]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		t.Fatalf("random database suffix: %v", err)
-	}
-	return hex.EncodeToString(bytes[:])
 }
 
 type blockingDispatch struct {
