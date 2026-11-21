@@ -2,7 +2,13 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { connect, createInbox, Events, headers, type Msg, type NatsConnection, nkeys } from "nats";
 import { createConsumerDelivery, deliverSubject, RelayHeader } from "../consumer-delivery";
 import { natsAuthOptions } from "../nats-auth";
-import { type NatsServer, startNatsServerWithConfig, useNatsServerDirectory } from "./nats-server";
+import {
+  NATS_START_HOOK_MS,
+  NATS_STOP_MS,
+  type NatsServer,
+  startNatsServerWithConfig,
+  useNatsServerDirectory,
+} from "./nats-server";
 
 /** nats.js types its `nkeys` export `any`. */
 const testKeys: { createUser(): { getSeed(): Uint8Array; getPublicKey(): string } } = nkeys;
@@ -22,13 +28,19 @@ const token = () =>
  *  `<inbox>.<session id>.<token>`. */
 const sessionReply = () => `${createInbox()}.${SESSION}.${token()}`;
 
-/** Polls `holds` every 20 ms until it is true, failing with `what` after `within` ms. The answers
- *  and the server's refusals cross a real socket from a real server, so there is no clock to fake;
- *  the wait is on the condition itself, never a fixed sleep. */
-async function waitFor(holds: () => boolean, within: number, what: string): Promise<void> {
-  const deadline = Date.now() + within;
+/** The row's bound, as the row writes it. Its waits give up 5 s inside it, so a wait that gives up
+ *  fails naming what it waited for rather than as the row's timeout. */
+const ROW_MS = 60_000;
+
+/** Polls `holds` every 20 ms until it is true, failing with `what` at `deadline` (a
+ *  `performance.now()` reading). The answers and the server's refusals cross a real socket from a
+ *  real server, so there is no clock to fake; the wait is on the condition itself, never a fixed
+ *  sleep, and its only bound is the row's. */
+async function waitFor(holds: () => boolean, deadline: number, what: string): Promise<void> {
   while (!holds()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    if (performance.now() > deadline) {
+      throw new Error(`timed out waiting for ${what}, ${ROW_MS / 1000 - 5} s into the row`);
+    }
     await Bun.sleep(20);
   }
 }
@@ -64,13 +76,15 @@ authorization {
 }
 `
     );
-  }, 120_000);
+  }, NATS_START_HOOK_MS);
+  // The connections' closes, in the 60 s this hook had before, and then the container's removal.
   afterAll(async () => {
     for (const connection of open) await connection.close();
     server?.stop();
-  }, 60_000);
+  }, 60_000 + NATS_STOP_MS);
 
   test("answers a frame and a probe asked on its own reply prefix, and nothing else gets out", async () => {
+    const deadline = performance.now() + ROW_MS - 5_000;
     const session = await connect({
       servers: [server.url],
       name: "session-reply-grant",
@@ -145,7 +159,7 @@ authorization {
     probe(ownProbe);
     await waitFor(
       () => answersOn(ownFrame).length === 2 && answersOn(ownProbe).length === 1,
-      10_000,
+      deadline,
       `received and done on ${ownFrame} and done on ${ownProbe}`
     );
     expect(answersOn(ownFrame)).toEqual(["received", "done"]);
@@ -158,7 +172,7 @@ authorization {
     const plainProbe = createInbox();
     frame(2, counterFrame);
     probe(plainProbe);
-    await waitFor(() => refusals.length === 3, 10_000, "the server's three refusals");
+    await waitFor(() => refusals.length === 3, deadline, "the server's three refusals");
     await session.flush();
     await requester.flush();
     expect(refusals).toEqual([

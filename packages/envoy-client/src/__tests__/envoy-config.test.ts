@@ -1245,20 +1245,40 @@ describe("a ! command in envoy.json", () => {
     return readdirSync(scratch);
   }
 
-  /** Whether the process with this pid is gone within a second: a killed orphan is a zombie until
-   * the process it was reparented to reaps it, and `kill(pid, 0)` still answers for a zombie. */
-  function gone(pid: number): boolean {
-    for (const deadline = Date.now() + 1_000; Date.now() < deadline; Bun.sleepSync(20)) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        return true;
-      }
+  /** The bound of the two rows below that wait for a killed process to end, as each writes it. */
+  const KILL_ROW_MS = 20_000;
+
+  /** Whether the process with this pid still runs: `kill(pid, 0)` answers, and it is no zombie. A
+   * killed orphan is a zombie until the process it was reparented to reaps it, which a loaded host
+   * can put off past any fixed wait, and a zombie runs nothing, so it has ended. Where `/proc`
+   * cannot be read, `kill(pid, 0)` alone answers. */
+  function running(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return false;
     }
-    return false;
+    let stat: string;
+    try {
+      stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+    } catch {
+      return true;
+    }
+    return stat.charAt(stat.lastIndexOf(")") + 2) !== "Z";
+  }
+
+  /** Whether the process with this pid has ended by `deadline` (a `performance.now()` reading): the
+   * kernel delivers a SIGKILL when it schedules the process, so the wait is on the fact, bounded
+   * only by the row's own bound less 2 s. */
+  function gone(pid: number, deadline: number): boolean {
+    for (; running(pid); Bun.sleepSync(20)) {
+      if (performance.now() > deadline) return false;
+    }
+    return true;
   }
 
   test("that exits 0 is its value at once, and a process it left running is killed", () => {
+    const deadline = performance.now() + KILL_ROW_MS - 2_000;
     const home = tempDir();
     const env = commandEnvironment(home);
     const pidFile = path.join(home, "child.pid");
@@ -1285,11 +1305,12 @@ describe("a ! command in envoy.json", () => {
     expect(elapsed).toBeLessThan(2_000);
     const child = Number(readFileSync(pidFile, "utf-8").trim());
     expect(child).toBeGreaterThan(0);
-    expect(gone(child)).toBe(true);
+    expect(gone(child, deadline)).toBe(true);
     expect(left).toEqual([]);
   }, 20_000);
 
   test("still running after 10 s is an error naming the field and the file, and every process it started is killed", () => {
+    const deadline = performance.now() + KILL_ROW_MS - 2_000;
     const home = tempDir();
     const env = commandEnvironment(home);
     const pidFile = path.join(home, "child.pid");
@@ -1313,7 +1334,7 @@ describe("a ! command in envoy.json", () => {
       notice: null,
       error: `${file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
     });
-    expect(gone(Number(readFileSync(pidFile, "utf-8").trim()))).toBe(true);
+    expect(gone(Number(readFileSync(pidFile, "utf-8").trim()), deadline)).toBe(true);
     expect(left).toEqual([]);
   }, 20_000);
 
