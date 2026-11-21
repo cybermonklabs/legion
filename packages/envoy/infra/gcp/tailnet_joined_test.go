@@ -2,6 +2,7 @@ package gcp_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,6 +40,14 @@ type joinedHarness struct {
 
 func newJoinedHarness(t *testing.T) *joinedHarness {
 	t.Helper()
+	// The script waits in a loop until jq reads Running, and sleep is stubbed, so a jq, or a wc or
+	// sed of the docker stub, missing here would loop with no end: the package would hang until go
+	// test's limit and name no tool. Container-Optimized OS ships jq on the VM.
+	for _, tool := range []string{"jq", "wc", "sed"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Fatalf("%s is not on PATH; the joined script and its docker stub run it, and this test fails rather than skips", tool)
+		}
+	}
 	var doc gcp.CloudConfig
 	require.NoError(t, yamlUnmarshalGolden(t, &doc))
 	h := &joinedHarness{
