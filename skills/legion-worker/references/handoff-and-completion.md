@@ -12,7 +12,7 @@ A handoff is never a commit and never a result: what you ran is a result you rec
 
 ## When your phase ends
 
-The workspace is read-only for you from the moment your phase ends, whether you ended it by completing or another role's move ended it while your turn ran: no commit, no `jj new`, no edit to a tracked file, in the turn still running when you learn it ended and in every turn after it, until a new task names your phase. Nothing stops that turn for you, so stopping is yours to do: drop the work in hand by restoring each tracked file you changed and did not commit (`jj -R "$LEGION_WORKSPACE" restore <paths>`), so `@` holds none of your edits for the next role. Two writes are the exception: that restore, and the forward merge a merge-forward message asks of the implementer.
+The workspace is read-only for you from the moment your phase ends, whether you ended it by completing or another role's move ended it while your turn ran: no commit, no `jj new`, no edit to a tracked file, in the turn still running when you learn it ended and in every turn after it, until a new task names your phase. Nothing stops that turn for you, so stopping is yours to do: write nothing more in the workspace, and leave what you did not commit as it is. Where that leaves edits to tracked files, send the role that holds the phase one message (`envoy_publish` to its role topic) that names each path and the change id of `@`, which `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph --ignore-working-copy -T 'change_id.short()'` prints (a read that snapshots nothing). One write is the exception: the forward merge a merge-forward message asks of the implementer.
 
 ## A refused completion
 

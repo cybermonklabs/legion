@@ -5,9 +5,9 @@ architect holds its role, else the nearest one above that does. A `catch-up` rea
 architect of its own issue. A `child-status` or `child-closed`, and a `worker-died` or
 `worker-stalled` about a child's own architect, reach the architect above the child. Your role
 prompt describes each notice except `worker-stalled`, `worker-silent`, `worker-background-stalled`,
-`volume-near-full`, `child-release-stalled` and `child-not-recorded`. "Section N" is that section
-of `skill://legion-architect`. Where a row says to ask a person, a child's own architect sends the
-question to the architect above it.
+`volume-near-full`, `session-lost`, `session-forgotten`, `child-release-stalled` and
+`child-not-recorded`. "Section N" is that section of `skill://legion-architect`. Where a row says
+to ask a person, a child's own architect sends the question to the architect above it.
 
 | Wake | What to do |
 | --- | --- |
@@ -22,9 +22,9 @@ question to the architect above it.
 | `pr-merged` | Merged, not closed: it waits to reach `merging`, or for the issues beneath it. Start nothing. |
 | `pr-closed-unmerged` | Decide whether the work reopens, restarts (`park_child` then `rerun_child`) or ends, and give the reason. A child's own architect cannot park or rerun its own issue (`ISSUE_NOT_OWNED`), so it sends a restart of its issue to the architect above it. A phase worker makes the repository change. |
 | `pull-request-missing` | Tell the implementer to open the pull request from the branch the reason names. |
-| `child-status`, `child-closed`, `child-release-stalled`, `child-not-recorded` | Read `skill://legion-architect/references/wake-routing-children.md` when one of these reaches you. |
+| `child-status`, `child-closed`, `child-release-stalled`, `child-not-recorded` | Read `skill://legion-architect/references/wake-routing-children.md`. |
 | `children-first` | Release every child that should run. Park a child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the child. A released child, a held one included, stays under the parent, because the parent's wait ends when that child leaves the workflow. Move out from under the parent only a child you have not released and that should not run now. Move it under another issue you own (the root's architect owns every issue of the tree, a child's architect its own issue and the issues under it) that has started a phase and has not reached `accepting`, and never under an issue it waits on. After the move, ask the person on the root (`dispatch ask`) when that child's work should run or stop: release it when they say to run it; when they say to stop it, close it, or move it to `icebox` under the rule when they say its work should wait, citing their answer. Until they answer, sign off neither the issue you moved it under nor any issue above it that you accept. Never give such a child the `legion` label, and never clear its parent while the tree is live: the daemon admits an orphan as a root of its own only when its tree is not live, so such a child would run nowhere. Where you own no issue to move the child under, ask the person. A `blocked_by` link up the parent chain: ask a person to remove it. |
-| `worker-died`, `worker-stalled`, `worker-silent`, `worker-background-stalled`, `volume-near-full` | Read `skill://legion-architect/references/wake-routing-workers.md` when one of these reaches you. |
+| `worker-died`, `worker-stalled`, `worker-silent`, `worker-background-stalled`, `volume-near-full`, `session-lost`, `session-forgotten` | Read `skill://legion-architect/references/wake-routing-workers.md`. |
 | `held` | No `reason`: answer the `worker-died` that comes with it. `reason: "escalated"`: the controller has it; start nothing. Your `retry` is not the only release: a `todo` written on a held root by a person in the Dispatch dashboard, by the controller's `set_status` or by an operator's `legion issue status` releases the hold the same way, so an issue you left held may be working that phase again when you next read it. |
 | `message-refused` | Post what a person still needs yourself. Where Dispatch refused the status itself, ask a person to set it. |
 | `status-reasserted` | A session outside the tree wrote a status on the root, and the daemon set it back. Ask a person when it reads as a wish to stop the tree. |

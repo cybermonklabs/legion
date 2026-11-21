@@ -19,4 +19,5 @@ Your own tasks, notices and `tick` still run.
 
 The notice names who ended the pause, and when.
 The daemon launches each role the pause held something for at its wake pacing, never all at once, and the other stopped roles wait for their next wake.
-Read `read_state`, and handle each wake by its row in `wakes.md` as it arrives: the pause held none of yours, and the resume sends you no wake but this notice.
+Read `read_state`, and handle each wake by its row in `wakes.md` as it arrives: the pause held none of yours.
+The resume also runs one admission pass, which the pause held back: it can send you `slot-free` for a slot it leaves free, and `unslotted` or `tree-stalled` for what it finds.

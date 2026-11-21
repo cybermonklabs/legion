@@ -1,7 +1,8 @@
 # Wake routing: worker and pod wakes
 
-Read this when a `worker-died`, `worker-stalled`, `worker-silent`, `worker-background-stalled` or
-`volume-near-full` wake reaches you. "Section N" is that section of `skill://legion-architect`.
+Read this when a `worker-died`, `worker-stalled`, `worker-silent`, `worker-background-stalled`,
+`volume-near-full`, `session-lost` or `session-forgotten` wake reaches you. "Section N" is that
+section of `skill://legion-architect`.
 
 | Wake | What to do |
 | --- | --- |
@@ -10,3 +11,4 @@ Read this when a `worker-died`, `worker-stalled`, `worker-silent`, `worker-backg
 | `worker-silent` | The daemon already sent the work again: read the issue's record with `read_record` to see where the phase stands, and start nothing. Where an operator's suspension holds the claim, ask the operator to resume it, and message the role on its topic (`envoy_publish`) where its phase cannot wait. |
 | `worker-background-stalled` | Read what the session waits on, and judge by that, never by how long the work has run: the daemon cannot tell a job that hung from a long one. A job waiting on a surface that does not exist, or on a person, needs your decision; a build or a test run does not. Read the issue's record with `read_record` for where the phase stands, then leave the work to finish or message the role on its topic (`envoy_publish`) with what you decide. |
 | `volume-near-full` | The issue volume stayed above its low mark after a cache sweep; read the issue and pod it names. Cold bytes are what a `sizes` entry counts in `bytesOverHour` (files unchanged for more than an hour); warm bytes are the rest of its `bytes`. Mostly cold bytes in `scratch/tmp` or a workspace: ask the pod's roles on their topics to delete by exact path what they made and no longer need. Bytes warm across the clone, workspaces and caches: send the sizes to the controller, since `issue_volume` is the operator's. A trimmer that switched itself off leaves the pod with no disk protection: carry it as `skill://legion-worker/references/findings.md` says. |
+| `session-lost`, `session-forgotten` | The worker lost its recorded session (`session-forgotten`: forgot it, because its pod's launcher is older than the daemon's release and could not look the session up by its id). It runs a fresh agent that has read none of its own earlier turns; only what it pushed and committed survives. Nothing of the issue moves and nothing is held, so start nothing. Tell the worker anything only you know with `envoy_publish` to its role topic, as after a `retry`. |

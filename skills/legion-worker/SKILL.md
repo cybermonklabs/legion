@@ -27,7 +27,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
   - a pushing role whose second push still did not carry the pull request onto its commit.
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with the issue, phase, verified observation, what you tried and the decision needed, then go on. A human-only to-do is a `dispatch ask`.
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/pr-body.md#when-no-surface-reaches-the-changed-path`).
-- A released pod is not a stop. Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
+- A released pod is not a stop. Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives, except on a volume the deployment keeps (`skill://legion-worker/references/shared-workspace.md`).
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
 
 ## References

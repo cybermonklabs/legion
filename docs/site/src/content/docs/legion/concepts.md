@@ -468,14 +468,16 @@ Legion uses GitHub's own review mechanisms rather than labels:
   and the conflict rounds left out.
 - Each move back is counted by its kind, as the pair `<from>-<to>` —
   `testing-implementing`, `reviewing-implementing`, `merging-implementing` and the other eighteen —
-  beside the round count, and a conflict round raises no pair.
+  beside the round count. A move back made while the record holds the head conflicting with its
+  base raises no pair.
   `GET /legion/v1/state` serves the counts as `workers.implementer.backwardMoves`, left out for an
   issue that has had no move back.
 - **Hooks** put a deployment's own words in front of the workers on a move back. A hook is an
   entry of `hooks:` in [legion.yaml](/legion/legion/running-legion/#legionyaml): the moves it
   selects, how many of them fire it, the roles it writes to, and the words. A move back the hook
   selects fires it when the counts of the moves it selects, added up, are then a whole multiple
-  of that number. The daemon writes the words to each role the hook names, between its own
+  of that number; a move back made while the head conflicts with its base fires none. The daemon
+  writes the words to each role the hook names, between its own
   header — the hook and the move — and its own counts of the moves back, and posts
   `Legion hook <name> fired at <N> moves back: <from> to <to>. Prompted: <role>, <role>.` on the
   issue. It gates nothing: the phase the move opened starts its worker whether a hook fired or
