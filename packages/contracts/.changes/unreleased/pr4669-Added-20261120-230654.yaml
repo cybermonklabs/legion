@@ -1,0 +1,5 @@
+kind: Added
+body: 'The description of `PATCH /api/v1/projects/{key}/access` names what a switch to private now answers: 409 SLACK_CHANNEL_SHARED while another private project lists one of its Slack channels, the channels'' time it starts, 409 PRIVATE_PROJECTS_UNAVAILABLE unless every hub that serves private projects admits Dispatch when the switch proves it, and 409 LOCK_TIMEOUT naming the owner-row or slack-channel lock a PATCH did not take within 60 s.'
+time: 2026-11-20T23:06:54.893371736Z
+custom:
+    Issue: pr4669

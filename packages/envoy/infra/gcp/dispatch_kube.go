@@ -795,6 +795,9 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if len(s.privateProjects) > 0 {
 		appEnv = append(appEnv, valueEnv("DISPATCH_PRIVATE_PROJECTS", strings.Join(s.privateProjects, ",")))
 	}
+	if len(s.privateHubs) > 0 {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PRIVATE_HUBS", strings.Join(s.privateHubs, ",")))
+	}
 	if s.appClientID != "" {
 		// The App key is one key of a Kubernetes Secret this component never creates: it exists at
 		// run time (GKE SecretSync), so the Deployment does not wait on it.
@@ -868,6 +871,9 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		// The profiler binds 127.0.0.1 inside the pod, so no Service or NetworkPolicy changes:
 		// an operator reaches it through kubectl port-forward.
 		appEnv = append(appEnv, valueEnv("DISPATCH_PPROF_PORT", strconv.Itoa(s.pprofPort)))
+	}
+	if err := dispatchHubsNeedTheirToken(appEnv); err != nil {
+		return err
 	}
 	// cloud-sql-proxy serves its health endpoints on 9801 (--health-check): /startup once its
 	// listener is up, which gates envoy-dispatch's start, and /liveness while the process answers,
@@ -953,6 +959,26 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		ingressFrom(core.DefaultListenerPort, networkingv1.NetworkPolicyPeerArray{podPeer(s.hostname)}),
 	}); err != nil {
 		return err
+	}
+	return nil
+}
+
+// dispatchHubsNeedTheirToken refuses, at preview, an app environment that names hubs to prove
+// (DISPATCH_PRIVATE_HUBS) and no token to prove them with (DISPATCH_HUB_ADMISSION_TOKEN_FILE): the
+// pair Dispatch's own boot refuses (resolveBootConfig), caught here before an apply replaces the
+// running pod with one that cannot start. It reads the environment as assembled, not an input, so it
+// holds whichever change renders the token's mount and its variable.
+func dispatchHubsNeedTheirToken(env corev1.EnvVarArray) error {
+	named := map[string]bool{}
+	for _, entry := range env {
+		if variable, ok := entry.(corev1.EnvVarArgs); ok {
+			if name, ok := variable.Name.(pulumi.String); ok {
+				named[string(name)] = true
+			}
+		}
+	}
+	if named["DISPATCH_PRIVATE_HUBS"] && !named["DISPATCH_HUB_ADMISSION_TOKEN_FILE"] {
+		return core.InputErrorf("privateHubs", "privateHubs renders DISPATCH_PRIVATE_HUBS, and this render mounts no hub-admission token and sets no DISPATCH_HUB_ADMISSION_TOKEN_FILE: Dispatch refuses to start with hubs to prove and no token to prove them with")
 	}
 	return nil
 }

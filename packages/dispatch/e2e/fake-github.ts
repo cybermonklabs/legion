@@ -105,6 +105,18 @@ interface FakeRepo {
   /** A repository Dispatch's App is not installed on: every read of it answers, but the
    *  installation lookup is GitHub's 404, so the server can reach no token for it. */
   readonly installation_missing?: boolean;
+  /** GitHub's id of the repository, which the repository read answers as `id`; repositoryId's
+   *  fixed number for its name when unset, so a seed gets the same id on every run. */
+  readonly id?: number;
+}
+
+/** A repository's id when its fixture names none: a number fixed by its full name, the same on
+ *  every run, so a server that records a repository's id at a write and compares it later reads
+ *  one id for one name. */
+function repositoryId(fullName: string): number {
+  const hasher = new Bun.CryptoHasher("sha1");
+  hasher.update(fullName);
+  return Number.parseInt(hasher.digest("hex").slice(0, 8), 16) + 1;
 }
 
 /** Deterministic commit sha for a repository's current files. */
@@ -448,12 +460,15 @@ const server = Bun.serve({
       if (!request.headers.get("Authorization")?.startsWith("Bearer ghs_fake_")) {
         return Response.json({ message: "Requires authentication" }, { status: 401 });
       }
-      if (!repos.has(`${repository[1]}/${repository[2]}`)) {
+      const fullName = `${repository[1]}/${repository[2]}`;
+      const seeded = repos.get(fullName);
+      if (seeded === undefined) {
         return Response.json({ message: "Not Found" }, { status: 404 });
       }
       return Response.json({
-        default_branch: repos.get(`${repository[1]}/${repository[2]}`)?.default_branch ?? "main",
-        full_name: `${repository[1]}/${repository[2]}`,
+        default_branch: seeded.default_branch ?? "main",
+        full_name: fullName,
+        id: seeded.id ?? repositoryId(fullName),
       });
     }
 

@@ -382,8 +382,8 @@ A project can be made private only once the deployment has provisioned it.
 `DISPATCH_PRIVATE_PROJECTS` holds, comma-separated, the keys of the projects whose private
 namespace, stores and grants the deployment has made; on a deployment built by `envoy-infra`'s
 `gcp:Dispatch`, the component's `privateProjects` input, a list of keys, renders it. An entry that
-is not a project key, the old value `1` included, stops the start. Unset or empty, no project can
-be made private.
+is not a project key, the old value `1` included, is ignored, and Dispatch logs an ERROR line
+naming it at start. Unset or empty, no project can be made private.
 
 The owner switches a project private on its Access tab
 (`PATCH /api/v1/projects/{key}/access` with `{"visibility": "private"}`), and Dispatch checks, in
@@ -400,16 +400,24 @@ this order:
    that names another project, which a person compares with its row),
    `envoy-dispatch backfill-session-projects` until the sessions' projects are filled, and
    `envoy-dispatch scrub-access-events` until the stored access events are scrubbed.
-5. Last, in the same transaction, Dispatch writes the project's key in the hub's
-   `envoy_private_projects` bucket, the record by which Envoy's listeners are to hold the
-   project's messages back from a token that does not list it. When the hub refuses that write,
-   as a hub without its auth service does, or Dispatch has no bus to write it to, the switch is
-   `409 PRIVATE_PROJECTS_UNAVAILABLE` and nothing changes. This release of Dispatch has no writer
-   of that bucket, so every switch that passes steps 1 to 4 is
-   `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project can be made private until a release carries the
-   writer.
+5. Another private project that lists one of the project's Slack channels makes the switch
+   `409 SLACK_CHANNEL_SHARED`, naming that project only to a caller who sees it.
+6. Last, in the same transaction, Dispatch proves that every hub `DISPATCH_PRIVATE_HUBS` names
+   admits it through its auth service, presenting the token `DISPATCH_HUB_ADMISSION_TOKEN_FILE`
+   holds, and that every listener replica reads the private projects. The proof writes nothing:
+   every listener reads which projects are private, and their Slack channels, from Dispatch
+   itself. A failed proof, or a deployment that names no hub, is
+   `409 PRIVATE_PROJECTS_UNAVAILABLE` and nothing changes. This release of Dispatch runs no proof
+   yet, so every switch that passes steps 1 to 5 is `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project
+   can be made private until a release carries the proof.
 
-Of these, only the owner check of step 2 applies to a switch to public.
+A switch that passes starts the project's Slack channels' time (`slack_channels_changed_at`) when
+it names any channel. A change of the visibility or of the Slack channels waits at most 60 seconds
+for each lock it takes, and then answers `409 LOCK_TIMEOUT`, naming the lock, with nothing
+changed. A non-empty `DISPATCH_PRIVATE_HUBS` without `DISPATCH_HUB_ADMISSION_TOKEN_FILE` stops the
+start.
+
+Of steps 1 to 6, only the owner check of step 2 applies to a switch to public.
 
 A project the database holds private that the list does not name, because its key was taken off
 the list or the list was emptied, stays private. Nothing of it reaches anyone who could not see

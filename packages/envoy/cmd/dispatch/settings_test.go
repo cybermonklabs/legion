@@ -1117,7 +1117,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			// The list's own reading is TestThePrivateProjectsSettingIsAListOfKeys. Its reader: the
 			// owner's switch of PRIV to private, refused with no list before anything is read, with
 			// a list that names another project for want of PRIV on it, and with PRIV on it only for
-			// want of a bus to hold the private-projects record, which this router is given none of.
+			// want of a hub-admission proof, which this router is given none of.
 			t.Run("router", func(t *testing.T) {
 				database := storetest.Open(t)
 				if _, err := database.Pool.Exec(context.Background(), `
@@ -1138,6 +1138,32 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					}
 				}
 			})
+		},
+		"DISPATCH_PRIVATE_HUBS": func(t *testing.T) {
+			// The hubs' own reading is TestPrivateHubsNeedTheHubAdmissionTokenFile. Their reader:
+			// startHubAdmission, which hands the router the proof main runs over them and the
+			// outbox its last result, and, with no proof to run, says so naming the hubs.
+			boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_HUBS": "nats://hub:4222", "DISPATCH_HUB_ADMISSION_TOKEN_FILE": "/token"})
+			var logged cmdtest.LockedBuffer
+			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+			if gate, ready := startHubAdmission(t.Context(), boot, nil); gate != nil || ready != nil {
+				t.Errorf("no proof: startHubAdmission answered a gate %v and a hold %v, want neither", gate, ready != nil)
+			}
+			if line := logged.String(); !strings.Contains(line, "level=WARN") || !strings.Contains(line, "hubs=nats://hub:4222") || !strings.Contains(line, "PRIVATE_PROJECTS_UNAVAILABLE") {
+				t.Errorf("no proof over DISPATCH_PRIVATE_HUBS=nats://hub:4222 logged %q, want a WARN naming the hub and the switch's refusal", line)
+			}
+			admission := newFakeHubAdmission(true)
+			gate, ready := startHubAdmission(t.Context(), boot, admission)
+			if gate != admission || ready == nil || !ready() {
+				t.Errorf("a proof: startHubAdmission answered the gate %v and a hold answering %v, want the proof itself and its Ready", gate, ready != nil && ready())
+			}
+			admission.waitRunning(t)
+		},
+		"DISPATCH_HUB_ADMISSION_TOKEN_FILE": func(t *testing.T) {
+			refusedWith(t, map[string]string{"DISPATCH_PRIVATE_HUBS": "nats://hub:4222"}, "DISPATCH_HUB_ADMISSION_TOKEN_FILE")
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_HUBS": "nats://hub:4222", "DISPATCH_HUB_ADMISSION_TOKEN_FILE": " /token "}); boot.HubAdmissionTokenFile != "/token" {
+				t.Errorf("HubAdmissionTokenFile = %q, want /token", boot.HubAdmissionTokenFile)
+			}
 		},
 		"DISPATCH_APP_CLIENT_ID": func(t *testing.T) {
 			if clientID, source, err := loadApp(t, map[string]string{"DISPATCH_APP_CLIENT_ID": "Iv1.env"}); err != nil || clientID != "Iv1.env" || source != "env" {
@@ -2503,5 +2529,38 @@ func TestThePrivateProjectsSettingIsAListOfKeys(t *testing.T) {
 		if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") || !strings.Contains(lines[0], `entry=`+entry) || !strings.Contains(lines[0], "PRIVATE_PROJECT_NOT_PROVISIONED") {
 			t.Errorf("the boot's report of the ignored entry %q logged %q, want one ERROR line naming it and the switch's refusal", entry, logged.String())
 		}
+	}
+}
+
+// TestPrivateHubsNeedTheHubAdmissionTokenFile: a non-empty DISPATCH_PRIVATE_HUBS names hubs a
+// switch to private proves Dispatch's admission to, with the token DISPATCH_HUB_ADMISSION_TOKEN_FILE
+// holds, so the start is refused, naming that file's setting, while it is unset or blank: a
+// malformed setting, which no project's rows can cause. With the file set, the hubs are read in the
+// order given, each once, and the path trimmed; with no hub, neither is read and the start goes on
+// as before the settings existed (R9). Control: drop the requirement, and the start with no token
+// file goes on, which the first rows name.
+func TestPrivateHubsNeedTheHubAdmissionTokenFile(t *testing.T) {
+	for name, file := range map[string]*string{"unset": nil, "blank": new("  ")} {
+		overrides := map[string]string{"DISPATCH_PRIVATE_HUBS": "nats://hub:4222"}
+		if file != nil {
+			overrides["DISPATCH_HUB_ADMISSION_TOKEN_FILE"] = *file
+		}
+		refusedWith(t, overrides, "DISPATCH_HUB_ADMISSION_TOKEN_FILE is required when DISPATCH_PRIVATE_HUBS is set")
+		if t.Failed() {
+			t.Fatalf("DISPATCH_HUB_ADMISSION_TOKEN_FILE %s beside DISPATCH_PRIVATE_HUBS: the start went on with no token to prove the hubs by", name)
+		}
+	}
+	boot := resolveWith(t, map[string]string{
+		"DISPATCH_PRIVATE_HUBS":             " nats://hub:4222, nats://other:4222 ,nats://hub:4222,",
+		"DISPATCH_HUB_ADMISSION_TOKEN_FILE": " /var/run/secrets/dispatch-hub-admission/token ",
+	})
+	if !slices.Equal(boot.PrivateHubs, []string{"nats://hub:4222", "nats://other:4222"}) || boot.HubAdmissionTokenFile != "/var/run/secrets/dispatch-hub-admission/token" {
+		t.Errorf("with the file set: PrivateHubs = %q, HubAdmissionTokenFile = %q; want [nats://hub:4222 nats://other:4222] in the order given, and the trimmed path", boot.PrivateHubs, boot.HubAdmissionTokenFile)
+	}
+	if boot := resolveWith(t, map[string]string{"DISPATCH_HUB_ADMISSION_TOKEN_FILE": "/var/run/secrets/dispatch-hub-admission/token"}); len(boot.PrivateHubs) != 0 || boot.HubAdmissionTokenFile != "" {
+		t.Errorf("with no hub: PrivateHubs = %q, HubAdmissionTokenFile = %q; want neither read", boot.PrivateHubs, boot.HubAdmissionTokenFile)
+	}
+	if boot := resolveWith(t, nil); len(boot.PrivateHubs) != 0 {
+		t.Errorf("unset: PrivateHubs = %q, want none", boot.PrivateHubs)
 	}
 }

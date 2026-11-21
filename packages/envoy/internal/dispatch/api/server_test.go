@@ -82,11 +82,11 @@ type testServerOptions struct {
 	// Nil is the deployment that names none.
 	oidcAccounts   []string
 	accessAccounts []string
-	// privateProjects and busProjects are Deps.PrivateProjects and Deps.BusProjects: the projects
-	// the deployment has provisioned as private, and the private-projects record's writer. Nil
-	// and nil are the deployment that names no private project.
+	// privateProjects and hubAdmission are Deps.PrivateProjects and Deps.HubAdmission: the projects
+	// the deployment has provisioned as private, and the private-hub admission proof a switch to
+	// private makes before its commit. Nil and nil are the deployment that names no private project.
 	privateProjects []string
-	busProjects     BusProjects
+	hubAdmission    HubAdmission
 	// brokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme. It is built from the test's own database, as the persistence seam below
 	// is, because the verifier's DPoP replay store is a table of it (store.NewDPoPProofs); nil
@@ -313,7 +313,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		OIDCAccounts:      options.oidcAccounts,
 		AccessAccounts:    options.accessAccounts,
 		PrivateProjects:   options.privateProjects,
-		BusProjects:       options.busProjects,
+		HubAdmission:      options.hubAdmission,
 		BrokerTokens:      brokerTokens,
 		AgentStream:       options.agentStream,
 		AgentPublisher:    agentPublisher,

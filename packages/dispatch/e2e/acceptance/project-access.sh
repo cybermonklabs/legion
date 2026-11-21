@@ -28,13 +28,13 @@
 #               backfill-session-projects and scrub-access-events) run against main's database,
 #               and PRIV is made private through PATCH /api/v1/projects/PRIV/access. walk, search,
 #               sockets, proxy and writes need it, and are reported as not run when the route
-#               refuses, as it always does in a build with no writer of the private-projects
-#               record (409 PRIVATE_PROJECTS_UNAVAILABLE); listed and confined run either way. With
+#               refuses, as it always does in a build that runs no private-hub admission proof
+#               (409 PRIVATE_PROJECTS_UNAVAILABLE); listed and confined run either way. With
 #               --private-by-sql, that refusal is stood in for by the store write the route makes
 #               (`update projects set visibility = 'private'`), so every section below runs, and
 #               the run passes when they do. The route checks, in the transaction it refuses, that
 #               PRIV is provisioned and that the store is complete (PRIV's census and the markers
-#               of the two commands) before it reaches the record, so that refusal says the
+#               of the two commands) before it reaches the proof, so that refusal says the
 #               switch's preconditions hold; any other answer of the route fails the run. The
 #               stand-in does not append the route's project.access_changed event, an event of
 #               PRIV, which no unseeing caller reads.

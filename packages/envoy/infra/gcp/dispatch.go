@@ -306,6 +306,13 @@ type DispatchArgs struct {
 	// renders nothing. An entry that is not a project key is ignored, with a warning at preview naming
 	// it, as Dispatch's boot ignores and logs one.
 	PrivateProjects []string `pulumi:"privateProjects,optional"`
+	// PrivateHubs are the NATS URLs of the hubs that serve private projects, in production the
+	// clustered hub alone and never the VM hub, Dispatch's own first: each switch to private proves
+	// that every one of them admits Dispatch before it commits. It renders DISPATCH_PRIVATE_HUBS in
+	// the order given and each URL once at its first place; empty or unset renders nothing. A
+	// rendered DISPATCH_PRIVATE_HUBS beside no DISPATCH_HUB_ADMISSION_TOKEN_FILE, the token each
+	// proof presents, is an input error at preview (dispatchHubsNeedTheirToken).
+	PrivateHubs []string `pulumi:"privateHubs,optional"`
 
 	// AppClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey turn on Dispatch's
 	// GitHub App together: DISPATCH_APP_CLIENT_ID and DISPATCH_APP_ID as plain values, and
@@ -743,6 +750,7 @@ type dispatchSettings struct {
 	oidcAccounts, accessAccounts                []string
 	projectOwnerFallback                        string
 	privateProjects, privateProjectsIgnored     []string
+	privateHubs                                 []string
 	appClientID, appID                          string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
@@ -1090,6 +1098,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"accessAccounts", len(args.AccessAccounts) > 0},
 		{"projectOwnerFallback", args.ProjectOwnerFallback != ""},
 		{"privateProjects", len(args.PrivateProjects) > 0},
+		{"privateHubs", len(args.PrivateHubs) > 0},
 		{"appClientId", args.AppClientId != ""},
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
@@ -1786,6 +1795,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.accessAccounts = args.AccessAccounts
 	s.projectOwnerFallback = args.ProjectOwnerFallback
 	s.privateProjects, s.privateProjectsIgnored = dispatchPrivateProjects(args.PrivateProjects)
+	s.privateHubs = dispatchPrivateHubs(args.PrivateHubs)
 	s.appClientID = args.AppClientId
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName
@@ -1896,6 +1906,19 @@ func dispatchPrivateProjects(entries []string) (keys, ignored []string) {
 		keys = append(keys, entry)
 	}
 	return slices.Compact(slices.Sorted(slices.Values(keys))), ignored
+}
+
+// dispatchPrivateHubs is privateHubs as DISPATCH_PRIVATE_HUBS renders it: each URL trimmed, empty
+// ones dropped, in the order given and each once at its first place, so Dispatch's own hub, which
+// the stack names first, stays first.
+func dispatchPrivateHubs(entries []string) []string {
+	var hubs []string
+	for _, entry := range entries {
+		if entry = strings.TrimSpace(entry); entry != "" && !slices.Contains(hubs, entry) {
+			hubs = append(hubs, entry)
+		}
+	}
+	return hubs
 }
 
 // privateProjectsIgnoredMessage is the diagnostic NewDispatch prints at preview for an entry of

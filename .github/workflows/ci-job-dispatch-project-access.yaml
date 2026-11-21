@@ -12,9 +12,9 @@ name: CI job dispatch-project-access
 # carol and carol's PRIV token to finding each object of PRIV and nothing of PUB, no agent outside
 # PRIV and no direct message that is not their own. project-access.sh --private-by-sql makes PRIV
 # private by the store write the switch makes, where the switch, its preconditions met, answers
-# 409 PRIVATE_PROJECTS_UNAVAILABLE until the bus writer it needs is in the tree, and runs every
-# section that needs a private project: each caller PRIV is hidden from reads every route of the
-# route table, the sockets, search and the GitHub proxy, and writes every write route, and is
+# 409 PRIVATE_PROJECTS_UNAVAILABLE until the private-hub admission proof it needs runs, and runs
+# every section that needs a private project: each caller PRIV is hidden from reads every route
+# of the route table, the sockets, search and the GitHub proxy, and writes every write route, and is
 # answered as for an id nobody holds. project-access-blob.sh (c-blob-unchanged) builds the merge
 # base beside this tree through scripts/e2e/lib/two-builds.sh, seeds each alike on a database of
 # its own with every project public, and fails on any answer a caller reads differently at the

@@ -1,0 +1,22 @@
+-- 20261120235508_projects_full_switch_at.up.sql — when a project last went private by the full
+-- switch.
+--
+-- A project can be private before the full switch: a deployment may let a listed key go private
+-- with no provisioning and no hub-admission proof. The owner's switch to private through the API
+-- (PATCH /api/v1/projects/{key}/access) is the full switch: provisioning, completeness, the Slack
+-- channels' check and the hub-admission proof last. Each one that commits sets the column to
+-- `statement_timestamp()`, in the switch's own transaction before the proof, so a switch whose proof
+-- fails rolls it back with the rest and records nothing. A project private with the column null
+-- went private some other way, and its owner's next switch to private runs the whole path; a
+-- project private with the column set has had it, and a switch to private again changes nothing.
+-- A switch to public clears it (`access.SetVisibility`), so a later private stretch is judged
+-- afresh.
+--
+-- Adding a nullable column with no default writes the catalog alone, so it holds the table's ACCESS
+-- EXCLUSIVE lock for milliseconds and rewrites no row. The release before this one neither reads
+-- nor writes the column, so it serves beside it unchanged; a switch that release makes during the
+-- roll leaves the column as it was.
+--
+-- Its identifier is the UTC moment it was written, as `migrationid` requires of every migration
+-- past the numbered series, which closed at 0161.
+alter table projects add column full_switch_at timestamptz;

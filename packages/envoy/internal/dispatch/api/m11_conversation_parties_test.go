@@ -55,8 +55,8 @@ func TestASwitchToPrivateCountsADirectConversationThatNamesNoParty(t *testing.T)
 			sends := []map[string]any{}
 			listener := sessionListener(t, &live, &sends)
 			t.Cleanup(listener.Close)
-			bus := &recordingBus{}
-			handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: []string{"PRIV"}, envoyURL: listener.URL}, bus)
+			admission := &recordingAdmission{}
+			handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: []string{"PRIV"}, envoyURL: listener.URL}, admission)
 			// alice writes to s1, a session of no project, which she reaches through Dispatch's record
 			// of the listener's list: a list of the sessions stores it.
 			if listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents", nil, "alice"); listed.Code != http.StatusOK {
@@ -68,8 +68,8 @@ func TestASwitchToPrivateCountsADirectConversationThatNamesNoParty(t *testing.T)
 			before := allEvents(t, database)
 			response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
 			requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_INCOMPLETE", line)
-			if calls := bus.taken(); len(calls) != 0 {
-				t.Fatalf("%s: the refused write called the writer: %+v", broken.name, calls)
+			if calls := admission.taken(); len(calls) != 0 {
+				t.Fatalf("%s: the refused switch made the proof: %+v", broken.name, calls)
 			}
 
 			if _, err := database.Pool.Exec(context.Background(), mend); err != nil {

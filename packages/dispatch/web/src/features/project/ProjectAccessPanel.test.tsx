@@ -631,21 +631,23 @@ function drawn(text: string): boolean {
 
 // Every refusal the switch's route answers, with the body Dispatch answers it with. Dispatch's
 // words are written for the deployment's operator: a table, an envoy-dispatch command, a setting,
-// the hub's bucket. They stay in the server's log and record. The owner who pressed the switch
-// reads one sentence of the dashboard's per code instead, which says what they can do, and none
-// of Dispatch's text is drawn anywhere on the page. None offers Retry: every answer stays the same
-// until someone changes the deployment, the store or the project. That holds for
-// PRIVATE_PROJECTS_UNAVAILABLE too, which this release answers every switch to private that passes
-// the other checks, since it has no writer of the hub's private-projects record. A code the
-// dashboard does not know gets a sentence that names nothing of Dispatch's. The switch stays
-// public through each.
-for (const { code, status, server, shown } of [
+// a hub or listener replica the switch's proof could not confirm, a lock. They stay in the
+// server's log and record. The owner who pressed the switch reads one sentence of the dashboard's
+// per code instead, which says what they can do, and none of Dispatch's text is drawn anywhere on
+// the page. Retry is offered where pressing again can land with nothing else changed: the proof
+// that every hub and listener holds the project's messages back failed just now
+// (PRIVATE_PROJECTS_UNAVAILABLE), or another change of who may see a project held a lock the
+// switch waited for (LOCK_TIMEOUT). Every other answer stays the same until someone changes the
+// deployment, the store or the project. A code the dashboard does not know gets a sentence that
+// names nothing of Dispatch's. The switch stays public through each.
+for (const { code, status, server, shown, retry } of [
   {
     code: "PRIVATE_PROJECTS_OFF",
     status: 409,
     server: "this deployment cannot make a project private yet: nothing was changed",
     shown:
       "This deployment cannot make a project private yet: ask its operator to set up private projects.",
+    retry: false,
   },
   {
     code: "PRIVATE_PROJECT_NOT_PROVISIONED",
@@ -653,6 +655,7 @@ for (const { code, status, server, shown } of [
     server:
       "CORE is not one of the projects DISPATCH_PRIVATE_PROJECTS names; a deployment names a project there once it has provisioned that project's private namespace, stores and grants (the infrastructure repository's privateprojects.Projects())",
     shown: "This deployment has not set up CORE to be private: ask its operator to set it up.",
+    retry: false,
   },
   {
     code: "PRIVATE_PROJECTS_INCOMPLETE",
@@ -661,32 +664,46 @@ for (const { code, status, server, shown } of [
       "the project stays public until the store can hold it private: access_events_scrubbed holds no row, so project.access_changed events stored before this release may still carry a project's access list: run envoy-dispatch scrub-access-events",
     shown:
       "This deployment is not ready to keep CORE private yet: ask its operator to finish setting up private projects.",
+    retry: false,
   },
   {
     code: "PRIVATE_PROJECTS_UNAVAILABLE",
     status: 409,
     server:
-      "the project stays public: every listener holds a private project's messages back by its key in the hub's envoy_private_projects bucket, and that key could not be written: this deployment has no bus to write it to",
+      "the project stays public: a switch to private first proves that every hub serving private projects admits Dispatch through its auth service and that every listener replica reads the private projects, and that proof failed: this deployment names no hub to prove (DISPATCH_PRIVATE_HUBS)",
     shown:
-      "This deployment cannot keep CORE's messages from other people yet, so CORE stays public: ask its operator to set up private projects.",
+      "Dispatch could not confirm just now that CORE's messages would reach only the people who may see it, so CORE stays public: try again in a moment, and if this keeps happening, ask the deployment's operator.",
+    retry: true,
+  },
+  {
+    code: "LOCK_TIMEOUT",
+    status: 409,
+    server:
+      "the owner-row lock was not taken in time: another write holds it; nothing was changed; try again once the write that holds it ends",
+    shown:
+      "Another change to who may see a project was still being saved, so Dispatch did not make CORE private: try again in a moment.",
+    retry: true,
   },
   {
     code: "PROJECT_OWNER_REQUIRED",
     status: 403,
     server: "only the project's owner changes who may see it: ask its owner, bob",
     shown: "Only CORE's owner can change who may see it.",
+    retry: false,
   },
   {
     code: "PROJECT_NOT_FOUND",
     status: 404,
     server: "no project has this key: CORE",
     shown: "You can no longer see CORE, so you cannot change who may see it.",
+    retry: false,
   },
   {
     code: "PROJECT_ACCESS_INPUT",
     status: 400,
     server: 'a project is public or private, not "secret"',
     shown: "Dispatch did not take this change: reload the page and press the switch again.",
+    retry: false,
   },
   {
     code: "A_REFUSAL_THIS_DASHBOARD_DOES_NOT_KNOW",
@@ -694,9 +711,10 @@ for (const { code, status, server, shown } of [
     server: "the owner lock dispatch-owner:project:CORE was not taken within 60s",
     shown:
       "Dispatch did not make CORE private: if this keeps happening, ask the deployment's operator.",
+    retry: false,
   },
 ] as const) {
-  test(`a switch refused ${code} tells the owner what to do, offers no Retry, draws none of Dispatch's words, and stays public`, async () => {
+  test(`a switch refused ${code} tells the owner what to do, offers ${retry ? "Retry" : "no Retry"}, draws none of Dispatch's words, and stays public`, async () => {
     const user = userEvent.setup();
     const panel = renderPanel();
     const patch = spyOn(api, "patchProjectAccess").mockRejectedValue(
@@ -714,7 +732,93 @@ for (const { code, status, server, shown } of [
         "false"
       );
       expect(screen.getByTestId("access-visibility")).toHaveTextContent("Public");
+      if (retry) {
+        expect(within(alert).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+      } else {
+        expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+      }
+      expect(patch).toHaveBeenCalledTimes(1);
+    } finally {
+      panel.restore();
+      patch.mockRestore();
+    }
+  });
+}
+
+// The admission proof can fail for a moment - a hub restarting, a listener replica not answering
+// yet - and pass on the next press with nothing changed, so its refusal's Retry sends the same
+// switch again, and the project turns private once Dispatch takes it.
+test("Retry after a switch refused PRIVATE_PROJECTS_UNAVAILABLE sends the switch again, and the project turns private", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel();
+  const patch = spyOn(api, "patchProjectAccess")
+    .mockRejectedValueOnce(
+      new ApiError(409, {
+        code: "PRIVATE_PROJECTS_UNAVAILABLE",
+        error:
+          "the project stays public: the listener replica dispatch-listener-1 did not answer a fresh read",
+      })
+    )
+    .mockImplementationOnce(panel.lands(access({ visibility: "private" })));
+  try {
+    await user.click(await screen.findByRole("switch", { name: "Private" }));
+    const alert = await within(screen.getByRole("region", { name: "Visibility" })).findByRole(
+      "alert"
+    );
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+    expect(patch).toHaveBeenLastCalledWith("CORE", { visibility: "private" }, keyedAttempt);
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Private" })).toHaveAttribute(
+        "aria-checked",
+        "true"
+      )
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    panel.restore();
+    patch.mockRestore();
+  }
+});
+
+// A Slack channel belongs to one private project, so a switch to private is refused while another
+// private project lists one of this project's channels (409 SLACK_CHANNEL_SHARED). Dispatch's words
+// for it are the owner's: they name the channel, which the owner listed, and the other project
+// only to an owner who sees it. So the switch quotes them, and says what the owner can do, with no
+// Retry: the answer stays the same until a project's channels change.
+for (const { form, server } of [
+  {
+    form: "names the other project to an owner who sees it",
+    server:
+      "C0SHARED001 is listed by PRIV, a private project; a Slack channel belongs to one private project",
+  },
+  {
+    form: "names no project to an owner who does not see it",
+    server: "C0SHARED001 is listed by a private project you cannot see",
+  },
+] as const) {
+  test(`a switch refused SLACK_CHANNEL_SHARED quotes Dispatch's words, which ${form}, offers no Retry, and stays public`, async () => {
+    const user = userEvent.setup();
+    const panel = renderPanel({ answer: access({ slack_channels: ["C0SHARED001"] }) });
+    const patch = spyOn(api, "patchProjectAccess").mockRejectedValue(
+      new ApiError(409, { code: "SLACK_CHANNEL_SHARED", error: server })
+    );
+    try {
+      await user.click(await screen.findByRole("switch", { name: "Private" }));
+      const alert = await within(screen.getByRole("region", { name: "Visibility" })).findByRole(
+        "alert"
+      );
+      expect(
+        within(alert).getByText(
+          `CORE stays public: ${server}. Take that channel off CORE's Slack channels below, then make CORE private.`
+        )
+      ).toBeInTheDocument();
       expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+      expect(screen.getByRole("switch", { name: "Private" })).toHaveAttribute(
+        "aria-checked",
+        "false"
+      );
+      expect(screen.getByTestId("access-visibility")).toHaveTextContent("Public");
       expect(patch).toHaveBeenCalledTimes(1);
     } finally {
       panel.restore();

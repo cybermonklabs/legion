@@ -1474,6 +1474,16 @@ Dispatch's boot ignores and logs one, so the project it meant is never provision
 with an `envoyImage` whose `envoy-dispatch` reads the list: a binary that
 does not know the setting ignores it, and no project of that deployment can be made private.
 
+`privateHubs` (a list of NATS URLs) is the hubs that serve private projects, in production the
+clustered hub alone and never the VM hub, Dispatch's own first: each switch to private proves that
+every one of them admits Dispatch through the auth callout before it commits. It renders
+`DISPATCH_PRIVATE_HUBS=<url>,<url>` in the order given, each URL once at its first place; empty or
+unset renders nothing. Dispatch refuses to start with hubs to prove and no
+`DISPATCH_HUB_ADMISSION_TOKEN_FILE`, the token each proof presents, so a render whose environment
+holds `DISPATCH_PRIVATE_HUBS` and not that file is an input error at `pulumi preview` naming
+`privateHubs`; this component renders no hub-admission token yet, so every non-empty `privateHubs`
+is refused until the change that mounts it.
+
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`
 and `appPrivateKeySecretKey` (plain: the name and key of an existing Kubernetes Secret in the
 component's namespace holding the App's PEM private key, as GKE SecretSync copies it from Secret

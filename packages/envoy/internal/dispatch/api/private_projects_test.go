@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -25,43 +23,48 @@ import (
 // project, byte for byte, the bytes it answered before a deployment could name one (R9).
 const privateOffBody = `{"code":"PRIVATE_PROJECTS_OFF","error":"this deployment cannot make a project private yet: nothing was changed"}`
 
-// busCall is one call a recordingBus took: the project, what its q was (the route's transaction,
-// or the Go type of anything else), the project's visibility as q read it, and as another
-// connection read it during the call. Through the transaction a switch to private reads private
-// already; from another connection it still reads public, since the write has not committed.
-type busCall struct {
-	project, through, inTransaction, committed string
+// proveCall is one Prove a recordingAdmission noted, read from a connection of its own as the call
+// ran: whether the project's owner lock was held (TryLockOwners took nothing, so the switch's
+// transaction holds it still), and the project's visibility as committed, which a switch to private
+// still leaves public until it commits. A Prove inside the switch's transaction reads both.
+type proveCall struct {
+	project       string
+	ownerLockHeld bool
+	committed     string
 }
 
-// recordingBus is a test's writer of the private-projects record (BusProjects). It records every
-// call and answers each with privateErr.
-type recordingBus struct {
-	pool       *store.Pool
-	privateErr error
+// insideTheSwitch is a Prove made while a switch to private of project had not committed.
+func insideTheSwitch(project string) proveCall {
+	return proveCall{project: project, ownerLockHeld: true, committed: model.ProjectPublic}
+}
+
+// recordingAdmission is a test's private-hub admission proof (HubAdmission). It notes every Prove,
+// reading project's owner lock and committed visibility, and answers each with proveErr.
+type recordingAdmission struct {
+	pool     *store.Pool
+	project  string
+	proveErr error
 
 	mu    sync.Mutex
-	calls []busCall
+	calls []proveCall
 }
 
-func (b *recordingBus) EnsurePrivate(ctx context.Context, q access.Querier, project string) error {
-	through := fmt.Sprintf("%T", q)
-	if _, ok := q.(pgx.Tx); ok {
-		through = "the route's transaction"
-	}
-	// The other read takes a connection of the bus's own: the call's context holds the write's
-	// transaction, under which the pool refuses it a second one (store.ErrNestedAcquire).
-	call := busCall{project: project, through: through, inTransaction: readVisibility(ctx, q, project),
-		committed: readVisibility(context.Background(), b.pool, project)}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.calls = append(b.calls, call)
-	return b.privateErr
+func (a *recordingAdmission) Prove(context.Context) error {
+	// Each read takes a connection of its own: the call's context holds the switch's transaction,
+	// under which the pool refuses it a second one (store.ErrNestedAcquire).
+	call := proveCall{project: a.project, committed: readVisibility(context.Background(), a.pool, a.project)}
+	taken, err := store.TryLockOwners(context.Background(), a.pool, store.ProjectOwner(a.project))
+	call.ownerLockHeld = err == nil && len(taken) == 0
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.calls = append(a.calls, call)
+	return a.proveErr
 }
 
-func (b *recordingBus) taken() []busCall {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return slices.Clone(b.calls)
+func (a *recordingAdmission) taken() []proveCall {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.calls)
 }
 
 // readVisibility is project's visibility as q reads it, or why q could not read it.
@@ -74,15 +77,18 @@ func readVisibility(ctx context.Context, q access.Querier, project string) strin
 }
 
 // newPrivateProjectsServer is a test server holding PRIV and OTHER, both alice's, and HIDE,
-// carol's private project, which alice cannot see, under options, writing the private-projects
-// record through bus, or through no writer when bus is nil. Its store is complete, the sessions'
-// projects filled included.
-func newPrivateProjectsServer(t *testing.T, options testServerOptions, bus *recordingBus) (http.Handler, *store.Store) {
+// carol's private project, which alice cannot see, under options, proving the hubs' admission
+// through admission, or through no proof when admission is nil. Its store is complete, the
+// sessions' projects filled included.
+func newPrivateProjectsServer(t *testing.T, options testServerOptions, admission *recordingAdmission) (http.Handler, *store.Store) {
 	t.Helper()
 	options.store = storetest.Open(t)
-	if bus != nil {
-		bus.pool = options.store.Pool
-		options.busProjects = bus
+	if admission != nil {
+		admission.pool = options.store.Pool
+		if admission.project == "" {
+			admission.project = "PRIV"
+		}
+		options.hubAdmission = admission
 	}
 	handler, database, _ := newTestServer(t, options)
 	seedPeople(t, database, accessCarol)
@@ -121,26 +127,28 @@ func requireRefused(t *testing.T, database *store.Store, response *httptest.Resp
 	}
 }
 
-// TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows is c-private-needs-callout's Dispatch row
-// (K7). A deployment that names no private project answers a switch to private 409
+// TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows is c-dispatch-needs-callout's Dispatch row
+// (R12). A deployment that names no private project answers a switch to private 409
 // PRIVATE_PROJECTS_OFF with privateOffBody's bytes; one that names others answers 409
-// PRIVATE_PROJECT_NOT_PROVISIONED and calls no writer. For a project the list names, the record
-// is written through the route's own transaction as its last step, and any refusal rolls the
-// whole write back and answers 409 PRIVATE_PROJECTS_UNAVAILABLE naming the bucket. The route
-// makes no other bus call: not after a commit that failed, and not for public, whose key is the
-// writer's own pass to delete.
+// PRIVATE_PROJECT_NOT_PROVISIONED and makes no proof. For a project the list names, the switch's
+// last step before its commit is the hub-admission proof, made while its transaction holds the
+// project, and a proof that fails, or no proof at all, rolls the whole write back and answers 409
+// PRIVATE_PROJECTS_UNAVAILABLE naming what failed. No other write makes a proof: not public, and
+// nothing after a commit that failed, since no copy of a project's privacy exists outside the
+// database to repair.
 func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 	private := map[string]string{"visibility": model.ProjectPrivate}
 	public := map[string]string{"visibility": model.ProjectPublic}
-	refusal := errors.New(`nats: permissions violation for publish to "$KV.envoy_private_projects.PRIV"`)
 	provisioned := []string{"PRIV"}
-	// The record written last before the commit: through the transaction PRIV reads private
-	// already, and from another connection still public.
-	recorded := busCall{"PRIV", "the route's transaction", model.ProjectPrivate, model.ProjectPublic}
+	// R12's refusal: the second of the deployment's hubs, rendered without the private-projects
+	// tag, refuses the proof's new connection, and the proof names it.
+	const refusingHub = "nats://hub-b.example:4222"
+	refusal := errors.New("hub " + refusingHub + " refused the admission proof: nats: authorization violation")
+	proven := insideTheSwitch("PRIV")
 
 	t.Run("an empty list", func(t *testing.T) {
-		bus := &recordingBus{}
-		handler, database := newPrivateProjectsServer(t, testServerOptions{}, bus)
+		admission := &recordingAdmission{}
+		handler, database := newPrivateProjectsServer(t, testServerOptions{}, admission)
 		before := allEvents(t, database)
 		// The owner, and alice on a key she cannot see, are answered alike, before any read.
 		hidden := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/HIDE/access", private, "alice")
@@ -151,8 +159,8 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 			}
 		}
 		requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_OFF")
-		if calls := bus.taken(); len(calls) != 0 {
-			t.Fatalf("an empty list: the refused write called the writer: %+v", calls)
+		if calls := admission.taken(); len(calls) != 0 {
+			t.Fatalf("an empty list: the refused switch made the proof: %+v", calls)
 		}
 	})
 
@@ -163,16 +171,16 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 		{"access_events_scrubbed", "envoy-dispatch scrub-access-events"},
 	} {
 		t.Run(marker.table+" empty", func(t *testing.T) {
-			bus := &recordingBus{}
-			handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, bus)
+			admission := &recordingAdmission{}
+			handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, admission)
 			if _, err := database.Pool.Exec(context.Background(), `delete from `+marker.table); err != nil {
 				t.Fatalf("empty %s: %v", marker.table, err)
 			}
 			before := allEvents(t, database)
 			response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
 			requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_INCOMPLETE", marker.table, marker.command)
-			if calls := bus.taken(); len(calls) != 0 {
-				t.Fatalf("%s empty: the refused write called the writer: %+v", marker.table, calls)
+			if calls := admission.taken(); len(calls) != 0 {
+				t.Fatalf("%s empty: the refused switch made the proof: %+v", marker.table, calls)
 			}
 		})
 	}
@@ -188,8 +196,8 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 			"issue PRIV-1: missing; run envoy-dispatch backfill-graph-store", "writes their nodes"},
 	} {
 		t.Run(broken.name, func(t *testing.T) {
-			bus := &recordingBus{}
-			handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, bus)
+			admission := &recordingAdmission{}
+			handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, admission)
 			if created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": "PRIV", "title": "One"}, "alice"); created.Code != http.StatusCreated {
 				t.Fatalf("create PRIV-1: %d %s", created.Code, created.Body.String())
 			}
@@ -202,65 +210,67 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 			if body := response.Body.String(); strings.Contains(body, broken.refuse) {
 				t.Fatalf("%s: the refusal %s holds %q, a cure its line does not name", broken.name, body, broken.refuse)
 			}
-			if calls := bus.taken(); len(calls) != 0 {
-				t.Fatalf("%s: the refused write called the writer: %+v", broken.name, calls)
+			if calls := admission.taken(); len(calls) != 0 {
+				t.Fatalf("%s: the refused switch made the proof: %+v", broken.name, calls)
 			}
 		})
 	}
 
 	t.Run("a project the list does not name", func(t *testing.T) {
-		bus := &recordingBus{}
-		handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, bus)
+		admission := &recordingAdmission{project: "OTHER"}
+		handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, admission)
 		before := allEvents(t, database)
 		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/OTHER/access", private, "alice")
 		requireRefused(t, database, response, "OTHER", before, http.StatusConflict, "PRIVATE_PROJECT_NOT_PROVISIONED", "OTHER", "DISPATCH_PRIVATE_PROJECTS")
-		if calls := bus.taken(); len(calls) != 0 {
-			t.Fatalf("OTHER, which the list does not name: the refused write called the writer: %+v", calls)
+		if calls := admission.taken(); len(calls) != 0 {
+			t.Fatalf("OTHER, which the list does not name: the refused switch made the proof: %+v", calls)
 		}
 	})
 
-	t.Run("a writer that refuses", func(t *testing.T) {
-		bus := &recordingBus{privateErr: refusal}
-		handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, bus)
+	t.Run("a hub that refuses the proof", func(t *testing.T) {
+		admission := &recordingAdmission{proveErr: refusal}
+		handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, admission)
 		before := allEvents(t, database)
-		// The owner change in the same body goes back with it: the record is the write's last step.
+		// The owner change in the same body goes back with it: the proof is the switch's last step.
 		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access",
 			map[string]string{"visibility": model.ProjectPrivate, "owner": accessCarol}, "alice")
-		requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_UNAVAILABLE", privateProjectsBucket)
-		if calls, want := bus.taken(), []busCall{recorded}; !slices.Equal(calls, want) {
-			t.Fatalf("a writer that refuses: the write called %+v, want %+v", calls, want)
+		if visibilityOf(t, database, "PRIV") != model.ProjectPublic {
+			t.Fatalf("a hub that refuses the proof: the switch made PRIV private (%d %s)", response.Code, response.Body.String())
 		}
+		requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_UNAVAILABLE", refusingHub)
+		requireOnlyTheProof(t, admission, proven, "a hub that refuses the proof")
 	})
 
-	t.Run("no bus", func(t *testing.T) {
+	t.Run("no proof", func(t *testing.T) {
 		handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, nil)
 		before := allEvents(t, database)
 		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
-		requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_UNAVAILABLE", privateProjectsBucket)
+		requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_UNAVAILABLE", "DISPATCH_PRIVATE_HUBS")
 	})
 
-	t.Run("a writer that accepts", func(t *testing.T) {
-		bus := &recordingBus{}
-		handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, bus)
+	t.Run("a proof that admits", func(t *testing.T) {
+		admission := &recordingAdmission{}
+		handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, admission)
 		made := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
 		if made.Code != http.StatusOK || decodeBody[model.ProjectAccess](t, made).Visibility != model.ProjectPrivate ||
 			visibilityOf(t, database, "PRIV") != model.ProjectPrivate {
-			t.Fatalf("PATCH PRIV private with a writer that accepts = %d %s, PRIV %s; want 200 and PRIV private",
+			t.Fatalf("PATCH PRIV private with a proof that admits = %d %s, PRIV %s; want 200 and PRIV private",
 				made.Code, made.Body.String(), visibilityOf(t, database, "PRIV"))
 		}
-		// public makes no bus call: deleting the key is the writer's own pass.
+		// public makes no proof, and leaves nothing to remove: no copy of PRIV's privacy exists
+		// outside the database.
 		made = dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", public, "alice")
 		if made.Code != http.StatusOK || visibilityOf(t, database, "PRIV") != model.ProjectPublic {
 			t.Fatalf("PATCH PRIV public = %d %s; want 200 and PRIV public", made.Code, made.Body.String())
 		}
-		requireOnlyTheRecord(t, bus, recorded, "making PRIV private, then public")
+		requireOnlyTheProof(t, admission, proven, "making PRIV private, then public")
 	})
 
-	t.Run("a commit that fails after the write", func(t *testing.T) {
-		bus := &recordingBus{}
-		handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, bus)
+	t.Run("a commit that fails after the proof", func(t *testing.T) {
+		admission := &recordingAdmission{}
+		handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, admission)
 		// A deferred trigger refuses the commit of any write that makes a project private, after
-		// every statement of it, the record's included, has run.
+		// every statement of it, the proof included, has run.
 		if _, err := database.Pool.Exec(context.Background(), `
 			create function refuse_private_commit() returns trigger language plpgsql as $$
 			begin
@@ -277,22 +287,169 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 			t.Fatalf("PATCH PRIV private whose commit fails = %d %s, PRIV %s; want a failure and PRIV public",
 				failed.Code, failed.Body.String(), visibilityOf(t, database, "PRIV"))
 		}
-		requireOnlyTheRecord(t, bus, recorded, "a commit that failed after the record was written")
+		requireOnlyTheProof(t, admission, proven, "a commit that failed after the proof")
 	})
 }
 
-// requireOnlyTheRecord fails unless bus took exactly one call, want, through the route's
-// transaction, naming any call made through anything else.
-func requireOnlyTheRecord(t *testing.T, bus *recordingBus, want busCall, row string) {
+// requireOnlyTheProof fails unless admission noted exactly one Prove, want, made inside the
+// switch's transaction, naming any call made outside one.
+func requireOnlyTheProof(t *testing.T, admission *recordingAdmission, want proveCall, row string) {
 	t.Helper()
-	calls := bus.taken()
+	calls := admission.taken()
 	for _, call := range calls {
-		if call.through != want.through {
-			t.Errorf("%s: EnsurePrivate(%s) was called through %s, outside the route's transaction", row, call.project, call.through)
+		if call != want {
+			t.Errorf("%s: a Prove outside the switch's transaction: %s's owner lock held %t, %s committed %s",
+				row, call.project, call.ownerLockHeld, call.project, call.committed)
 		}
 	}
-	if !slices.Equal(calls, []busCall{want}) {
-		t.Fatalf("%s: the routes called %+v, want only %+v", row, calls, want)
+	if !slices.Equal(calls, []proveCall{want}) {
+		t.Fatalf("%s: the routes made the proofs %+v, want only %+v", row, calls, want)
+	}
+}
+
+// TestThePrivateListAnswersOnlyCommittedRows: every listener reads which projects are private, and
+// their Slack channels, from GET /api/v1/access/private-projects through the broker, uncached, so
+// no copy can lag behind a switch. While PRIV's switch to private is held at its commit, after its
+// proof, the broker's read does not list PRIV; the read after the commit lists it; a channel write
+// on PRIV shows in the next read; and the read after PRIV's switch to public does not list it.
+// Control: answer the route from a copy read once and kept for 30 s, as privateProjectsState keeps
+// the header's, and the read right after the commit lacks PRIV, and the test fails naming the read.
+func TestThePrivateListAnswersOnlyCommittedRows(t *testing.T) {
+	ctx := context.Background()
+	server := newChannelSwitchServer(t, &recordingAdmission{})
+	lists := func(t *testing.T) (model.PrivateProjectChannels, bool) {
+		t.Helper()
+		project, listed := server.privateList(t)["PRIV"]
+		return project, listed
+	}
+	if _, listed := lists(t); listed {
+		t.Fatal("the broker's read lists PRIV before its switch to private")
+	}
+	// PRIV's switch is held at its commit, after every statement of it, its proof included, until
+	// the test releases the lock the trigger waits for.
+	if _, err := server.database.Pool.Exec(ctx, `
+		create function hold_priv_commit() returns trigger language plpgsql as $$
+		begin
+			perform pg_advisory_xact_lock(hashtext('the committed-rows row holds PRIV''s commit'));
+			return null;
+		end $$;
+		create constraint trigger hold_priv_commit after update on projects
+			deferrable initially deferred for each row when (new.key = 'PRIV')
+			execute function hold_priv_commit();
+	`); err != nil {
+		t.Fatalf("hold every commit that writes PRIV: %v", err)
+	}
+	held, err := server.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds PRIV's commit: %v", err)
+	}
+	defer held.Rollback(ctx)
+	if _, err := held.Exec(ctx, `select pg_advisory_xact_lock(hashtext('the committed-rows row holds PRIV''s commit'))`); err != nil {
+		t.Fatalf("hold PRIV's commit: %v", err)
+	}
+	switched := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		switched <- accessPatch(ctx, server.handler, "PRIV", `{"visibility":"private"}`, "alice")
+	}()
+	waitForDatabaseLocks(t, held, 1)
+	if _, listed := lists(t); listed {
+		t.Fatal("the broker's read while PRIV's switch is held at its commit lists PRIV: it must answer the committed rows")
+	}
+	if err := held.Rollback(ctx); err != nil {
+		t.Fatalf("release PRIV's commit: %v", err)
+	}
+	select {
+	case response := <-switched:
+		if response.Code != http.StatusOK {
+			t.Fatalf("PATCH PRIV private = %d %s, want 200", response.Code, response.Body.String())
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("PRIV's switch never answered once its commit was released")
+	}
+	if _, listed := lists(t); !listed {
+		t.Fatal("the broker's read right after PRIV's switch committed does not list PRIV: it must answer the committed rows")
+	}
+	if response := server.patch(t, "PRIV", map[string]any{"slack_channels": []string{"C0PRIV00009"}}); response.Code != http.StatusOK {
+		t.Fatalf("alice's PATCH of private PRIV's channels = %d %s, want 200", response.Code, response.Body.String())
+	}
+	if project, _ := lists(t); !slices.Equal(project.SlackChannels, []string{"C0PRIV00009"}) {
+		t.Fatalf("the broker's read after PRIV's channel write lists %v for PRIV, want [C0PRIV00009]", project.SlackChannels)
+	}
+	if response := server.patch(t, "PRIV", map[string]string{"visibility": model.ProjectPublic}); response.Code != http.StatusOK {
+		t.Fatalf("PATCH PRIV public = %d %s, want 200", response.Code, response.Body.String())
+	}
+	if _, listed := lists(t); listed {
+		t.Fatal("the broker's read after PRIV's switch to public still lists PRIV")
+	}
+}
+
+// fullSwitchOf is project key's full_switch_at as committed, nil while it is null.
+func fullSwitchOf(t *testing.T, database *store.Store, key string) *time.Time {
+	t.Helper()
+	var at *time.Time
+	if err := database.Pool.QueryRow(context.Background(), `select full_switch_at from projects where key = $1`, key).Scan(&at); err != nil {
+		t.Fatalf("read %s's full switch: %v", key, err)
+	}
+	return at
+}
+
+// TestAFullSwitchRunsTheWholePathOnceForADayOnePrivateProject: a project can be private before the
+// full switch (a deployment's day one, with no provisioning and no proof), and then it records no
+// full switch. With its key on the list, its owner's switch to private runs the whole path as a
+// switch from public does: a proof that fails answers 409 PRIVATE_PROJECTS_UNAVAILABLE and records
+// nothing, and a proof that passes records the full switch (full_switch_at). The switch of a project
+// the full switch made private is a no-op: no proof, no event, the record as it was. A switch to
+// public clears the record, and a switch from public records it. Controls, each on its own: record
+// nothing at the switch, and the passing row fails naming PRIV; read every private project as
+// switched already, and the day-one row answers 200 with no proof; never read a switch as done, and
+// the re-switch row makes a proof and appends an event.
+func TestAFullSwitchRunsTheWholePathOnceForADayOnePrivateProject(t *testing.T) {
+	private := map[string]string{"visibility": model.ProjectPrivate}
+	admission := &recordingAdmission{proveErr: errors.New("hub nats://hub-b.example:4222 refused the admission proof")}
+	handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: []string{"OTHER", "PRIV"}}, admission)
+	// Day one: PRIV went private with no full switch.
+	if _, err := database.Pool.Exec(context.Background(), `update projects set visibility = 'private' where key = 'PRIV'`); err != nil {
+		t.Fatalf("make PRIV private before its full switch: %v", err)
+	}
+
+	before := allEvents(t, database)
+	refused := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
+	if body := refused.Body.String(); refused.Code != http.StatusConflict || !strings.Contains(body, `"code":"PRIVATE_PROJECTS_UNAVAILABLE"`) {
+		t.Fatalf("day-one PRIV's full switch with a refusing proof = %d %s, want 409 PRIVATE_PROJECTS_UNAVAILABLE", refused.Code, body)
+	}
+	if at, calls, appended := fullSwitchOf(t, database, "PRIV"), len(admission.taken()), allEvents(t, database)-before; at != nil || calls != 1 || appended != 0 {
+		t.Fatalf("day-one PRIV's refused full switch: full switch %v, %d proofs, %d events appended; want none recorded, one proof, nothing appended", at, calls, appended)
+	}
+
+	admission.proveErr = nil
+	switched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
+	at := fullSwitchOf(t, database, "PRIV")
+	if switched.Code != http.StatusOK || at == nil || len(admission.taken()) != 2 {
+		t.Fatalf("day-one PRIV's full switch with a passing proof = %d %s, full switch %v, %d proofs; want 200, the switch recorded, a second proof",
+			switched.Code, switched.Body.String(), at, len(admission.taken()))
+	}
+
+	before = allEvents(t, database)
+	again := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
+	if again.Code != http.StatusOK || decodeBody[model.ProjectAccess](t, again).Visibility != model.ProjectPrivate {
+		t.Fatalf("fully switched PRIV's switch to private again = %d %s, want 200 and PRIV private", again.Code, again.Body.String())
+	}
+	if after, calls, appended := fullSwitchOf(t, database, "PRIV"), len(admission.taken()), allEvents(t, database)-before; after == nil || !after.Equal(*at) || calls != 2 || appended != 0 {
+		t.Fatalf("fully switched PRIV's switch to private again: full switch %v (was %v), %d proofs, %d events appended; want a no-op", after, at, calls, appended)
+	}
+
+	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", map[string]string{"visibility": model.ProjectPublic}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("PATCH PRIV public = %d %s, want 200", response.Code, response.Body.String())
+	}
+	if at := fullSwitchOf(t, database, "PRIV"); at != nil {
+		t.Fatalf("PRIV made public still records the full switch %v, want it cleared", at)
+	}
+	admission.project = "OTHER"
+	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/OTHER/access", private, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("PATCH OTHER private = %d %s, want 200", response.Code, response.Body.String())
+	}
+	if at := fullSwitchOf(t, database, "OTHER"); at == nil {
+		t.Fatal("OTHER's switch from public to private records no full switch")
 	}
 }
 

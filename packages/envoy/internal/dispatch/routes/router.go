@@ -145,10 +145,10 @@ type AppContextOptions struct {
 	// (brokerTokenVerifier). See api.DepsInput.
 	BrokerTokens *brokertoken.Verifier
 	// PrivateProjects are the keys of the projects the deployment has provisioned as private
-	// (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS), and BusProjects the writer of the private-projects
-	// record. See api.DepsInput.
+	// (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS), and HubAdmission the private-hub admission proof a
+	// switch to private makes before its commit. See api.DepsInput.
 	PrivateProjects []string
-	BusProjects     api.BusProjects
+	HubAdmission    api.HubAdmission
 	AgentStream     agentstream.Source
 	// AgentPublisher queues a person's targeted message on its session's own subject when no store
 	// of the listener's holds that session: cmd/dispatch's NATS client, its recorder under the
@@ -239,7 +239,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AccessAccounts:         opts.AccessAccounts,
 		BrokerTokens:           opts.BrokerTokens,
 		PrivateProjects:        opts.PrivateProjects,
-		BusProjects:            opts.BusProjects,
+		HubAdmission:           opts.HubAdmission,
 		AgentStream:            opts.AgentStream,
 		AgentPublisher:         opts.AgentPublisher,
 		AgentSecretsURL:        opts.AgentSecretsURL,

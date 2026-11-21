@@ -2832,6 +2832,36 @@ func TestDispatchNamesAnIgnoredPrivateProjectsEntry(t *testing.T) {
 	}
 }
 
+// TestDispatchRefusesPrivateHubsWithoutTheAdmissionToken: privateHubs renders
+// DISPATCH_PRIVATE_HUBS, and Dispatch refuses to start with hubs to prove and no
+// DISPATCH_HUB_ADMISSION_TOKEN_FILE. A render that names hubs and mounts no hub-admission token is
+// therefore an input error at preview naming privateHubs and DISPATCH_HUB_ADMISSION_TOKEN_FILE, so a
+// deploy that carries it fails before it replaces the running pod; this component renders no such
+// mount yet, so every non-empty privateHubs is that error. An empty or absent privateHubs renders
+// neither variable and no error. Control: drop the check, and the render holds
+// DISPATCH_PRIVATE_HUBS without DISPATCH_HUB_ADMISSION_TOKEN_FILE, and the refusal row fails naming it.
+func TestDispatchRefusesPrivateHubsWithoutTheAdmissionToken(t *testing.T) {
+	args := dispatchArgs()
+	args.PrivateHubs = []string{"nats://hub:4222"}
+	_, err := runDispatch(t, args, true)
+	require.ErrorContains(t, err, "privateHubs renders DISPATCH_PRIVATE_HUBS", "privateHubs without a rendered DISPATCH_HUB_ADMISSION_TOKEN_FILE was taken")
+	require.ErrorContains(t, err, "DISPATCH_HUB_ADMISSION_TOKEN_FILE")
+	var input *core.InputError
+	require.ErrorAs(t, err, &input)
+	require.Equal(t, "privateHubs", input.Input, "%v", err)
+	for name, hubs := range map[string][]string{"unset": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			args := dispatchArgs()
+			args.PrivateHubs = hubs
+			m, err := runDispatch(t, args, true)
+			require.NoError(t, err)
+			env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch"))
+			requireOptionalEnv(t, env, "DISPATCH_PRIVATE_HUBS", "")
+			requireOptionalEnv(t, env, "DISPATCH_HUB_ADMISSION_TOKEN_FILE", "")
+		})
+	}
+}
+
 // A refused Azure configuration is refused by the resolver, before the component registers, so
 // nothing beyond the test's providers exists.
 func TestDispatchRefusesAnAzureMisconfigurationBeforeRegistering(t *testing.T) {

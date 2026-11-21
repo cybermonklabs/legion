@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -25,8 +26,11 @@ import (
 // project.access_changed, which the route publishes once the transaction commits. A project is
 // made private only where the deployment names it among the projects it has provisioned as
 // private (Deps.PrivateProjects: else 409 PRIVATE_PROJECTS_OFF for a deployment that names none,
-// and 409 PRIVATE_PROJECT_NOT_PROVISIONED for one that names others) and the hub takes its
-// private-projects record (K7, Deps.BusProjects, else 409 PRIVATE_PROJECTS_UNAVAILABLE).
+// and 409 PRIVATE_PROJECT_NOT_PROVISIONED for one that names others) and every hub that serves
+// private projects admits Dispatch, proven last before the switch commits (Deps.HubAdmission, else
+// 409 PRIVATE_PROJECTS_UNAVAILABLE). No copy of a project's privacy exists outside the database:
+// every listener reads the committed rows (GET /api/v1/access/private-projects), so no write of a
+// project's access writes anything on the bus.
 
 // projectAccessInput is the body of PATCH /api/v1/projects/{key}/access.
 type projectAccessInput struct {
@@ -39,27 +43,29 @@ type projectAccessInput struct {
 	SlackChannels *[]string `json:"slack_channels,omitempty"`
 }
 
-// BusProjects writes the private-projects record, the contract K7 names: one key per private
-// project in the hub's envoy_private_projects bucket, which every listener reads to hold that
-// project's messages back from a token that does not list it. No writer of it is in this tree, so
-// cmd/dispatch passes none, and every write that needs the record answers 409
-// PRIVATE_PROJECTS_UNAVAILABLE (ensurePrivate).
-type BusProjects interface {
-	// EnsurePrivate puts project's key, reading what it needs through q, the visibility write's
-	// own transaction, since the pool refuses that write's request a second connection
-	// (store.ErrNestedAcquire). The write calls it last before its commit, and any error refuses
-	// the write.
-	EnsurePrivate(ctx context.Context, q access.Querier, project string) error
+// HubAdmission is the private-hub admission proof a switch to private makes last before its
+// commit: every hub that serves private projects admits a new connection of Dispatch's through its
+// auth service, and every listener replica answers a fresh read of the private projects. It reads
+// nothing of the project and writes nothing. cmd/dispatch passes the deployment's proof
+// (busprojects.HubAdmission), or none, and a nil HubAdmission refuses every switch to private 409
+// PRIVATE_PROJECTS_UNAVAILABLE (proveHubAdmission).
+type HubAdmission interface {
+	// Prove answers nil only when every hub and every listener replica the deployment names
+	// admits the proof now, and otherwise an error naming the hub or replica that did not. The
+	// switch calls it inside its transaction, as its last step before the commit, and any error
+	// refuses the switch with nothing changed.
+	Prove(ctx context.Context) error
 }
 
-// privateProjectsBucket is the hub's key-value bucket the private-projects record is kept in, the
-// one a refusal to make a project private names.
-const privateProjectsBucket = "envoy_private_projects"
+// errPrivateProjectsUnavailable is a switch to private whose hub-admission proof failed: 409
+// PRIVATE_PROJECTS_UNAVAILABLE, wrapped before the proof's own error.
+var errPrivateProjectsUnavailable = errors.New("the project stays public: a switch to private first proves that every hub serving private projects admits Dispatch through its auth service and that every listener replica reads the private projects, and that proof failed")
 
-// errPrivateProjectsUnavailable is a write that would make a project private while its
-// private-projects record cannot be written: 409 PRIVATE_PROJECTS_UNAVAILABLE.
-var errPrivateProjectsUnavailable = errors.New("the project stays public: every listener holds a private project's messages back by its key in the hub's " +
-	privateProjectsBucket + " bucket, and that key could not be written")
+// patchLockTimeout bounds each lock the PATCH access transaction waits for when it sets the
+// visibility or the Slack channels: the project's owner lock and the Slack channel lock. A lock
+// not taken within it answers 409 LOCK_TIMEOUT naming the lock (access.ErrLockTimeout), with
+// nothing changed. A variable only so a test lowers it.
+var patchLockTimeout = 60 * time.Second
 
 // errPrivateProjectNotProvisioned is a switch to private of a project the deployment does not name
 // among those it has provisioned as private: 409 PRIVATE_PROJECT_NOT_PROVISIONED, wrapped after the
@@ -169,11 +175,17 @@ func (s *server) getProjectAccess(w http.ResponseWriter, r *http.Request) {
 // and a body naming none is refused. A switch to private is refused before anything is read where the
 // deployment names no private project, with the bytes it always answered; once the owner is
 // known and before anything is written, for a project the deployment does not name (a private one
-// whose key left the list included), and for one whose rows or sessions the store has not filled.
-// Otherwise its private-projects record is written through the transaction as its last step, so a
-// refused record leaves the project as it was. A switch to public is refused by none of them. The
-// route makes no other bus call: deleting the key of a project made public, or of one whose commit
-// failed after its record was written, is the record writer's own pass (K7), not this route's.
+// whose key left the list included), and for one whose rows or sessions the store has not filled;
+// and, once every write of the body has run, while another private project lists one of the
+// project's Slack channels. A switch to private starts the channels' time (slack_channels_changed_at)
+// when the project names any, and its last step before the commit is the hub-admission proof
+// (proveHubAdmission), so a failed proof leaves the project as it was. A switch to public is refused
+// by none of them, and no write here makes a bus call: every listener reads the committed rows.
+//
+// One lock order (privateArm): the project's owner lock (ownerWrite), then the Slack channel lock
+// where a write takes it; a body that sets both the channels and private writes the channels first,
+// so the private arm reads the new list, and no write takes the owner lock after the channel lock.
+// A body that sets the visibility or the channels bounds each lock wait by patchLockTimeout.
 func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 	var input projectAccessInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -193,22 +205,43 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			"this deployment cannot make a project private yet: nothing was changed")
 		return
 	}
+	var lockTimeout time.Duration
+	if input.Visibility != nil || input.SlackChannels != nil {
+		lockTimeout = patchLockTimeout
+	}
 	// A shared channel's refusal names the other private project only to a caller who sees it: the
 	// viewer ownerWrite resolved from the request's own credential (readerOf), not the person
 	// actingPerson answers, by. Read as that person, a token listing no project would see the
 	// person's private projects, which the token does not.
-	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+	s.ownerWrite(w, r, "", lockTimeout, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		var appended []model.Event
 		var answer model.ProjectAccess
+		// switching is a full switch to private: every switch to private but one of a project the
+		// full switch already made private, which changes nothing. A project private some other
+		// way, before any full switch, runs the whole path.
+		switching := false
 		if visibility == model.ProjectPrivate {
 			if !s.privateProjectProvisioned(key) {
 				return model.ProjectAccess{}, nil, fmt.Errorf("%s %w", key, errPrivateProjectNotProvisioned)
 			}
-			if err := privateProjectIncomplete(ctx, tx, key); err != nil {
+			recorded, err := access.FullSwitchRecorded(ctx, tx, key)
+			if err != nil {
 				return model.ProjectAccess{}, nil, err
 			}
+			if switching = !recorded; switching {
+				if err := privateProjectIncomplete(ctx, tx, key); err != nil {
+					return model.ProjectAccess{}, nil, err
+				}
+			}
 		}
-		if input.Visibility != nil {
+		if input.SlackChannels != nil {
+			written, event, err := access.SetSlackChannels(ctx, tx, s.deps.Events, key, *input.SlackChannels, by, viewer)
+			if err != nil {
+				return model.ProjectAccess{}, nil, err
+			}
+			answer, appended = written, append(appended, event)
+		}
+		if input.Visibility != nil && (visibility != model.ProjectPrivate || switching) {
 			written, event, err := access.SetVisibility(ctx, tx, s.deps.Events, key, visibility, by)
 			if err != nil {
 				return model.ProjectAccess{}, nil, err
@@ -231,32 +264,61 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			}
 			answer, appended = written, append(appended, event)
 		}
-		if input.SlackChannels != nil {
-			written, event, err := access.SetSlackChannels(ctx, tx, s.deps.Events, key, *input.SlackChannels, by, viewer)
+		if switching {
+			written, err := s.privateArm(ctx, tx, key, viewer)
 			if err != nil {
 				return model.ProjectAccess{}, nil, err
 			}
-			answer, appended = written, append(appended, event)
+			answer = written
 		}
-		if visibility == model.ProjectPrivate {
-			if err := ensurePrivate(ctx, tx, s.deps.BusProjects, key); err != nil {
+		if len(appended) == 0 && !switching {
+			written, err := access.ReadWrittenProject(ctx, tx, key)
+			if err != nil {
 				return model.ProjectAccess{}, nil, err
 			}
+			answer = written
 		}
 		return answer, appended, nil
 	})
 }
 
-// ensurePrivate writes project key's private-projects record through bus and the write's
-// transaction tx, the write's last step before its commit. It answers
-// errPrivateProjectsUnavailable where it cannot: a deployment with no writer (a nil bus, which is
-// every deployment of this build), or a writer that refused the write, as a hub without its auth
-// service refuses every one.
-func ensurePrivate(ctx context.Context, tx pgx.Tx, bus BusProjects, key string) error {
-	if bus == nil {
-		return fmt.Errorf("%w: this deployment has no bus to write it to", errPrivateProjectsUnavailable)
+// privateArm is the end of a switch of project key to private, after every other write of the body
+// has run in tx: under the Slack channel lock, taken after the project's owner lock, it refuses the
+// switch while another private project lists one of the project's own channels, naming that project
+// only to viewer when viewer sees it (access.RefuseSharedSlackChannels), and starts the channels'
+// time when the project names any (access.StartSlackChannelsTime), and records the full switch
+// (access.RecordFullSwitch). Its last step, with nothing after it but the commit, is the
+// hub-admission proof, so a failed proof rolls back the record with the rest. It answers the
+// project's access as the switch leaves it.
+func (s *server) privateArm(ctx context.Context, tx pgx.Tx, key string, viewer *model.Viewer) (model.ProjectAccess, error) {
+	if err := access.RefuseSharedSlackChannels(ctx, tx, key, viewer); err != nil {
+		return model.ProjectAccess{}, err
 	}
-	if err := bus.EnsurePrivate(ctx, tx, key); err != nil {
+	if err := access.StartSlackChannelsTime(ctx, tx, key); err != nil {
+		return model.ProjectAccess{}, err
+	}
+	if err := access.RecordFullSwitch(ctx, tx, key); err != nil {
+		return model.ProjectAccess{}, err
+	}
+	answer, err := access.ReadWrittenProject(ctx, tx, key)
+	if err != nil {
+		return model.ProjectAccess{}, err
+	}
+	if err := proveHubAdmission(ctx, s.deps.HubAdmission); err != nil {
+		return model.ProjectAccess{}, err
+	}
+	return answer, nil
+}
+
+// proveHubAdmission is a switch to private's hub-admission proof, its last step before the commit.
+// It answers errPrivateProjectsUnavailable, wrapped before the cause, for a deployment with no
+// proof (a nil admission) and for a proof that failed, naming the hub or replica it names; the
+// proof itself takes no database lock and writes nothing.
+func proveHubAdmission(ctx context.Context, admission HubAdmission) error {
+	if admission == nil {
+		return fmt.Errorf("%w: this deployment names no hub to prove (DISPATCH_PRIVATE_HUBS)", errPrivateProjectsUnavailable)
+	}
+	if err := admission.Prove(ctx); err != nil {
 		return fmt.Errorf("%w: %w", errPrivateProjectsUnavailable, err)
 	}
 	return nil
@@ -292,7 +354,7 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 	if kind == access.PrincipalGroup {
 		group = strings.TrimSpace(principal)
 	}
-	s.ownerWrite(w, r, group, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+	s.ownerWrite(w, r, group, 0, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		answer, event, err := write(ctx, tx, s.deps.Events, key, kind, principal, by)
 		if err != nil {
 			return model.ProjectAccess{}, nil, err
@@ -309,13 +371,17 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 // write appended once it commits, and answers the project's access as the write left it. The
 // write is handed the caller's viewer, read from the request's own credential (readerOf), which a
 // refusal it makes reads to name only what that credential sees (access.SetSlackChannels).
+// lockTimeout, when not zero, is the transaction's first statement, `set local lock_timeout`: each
+// lock it then takes gives up after that long, in its own statement, and answers 409 LOCK_TIMEOUT
+// naming that lock (access.ErrLockTimeout) with nothing changed. `set local` ends with the
+// transaction, so the pooled connection keeps no bound of it.
 //
 // The caller's viewer is read first: a project the caller does not see answers 404
 // PROJECT_NOT_FOUND exactly as a key no project holds, before the owner is read. Only a caller who
 // sees the project, and so may read its access list, is then told it is not the owner, by the 403
 // PROJECT_OWNER_REQUIRED that names the owner; the other order would name a hidden project's owner
 // to anyone who guessed its key.
-func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string,
+func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string, lockTimeout time.Duration,
 	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error)) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -336,6 +402,12 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 		return
 	}
 	defer tx.Rollback(r.Context())
+	if lockTimeout > 0 {
+		if _, err := tx.Exec(r.Context(), fmt.Sprintf(`set local lock_timeout = '%dms'`, lockTimeout.Milliseconds())); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	owner, err := access.LockForAccessWrite(r.Context(), tx, key, group)
 	if err != nil {
 		s.writeAccessError(w, err)
@@ -379,6 +451,7 @@ func (s *server) writeAccessError(w http.ResponseWriter, err error) {
 		code   string
 		status int
 	}{
+		{access.ErrLockTimeout, "LOCK_TIMEOUT", http.StatusConflict},
 		{access.ErrProjectNotFound, "PROJECT_NOT_FOUND", http.StatusNotFound},
 		{access.ErrGroupNotFound, "GROUP_NOT_FOUND", http.StatusNotFound},
 		{access.ErrOwnerNotAllowed, "OWNER_NOT_ALLOWED", http.StatusBadRequest},

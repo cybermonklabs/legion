@@ -115,37 +115,73 @@ function accessOperation(project: string, change: AccessChange): AccessOperation
 }
 
 /** What the owner who pressed the Private switch reads when Dispatch refuses it, by the refusal's
- *  code. Dispatch's own words for these refusals are written for the deployment's operator (a
- *  table, an envoy-dispatch command, a setting, the hub's bucket) and stay in the server's log and
- *  record, so none of them is drawn here: each code the route answers (`api/project_access.go`)
- *  has a sentence that says what the owner can do, and a code this dashboard does not know has one
- *  that names nothing of Dispatch's. None offers Retry: each answer stays the same until someone
- *  changes the deployment, the store or the project, and the switch itself can still be pressed.
- *  PRIVATE_PROJECTS_UNAVAILABLE is one of them: this release of Dispatch has no writer of the
- *  hub's private-projects record, so it refuses with that code every switch to private that passes
- *  the other checks (`cmd/dispatch/README.md`). */
+ *  code, and whether Retry is offered. Dispatch's own words for these refusals are written for the
+ *  deployment's operator (a table, an envoy-dispatch command, a setting, a hub or listener replica
+ *  the switch's proof could not confirm, a lock) and stay in the server's log and record, so none
+ *  of them is drawn here: each code the route answers (`api/project_access.go`) has a sentence
+ *  that says what the owner can do, and a code this dashboard does not know has one that names
+ *  nothing of Dispatch's. SLACK_CHANNEL_SHARED is the one refusal whose words are the owner's:
+ *  they name the channel the owner listed, and the private project that lists it too only to a
+ *  reader who sees that project, so its sentence quotes them. Retry is offered where pressing
+ *  again can land with nothing else changed: PRIVATE_PROJECTS_UNAVAILABLE, the proof that every
+ *  hub admits Dispatch and every listener replica holds a private project's messages back failing
+ *  just now, and LOCK_TIMEOUT, another change of who may see a project holding a lock the switch
+ *  waited for. Every other answer stays the same until someone changes the deployment, the store
+ *  or the project, and the switch itself can still be pressed. */
 function switchRefusal(
   project: string,
   visibility: ProjectAccess["visibility"],
-  code: string | undefined
-): string {
-  switch (code) {
+  refused: ApiError
+): { readonly message: string; readonly retry: boolean } {
+  switch (refused.code) {
     case "PRIVATE_PROJECTS_OFF":
-      return "This deployment cannot make a project private yet: ask its operator to set up private projects.";
+      return {
+        message:
+          "This deployment cannot make a project private yet: ask its operator to set up private projects.",
+        retry: false,
+      };
     case "PRIVATE_PROJECT_NOT_PROVISIONED":
-      return `This deployment has not set up ${project} to be private: ask its operator to set it up.`;
+      return {
+        message: `This deployment has not set up ${project} to be private: ask its operator to set it up.`,
+        retry: false,
+      };
     case "PRIVATE_PROJECTS_INCOMPLETE":
-      return `This deployment is not ready to keep ${project} private yet: ask its operator to finish setting up private projects.`;
+      return {
+        message: `This deployment is not ready to keep ${project} private yet: ask its operator to finish setting up private projects.`,
+        retry: false,
+      };
     case "PRIVATE_PROJECTS_UNAVAILABLE":
-      return `This deployment cannot keep ${project}'s messages from other people yet, so ${project} stays public: ask its operator to set up private projects.`;
+      return {
+        message: `Dispatch could not confirm just now that ${project}'s messages would reach only the people who may see it, so ${project} stays public: try again in a moment, and if this keeps happening, ask the deployment's operator.`,
+        retry: true,
+      };
+    case "LOCK_TIMEOUT":
+      return {
+        message: `Another change to who may see a project was still being saved, so Dispatch did not make ${project} ${visibility}: try again in a moment.`,
+        retry: true,
+      };
+    case "SLACK_CHANNEL_SHARED":
+      return {
+        message: `${project} stays public: ${refused.message}. Take that channel off ${project}'s Slack channels below, then make ${project} private.`,
+        retry: false,
+      };
     case "PROJECT_OWNER_REQUIRED":
-      return `Only ${project}'s owner can change who may see it.`;
+      return { message: `Only ${project}'s owner can change who may see it.`, retry: false };
     case "PROJECT_NOT_FOUND":
-      return `You can no longer see ${project}, so you cannot change who may see it.`;
+      return {
+        message: `You can no longer see ${project}, so you cannot change who may see it.`,
+        retry: false,
+      };
     case "PROJECT_ACCESS_INPUT":
-      return "Dispatch did not take this change: reload the page and press the switch again.";
+      return {
+        message: "Dispatch did not take this change: reload the page and press the switch again.",
+        retry: false,
+      };
     default:
-      return `Dispatch did not make ${project} ${visibility}: if this keeps happening, ask the deployment's operator.`;
+      return {
+        message: `Dispatch did not make ${project} ${visibility}: if this keeps happening, ask the deployment's operator.`,
+        retry: false,
+      };
   }
 }
 
@@ -251,11 +287,12 @@ const rowClass = `flex min-h-11 items-center justify-between gap-3 border-b px-4
  * is disabled for anyone else, with the reason as its title and on the page above them; whether
  * the reader is the owner is `/auth/whoami`'s `login` against the answer's `owner`, read from the
  * identity the shell already holds. Dispatch refuses the switch with a code (PRIVATE_PROJECTS_OFF,
- * PRIVATE_PROJECT_NOT_PROVISIONED, PRIVATE_PROJECTS_INCOMPLETE, PRIVATE_PROJECTS_UNAVAILABLE and
- * others), and the switch shows beside it the owner's sentence for that code (`switchRefusal`),
- * never Dispatch's own words, which are the operator's. A switch to public, which shows the
- * project and everything in it to every full member, is sent only once the owner confirms it, as
- * giving the project away is; a switch to private asks nothing, since it shows nobody more.
+ * PRIVATE_PROJECT_NOT_PROVISIONED, PRIVATE_PROJECTS_INCOMPLETE, PRIVATE_PROJECTS_UNAVAILABLE,
+ * LOCK_TIMEOUT, SLACK_CHANNEL_SHARED and others), and the switch shows beside it the owner's
+ * sentence for that code (`switchRefusal`), which quotes none of Dispatch's own words but the
+ * shared channel's, which are the owner's. A switch to public, which shows the project and
+ * everything in it to every full member, is sent only once the owner confirms it, as giving the
+ * project away is; a switch to private asks nothing, since it shows nobody more.
  */
 export function ProjectAccessPanel({ project }: { project: string }): ReactNode {
   const ids = useId();
@@ -338,15 +375,12 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
     if (operation.part !== part) {
       return null;
     }
-    // Dispatch's answer to the switch is said in the owner's words, with no Retry; a request
-    // Dispatch did not answer, and every other part's refusal, keeps the operation's line and its
-    // Retry.
+    // Dispatch's answer to the switch is said in the owner's words, with Retry only where pressing
+    // again can land (`switchRefusal`); a request Dispatch did not answer, and every other part's
+    // refusal, keeps the operation's line and its Retry.
     const shown =
       refused.change.kind === "visibility" && refused.error instanceof ApiError
-        ? {
-            message: switchRefusal(project, refused.change.visibility, refused.error.code),
-            retry: false,
-          }
+        ? switchRefusal(project, refused.change.visibility, refused.error)
         : { message: apiErrorMessage(refused.error, operation.refusal), retry: true };
     return (
       <div className="mt-3">

@@ -148,10 +148,10 @@ type Deps struct {
 	// private (privateProjectProvisioned). Empty refuses every switch to private 409
 	// PRIVATE_PROJECTS_OFF before anything is read, as every deployment before the setting did.
 	PrivateProjects []string
-	// BusProjects writes the private-projects record the listeners hold a private project's
-	// messages back by (K7). nil, which is what cmd/dispatch passes in this build, is a deployment
-	// with no writer: a project cannot be made private (409 PRIVATE_PROJECTS_UNAVAILABLE).
-	BusProjects BusProjects
+	// HubAdmission is the private-hub admission proof a switch to private makes last before its
+	// commit (cmd/dispatch: busprojects.HubAdmission over DISPATCH_PRIVATE_HUBS). nil is a
+	// deployment with no proof: a project cannot be made private (409 PRIVATE_PROJECTS_UNAVAILABLE).
+	HubAdmission HubAdmission
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such
 	// credential kind and answers a DPoP presentation exactly as it always has.
@@ -278,9 +278,9 @@ type DepsInput struct {
 	// has checked each subject's form and that every access account is also admitted.
 	OIDCAccounts   []string
 	AccessAccounts []string
-	// PrivateProjects and BusProjects are Deps.PrivateProjects and Deps.BusProjects.
+	// PrivateProjects and HubAdmission are Deps.PrivateProjects and Deps.HubAdmission.
 	PrivateProjects []string
-	BusProjects     BusProjects
+	HubAdmission    HubAdmission
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *brokertoken.Verifier
@@ -397,7 +397,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		OIDCAccounts:           input.OIDCAccounts,
 		AccessAccounts:         input.AccessAccounts,
 		PrivateProjects:        input.PrivateProjects,
-		BusProjects:            input.BusProjects,
+		HubAdmission:           input.HubAdmission,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
 		AgentPublisher:         input.AgentPublisher,

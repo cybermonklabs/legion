@@ -220,6 +220,13 @@ type bootConfig struct {
 	// the order given: never read as a key, and logged at boot as one ERROR line each
 	// (reportIgnoredPrivateProjects).
 	PrivateProjectsIgnored []string
+	// PrivateHubs is DISPATCH_PRIVATE_HUBS: the NATS URLs of the hubs that serve private projects,
+	// in the order given and each once (privateHubsSetting), every one of which a switch to private
+	// proves admits Dispatch before it commits. HubAdmissionTokenFile is
+	// DISPATCH_HUB_ADMISSION_TOKEN_FILE, the file holding the token each proof connection presents,
+	// required with any hub and read at each dial, never here: a projected token rotates.
+	PrivateHubs           []string
+	HubAdmissionTokenFile string
 	// AgentSecretsURL is DISPATCH_AGENT_SECRETS_URL, the secrets broker's API; empty means the
 	// credential-request feature is off. AgentSecretsTokenFile is
 	// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
@@ -633,6 +640,13 @@ func main() {
 	if brokerTokens != nil {
 		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
 	}
+	// The private-hub admission proof a switch to private makes before it commits, and the
+	// outbox's hold of a private project's events while any hub is unproven (startHubAdmission).
+	// This build runs none: the proof over one client per hub of boot.PrivateHubs is
+	// busprojects.HubAdmission, which this tree does not hold yet, so every switch to private is 409
+	// PRIVATE_PROJECTS_UNAVAILABLE and the outbox holds nothing.
+	switchAdmission, privateHubsReady := startHubAdmission(ctx, boot, nil)
+	built.HubAdmission = switchAdmission
 	appCtx, err := routes.BuildAppContext(appContextOptions(boot, built))
 
 	if err != nil {
@@ -833,6 +847,7 @@ func main() {
 			PublishFailures:  outboxPublishFailures,
 			RoleForwardsHeld: outboxRoleForwardsHeld,
 			Metrics:          met,
+			PrivateHubsReady: privateHubsReady,
 		})
 		outboxStopped = make(chan struct{})
 		go func() {
@@ -1457,6 +1472,15 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	boot.PrivateProjects, boot.PrivateProjectsIgnored = privateProjectsSetting(env.get("DISPATCH_PRIVATE_PROJECTS"))
+	// A hub named with no token to prove it by is a malformed setting, not a project's condition, so
+	// it refuses the start as DISPATCH_AGENT_SECRETS_URL without its token file does; the component
+	// refuses the same pair at preview (gcp:Dispatch, privateHubs).
+	if boot.PrivateHubs = privateHubsSetting(env.get("DISPATCH_PRIVATE_HUBS")); len(boot.PrivateHubs) > 0 {
+		boot.HubAdmissionTokenFile = strings.TrimSpace(env.get("DISPATCH_HUB_ADMISSION_TOKEN_FILE"))
+		if boot.HubAdmissionTokenFile == "" {
+			return bootConfig{}, errors.New("DISPATCH_HUB_ADMISSION_TOKEN_FILE is required when DISPATCH_PRIVATE_HUBS is set: each switch to private proves every hub admits Dispatch with that token")
+		}
+	}
 	for _, setting := range []struct {
 		name   string
 		target *bool
