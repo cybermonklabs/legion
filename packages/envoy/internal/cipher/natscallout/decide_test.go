@@ -27,10 +27,10 @@ import (
 )
 
 // encodeAnswer is the authorization response the server reads for req, signed by issuer: the
-// verdict admit settles, signed, as answer runs them, for a test that holds a decision and no
-// running service.
+// verdict admit settles, placed in the global account, signed, as answer runs them, for a test
+// that holds a decision and no running service.
 func encodeAnswer(issuer nkeys.KeyPair, req Request, decision Decision, refusal error) (string, error) {
-	user, refused := admit(req, decision, asRefusal(refusal))
+	user, refused := admit(config.GlobalNATSAccount, req, decision, asRefusal(refusal))
 	return sign(issuer, req, user, refused)
 }
 
@@ -317,7 +317,7 @@ func TestTheUserExpiresWithItsCredential(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, row.expiry, admitted.Expires, "the user expires at %s, its credential at %s",
 				time.Unix(admitted.Expires, 0), time.Unix(row.expiry, 0))
-			require.Equal(t, globalAccount, admitted.Audience)
+			require.Equal(t, config.GlobalNATSAccount, admitted.Audience)
 			require.Equal(t, decision.Name, admitted.Name)
 			require.Equal(t, userKey, admitted.Subject)
 		})
@@ -374,7 +374,7 @@ func TestAGrantNamingASystemSubjectIsRefused(t *testing.T) {
 			response, err := jwt.DecodeAuthorizationResponseClaims(encoded)
 			require.NoError(t, err)
 			require.Equal(t, row.refusal, response.Error)
-			_, refused := admit(Request{UserNkey: userKey}, Decision{Grant: grant}, nil)
+			_, refused := admit(config.GlobalNATSAccount, Request{UserNkey: userKey}, Decision{Grant: grant}, nil)
 			if row.refusal != "" {
 				require.Empty(t, response.Jwt, "a user was encoded for a grant naming a system subject")
 				require.NotNil(t, refused)

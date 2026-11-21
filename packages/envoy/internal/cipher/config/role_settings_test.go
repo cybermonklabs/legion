@@ -127,6 +127,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_NATS_K8S_AUDIENCE":     givesNone("an audience"),
 	"BROKER_NATS_GOOGLE_AUDIENCE":  givesNone("an audience"),
 	"BROKER_NATS_URLS":             givesNone("the NATS hub's URLs"),
+	"BROKER_NATS_ACCOUNT":          givesNone("the hub account admitted clients are placed in"),
 
 	"BROKER_POD_REGISTRARS":            givesARole("a BROKER_POD_REGISTRARS entry names it as its registrar"),
 	"BROKER_POD_REGISTRATION_AUDIENCE": givesNone("an audience"),

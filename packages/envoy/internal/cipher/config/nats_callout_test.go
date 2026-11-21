@@ -48,7 +48,8 @@ func entryTexts(services []NATSService) string {
 // The NATS auth service's settings: none set is no service, and neither is BROKER_NATS_SERVICES
 // alone holding only edge listeners' entries; any other set needs the hub's URLs and the three
 // seed files, each holding a seed of its own kind; an audience for a kind of platform token needs
-// that kind's issuer, and an edge listener's account the issuer its identity token comes from;
+// that kind's issuer, and an edge listener's account the issuer its identity token comes from; the
+// hub account is $G unset, and refused naming its setting unless it is $G or one subject token;
 // and the shared Envoy bearer is gone, its variables refused naming the account token file that
 // replaces it.
 func TestNATSCalloutSettings(t *testing.T) {
@@ -83,14 +84,31 @@ func TestNATSCalloutSettings(t *testing.T) {
 		}
 		want := NATSCallout{
 			URLs: []string{"nats://hub-a:4222", "nats://hub-b:4222"}, SeedFile: user, IssuerSeedFile: account, XKeySeedFile: curve,
-			K8sAudience: "envoy-nats", GoogleAudience: "envoy-nats-google",
+			K8sAudience: "envoy-nats", GoogleAudience: "envoy-nats-google", Account: GlobalNATSAccount,
 		}
 		if !cfg.NATS.Enabled() || strings.Join(cfg.NATS.URLs, " ") != strings.Join(want.URLs, " ") ||
 			cfg.NATS.SeedFile != want.SeedFile || cfg.NATS.IssuerSeedFile != want.IssuerSeedFile || cfg.NATS.XKeySeedFile != want.XKeySeedFile ||
-			entryTexts(cfg.NATS.Services) != e["BROKER_NATS_SERVICES"] || cfg.NATS.K8sAudience != want.K8sAudience || cfg.NATS.GoogleAudience != want.GoogleAudience {
+			entryTexts(cfg.NATS.Services) != e["BROKER_NATS_SERVICES"] || cfg.NATS.K8sAudience != want.K8sAudience || cfg.NATS.GoogleAudience != want.GoogleAudience ||
+			cfg.NATS.Account != want.Account {
 			t.Fatalf("read %+v, want %+v with the services %s", cfg.NATS, want, e["BROKER_NATS_SERVICES"])
 		}
 	})
+	// BROKER_NATS_ACCOUNT is the account every client the service admits is placed in: $G unset,
+	// and as given when it is $G or one subject token, its surrounding space trimmed as every
+	// other setting's is.
+	for raw, want := range map[string]string{"$G": GlobalNATSAccount, "ENVOY": "ENVOY", " ENVOY ": "ENVOY", "envoy_clients-2": "envoy_clients-2"} {
+		t.Run("the account "+strconv.Quote(raw), func(t *testing.T) {
+			e := full()
+			e[NATSAccountVariable] = raw
+			cfg, err := Load(env(e))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.NATS.Account != want {
+				t.Fatalf("%s %q read as account %q, want %q", NATSAccountVariable, raw, cfg.NATS.Account, want)
+			}
+		})
+	}
 	// BROKER_NATS_SERVICES alone runs no auth service, and is read for the edge listeners its
 	// entries name (GET /v1/project-repositories): with every entry an edge-listener one, it loads
 	// as it was given and the service stays off.
@@ -204,6 +222,16 @@ func TestNATSCalloutSettings(t *testing.T) {
 		{"the shared Envoy bearer", func(e map[string]string) { e["BROKER_ENVOY_TOKEN"] = "shared" }, "BROKER_ENVOY_ACCOUNT_TOKEN_FILE"},
 		{"the shared Envoy bearer's file", func(e map[string]string) { e["BROKER_ENVOY_TOKEN_FILE"] = "/run/token" }, "BROKER_ENVOY_ACCOUNT_TOKEN_FILE"},
 		{"an Envoy URL with no account token", func(e map[string]string) { e["BROKER_ENVOY_URL"] = "https://listener.example" }, "BROKER_ENVOY_ACCOUNT_TOKEN_FILE"},
+		{"an account of two tokens", func(e map[string]string) { e[NATSAccountVariable] = "a.b" }, NATSAccountVariable},
+		{"an account with a space", func(e map[string]string) { e[NATSAccountVariable] = "ENVOY X" }, NATSAccountVariable},
+		{"an account that is a wildcard", func(e map[string]string) { e[NATSAccountVariable] = ">" }, NATSAccountVariable},
+		{"the system account", func(e map[string]string) { e[NATSAccountVariable] = "$SYS" }, NATSAccountVariable},
+		{"only the account", func(e map[string]string) {
+			for _, name := range []string{"BROKER_NATS_URLS", "BROKER_NATS_SEED_FILE", "BROKER_NATS_ISSUER_SEED_FILE", "BROKER_NATS_XKEY_SEED_FILE", "BROKER_NATS_SERVICES"} {
+				delete(e, name)
+			}
+			e[NATSAccountVariable] = "ENVOY"
+		}, "BROKER_NATS_URLS"},
 	}
 	for _, row := range refusals {
 		t.Run(row.name, func(t *testing.T) {

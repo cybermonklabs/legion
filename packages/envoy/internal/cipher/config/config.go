@@ -770,7 +770,7 @@ type Config struct {
 	EnvoyAccountTokenFile string
 	// BROKER_NATS_URLS, BROKER_NATS_SEED_FILE, BROKER_NATS_ISSUER_SEED_FILE,
 	// BROKER_NATS_XKEY_SEED_FILE, BROKER_NATS_SERVICES, BROKER_NATS_K8S_AUDIENCE,
-	// BROKER_NATS_GOOGLE_AUDIENCE: the NATS auth service the broker runs
+	// BROKER_NATS_GOOGLE_AUDIENCE, BROKER_NATS_ACCOUNT: the NATS auth service the broker runs
 	// (internal/cipher/natscallout), which the Envoy hub sends the authorization of every
 	// connection its configuration lists no static user for, and which answers each with a NATS
 	// user of that connection's own. BROKER_NATS_URLS is the hub's servers, comma separated, each
@@ -802,9 +802,15 @@ type Config struct {
 	// has no audience is refused at start naming it. An edge listener's entry needs neither: no
 	// edge listener's connection is admitted whatever its token, so an audience would admit
 	// nothing, and without one its connection is refused at the token check. A session presents
-	// its broker access token and needs neither. All unset, or BROKER_NATS_SERVICES alone holding
-	// only edge listeners' entries, the broker runs no auth service; any other set needs the URLs
-	// and the three seed files.
+	// its broker access token and needs neither. BROKER_NATS_ACCOUNT is the hub account every
+	// client the service admits is placed in, the audience of each user it answers: $G, the global
+	// account, when unset, where a hub whose configuration names no account keeps every user; a
+	// hub that keeps JetStream in an account of its own names the account its clients sit in, and
+	// must declare it before the broker names it, since a hub refuses every client placed in an
+	// account it does not have. Any value but $G or one subject token of letters, digits, '_' and
+	// '-' refuses the start, naming the setting (ParseNATSAccount). All unset, or
+	// BROKER_NATS_SERVICES alone holding only edge listeners' entries, the broker runs no auth
+	// service; any other set needs the URLs and the three seed files.
 	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was
@@ -995,6 +1001,8 @@ type NATSCallout struct {
 	// one reading the auth service, the API's edge listeners and every check of Load take.
 	Services                    []NATSService
 	K8sAudience, GoogleAudience string
+	// Account is BROKER_NATS_ACCOUNT as ParseNATSAccount reads it, GlobalNATSAccount when unset.
+	Account string
 }
 
 // Enabled reports whether the broker runs the auth service.

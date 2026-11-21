@@ -5,22 +5,60 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/nats-io/nkeys"
 )
 
+// NATSAccountVariable is the setting ParseNATSAccount reads.
+const NATSAccountVariable = "BROKER_NATS_ACCOUNT"
+
+// GlobalNATSAccount is nats-server's global account, the one a hub whose configuration names no
+// account keeps every user and stream in, and the NATS auth service's account when
+// NATSAccountVariable is unset.
+const GlobalNATSAccount = "$G"
+
+// natsAccountName is an account NATSAccountVariable may name besides GlobalNATSAccount: one subject
+// token of letters, digits, '_' and '-'.
+var natsAccountName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// ParseNATSAccount is the account BROKER_NATS_ACCOUNT names, raw: the account every client the NATS
+// auth service admits is placed in, which the user JWT it answers names as its audience, and which
+// a hub in config mode places the client in (nats-server server/auth_callout.go,
+// assignAccountAndPermissions). Unset, it is GlobalNATSAccount, where a hub with no accounts block
+// keeps every user; a hub that keeps JetStream in an account of its own keeps its clients in
+// another, which this names. Any value but GlobalNATSAccount or one subject token of
+// [A-Za-z0-9_-] is refused, naming the setting: the server writes the account as one token of its
+// own subjects ($SYS.ACCOUNT.<account>.CONNECT), and a hub that declares no account of the name
+// refuses every client the service admits. It is the one reader of the setting: the broker's start
+// checks it (loadNATSCallout), and the service reads its account with it (natscallout.Start).
+func ParseNATSAccount(raw string) (string, error) {
+	switch {
+	case raw == "":
+		return GlobalNATSAccount, nil
+	case raw == GlobalNATSAccount || natsAccountName.MatchString(raw):
+		return raw, nil
+	}
+	return "", fmt.Errorf("%s %q must be %s or one subject token of letters, digits, '_' and '-'", NATSAccountVariable, raw, GlobalNATSAccount)
+}
+
 // loadNATSCallout reads the NATS auth service's settings (Config.NATS). BROKER_NATS_SERVICES is
 // parsed first (ParseNATSServices), so an entry of no form is refused for its form before any rule
-// here reads its kind or its account. None set is no service; BROKER_NATS_SERVICES alone is no
-// service either, when every entry of it is an edge listener's, which the broker reads for
-// GET /v1/project-repositories whether or not it answers a hub; any other set needs
-// BROKER_NATS_URLS and the three seed files, each holding a seed of its own kind;
-// BROKER_NATS_K8S_AUDIENCE needs k8sIssuer, BROKER_K8S_OIDC_ISSUER. A hub URL carrying user info,
-// or one that is no URL, is refused by its place in the list (hubURLRefusal). No refusal carries
-// a seed or a URL.
+// here reads its kind or its account, and BROKER_NATS_ACCOUNT next (ParseNATSAccount). None set is
+// no service; BROKER_NATS_SERVICES alone is no service either, when every entry of it is an edge
+// listener's, which the broker reads for GET /v1/project-repositories whether or not it answers a
+// hub; any other set needs BROKER_NATS_URLS and the three seed files, each holding a seed of its
+// own kind; BROKER_NATS_K8S_AUDIENCE needs k8sIssuer, BROKER_K8S_OIDC_ISSUER. A hub URL carrying
+// user info, or one that is no URL, is refused by its place in the list (hubURLRefusal). No
+// refusal carries a seed or a URL.
 func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout, error) {
 	services, err := ParseNATSServices(getenv(NATSServicesVariable))
+	if err != nil {
+		return NATSCallout{}, err
+	}
+	rawAccount := strings.TrimSpace(getenv(NATSAccountVariable))
+	account, err := ParseNATSAccount(rawAccount)
 	if err != nil {
 		return NATSCallout{}, err
 	}
@@ -31,6 +69,7 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 		Services:       services,
 		K8sAudience:    strings.TrimSpace(getenv("BROKER_NATS_K8S_AUDIENCE")),
 		GoogleAudience: strings.TrimSpace(getenv("BROKER_NATS_GOOGLE_AUDIENCE")),
+		Account:        account,
 	}
 	for index, entry := range strings.Split(getenv("BROKER_NATS_URLS"), ",") {
 		entry = strings.TrimSpace(entry)
@@ -43,7 +82,7 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 		settings.URLs = append(settings.URLs, entry)
 	}
 	if settings.URLs == nil && settings.SeedFile == "" && settings.IssuerSeedFile == "" && settings.XKeySeedFile == "" &&
-		settings.K8sAudience == "" && settings.GoogleAudience == "" {
+		settings.K8sAudience == "" && settings.GoogleAudience == "" && rawAccount == "" {
 		// No service: only edge listeners' entries are read without one. Any other entry is
 		// the auth service's alone, which this broker would not run, so it is refused rather than
 		// silently admitting nothing.

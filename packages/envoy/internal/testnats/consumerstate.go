@@ -132,6 +132,25 @@ func AwaitConsumerStored(t testing.TB, conn *natsgo.Conn, stream, consumer strin
 // the account conn belongs to (AwaitConsumerStored).
 func consumerStatePath(t testing.TB, conn *natsgo.Conn, stream, consumer string) string {
 	t.Helper()
+	server, account := connPlace(t, conn)
+	return filepath.Join(server.store, "jetstream", account, "streams", stream, "obs", consumer, "o.dat")
+}
+
+// ConnAccount is the account the server conn is connected to holds conn in, as that server's
+// Connz names it for conn's client id, "$G" where it names none: a test of where a hub placed a
+// client reads it here. It fails the test as connPlace does.
+func ConnAccount(t testing.TB, conn *natsgo.Conn) string {
+	t.Helper()
+	_, account := connPlace(t, conn)
+	return account
+}
+
+// connPlace is the server conn is connected to, and the account that server holds conn in, as its
+// Connz names it for conn's client id ("$G" when it names none). It fails the test when conn
+// reaches no server this package started and registered, and when the server holds no connection
+// by conn's client id.
+func connPlace(t testing.TB, conn *natsgo.Conn) (*Server, string) {
+	t.Helper()
 	connected := conn.ConnectedUrlRedacted()
 	parsed, err := url.Parse(connected)
 	if err != nil || parsed.Host == "" {
@@ -163,7 +182,7 @@ func consumerStatePath(t testing.TB, conn *natsgo.Conn, stream, consumer string)
 	if account == "" {
 		account = "$G"
 	}
-	return filepath.Join(server.store, "jetstream", account, "streams", stream, "obs", consumer, "o.dat")
+	return server, account
 }
 
 // readStoredConsumer reads the position in the consumer state file at path (AwaitConsumerStored).
