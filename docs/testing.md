@@ -58,7 +58,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 `bun test` runs every file of a package in one process, so what one file leaves behind is what the
 next file reads: a directory, an environment variable, a port, a container, a cache. These rules are
 how a file leaves nothing behind. `@legion/test-fixtures` holds the shared pieces, and nine
-packages depend on it: broker-client, claude-envoy, contracts, dispatch, envoy-client, pi-envoy,
+packages depend on it: cipher-client, claude-envoy, contracts, dispatch, envoy-client, pi-envoy,
 pi-legion, pi-shared and proof-editor. The one Bun package that does not is the fixture package
 itself, whose tests import its sources by relative path.
 

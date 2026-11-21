@@ -80,7 +80,7 @@ type ChainVerifier struct {
 	// JudgeSeconds is the airlock rules' bound on the lifetime the model judge may decide for
 	// one secret (proxyrules.Rules.JudgeSeconds), which MayJudge holds a judge's approval to. It
 	// is a func field for the same reason MayJudge takes one: this package must not import
-	// airlock. A verifier that leaves it nil never admits a judge's approval, since MayJudge
+	// proxyrules. A verifier that leaves it nil never admits a judge's approval, since MayJudge
 	// refuses with no bound available — which is what enroll.NewChainVerifier does, a launcher
 	// credential being no record the judge ever decides.
 	JudgeSeconds func(secret string) (uint32, bool)

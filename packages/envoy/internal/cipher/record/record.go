@@ -625,8 +625,8 @@ var ErrNotJudgeable = errors.New("not a request the model judge may decide")
 // that then refuses cannot drift apart. Each caller keeps its own refusal wording, which is
 // what a person reads; only the comparison is shared.
 //
-// It lives in this package rather than beside JudgeSeconds in airlock because MayJudge must
-// reach it and this package must not import airlock; the other two callers already import
+// It lives in this package rather than beside JudgeSeconds in proxyrules because MayJudge must
+// reach it and this package must not import proxyrules; the other two callers already import
 // this one. Both sides are widened to int64, the bound being a uint32 and the lifetime an int,
 // so neither is ever cut to the other's range.
 func JudgeAllowsLifetime(bound uint32, lifetimeSeconds int) bool {
@@ -647,7 +647,7 @@ func JudgeAllowsLifetime(bound uint32, lifetimeSeconds int) bool {
 // nil decided is every key decided.
 //
 // judgeSeconds is the rules file's answer for one secret (proxyrules.Rules.JudgeSeconds); both
-// funcs are injected because this package must not import airlock or read the request rows. A
+// funcs are injected because this package must not import proxyrules or read the request rows. A
 // nil judgeSeconds is no bound at all and refuses, as a record with no lifetime does: an
 // unbounded grant is exactly what the judge's seconds are there to bound, so nothing the rules
 // say can admit it.
