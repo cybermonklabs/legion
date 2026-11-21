@@ -69,7 +69,7 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 		}{
 			"Listener":     {withSelectionBucket(base.Listener[id]), natsgrant.Listener(id)},
 			"ListenerHost": {withSelectionBucket(base.ListenerHost[id]), natsgrant.ListenerHost(id)},
-			"Dispatch":     {base.Dispatch[id], natsgrant.Dispatch(id)},
+			"Dispatch":     {withListenerSelectionKey(base.Dispatch[id], id), natsgrant.Dispatch(id, natsgrant.DispatchIntake{})},
 			"Host":         {base.Host[id], natsgrant.Host(id)},
 		} {
 			requireSet(t, pair.want, pair.got, name+"("+strconv.Quote(id)+")")
@@ -98,6 +98,17 @@ func withSelectionBucket(s set) set {
 	return s
 }
 
+// withListenerSelectionKey is s with what Dispatch's grant adds for the listener beside it: the
+// selection bucket's leader-answered get (its sentinel and its own key) and the write of its own
+// listener durable's key alone, the machine id's.
+func withListenerSelectionKey(s set, machineID string) set {
+	s.Publish = append(slices.Clone(s.Publish),
+		"$JS.API.STREAM.MSG.GET.KV_"+consumernames.SessionBucket,
+		"$KV."+consumernames.SessionBucket+"."+consumernames.DurableKey(bus.ListenerDurable(machineID)),
+	)
+	return s
+}
+
 // The selection bucket's grant writes its keys and reads them from the stream's leader, and can
 // neither create the bucket's stream nor update it, so a listener never makes a lost bucket again
 // empty. Only the users that manage session consumers hold it.
@@ -113,14 +124,14 @@ func TestTheListenerWritesTheSelectionBucketAndCannotCreateIt(t *testing.T) {
 		for name, grant := range map[string]natsgrant.Permissions{
 			"Listener":     natsgrant.Listener("example-host-a"),
 			"ListenerHost": natsgrant.ListenerHost("example-host-a"),
-			"Dispatch":     natsgrant.Dispatch("example-host-a"),
+			"Dispatch":     natsgrant.Dispatch("example-host-a", natsgrant.DispatchIntake{}),
 			"Host":         natsgrant.Host("example-host-a"),
 		} {
 			require.NotContains(t, grant.Publish, refused, "%s may create or update the selection bucket", name)
 		}
 	}
 	require.Contains(t, natsgrant.Listener("example-host-a").Publish, "$KV."+consumernames.SessionBucket+".>")
-	require.NotContains(t, natsgrant.Dispatch("example-host-a").Publish, "$KV."+consumernames.SessionBucket+".>")
+	require.NotContains(t, natsgrant.Dispatch("example-host-a", natsgrant.DispatchIntake{}).Publish, "$KV."+consumernames.SessionBucket+".>")
 	require.NotContains(t, natsgrant.Host("example-host-a").Publish, "$KV."+consumernames.SessionBucket+".>")
 }
 
@@ -210,7 +221,9 @@ func TestNamesSystemSubject(t *testing.T) {
 	for _, id := range []string{"example-host-a", "example-dispatch", "example-hub"} {
 		grants["Listener("+id+")"] = natsgrant.Listener(id)
 		grants["ListenerHost("+id+")"] = natsgrant.ListenerHost(id)
-		grants["Dispatch("+id+")"] = natsgrant.Dispatch(id)
+		grants["Dispatch("+id+")"] = natsgrant.Dispatch(id, natsgrant.DispatchIntake{})
+		grants["Dispatch("+id+", intake)"] = natsgrant.Dispatch(id, natsgrant.ParseDispatchConnection("dispatch-intake/delivery-events/new/old"))
+		grants["Dispatch("+id+", cleanup)"] = natsgrant.Dispatch(id, natsgrant.ParseDispatchConnection("dispatch-cleanup/delivery-jobs/old"))
 		grants["Host("+id+")"] = natsgrant.Host(id)
 	}
 	for name, grant := range grants {

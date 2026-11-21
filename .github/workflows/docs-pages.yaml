@@ -223,6 +223,7 @@ on:
       - 'packages/envoy/internal/store/*'
       - 'packages/envoy/listenerwire/*'
       - 'packages/envoy/listenfd/*'
+      - 'packages/envoy/consumernames/*'
       # The docs filter's own:
       # agentloop: the model loop cmd/cipherd's judge runs a model and its tools through.
       - 'packages/envoy/agentloop/*'

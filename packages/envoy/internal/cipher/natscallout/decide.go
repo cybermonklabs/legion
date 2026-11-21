@@ -70,6 +70,10 @@ type Request struct {
 	// User and Password are the CONNECT's user and password: natscred.ServiceUser and a
 	// service's platform identity token.
 	User, Password string
+	// Name is the CONNECT's connection name. Dispatch's grant reads the fresh generations it names
+	// (natsgrant.ParseDispatchConnection); no other kind's grant reads it. A reconnect sends it
+	// again and is decided again.
+	Name string
 	// Host is the client's address, for the log.
 	Host string
 }
@@ -149,11 +153,12 @@ func credentialKind(req Request) string {
 	return credentialNone
 }
 
-// serviceGrant is entry's kind's grant, before it is held to the entry's projects.
-func serviceGrant(entry ServiceEntry) natsgrant.Permissions {
+// serviceGrant is entry's kind's grant for a connection named name, before it is held to the
+// entry's projects: Dispatch's adds the fresh generations name asks for.
+func serviceGrant(entry ServiceEntry, name string) natsgrant.Permissions {
 	switch entry.Kind {
 	case KindDispatch:
-		return natsgrant.Dispatch(entry.MachineID)
+		return natsgrant.Dispatch(entry.MachineID, natsgrant.ParseDispatchConnection(name))
 	case KindListener:
 		return natsgrant.Listener(entry.MachineID)
 	case KindDaemon:
@@ -277,7 +282,7 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 	if entry == nil {
 		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+account)
 	}
-	grant, err := scopeGrant(*entry, serviceGrant(*entry))
+	grant, err := scopeGrant(*entry, serviceGrant(*entry, req.Name))
 	if err != nil {
 		return Decision{}, err
 	}

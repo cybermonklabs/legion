@@ -143,7 +143,7 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	}
 	deps := Deps{ServiceToken: serviceTokens(tokens)}
 	for raw, want := range map[string]Decision{
-		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch"), Expires: now.Add(time.Hour)},
+		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{}), Expires: now.Add(time.Hour)},
 		"listener-token": {Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)},
 		"daemon-token":   {Name: "daemon/" + daemonAccount, Grant: natsgrant.Daemon(), Expires: now.Add(30 * time.Minute)},
 		"measure-token":  {Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)},
@@ -154,6 +154,44 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 			require.Equal(t, want, decision)
 		})
 	}
+}
+
+// A Dispatch connection's own name decides which fresh generations its grant adds: an intake's
+// name its generation and the one it replaces, a cleanup's name its one generation, and every
+// other name nothing, so Dispatch's publisher and the fixed mode's intakes keep the fixed grant.
+// The name is the connection's, read from the CONNECT and so read again at each reconnect. The
+// same name under another kind's credential adds nothing: only Dispatch's grant reads it.
+func TestADispatchConnectionsNameAddsTheGenerationsItNames(t *testing.T) {
+	now := time.Now()
+	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
+		"dispatch-token": {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
+		"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
+	})}
+	intake := natsgrant.DispatchIntakeConnection("delivery-events", "Gen1", "Gen0")
+	cleanup := natsgrant.DispatchCleanupConnection("delivery-jobs", "Gen0")
+	for _, row := range []struct {
+		token, name string
+		want        natsgrant.Permissions
+	}{
+		{"dispatch-token", intake, natsgrant.Dispatch("example-dispatch", natsgrant.ParseDispatchConnection(intake))},
+		{"dispatch-token", cleanup, natsgrant.Dispatch("example-dispatch", natsgrant.ParseDispatchConnection(cleanup))},
+		{"dispatch-token", "dispatch-intake", natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{})},
+		{"dispatch-token", "dispatch", natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{})},
+		{"dispatch-token", "dispatch-intake/listener-m2/Gen1", natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{})},
+		// The listener beside Dispatch: its own machine's generation, and none for a name naming another.
+		{"dispatch-token", natsgrant.ListenerIntakeConnection("example-dispatch", "Gen1", "Gen0"),
+			natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{ListenerMachine: "example-dispatch", Generation: "Gen1", Old: "Gen0"})},
+		{"dispatch-token", natsgrant.ListenerIntakeConnection("m2", "Gen1", ""), natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{})},
+		{"listener-token", intake, natsgrant.Listener("example-hub")},
+	} {
+		req := serviceRequest(row.token)
+		req.Name = row.name
+		decision, err := Decide(t.Context(), deps, exampleServices, req)
+		require.NoError(t, err, "%s named %q", row.token, row.name)
+		require.Equal(t, row.want, decision.Grant, "%s named %q", row.token, row.name)
+	}
+	require.NotEqual(t, natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{}), natsgrant.Dispatch("example-dispatch", natsgrant.ParseDispatchConnection(intake)),
+		"control: an intake's grant differs from the fixed one, so the rows above can tell them apart")
 }
 
 // Every refusal is one line naming why, carries nothing of the credential, and is counted under

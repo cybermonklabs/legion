@@ -149,6 +149,11 @@ type bindThrottle struct {
 // for the reason message names -- unless this intake logged that same message within
 // standbyLogEvery.
 func (t *bindThrottle) reportStandby(name, message string) {
+	t.reportStandbyAt(slog.LevelInfo, name, message)
+}
+
+// reportStandbyAt is reportStandby at level.
+func (t *bindThrottle) reportStandbyAt(level slog.Level, name, message string) {
 	t.mu.Lock()
 	if t.standbyReason == message && time.Since(t.standby) < standbyLogEvery {
 		t.mu.Unlock()
@@ -156,7 +161,7 @@ func (t *bindThrottle) reportStandby(name, message string) {
 	}
 	t.standby, t.standbyReason = time.Now(), message
 	t.mu.Unlock()
-	slog.Info(message, "name", name)
+	slog.Log(context.Background(), level, message, "name", name)
 }
 
 // heldDurable is one intake's delivery from its durable, which it does only while it holds the
@@ -222,6 +227,14 @@ type heldDurable struct {
 	// returns. It is nil outside tests: a test sets it to hold a take-over that has bound the
 	// durable until past Run's ctx's end.
 	boundHook func()
+	// fresh is the durable's fresh-mode naming (nameFreshly, fresh_names.go), nil in the fixed mode.
+	// In the fresh mode nats is the connection of the generation this intake delivers from, nil
+	// before its first take-over, and every consumer call goes on a connection of its generation.
+	fresh *freshNaming
+	// freshHook, when not nil, runs at each point of the fresh take-over a test stops a process at
+	// (stepReserved and the others, fresh_names.go), with the physical name the step is on; an error
+	// it answers is that step's failure. It is nil outside tests.
+	freshHook func(point, name string) error
 
 	mu sync.Mutex
 	// delivering is the latest subscription subscribe made, which StopDelivering stops.
@@ -318,9 +331,15 @@ func (d *heldDurable) stopDeliveringWithin(budget time.Duration) {
 // attempt tries to make this intake the one delivering from the durable: it takes the hold when
 // no other process holds it live, then takes the durable over under it (takeOver). A durable
 // bound to a subject no hold recorded is read first outside the consumer lease, so a holder that
-// waits for a process of the build before holds to let go takes no lease on every poll.
+// waits for a process of the build before holds to let go takes no lease on every poll. In the
+// fresh mode no fixed name is read: the take-over reads the record's current under the lease
+// (takeOverFresh), since no process of the build before holds names a fresh generation.
 func (d *heldDurable) attempt(ctx context.Context) {
 	if d.hold == nil && !d.takeHold(ctx) {
+		return
+	}
+	if d.fresh != nil {
+		duty.Exclusive(ctx, d.leases, consumerLease(d.name), time.Time{}, 0, d.takeOverFresh)
 		return
 	}
 	info, err := d.lookupDurable(ctx)
@@ -643,8 +662,13 @@ const durableDeliversElsewhere = "dispatch delivery: the NATS consumer no longer
 // check stops delivering when the durable no longer delivers to this intake's deliver subject:
 // something deleted it, or replaced it with one on another subject. The intake keeps its hold, and
 // its next attempt takes the durable over again, or waits for a process that binds without a
-// hold. A lookup that fails says nothing, and changes nothing.
+// hold. A lookup that fails says nothing, and changes nothing. In the fresh mode it is checkFresh,
+// which reads the record's current and also writes its last floor and deletes retired generations.
 func (d *heldDurable) check(ctx context.Context) {
+	if d.fresh != nil {
+		d.checkFresh(ctx)
+		return
+	}
 	if d.subject == "" {
 		return
 	}

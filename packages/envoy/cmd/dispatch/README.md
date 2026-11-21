@@ -975,6 +975,12 @@ What the two processes share, and what each keeps to itself:
   a subscription its client sends again after a reconnect gets nothing.
   It runs whole under that durable's own Postgres consumer lease, which the reconciliation of the build before holds takes too, so no two processes change one durable at once.
   A durable bound by a build before holds, which binds by lookup and holds nothing, is left to that build until it lets go (`delivery/held_durable.go`, `heldDurable`).
+  That take-over deletes one fixed name and creates it again, which `ENVOY_CONSUMER_NAMES=fixed`, the default, keeps.
+  `ENVOY_CONSUMER_NAMES=fresh` replaces the durable's current consumer with a new physical one instead, `<durable>~<generation>`, created once and never again, behind the durable's row in `intake_consumers` (`delivery/fresh_names.go`, `consumernames.Names`):
+  nats-server can leave a deleted consumer's late state write in the next consumer of the same name, which then skips messages after a restart, and a fresh name leaves that write in a directory no consumer reads.
+  The take-over reserves its replace in the row, connects for the new generation (`dispatch-intake/<durable>/<generation>/<old generation>`, which the NATS auth service grants that generation's calls alone, so `fresh` needs Dispatch to connect through the auth service), saves the start at the old consumer's ack floor + 1, subscribes and creates the new one, publishes it, and deletes the old; an interrupted one is finished by the next holder's take-over, and a connect the auth service does not answer stops it before anything is deleted.
+  The check every five seconds also records the current's ack floor in the row and deletes retired generations (`dispatch-cleanup/<durable>/<generation>`) under the consumer lease.
+  Until the row's cutover marker reads `done`, which the cutover writes, a `fresh` process takes neither durable over and says so at ERROR.
 
 - A delivery a process left behind is sent by another.
   A direct message's first attempt is written in the transaction that stores it, and a request's own send outlives a cut connection.
@@ -2310,6 +2316,12 @@ The key is `read`, and a check holds it to the four names `webhook_redelivery`, 
 `at` is when the attempt was recorded, by the database's clock, `succeeded` whether it sent requests to GitHub and noted no failure, and `cause` the text of its first failure, at most 1,024 bytes;
 two checks hold `cause` to that length and null exactly when `succeeded` is true.
 The loop that holds a read's lease writes that read's row over the one before it when its pass ends (`store.GitHubReadAttempts.Record`), and a row trigger notifies `dispatch_github_read_attempts` with the read's name at each write, which refreshes every process's copy of the record (Background loops, above).
+A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
+
+Migration `20261121002206_intake_consumers` creates `intake_consumers (logical, record, revision)`, the selection records of the delivery intakes' two durables under the fresh consumer names (`ENVOY_CONSUMER_NAMES=fresh`, `consumernames.PGStore`):
+one row per logical name, `delivery-events` and `delivery-jobs`, whose `record` (JSON, `consumernames.Record`) says which physical consumer, `<durable>~<generation>`, the intake delivers from, the operation in flight, the start saved before anything is deleted, the last ack floor read and the retired generations; and the sentinel row `envoy.sentinel`, whose record (`consumernames.StoreState`) holds the cutover marker.
+Every write is conditional on the `revision` it read, and no row is ever deleted.
+The migration writes no row: the cutover's `convert` writes them, and until it has, a `fresh` process refuses every consumer call while a `fixed` one reads only the sentinel, at boot (`delivery.CheckNamingMode`).
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
 Migration `20261101030537_server_processes_schema` adds four columns to `server_processes`:
@@ -3869,6 +3881,7 @@ Each item below names a path with its method and identity, then its purpose.
   `outbox_publisher` says whether this process publishes the events outbox now:
   `true` while it holds the outbox's publisher hold and the hold's deadline has not passed, `false` while it stands by for another process's, after it lost the hold, and with NATS disabled.
   One process of a deployment publishes at a time, so a healthy process may report `false`, and the field never decides `ok` or the status.
+  `consumer_names` is the delivery intakes' consumer naming mode, `ENVOY_CONSUMER_NAMES` as this process read it at boot (`fixed` or `fresh`, `delivery.IntakeNaming`); a fact of the process, it never decides `ok` or the status.
   `github` names each GitHub read Dispatch makes under a lease with its newest attempt (`githubreads`, `gitHubReads` in `main.go`), and it never decides `ok` or the status:
   a process serves everything but those reads while GitHub fails, so failing the probe would take every server process out of service for an outage each of them serves through.
   It is `null` where no GitHub App is configured (neither the `DISPATCH_APP_*` settings nor `app.json` name one, `loadAppCredentials`), and otherwise holds `webhook_redelivery`, `architecture_import`, `delivery_reconcile` and `ci_reconcile`, in that order, each `{state, at, cause}`:
@@ -3948,6 +3961,7 @@ Each item below names a path with its method and identity, then its purpose.
   `envoy_dispatch_outbox_publish_failures_total{reason}`, one count per destination of an outbox publish attempt that was not reached, `reason` being `denied` (the server refused it under the connection's own publish permissions), `refused` (NATS refuses the envelope or its subject however often it is retried), `unanswered` (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer, for every holder alike) or `failed` (every other failure);
   and `envoy_dispatch_outbox_role_forwards_held_total{holder_state}`, one count per role forward a holder's resolution held pending with nothing sent, `holder_state` being `unresponsive` (the holder is past the live window), `undated` (nothing dates the holder) or `unresolved` (the role claim or the holder's session could not be read).
   A hold is a wait for that session to answer and no failure of the bus, so it is counted there and never under the publish failures an alert watches.
+  `envoy_dispatch_durable_names_total{durable,op,outcome}` counts each step of the delivery intakes' fresh consumer names (`ENVOY_CONSUMER_NAMES=fresh`, `internal/dispatch/delivery/fresh_names.go`), by durable (`delivery-events`, `delivery-jobs`), `op` (`consumernames.Operation`: `select`, `create`, `replace`, `recover`, `missing_current`, `last_floor`, `cleanup`) and `outcome` (`consumernames.Outcome`: `ok`, `adopted`, `retired`, `refused`, `conflict`, `limit`, `error`); `refused` is a call stopped before anything changed, and a process in `fixed` counts nothing.
   It also carries four gauges of the copies of comment mentions that wait behind an earlier event of their owner, with no label, since an owner's key is neither bounded nor public and whoever reaches the port reads this endpoint: `envoy_dispatch_mention_sends_held` and `envoy_dispatch_mention_send_held_oldest_seconds`, the API's mention sends that wait and how long the oldest has (`api.registerHeldGauges`), and `envoy_dispatch_outbox_fallback_copies_held` and `envoy_dispatch_outbox_fallback_copy_held_oldest_seconds`, the same of the outbox's fallback copies (`heldCopies`).
   A held mention copy's wait has no bound, so beside the gauges a copy held `model.MentionCopyHeldWarnAfter` (one minute) logs one WARN naming its owner, the earlier event and that event's `publish_error`; the event's own failed publish logs `dispatch outbox: publish event` at ERROR at each attempt.
   It is answered above the router, so it is never the dashboard's shell, and whoever reaches the HTTP port can read it.

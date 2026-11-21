@@ -187,6 +187,8 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/migrationid/*'
   - 'packages/envoy/roleholder/*'
   - 'packages/envoy/natsversion/*'
+  - 'packages/envoy/consumernames/*'
+  - 'packages/envoy/natsgrant/*'
 legion_command: &legion_command
   - 'packages/daemon/cmd/legion/*'
   - 'packages/daemon/internal/admit/*'
@@ -1213,6 +1215,8 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/natscred/*'
+  - 'packages/envoy/consumernames/*'
+  - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/internal/cistore/*'
   - 'packages/envoy/internal/cmdtest/*'
   - 'packages/envoy/internal/contracts/**'
@@ -1794,6 +1798,7 @@ dispatch_memory:
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -1834,6 +1839,7 @@ dispatch_multiprocess:
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -1928,6 +1934,7 @@ dispatch_two_builds_go:
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -2025,6 +2032,7 @@ dispatch_two_builds:
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -2063,6 +2071,8 @@ listener_server_change:
   - 'packages/envoy/internal/dispatch/bytelru/*'
   - 'packages/envoy/internal/dispatch/cireconcile/*'
   - 'packages/envoy/internal/dispatch/delivery/**'
+  - 'packages/envoy/consumernames/*'
+  - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/internal/dispatch/docs/*'
   - 'packages/envoy/internal/dispatch/docs/crafted/*'
   - 'packages/envoy/internal/dispatch/duty/*'
@@ -2122,6 +2132,7 @@ listener_server_change:
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
@@ -2661,6 +2672,7 @@ envoy_go_race:
   - '!packages/envoy/internal/dispatch/cireconcile/**/*_test.go'
   - '!packages/envoy/internal/dispatch/config/**/*_test.go'
   - '!packages/envoy/internal/dispatch/dashboard/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/delivery/fresh_names_forced_order_test.go'
   - '!packages/envoy/internal/dispatch/delivery/xid_window_test.go'
   - '!packages/envoy/internal/dispatch/deliveryaudit/**/*_test.go'
   - '!packages/envoy/internal/dispatch/docs/**/*_test.go'
@@ -2786,6 +2798,8 @@ envoy_go_race_api:
   - 'packages/envoy/internal/cputest/*'
   - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/natscred/*'
+  - 'packages/envoy/consumernames/*'
+  - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/internal/dispatch/accesslog/*'
   - 'packages/envoy/internal/dispatch/cipher/*'
   - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -2969,6 +2983,7 @@ envoy_go_race_api:
   - '!packages/envoy/listenerwire/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated

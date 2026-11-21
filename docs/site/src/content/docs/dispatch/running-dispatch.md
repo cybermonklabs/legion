@@ -339,7 +339,7 @@ Sign in, then open **Settings**:
 while Postgres answers:
 
 ```json
-{"ok":true,"db":true,"nats":null,"files":null,"signin":null,"service_tokens":null,"github":null,"commit":null,"fleet_commit":null,"schema_version":121,"outbox_publisher":false}
+{"ok":true,"db":true,"nats":null,"files":null,"signin":null,"service_tokens":null,"github":null,"commit":null,"fleet_commit":null,"schema_version":121,"outbox_publisher":false,"idempotency_keys":true,"consumer_names":"fixed"}
 ```
 
 It is a readiness check, not a liveness check: it fails while the database cannot be reached, so a
@@ -370,6 +370,8 @@ balancer's or Kubernetes' readiness probe at it.
 - `outbox_publisher` is whether this server is the one publishing notifications to NATS now. One
   server publishes at a time, so a healthy server can say `false`, and it always does when NATS is
   turned off. It never decides `ok` or the status.
+- `consumer_names` is how this server names its GitHub intakes' consumers, `fixed` or `fresh`: the
+  `ENVOY_CONSUMER_NAMES` it read at start. It never decides `ok` or the status.
 
 A check that needs NATS, the bucket or sign-in asserts `nats: true`, `files: true` or `signin: true`
 itself.
@@ -490,7 +492,7 @@ counts.
 ## Metrics
 
 `GET /metrics` needs no credential either, so whoever reaches the server's HTTP port can read it.
-It answers in the Prometheus text format with two counters and four gauges.
+It answers in the Prometheus text format with three counters and four gauges.
 `envoy_dispatch_outbox_publish_failures_total` counts each destination of an event publish that
 was not reached, labelled `reason`. `denied` is a publish NATS refused under the server's own
 grant, `refused` one NATS refuses however often it is retried, `unanswered` a forward NATS took
@@ -506,6 +508,13 @@ holder keeps its claim, and the event is retried until the session answers - so 
 here rather than with the failures above, and its event's back-off is logged at INFO
 (`dispatch outbox: event waits for its role's holder`). An event that reaches the dead-letter
 threshold logs at ERROR however it was held.
+
+`envoy_dispatch_durable_names_total` counts the steps of the fresh consumer names
+(`ENVOY_CONSUMER_NAMES=fresh`), labelled `durable` (`delivery-events` or `delivery-jobs`), `op`
+(`select`, `create`, `replace`, `recover`, `missing_current`, `last_floor`, `cleanup`) and `outcome`
+(`ok`, `adopted`, `retired`, `refused`, `conflict`, `limit`, `error`). `refused` is a call stopped
+before anything changed: the cutover not run, the `intake_consumers` table, its sentinel or the
+durable's row missing, or no safe start. A server in `fixed` counts nothing here.
 
 A copy of a comment's mention waits until every earlier event of its issue that a session may
 take first has been published, so the session takes them in order. The wait has no limit, so it

@@ -213,6 +213,154 @@ func DispatchDurables() []string {
 	return []string{bus.DispatchDeliveryDurable, bus.DispatchJobDurable}
 }
 
+// The first segment of the names Dispatch gives the connections a take-over and a cleanup of its
+// durables' fresh generations open (DispatchIntakeConnection, DispatchCleanupConnection), and the
+// listener beside it a take-over of its own durable's (ListenerIntakeConnection).
+const (
+	dispatchIntakeConnection  = "dispatch-intake"
+	dispatchCleanupConnection = "dispatch-cleanup"
+	listenerIntakeConnection  = "listener-intake"
+)
+
+// maxGenerationLen bounds a generation token's length. A NUID, which is what a fresh name's
+// generation is, is 22 characters.
+const maxGenerationLen = 64
+
+// DispatchIntake is what a Dispatch connection asks of its grant by its own name, beside the fixed
+// grant every Dispatch connection holds: the fresh generations of one of Dispatch's durables
+// (DispatchDurables), or of the listener beside it, that one take-over or one cleanup acts on.
+// Each generation's consumer is named <durable>~<generation>. The zero value asks for nothing.
+type DispatchIntake struct {
+	// Logical is the durable's logical name, one of DispatchDurables, or "" for a listener intake.
+	Logical string
+	// ListenerMachine is the machine id a listener intake connection names, whose listener
+	// durable's (bus.ListenerDurable) generations it asks for; "" for Dispatch's own durables. Only
+	// the grant's own machine id is granted any (Dispatch): the name never chooses the machine.
+	ListenerMachine string
+	// Generation is the generation an intake connection creates, reads and acknowledges, or the one
+	// a cleanup connection reads and deletes.
+	Generation string
+	// Old is the generation an intake connection's take-over reads and deletes, or "".
+	Old string
+	// Cleanup is set for a cleanup connection.
+	Cleanup bool
+}
+
+// DispatchIntakeConnection is the name of the connection a take-over of logical's durable opens to
+// create generation and deliver from it, after it reads and deletes old ("" when it replaces
+// none): dispatch-intake/<logical>/<generation>[/<old>].
+func DispatchIntakeConnection(logical, generation, old string) string {
+	name := dispatchIntakeConnection + "/" + logical + "/" + generation
+	if old != "" {
+		name += "/" + old
+	}
+	return name
+}
+
+// DispatchCleanupConnection is the name of the connection that reads and deletes one retired
+// generation of logical's durable: dispatch-cleanup/<logical>/<generation>.
+func DispatchCleanupConnection(logical, generation string) string {
+	return dispatchCleanupConnection + "/" + logical + "/" + generation
+}
+
+// ListenerIntakeConnection is the name of the connection the listener beside Dispatch, as machine
+// machineID, opens to create generation of its own durable and deliver from it, after it reads and
+// deletes old ("" when it replaces none): listener-intake/<machine id>/<generation>[/<old>].
+func ListenerIntakeConnection(machineID, generation, old string) string {
+	name := listenerIntakeConnection + "/" + machineID + "/" + generation
+	if old != "" {
+		name += "/" + old
+	}
+	return name
+}
+
+// ParseDispatchConnection is the intake a connection's name asks for: DispatchIntakeConnection's
+// and DispatchCleanupConnection's shapes, for a logical name of DispatchDurables, and
+// ListenerIntakeConnection's, with each generation one to maxGenerationLen letters and digits and
+// an old generation other than the new one. Any other name, Dispatch's publisher's and the fixed
+// mode's intakes' included, asks for nothing (the zero DispatchIntake), so no name reaches past
+// Dispatch's own two durables and its own listener's or holds a wildcard, a dot or a space.
+func ParseDispatchConnection(name string) DispatchIntake {
+	parts := strings.Split(name, "/")
+	if len(parts) < 3 || !generationToken(parts[2]) {
+		return DispatchIntake{}
+	}
+	if len(parts) == 4 && (!generationToken(parts[3]) || parts[3] == parts[2]) {
+		return DispatchIntake{}
+	}
+	old := ""
+	if len(parts) == 4 {
+		old = parts[3]
+	}
+	switch {
+	case len(parts) > 4:
+	case parts[0] == listenerIntakeConnection && parts[1] != "":
+		return DispatchIntake{ListenerMachine: parts[1], Generation: parts[2], Old: old}
+	case !slices.Contains(DispatchDurables(), parts[1]):
+	case parts[0] == dispatchCleanupConnection && len(parts) == 3:
+		return DispatchIntake{Logical: parts[1], Generation: parts[2], Cleanup: true}
+	case parts[0] == dispatchIntakeConnection:
+		return DispatchIntake{Logical: parts[1], Generation: parts[2], Old: old}
+	}
+	return DispatchIntake{}
+}
+
+// generationToken reports whether token can be a generation: one to maxGenerationLen ASCII letters
+// and digits.
+func generationToken(token string) bool {
+	if token == "" || len(token) > maxGenerationLen {
+		return false
+	}
+	return !strings.ContainsFunc(token, func(r rune) bool {
+		return (r < '0' || r > '9') && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z')
+	})
+}
+
+// entries are the literal-named consumer calls intake asks for of machineID's grant, each naming
+// one generation's consumer, <durable>~<generation>, as a whole subject token: an intake
+// connection's create, info and acknowledgements of its own generation, then the info and delete
+// of the old one; a cleanup connection's info and delete of its one generation. A Dispatch durable's
+// create is nats.go's form with the filter subject after the name; a listener generation's is the
+// one form the listener's fixed durable is granted (listenerGrant), without it. None for the zero
+// DispatchIntake, nor for a listener intake naming another machine than machineID.
+func (intake DispatchIntake) entries(machineID string) []string {
+	durable, create := intake.Logical, ".>"
+	switch {
+	case intake.ListenerMachine != "" && intake.ListenerMachine == machineID:
+		durable, create = bus.ListenerDurable(machineID), ""
+	case intake.ListenerMachine != "", intake.Logical == "":
+		return nil
+	}
+	consumer := func(generation string) string { return bus.Stream + "." + durable + "~" + generation }
+	own := consumer(intake.Generation)
+	if intake.Cleanup {
+		return []string{jsAPI + "CONSUMER.INFO." + own, jsAPI + "CONSUMER.DELETE." + own}
+	}
+	entries := []string{
+		jsAPI + "CONSUMER.INFO." + own,
+		jsAPI + "CONSUMER.CREATE." + own + create,
+		jsAck + own + ".>",
+	}
+	if intake.Old != "" {
+		old := consumer(intake.Old)
+		entries = append(entries, jsAPI+"CONSUMER.INFO."+old, jsAPI+"CONSUMER.DELETE."+old)
+	}
+	return entries
+}
+
+// listenerSelection is what the listener beside Dispatch, as machine machineID, needs of the
+// session consumers' selection bucket (consumernames.SessionBucket): the stream's leader-answered
+// message get, which reads the bucket's sentinel and the listener's own record, and the write of
+// that one record's key (consumernames.DurableKey of its durable), never the bucket's wildcard. The
+// get takes the key in its body, so it reads any key of the bucket; no other call of the bucket's
+// stream is granted, so it changes none but its own.
+func listenerSelection(machineID string) []string {
+	return []string{
+		jsAPI + "STREAM.MSG.GET." + kvStream + consumernames.SessionBucket,
+		"$KV." + consumernames.SessionBucket + "." + consumernames.DurableKey(bus.ListenerDurable(machineID)),
+	}
+}
+
 // Dispatch is the grant of Dispatch's one NATS user, which envoy-dispatch and the envoy-listener
 // beside it share: the listener grant (listenerGrant) of the listener's machine id, then what
 // Dispatch itself needs. It holds no session-consumer call (sessionConsumerCalls), so the listener
@@ -225,10 +373,14 @@ func DispatchDurables() []string {
 // delivery-events lets it create that durable on any filter, so it can read any retained
 // notification; and a consumer it creates can deliver any payload onto a session's frames, since
 // NATS checks no push consumer's deliver subject. Publish, in this order: the stream calls and
-// acknowledgements of each durable Dispatch binds, the KV calls for its webhook-redelivery bucket,
-// and every session's agent stream control subject. Subscribe: every session's agent stream
-// frames.
-func Dispatch(machineID string) Permissions {
+// acknowledgements of each fixed durable Dispatch binds, the KV calls for its webhook-redelivery
+// bucket, every session's agent stream control subject, the listener's own selection record
+// (listenerSelection), and then the literal-named calls of the fresh generations intake names
+// (DispatchIntake): the auth service reads intake from the connection's own name
+// (ParseDispatchConnection) and answers again at each reconnect, and a hub's static user, which no
+// name changes, passes the zero DispatchIntake. The fixed durables' entries stay beside them.
+// Subscribe: every session's agent stream frames.
+func Dispatch(machineID string, intake DispatchIntake) Permissions {
 	listener := listenerGrant(machineID)
 	publish := listener.Publish
 	for _, durable := range DispatchDurables() {
@@ -241,6 +393,8 @@ func Dispatch(machineID string) Permissions {
 	}
 	publish = append(publish, KVWrite(bus.WebhookRedeliveryBucket)...)
 	publish = append(publish, contracts.AgentStreamControlSubject("*"))
+	publish = append(publish, listenerSelection(machineID)...)
+	publish = append(publish, intake.entries(machineID)...)
 	return Permissions{
 		Publish:   publish,
 		Subscribe: append(listener.Subscribe, contracts.AgentStreamFramesSubject("*")),

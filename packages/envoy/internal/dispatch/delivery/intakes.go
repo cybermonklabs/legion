@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -104,7 +105,13 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // every envoy-dispatch process one delivers from each durable at a time -- and so that neither
 // intake's take-over can block the other's, which one lease over both durables did (the
 // measurement is on consumerLease).
-func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}) (stop func(), err error) {
+//
+// naming is the process's ENVOY_CONSUMER_NAMES (IntakeNaming). In the fixed mode, the default, each
+// intake delivers from its fixed durable on the client connect opens for it, as before the mode
+// existed, and reads nothing of intake_consumers. In the fresh mode each intake's client only reads
+// the stream, and each take-over connects its own generation's connection through connect
+// (fresh_names.go), with its selection records in pool's intake_consumers.
+func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, naming IntakeNaming) (stop func(), err error) {
 	if github == nil {
 		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
@@ -121,22 +128,37 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 	settings := newSettingsCache(pool, settingsWake)
 	intake := newIntake(intakeClient, pool, leases.events, github, broker, settings)
 	job := newJobIntake(jobClient, pool, leases.jobs, github, realJobClock{}, settings)
+	var readers []*bus.Client
+	if naming.Mode == consumernames.ModeFresh {
+		records := consumernames.NewPGStore(pool)
+		for _, durable := range []*heldDurable{&intake.heldDurable, &job.heldDurable} {
+			readers = append(readers, durable.nats)
+			durable.nameFreshly(records, connect, durable.nats, naming.Steps)
+			durable.nats = nil
+		}
+	}
 	var running sync.WaitGroup
 	running.Go(func() { settings.Run(ctx) })
 	running.Go(func() { intake.Run(ctx) })
 	running.Go(func() { job.Run(ctx) })
 	return sync.OnceFunc(func() {
 		stopIntakes(&running, &intake.heldDurable, &job.heldDurable)
+		for _, reader := range readers {
+			reader.Close()
+		}
 	}), nil
 }
 
 // stopIntakes waits for their Runs, closes their NATS clients through each durable, then waits for
 // any hand-back finalizer each Run left behind. A closed client makes such a finalizer settle, and
 // it releases its hold through the still-open database pool before this stop returns (StartIntakes).
+// A fresh-mode durable that never took its durable over holds no client.
 func stopIntakes(running *sync.WaitGroup, durables ...*heldDurable) {
 	running.Wait()
 	for _, durable := range durables {
-		durable.nats.Close()
+		if durable.nats != nil {
+			durable.nats.Close()
+		}
 	}
 	for _, durable := range durables {
 		durable.waitFinalizers()

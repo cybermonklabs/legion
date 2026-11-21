@@ -592,7 +592,8 @@ func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 	req := Request{
 		UserNkey: claims.UserNkey, ServerID: claims.Server.ID,
 		Nonce: claims.ClientInformation.Nonce, Token: claims.ConnectOptions.Token, Sig: claims.ConnectOptions.SignedNonce,
-		User: claims.ConnectOptions.Username, Password: claims.ConnectOptions.Password, Host: claims.ClientInformation.Host,
+		User: claims.ConnectOptions.Username, Password: claims.ConnectOptions.Password, Name: claims.ConnectOptions.Name,
+		Host: claims.ClientInformation.Host,
 	}
 	kind := credentialKind(req)
 	var decision Decision

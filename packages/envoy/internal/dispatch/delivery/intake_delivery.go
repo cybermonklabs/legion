@@ -87,24 +87,37 @@ type intakeMessage struct {
 // reconnect would bind that registration otherwise, and its callback, its handling given up, would
 // hand back every message until the intake's next subscribe replaced it.
 func (d *heldDurable) subscribe(deliverSubject string) (*natsgo.Subscription, error) {
+	delivery, err := d.subscribeOn(d.nats, d.name, deliverSubject)
+	if err != nil {
+		return nil, err
+	}
+	return delivery.sub, nil
+}
+
+// subscribeOn is subscribe on client to durable's deliveries: the fixed mode's one client and fixed
+// name (subscribe), or, in the fresh mode, the connection a generation's create is granted on and
+// that generation's physical name (createFresh). It answers the delivery it made, which is
+// StopDelivering's from then on.
+func (d *heldDurable) subscribeOn(client *bus.Client, durable, deliverSubject string) (*intakeDelivery, error) {
 	handling, abandon := context.WithCancel(context.Background())
 	delivery := &intakeDelivery{
-		nats: d.nats, key: d.key, hold: d.hold, subject: deliverSubject,
+		nats: client, key: d.key, hold: d.hold, subject: deliverSubject,
 		handling: handling, abandon: abandon,
 	}
 	delivery.keys = newKeyedRunner(func(message intakeMessage) { d.handle(delivery, message) })
 	wanted := d.config()
-	sub, err := subscribeDurable(d.nats, wanted, deliverSubject, delivery.receive)
+	wanted.Durable = durable
+	sub, err := subscribeDurable(client, wanted, deliverSubject, delivery.receive)
 	if err != nil {
 		abandon()
-		d.nats.ReleaseFailed(wanted.FilterSubject)
+		client.ReleaseFailed(wanted.FilterSubject)
 		return nil, err
 	}
 	delivery.sub = sub
 	d.mu.Lock()
 	d.delivering = delivery
 	d.mu.Unlock()
-	return sub, nil
+	return delivery, nil
 }
 
 // subscribeDurable subscribes deliver to wanted's durable through client.Subscribe at

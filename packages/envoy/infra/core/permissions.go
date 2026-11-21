@@ -41,9 +41,11 @@ func DispatchDurables() []string {
 }
 
 // DispatchPermissions is the grant of Dispatch's one NATS user, which envoy-dispatch and the
-// envoy-listener beside it share (natsgrant.Dispatch).
+// envoy-listener beside it share (natsgrant.Dispatch). A hub's static user keeps this set whatever
+// its connections are named, so it asks for no fresh generation (the zero natsgrant.DispatchIntake):
+// those are the auth service's to grant, from each connection's name.
 func DispatchPermissions(machineID string) Permissions {
-	return rules(natsgrant.Dispatch(machineID))
+	return rules(natsgrant.Dispatch(machineID, natsgrant.DispatchIntake{}))
 }
 
 // SessionPermissions is the grant any agent session needs, with * for the session id

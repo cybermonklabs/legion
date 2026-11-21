@@ -28,6 +28,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -859,6 +860,19 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					t.Errorf("ENVOY_NATS_SOCKS5_PROXY=%s: the proxy received %+v, want every request for 127.0.0.1:1 as an IPv4 address (type 1)", proxy.Addr, got)
 					break
 				}
+			}
+		},
+		"ENVOY_CONSUMER_NAMES": func(t *testing.T) {
+			if boot := resolveWith(t, nil); boot.ConsumerNames != consumernames.ModeFixed {
+				t.Errorf("unset: ConsumerNames = %q, want the default %q", boot.ConsumerNames, consumernames.ModeFixed)
+			}
+			for value, want := range map[string]consumernames.Mode{"fixed": consumernames.ModeFixed, " fresh ": consumernames.ModeFresh} {
+				if boot := resolveWith(t, map[string]string{"ENVOY_CONSUMER_NAMES": value}); boot.ConsumerNames != want {
+					t.Errorf("%q: ConsumerNames = %q, want %q", value, boot.ConsumerNames, want)
+				}
+			}
+			for _, value := range []string{"x", "FRESH", "fixed,fresh"} {
+				refusedWith(t, map[string]string{"ENVOY_CONSUMER_NAMES": value}, fmt.Sprintf("ENVOY_CONSUMER_NAMES=%q", value))
 			}
 		},
 		"ENVOY_NATS_REPLICAS": func(t *testing.T) {
