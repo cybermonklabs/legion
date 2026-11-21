@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"time"
 )
 
@@ -205,8 +206,8 @@ func check(ctx context.Context, target Target, recordPath string, stdout, stderr
 	return int(verdict)
 }
 
-// readRecord decodes the record at path, refusing a field it does not know and a record that
-// names no pod.
+// readRecord decodes the record at path, refusing a field it does not know, a record that names no
+// pod, and a field of another form than routes record writes (recordFieldsForm).
 func readRecord(path string) (Record, error) {
 	body, err := os.ReadFile(path)
 	if err != nil {
@@ -221,5 +222,45 @@ func readRecord(path string) (Record, error) {
 	if len(rec.Pods) == 0 {
 		return Record{}, fmt.Errorf("the record %s names no pod", path)
 	}
+	if err := recordFieldsForm(rec); err != nil {
+		return Record{}, fmt.Errorf("the record %s: %w", path, err)
+	}
 	return rec, nil
+}
+
+// The forms of a record's fields that check prints unquoted: a namespace, StatefulSet or pod name
+// is a DNS label, as Kubernetes holds each; a pod's uid is a UUID, as Kubernetes gives each pod;
+// and a CA entry is a SHA-256 in hex, as caCertificates writes it.
+var (
+	dnsLabel     = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+	podUID       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	sha256InHex  = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	recordFields = "a record file is text a person or a process can edit, and check prints this field to the terminal"
+)
+
+// recordFieldsForm refuses a record whose namespace, StatefulSet or pod name is no DNS label,
+// whose pod uid is no UUID, or whose CA entry is no SHA-256 in hex, naming the field and not its
+// value, which could hold an escape sequence for the operator's terminal. The context and the
+// server are printed quoted, so any value of theirs is safe to print.
+func recordFieldsForm(rec Record) error {
+	if !dnsLabel.MatchString(rec.Namespace) {
+		return fmt.Errorf("its namespace is no DNS label (%s)", recordFields)
+	}
+	if !dnsLabel.MatchString(rec.StatefulSet) {
+		return fmt.Errorf("its statefulSet is no DNS label (%s)", recordFields)
+	}
+	for i, ca := range rec.Cluster.CA {
+		if !sha256InHex.MatchString(ca) {
+			return fmt.Errorf("its cluster.caCertificates[%d] is no SHA-256 in hex (%s)", i, recordFields)
+		}
+	}
+	for i, p := range rec.Pods {
+		if !dnsLabel.MatchString(p.Name) {
+			return fmt.Errorf("its pods[%d].name is no DNS label (%s)", i, recordFields)
+		}
+		if !podUID.MatchString(p.UID) {
+			return fmt.Errorf("its pods[%d].uid is no UUID (%s)", i, recordFields)
+		}
+	}
+	return nil
 }

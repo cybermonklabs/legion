@@ -264,7 +264,7 @@ func cleanHub() *fakeHub {
 		infos: map[string]string{}, answers: map[string]string{}, refused: map[string]error{}, onLog: map[string]func(){}, unstamped: map[string]bool{}}
 	for i := range 3 {
 		name := fmt.Sprintf("envoy-nats-%d", i)
-		h.pods = append(h.pods, routes.Pod{Name: name, UID: "uid-" + name, IP: fmt.Sprintf("10.0.0.%d", 10+i), Ready: true, Updated: true, RouteEnv: true, StartedAt: started})
+		h.pods = append(h.pods, routes.Pod{Name: name, UID: podUID(i), IP: fmt.Sprintf("10.0.0.%d", 10+i), Ready: true, Updated: true, RouteEnv: true, StartedAt: started})
 		h.ids[name] = fmt.Sprintf("NSERVER%d", i)
 		h.infos[name] = authInfo(h.ids[name], true)
 	}
@@ -311,6 +311,9 @@ func (h *fakeHub) editAuthorizationReload(pod, with string) {
 	}
 	h.logs[pod] = strings.Replace(h.logs[pod], authorizationReload, with, 1)
 }
+
+// podUID is the uid of the fake hub's i-th pod, a UUID as Kubernetes gives each pod.
+func podUID(i int) string { return fmt.Sprintf("00000000-0000-4000-8000-%012d", i) }
 
 // recordOf is the record Take makes of h at env, before its route ports require authorization.
 func recordOf(t *testing.T, h *fakeHub) routes.Record {
@@ -518,7 +521,7 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 			routes.Unknown, "envoy-nats-2", `its route port took a route login with no user (it answered "PONG"`},
 		{"a route login's answer unread", func(h *fakeHub) { h.refused["envoy-nats-0 login"] = errors.New("reset") },
 			routes.Unknown, "envoy-nats-0", "its route port's answer to a route login with no user could not be read"},
-		{"a restart during the check", restartOnLog, routes.Unknown, "envoy-nats-2", "changed during the check (at its start: uid uid-envoy-nats-2, ip 10.0.0.12, restartCount 0, startedAt 2026-11-17T12:00:00Z; at its end: uid uid-envoy-nats-2, ip 10.0.0.12, restartCount 1"},
+		{"a restart during the check", restartOnLog, routes.Unknown, "envoy-nats-2", "changed during the check (at its start: uid " + podUID(2) + ", ip 10.0.0.12, restartCount 0, startedAt 2026-11-17T12:00:00Z; at its end: uid " + podUID(2) + ", ip 10.0.0.12, restartCount 1"},
 		{"a restart during the check, its new log read at its new start", restartOnLog, routes.Unknown, "envoy-nats-2",
 			"its container started at 2026-11-17T12:00:00Z, so it is no start line of that container and the lines since the env roll may be gone; the pod changed during the check"},
 		{"a pod not in the record", func(h *fakeHub) { h.pods = append(h.pods, newPod) }, routes.Unknown, "envoy-nats-3", "is not in the record of"},
@@ -738,9 +741,9 @@ func TestTakeRecordsOnlyAFinishedRoll(t *testing.T) {
 	rec, err := routes.Take(context.Background(), h, "envoy", "envoy-nats", started.Add(time.Minute))
 	require.NoError(t, err)
 	require.Equal(t, routes.Record{Namespace: "envoy", StatefulSet: "envoy-nats", RecordedAt: started.Add(time.Minute), Pods: []routes.PodRecord{
-		{Name: "envoy-nats-0", UID: "uid-envoy-nats-0", StartedAt: started},
-		{Name: "envoy-nats-1", UID: "uid-envoy-nats-1", StartedAt: started},
-		{Name: "envoy-nats-2", UID: "uid-envoy-nats-2", StartedAt: started},
+		{Name: "envoy-nats-0", UID: podUID(0), StartedAt: started},
+		{Name: "envoy-nats-1", UID: podUID(1), StartedAt: started},
+		{Name: "envoy-nats-2", UID: podUID(2), StartedAt: started},
 	}}, rec)
 
 	h.infos["envoy-nats-1"] = authInfo("NSERVER1", true)

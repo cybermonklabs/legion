@@ -3,6 +3,7 @@ package routes_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -49,7 +50,7 @@ func TestRecordThenCheck(t *testing.T) {
 	require.True(t, h.closed, "record closed the hub it opened")
 	body, err := os.ReadFile(out)
 	require.NoError(t, err)
-	require.Contains(t, string(body), `"uid": "uid-envoy-nats-2"`)
+	require.Contains(t, string(body), `"uid": "`+podUID(2)+`"`)
 	require.Contains(t, string(body), `"context": "example-context",`+"\n"+`    "server": "https://example-context.example.invalid"`, "the record names its context and cluster")
 
 	check := func(h *fakeHub) (int, string) {
@@ -82,6 +83,51 @@ func TestRecordThenCheck(t *testing.T) {
 	code, _, stderr, _ = runRoutes(cleanHub(), "check", "--namespace", "envoy", "--statefulset", "other", "--record", out)
 	require.Equal(t, 2, code)
 	require.Contains(t, stderr, "is the record of envoy/envoy-nats, not of envoy/other")
+}
+
+// A record file is text a person or a process can edit, and routes check prints its fields to the
+// operator's terminal: it refuses, exit 2, a record whose namespace, StatefulSet or pod name is no
+// DNS label, whose pod uid is no UUID, or whose CA entry is no SHA-256 in hex, naming the field and
+// not its value, so no escape sequence written into the record reaches the terminal. Control: the
+// record as routes record wrote it, exit 0.
+func TestCheckRefusesARecordWithAFieldOfAnotherForm(t *testing.T) {
+	const escape = "\x1b]0;written\x07\x1b[2J"
+	for _, row := range []struct {
+		name, field string
+		edit        func(r *routes.Record)
+	}{
+		{"control: the record as written", "", func(*routes.Record) {}},
+		{"the namespace", "namespace", func(r *routes.Record) { r.Namespace += escape }},
+		{"the StatefulSet", "statefulSet", func(r *routes.Record) { r.StatefulSet += escape }},
+		{"a pod's name", "pods[1].name", func(r *routes.Record) { r.Pods[1].Name += escape }},
+		{"a pod's uid", "pods[1].uid", func(r *routes.Record) { r.Pods[1].UID += escape }},
+		{"a CA digest", "cluster.caCertificates[0]", func(r *routes.Record) { r.Cluster.CA = []string{strings.Repeat("a", 60) + escape} }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := cleanHub()
+			h.atEnv()
+			out := filepath.Join(t.TempDir(), "routes.json")
+			code, _, stderr, _ := runRoutes(h, "record", "--namespace", "envoy", "--statefulset", "envoy-nats", "--out", out)
+			require.Equal(t, 0, code, stderr)
+			body, err := os.ReadFile(out)
+			require.NoError(t, err)
+			var rec routes.Record
+			require.NoError(t, json.Unmarshal(body, &rec))
+			row.edit(&rec)
+			body, err = json.Marshal(rec)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(out, body, 0o600))
+
+			code, stdout, stderr, _ := runRoutes(cleanHub(), "check", "--namespace", "envoy", "--statefulset", "envoy-nats", "--record", out)
+			if row.field == "" {
+				require.Equal(t, 0, code, "stdout %q stderr %q", stdout, stderr)
+				return
+			}
+			require.NotContains(t, stdout+stderr, "\x1b", "no escape byte reaches the terminal")
+			require.Equal(t, 2, code, "stdout %q stderr %q", stdout, stderr)
+			require.Contains(t, stderr, "its "+row.field+" is ")
+		})
+	}
 }
 
 // The record's context is compared by its name as well as its cluster's server: a context renamed
