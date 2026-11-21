@@ -507,12 +507,16 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 		}, routes.Unknown, "envoy-nats-0", "authorization is not in force"},
 		{"authorization dropped by a later reload", func(h *fakeHub) { h.infos["envoy-nats-2"] = authInfo("NSERVER2", false) },
 			routes.Unknown, "envoy-nats-2", "a reload that changed its cluster block left it without authorization"},
-		{"authorization since the server started", func(h *fakeHub) { h.withoutAuthorizationReload("envoy-nats-1") }, routes.Clean, "", ""},
-		{"authorization since the start, and another address at env", func(h *fakeHub) {
+		// A container the record vouches for had no authorization when it was recorded, so it loaded
+		// authorization by a reload; with no reload line in the server's own lines, the window cannot
+		// be placed, and no route connection is judged as after authorization.
+		{"no authorization reload in the log, the route port requiring it: no window", func(h *fakeHub) { h.withoutAuthorizationReload("envoy-nats-1") },
+			routes.Unknown, "envoy-nats-1", `its log, in the lines its server wrote, holds no "[INF] Reloaded: cluster"`},
+		{"no authorization reload in the log, and another address at env: not judged as after authorization", func(h *fakeHub) {
 			h.withoutAuthorizationReload("envoy-nats-1")
 			h.logs["envoy-nats-1"] = strings.Replace(h.logs["envoy-nats-1"], strings.Join(routesReload, "\n"),
 				created("10.9.9.4:6222")+"\n"+formed("10.9.9.4:6222", "9")+"\n"+strings.Join(routesReload, "\n"), 1)
-		}, routes.PasswordRead, "envoy-nats-1", `with "10.9.9.4"`},
+		}, routes.Unknown, "envoy-nats-1", `holds no "[INF] Reloaded: cluster"`},
 		{"an authorization reload that did not finish", func(h *fakeHub) {
 			h.logs["envoy-nats-0"] = strings.Replace(h.logs["envoy-nats-0"], authorizationLines[1]+"\n", "", 1)
 		}, routes.Unknown, "envoy-nats-0", `has logged no "[INF] Reloaded server configuration"`},
@@ -584,6 +588,55 @@ func TestCheckJudgesNoRemoteIDWithoutEveryServerID(t *testing.T) {
 	report := routes.Check(context.Background(), h, rec)
 	require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
 	require.Contains(t, fmt.Sprint(report.Findings), "the hub's server ids are not all known, so routes are judged by IP alone")
+}
+
+// The env roll gives each new pod a new IP, so the log of a pod rolled first names the old IP of a
+// pod rolled after it, in a route that closed naming a hub server. The window rule judges no such
+// line: with the reload that loaded authorization in the log, the hub is Clean. Without that
+// reload's line among the server's own lines, because the reload has not reached the pod, whose
+// route port then cannot be read, or because the runtime read the line too late to count it as the
+// server's, the check cannot place the window: Unknown, naming that, and never a password read for
+// the old IP.
+func TestCheckJudgesNoEnvRollLineAsAfterAuthorization(t *testing.T) {
+	const oldIP = "10.0.0.99"
+	hub := func(t *testing.T) (*fakeHub, routes.Record) {
+		h := cleanHub()
+		rec := recordOf(t, h)
+		envRoll := logLine("INF", oldIP+":6222 - rid:3 - Route connection created") + "\n" +
+			logLine("INF", oldIP+":6222 - rid:3 - Router connection closed: Client Closed - Remote: envoy-nats-1") + "\n"
+		marker := routesReload[0] + "\n"
+		require.Equal(t, 1, strings.Count(h.logs["envoy-nats-2"], marker), "the routes reload is in the log once")
+		h.logs["envoy-nats-2"] = strings.Replace(h.logs["envoy-nats-2"], marker, envRoll+marker, 1)
+		return h, rec
+	}
+	t.Run("control: the log whole, authorization reloaded", func(t *testing.T) {
+		h, rec := hub(t)
+		report := routes.Check(context.Background(), h, rec)
+		require.Equal(t, routes.Clean, report.Verdict(), "findings: %v", report.Findings)
+	})
+	for _, row := range []struct {
+		name   string
+		change func(h *fakeHub)
+	}{
+		{"authorization not yet reloaded on the pod, its route port's INFO unread", func(h *fakeHub) {
+			h.withoutAuthorizationReload("envoy-nats-2")
+			h.refused["envoy-nats-2 info"] = errors.New("port-forward to 6222 failed")
+		}},
+		{"the reload's line read 3 s after its logger time", func(h *fakeHub) {
+			line := authorizationLines[0]
+			require.Equal(t, 1, strings.Count(h.logs["envoy-nats-2"], line+"\n"), "the Reloaded: cluster line is in the log once")
+			h.logs["envoy-nats-2"] = strings.Replace(h.logs["envoy-nats-2"], line+"\n", stampedAt(authorizationAt.Add(3*time.Second), line)+"\n", 1)
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h, rec := hub(t)
+			row.change(h)
+			report := routes.Check(context.Background(), h, rec)
+			require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
+			require.NotContains(t, fmt.Sprint(report.Findings), oldIP, "the env roll's old pod IP is judged by no rule")
+			require.Contains(t, fmt.Sprint(report.Findings), `envoy-nats-2: unknown: its log, in the lines its server wrote, holds no "[INF] Reloaded: cluster"`)
+		})
+	}
 }
 
 // A log read without the container runtime's times, as `kubectl logs` without --timestamps gives

@@ -740,20 +740,25 @@ func ownLines(r *Report, pod string, lines []logLine) {
 // them of the first "Reloaded: cluster" line (reload.go:470), of the reload that loaded
 // authorization, and whether the log shows that reload. The window opens at the first line the
 // container runtime read at most reloadSpan before that line, by the runtime's time, so no line a
-// peer writes can move it. With no such reload in the log, it is the whole log, every line judged
-// as after the reload, when auth says authorization is in force or that is not known, since the
-// server then held it from its start; and empty when auth says it is not, since no connection then
-// carried the password beyond the pods. The reload must have finished, and the runtime must have
-// read its line more than startDelay after the container's start, or a start line a process wrote
-// in that span through a route's name could pass the start line rule; each is Unknown otherwise.
+// peer writes can move it. With no such line among the server's lines, the window is empty: when
+// auth says authorization is not in force, since no connection then carried the password beyond
+// the pods; and otherwise as well, but Unknown. A container the record vouches for had no
+// authorization when it was recorded (Take), so it loaded authorization by a reload, which logs
+// that line; with the line lost, or the reload not yet on the pod, no line can be placed after it,
+// and the env roll's lines name the old IPs of the pods it rolled. The reload must have finished,
+// and the runtime must have read its line more than startDelay after the container's start, or a
+// start line a process wrote in that span through a route's name could pass the start line rule;
+// each is Unknown otherwise.
 func authorizationWindow(r *Report, s server, lines []logLine, auth authState) ([]logLine, int, bool) {
 	pod := s.pod.Name
 	at := slices.IndexFunc(lines, func(l logLine) bool { return l.is("INF", clusterReloadedMessage) })
 	if at < 0 {
-		if auth == authOff {
-			return nil, 0, false
+		if auth != authOff && len(lines) > 0 {
+			r.add(pod, Unknown, "its log, in the lines its server wrote, holds no %q, the line of the reload that loaded authorization, though "+
+				"its route port's INFO does not show authorization off; the record's container loaded authorization by a reload, so that line "+
+				"was lost or the reload has not reached the pod, and no route connection is judged as after authorization", "[INF] "+clusterReloadedMessage)
 		}
-		return lines, 0, false
+		return nil, 0, false
 	}
 	if !slices.ContainsFunc(lines[at:], func(l logLine) bool {
 		return l.is("INF", reloadedMessage) || (l.level == "INF" && strings.HasPrefix(l.message, reloadedMessage+" ("))

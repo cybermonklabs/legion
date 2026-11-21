@@ -21,11 +21,11 @@ const usageText = `usage: envoy-infra routes record --namespace <ns> --statefuls
     and every route since it loaded joined two of the hub's servers; 1 when another process held one
     or may have been handed the password, or a log line may hold it (treat the route password as
     read, cut its reach, rotate the password, then record and check again); 2 when it could not read
-    all it needs, when authorization is not in force or loaded within 10 s of a pod's start, when the
-    mesh is not whole or the servers do not hold one password, when a route connection from another
-    address named no server, was still open when the log was read, or was logged in the 5 s before
-    authorization loaded, when the log holds a line in the server's form the server did not write, or
-    when a pod changed during the check.
+    all it needs, when authorization is not in force, left no line of the reload that loaded it, or
+    loaded within 10 s of a pod's start, when the mesh is not whole or the servers do not hold one
+    password, when a route connection from another address named no server, was still open when the
+    log was read, or was logged in the 5 s before authorization loaded, when the log holds a line in
+    the server's form the server did not write, or when a pod changed during the check.
 `
 
 // timeout bounds a command's reads of the hub: each kubectl call, each wait for a port-forward to

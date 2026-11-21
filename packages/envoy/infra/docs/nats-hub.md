@@ -1188,10 +1188,11 @@ port-forward to 8222, its route port through a port-forward to 6222, and its nat
 log as `kubectl logs --timestamps` gives it, then reads the pods again. It exits 0 when every
 rule below holds; 1 when one shows the password may be read; and 2 when it could not read all it
 needs, when the log carries no time of the container runtime's, when authorization is not yet in
-force or loaded within 10 s of a pod's start, when the mesh is not whole or the servers do not
-hold one password, when a route connection from another address named no server, was still open
-when the log was read, or was logged in the 5 s before authorization loaded, when the log holds a
-line the server did not write, or when a pod changed during the check. It prints no password,
+force, left no line of the reload that loaded it, or loaded within 10 s of a pod's start, when the
+mesh is not whole or the servers do not hold one password, when a route connection from another
+address named no server, was still open when the log was read, or was logged in the 5 s before
+authorization loaded, when the log holds a line the server did not write, or when a pod changed
+during the check. It prints no password,
 since it never has one, and quotes what a peer chose, a route's `remote_id` and `remote_name` and
 an address from a log line, so no peer can write a line of its own on the operator's terminal. So
 anything that can reach a pod's port 6222 can keep the check from reaching 0, though not make it
@@ -1259,8 +1260,11 @@ reads with `--timestamps`.
   IP alone, or the pod's own loopback. Lines before the window are not judged: an implicit route
   carries the password only once authorization applies (`route.go:1092-1094`), and the `env`
   roll gives each new pod a new IP, so the logs of the pods it rolled first name the old IPs of
-  the ones it rolled after. A log in which no reload loaded authorization is judged whole when
-  the route port requires authorization, since the server then had it from its start. A
+  the ones it rolled after. A log with no `Reloaded: cluster` line among the server's own lines
+  has no window. When the route port shows authorization in force, or cannot be read, that is
+  exit 2: the record vouches that the container had no authorization when it was recorded, so it
+  loaded authorization by a reload, and that reload's line was lost or has not reached the pod;
+  judging the whole log would read the `env` roll's old pod IPs as after authorization. A
   connection from another address is exit 1 only when it was logged after the `Reloaded:
   cluster` line and formed a route by the log, its close line naming a server; every other one
   is exit 2. One logged before that line, in the window, may predate the reload's new
