@@ -25,21 +25,62 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // fleetProcess writes the server_processes row of another server process straight into the
-// registry: one that reads schema version and creates up to creatable, whose last heartbeat is
-// age before the database's now(). A version of 0 is the row of a build that predates the fleet
-// columns.
-func fleetProcess(t *testing.T, service *Service, version, creatable int, age time.Duration) {
+// registry: one that reads schema version, creates up to creatable and registers owner lock
+// protocol ownerLockProtocol, whose last heartbeat is age before the database's now(). A version
+// of 0 is the row of a build that predates the fleet columns.
+//
+// The owner lock protocol is the row's build's, as it registers it: store.OwnerLockProtocol for
+// this build and every build after it (processes.admit), and 0, the column's default, for a build
+// before that protocol. A row at 0 is an earlier build's arrival, whose insert takes the owner lock
+// gate exclusively and so waits for every transaction of this build that holds it - a settlement of
+// the document a test seeded among them - for at most 5 seconds, and then fails with 55P03
+// (migration 20261115200014_owner_lock_legacy_gate). A row of a later build at 0 would make that
+// wait in a test where no such build waits.
+func fleetProcess(t *testing.T, service *Service, version, creatable, ownerLockProtocol int, age time.Duration) {
 	t.Helper()
 	if _, err := service.store.Pool.Exec(context.Background(), `
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at)
-		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() - make_interval(secs => $3))`,
-		version, creatable, age.Seconds()); err != nil {
+		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, owner_lock_protocol, heartbeat_at)
+		values (gen_random_uuid(), '{fingerprint}', $1, $2, $3, now() - make_interval(secs => $4))`,
+		version, creatable, ownerLockProtocol, age.Seconds()); err != nil {
 		t.Fatalf("add a server process reading schema version %d: %v", version, err)
 	}
+}
+
+// The row of the build after this one goes in while a transaction of this build holds an owner
+// lock, and with it the owner lock gate, as a settlement of the document a test seeded does while
+// that test's page joins (TestARevokeWaitsForTheMessageTheServerHasInFlight): that build's
+// registration takes no gate. The gate is read held first, so a row that took it would wait here
+// for the registration's 5 seconds and fail.
+func TestTheNextBuildsFleetProcessWaitsForNoOwnerLock(t *testing.T) {
+	service, _ := newTestService(t)
+	ctx := context.Background()
+	tx, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the owner lock's transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
+		t.Fatalf("lock the document's issue: %v", err)
+	}
+	var held bool
+	if err := tx.QueryRow(ctx, `
+		select exists (
+			select from pg_locks
+			where locktype = 'advisory' and classid::bigint = $1 and objid::bigint = $2 and objsubid = 2
+				and pid = pg_backend_pid() and mode = 'ShareLock' and granted)`,
+		store.OwnerLockGateNamespace, store.OwnerLockGateKey).Scan(&held); err != nil {
+		t.Fatalf("read the owner lock gate: %v", err)
+	}
+	if !held {
+		t.Fatal("the owner lock's transaction holds no owner lock gate, so this cannot tell a row that waits for it from one that does not")
+	}
+	version := pmdoc.SchemaVersion()
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
 }
 
 // page is the query a page presents on its document socket: schema_version, and schema_creatable
@@ -251,13 +292,16 @@ func TestSchemaAdmissionFollowsTheLiveFleet(t *testing.T) {
 			v, r, v+1, r)
 	}
 	type process struct {
-		version, creatable int
-		age                time.Duration
+		version, creatable, ownerLockProtocol int
+		age                                   time.Duration
 	}
 	current, creates := v+1, r
 	older, newer := current-1, current+1
-	nextBuild := process{version: newer, creatable: current}
-	lapsedNextBuild := process{version: newer, creatable: current, age: time.Hour}
+	// The build after this one registers this build's owner lock protocol; the first version's
+	// build, and one that predates the fleet columns, came before that protocol and register none
+	// (fleetProcess).
+	nextBuild := process{version: newer, creatable: current, ownerLockProtocol: store.OwnerLockProtocol}
+	lapsedNextBuild := process{version: newer, creatable: current, ownerLockProtocol: store.OwnerLockProtocol, age: time.Hour}
 	firstVersion := process{version: 1, creatable: 1}
 	predatesFleetColumns := process{}
 	for _, c := range []struct {
@@ -289,7 +333,7 @@ func TestSchemaAdmissionFollowsTheLiveFleet(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			service, artifactID, server := newAdmissionServer(t, c.future)
 			for _, p := range c.fleet {
-				fleetProcess(t, service, p.version, p.creatable, p.age)
+				fleetProcess(t, service, p.version, p.creatable, p.ownerLockProtocol, p.age)
 			}
 			token := c.query.Get("schema_version")
 			socket, authenticated := admission(t, server.URL, artifactID, c.query, token)
@@ -357,7 +401,7 @@ func TestAdmissionRecheckClosesASocketTheFleetNoLongerAdmits(t *testing.T) {
 		t.Fatal("a current page was authenticated read-only")
 	}
 
-	fleetProcess(t, service, version+1, version, 0)
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
 	if err := service.recheckSchemaAdmissions(context.Background()); err != nil {
 		t.Fatalf("re-check the sockets' admission: %v", err)
 	}
@@ -379,7 +423,7 @@ func TestAdmissionRecheckClosesASocketTheFleetNoLongerAdmits(t *testing.T) {
 func TestAdmissionRecheckClosesANewerPageOnceNoLiveProcessCreatesWhatItCreates(t *testing.T) {
 	service, artifactID, server := newAdmissionServer(t, false)
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
-	fleetProcess(t, service, version+1, version, 0)
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
 	newerPage := page(version+1, version)
 	newer := mustDialPage(t, server.URL, artifactID, newerPage)
 	if !tokenWritable(t, newer, artifactID, newerPage.Get("schema_version")) {
@@ -521,7 +565,7 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 
 	// A process of the build after this one, which creates up to version, what this page cannot
 	// represent, joins, and the re-check revokes it.
-	fleetProcess(t, service, version+1, version, 0)
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
 	if err := service.recheckSchemaAdmissions(context.Background()); err != nil {
 		t.Fatalf("re-check the sockets' admission: %v", err)
 	}
@@ -670,7 +714,7 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	onTheWire := waitForTheDocumentOnTheWire(t, serverConn, dialed)
 	// A process of the build after this one joins: it creates up to version, which the slow page
 	// cannot represent, and reads one version above it.
-	fleetProcess(t, service, version+1, version, 0)
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
 	fleet, err := readSchemaFleet(context.Background(), service.store.Pool)
 	if err != nil {
 		t.Fatalf("read the live fleet: %v", err)
