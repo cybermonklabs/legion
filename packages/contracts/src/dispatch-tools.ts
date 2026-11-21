@@ -1033,7 +1033,10 @@ export const dispatchToolSpecs = [
       "architecture components, set the repository it targets, or move it on its project's " +
       "board. Status is one of " +
       `${ISSUE_STATUSES.join(", ")}; outside Legion, move it yourself as the work advances; inside ` +
-      "Legion the daemon moves it. A non-empty external_links is " +
+      "Legion the daemon moves it. On a Legion issue, where Dispatch runs with " +
+      "DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status write, the removal of the legion label, " +
+      "and a move out from under every labelled issue (403 LEGION_STATUS_SCOPE_REQUIRED) unless the " +
+      "credential holds the person or legion-status scope. A non-empty external_links is " +
       "merged into the issue's existing links by URL, so linking the pull request you just opened " +
       "keeps every earlier link; an empty external_links removes every link instead. components " +
       "replaces the issue's own attachment. Closing an issue " +
@@ -1206,8 +1209,11 @@ export const dispatchToolSpecs = [
       "the issue and decide again. A claim whose session is no longer running may be " +
       "taken: the takeover is recorded on the issue and the session that lost it is told. A claim is not the " +
       "issue's status — claiming moves nothing, and the result names who moves the status: you, with " +
-      "dispatch issue-update, or Legion's daemon on an issue it runs, where a status written by anyone " +
-      "else is undone. A claim is released by its holder or any human, and by " +
+      "dispatch issue-update, or Legion's daemon on an issue it runs. On such an issue, where " +
+      "Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status write from a " +
+      "credential that holds neither the person nor the legion-status scope " +
+      "(403 LEGION_STATUS_SCOPE_REQUIRED). Otherwise the daemon undoes a status that anyone else " +
+      "writes. A claim is released by its holder or any human, and by " +
       "any agent once the holder's session is no longer running. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({

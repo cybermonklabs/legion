@@ -71,7 +71,7 @@ const architectureComponentsAction =
  *  Legion runs, only its daemon writes the status. One copy, since the claim and the release
  *  must say the same thing. */
 const LEGION_OWNS_STATUS =
-  "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — a status written here is undone.";
+  "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — where Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status written here from a credential without the person or legion-status scope (403 LEGION_STATUS_SCOPE_REQUIRED), and otherwise the daemon undoes it.";
 
 /**
  * Guidance only: creation already succeeded, so an unavailable source lookup must not turn this
@@ -496,8 +496,10 @@ export async function claimCommand(context: CommandContext): Promise<DispatchToo
     throw refusalWithCode(error);
   }
   const held = after.claim;
-  // On an issue Legion runs, only its daemon writes the status: a status this session sets
-  // is undone, so the result says who owns it rather than asking for a move.
+  // On an issue Legion runs, only its daemon writes the status. Where Dispatch runs with
+  // DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status this session sets without the person or
+  // legion-status scope, and otherwise the daemon undoes it. So the result says who owns the
+  // status rather than asking for a move.
   // An absent field (an older Dispatch, or a failed label walk) reads as not managed.
   const legionManaged = after.legion_managed_status === true;
   // A release answers with the claim cleared or it does not answer at all: the server

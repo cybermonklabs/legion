@@ -692,32 +692,46 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 }
 
 // writeProjectScope writes what claims.Scope decides onto the session the token is stored with,
-// and grants the OAuth scope that decision carries: the project scope's wire word under
+// and grants the OAuth scopes that decision carries: the project scope's wire word under
 // ClaimProjectScope; the list of projects under ClaimProjects, which is empty for every token of
 // the none scope; a named token's one project under claimLegacyProject too, and none for any
-// other; and oauthwire.ScopeRead for exchange.ProjectScopeNone, the read entry's decision, and
-// no scope for any other.
+// other; oauthwire.ScopeRead for exchange.ProjectScopeNone, the read entry's decision;
+// oauthwire.ScopeLegionStatus for a named token whose claims.LegionStatus is set, the decision of
+// a Legion daemon's own entry (exchange.Set.Pod); and no scope for any other.
 //
 // The entry decides the scope, and the request's own scope parameter never does. The exchange
 // client is registered for oauthwire.Scope alone (oauthstore.exchangeClient), so the library
-// refuses a request that names oauthwire.ScopeRead invalid_scope before decide runs, under every
-// entry; and it validates a requested scope without granting it, so a request under a read entry
-// that names oauthwire.Scope is granted oauthwire.ScopeRead here and nothing else, and the same
-// request under any other entry is granted nothing.
+// refuses a request that names oauthwire.ScopeRead or oauthwire.ScopeLegionStatus invalid_scope
+// before decide runs, under every entry. The library validates a requested scope without granting
+// it. So a request that names oauthwire.Scope is granted oauthwire.ScopeRead here and nothing else
+// under a read entry, oauthwire.ScopeLegionStatus and nothing else under a Legion daemon's entry,
+// and nothing under any other entry.
 //
-// Any other value, exchange.ProjectScopeUnset included, is a server error that names it, and
-// nothing is written or granted: every exchange constructor sets the scope, so an unset one is a
-// decision nobody made and the broker's own failure rather than a token whose empty list reads as
-// any scope. Read as the person scope, as a build before exchange.ProjectScopeNone read every
-// value that was not named, a Claims nobody filled in would mint a token that acts as its person.
-// No path through decide hands it one today, since ExchangeConfig.Policy is a concrete
-// *exchange.Set and each of its decisions sets one of the three values below, so the refusal is
-// what keeps a value that package adds later from being minted as one of them before this switch
-// learns its word.
+// claims.LegionStatus beside any project scope but exchange.ProjectScopeNamed is a server error
+// that names it, and nothing is written or granted. Set.Pod sets it for an account entry alone,
+// whose decision is always named, so it beside another scope is a decision this broker never
+// makes, and the refusal keeps such a Claims from minting a token that holds the scope.
+//
+// A project scope the switch has no word for, exchange.ProjectScopeUnset included, is a server
+// error that names it, and nothing is written or granted: every exchange constructor sets the
+// scope, so an unset one is a decision nobody made and the broker's own failure rather than a
+// token whose empty list reads as any scope. Read as the person scope, as a build before
+// exchange.ProjectScopeNone read every value that was not named, a Claims nobody filled in would
+// mint a token that acts as its person. No path through decide hands it one today, since
+// ExchangeConfig.Policy is a concrete *exchange.Set and each of its decisions sets one of the
+// three values below, so the refusal is what keeps a value that package adds later from being
+// minted as one of them before this switch learns its word.
 func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSession, claims exchange.Claims) error {
+	if claims.LegionStatus && claims.Scope != exchange.ProjectScopeNamed {
+		return oauth2.ErrServerError.WithDebugf("the exchange decided %s beside project scope %d (%s) for %s, and this broker grants %s to a named token alone",
+			oauthwire.ScopeLegionStatus, int(claims.Scope), claims.Scope, claims.Principal, oauthwire.ScopeLegionStatus)
+	}
 	switch claims.Scope {
 	case exchange.ProjectScopeNamed:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeNamed
+		if claims.LegionStatus {
+			request.GrantScope(oauthwire.ScopeLegionStatus)
+		}
 	case exchange.ProjectScopePerson:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopePerson
 	case exchange.ProjectScopeNone:

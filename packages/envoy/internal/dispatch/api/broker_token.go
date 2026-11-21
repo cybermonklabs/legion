@@ -79,6 +79,12 @@ func errNoBrokerConfigured() *apiError {
 
 var brokerPersonScopes = []string{model.ScopePerson}
 
+// legionStatusScopes is the scopes of a Legion daemon's own broker token: model.ScopeLegionStatus
+// alone. It is a slice of its own, as brokerPersonScopes is, so no request allocates one and
+// nothing appends to another credential's scopes. Read it, never write it: every daemon's
+// credential shares this one slice.
+var legionStatusScopes = []string{model.ScopeLegionStatus}
+
 // brokerTokenActor authenticates a caller presenting an access token the secrets broker issued,
 // under the DPoP scheme: the broker is asked whether the token is live and the caller is held to
 // the key that token is bound to (internal/ciphertoken). A verified caller is the session the
@@ -163,16 +169,30 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// so whoever copies that file holds it, and approve settles what only the person settles - an
 	// approval, a credential decision or revoke, a personal token. Those need the person's browser
 	// session or a personal token the person gave approve. A token scoped to a project gets no
-	// scope, because the deployment mapped that token to a project and not to the person: it
+	// person scope, because the deployment mapped that token to a project and not to the person: it
 	// proves a session, not that any person stands behind the request. A token that names a
 	// service and no person gets none either, whatever scope the broker answered: there is no
 	// person for it to act as, and a scope that said otherwise would let it act as the session's
 	// own id on the routes that read what belongs to a person. A read-only token is one of those,
 	// and its one scope, read, is carried as the credential's ReadOnly mark and never as a scope a
 	// route could require.
+	//
+	// A token scoped to one project whose answer holds legion-status gets that scope alone
+	// (legionStatusScopes). The broker grants it to a Legion daemon's own token only. A named
+	// token that names no project names a person, as the shared public-session account's token
+	// does. legion-status on such a token would pass R26 on the Legion issues of every project,
+	// so it gets no scope. Dispatch does not check the token's session: the broker decides who
+	// holds the scope. No credential holds it beside person, so an act's scopes, which only a
+	// credential holding person records (actingPerson), never carry it. oneProject is also the
+	// test for the one project the token may write (actor.Project, below), so the two cannot
+	// drift apart.
+	oneProject := caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1
 	var scopes []string
-	if caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson {
+	switch {
+	case caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson:
 		scopes = brokerPersonScopes
+	case caller.LegionStatus && oneProject:
+		scopes = legionStatusScopes
 	}
 	actor := model.Actor{
 		Kind: "session",
@@ -200,7 +220,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// dev box session's person writes wherever they may, and the token of a machine naming a
 	// service and no person names no project at all. Nor does a read-only token, whose project
 	// scope none names no project and writes none.
-	if caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1 {
+	if oneProject {
 		project := caller.Projects[0]
 		actor.Project = &project
 	}

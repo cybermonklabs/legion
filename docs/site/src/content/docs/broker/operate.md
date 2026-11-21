@@ -688,6 +688,14 @@ A pod trades its own projected ServiceAccount token, minted for `BROKER_EXCHANGE
 the token exchange for a Dispatch access token. `BROKER_EXCHANGE_ACCOUNTS` lists the accounts whose
 tokens write as one person: in the one Dispatch project the entry names, or, for an entry that names
 no project (`<service account>==<person>`), wherever Dispatch's own rules let that person write.
+An entry whose fixed session is `legion-daemon:<its own project>` is a Legion daemon's own, for
+example `system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE`.
+The token of such an entry holds the OAuth scope `legion-status` alone, which Dispatch reads
+(`DISPATCH_LEGION_STATUS_SCOPE`): where that setting is on, a write of a Legion issue's status
+needs it or the `person` scope. The broker reads the session the entry fixes, letter case
+included, and never a session a request names. No other token the exchange mints holds
+`legion-status`, whatever session it carries, and a request that names that scope is refused
+`invalid_scope` under every entry.
 `BROKER_EXCHANGE_READ_ACCOUNTS` lists the accounts whose tokens only read, as whitespace-separated
 `<service account>=<service>=<session>` entries, for example
 `BROKER_EXCHANGE_READ_ACCOUNTS=system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session`.

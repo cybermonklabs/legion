@@ -687,11 +687,15 @@ type Config struct {
 	// refuses the start over when it is not one, acts for that person, and writes under
 	// the session the entry fixes; an entry that fixes none requires the pod to name its own
 	// session. An entry may name no project (<service account>==<person>): the shared
-	// public-session account's, whose tokens act for that person and name no project. The
-	// session is everything after the third "=", so it alone may carry one. A
-	// namespace's default account is refused, as is an account listed twice. Needs
-	// BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present.
-	// Unset, no account exchanges.
+	// public-session account's, whose tokens act for that person and name no project. An entry
+	// whose fixed session is legion-daemon:<its own project> is a Legion daemon's own: the token
+	// minted for its pods holds the OAuth scope legion-status too. Dispatch reads that scope
+	// (DISPATCH_LEGION_STATUS_SCOPE): where the setting is on, a write of a Legion issue's status
+	// needs it or the person scope. No other token the exchange mints holds legion-status,
+	// whatever session it carries. The session is everything after the third "=", so it alone
+	// may carry one. A namespace's default account is refused, as is an account listed twice.
+	// Needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods
+	// present. Unset, no account exchanges.
 	ExchangeAccounts []exchange.AccountEntry
 	// BROKER_EXCHANGE_READ_ACCOUNTS: the Kubernetes service accounts whose pods exchange their
 	// projected token for one that only reads, whitespace-separated

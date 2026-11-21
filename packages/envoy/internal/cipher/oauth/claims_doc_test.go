@@ -41,11 +41,11 @@ import (
 // the others. So a claim a new scope or a new decision adds is a claim this fails until the list
 // names it. The OAuth scope a decision grants is a claim too, though decide grants it on the
 // request rather than writing it into the extras: `scope`, which an introspection answers from the
-// granted scopes and a read entry's token alone carries (writeProjectScope), joins the union when
-// any decision granted one. The one claim no decision writes, the launcher credential a machine's
-// exchange mints (machineCredential, which runs after decide because the credential does not
-// exist until the request's key is bound), is added to that union by name; what proves it is
-// written is the live exchange in cmd/cipherd.
+// granted scopes and which a read entry's token and a Legion daemon's token alone carry
+// (writeProjectScope), joins the union when any decision granted one. The one claim no decision
+// writes, the launcher credential a machine's exchange mints (machineCredential, which runs after
+// decide because the credential does not exist until the request's key is bound), is added to
+// that union by name; what proves it is written is the live exchange in cmd/cipherd.
 //
 // What this cannot do: it compares two sets of names, and nothing more. It does not read a bullet's
 // meaning, so a claim whose description is stale, wrong, or swapped with its neighbour's passes

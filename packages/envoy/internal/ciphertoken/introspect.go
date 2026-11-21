@@ -48,6 +48,12 @@ const (
 // session's credential (ErrNotASession).
 const ScopeRead = oauthwire.ScopeRead
 
+// ScopeLegionStatus is the OAuth scope the broker grants a Legion daemon's own token, in the
+// answer's space-separated Scope: the broker's own wire name, carried here for the reason
+// ScopeRead is. callerOf reads it into Caller.LegionStatus. Beside the project scope named or
+// person, shapeOf reads a token that holds it as it reads one that does not.
+const ScopeLegionStatus = oauthwire.ScopeLegionStatus
+
 // ExchangeClientID is the OAuth client every token issued for acting as a session is issued to:
 // the RFC 8693 exchange a pod, a workflow run or a dev box session asks for a Dispatch access
 // token through (internal/cipher/oauthwire). It is carried here for the same reason the project
@@ -82,12 +88,22 @@ func expiryOf(answer Introspection) time.Time {
 // and hands over as shape: callerOf runs only on an answer sessionCaller accepted, and
 // sessionCaller lets a read-only answer through only with its switch set, which only a verifier
 // that serves one sets, so a Caller marked read-only is one such a verifier accepted.
+// LegionStatus is whether Scope holds the word ScopeLegionStatus, read one word at a time as
+// shapeOf reads it and with no slice built, since this too runs on every request a verifier
+// decides.
 func callerOf(answer Introspection, shape tokenShape) Caller {
-	return Caller{
+	caller := Caller{
 		Session: answer.Session, Person: answer.Person, Service: answer.Service,
 		Projects: slices.Clone(answer.Projects), ProjectScope: answer.ProjectScope,
 		ReadOnly: shape == shapeReadOnly,
 	}
+	for word := range strings.FieldsSeq(answer.Scope) {
+		if word == ScopeLegionStatus {
+			caller.LegionStatus = true
+			break
+		}
+	}
+	return caller
 }
 
 // introspect asks the broker what token is, presenting Dispatch's own projected ServiceAccount

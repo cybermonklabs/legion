@@ -55,21 +55,29 @@ var parentDepthCapSQL = strconv.Itoa(parentDepthCap)
 // legionLabel is the label that hands an issue's status to the Legion daemon. The daemon holds
 // its own copy of the spelling (packages/daemon/internal/dispatch/types.go, LegionLabel): the two
 // are separate constants in separate Go modules that have to be changed together, not one shared
-// value. packages/envoy knows two Legion-specific rules in all, and this is one: the other is the
-// design-gate record the daemon publishes onto an issue (design_gates, issue_design_gates.go),
-// which the superseded-approval advice reads to name the gates a document write made stale.
+// value. packages/envoy knows three Legion-specific rules in all, and this is one. The second is
+// the design-gate record the daemon publishes onto an issue (design_gates,
+// issue_design_gates.go), which the superseded-approval advice reads to name the gates a document
+// write made stale. The third is R26's refusal (legion_status_scope.go). Where
+// DISPATCH_LEGION_STATUS_SCOPE is on, a credential needs the person scope or the legion-status
+// scope to write the status of an issue that this label makes a Legion issue, to take this label
+// off an issue, or to move a Legion issue out from under every labelled issue.
 const legionLabel = "legion"
 
 // legionManagedStatusSQL answers whether the Legion daemon owns the status of the issue keyed by
 // $1: whether that issue, or any issue on its parent chain, carries the legion label. It lives
 // here because it is one more parent-chain walk bounded by parentDepthCap, like the ones above.
-// Labels keep the case they were typed in and are only de-duplicated case-insensitively, so
-// `Legion` is a real stored value and the match is on lower(label). The walk starts at the issue
-// itself, so one query answers both its own labels and its ancestors'. A chain deeper than the
-// cap answers false. A claim never reaches that case - loadIssue refuses such a chain before this
-// runs - but a write's advice does (computeWriteAdvice, write_advice.go), and there it means the
-// issue is treated as one Legion does not run: the "still in triage" line prints. A chain that
-// deep needs a reparent that refuseParentTooDeep would have refused.
+// Labels keep the case they were typed in and are only de-duplicated where strings.EqualFold
+// matches them (labelKey), so `Legion` is a real stored value and the match is on lower(label)
+// in the collation "C". In "C", lower() changes only A-Z, which for the six ASCII letters of
+// legion is exactly what strings.EqualFold matches, so the walk and holdsLegionLabel agree on
+// every database. In a glibc collation such as en_US.UTF-8, lower() also changes U+0130 (İ) to
+// i, and the walk would read LEGİON as legion. The walk starts at the issue itself, so one query
+// answers both its own labels and its ancestors'. A chain deeper than the cap answers false. A
+// claim never reaches that case - loadIssue refuses such a chain before this runs - but a write's
+// advice does (computeWriteAdvice, write_advice.go), and there it means the issue is treated as
+// one Legion does not run: the "still in triage" line prints. A chain that deep needs a reparent
+// that refuseParentTooDeep would have refused.
 var legionManagedStatusSQL = legionWalkSQL(`select i.parent_key, i.labels, 0 as depth from issues i where i.key = $1`)
 
 // legionManagedStatusOfRowSQL is legionManagedStatusSQL walking from an issue row given rather
@@ -77,28 +85,42 @@ var legionManagedStatusSQL = legionWalkSQL(`select i.parent_key, i.labels, 0 as 
 // writes that row (writeAdviceBefore). The walk above it, and the depth cap, are the same.
 var legionManagedStatusOfRowSQL = legionWalkSQL(`select $1::text as parent_key, $2::text[] as labels, 0 as depth`)
 
+// legionManagedStatusWithLabelsSQL is legionManagedStatusSQL that answers the stored labels of
+// the issue keyed by $1 too, in the same statement: its labels, then whether it is a Legion
+// issue. R26's refusal reads both from the row as it is stored under the caller's owner locks
+// (legion_status_scope.go).
+var legionManagedStatusWithLabelsSQL = `select i.labels, (` + legionManagedStatusSQL + `) from issues i where i.key = $1`
+
 // legionWalkSQL is the legion-label walk up the parent chain from the row start selects: its
-// parent_key, its labels and depth 0.
+// parent_key, its labels and depth 0. Both terms of the recursive query name the collation "C"
+// for labels. A recursive query refuses a column whose collation differs between its terms, and
+// start's labels may be a parameter in the database's default collation while the column has
+// another one.
 func legionWalkSQL(start string) string {
 	return `
 	with recursive chain as (
-		` + start + `
+		select s.parent_key, s.labels collate "C" as labels, s.depth from (
+			` + start + `
+		) s
 		union
-		select p.parent_key, p.labels, c.depth + 1
+		select p.parent_key, p.labels collate "C", c.depth + 1
 		from issues p join chain c on p.key = c.parent_key
 		where c.depth < ` + parentDepthCapSQL + `
 	)
 	select exists (
-		select 1 from chain c, unnest(c.labels) as label where lower(label) = '` + legionLabel + `'
+		select 1 from chain c, unnest(c.labels) as label where lower(label collate "C") = '` + legionLabel + `'
 	)`
 }
 
 // legionManagedStatus runs legionManagedStatusSQL inside the caller's transaction. That keeps the
 // issue's own row as the caller locked it, and nothing more: an ancestor's labels, and a reparent
-// above the issue, are read as they stand and are not held still by any lock the caller takes. The
-// answer is advisory in both callers, so a chain that moves under the walk costs a sentence of
-// guidance and never a write. Both claim routes (issue_claim.go) and a session's write advice
-// (write_advice.go) read it.
+// above the issue, are read as they stand and are not held still by any lock the caller takes.
+// Both claim routes (issue_claim.go) and a session's write advice (write_advice.go) read it. There
+// the answer is advice, so a chain that moves under the walk costs a sentence of guidance and
+// never a write. The same walk also gates a write: R26's refusal reads it, with the issue's
+// stored labels, before the call (legionManagedStatusWithLabelsSQL), and from the row that the
+// call leaves after it (legionManagedStatusOfRow). legion_status_scope.go says why that walk
+// needs no lock on an ancestor either.
 func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
 	var managed bool
 	if err := tx.QueryRow(ctx, legionManagedStatusSQL, key).Scan(&managed); err != nil {
@@ -107,8 +129,10 @@ func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, erro
 	return managed, nil
 }
 
-// legionManagedStatusOfRow is legionManagedStatus for key's row as a write leaves it, parent and
-// labels, which the write has not written yet (legionManagedStatusOfRowSQL).
+// legionManagedStatusOfRow is legionManagedStatus for key's row with its parent and labels given
+// rather than read (legionManagedStatusOfRowSQL): the row as a write leaves it, before the write
+// writes it (writeAdviceBefore), or the row after a call that R26's refusal judges
+// (legion_status_scope.go).
 func legionManagedStatusOfRow(ctx context.Context, tx pgx.Tx, key string, parent *string, labels []string) (bool, error) {
 	var managed bool
 	if err := tx.QueryRow(ctx, legionManagedStatusOfRowSQL, parent, labels).Scan(&managed); err != nil {

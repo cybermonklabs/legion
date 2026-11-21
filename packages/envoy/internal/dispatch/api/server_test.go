@@ -166,6 +166,12 @@ type testServerOptions struct {
 	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
 	// none, as every test that reads no gauge leaves it.
 	metrics *metrics.Registry
+	// legionStatusScope is Deps.LegionStatusScope (DISPATCH_LEGION_STATUS_SCOPE): R26's refusal
+	// of a write that sets a Legion issue's status, takes the legion label off an issue, or moves
+	// a Legion issue out from under every labelled issue, from a credential that holds neither
+	// the person scope nor the legion-status scope. False is the deployment that has not turned
+	// it on, which every test but legion_status_scope_test.go's runs as.
+	legionStatusScope bool
 	// parentStatusRule turns DISPATCH_PARENT_STATUS_RULE on for the server (Deps.ParentStatusRule).
 	parentStatusRule bool
 }
@@ -338,6 +344,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		BuildCommit:           options.buildCommit,
 		OutboxPublishes:       options.outboxPublishes,
 		Metrics:               options.metrics,
+		LegionStatusScope:     options.legionStatusScope,
 		ParentStatusRule:      ParentStatusRule{on: options.parentStatusRule},
 	})
 	if err != nil {

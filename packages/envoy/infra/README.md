@@ -1385,6 +1385,22 @@ deployment that leaves it unset renders the pod it always had. An `envoyImage` w
 table (`packages/envoy/cmd/dispatch/settings.go`) does not list. Setting or unsetting it
 replaces the app's pods as any change to its pod template does.
 
+`legionStatusScope`, `false` by default, turns on Dispatch's refusal of three writes of a Legion
+issue: `true` renders `DISPATCH_LEGION_STATUS_SCOPE=on` on the `envoy-dispatch` container alone,
+in every mode that runs Dispatch, right after `DISPATCH_PARENT_STATUS_RULE` (or where that
+variable would be). The three writes are a write of the issue's status, the removal of its
+`legion` label, and a move that leaves it under no labelled issue. With it Dispatch refuses
+them to a credential that holds neither the `person` scope nor `legion-status`. A Legion issue
+carries the `legion` label, in any letter case, or is under an issue that carries it. The setting's
+row in `packages/envoy/cmd/dispatch/settings.go`, which `envoy-dispatch settings` prints, is the one
+place of the procedure: which releases to deploy first, and the four conditions on each project's
+Legion daemon and controller under which an operator sets the input. The refusal needs no
+one-time step and no crossing: a pod with the setting off beside one with it on takes those writes
+until the roll ends. Unset, nothing is rendered, so a deployment that leaves it unset renders the
+pod it always had. An `envoyImage` whose `envoy-dispatch` predates the setting ignores it, as it
+ignores every variable its settings table (`packages/envoy/cmd/dispatch/settings.go`) does not
+list. Setting or unsetting it replaces the app's pods as any change to its pod template does.
+
 `priorityClassName`, `appPdbMinAvailable`, `frontDoorPdbMinAvailable` and
 `listenerPdbMinAvailable` protect the pods from being displaced; with none set the component
 renders no priority class and no budget.

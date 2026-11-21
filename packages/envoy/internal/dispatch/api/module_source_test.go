@@ -12,7 +12,7 @@
 // build and the package's test binary stops compiling.
 //
 // No test, because a test declared here would run wherever this file compiles - the race job
-// included - and the seventeen tests of those nine files are the text-check job's to run, once
+// included - and the nineteen tests of those nine files are the text-check job's to run, once
 // each. What an untagged file of declarations costs the race build is its compile and the one
 // walk the census asks of it: nothing here walks or parses anything until a test calls it.
 

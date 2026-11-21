@@ -34,9 +34,12 @@ export interface AuthenticatedUser {
  *
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
  *  call: both of them for a person at a browser, the set its row names for a personal token, and
- *  `[]` for the shared token and a verified service token, which act as nobody. The kind stays
- *  `agent` for a personal token holding `person`, because the kind names the credential and not
- *  the act; the person it acts for is `owner`. */
+ *  `[]` for the shared token and a verified service token, which act as nobody. A Legion daemon's
+ *  own broker token answers `["legion-status"]`: where Dispatch runs with
+ *  `DISPATCH_LEGION_STATUS_SCOPE` on, that scope or `person` lets a credential write a Legion
+ *  issue's status, take its `legion` label off, and move it out from under every labelled issue.
+ *  The kind stays `agent` for a personal token holding `person`, because the kind names the
+ *  credential and not the act; the person it acts for is `owner`. */
 export type WhoamiResponse = WhoamiUser | WhoamiAgent;
 
 export const UserIssueStateSchema = z

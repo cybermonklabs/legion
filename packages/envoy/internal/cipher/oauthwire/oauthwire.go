@@ -1,10 +1,10 @@
 // Package oauthwire is the wire contract of the broker's OAuth endpoints that the broker and the
-// callers it answers share: the clients they present, the scope a machine login asks for and the
-// one a read entry's token holds, the names the token exchange knows a subject token by, the
-// fields the broker adds to a token answer, and the one grammar of a token's list of projects. It
-// imports nothing of the broker — only the standard library and the project-key rule
-// internal/contracts generates — so the agent-secrets helper reads it without the broker's
-// storage.
+// callers it answers share: the clients they present, the scope a machine login asks for, the one
+// a read entry's token holds and the one a Legion daemon's token holds, the names the token
+// exchange knows a subject token by, the fields the broker adds to a token answer, and the one
+// grammar of a token's list of projects. It imports nothing of the broker — only the standard
+// library and the project-key rule internal/contracts generates — so the agent-secrets helper
+// reads it without the broker's storage.
 package oauthwire
 
 import (
@@ -27,12 +27,19 @@ const (
 	// Scope is the one scope a machine login asks for and is granted.
 	Scope = "machine"
 	// ScopeRead is the one OAuth scope a token minted from a read entry
-	// (BROKER_EXCHANGE_READ_ACCOUNTS) holds, and the only scope the exchange grants: a token
-	// that writes nothing and reads only the routes a resource server lists for it, which
-	// Dispatch does in its read list and every other service refuses (ciphertoken). The entry
-	// decides it, never the request: the exchange client is registered for Scope alone, so the
-	// library refuses a request that names this one invalid_scope under every entry.
+	// (BROKER_EXCHANGE_READ_ACCOUNTS) holds: a token that writes nothing and reads only the
+	// routes a resource server lists for it, which Dispatch does in its read list and every
+	// other service refuses (ciphertoken). The entry decides it, never the request: the exchange
+	// client is registered for Scope alone, so the library refuses a request that names this one
+	// invalid_scope under every entry.
 	ScopeRead = "read"
+	// ScopeLegionStatus is the OAuth scope the exchange grants a Legion daemon's own token: the
+	// token of an account entry that names a project and fixes the session legion-daemon:<that
+	// project>. It is the other scope the exchange grants, beside ScopeRead. Dispatch lets a
+	// credential that holds it write a Legion issue's status where DISPATCH_LEGION_STATUS_SCOPE
+	// refuses that write to others. The entry decides it, never the request, as it decides
+	// ScopeRead. A resource server that does not read the word accepts the token and ignores it.
+	ScopeLegionStatus = "legion-status"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.
 	ExtraCredentialID = "credential_id"
@@ -239,8 +246,9 @@ type Introspection struct {
 	// ProjectScopeNone token, none. Sorted, each once; absent for none.
 	Projects []string `json:"projects,omitempty"`
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
-	// exchanged token holds ScopeRead when a read entry minted it and no scope otherwise, and a
-	// machine login's own token holds Scope.
+	// exchanged token holds ScopeRead when a read entry minted it, ScopeLegionStatus when a
+	// Legion daemon's own entry minted it, and no scope otherwise. A machine login's own token
+	// holds Scope.
 	Scope string `json:"scope,omitempty"`
 	// ExpiresAt is when the token expires, in seconds since the epoch (RFC 7662's 'exp'), so a
 	// caller that remembers an affirmative answer can keep it no longer than the token lives.

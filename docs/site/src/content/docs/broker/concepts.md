@@ -55,11 +55,15 @@ A Kubernetes pod trades its own projected ServiceAccount token at the same excha
 access token alone: that trade mints no machine login and enrols nothing. The entry that lists the
 pod's account decides what the token is. An entry of `BROKER_EXCHANGE_ACCOUNTS` gives it a person
 and the one Dispatch project it may write, or no project for an entry that names none
-(`<service account>==<person>`). A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
-service and a fixed session instead, and no person and no project: the token holds the OAuth scope
-`read` alone. Dispatch serves such a token on the routes its read list names and refuses it on every
-other route with `403 READ_ONLY_TOKEN`; the Envoy listener refuses it with `401`, and the NATS auth
-service refuses a connection that presents it as `not_a_session`
+(`<service account>==<person>`). An entry whose fixed session is `legion-daemon:<its own project>`
+is a Legion daemon's own, and its token holds the OAuth scope `legion-status` too. Dispatch reads
+that scope (`DISPATCH_LEGION_STATUS_SCOPE`): where that setting is on, a write of a Legion issue's
+status needs it or the `person` scope. No other token the exchange mints holds `legion-status`,
+whatever session it carries. A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives the pod's
+token a service and a fixed session instead, and no person and no project: the token holds the
+OAuth scope `read` alone. Dispatch serves such a token on the routes its read list names and
+refuses it on every other route with `403 READ_ONLY_TOKEN`; the Envoy listener refuses it with
+`401`, and the NATS auth service refuses a connection that presents it as `not_a_session`
 ([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole answer of
 `GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
 source, each component, and every issue of the project, closed and iceboxed ones included. No

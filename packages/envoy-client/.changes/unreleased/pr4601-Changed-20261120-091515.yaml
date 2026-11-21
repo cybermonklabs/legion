@@ -1,0 +1,5 @@
+kind: Changed
+body: The note `dispatch issue-update` prints on a Legion issue says that Dispatch refuses a status written there from a credential without the `person` or `legion-status` scope where `DISPATCH_LEGION_STATUS_SCOPE` is on, and that the daemon undoes it otherwise.
+time: 2026-11-20T09:15:15.781302896Z
+custom:
+    Issue: pr4601

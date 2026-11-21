@@ -98,8 +98,9 @@ func parentStatusFixWriter() issueWriter {
 	return issueWriter{actor: parentStatusRuleActor, system: true}
 }
 
-// issueWritePlan is a write of the status or the parent of one or more issues, step by step, as
-// refuseIssueWritePlan judges it before the first step writes.
+// issueWritePlan is a write of one or more issues, step by step, as refuseIssueWritePlan judges it
+// before the first step writes. A step may write the status, the parent, the labels, or none of
+// them (the plan of a PATCH that writes the title alone).
 type issueWritePlan struct {
 	steps []issueWriteStep
 	// includeChildren is that the call moves the open issues under the issue it names with that
@@ -249,13 +250,19 @@ func (call *issueWriteCall) unlinkFrom(parent string) {
 }
 
 // refuseIssueWritePlan is the one check of a plan, which its caller runs before the plan's first
-// write, with the owner lock of each step's issue and of each step's current and new parent held.
-// It refuses with an error what no setting lets through. Then it answers the conflict with R24
-// (parentStatusConflictOf), or nil when the plan keeps the rule. An unjudged plan answers nil and
-// reads nothing, since its caller refuses no conflict. Every other caller refuses the conflict
-// only while the rule is on, but for a dry run of the route.
+// write, with the owner lock of each step's issue held, and for a step that writes a status or a
+// parent, the locks of its current and new parent too.
+// It refuses with an error R26's refusal, while its setting is on, and what no setting lets
+// through. Then it answers the conflict with R24 (parentStatusConflictOf), or nil when the plan
+// keeps the rule. An unjudged plan answers nil without R24's read, since its caller refuses no
+// conflict; R26 judges it all the same. Every other caller refuses the conflict only while the
+// rule is on, but for a dry run of the route.
 func (s *server) refuseIssueWritePlan(ctx context.Context, q pgx.Tx, writer issueWriter, plan issueWritePlan) (*parentStatusConflict, error) {
-	// INFRA-4732's guard of who may write a Legion issue's status becomes the first statement here.
+	// R26 (legion_status_scope.go) comes first, so a call that R24 refuses too answers R26's code.
+	// It runs with the parent-status rule off too: an unjudged plan returns after it.
+	if err := refuseLegionStatusWrite(ctx, q, s.deps.LegionStatusScope, writer, plan); err != nil {
+		return nil, err
+	}
 	if plan.includeChildren && !writer.human && plan.writesStatus("done") {
 		return nil, errorf(http.StatusForbidden, "BROWSER_SIGN_IN_REQUIRED",
 			"Only a person who is signed in at a browser can close the open issues under an issue together with it (include_children with done). This request presents a token.")
@@ -288,8 +295,9 @@ type plannedIssue struct {
 // each issue whose status a step changes) and writes each step's status and parent over them. A
 // status change judges the issue with its parent and with each direct child. A change of parent
 // judges the issue with its new parent. A pair that no step changes is not judged, so a plan that
-// changes no pair reads nothing. The issues are listed in the order of the steps, a parent before
-// the children, and the children in the order of their numbers.
+// changes no pair reads nothing. Every writer of a pair holds the parent's owner lock, so two
+// writes of one pair are judged one after the other. The issues are listed in the order of the
+// steps, a parent before the children, and the children in the order of their numbers.
 func parentStatusConflictOf(ctx context.Context, q pgx.Tx, plan issueWritePlan) (*parentStatusConflict, error) {
 	var judged []issueWriteStep
 	var parentsOfChildren []string

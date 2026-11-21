@@ -433,30 +433,27 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 	statusChanged := input.Status != nil && before.Status != status
 	parentChanged := parentProvided && !stringPointersEqual(before.Parent, afterParent)
-	// R24 (parent_status_rule.go) judges a write that changes the status or the parent, here,
-	// after the refusals above and under the owner locks the write holds: the issue's, its
-	// current parent's and its proposed parent's. Every writer of a pair holds the parent's
-	// owner lock, so two writes of one pair are judged one after the other. A write that names
-	// the status the issue already has changes no pair and is not judged. With the rule off the
-	// plan is unjudged, so the check reads no conflict that the write would not refuse.
-	if statusChanged || parentChanged {
-		var statusAfter *string
-		if input.Status != nil {
-			statusAfter = &status
-		}
-		var labelsAfter *[]string
-		if input.Labels != nil || (input.LabelsAdd != nil && labelsMerged == nil) {
-			labelsAfter = &labels
-		}
-		plan := issueWritePlanOfPatch(before, statusAfter, parentProvided, parent, labelsAfter)
-		plan.unjudged = !s.deps.ParentStatusRule.On()
-		conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, plan)
-		if err != nil {
-			return issueWriteResult{}, err
-		}
-		if conflict != nil {
-			return issueWriteResult{}, conflict
-		}
+	var labelsAfter *[]string
+	if input.Labels != nil || (input.LabelsAdd != nil && labelsMerged == nil) {
+		labelsAfter = &labels
+	}
+	// The plan's one check (refuseIssueWritePlan) runs here, after the refusals above and under
+	// the owner locks the write holds. R26 (legion_status_scope.go) judges the write first, and R24
+	// (parent_status_rule.go) judges it after R26, so where both refuse, the code is R26's. With the
+	// parent-status rule off the plan is unjudged, so R24 reads no conflict that the write would
+	// not refuse.
+	var statusAfter *string
+	if input.Status != nil {
+		statusAfter = &status
+	}
+	plan := issueWritePlanOfPatch(before, statusAfter, parentProvided, parent, labelsAfter)
+	plan.unjudged = !s.deps.ParentStatusRule.On()
+	conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, plan)
+	if err != nil {
+		return issueWriteResult{}, err
+	}
+	if conflict != nil {
+		return issueWriteResult{}, conflict
 	}
 	// The `advances` revision rule is decided here, beside the other refusals of this handler
 	// and before the first row is written: a refused write leaves the issue exactly as it was.
@@ -586,8 +583,8 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if input.Status != nil {
 		afterStatus = status
 	}
-	if input.Labels != nil || input.LabelsAdd != nil {
-		afterRow.labels = labels
+	if labelsAfter != nil {
+		afterRow.labels = *labelsAfter
 	}
 	advice := s.writeAdviceBefore(ctx, tx, call.adviceRoute, key, actor, afterStatus, afterRow, adviceAsks{
 		excluded: askIDs(closingAsks),
