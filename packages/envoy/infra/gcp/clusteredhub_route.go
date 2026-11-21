@@ -80,7 +80,7 @@ func newClusteredHubRoute(args *ClusteredHubRouteAuthorizationArgs, namespace st
 	if !dnsSubdomain(args.SecretName) {
 		return nil, core.InputErrorf("routeAuthorization.secretName", "routeAuthorization.secretName %q must be a DNS subdomain, the name of a Secret in namespace %s", args.SecretName, namespace)
 	}
-	if !secretKeyRule.MatchString(args.SecretKey) {
+	if !isSecretKey(args.SecretKey) {
 		return nil, core.InputErrorf("routeAuthorization.secretKey", "routeAuthorization.secretKey %q must match %s", args.SecretKey, secretKeyRule)
 	}
 	stage := slices.Index(clusteredHubRouteStageNames[:], args.Stage)
