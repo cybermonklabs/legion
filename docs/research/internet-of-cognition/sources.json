@@ -201,11 +201,11 @@
       "state": "landed",
       "merged_in": "cybermonklabs/legion#4636",
       "commit": "fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69",
-      "command": "git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/pr-body.md | tr -d '\\140' | grep -qF -e 'one row per half' && git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/pr-body.md | tr -d '\\140' | grep -qF -e '- thermonuclear-deep-review: <APPROVE | CHANGES>, <n> findings stand' && git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/pr-body.md | tr -d '\\140' | grep -qF -e '- thermonuclear-code-quality: <APPROVE | CHANGES>, <n> findings stand'",
+      "command": "git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/pr-body.md | tr -d '\\140' | grep -qF -e '**Thermo:** simplify-settled-diff once at <head-sha>, a docs-only PR included: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:' && git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/pr-body.md | tr -d '\\140' | grep -qF -e '- thermonuclear-deep-review: <APPROVE | CHANGES>, <n> findings stand' && git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/pr-body.md | tr -d '\\140' | grep -qF -e '- thermonuclear-code-quality: <APPROVE | CHANGES>, <n> findings stand' && git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/pr-body.md | tr -d '\\140' | grep -qF -e '- The reviewer'\\''s pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code; the Thermo line records the range it read and a row per half, and earlier rounds'\\'' rows stay beside them.'",
       "published": [
         {
           "path": "skills/legion-worker/references/pr-body.md",
-          "sentence": "one row per half"
+          "sentence": "**Thermo:** `simplify-settled-diff` once at <head-sha>, a docs-only PR included: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:"
         },
         {
           "path": "skills/legion-worker/references/pr-body.md",
@@ -214,6 +214,10 @@
         {
           "path": "skills/legion-worker/references/pr-body.md",
           "sentence": "- `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand"
+        },
+        {
+          "path": "skills/legion-worker/references/pr-body.md",
+          "sentence": "- The reviewer's pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code; the `Thermo` line records the range it read and a row per half, and earlier rounds' rows stay beside them."
         }
       ],
       "record": ["dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760"],
@@ -224,7 +228,7 @@
       "state": "landed",
       "merged_in": "cybermonklabs/legion#4636",
       "commit": "fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69",
-      "command": "git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/merge-gate.md | tr -d '\\140' | grep -qF -e 'A CHANGES from either half is answered in the review: its findings are carried into a REQUEST_CHANGES, or each finding is recorded with why it does not stand.' && git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/merge-gate.md | tr -d '\\140' | grep -qF -e 'Your APPROVE needs both halves run at the reviewed head, or both Thermo rows reading not run because the diff the round reads touches no runtime code (the whole change, or the difference from the last reviewed commit to the head).'",
+      "command": "git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/merge-gate.md | tr -d '\\140' | grep -qF -e 'A CHANGES from either half is answered in the review: its findings are carried into a REQUEST_CHANGES, or each finding is recorded with why it does not stand.' && git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/merge-gate.md | tr -d '\\140' | grep -qF -e 'Your APPROVE needs both halves run at the reviewed head, or both Thermo rows reading not run because the diff the round reads touches no runtime code (the whole change, or the difference from the last reviewed commit to the head).' && git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/pr-body.md | tr -d '\\140' | grep -qF -e 'Where the diff the round reads touches no runtime code, each row reads not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code), and the two rows of the last round the pair ran in stay beside them.'",
       "published": [
         {
           "path": "skills/legion-worker/references/merge-gate.md",
@@ -233,10 +237,14 @@
         {
           "path": "skills/legion-worker/references/merge-gate.md",
           "sentence": "Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code (the whole change, or the difference from the last reviewed commit to the head)."
+        },
+        {
+          "path": "skills/legion-worker/references/pr-body.md",
+          "sentence": "Where the diff the round reads touches no runtime code, each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them."
         }
       ],
       "record": ["dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760"],
-      "comment": "A step of R12 that lands outside this pull request: cybermonklabs/legion#4636, from main, makes it, and merged to main as fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69, the squash of its head 8111f001f386abbcd67644dc55c9dab7e92973c1, so the step lives in skills/legion-worker/references/merge-gate.md on main and not in this tree, which changes no skill file. The gate fetches that commit into a scratch git directory and names it IOC_MERGED_REPO; the proof reads the file there at that commit and holds each sentence published lists, so it exits 0 only when every sentence stands. A page's Proven by is a code span, which holds no backtick, so the proof takes the backticks out of the file with tr -d '\\140' and greps each sentence as written, its backticks taken out; published holds each sentence whole, backticks and all. The record is this tree's reading of how a step landed this way satisfies c-landed-steps (verification.md version 4). The guard test of the step ran in #4636's CI at 8111f001, the job pi-legion / pi-legion, with success (https://github.com/cybermonklabs/legion/actions/runs/44760760061/job/136376541199); it is a run of the step, not its proof. check.sh --landed holds the page to name this commit and this command."
+      "comment": "A step of R12 that lands outside this pull request: cybermonklabs/legion#4636, from main, makes it, and merged to main as fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69, the squash of its head 8111f001f386abbcd67644dc55c9dab7e92973c1, so the step lives in skills/legion-worker/references/merge-gate.md, with one sentence in skills/legion-worker/references/pr-body.md, on main and not in this tree, which changes no skill file. The gate fetches that commit into a scratch git directory and names it IOC_MERGED_REPO; the proof reads the file there at that commit and holds each sentence published lists, so it exits 0 only when every sentence stands. A page's Proven by is a code span, which holds no backtick, so the proof takes the backticks out of the file with tr -d '\\140' and greps each sentence as written, its backticks taken out; published holds each sentence whole, backticks and all. The record is this tree's reading of how a step landed this way satisfies c-landed-steps (verification.md version 4). The guard test of the step ran in #4636's CI at 8111f001, the job pi-legion / pi-legion, with success (https://github.com/cybermonklabs/legion/actions/runs/44760760061/job/136376541199); it is a run of the step, not its proof. check.sh --landed holds the page to name this commit and this command."
     }
   ]
 }

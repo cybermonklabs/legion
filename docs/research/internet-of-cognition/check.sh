@@ -306,11 +306,21 @@
 # commit, the page's Landed line names the commit and "(<owner>/<repository>#<n>)", and
 # the committed command passes with IOC_MERGED_REPO naming the fetched directory;
 # landed-no-refusal and landed-third-change read that commit's own diff beside this pull
-# request's. A step whose state is not_landed commits the R12 condition that stops it,
-# one of R12_CONDITIONS word for word, and its records, the dispatch:// references and pull
-# requests that record why; its page says Not landed with that condition word for word and
-# names each record, and each dispatch:// record resolves through live_read, since
-# --citations resolves the references of this directory's files and not the judgement's.
+# request's. A merged-in step is held to the whole of what its commit added, and its proof
+# to the whole of what it publishes: landed-coverage reads each non-blank line the commit
+# added to a file a merged-in step's published list names, takes the backticks out of it
+# and out of each sentence a merged-in step of that commit publishes on that file, takes
+# those sentences out of the line, and fails the line, naming the steps, the file and the
+# line, when anything is left but whitespace and one list marker, -, * or <n>., and a bold
+# label as **Thermo:** is no list marker; and landed-proof-holds fails each published
+# sentence that the page's Proven by command, read from its code span with each '\'' read
+# as ', does not hold with its backticks taken out, naming the step, the file and the
+# sentence, since a proof that greps for less passes with a sentence gone. A step whose
+# state is not_landed commits the R12 condition that stops it, one of R12_CONDITIONS word
+# for word, and its records, the dispatch:// references and pull requests that record why;
+# its page says Not landed with that condition word for word and names each record, and
+# each dispatch:// record resolves through live_read, since --citations resolves the
+# references of this directory's files and not the judgement's.
 # A step whose state is refuted has a page that says Landed: not made with its Refuted by
 # line. A page carries one state: Landed with Proven by, Landed: not made with Refuted by,
 # or Not landed; a page carrying two, or a line of a state twice, fails, so no reader that
@@ -668,6 +678,8 @@ landed-refutation|landed|a page that refutes a step carries a command with outpu
 landed-order|landed|when every step of sources.json's landed list is landed, one commit of this pull request carries the subject of each of the two steps, and the commit of the shortfall rows is an ancestor of the commit of the combining rule, or the steps merged in another pull request land in one commit or in commits each an ancestor of the next on main; otherwise the order is not judged, and the line names the steps not landed|the two commits in the other order
 landed-no-refusal|landed|no landed step's diff reaches a refusal path of the daemon or of Dispatch, and none adds a refusal constant|a landed step that touches a refusal path
 landed-third-change|landed|the third change, a refusal of a reviewer completion with no pair result, is not landed in any form|the third change landed as prose in a skill
+landed-coverage|landed|every non-blank line the merge commit of a step merged in another pull request added to a file its published list names is covered by the sentences the merged-in steps publish there, all but whitespace and a list marker|a line the merge commit added that its step's published list leaves out
+landed-proof-holds|landed|the proof the page of each step merged in another pull request writes holds every sentence the step publishes, backticks taken out|a published sentence the page's proof does not grep for
 published-tree|published|the default branch carries the evidence directory, the committed transcript, this script and every file a page links to|-
 published-delivery|published|the record of the delivery is on the issue: the message, the comment on dispatch://INFRA-1098 and the comment recording the publication|-
 admitted-form|admitted|every entry of ADMITTED, the forms the evaluator admits, is used by a row of claims.jsonl|-
@@ -1752,7 +1764,7 @@ prepare_env() {
 # refused, or when a line here differs from what it measured; --self-test runs it.
 #
 #   form                            rows  what it is
-#   &&                               223  runs the next pipeline when this one exits 0
+#   &&                               224  runs the next pipeline when this one exits 0
 #   ||                                 9  runs the next pipeline when this one fails
 #   |                                471  joins the commands of a pipeline
 #   ;                                 73  ends a pipeline
@@ -1770,7 +1782,7 @@ prepare_env() {
 #   done                              21  closes a for loop
 #   simple command                   664  a command word and its arguments
 #   pipeline                         471  two or more commands joined by |
-#   list                             260  two or more pipelines joined by ;, &&, || or newline
+#   list                             261  two or more pipelines joined by ;, &&, || or newline
 #   group                             28  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
 #   for loop                          21  for NAME in words; do list; done
@@ -6187,6 +6199,8 @@ mode_landed() {
     landed_order
     landed_no_refusal
     landed_third_change
+    landed_coverage
+    landed_proof_holds
 }
 
 # landed_commit_of <phrase>; every commit of this pull request whose subject carries
@@ -6310,6 +6324,98 @@ landed_third_change() {
         pass landed-third-change "the third change, a refusal of a reviewer completion with no pair result, is landed in no form, in this pull request or in a commit another pull request of this tree merged"
     else
         fail landed-third-change "the third change is landed in this tree or in a merged-in step's commit in $hits place(s), and it is a page with a cost and a default"
+    fi
+}
+
+# landed_coverage; a step another pull request of this tree made is held to the whole of
+# what its merge commit added to the files it publishes in, and not only to the sentences
+# its published list names, so a sentence the commit added that the list leaves out is no
+# sentence nothing reads. For each merge commit and each path the published list of a
+# merged-in step of that commit names, every non-blank line the commit added to the path
+# (git diff <commit>^ <commit> -- <path>, its + lines, read in IOC_MERGED_REPO) is covered:
+# with its backticks taken out, and each sentence any merged-in step of that commit
+# publishes on that path taken out of it, its backticks taken out too, what is left is
+# whitespace and at most one list marker, -, * or <n>., and nothing else; a bold label,
+# as **Thermo:**, is no list marker. A line with anything else left fails, naming the steps,
+# the file and the line, and so does a path the commit added no line to, since then the
+# commit did not make the sentences listed there.
+landed_coverage() {
+    local commit path titles line left sentence added in_hunk found bad=0 lines=0 paths=0
+    local -a sentences
+    while IFS=$'\t' read -r commit path; do
+        paths=$((paths + 1))
+        titles="$(jq -r --arg c "$commit" --arg p "$path" --arg q "'" '[.landed[] | select(.state == "landed" and (.merged_in // "") != "" and .commit == $c and any(.published[]?; .path == $p)) | $q + .title + $q] | join(", ")' "$EVIDENCE/sources.json")"
+        mapfile -t sentences < <(jq -r --arg c "$commit" --arg p "$path" '.landed[] | select(.state == "landed" and (.merged_in // "") != "" and .commit == $c) | .published[]? | select(.path == $p) | .sentence // "" | gsub("`"; "")' "$EVIDENCE/sources.json")
+        if ! added="$(git -C "$IOC_MERGED_REPO" diff --no-color --no-ext-diff -U0 "$commit^" "$commit" -- "$path" 2>/dev/null)"; then
+            bad=$((bad + 1))
+            fail landed-coverage "the diff of $commit against its parent is not there to read in $IOC_MERGED_REPO, so what it added to $path, where the merged-in steps $titles publish, is not read"
+            continue
+        fi
+        in_hunk=0 found=0
+        while IFS= read -r line; do
+            case "$line" in @@*) in_hunk=1 && continue ;; esac
+            [ "$in_hunk" = 1 ] && [ "${line:0:1}" = + ] || continue
+            line="${line:1}"
+            [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+            found=$((found + 1)) lines=$((lines + 1))
+            left="${line//\`/}"
+            for sentence in "${sentences[@]}"; do
+                [ -n "$sentence" ] && left="${left//"$sentence"/}"
+            done
+            [[ "$left" =~ ^[[:space:]]*([-*]|[0-9]+\.)?[[:space:]]*$ ]] && continue
+            bad=$((bad + 1))
+            fail landed-coverage "the line '$line', which $commit added to $path, is not covered by the sentences the merged-in steps $titles publish there: '$(printf '%s' "$left" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | head -c 240)' is left of it, and a merged-in step's published list holds every line its merge commit added to the files it names"
+        done <<<"$added"
+        if [ "$found" -eq 0 ]; then
+            bad=$((bad + 1))
+            fail landed-coverage "$commit added no line to $path, where the merged-in steps $titles publish, so the commit did not make the sentences listed there"
+        fi
+    done < <(jq -r '.landed // [] | .[] | select(.state == "landed" and (.merged_in // "") != "" and ((.commit // "") | test("^[0-9a-f]{40}$"))) | .commit as $c | (.published // [] | if type == "array" then .[] else empty end) | select((.path // "") != "") | [$c, .path] | @tsv' "$EVIDENCE/sources.json" | sort -u)
+    if [ "$paths" -eq 0 ]; then
+        pass landed-coverage "no step of sources.json's landed list is merged in another pull request, so no merge commit's added lines are read"
+    elif [ "$bad" -eq 0 ]; then
+        pass landed-coverage "each of the $lines non-blank lines the merge commits of the merged-in steps added to the $paths files their published lists name is covered by the sentences those steps publish there, all but whitespace and a list marker"
+    fi
+}
+
+# landed_proof_holds; the proof the page of a merged-in step writes holds every sentence the
+# step publishes: each published sentence, its backticks taken out, stands in the page's
+# Proven by command, read from its code span, which holds no backtick, with each '\'' read
+# as the ' it writes inside the command's single quotes. A proof that greps for less than
+# its step publishes still passes with a sentence gone from the commit, so a sentence the
+# proof does not hold fails, naming the step, the file and the sentence.
+landed_proof_holds() {
+    local page title command entry path sentence quote="'\\''" bad=0 steps=0 held=0
+    local -A proven=()
+    while IFS= read -r -d $'\f' page; do
+        title="$(printf '%s\n' "$page" | head -1 | sed 's/^### //')"
+        proven["$title"]="$(printf '%s\n' "$page" | grep -m1 -oE '\*\*Proven by:\*\*[[:space:]]*`[^`]+`' | sed 's/.*`\(.*\)`/\1/')"
+    done < <(page_blocks)
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        steps=$((steps + 1))
+        title="$(printf '%s' "$entry" | jq -r '.title // ""')"
+        command="${proven[$title]-}"
+        command="${command//"$quote"/"'"}"
+        if [ -z "$command" ]; then
+            bad=$((bad + 1))
+            fail landed-proof-holds "the page of the merged-in step '$title' writes no Proven by command, so its proof holds none of the sentences the step publishes"
+            continue
+        fi
+        while IFS= read -r path && IFS= read -r sentence; do
+            [ -n "$sentence" ] || continue
+            if [[ "$command" == *"${sentence//\`/}"* ]]; then
+                held=$((held + 1))
+            else
+                bad=$((bad + 1))
+                fail landed-proof-holds "the proof the page of the merged-in step '$title' writes does not hold the sentence '$sentence' the step publishes in $path, its backticks taken out, so a commit without it still passes the proof"
+            fi
+        done < <(printf '%s' "$entry" | jq -r '.published // [] | if type == "array" then .[] else empty end | (.path // ""), (.sentence // "")')
+    done < <(jq -c '.landed // [] | .[] | select(.state == "landed" and (.merged_in // "") != "")' "$EVIDENCE/sources.json")
+    if [ "$steps" -eq 0 ]; then
+        pass landed-proof-holds "no step of sources.json's landed list is merged in another pull request, so no proof is held to the sentences of a merge commit"
+    elif [ "$bad" -eq 0 ]; then
+        pass landed-proof-holds "the proof each of the $steps pages of a merged-in step writes holds each of the $held sentences its step publishes, backticks taken out"
     fi
 }
 
@@ -6710,6 +6816,116 @@ gate_run() {
     return "$status"
 }
 
+# The fixture's plant of R12's two steps as cybermonklabs/legion#4636 made them and main
+# merged them, as fcc746a3, which --self-test's plants of landed-coverage and
+# landed-proof-holds and the cases of check.test.sh on a merged-in step read.
+#
+# fixture_merged_lines <pr-body|rule>; the lines fcc746a3 added to pr-body.md, and the one
+# it added to merge-gate.md, word for word.
+fixture_merged_lines() {
+    case "$1" in
+    pr-body)
+        cat <<'MD'
+**Thermo:** `simplify-settled-diff` once at <head-sha>, a docs-only PR included: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:
+- `thermonuclear-deep-review`: <APPROVE | CHANGES>, <n> findings stand
+- `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand
+Where the diff the round reads touches no runtime code, each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them.
+- The reviewer's pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code; the `Thermo` line records the range it read and a row per half, and earlier rounds' rows stay beside them.
+MD
+        ;;
+    rule)
+        cat <<'MD'
+4. A `CHANGES` from either half is answered in the review: its findings are carried into a `REQUEST_CHANGES`, or each finding is recorded with why it does not stand. Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code (the whole change, or the difference from the last reviewed commit to the head).
+MD
+        ;;
+    esac
+}
+
+# fixture_merged_steps; the two steps fcc746a3 made, as a JSON list of each one's page and
+# the sentences it publishes, sources.json's lists for them: the shortfall rows' on the
+# fixture's page 'An execution record under the gen_ai. names', and the combining rule's on
+# its page 'One definitions record'.
+fixture_merged_steps() {
+    cat <<'JSON'
+[
+  {"title": "An execution record under the gen_ai. names", "published": [
+    {"path": "skills/legion-worker/references/pr-body.md", "sentence": "**Thermo:** `simplify-settled-diff` once at <head-sha>, a docs-only PR included: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:"},
+    {"path": "skills/legion-worker/references/pr-body.md", "sentence": "- `thermonuclear-deep-review`: <APPROVE | CHANGES>, <n> findings stand"},
+    {"path": "skills/legion-worker/references/pr-body.md", "sentence": "- `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand"},
+    {"path": "skills/legion-worker/references/pr-body.md", "sentence": "- The reviewer's pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code; the `Thermo` line records the range it read and a row per half, and earlier rounds' rows stay beside them."}]},
+  {"title": "One definitions record", "published": [
+    {"path": "skills/legion-worker/references/merge-gate.md", "sentence": "A `CHANGES` from either half is answered in the review: its findings are carried into a `REQUEST_CHANGES`, or each finding is recorded with why it does not stand."},
+    {"path": "skills/legion-worker/references/merge-gate.md", "sentence": "Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code (the whole change, or the difference from the last reviewed commit to the head)."},
+    {"path": "skills/legion-worker/references/pr-body.md", "sentence": "Where the diff the round reads touches no runtime code, each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them."}]}
+]
+JSON
+}
+
+# fixture_merged <dir> <subject>; makes the fixture's landed list the two steps of
+# fixture_merged_steps, each landed and merged in cybermonklabs/legion#4636: one commit of
+# the fixture's own repository, on the branch merged-main beside the fixture's own line and
+# never on it, made from the fixture's base with the subject <subject>, which writes
+# pr-body.md as the lines fcc746a3 added to it and adds to merge-gate.md the line fcc746a3
+# added there; sources.json's our_repository.url names the fixture's own repository, so
+# --landed fetches the commit from it. Each page's Landed line names the commit and
+# (cybermonklabs/legion#4636), and each step's proof is the one fixture_merged_prove writes,
+# which holds every sentence the step publishes. It prints the commit, and returns non-zero
+# when any of it could not be planted.
+fixture_merged() {
+    local dir="$1" repo="$1/repo" sources="$1/repo/docs/research/internet-of-cognition/sources.json" base pr_body rule tree merged
+    base="$(cat "$dir/base")"
+    pr_body="$(fixture_merged_lines pr-body | git -C "$repo" hash-object -w --stdin)" &&
+        rule="$({ git -C "$repo" show "$base:skills/legion-worker/references/merge-gate.md" && fixture_merged_lines rule; } | git -C "$repo" hash-object -w --stdin)" &&
+        GIT_INDEX_FILE="$dir/merged.index" git -C "$repo" read-tree "$base" &&
+        GIT_INDEX_FILE="$dir/merged.index" git -C "$repo" update-index --add \
+            --cacheinfo "100644,$pr_body,skills/legion-worker/references/pr-body.md" \
+            --cacheinfo "100644,$rule,skills/legion-worker/references/merge-gate.md" &&
+        tree="$(GIT_INDEX_FILE="$dir/merged.index" git -C "$repo" write-tree)" &&
+        merged="$(git -C "$repo" commit-tree "$tree" -p "$base" -m "$2")" &&
+        git -C "$repo" update-ref refs/heads/merged-main "$merged" && rm -f "$dir/merged.index" || return 1
+    jq --arg url "$repo" --arg c "$merged" --argjson steps "$(fixture_merged_steps)" \
+        '.our_repository.url = $url | .landed = [$steps[] | {title, state: "landed", merged_in: "cybermonklabs/legion#4636", commit: $c, command: "", published, record: ["dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760"]}]' \
+        "$sources" >"$dir/sources.json" && mv "$dir/sources.json" "$sources" || return 1
+    LANDED="- **Landed:** $merged (cybermonklabs/legion#4636)" awk '
+        /^### / { title = substr($0, 5) }
+        title == "An execution record under the gen_ai. names" && /^- \*\*Landed:\*\* / { print ENVIRON["LANDED"]; next }
+        { print }
+        title == "One definitions record" && $0 == "- It is rejected because the measurement under it failed." { print ENVIRON["LANDED"]; print "- **Proven by:** `true`" }' \
+        "$dir/judgement.md" >"$dir/judgement.new" && mv "$dir/judgement.new" "$dir/judgement.md" || return 1
+    fixture_merged_prove "$dir" "An execution record under the gen_ai. names" &&
+        fixture_merged_prove "$dir" "One definitions record" &&
+        [ "$(grep -cxF -- "- **Landed:** $merged (cybermonklabs/legion#4636)" "$dir/judgement.md")" = 2 ] &&
+        ! git -C "$repo" merge-base --is-ancestor "$merged" HEAD || return 1
+    printf '%s' "$merged"
+}
+
+# fixture_merged_prove <dir> <title> [<sentence>]; writes the proof of the step <title> of
+# the fixture's landed list, as sources.json's command and as its page's Proven by line:
+# one grep of the step's file at its commit, read in IOC_MERGED_REPO with its backticks
+# taken out, for each sentence the step publishes but <sentence>, each written with its
+# backticks taken out and each ' as '\''. It returns non-zero when the proof could not be
+# written in both places.
+fixture_merged_prove() {
+    local dir="$1" sources="$1/repo/docs/research/internet-of-cognition/sources.json" proof program
+    program="$(
+        cat <<'JQ'
+.landed[] | select(.title == $t) | .commit as $c
+| [.published[] | select(.sentence != $out)
+   | "git -C \"$IOC_MERGED_REPO\" show \($c):\(.path) | tr -d '\\140' | grep -qF -e '"
+     + (.sentence | gsub("`"; "") | gsub("'"; "'\\''")) + "'"]
+| join(" && ")
+JQ
+    )"
+    proof="$(jq -r --arg t "$2" --arg out "${3:-}" "$program" "$sources")" && [ -n "$proof" ] &&
+        jq --arg t "$2" --arg p "$proof" '(.landed[] | select(.title == $t) | .command) = $p' "$sources" >"$dir/sources.json" &&
+        mv "$dir/sources.json" "$sources" || return 1
+    TITLE="$2" PROVEN="- **Proven by:** \`$proof\`" awk '
+        /^### / { title = substr($0, 5) }
+        title == ENVIRON["TITLE"] && /^- \*\*Proven by:\*\* / { print ENVIRON["PROVEN"]; next }
+        { print }' "$dir/judgement.md" >"$dir/judgement.new" && mv "$dir/judgement.new" "$dir/judgement.md" &&
+        grep -qxF -- "- **Proven by:** \`$proof\`" "$dir/judgement.md"
+}
+
 fixture_plant() {
     # fixture_plant <dir> <family>; breaks the copy and returns 0, or 1 when the family
     # has no planted fault.
@@ -6882,6 +7098,21 @@ MD
             git add skills
             git commit --quiet -m "the third change, landed as prose in a skill"
         )
+        ;;
+    landed-coverage)
+        # The two merged-in steps of fcc746a3, the shortfall rows' published list leaving out
+        # the last line the commit added to pr-body.md, and its proof with it, so the list
+        # and the proof agree and only the line nothing publishes is left.
+        fixture_merged "$dir" "docs(skills): the reviewer pair is two rows (#4636)" >/dev/null &&
+            jq '(.landed[] | select(.title == "An execution record under the gen_ai. names") | .published) |= .[:-1]' "$evidence/sources.json" >"$dir/sources.json" &&
+            mv "$dir/sources.json" "$evidence/sources.json" &&
+            fixture_merged_prove "$dir" "An execution record under the gen_ai. names" || return 1
+        ;;
+    landed-proof-holds)
+        # The two merged-in steps of fcc746a3, the shortfall rows' proof leaving out the grep
+        # of the first sentence its step publishes, which the list still carries.
+        fixture_merged "$dir" "docs(skills): the reviewer pair is two rows (#4636)" >/dev/null &&
+            fixture_merged_prove "$dir" "An execution record under the gen_ai. names" "$(fixture_merged_steps | jq -r '.[0].published[0].sentence')" || return 1
         ;;
     *) return 1 ;;
     esac

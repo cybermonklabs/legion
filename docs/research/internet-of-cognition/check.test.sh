@@ -215,36 +215,6 @@ not_landed_plant() {
     grep -qxF -- "$2" "$1/judgement.md" && ! grep -qE '\*\*(Landed|Proven by):\*\*' "$1/judgement.md"
 }
 
-# merged_plant <dir> <subject> <published sentence>; makes the fixture's one step of
-# sources.json's landed list, the page 'An execution record under the gen_ai. names', a step
-# another pull request of this tree made and main merged: a commit of the fixture's own
-# repository, on the branch merged-main beside the fixture's own line and never on it, made
-# from the fixture's base with the subject <subject> and a pr-body.md that adds "each row
-# whole"; sources.json's our_repository.url names the fixture's own repository, so --landed
-# fetches the commit from it, and the step is landed, merged_in cybermonklabs/legion#4636,
-# with that commit, <published sentence> published in pr-body.md and the proof
-# MERGED_PROOF; the page's Landed line names the commit and (cybermonklabs/legion#4636) and
-# its Proven by line the proof. It prints the commit, and returns non-zero when any of it
-# could not be planted.
-MERGED_PROOF='git -C "$IOC_MERGED_REPO" cat-file -e MERGED_COMMIT'
-merged_plant() {
-    local repo="$1/repo" sources="$1/repo/docs/research/internet-of-cognition/sources.json" blob tree merged proof
-    blob="$(printf '**Thermo:** the pair at the reviewed head, one row per half, each row whole:\n' | git -C "$repo" hash-object -w --stdin)" &&
-        GIT_INDEX_FILE="$1/merged.index" git -C "$repo" read-tree "$(cat "$1/base")" &&
-        GIT_INDEX_FILE="$1/merged.index" git -C "$repo" update-index --add --cacheinfo "100644,$blob,skills/legion-worker/references/pr-body.md" &&
-        tree="$(GIT_INDEX_FILE="$1/merged.index" git -C "$repo" write-tree)" &&
-        merged="$(git -C "$repo" commit-tree "$tree" -p "$(cat "$1/base")" -m "$2")" &&
-        git -C "$repo" update-ref refs/heads/merged-main "$merged" && rm -f "$1/merged.index" || return 1
-    proof="${MERGED_PROOF/MERGED_COMMIT/$merged}"
-    jq --arg url "$repo" --arg c "$merged" --arg p "$proof" --arg s "$3" '.our_repository.url = $url | .landed = [{"title": "An execution record under the gen_ai. names", "state": "landed", "merged_in": "cybermonklabs/legion#4636", "commit": $c, "command": $p, "published": [{"path": "skills/legion-worker/references/pr-body.md", "sentence": $s}], "record": ["dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760"]}]' \
-        "$sources" >"$1/sources.json" && mv "$1/sources.json" "$sources" || return 1
-    sed -i "s|^- \*\*Landed:\*\* [0-9a-f]*\$|- **Landed:** $merged (cybermonklabs/legion#4636)|; s|^- \*\*Proven by:\*\* \`true\`\$|- **Proven by:** \`$proof\`|" "$1/judgement.md"
-    grep -qxF -- "- **Landed:** $merged (cybermonklabs/legion#4636)" "$1/judgement.md" &&
-        grep -qxF -- "- **Proven by:** \`$proof\`" "$1/judgement.md" &&
-        ! git -C "$repo" merge-base --is-ancestor "$merged" HEAD || return 1
-    printf '%s' "$merged"
-}
-
 # ==== the cases of check.test.sh begin below this line, where cases_copy cuts it ====
 
 # 1. A row that carries a command and a recorded output but no predicate. claims.jsonl has
@@ -1383,7 +1353,7 @@ dir="$(fresh judgement-honest)"
 out="$(fixture_run "$dir" --shape)"
 ending_result "the fixture's judgement passes --shape" 0 '^all 9 assertions passed$' "$out"
 out="$(fixture_run "$dir" --landed)"
-ending_result "the fixture's judgement passes --landed" 0 '^all 5 assertions passed$' "$out"
+ending_result "the fixture's judgement passes --landed" 0 '^all 7 assertions passed$' "$out"
 
 # 74. A step of sources.json's landed list that no page carries fails by its title. At
 # 8f53f0c8ca the gate read only the pages it found, so a renamed page left the step its
@@ -1489,7 +1459,7 @@ if command -v bun >/dev/null 2>&1; then
     fi
     (cd "$fresh_checkout" && bun install --frozen-lockfile >/dev/null 2>&1)
     out="$(IOC_ROOT="$fresh_checkout" IOC_EVIDENCE="$fresh_checkout/docs/research/internet-of-cognition" gate_run "$fresh_checkout/docs/research/internet-of-cognition/check.sh" --landed)"
-    ending_result "--landed on the same checkout after bun install passes" 0 '^all 5 assertions passed$' "$out"
+    ending_result "--landed on the same checkout after bun install passes" 0 '^all 7 assertions passed$' "$out"
 else
     printf 'SKIP --landed on a checkout with no node_modules: bun is missing\n'
 fi
@@ -1561,7 +1531,7 @@ ending_result "--replay with every tool of its table on PATH passes the fixture"
 out="$(fixture_run "$dir" --shape)"
 ending_result "--shape with every tool of its table on PATH passes the fixture" 0 '^all 9 assertions passed$' "$out"
 out="$(fixture_run "$dir" --landed)"
-ending_result "--landed with every tool of its table on PATH passes the fixture" 0 '^all 5 assertions passed$' "$out"
+ending_result "--landed with every tool of its table on PATH passes the fixture" 0 '^all 7 assertions passed$' "$out"
 
 # 79. An environment variable missing. At 533506542a --replay with no DISPATCH_TOKEN_FILE
 # exported no header, so every recorded read of the Dispatch API would fail as a row of
@@ -1596,7 +1566,7 @@ missing_result "--landed with one of two packages installed cannot run, naming t
 mkdir -p "$dir/repo/packages/pi-legion/node_modules/zod"
 printf '{"name": "zod", "version": "4.3.6"}\n' >"$dir/repo/packages/pi-legion/node_modules/zod/package.json"
 out="$(fixture_run "$dir" --landed)"
-ending_result "--landed with every package installed judges the step" 0 '^all 5 assertions passed$' "$out"
+ending_result "--landed with every package installed judges the step" 0 '^all 7 assertions passed$' "$out"
 sed -i 's/"command": "true"/"command": "false"/' "$dir/repo/docs/research/internet-of-cognition/sources.json"
 sed -i 's/^- \*\*Proven by:\*\* `true`$/- **Proven by:** `false`/' "$dir/judgement.md"
 grep -qF '"command": "false"' "$dir/repo/docs/research/internet-of-cognition/sources.json" && grep -qF '**Proven by:** `false`' "$dir/judgement.md" || {
@@ -1604,7 +1574,7 @@ grep -qF '"command": "false"' "$dir/repo/docs/research/internet-of-cognition/sou
     exit 1
 }
 out="$(fixture_run "$dir" --landed)"
-ending_result "--landed with every package installed and a proof that fails is a FAIL of the step" 1 '^1 of 5 assertions failed: landed-proof$' "$out"
+ending_result "--landed with every package installed and a proof that fails is a FAIL of the step" 1 '^1 of 7 assertions failed: landed-proof$' "$out"
 
 # 81. The history and the clone root. At 533506542a --shape with an IOC_HISTORY_REF that
 # names no commit failed order-of-work, blaming the deliverable for a fetch the reader had
@@ -1718,7 +1688,7 @@ fi
 # fixture's row either: a row that prints one prints nothing of it.
 head_commit="$(git -C "$IOC_ROOT" rev-parse HEAD)"
 dir="$(fresh history-exported)"
-for mode in shape:9 landed:5; do
+for mode in shape:9 landed:7; do
     out="$(IOC_HISTORY_REF="$head_commit" bash -c '. "$1"; fixture_run "$2" "$3"' _ "$HERE/check.sh" "$dir" "--${mode%:*}")"
     ending_result "--${mode%:*} over the fixture passes from a shell that exported IOC_HISTORY_REF, a commit of this tree" 0 "^all ${mode#*:} assertions passed\$" "$out"
     out="$(bash -c '. "$1"; fixture_run "$2" "$3"' _ "$HERE/check.sh" "$dir" "--${mode%:*}")"
@@ -1756,7 +1726,7 @@ ending_result "--self-test whose fixture's --citations has no Dispatch to read c
 out="$(IOC_HISTORY_REF="$head_commit" DISPATCH_URL=http://127.0.0.1:1 IOC_EVIDENCE="$self_copy" gate_run "$self_copy/check.sh" --self-test)"
 ending_result "--self-test with IOC_HISTORY_REF exported runs its fixture on the fixture's own history, and ends naming Dispatch" 2 "$SELF_CANNOT" "$out"
 out="$(IOC_EVIDENCE="$self_copy" gate_run "$self_copy/check.sh" --self-test)"
-ending_result "--self-test of the copy passes when every run it makes can run" 0 '^all 42 assertions passed$' "$out"
+ending_result "--self-test of the copy passes when every run it makes can run" 0 '^all 44 assertions passed$' "$out"
 
 # 86. --admitted reads the status of the install reader. At 0fdbb24ddf it read the
 # classifier's lines through a process substitution, so no status of python3 reached it:
@@ -1950,7 +1920,7 @@ copy="$(dir_copy parse-self-test "$WORK/cases-stub.sh")"
 printf '%s\n' "$LIST_COMMAND" >>"$copy/claims.jsonl"
 out="$(IOC_EVIDENCE="$copy" gate_run "$copy/check.sh" --self-test)"
 one_failure_result "--self-test over a claims.jsonl holding a row whose command is a list fails admitted-table alone, exit 1" admitted-table \
-    '^1 of 42 assertions failed: admitted-table$' "^FAIL admitted-table: .*admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$out"
+    '^1 of 44 assertions failed: admitted-table$' "^FAIL admitted-table: .*admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$out"
 
 # 89. check.test.sh ends the three ways the gate does, and --self-test reads it by its
 # ending record. At 9c82069807 case_result, passed_result and ending_result read a fixture
@@ -2041,7 +2011,7 @@ if [ "$RUN_CRASH" != 1 ] || [ -e "$out/ending" ] || ! grep -q "syntax error near
 fi
 out="$(IOC_EVIDENCE="$copy" gate_run "$copy/check.sh" --self-test)"
 one_failure_result "--self-test whose check.test.sh ends in a bash syntax error, exit 2 with no ending record, fails gate-cases" gate-cases \
-    '^1 of 42 assertions failed: gate-cases$' '^FAIL gate-cases: check\.test\.sh does not pass, exit 2: ' "$out"
+    '^1 of 44 assertions failed: gate-cases$' '^FAIL gate-cases: check\.test\.sh does not pass, exit 2: ' "$out"
 
 # 90-92 come from the thirteenth review of the pull request and the architect's rulings on
 # it of 2026-11-16T06:40Z and 07:08Z, and the header of check.sh states each rule they hold:
@@ -4341,28 +4311,33 @@ fi
 # read a landed step only as a commit this pull request added, with its sentences in this
 # tree. A step that carries merged_in is held instead to its merge commit, fetched from
 # our_repository.url into the run's scratch, with each sentence it published in its file at
-# that commit. The case makes the fixture's one step such a step (merged_plant), its commit on
-# a branch beside the fixture's own line, and runs --landed twice: with a published sentence
-# the commit's pr-body.md does not carry, which must fail landed-proof, naming the step, the
-# sentence and the commit; and, the honest form, with "each row whole", which the commit
-# adds, which must pass every assertion.
+# that commit. The case makes the fixture's landed list R12's two steps as fcc746a3 made them
+# (check.sh's fixture_merged), their commit on a branch beside the fixture's own line, and
+# runs --landed twice: with the shortfall rows' first sentence written in sources.json as
+# one the commit's pr-body.md does not carry, which must fail landed-proof, naming the step,
+# the sentence and the commit; and, the honest form, as fixture_merged plants it, which
+# must pass every assertion.
 for form in absent honest; do
     dir="$(fresh "merged-$form")"
-    case "$form" in
-    absent) sentence='a sentence the merge never wrote' ;;
-    honest) sentence='each row whole' ;;
-    esac
-    merged="$(merged_plant "$dir" "docs(skills): the reviewer pair is two rows (#4636)" "$sentence")" || {
-        printf 'FAIL the merged-in step could not be planted in the fixture (%s)\n' "$form"
+    merged="$(fixture_merged "$dir" "docs(skills): the reviewer pair is two rows (#4636)")" || {
+        printf 'FAIL the merged-in steps could not be planted in the fixture (%s)\n' "$form"
         exit 1
     }
+    if [ "$form" = absent ]; then
+        sources="$dir/repo/docs/research/internet-of-cognition/sources.json"
+        jq '(.landed[] | select(.title == "An execution record under the gen_ai. names") | .published[0].sentence) = "a sentence the merge never wrote"' \
+            "$sources" >"$dir/sources.json" && mv "$dir/sources.json" "$sources" || {
+            printf 'FAIL the absent sentence could not be planted in the fixture sources.json\n'
+            exit 1
+        }
+    fi
     out="$(fixture_run "$dir" --landed)"
     case "$form" in
     absent)
         case_result "a merged-in step whose published sentence its commit does not carry fails --landed, naming the sentence and the commit" \
             "landed-proof: the landed step .An execution record under the gen_ai\\. names. published .a sentence the merge never wrote. in skills/legion-worker/references/pr-body\\.md, and skills/legion-worker/references/pr-body\\.md at $merged, which cybermonklabs/legion#4636 merged, does not carry it" "$out"
         ;;
-    honest) passed_result "a merged-in step whose commit carries its sentence, named on its page with its pull request, passes --landed" "$out" ;;
+    honest) passed_result "merged-in steps whose commit carries every sentence they publish, each named on its page with its pull request and held by its proof, pass --landed" "$out" ;;
     esac
 done
 
@@ -4370,12 +4345,12 @@ done
 # brief of round 43). A squash merge on main writes the pull request's number at the end of
 # its subject, "(#4636)", a fixed fact of an immutable commit, so a step that says
 # cybermonklabs/legion#4636 merged it is held to a commit whose subject ends "(#4636)". The
-# case plants the merged-in step of case 144's honest form with a commit whose subject ends
+# case plants the merged-in steps of case 144's honest form with a commit whose subject ends
 # "(#4637)", and runs --landed, which must fail landed-proof, naming the commit's subject and
 # the pull request sources.json names.
 dir="$(fresh merged-other-pr)"
-merged_plant "$dir" "docs(skills): the reviewer pair is two rows (#4637)" 'each row whole' >/dev/null || {
-    printf 'FAIL the merged-in step could not be planted in the fixture with another pull request in its subject\n'
+fixture_merged "$dir" "docs(skills): the reviewer pair is two rows (#4637)" >/dev/null || {
+    printf 'FAIL the merged-in steps could not be planted in the fixture with another pull request in their subject\n'
     exit 1
 }
 case_result "a merged-in step whose commit's subject names another pull request fails --landed, naming both" \
@@ -4385,20 +4360,61 @@ case_result "a merged-in step whose commit's subject names another pull request 
 # 146. A merged-in step's commit that the fetch cannot reach leaves --landed unable to run (the
 # architect's brief of round 43: the fetch is a live read, and a live read that gets no answer
 # is a mode that cannot run, never a verdict on the deliverable). The case plants the
-# merged-in step of case 144's honest form, then writes into sources.json and onto the page a
-# commit the fixture's repository does not hold, and runs --landed, which must end exit 2,
+# merged-in steps of case 144's honest form, then writes into sources.json and onto the pages
+# a commit the fixture's repository does not hold, and runs --landed, which must end exit 2,
 # cannot run, naming the fetch of that commit.
 UNREACHABLE=0123456789abcdef0123456789abcdef01234567
 dir="$(fresh merged-unreachable)"
-merged="$(merged_plant "$dir" "docs(skills): the reviewer pair is two rows (#4636)" 'each row whole')" &&
+merged="$(fixture_merged "$dir" "docs(skills): the reviewer pair is two rows (#4636)")" &&
     sed -i "s/$merged/$UNREACHABLE/g" "$dir/judgement.md" "$dir/repo/docs/research/internet-of-cognition/sources.json" &&
     grep -qF "$UNREACHABLE" "$dir/judgement.md" && [ "$(jq -r '.landed[0].commit' "$dir/repo/docs/research/internet-of-cognition/sources.json")" = "$UNREACHABLE" ] &&
     ! git -C "$dir/repo" cat-file -e "$UNREACHABLE" 2>/dev/null || {
-    printf 'FAIL the merged-in step could not be planted in the fixture with a commit its repository does not hold\n'
+    printf 'FAIL the merged-in steps could not be planted in the fixture with a commit its repository does not hold\n'
     exit 1
 }
 ending_result "a merged-in step whose commit the fetch cannot reach makes --landed cannot run, naming the fetch" 2 \
     "^check\\.sh cannot run --landed: .*the fetch of $UNREACHABLE, .*did not answer" "$(fixture_run "$dir" --landed)"
+
+# 147. A merged-in step's published list holds every line its merge commit added to the files
+# it names (the architect's brief of round 44). Until round 44 --landed read that each
+# published sentence stands in its file at the commit and ran the page's proof there, and
+# read nothing of what the commit added beside them, so the tester cut pr-body.md's sentence
+# "Where the diff the round reads touches no runtime code, each row reads ..." from a copy
+# of fcc746a3, which neither step's list named, and both proofs still passed. The case plants
+# R12's two steps as fcc746a3 made them (fixture_merged), takes that not-run sentence out of
+# the combining rule's published list, on the fixture's page 'One definitions record', and
+# writes its proof again from the list, so list and proof agree, and runs --landed, which must
+# fail landed-coverage, naming the line the commit added to pr-body.md that no list holds.
+dir="$(fresh merged-list-short)"
+fixture_merged "$dir" "docs(skills): the reviewer pair is two rows (#4636)" >/dev/null &&
+    sources="$dir/repo/docs/research/internet-of-cognition/sources.json" &&
+    jq '(.landed[] | select(.title == "One definitions record") | .published) |= map(select(.sentence | startswith("Where the diff the round reads") | not))' \
+        "$sources" >"$dir/sources.json" && mv "$dir/sources.json" "$sources" &&
+    [ "$(jq '[.landed[].published[] | select(.sentence | startswith("Where the diff the round reads"))] | length' "$sources")" = 0 ] &&
+    fixture_merged_prove "$dir" "One definitions record" || {
+    printf 'FAIL the not-run sentence could not be taken out of the fixture combining rule'"'"'s list\n'
+    exit 1
+}
+case_result "a merged-in step's published list that leaves out a sentence its commit added fails --landed, naming the line" \
+    "landed-coverage: the line .Where the diff the round reads touches no runtime code, each row reads .not run \\(<the whole change .*, which [0-9a-f]{40} added to skills/legion-worker/references/pr-body\\.md, is not covered" \
+    "$(fixture_run "$dir" --landed)"
+
+# 148. The proof of a merged-in step holds every sentence the step publishes (the architect's
+# brief of round 44). A proof that greps for less than its step publishes still passes with a
+# sentence gone from the commit. The case plants R12's two steps as fcc746a3 made them, the
+# combining rule's published list carrying the not-run sentence, and writes the combining
+# rule's proof, on its page and in sources.json alike, without the grep of that sentence, and
+# runs --landed, which must fail landed-proof-holds, naming the step and the sentence.
+dir="$(fresh merged-proof-short)"
+fixture_merged "$dir" "docs(skills): the reviewer pair is two rows (#4636)" >/dev/null &&
+    fixture_merged_prove "$dir" "One definitions record" "$(fixture_merged_steps | jq -r '.[1].published[] | select(.sentence | startswith("Where the diff the round reads")) | .sentence')" &&
+    ! grep -qF 'Where the diff the round reads' <(jq -r '.landed[] | select(.title == "One definitions record") | .command' "$dir/repo/docs/research/internet-of-cognition/sources.json") || {
+    printf 'FAIL the combining rule'"'"'s proof could not be written without the not-run sentence in the fixture\n'
+    exit 1
+}
+case_result "a merged-in step whose proof does not grep for a sentence the step publishes fails --landed, naming it" \
+    "landed-proof-holds: the proof the page of the merged-in step .One definitions record. writes does not hold the sentence .Where the diff the round reads touches no runtime code, each row reads .not run \\(<the whole change" \
+    "$(fixture_run "$dir" --landed)"
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
