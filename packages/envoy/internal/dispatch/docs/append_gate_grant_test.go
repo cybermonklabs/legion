@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,12 +15,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// besideAFullPoolWait bounds the wait for a keystroke's store that a full pool must not hold up
-// (TestTheWorkersGateDecodesAFoldedHistoryBesideAFullPool): one keystroke stored on a document of
-// one paragraph, a decode of a few hundred bytes and three round trips, where the longest whole
-// run of a test that waits roomWait measured 2.1 s at load 17 (roomWaitCap). A store the pool
-// holds up never comes while the test holds the pool, so the test fails at this bound by name
-// rather than at roomWaitCap's two minutes or the binary's timeout.
+// besideAFullPoolWait bounds the wait for work of a room's persistence worker that a full pool
+// must not hold up: one keystroke stored on a document of one paragraph, a decode of a few hundred
+// bytes and three round trips (TestTheWorkersGateDecodesAFoldedHistoryBesideAFullPool), and the
+// close of a room of three paragraphs, whose worker compacts three rows as it exits
+// (TestARoomsCloseCompactsBesideAFullPool), where the longest whole run of a test that waits
+// roomWait measured 2.1 s at load 17 (roomWaitCap). Work the pool holds up never ends while the
+// test holds the pool, so the test fails at this bound by name rather than at roomWaitCap's two
+// minutes or the binary's timeout.
 const besideAFullPoolWait = 30 * time.Second
 
 // The room's persistence worker is the one reader of the room's queue of updates to store, and a
@@ -152,14 +155,103 @@ func writeAfterTheFold(t *testing.T, holder pgx.Tx, artifactID string, at int64)
 	}
 }
 
-// The gate's check of a history replaced under a room applies the run it would store to the
-// document that history makes (storedHistoryHolds), a whole decode of each of the run's updates.
-// That decode is counted in the pod's load concurrency: with the pool free it holds what the
-// run's copy costs (storedCopyWeight) while it decodes, both on the room's persistence worker,
-// whose context takes only bytes free at once (withFreeLoadOnly), and in a transaction's flush of
-// the room, whose context waits for them. It took nothing before: the fold's grants were given
-// back before it decoded.
-func TestTheGatesDecodeOfARunOnAReplacedHistoryIsCountedInThePool(t *testing.T) {
+// deletedCharacters is how many characters deletedHistory types and then deletes: enough that the
+// rows' bytes weigh many times the state the fold leaves of them (copyWeight).
+const deletedCharacters = 4096
+
+// deletedHistory is two rows: characters characters typed into a text in one update, and their
+// deletion in another. A document applying them collects the deleted characters, keeping their
+// item's id and length but none of its content (stateThrough), so the state the rows fold into is
+// a fraction of their bytes. run is one keystroke typed into another text after them, which builds
+// on the history's clocks alone.
+func deletedHistory(characters int) (rows [][]byte, run []byte) {
+	doc := crdt.New()
+	write := func(change func(txn *crdt.Transaction)) []byte {
+		before := doc.StateVector()
+		doc.Transact(change)
+		return crdt.EncodeStateAsUpdateV1(doc, before)
+	}
+	deleted := doc.GetText("deleted")
+	rows = append(rows,
+		write(func(txn *crdt.Transaction) { deleted.Insert(txn, 0, strings.Repeat("x", characters), nil) }),
+		write(func(txn *crdt.Transaction) { deleted.Delete(txn, 0, characters) }))
+	typed := doc.GetText("typed")
+	return rows, write(func(txn *crdt.Transaction) { typed.Insert(txn, 0, "x", nil) })
+}
+
+// The gate's check of a history replaced under a room folds that history (storedHistoryHolds,
+// fold), and the fold builds its own document row by row before it reads anything back. That
+// document is counted in the pod's load concurrency: with the pool free, the gate's grant holds
+// what the rows weigh - their bytes and the structs their headers declare (copyWeight), as
+// foldRead weighs the rows it folds - once the fold has read them, both on the room's persistence
+// worker, whose context takes only bytes free at once (withFreeLoadOnly), and in a transaction's
+// flush of the room, whose context waits for them. Before, the fold's first pass took nothing:
+// the gate read the rows outside foldRead, and the fold's one grant was its read-back's, weighed
+// on the folded state alone.
+//
+// The history is prose typed and then deleted (deletedHistory): the fold's document collects the
+// deleted content, so the rows weigh many times the state they fold into, and a grant on that
+// state cannot pass for one on the rows.
+func TestTheGatesFoldOfAReplacedHistoryIsCountedOnItsRows(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	rows, run := deletedHistory(deletedCharacters)
+	var bytes, structs int64
+	for version, row := range rows {
+		if _, err := database.Pool.Exec(ctx, `insert into doc_updates (artifact_id, version, update, content_changed) values ($1, $2, $3, false)`,
+			artifactID, version+1, row); err != nil {
+			t.Fatalf("store row %d: %v", version+1, err)
+		}
+		bytes += int64(len(row))
+		structs += int64(declaredStructs(row))
+	}
+	want := copyWeight(bytes, structs)
+	state, _, _, misread, err := fold(ctx, memoryUpdates(ctx, rows), maxUpdateItems)
+	if err != nil || misread != nil {
+		t.Fatalf("fold the history: %v, %v", err, misread)
+	}
+	if folded := storedCopyWeight(state); folded >= want {
+		t.Fatalf("the history's %d rows fold into a state weighing %d, against %d on the rows: want the rows heavier, or nothing here is tested", len(rows), folded, want)
+	}
+	for _, gate := range []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"on the room's persistence worker", withFreeLoadOnly(ctx)},
+		{"in a transaction's flush of the room", ctx},
+	} {
+		t.Run(gate.name, func(t *testing.T) {
+			slots := newLoadSlots(1)
+			var taken slotsHeld
+			slots.taken = taken.record
+			pool := useLoadSlots(t, slots)
+			holds, err := storedHistoryHolds(gate.ctx, database.Pool, artifactID, int64(len(rows)), []BrowserUpdate{{Update: run, ContentChanged: true}}, maxUpdateItems)
+			if err != nil || !holds {
+				t.Fatalf("the stored history holds the keystroke = %t (%v), want it held: it builds on the history's clocks alone, and nothing here is tested otherwise", holds, err)
+			}
+			if grants := taken.all(); len(grants) < 2 || grants[len(grants)-2] != want {
+				t.Fatalf("the gate's grants left %v held, want the one before the run's decode to hold the %d bytes the history's %d rows weigh, their %d bytes and %d declared structs (copyWeight), where the state they fold into weighs %d: the fold's own document was not counted",
+					grants, want, len(rows), bytes, structs, storedCopyWeight(state))
+			}
+			if held := pool.held.Load(); held != 0 {
+				t.Fatalf("%d bytes of the pool are held once the gate has judged the run, want none", held)
+			}
+			t.Logf("the gate's fold of %d rows of %d bytes declaring %d structs held %d bytes of the pool", len(rows), bytes, structs, want)
+		})
+	}
+}
+
+// The gate's check of a history replaced under a room decodes the run it would store onto the
+// document that history makes (storedHistoryHolds), a whole decode of each of the run's updates,
+// and holds that document until the run is judged. Both are counted in the pod's load
+// concurrency: with the pool free, the run's decode raises the grant that holds the document by
+// what the run's copy costs (storedCopyWeight), and the grant is given back only once the run is
+// judged, both on the room's persistence worker, whose context takes only bytes free at once
+// (withFreeLoadOnly), and in a transaction's flush of the room, whose context waits for them.
+// Before, the document's grant was given back as the history's decode returned, and the run's
+// decode held what the run cost alone while the document stood beside it uncounted.
+func TestTheGatesDocumentIsCountedUntilItsRunIsJudged(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour // no settlement takes a grant beside the gate's
 	seedServiceText(t, service, artifactID, "before")
@@ -183,18 +275,19 @@ func TestTheGatesDecodeOfARunOnAReplacedHistoryIsCountedInThePool(t *testing.T) 
 			if err != nil || !holds {
 				t.Fatalf("the stored history holds the run = %t (%v), want it held: the chain builds on its own items alone, and nothing here is tested otherwise", holds, err)
 			}
-			switch grants := taken.all(); {
-			case len(grants) == 0:
-				t.Fatalf("the gate decoded the history and a %d-byte run declaring %d structs taking nothing of the free pool, want the run's decode to hold the %d bytes its copy costs",
-					len(run), declaredStructs(run), want)
-			case grants[len(grants)-1] != want:
-				t.Fatalf("the gate's decodes took grants leaving %v held, want the last, the run's decode, to hold the %d bytes its %d bytes and %d structs cost (storedCopyWeight)",
-					grants, want, len(run), declaredStructs(run))
+			grants := taken.all()
+			if len(grants) < 2 {
+				t.Fatalf("the gate's grants left %v held, want one holding the document the history makes and then the run's decode onto it", grants)
+			}
+			document := grants[len(grants)-2]
+			if last := grants[len(grants)-1]; last != document+want {
+				t.Fatalf("the gate's grants left %v held, want the last, the run's decode, to hold the %d bytes the document held before it and the %d bytes the run's %d bytes and %d structs cost (storedCopyWeight)",
+					grants, document, want, len(run), declaredStructs(run))
 			}
 			if held := pool.held.Load(); held != 0 {
 				t.Fatalf("%d bytes of the pool are held once the gate has judged the run, want none", held)
 			}
-			t.Logf("the gate's decode of a %d-byte run declaring %d structs held %d bytes of the pool", len(run), declaredStructs(run), want)
+			t.Logf("the gate's document held %d bytes of the pool, and %d more while a %d-byte run declaring %d structs decoded onto it", document, want, len(run), declaredStructs(run))
 		})
 	}
 }

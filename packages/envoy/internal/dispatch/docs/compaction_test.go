@@ -127,6 +127,50 @@ func TestARoomCloseCompactionLeavesABusyDocumentForALaterCompaction(t *testing.T
 	requireCompactedFrom(t, service.store, artifactID, before, foldPoint, cursor)
 }
 
+// A room's persistence worker compacts the room as it exits (servicePersistenceAdapter.Compact),
+// and a commit made once the worker has begun to exit waits for it to finish (ygo's
+// persistStranded): at ygo's shutdown a socket can still commit a heavy apply, which holds its
+// grant of the pod's load concurrency through its commit. So that compaction takes only bytes free
+// at once (withFreeLoadOnly): with every byte of the pool held, the room's close finishes, its
+// rows older than the tail folded beside the pool's holders. Before, the compaction's fold waited
+// for the pool, and the close with it, while the pool stayed full.
+func TestARoomsCloseCompactsBesideAFullPool(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	foldPoint := writeRoomRows(t, service, artifactID)
+	ageUpdatesThrough(t, service.store, artifactID, foldPoint, time.Hour)
+	before, cursor := storedRows(t, service.store, artifactID), settlementCursor(t, service.store, artifactID)
+
+	// Every byte of the pool is held from before the room closes until the test ends, which gives
+	// it back before the service shuts down.
+	slots := newLoadSlots(1)
+	var waited atomic.Bool
+	slots.waiting = func() { waited.Store(true) }
+	pool := useLoadSlots(t, slots)
+	filler := newLoadSlot()
+	if !filler.tryTake(pool.poolBytes()) {
+		t.Fatalf("the empty pool refused its %d bytes", pool.poolBytes())
+	}
+	t.Cleanup(filler.release)
+
+	closed := make(chan error, 1)
+	go func() { closed <- service.Evict(context.Background(), artifactID) }()
+	wait := min(roomWait(t), besideAFullPoolWait)
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("close the document's room: %v", err)
+		}
+	case <-time.After(wait):
+		t.Fatalf("the room's close did not finish within %s while every byte of the pool was held (a taker began to wait for the pool: %t): its persistence worker's compaction as it exits waits for the pool",
+			wait, waited.Load())
+	}
+	requireCompactedFrom(t, service.store, artifactID, before, foldPoint, cursor)
+	if inUse := pool.held.Load(); inUse != pool.poolBytes() {
+		t.Fatalf("%d of the pool's %d bytes are held once the room has closed, want the test's whole hold and nothing else", inUse, pool.poolBytes())
+	}
+}
+
 // A failed room's eviction waits for the document's lock and compacts under the tail rule before
 // the room recovers: the rows older than the tail fold, the young row stays as written, and the
 // recovered room reads the document as it was.

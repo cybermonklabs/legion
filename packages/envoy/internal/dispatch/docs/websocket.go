@@ -429,7 +429,19 @@ func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room 
 // rather than waiting behind that holder. A failed room's eviction is the exception: it waits for
 // the lock and compacts before recovery, and with nothing to fold it still waits for the lock
 // (passRoomLock), so a repair written into the failed room commits before the room reloads.
+//
+// It runs on the room's persistence worker after the worker has retired from the room's queue of
+// updates to store, and a commit made once the worker has retired waits for the worker to exit,
+// this compaction included: ygo's persistence observer hands it to persistStranded, which waits
+// for the worker's persistDone. At ygo's shutdown a browser's socket can still commit while its
+// room's worker retires, and a heavy apply holds its grant of the pod's load concurrency through
+// its commit (weighPeerUpdate), so a wait for that pool here would hold that apply and this
+// worker against each other. So ctx is marked to take only bytes free at once
+// (withFreeLoadOnly): the compaction's fold and read-back (foldRead, fold) and a parked fold's
+// check of the stored versions (disagreeingVersion) take what is free at once and otherwise
+// decode beside the pool's holders.
 func (a *servicePersistenceAdapter) Compact(ctx context.Context, room string) error {
+	ctx = withFreeLoadOnly(ctx)
 	// A failed room's eviction waits for the document's lock, so a repair written into it commits
 	// before the room reloads; the hook counts those waiting compactions.
 	failed := a.service.roomFailed(room)

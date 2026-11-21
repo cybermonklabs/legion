@@ -149,9 +149,12 @@ func (h *unappliedHistory) Unwrap() error { return h.refused }
 // store's pending queue, maxPending, as a room decodes it; and the runs of a log that does not fold
 // (runsThrough) applied in order to such a document (runsDocument) - the document whose encoding
 // stateThrough returns for a log of several runs, which holds what the runs applied even where
-// that encoding keeps a parked struct over them. Each decode runs under the load grant ctx carries
-// or one of its own (runsDocument). A history that does not decode is ErrDocumentUnloadable; a log
-// holding no update is no document.
+// that encoding keeps a parked struct over them. Each decode runs under the load grant ctx carries,
+// which each caller takes on the rows, each row counted before the fold decodes it (foldRead,
+// storedHistoryHolds), raised where the read-back or the runs' decode weighs more (fold,
+// runsDocument); under a context carrying none, the read-back and the runs' decode take grants of
+// their own and the fold's own document is counted by none. A history that does not decode is
+// ErrDocumentUnloadable; a log holding no update is no document.
 func documentThrough(ctx context.Context, room string, version persistence.Version, updates updateSource, maxPending int) (*crdt.Doc, error) {
 	state, readBack, _, misread, err := fold(ctx, updates, maxPending)
 	switch {
@@ -269,7 +272,10 @@ const bufferedFolds = store.RoomsPoolSize
 // copyWeight weighs nothing more. A log of one update takes nothing of its own: it is returned as
 // stored, and whoever decodes it takes the grant (documentThrough). The buffered fold's slot is
 // taken before the load grant, never the other way about, which is what keeps that one wait out
-// of a cycle (podLoadSlots).
+// of a cycle (podLoadSlots). Under a context marked to take only free bytes - a room's persistence
+// worker's compaction as it exits (servicePersistenceAdapter.Compact) - the grant takes its bytes
+// only where they are free at once, and the fold otherwise runs beside the pool's holders
+// (withFreeLoadOnly).
 func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, version persistence.Version, rows int, bytes int64, what string, use func(context.Context, updateSource) error) error {
 	ctx, slot, release := withLoadSlot(ctx)
 	defer release()
@@ -416,14 +422,15 @@ func memoryUpdates(ctx context.Context, updates [][]byte) updateSource {
 // merge decides nothing the document placed: only the structs it parks, which a document's own
 // pending queue merges as they arrive.
 //
-// Whoever read the updates took the load grant ctx carries (foldRead), and the read-back's decode
-// runs inside it, raising it where the folded state weighs more than the rows did
-// (storedCopyWeight, loadSlot.take): a delete inside a run splits it into structs no row declared.
-// A fold under a context carrying no grant takes one of its own, weighed on the state it is about
-// to read back, and given back as it returns (holdLoad). Under a context marked to take only free
-// bytes - the room's persistence worker's gate on a history replaced under its room
-// (storedHistoryHolds, withFreeLoadOnly) - either grant takes its bytes only where they are free
-// at once, and the read-back otherwise runs beside the pool's holders.
+// Whoever read the updates took the load grant ctx carries (foldRead, storedHistoryHolds), and the
+// read-back's decode runs inside it, raising it where the folded state weighs more than the rows
+// did (storedCopyWeight, loadSlot.take): a delete inside a run splits it into structs no row
+// declared. A fold under a context carrying no grant takes one of its own for the read-back alone,
+// weighed on the state it is about to read back, and given back as it returns (holdLoad). Under a
+// context marked to take only free bytes - the room's persistence worker's gate on a history
+// replaced under its room (storedHistoryHolds, withFreeLoadOnly) and its compaction as it exits
+// (servicePersistenceAdapter.Compact) - either grant takes its bytes only where they are free at
+// once, and the read-back otherwise runs beside the pool's holders.
 func fold(ctx context.Context, updates updateSource, maxPending int) (state []byte, readBack *crdt.Doc, parked bool, misread error, err error) {
 	var doc *crdt.Doc
 	apply := func(update []byte) error {

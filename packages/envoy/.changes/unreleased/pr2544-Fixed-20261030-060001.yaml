@@ -161,7 +161,7 @@ body: |-
     turned away. The decodes that must not wait take their bytes only where the pool has them free
     at once, and otherwise run beside its holders: the second copy a room builds from a stored
     state, and what a room's persistence worker decodes as it stores a browser's update, its check
-    of a history replaced under the room included.
+    of a history replaced under the room included, and as it compacts the room on its close.
 
     What the server holds for one browser's socket is bounded as well, at 70 MiB of frames queued
     for it and not yet written. ygo bounded that queue in frames alone, 512 of them whatever their

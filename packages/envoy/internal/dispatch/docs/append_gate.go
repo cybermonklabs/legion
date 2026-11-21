@@ -260,7 +260,7 @@ func updateAge(observed time.Time) time.Duration {
 // update of its browsers down this path, a decode of the whole stored document under the
 // document's lock each.
 //
-// The decodes that check makes take their grants of the pod's load concurrency from ctx
+// The decodes that check makes share one grant of the pod's load concurrency, taken under ctx
 // (storedHistoryHolds). The room's persistence worker marks its append's context to take only
 // free bytes (StoreUpdateStored, withFreeLoadOnly): it holds the document's lock and a connection
 // of the room-appends pool here, and a heavy apply holding its grant through its commit waits on
@@ -316,17 +316,39 @@ func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind
 // items, which a room's update parks on. A history that already parks something answers false, as
 // does a run it cannot apply: the run is admitted whole or not at all.
 //
-// Its decodes take their grants from ctx (holdLoad): the fold's read-back of the history's state,
-// or the decode of its runs where it does not fold (fold, runsDocument), and then the decode of
-// the run onto the document they make, a whole decode of each of its updates, which takes what
-// the run's copy costs - its bytes and the structs their headers declare, as storedCopyWeight
-// weighs one update, read before anything of the run is decoded - and gives it back once the run
-// is judged. Under the context the room's persistence worker marks (withFreeLoadOnly, gateAppend)
-// each takes only bytes free at once and otherwise decodes beside the pool's holders; under any
-// other it waits for them, and a wait ctx ends is the error.
+// Its decodes share one grant of the pod's load concurrency (withLoadSlot): the grant ctx carries,
+// or one of its own given back as it returns, so the document is counted for its whole life here.
+// The grant is taken on the history's rows as the fold reads them: each row's bytes and the
+// structs its header declares are added before the fold decodes it (copyWeight, declaredStructs),
+// so the fold's own document is counted from its first row, and once every row is read the grant
+// holds what foldRead takes for the same rows read into memory. The rows are summed as they are
+// read, not by the gate's statement, which every append runs and which would then fetch every
+// row of the history rather than read its index (appendGateStatement). The fold's read-back, or
+// the decode of the history's runs where it does not fold (fold, runsDocument), raises the grant
+// where its document weighs more. The run is then decoded onto that document, a whole decode of
+// each of its updates, and the grant is raised by what the run's copy costs - its bytes and the
+// structs their headers declare, as storedCopyWeight weighs one update, read before anything of
+// the run is decoded - so it covers the document and the run together until the run is judged.
+// Under the context the room's persistence worker marks (withFreeLoadOnly, gateAppend) each take
+// takes only bytes free at once and otherwise leaves its decode beside the pool's holders; under
+// any other it waits for them, as foldRead's does, and a wait ctx ends is the error.
 func storedHistoryHolds(ctx context.Context, q Queryer, room string, head int64, updates []BrowserUpdate, maxPending int) (bool, error) {
+	ctx, slot, done := withLoadSlot(ctx)
+	defer done()
 	version := persistence.Version(head)
-	doc, err := documentThrough(ctx, room, version, storedUpdates(ctx, q, room, version), maxPending)
+	stored := storedUpdates(ctx, q, room, version)
+	weighed := func(use func([]byte) error) error {
+		var bytes, structs int64
+		return stored(func(update []byte) error {
+			bytes += int64(len(update))
+			structs += int64(declaredStructs(update))
+			if err := slot.take(ctx, copyWeight(bytes, structs)); err != nil {
+				return err
+			}
+			return use(update)
+		})
+	}
+	doc, err := documentThrough(ctx, room, version, weighed, maxPending)
 	if err != nil || doc == nil {
 		return false, err
 	}
@@ -338,11 +360,11 @@ func storedHistoryHolds(ctx context.Context, q Queryer, room string, head int64,
 		bytes += int64(len(update.Update))
 		structs += int64(declaredStructs(update.Update))
 	}
-	release, err := holdLoad(ctx, copyWeight(bytes, structs))
-	if err != nil {
+	// The sum is capped at one slot, as every copy's weight is (copyWeight): the pool may hold one
+	// slot alone, and a take past it would never be admitted.
+	if err := slot.take(ctx, min(slot.bytes+copyWeight(bytes, structs), loadSlotBytes)); err != nil {
 		return false, err
 	}
-	defer release()
 	for _, update := range updates {
 		if err := crdt.ApplyUpdateV1(doc, update.Update, nil); err != nil {
 			return false, nil
