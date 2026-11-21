@@ -215,11 +215,12 @@ real_strace=$(type -P strace) ||
 #   SQPOLL polled from user space is one, after an io_uring_setup the list counts.
 #
 # A regex, so strace matches only the calls the host's architectures have. What the trace
-# establishes is that the drive made none of these calls, counted as timed_waits counts them: no
-# wait whose time a call or a signal timer was given by its caller. It establishes no more, and
-# a timer the kernel keeps itself (TCP's SYN and retransmission timers and the like) is a class
-# it cannot see. No check here reads elapsed time to make up for the waits named above as not
-# seen.
+# establishes is that the drive made none of these calls, counted as timed_waits counts them, and
+# no more. Every unlisted case named above can still wait unseen: a blocking call a timer_create
+# timer's signal ends, which its caller gave a time through timer_settime, a `timeout N cmd`, a
+# process outside the traced tree, a device's own timed ioctl request and a busy loop; so can a
+# timer the kernel keeps itself (TCP's SYN and retransmission timers and the like). No check here
+# reads elapsed time to make up for those.
 TIMED_WAITS='/^(nanosleep|clock_nanosleep(_time64)?|select|_newselect|pselect6(_time64)?|poll|ppoll(_time64)?|epoll_wait|epoll_pwait|epoll_pwait2|rt_sigtimedwait(_time64)?|futex(_time64|_waitv|_wait)?|semtimedop(_time64)?|mq_timedreceive(_time64)?|mq_timedsend(_time64)?|recvmmsg(_time64)?|io_getevents|io_pgetevents(_time64)?|io_uring_setup|io_uring_enter|io_uring_register|timerfd_settime(64)?|setitimer|alarm|sched_setattr|setsockopt|pause|flock|fcntl(64)?|ioctl)$'
 
 # timed_waits <trace>: the calls of a strace log the control counts, one per line. A call begins
