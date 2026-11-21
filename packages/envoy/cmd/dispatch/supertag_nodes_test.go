@@ -18,16 +18,22 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes/schemanodestest"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// typeMigrations are the files that write the type nodes, in the order the runner applies them:
-// the seed, then each migration that has changed a type since. The test runs them all a second
-// time, in that order and through the same path the migration runner runs each, to prove a second
-// run leaves the same nodes. The seed alone would not do: run again, it puts back the version and
-// the attributes it was written at, which every later type migration has moved on from.
+// typeMigrations are the type migrations written before the store's backfill, in the order the
+// runner applies them: the seed, then each migration that changed a type before it. The test runs
+// them a second time, in that order and through the same path the migration runner runs each, to
+// prove a second run leaves the same nodes. The seed alone would not do: run again, it puts back
+// the version and the attributes it was written at, which every later type migration has moved on
+// from. A type migration written after the backfill is not listed here and runs once, as the
+// runner applies every file: it writes graph_tuples above the census limit, so it may write only
+// literal `insert … values` rows under the migration census's bounded-write rule, and the seed
+// tuples it writes at source_event 0 fall under no unique key, so a second run would append them
+// again.
 var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
 	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
@@ -38,35 +44,20 @@ var typeMigrations = []string{
 // pmdoc, so what the store holds is compared with the file itself.
 const blockSchemaFile = "../../internal/dispatch/pmdoc/schema/blocks.json"
 
-// closedSupertags is the root's closed list of types, twenty-seven names
-// (R21 of the parent change's specification and R6 of this change's): `proposed` is a value of a
+// closedSupertags is the root's closed list of types (R21 of the parent change's specification
+// and R6 of this change's): the twenty-seven this change creates. `proposed` is a value of a
 // node's state and no type, and the role is the agent, so neither is a supertag. The store holds
-// one supertag node for each, and beyond them only an entry an approved document of this tree
-// creates (authorisedSupertags), so this list is written here as the test's own copy: a seed that
-// adds or drops a name has to be read by a person before this test agrees with it.
+// one supertag node for each and no other. Each later change that creates a kind adds it to this
+// list in its own pull request: the change that moves lenses and lens kinds adds `lens_kind`, the
+// change that moves issues and their documents adds `query` and `query version`, the change that
+// moves handoffs adds `handoff`, and the root adds `priority`, `step` and `plan`. The list is
+// written here as the test's own copy, so a seed that adds or drops a name has to be read by a
+// person before this test agrees with it.
 var closedSupertags = []string{
 	"issue", "document", "document version", "block", "callout", "ask", "requirement",
 	"plan_task", "check", "result", "decision", "reading", "criterion",
 	"constraint", "lens", "risk", "comment", "message", "person", "session", "role",
 	"page", "interaction", "delivery_attempt", "component", "supertag", "attribute",
-}
-
-// authorisedSupertags is every supertag the closed list does not name that an approved document
-// of this tree creates, each with the reference of the document that creates it. A bare
-// prohibition would refuse a correct store: the root's own c-derived requires the entries below
-// once the child that moves lenses and lens kinds and the child that moves issues and their
-// documents seed them, so a test that allowed the
-// closed list alone would fail the build that requirement asks for. What the check is for is a
-// supertag nobody authorised, so an entry
-// beyond the closed list passes only where this list names its document, and the run prints
-// every one of them with that reference.
-//
-// The reference is written here rather than read: these checks run where no Dispatch is
-// reachable, so a test that called one could not run at all.
-var authorisedSupertags = map[string]string{
-	"lens_kind":     "R7 of the specification of the child that moves lenses and lens kinds",
-	"query":         "the specification of the child that moves issues and their documents",
-	"query version": "the specification of the child that moves issues and their documents",
 }
 
 // TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt proves that a type is data: the seed
@@ -100,11 +91,9 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 	requireAnUnknownKindIsSkipped(t, ctx, pool, file)
 }
 
-// requireClosedSupertagList holds the store to one supertag node per name of the closed list,
-// and beyond them only to an entry authorisedSupertags names with its document, each with the
-// base attributes every node of this store carries, as node columns and as tuples. Every entry
-// beyond the closed list is printed with the document that authorises it, and one with no
-// document fails.
+// requireClosedSupertagList holds the store to one supertag node per name of the closed list and
+// no other, each with the base attributes every node of this store carries, as node columns and
+// as tuples.
 func requireClosedSupertagList(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	nodes, err := graphstore.NodesOfKind(ctx, pool, schemanodes.KindSupertag)
@@ -123,20 +112,11 @@ func requireClosedSupertagList(t *testing.T, ctx context.Context, pool *store.Po
 	slices.Sort(want)
 	got := slices.Clone(names)
 	slices.Sort(got)
-	// Every supertag the closed list does not name, reported with the document that authorises
-	// it, and a failure for one nothing authorises.
 	for _, name := range missing(got, want) {
-		document, authorised := authorisedSupertags[name]
-		if !authorised {
-			t.Errorf("the store holds supertag node %q, which the closed list does not name and no approved document of this tree authorises", name)
-			continue
-		}
-		t.Logf("the store holds supertag %q beyond the closed list, created by %s", name, document)
-		want = append(want, name)
-		slices.Sort(want)
+		t.Errorf("the store holds supertag node %q, which the closed list does not name", name)
 	}
 	if !slices.Equal(got, want) {
-		t.Errorf("the store holds supertag nodes %v, want the closed list and the supertags this tree authorises %v\nonly in the store: %v\nonly in the list: %v",
+		t.Errorf("the store holds supertag nodes %v, want the closed list %v\nonly in the store: %v\nonly in the list: %v",
 			got, want, missing(got, want), missing(want, got))
 	}
 }
@@ -249,7 +229,7 @@ func requireTypeNodeValuesAreTheirTuples(t *testing.T, ctx context.Context, pool
 // fails, and so does one whose kind, choices, default, server flag, targets, scope or element
 // versions differ.
 // The file names an attribute as a document writes it, and its node is the one
-// schemanodes.StoreName names, `<type>/<store name>`, so ask's `state` is the node
+// schemanodestest.StoreName names, `<type>/<store name>`, so ask's `state` is the node
 // ask/answer_state. Each type and attribute it fails on is recorded in drift.
 func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *store.Pool, file pmdoc.BlockSchema, drift *schemaDrift) {
 	t.Helper()
@@ -276,7 +256,7 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 			tied[tuple.FromID] = struct{}{}
 		}
 		for position, declared := range typ.Attributes {
-			id := typ.Name + "/" + schemanodes.StoreName(typ.Name, declared.Name)
+			id := typ.Name + "/" + schemanodestest.StoreName(typ.Name, declared.Name)
 			wanted[id] = struct{}{}
 			if _, tiedToType := tied[id]; !tiedToType {
 				t.Errorf("no %s tuple ties attribute node %q to supertag %q", schemanodes.TupleAttributeOf, id, typ.Name)
@@ -304,7 +284,7 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 }
 
 // requireAttributeNodeCarries holds one attribute node of type typeName to what the file says
-// about that attribute: its name and place, the store name schemanodes.StoreName gives it, and
+// about that attribute: its name and place, the store name schemanodestest.StoreName gives it, and
 // each field a BlockAttributeSchema carries. A node that differs is recorded in drift.
 func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, typeName string, position int, declared pmdoc.BlockAttribute, drift *schemaDrift) {
 	t.Helper()
@@ -313,7 +293,7 @@ func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, typeName st
 		t.Errorf("attribute node %q carries name %q, want %q", node.ID, name, declared.Name)
 		drift.add(node.ID)
 	}
-	if held, want := carried["store_name"], schemanodes.StoreName(typeName, declared.Name); held != want {
+	if held, want := carried["store_name"], schemanodestest.StoreName(typeName, declared.Name); held != want {
 		t.Errorf("attribute node %q carries store name %v, want %q", node.ID, held, want)
 		drift.add(node.ID)
 	}
@@ -440,12 +420,18 @@ func (d *schemaDrift) report(t *testing.T) {
 	t.Errorf("pmdoc/schema/blocks.json and the store's type nodes disagree on %s%s. "+
 		"A change to pmdoc/schema/blocks.json needs a store migration of its own, like %s: "+
 		"it writes the node of each type or attribute the change adds or alters, with its tuples, and moves every block type's supertag node to the new version. "+
-		"Write one for this change and add it to typeMigrations in this file.",
+		"Write one for this change. It runs once, as the runner applies every file, and joins no second run in this file: "+
+		"written after the store's backfill, it writes under the migration census's bounded-write rule (typeMigrations).",
 		what, versions, typeMigrationExample)
 }
 
-// requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration again, in
-// order, and holds every node row and every tuple to being the one the first run left.
+// requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration written before
+// the store's backfill again, in order, and holds every node row and every tuple to being the one
+// the first run left. A type migration written after the backfill runs once: it writes only literal
+// `insert … values` rows under the migration census's bounded-write rule, and the seed tuples it
+// writes at source_event 0 fall under no unique key, so it cannot run twice unchanged, and the
+// runner applies each file once anyway. Only typeMigrations runs here, and a later change adds no
+// migration to it.
 func requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	before, beforeTuples := schemaRows(t, ctx, pool)

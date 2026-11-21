@@ -106,11 +106,11 @@ func (r *RecordedTx) Holding(t testing.TB, marker string) Statement {
 	return found[0]
 }
 
-// preparedPlans numbers the statements ExplainExecuted prepares, so no two share a name on a
+// preparedPlans numbers the statements explainExecuted prepares, so no two share a name on a
 // connection the pool hands out again.
 var preparedPlans atomic.Int64
 
-// ExplainExecuted runs EXPLAIN (ANALYZE, FORMAT format) of statement executed with args in tx,
+// explainExecuted runs EXPLAIN (ANALYZE, FORMAT format) of statement executed with args in tx,
 // under the plan-cache mode mode, which it sets with `set local` inside tx. It answers the one
 // "Plan" node for json and every line of the plan for text.
 //
@@ -120,19 +120,11 @@ var preparedPlans atomic.Int64
 // bind parameter, so each argument is written as the text pgx encodes it in for the type
 // Postgres inferred for that parameter, quoted as a literal of that type. The statement runs, so
 // the caller explains in a transaction it rolls back.
-func ExplainExecuted(t testing.TB, ctx context.Context, tx pgx.Tx, statement string, args []any, mode, format string) []byte {
-	t.Helper()
-	answer, err := explainExecuted(t, ctx, tx, statement, args, mode, format)
-	if err != nil {
-		t.Fatalf("%v\n%s", err, statement)
-	}
-	return answer
-}
-
-// explainExecuted is ExplainExecuted answering the statement's own failure - Postgres refusing
-// to prepare it, to plan it or to run it - as an error, which a control's caller reads as the
-// control proving nothing (RequireTheCheckFails). A failure of the test's own making, an
-// argument pgx cannot write, still fails t.
+//
+// The statement's own failure - Postgres refusing to prepare it, to plan it or to run it - is
+// answered as an error, which a control's caller reads as the control proving nothing
+// (RequireTheCheckFails). A failure of the test's own making, an argument pgx cannot write, still
+// fails t.
 func explainExecuted(t testing.TB, ctx context.Context, tx pgx.Tx, statement string, args []any, mode, format string) ([]byte, error) {
 	t.Helper()
 	if _, err := tx.Exec(ctx, "set local plan_cache_mode = "+mode); err != nil {
@@ -180,7 +172,7 @@ func explainExecuted(t testing.TB, ctx context.Context, tx pgx.Tx, statement str
 }
 
 // ExplainAfter runs before, the statements a writer sent ahead of statement, and then explains
-// statement (ExplainExecuted) under mode and NestedLoopsOnly, all in one transaction of db that
+// statement (explainExecuted) under mode and NestedLoopsOnly, all in one transaction of db that
 // it rolls back. Each call is a transaction of its own, since the explained statement runs and
 // writes what a second explain would read.
 func ExplainAfter(t testing.TB, ctx context.Context, db Beginner, before []Statement, statement Statement, mode, format string) []byte {

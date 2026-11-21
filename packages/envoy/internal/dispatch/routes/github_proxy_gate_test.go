@@ -74,9 +74,10 @@ const uninstalledRepository = "acme/uninstalled"
 // alice, a full member no private list names, reads acme/pub, acme/none, acme/both, which PUB-2
 // names beside PRIV-5, and acme/newname, which no issue names; bob, a restricted member PRIV's list
 // names, reads every acme/priv* repository, acme/privparent among them through PRIV-3's parent, and
-// acme/both and acme/oldname; carol, on PRIV's and PRIV2's lists, reads all nine. The rename row
-// shows the rule reads no rename: alice reads acme/newname and not acme/oldname, and bob reads
-// acme/oldname and not acme/newname. Each readable repository is read through a pull request path
+// acme/both and acme/oldname; carol, on PRIV's and PRIV2's lists, reads all nine. With every project
+// public, dave, a restricted member no list names, reads none of them (R2/R3 in every state). The
+// rename row shows the rule reads no rename: alice reads acme/newname and not acme/oldname, and bob
+// reads acme/oldname and not acme/newname. Each readable repository is read through a pull request path
 // and a check path, and each hidden one through both too.
 //
 // Four controls, each run on its own, and each time the test fails naming the repository: show
@@ -122,6 +123,22 @@ func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 			}
 		}
 	}
+
+	// With every project public, a restricted member still reads only the repositories an issue of
+	// a project whose list names them resolves to: dave, on no list, reads none of the nine, each
+	// answered as acme/uninstalled is, with nothing read from GitHub.
+	if _, err := database.Pool.Exec(context.Background(), `update projects set visibility = 'public'`); err != nil {
+		t.Fatalf("make every project public: %v", err)
+	}
+	uninstalled := proxyAnswer(t, handler, "dave@example.com", uninstalledRepository, "pulls/1")
+	for _, repository := range proxiedRepositories {
+		before := len(fake.repositoryReads())
+		got := proxyAnswer(t, handler, "dave@example.com", repository, "pulls/1")
+		if read := len(fake.repositoryReads()) > before; got != uninstalled || read {
+			t.Errorf("with every project public, dave, a restricted member no list names, reads %s as\n\t%s (GitHub read: %t)\nwant what %s answers:\n\t%s",
+				repository, got, read, uninstalledRepository, uninstalled)
+		}
+	}
 }
 
 // seedProxyGate writes the people, projects and issues the proxy gate test reads through: alice and
@@ -137,7 +154,8 @@ func seedProxyGate(t *testing.T) *store.Store {
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into people (email, member_kind) values
-			('alice@example.com', 'full'), ('bob@example.com', 'restricted'), ('carol@example.com', 'full'), ('olga@example.com', 'full');
+			('alice@example.com', 'full'), ('bob@example.com', 'restricted'), ('carol@example.com', 'full'), ('olga@example.com', 'full'),
+			('dave@example.com', 'restricted');
 		insert into projects (key, name, default_assignee, visibility) values
 			('PUB', 'Public', 'olga@example.com', 'public'),
 			('PRIV', 'Private', 'olga@example.com', 'private'),

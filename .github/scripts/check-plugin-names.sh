@@ -57,7 +57,6 @@ allowlist=(
   # The legacy Dispatch client comment: `SearchResult.issue` stays until no installed client built
   # before the owner-only shape remains, and the old package is one of those clients.
   packages/contracts/src/dispatch-api-search.ts
-  packages/contracts/AGENTS.md
   packages/envoy/internal/dispatch/model/model.go
   # The live-view message names the plugin releases that do not stream ("before 5.8.0").
   packages/dispatch/web/src/features/agent-view/AgentConversationPage.tsx
@@ -65,22 +64,21 @@ allowlist=(
   # tells an operator to uninstall it, and its load probe reads the old package's marker.
   packages/daemon/internal/daemon/bootgate.go
   packages/daemon/internal/daemon/probe.mjs
-  # The shared interface: `LEGACY_LEGION_LOADED_KEY` is the old package's marker, and the symbol
-  # table in the package's AGENTS.md says what that marker means.
+  # The shared interface: `LEGACY_LEGION_LOADED_KEY` is the old package's marker.
   packages/pi-shared/src/interface.ts
-  packages/pi-shared/AGENTS.md
-  # The Legion entry's refusal names the old package as the thing to uninstall, its test asserts
-  # that sentence, and the package's AGENTS.md quotes it.
+  # The Legion entry's refusal names the old package as the thing to uninstall, and its test
+  # asserts that sentence.
   packages/pi-legion/extensions/legion.ts
   packages/pi-legion/extensions/legion.test.ts
-  packages/pi-legion/AGENTS.md
   # The Go tests that plant the old package's marker and assert each lane's refusal.
   packages/daemon/internal/daemon/bootgate_test.go
   packages/daemon/internal/daemon/imageprobe_test.go
   packages/daemon/cmd/legion/controller_test.go
   # The release workflow's first-release seed reads the old name's npm version, so the two new
-  # packages continue its version line instead of restarting at 0.x.
+  # packages continue its version line instead of restarting at 0.x. Its notes file holds the
+  # paragraph that says why.
   .github/workflows/release.yaml
+  .github/ci-notes/release.md
   # This check and its test spell the name they hunt.
   .github/scripts/check-plugin-names.sh
   .github/scripts/check-plugin-names.test.sh

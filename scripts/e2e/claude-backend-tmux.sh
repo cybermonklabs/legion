@@ -65,6 +65,12 @@ mkdir -p "$evidence/logs" "$evidence/transcripts"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
+# Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, lib/process-tree.sh); a fork of this shell that
+# execs nothing, such as the pane_watcher, carries none and is stopped by its pid (run_marks'
+# comment there). The transcript's tee, started above, carries none, so it outlives the sweep and
+# writes the run's last line.
+export LEGION_E2E_RUN=$work
 ok=
 check=setup
 TZ=UTC printf -v check_started '%(%FT%TZ)T' -1 # when the current check began (lib/model-gateway-unserved.sh)
@@ -105,6 +111,8 @@ pass() { printf 'ok %s\n' "$check"; }
 fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
+. "$root/scripts/e2e/lib/dispatch-identity.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/workflow.sh
@@ -165,9 +173,10 @@ cleanup() {
   stop_pid "$daemon_pid"
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
+  stop_pid "$dispatch_identity_issuer_pid"
   stop_pid "$daemon_keeper_pid"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  stop_marked_processes "$work" || true
   docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   collect_transcripts
   remove_run_branch
@@ -200,7 +209,8 @@ start_listener() {
   ENVOY_API_TOKEN="$token" ENVOY_LISTEN_HOST=127.0.0.1 \
     ENVOY_MACHINE_ID="legion-e2ecc-$$" NATS_URLS="nats://127.0.0.1:$port_nats" \
     start_held listener port_listener ENVOY_LISTEN_FD --env 'PORT={port}' -- \
-    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-listener"
+    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
+    "${dispatch_identity_listener_env[@]}" "$work/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
     curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$port_listener/v1/sessions"
 }
@@ -222,7 +232,8 @@ start_dispatch() {
     start_held dispatch port_dispatch DISPATCH_LISTEN_FD \
     --env 'DISPATCH_PORT={port}' --env 'DISPATCH_SERVER_URL=http://127.0.0.1:{port}' -- \
     env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
-    HOME="$work/dispatch-home" XDG_CONFIG_HOME="$work/dispatch-home/.config" "$work/envoy-dispatch"
+    HOME="$work/dispatch-home" XDG_CONFIG_HOME="$work/dispatch-home/.config" "${dispatch_identity_dispatch_env[@]}" \
+    "$work/envoy-dispatch"
   await_start dispatch "$dispatch_pid" 60 "the scratch Dispatch server" \
     curl -fsS "http://127.0.0.1:$port_dispatch/healthz"
   dispatch_base="http://127.0.0.1:$port_dispatch"
@@ -246,8 +257,8 @@ nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
-# The project's repository is Dispatch's mapping (the PUT below makes $repo its default), not a key of
-# legion.yaml.
+# The project's repository is no key of legion.yaml: the PUT below sets $repo as the project's
+# default repository in Dispatch, and the daemon takes each issue's repository from Dispatch.
 projects:
   $project: {}
 gates:
@@ -316,14 +327,8 @@ workspace_jj() {
 }
 
 # ---- the production guards -------------------------------------------------------------------
-# process_args PID NAME reads PID's arguments into the array NAME from the NUL-delimited
-# /proc/PID/cmdline, in this shell: no pipe stands between the read and the check, so nothing can
-# end early on a pane's command line, which holds its whole system prompt (past 64 KB, with
-# newlines). It fails when the entry cannot be read or holds no argument (the process has gone).
-process_args() {
-  local -n _args=$2
-  { mapfile -d '' -t _args <"/proc/$1/cmdline"; } 2>/dev/null && [ "${#_args[@]}" -gt 0 ]
-}
+# process_args (lib/process-tree.sh) reads a pane's command line whole, with no pipe, since it holds
+# the pane's whole system prompt (past 64 KB, with newlines).
 # read_environ PID NAME reads PID's environment once into the associative array NAME from the
 # NUL-delimited /proc/PID/environ, the first value of a repeated name winning, as getenv's does. A
 # read that fails, or an empty environment (the process has exited), prints why and fails: the
@@ -344,31 +349,36 @@ read_environ() {
     [ -n "${_env[${entry%%=*}]+set}" ] || _env[${entry%%=*}]=${entry#*=}
   done
 }
-# agent_descendant PID prints the first process under PID (PID included) that is an agent: Oh My Pi
-# (argv[0] omp) or Claude Code (argv[0] claude). A Claude Code pane's MCP server is claude's child,
-# so the walk meets claude first.
+# agent_descendant PANE_PID prints the pane's agent, read down from the pane's own process, the pid
+# the claim's locator recorded, by where each process stands and what it runs, never by its argv[0]:
+# the pane's `legion worker-shim` is its process's child that runs the run's legion
+# (child_running, lib/process-tree.sh); on a Claude Code pane that shim's own child that runs the
+# run's legion is its `legion claude-bridge`, and the agent is the Claude Code claude_pid finds; on
+# an Oh My Pi pane the agent is the one process below the shim that runs the Oh My Pi the daemon
+# launches ($omp_exe; launched). The backend is read from the pane's own tree first, so an Oh My Pi a
+# Claude Code runs as a tool is never taken for the agent, and a wrapper or an argv[0] of another
+# name cannot stand in for it or hide it.
 agent_descendant() {
-  local queue=("$1") pid children
-  local -a args
-  while [ "${#queue[@]}" -gt 0 ]; do
-    pid=${queue[0]}
-    queue=("${queue[@]:1}")
-    if process_args "$pid" args; then
-      case $(basename -- "${args[0]}") in
-        omp | claude)
-          printf '%s\n' "$pid"
-          return 0
-          ;;
-      esac
-    fi
-    children=$(cat /proc/"$pid"/task/*/children 2>/dev/null || true)
-    for child in $children; do queue+=("$child"); done
-  done
-  return 1
+  local shim
+  shim=$(child_running "$1" "$work/legion") || {
+    printf 'pane process %s: %s\n' "$1" "$shim"
+    return 1
+  }
+  if child_running "$shim" "$work/legion" >/dev/null; then
+    claude_pid "$1"
+  else
+    launched "$shim" "$omp_exe"
+  fi
 }
+# claim_pane_pid ISSUE ROLE prints the process the role's pane was launched as, out of the claim's
+# locator: the incarnation `<pid>:<start ticks>`, and only while that pid is still the process that
+# started then (incarnation_pid, lib/process-tree.sh), never a pid the kernel has since given to
+# another.
 claim_pane_pid() {
-  daemon_state | jq -er --arg issue "$1" --arg role "$2" \
-    '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation | split(":")[0]'
+  local inc
+  inc=$(daemon_state | jq -er --arg issue "$1" --arg role "$2" \
+    '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation') || return 1
+  incarnation_pid "$inc"
 }
 # endpoint_mismatch AGENT_PID checks the agent's environment, read once (read_environ), and
 # prints what it found: the first rig endpoint the agent does not carry, or a model credential
@@ -418,14 +428,15 @@ assert_claim_endpoints() {
 # its next poll, so an incarnation never read stays out of pane-endpoints-checked.txt and
 # every-launch-endpoint-checked fails naming it.
 pane_watcher() {
-  local claims inc issue role agent found status
+  local claims inc issue role pane agent found status
   trap - EXIT ERR
   set +e
   while kill -0 "$$" 2>/dev/null; do
     if claims=$("$work/legion" claims list --json --config "$work/legion.yaml" --operator-token-file "$work/operator-token" 2>/dev/null); then
       while IFS=$'\t' read -r inc issue role; do
         grep -qF "$inc " "$evidence/pane-endpoints-checked.txt" 2>/dev/null && continue
-        agent=$(agent_descendant "${inc%%:*}") || continue
+        pane=$(incarnation_pid "$inc") || continue
+        agent=$(agent_descendant "$pane") || continue
         found=$(endpoint_mismatch "$agent")
         status=$?
         case $status in
@@ -478,15 +489,41 @@ parent_pid() {
   read -r -a stat <<<"${stat##*) }"
   printf '%s\n' "${stat[1]}"
 }
-# claude_pid PANE_PID prints the pane's Claude Code process, failing when the pane's agent is not one:
-# its first argument, whole, names an executable called claude, whatever spaces its path holds.
+# claude_pid PANE_PID prints the pane's Claude Code process: the one child of the pane's
+# `legion claude-bridge`, which is the shim's child that runs the run's legion, the shim being the
+# pane's process's child that runs it (child_running and child_of, lib/process-tree.sh), once that
+# child runs Claude Code (claude_ready). bridged then holds its parent to
+# `legion claude-bridge -- <the run's claude>`. It prints why and fails when the pane has no such
+# process yet, an Oh My Pi pane among them.
 claude_pid() {
-  local agent
-  local -a args
-  agent=$(agent_descendant "$1") || return 1
-  process_args "$agent" args && [ "$(basename -- "${args[0]}")" = claude ] || return 1
-  printf '%s\n' "$agent"
+  local shim bridge child
+  shim=$(child_running "$1" "$work/legion") || {
+    printf 'pane process %s: %s\n' "$1" "$shim"
+    return 1
+  }
+  bridge=$(child_running "$shim" "$work/legion") || {
+    printf 'the shim %s of pane process %s: %s\n' "$shim" "$1" "$bridge"
+    return 1
+  }
+  child=$(child_of "$bridge") || {
+    printf 'the bridge %s of pane process %s: %s\n' "$bridge" "$1" "$child"
+    return 1
+  }
+  claude_ready "$child" || {
+    printf 'the child %s of the bridge %s does not run Claude Code yet: it runs %s\n' "$child" "$bridge" "$(readlink "/proc/$child/exe" 2>/dev/null || echo nothing)"
+    return 1
+  }
+  bridged "$child" || {
+    printf 'process %s, the child of %s, is no claude of the run'\''s legion claude-bridge\n' "$child" "$bridge"
+    return 1
+  }
+  printf '%s\n' "$child"
 }
+# claude_ready PID: PID, the bridge's child, runs the run's Claude Code itself, $claude_exe by the
+# kernel's record, and not the bridge it forked from or any wrapper on the way to it: a wrapper
+# script is run by its interpreter, and a chain of them by one interpreter after another, so only
+# the program the chain ends in is the agent, and its environment the one the endpoints are read in.
+claude_ready() { [ "$(readlink "/proc/$1/exe" 2>/dev/null || :)" = "$claude_exe" ]; }
 # claude_argv CLAUDE_PID prints its argv, one argument per line.
 claude_argv() { tr '\0' '\n' <"/proc/$1/cmdline"; }
 # ancestry PID prints PID and each ancestor above it, one `<pid> <argv>` line each, up to pid 1: what
@@ -578,7 +615,7 @@ if [ "$model_route" = key-file ]; then
     fail "LEGION_E2E_ANTHROPIC_KEY_FILE names $agent_key_file, which is not a readable file"
 fi
 refuse_leftovers legion-e2ecc
-for tool in go docker jq curl python3 tmux bun mise gh jj pgrep claude; do command -v "$tool" >/dev/null || fail "$tool is required"; done
+for tool in go docker jq curl python3 tmux bun mise gh jj claude; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 command -v agent-secrets >/dev/null || fail "agent-secrets, the secrets broker's client the implement App's token_command runs, is required"
 [ "$model_route" != gateway ] || command -v hawk-token >/dev/null || fail "hawk-token is required under LEGION_E2E_MODEL_ROUTE=gateway"
 (umask 077 && tr -d '[:space:]' <"$key_file" >"$work/claude-model-key")
@@ -612,6 +649,12 @@ bun_running=$(bun --version 2>/dev/null | tr -d '[:space:]') || bun_running=
   fail "refusing to run under Bun ${bun_running:-<no version>}: .bun-version pins $bun_pin, and the run builds claude-envoy with packages/claude-envoy/scripts/build.ts, whose bundler output depends on the exact Bun build (LEGION-568). Put the pinned Bun first on PATH ($(command -v bun) is the one found)"
 read_app_logins
 claude_bin=$(command -v claude)
+# The program the run's Claude Code runs: claude_bin when it is the program itself, and otherwise,
+# for a wrapper such as a devbox's dotfiles claude, the first claude on PATH that is (first_native,
+# lib/process-tree.sh), the one that wrapper hands the call to. claude_ready knows the agent by it;
+# a pane whose wrapper ends in another program shows no agent and fails its check by name.
+claude_exe=$(native_program "$claude_bin") || claude_exe=$(first_native claude) ||
+  fail "Claude Code: $claude_bin is a wrapper, and $claude_exe"
 # The daemon and every pane run with HOME moved to the run's own (make_omp_home), which hides mise's
 # global config from the box's own gh, jj, tmux and bun shims: a pane's jj shim hands the call back
 # to itself (exit 127), and the pane's MCP server finds no bun. So the real binaries mise resolves
@@ -666,6 +709,7 @@ docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::422
 port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 [ -n "$port_nats" ] || fail "docker assigned NATS no host port"
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
+dispatch_identity_start
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Claude backend proof $project" '{key:$key,name:$name}')" >/dev/null
@@ -678,6 +722,10 @@ envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --packag
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion")
 pin=$(<"$root/.omp-pin")
 mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+# The program every Oh My Pi pane runs: the daemon starts from this environment, so LEGION_OMP_PATH
+# outranks the invocation when it is set (omp_program, lib/process-tree.sh). agent_descendant knows
+# a pane's Oh My Pi by it.
+omp_exe=$(omp_program "$pin") || fail "the Oh My Pi the daemon would run for $pin is not one the kernel runs: $omp_exe"
 cat >"$work/instructions.md" <<'EOF'
 # Claude Code backend proof instructions
 

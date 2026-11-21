@@ -54,9 +54,8 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 	// The seeded spec's settlement takes the owner lock this test holds; keep it out of the queue.
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Closed while waiting", "A spec")
-	// The issue's create starts the related-item check's term-statistics refresh, which commits
-	// search_term_stats and search_term_totals at its own time; the fingerprint is taken once it
-	// has, so it compares only what the ask wrote.
+	// Creating the issue starts the project's term-statistics refresh, which commits its rows
+	// whenever it finishes: waited out here, it cannot read as a write of the refused ask.
 	awaitBackgroundWrites(t, served)
 	before := databaseFingerprint(t, database)
 
@@ -533,6 +532,9 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		handler = withDeadline(handler)
 		issue := createInteractionIssue(t, handler, "TEST", "Failed comment write phase", "foo")
 		takeNextSeq(t, database, issue.Key)
+		// Creating the issue starts the project's term-statistics refresh, which drains
+		// search_term_queue and commits search_term_stats and search_term_totals whenever it
+		// finishes: waited out here, it cannot read as a write of the refused comment.
 		awaitBackgroundWrites(t, served)
 		before := databaseFingerprint(t, database)
 
@@ -558,6 +560,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		handler = withDeadline(handler)
 		issue := createInteractionIssue(t, handler, "TEST", "Failed message write phase", "foo")
 		takeNextSeq(t, database, issue.Key)
+		// The same refresh the comment's row above waits out.
 		awaitBackgroundWrites(t, served)
 		before := databaseFingerprint(t, database)
 

@@ -31,8 +31,9 @@ func TestReaderOfAnswersEachCallersViewer(t *testing.T) {
 		{callerAlice, model.Viewer{Person: seedAlice, Open: true, Sees: []string{seedPublic}, AnyPrivate: true}},
 		{callerBob, model.Viewer{Person: seedBob, Restricted: true, Sees: []string{seedPrivate}, AnyPrivate: true}},
 		{callerCarol, model.Viewer{Person: seedCarol, Open: true, Sees: []string{seedPrivate, seedPublic}, AnyPrivate: true}},
-		{callerCarolPrivToken, model.Viewer{Person: seedCarol, Lists: []string{seedPrivate}, Sees: []string{seedPrivate}, AnyPrivate: true}},
-		{callerAlicePrivToken, model.Viewer{Person: seedAlice, Lists: []string{seedPrivate}, Sees: []string{}, AnyPrivate: true}},
+		{callerCarolPrivToken, model.Viewer{Person: seedCarol, Open: true, Lists: []string{seedPrivate}, Sees: []string{seedPrivate, seedPublic}, AnyPrivate: true}},
+		{callerAlicePrivToken, model.Viewer{Person: seedAlice, Open: true, Lists: []string{seedPrivate}, Sees: []string{seedPublic}, AnyPrivate: true}},
+		{callerBobPrivToken, model.Viewer{Person: seedBob, Restricted: true, Lists: []string{seedPrivate}, Sees: []string{seedPrivate}, AnyPrivate: true}},
 		{callerCarolToken, model.Viewer{Person: seedCarol, Open: true, Sees: []string{seedPublic}, AnyPrivate: true}},
 		{callerSharedToken, model.Viewer{Open: true, Sees: []string{seedPublic}, AnyPrivate: true}},
 	} {
@@ -94,6 +95,9 @@ func (s privateSeed) readerRequest(t *testing.T, caller privateCaller) *http.Req
 // belongs to one owner - one project or one conversation - and is gated per viewer where it leaves
 // the server.
 var serverReads = map[string]string{
+	"request_keys.go:heldAnswerHidden": "a repeat's object is read as the server sees it only to tell an object nobody holds, " +
+		"or one of no project, from one the caller does not see: the same address is then read as the caller, and nothing " +
+		"the server read is answered; only whether the caller's own read found it decides the repeat",
 	"comment_projection.go:commentEventPayload": "an event's payload is appended once and read by every subscriber of its topics " +
 		"and every reader of its owner's event log, which the event log and the live socket gate by project",
 	"comment_projection.go:commentAnchorRefreshEvent": "the payload of comment.anchor_refreshed, read for the event as " +

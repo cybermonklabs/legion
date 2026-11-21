@@ -1,14 +1,14 @@
 // contract_test.go is the contract layer (built because every fake had been built from the
 // client's assumption): it mounts the real broker handlers
 // (brokerapi.Register with real services on
-// BROKER_TEST_DATABASE_URL, exactly as the broker/api tests do)
+// BROKER_TEST_DATABASE_URL, exactly as the cipher/api tests do)
 // behind an httptest.Server, wires Dispatch's own routes to relay to it, and drives every UI
 // action through DISPATCH's routes as a signed-in human — proving the proxy round-trips a real
 // broker, which lists each person's pending requests and the expired ones nobody has dismissed,
 // decides a machine login, a dismissal and a revoke by the login Dispatch names, and refuses
 // every decision of a secret request with the page where a person signed in to the broker
 // decides it. A test needing a secret request decided decides it on
-// that page, signed in to the broker (brokertest.Decide), as a person does. Skips without
+// that page, signed in to the broker (ciphertest.Decide), as a person does. Skips without
 // BROKER_TEST_DATABASE_URL (via brokerstoretest.Open) or DISPATCH_TEST_DATABASE_URL (via
 // storetest.Open, already required by every other test in this package).
 package api
@@ -30,19 +30,19 @@ import (
 
 	"github.com/google/uuid"
 
-	brokerapi "github.com/sjawhar/envoy/internal/broker/api"
-	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/enroll"
-	"github.com/sjawhar/envoy/internal/broker/machine"
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/broker/policy"
-	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
-	"github.com/sjawhar/envoy/internal/broker/proof"
-	"github.com/sjawhar/envoy/internal/broker/record"
-	"github.com/sjawhar/envoy/internal/broker/requests"
-	"github.com/sjawhar/envoy/internal/broker/secrets"
-	"github.com/sjawhar/envoy/internal/broker/store"
-	brokerstoretest "github.com/sjawhar/envoy/internal/broker/store/storetest"
+	brokerapi "github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/machine"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/store"
+	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/approvetimingtest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -120,7 +120,7 @@ func newContractRig(t *testing.T) *contractRig {
 		Audience:   brokerServer.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute, reqMachine.Airlock)
-	provider := brokertest.NewOAuthProvider(t, brokerStore, issuer)
+	provider := ciphertest.NewOAuthProvider(t, brokerStore, issuer)
 	mach := &machine.Service{
 		Store: brokerStore, Enroll: enr, Policy: cur,
 		Audience: brokerServer.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -134,7 +134,7 @@ func newContractRig(t *testing.T) *contractRig {
 	dispatchToken := issuer.Mint(t, issuerKey, dispatchClaims)
 	brokerapi.Register(brokerMux, brokerapi.Deps{
 		PublicURL:     brokerServer.URL,
-		APIAccounts:   map[string]brokerapi.Account{contractDispatchAccount: brokertest.Caller(t, "dispatch")},
+		APIAccounts:   map[string]brokerapi.Account{contractDispatchAccount: ciphertest.Caller(t, "dispatch")},
 		AccountTokens: enroll.K8sPodVerifier{Verifier: tokenVerifier},
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
@@ -142,7 +142,7 @@ func newContractRig(t *testing.T) *contractRig {
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		// People sign in to the broker's approval page at the same local issuer, which stands in for
 		// every provider.
-		Approval: brokertest.NewApprovalPage(t, brokertest.SignIn(issuer, issuerKey), brokerServer.URL, brokerStore, reqMachine),
+		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), brokerServer.URL, brokerStore, reqMachine),
 	})
 
 	dispatchDB := storetest.Open(t)
@@ -179,7 +179,7 @@ func contractSigningKey(t *testing.T) *ecdsa.PrivateKey {
 	return key
 }
 
-// newSessionEnrollment inserts a live box enrollment directly (mirroring broker/api's own
+// newSessionEnrollment inserts a live box enrollment directly (mirroring cipher/api's own
 // api_test.go newSessionEnrollment): a session route is out of Dispatch's UI scope entirely, so
 // there is no proxy path that could create one.
 func (rig *contractRig) newSessionEnrollment(t *testing.T, operator string) (enrollmentID string, key *ecdsa.PrivateKey) {
@@ -307,7 +307,14 @@ func (rig *contractRig) createPendingAgentSecretRecord(t *testing.T, reason stri
 // the broker as that person: where a secret request is decided, since no Dispatch route decides one.
 func (rig *contractRig) approveOnBrokerPage(t *testing.T, login, recordID string) {
 	t.Helper()
-	brokertest.Decide(t, rig.BrokerURL, rig.issuer, login, recordID, true)
+	ciphertest.Decide(t, rig.BrokerURL, rig.issuer, login, recordID, true)
+}
+
+// approveOnBrokerPageRefused is approveOnBrokerPage for an approval the broker refuses with a
+// reason the page names, code being the page's fixed refusal code (ciphertest.DecideRefused).
+func (rig *contractRig) approveOnBrokerPageRefused(t *testing.T, login, recordID, code string) {
+	t.Helper()
+	ciphertest.DecideRefused(t, rig.BrokerURL, rig.issuer, login, recordID, true, code)
 }
 
 // grantOf reads requestID as session, which made it, straight from the broker, and answers its
@@ -937,7 +944,9 @@ func TestContractAnyoneApprovalCannotReleaseAPersonsWithheldSecret(t *testing.T)
 	if resp := dispatchRequest(t, rig.Dispatch, http.MethodPost, "/api/v1/credential-grants/"+*auto.GrantID+"/revoke", map[string]any{}, contractApprover); resp.Code != http.StatusOK {
 		t.Fatalf("revoke = %d: %s", resp.Code, resp.Body.String())
 	}
-	rig.approveOnBrokerPage(t, contractOther, *mixed.RecordID)
+	// The current policy has the operator approve AUTO_TOKEN now that it is withheld, so the
+	// broker refuses the second person's approval and the page names that reason ("policy").
+	rig.approveOnBrokerPageRefused(t, contractOther, *mixed.RecordID, "policy")
 	if n := rig.decisionEvents(t, *mixed.RecordID); n != 0 {
 		t.Fatalf("the request has %d decisions after %s approved it once %s withheld AUTO_TOKEN, want none", n, contractOther, contractApprover)
 	}

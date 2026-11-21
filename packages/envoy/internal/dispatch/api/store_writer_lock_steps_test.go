@@ -30,8 +30,9 @@ const storeStepWait = 20 * time.Second
 // and tuple store's writers, beside the test that drives each site's lock steps. Thirteen of them
 // live here, and this test drives them all:
 //
-//   - the comment path (createCommentFor, with the node its writeNode queues and the tuples its
-//     caused queues, then graphstore.QueueAuthored), run on an issue and on a project document;
+//   - the comment path (createCommentFor, with the node it queues through graphstore.QueueNodes
+//     and the tuples through graphstore.QueueCaused, then graphstore.QueueAuthored), run on an
+//     issue and on a project document;
 //   - a session's reply to a mention (replyComment, through the same three, and then
 //     queueAnsweredDelivery, which records the session the answered attempt reached: that session
 //     is the reply's author, whose node row the reply already holds, and its delivered_to tuple is
@@ -42,10 +43,10 @@ const storeStepWait = 20 * time.Second
 //   - the follower route (changeAskFollower, through appendCausingEvent) and an ask's create
 //     (createAskFor), each of which follows the ask for a session before the event it appends and
 //     moves the node that follow made onto that event (graphstore.QueueCaused);
-//   - an approval request renewed (renewApprovalAsk), once on a retry, which appends no event and
-//     leaves the follow's node and its base attributes at the sentinel, and once handing the
-//     request back, which follows after its event and states the node under it in the follow's
-//     own statement;
+//   - an approval request renewed (renewApprovalAsk), once on a retry, which follows the request
+//     for the session before it appends ask.follower_added and moves the follow's node onto that
+//     event (graphstore.QueueCaused), and once handing the request back, which follows after its
+//     event and states the node under it in the follow's own statement;
 //   - three writes of a document version, each of which runs the block index (refs'
 //     BlockIndexing.Queue) under the revision fence and appends what it stated under the event
 //     that recorded the version: an upload creating an issue's document (storeArtifact), an edit
@@ -195,8 +196,8 @@ type storeWriterRun struct {
 // Each statement head a step is read at. pg_stat_activity holds the statement as the writer sent
 // it, and normalizedStatement lowers it and folds its whitespace before it is compared.
 const (
-	// nodeWriteStatement is graphstore's node write (queueNodes), which writeNode queues through
-	// graphstore.QueueNodes and the block index through BlockIndexing.Queue.
+	// nodeWriteStatement is graphstore's node write (queueNodes), which the comment path queues
+	// through graphstore.QueueNodes and the block index through BlockIndexing.Queue.
 	nodeWriteStatement = "insert into graph_nodes ("
 	// armsStatement is graphstore.WriteArms spliced into a statement of its own, as QueueAuthored
 	// and QueueSessionRecorded queue it: the node arm and the tuple arms after it, in one statement.
@@ -225,12 +226,13 @@ const (
 
 // commentCreate is the comment path, through route. It takes its owner's lock, the issue's or the
 // project document's (lockCommentOwner), and in its write phase writes the comment's node
-// (writeNode) before the comments row that names it, appends comment.created, then appends the
-// tuples that event caused (caused) and, in one statement, the author's node and the authored_by
-// tuple under that event (graphstore.QueueAuthored). The comment's id is drawn inside its own
-// transaction, so no other transaction can hold its node, its row or its tuples before they exist:
-// those steps are held as the tables they are written to. Each run's author is a person no write
-// has recorded, so the author's node is new and is held as its row.
+// (graphstore.QueueNodes) before the comments row that names it, appends comment.created, then
+// appends the tuples that event caused (graphstore.QueueCaused) and, in one statement, the
+// author's node and the authored_by tuple under that event (graphstore.QueueAuthored). The
+// comment's id is drawn inside its own transaction, so no other transaction can hold its node, its
+// row or its tuples before they exist: those steps are held as the tables they are written to.
+// Each run's author is a person no write has recorded, so the author's node is new and is held as
+// its row.
 func (r *storeWriterRig) commentCreate(name, route string, owner storeStep) storeWriter {
 	return storeWriter{
 		name: name,
@@ -524,6 +526,7 @@ func (r *storeWriterRig) approvalHandBack() storeWriter {
 			created(t, "write the version that moves the approval request to its agent", dispatchRequest(t, r.handler, http.MethodPost,
 				"/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
 					"name": "spec.md", "content": "# Spec\n\nWhat the writers write, as " + session + " reads it.\n",
+					"precondition": uploadBase(t, r.handler, r.spec),
 				}, "alice"))
 			actor := model.Actor{Kind: "session", ID: session}
 			return storeWriterRun{

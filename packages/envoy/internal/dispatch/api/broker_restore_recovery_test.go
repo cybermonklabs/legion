@@ -8,25 +8,25 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/wire"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// recoveryRig is a Dispatch server and a real broker (brokertest.NewRig) for the runbook's
+// recoveryRig is a Dispatch server and a real broker (ciphertest.NewRig) for the runbook's
 // recovery: the pass the server runs is the one the loop runs, and the broker is the one the
 // recovery's reads read.
 type recoveryRig struct {
-	rig         *brokertest.Rig
+	rig         *ciphertest.Rig
 	dispatch    *store.Store
 	served      *server
 	people      *store.PgPeopleStore
 	revocations *store.BrokerRevocations
-	broker      *agentsecrets.Client
+	broker      *cipher.Client
 }
 
 // recoveryIssuer is the sign-in issuer every account of these tests belongs to.
@@ -35,7 +35,7 @@ const recoveryIssuer = "https://accounts.google.com"
 // newRecoveryRig builds the pair.
 func newRecoveryRig(t *testing.T) *recoveryRig {
 	t.Helper()
-	rig := brokertest.NewRig(t)
+	rig := ciphertest.NewRig(t)
 	dispatch := storetest.Open(t)
 	deps, err := NewDeps(DepsInput{
 		Store: dispatch, Identity: headerIdentity(dispatch), ServerURL: "https://dispatch.example", Events: events.NewBroker(),
@@ -49,7 +49,7 @@ func newRecoveryRig(t *testing.T) *recoveryRig {
 		served:      &server{deps: deps, lifetime: t.Context()},
 		people:      store.NewPgPeopleStore(dispatch.Pool, testSigningKey, nil, store.WithBrokerRevocations(recoveryIssuer)),
 		revocations: store.NewBrokerRevocations(dispatch.Pool),
-		broker:      agentsecrets.New(rig.URL, accountTokenFile(t, rig.UIToken)),
+		broker:      cipher.New(rig.URL, accountTokenFile(t, rig.UIToken)),
 	}
 }
 
@@ -648,10 +648,11 @@ func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
 		t.Fatalf("after the pass, %s owes %+v, %v; want the revocation settled", email, owing, err)
 	}
 	block := runbookBlockAfter(t, brokerRestoredLead)
-	if len(block.statements) != 5 || block.statements[0] != "begin" || block.statements[4] != "commit" ||
+	if len(block.statements) != 6 || block.statements[0] != "begin" || block.statements[5] != "commit" ||
 		!strings.HasPrefix(block.statements[1], "select u.generation from user_sessions u ") ||
-		!strings.HasPrefix(block.statements[3], "update machine_login_revocations ") {
-		t.Fatalf("the runbook's block for a broker restored alone is %q; want begin, a read of the addresses' session rows, the record-again, the machine-login revocations owed again and commit", block.statements)
+		!strings.HasPrefix(block.statements[3], "select pg_advisory_xact_lock(") ||
+		!strings.HasPrefix(block.statements[4], "update machine_login_revocations ") {
+		t.Fatalf("the runbook's block for a broker restored alone is %q; want begin, a read of the addresses' session rows, the record-again, the members' machine-login approval locks, the machine-login revocations owed again and commit", block.statements)
 	}
 	tx, err := r.dispatch.Pool.Begin(ctx)
 	if err != nil {
@@ -694,8 +695,9 @@ func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
 // TestABrokerRestoredAloneOwesAgainTheMachineLoginRevocationsSettledSince: the block for a broker
 // restored alone owes again each revocation of a restricted member's machine logins that Dispatch
 // settled at or after the backup's moment less an hour, at its next generation and with its
-// recorded_at kept, so the next pass again revokes only the logins approved before that removal.
-// One settled before then, which the restored broker's backup already holds revoked, stays settled.
+// recorded_at set to the block's own moment, so the pass again revokes every machine login the
+// member holds and settles it only once a claim comes machineLoginSettleAfter after the block. One
+// settled before then, which the restored broker's backup already holds revoked, stays settled.
 //
 // Control: drop the block's machine_login_revocations statement, and the revocation settled since
 // the backup stays settled, named.
@@ -705,16 +707,7 @@ func TestABrokerRestoredAloneOwesAgainTheMachineLoginRevocationsSettledSince(t *
 	revocations := store.NewMachineLoginRevocations(database.Pool)
 	const since, before = "since@other.example", "before@other.example"
 	for _, email := range []string{since, before} {
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := store.RecordMachineLoginRevocation(ctx, tx, email); err != nil {
-			t.Fatal(err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
+		storetest.RecordMachineLoginRevocation(t, database, email)
 	}
 	claimed, err := revocations.Claim(ctx, time.Minute, 5)
 	if err != nil || len(claimed) != 2 {
@@ -722,7 +715,7 @@ func TestABrokerRestoredAloneOwesAgainTheMachineLoginRevocationsSettledSince(t *
 	}
 	generations := map[string]int64{}
 	for _, owed := range claimed {
-		if settled, err := revocations.Settle(ctx, owed); err != nil || !settled {
+		if settled, err := revocations.Settle(ctx, owed, 0); err != nil || !settled {
 			t.Fatalf("Settle(%s) = %t, %v; want it settled", owed.Email, settled, err)
 		}
 		generations[owed.Email] = owed.Generation
@@ -731,8 +724,8 @@ func TestABrokerRestoredAloneOwesAgainTheMachineLoginRevocationsSettledSince(t *
 	if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set done_at = now() - interval '3 hours' where email = $1`, before); err != nil {
 		t.Fatal(err)
 	}
-	var recordedAt time.Time
-	if err := database.Pool.QueryRow(ctx, `select recorded_at from machine_login_revocations where email = $1`, since).Scan(&recordedAt); err != nil {
+	var blockStart time.Time
+	if err := database.Pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&blockStart); err != nil {
 		t.Fatal(err)
 	}
 
@@ -742,8 +735,8 @@ func TestABrokerRestoredAloneOwesAgainTheMachineLoginRevocationsSettledSince(t *
 		t.Errorf("the revocation settled since the backup is owed %t at generation %d (%v) after the block, want owed at %d", owed, generation, err, generations[since]+1)
 	}
 	var after time.Time
-	if err := database.Pool.QueryRow(ctx, `select recorded_at from machine_login_revocations where email = $1`, since).Scan(&after); err != nil || !after.Equal(recordedAt) {
-		t.Errorf("the revocation owed again records %s (%v), want its removal's recorded_at %s kept", after, err, recordedAt)
+	if err := database.Pool.QueryRow(ctx, `select recorded_at from machine_login_revocations where email = $1`, since).Scan(&after); err != nil || after.Before(blockStart) {
+		t.Errorf("the revocation owed again records %s (%v), want the block's own moment, at or after %s", after, err, blockStart)
 	}
 	if owed, _, err := revocations.Owing(ctx, before); err != nil || owed {
 		t.Errorf("the revocation settled before the backup's hour is owed %t (%v) after the block, want it settled still", owed, err)

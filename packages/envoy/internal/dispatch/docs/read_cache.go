@@ -388,10 +388,7 @@ func (s *Service) stillReads(ctx context.Context, artifactID string, viewer any)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return pgx.ErrNoRows
 		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		return fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
+		return headError(ctx, err)
 	}
 	return nil
 }

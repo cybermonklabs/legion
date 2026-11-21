@@ -33,7 +33,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -77,7 +77,8 @@ type AppContext struct {
 	// SignIn is the sign-in issuer's authorization code flow and SignInRule who it admits: the
 	// members of a Cognito pool's group, or the people of a Google Workspace domain, beside them
 	// the restricted members a project names where the rule admits those; the API holds a
-	// restricted member's tokens to that same rule (api.DepsInput.RestrictedAdmission). A nil
+	// restricted member's tokens to that same rule (api.DepsInput.RestrictedAdmission), or, on a
+	// dev sign-in server, which has none, to AppContextOptions.DevRestrictedAdmission. A nil
 	// SignIn is a test/local header-identity or dev sign-in server, whose /auth/start and
 	// /auth/callback answer 503.
 	SignIn     *oidc.CodeFlow
@@ -149,7 +150,15 @@ type AppContextOptions struct {
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
-	Docs       docs.API
+	// EnvoyAccountTokenFile is the file holding Dispatch's own projected service-account token
+	// every Envoy listener call presents in EnvoyToken's place (cmd/dispatch:
+	// ENVOY_ACCOUNT_TOKEN_FILE); empty presents EnvoyToken.
+	EnvoyAccountTokenFile string
+	// EnvoyGoogleAudience is ENVOY_ACCOUNT_GOOGLE_AUDIENCE, the audience of the Google Cloud
+	// machine's identity token every listener call presents in EnvoyToken's place instead
+	// (cmd/dispatch); empty presents none.
+	EnvoyGoogleAudience string
+	Docs                docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
@@ -167,7 +176,7 @@ type AppContextOptions struct {
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
-	BrokerTokens *brokertoken.Verifier
+	BrokerTokens *ciphertoken.Verifier
 	// PrivateProjects are the keys of the projects the deployment has provisioned as private
 	// (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS), and BusProjects the writer of the private-projects
 	// record. See api.DepsInput.
@@ -219,6 +228,11 @@ type AppContextOptions struct {
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// DevRestrictedAdmission is what a dev sign-in server (DevSignIn, which has no SignInRule) holds
+	// a restricted member's credentials to: cmd/dispatch sets identity.ListedAdmission over the
+	// access lists, the outside rule's list arm. A server with a SignInRule holds them to that rule
+	// instead, and BuildAppContext refuses this beside one, or without DevSignIn.
+	DevRestrictedAdmission identity.RestrictedAdmission
 	// BrokerRevocationsSuperseded is the process's count of revocations the secrets broker
 	// answered superseded (api.NewBrokerRevocationsSuperseded), beside Metrics; nil counts
 	// nothing. See api.DepsInput.
@@ -238,6 +252,17 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 	}
 	if opts.Identity == nil {
 		return nil, fmt.Errorf("BuildAppContext: Identity required")
+	}
+	// The one rule a restricted member's credentials are held to: the sign-in rule where the
+	// server has one, and a dev sign-in server's list check where it has none.
+	var restricted identity.RestrictedAdmission
+	switch {
+	case opts.DevRestrictedAdmission != nil && (opts.SignInRule != nil || !opts.DevSignIn):
+		return nil, fmt.Errorf("BuildAppContext: DevRestrictedAdmission is a dev sign-in server's, which has no SignInRule")
+	case opts.DevRestrictedAdmission != nil:
+		restricted = opts.DevRestrictedAdmission
+	case opts.SignInRule != nil:
+		restricted = opts.SignInRule
 	}
 	var devSignInHost string
 	if opts.DevSignIn {
@@ -280,6 +305,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OutsideOrigin:          outsideOrigin,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
+		EnvoyAccountTokenFile:  opts.EnvoyAccountTokenFile,
+		EnvoyGoogleAudience:    opts.EnvoyGoogleAudience,
 		Docs:                   opts.Docs,
 		Embedder:               opts.Embedder,
 		Answerer:               opts.Answerer,
@@ -289,7 +316,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OIDC:                   opts.OIDC,
 		OIDCAccounts:           opts.OIDCAccounts,
 		AccessAccounts:         opts.AccessAccounts,
-		RestrictedAdmission:    opts.SignInRule,
+		RestrictedAdmission:    restricted,
 		BrokerTokens:           opts.BrokerTokens,
 		PrivateProjects:        opts.PrivateProjects,
 		BusProjects:            opts.BusProjects,
@@ -379,6 +406,9 @@ type router struct {
 	// context's own (AppContext's eventHead) when it names one, else the registered API server's
 	// (api.Background's EventHead).
 	eventHead func(r *http.Request) (int64, error)
+	// passkeyBegins bounds the passkey ceremonies' begins, which a caller with no credential makes
+	// and each of which writes (passkeyBeginLimiter).
+	passkeyBegins *passkeyBeginLimiter
 }
 
 // New returns an http.Handler that serves all dispatch routes, and the API server's background
@@ -410,9 +440,10 @@ func serve(ctx *AppContext) (http.Handler, *http.ServeMux, api.Background) {
 // (TestAKeyedWriteNeverRunsUnkeyed, TestEveryGETRouteHasAReadClass).
 func mount(ctx *AppContext, mux *http.ServeMux) (*router, api.Background) {
 	r := &router{
-		ctx:          ctx,
-		retainedHeld: semaphore.NewWeighted(maxRetainedBytesHeld),
-		assets:       newAssetCache(maxCachedAssetBytes),
+		ctx:           ctx,
+		retainedHeld:  semaphore.NewWeighted(maxRetainedBytesHeld),
+		assets:        newAssetCache(maxCachedAssetBytes),
+		passkeyBegins: newPasskeyBeginLimiter(),
 	}
 	none := []readclass.Class{readclass.None}
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
@@ -1096,11 +1127,10 @@ func callbackURL(serverURL string, req *http.Request) string {
 }
 
 // publicOrigin is the origin a request came to: outsideOrigin when it is set and the request's
-// Host is its host (sameHost: without regard to case, one trailing dot or the scheme's default
-// port, as DevSignInOrigin's host is compared without regard to case); otherwise Dispatch's
-// configured canonical origin, serverURL, whenever it is set. A backend request's Host and TLS
-// state make the origin only for unconfigured local deployments; forwarded headers are
-// deliberately ignored.
+// Host is its host (sameHost: the name without regard to case or trailing dots, the port as a
+// number, the scheme's default none); otherwise Dispatch's configured canonical origin, serverURL,
+// whenever it is set. A backend request's Host and TLS state make the origin only for unconfigured
+// local deployments; forwarded headers are deliberately ignored.
 func publicOrigin(serverURL, outsideOrigin string, req *http.Request) string {
 	if outsideOrigin != "" && sameHost(outsideOrigin, req.Host) {
 		return outsideOrigin
@@ -1115,26 +1145,32 @@ func publicOrigin(serverURL, outsideOrigin string, req *http.Request) string {
 	return fmt.Sprintf("%s://%s", scheme, req.Host)
 }
 
-// sameHost reports whether host, a request's Host, names the host of origin, which is written as
-// weborigin.Parse returns it (scheme://host[:port] and nothing more). The two are compared as one
-// host however a client spells it: without regard to case, with one trailing dot on the name and
-// the scheme's default port dropped on either side, so `outside.example:443` and
-// `outside.example.` reach the outside origin as `outside.example` does.
+// sameHost reports whether host, a request's Host, is the host of origin (scheme://host[:port], as
+// weborigin.Parse writes it), compared as a URL parser reads a host: the name without regard to case
+// or trailing dots, and the port as a number, the scheme's default being no port. So
+// `outside.example:443`, `outside.example:0443` and `outside.example..` reach the https outside
+// origin as `outside.example` does, while another port, `outside.example:8443` or `:80`, is another
+// origin and is answered as the canonical one.
 func sameHost(origin, host string) bool {
 	scheme, own, ok := strings.Cut(origin, "://")
 	return ok && hostKey(scheme, own) == hostKey(scheme, host)
 }
 
 // hostKey is host, a Host header or an origin's host under scheme, as sameHost compares it: its
-// name lower case, with one trailing dot and an IPv6 literal's brackets taken off, and its port,
-// none for the scheme's default.
+// name lower case, with an IPv6 literal's brackets and every trailing dot taken off, then its port
+// as a decimal number with no leading zeros, none for the scheme's default; a port that is no
+// string of digits is kept as written, which no origin's port equals.
 func hostKey(scheme, host string) string {
 	name, port := host, ""
 	if split, splitPort, err := net.SplitHostPort(host); err == nil {
 		name, port = split, splitPort
 	}
-	name = strings.TrimSuffix(strings.TrimPrefix(strings.ToLower(name), "["), "]")
-	name = strings.TrimSuffix(name, ".")
+	name = strings.TrimRight(strings.Trim(strings.ToLower(name), "[]"), ".")
+	if port != "" && strings.Trim(port, "0123456789") == "" {
+		if number, err := strconv.ParseUint(port, 10, 16); err == nil {
+			port = strconv.FormatUint(number, 10)
+		}
+	}
 	if scheme == "https" && port == "443" || scheme == "http" && port == "80" {
 		port = ""
 	}

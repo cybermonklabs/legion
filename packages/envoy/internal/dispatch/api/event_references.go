@@ -45,21 +45,21 @@ import (
 //   - mentions, deliveries: a comment's or a message's targets, each {target, session_id,
 //     resolved_session_id}; each entry naming a hidden session, or a role of a hidden project, is
 //     dropped.
-var payloadReferenceKeys = map[string]string{
-	"blocked_by":                  "issue keys, each dropped when hidden",
-	model.ReferencesChangedKey:    "graph nodes {kind,id,issue_key,artifact_id,ref}, each dropped when hidden",
-	"assignee":                    "a person, null when hidden",
-	"asked_of":                    "a person, null when hidden",
-	"thread_logins":               "persons, each dropped when hidden",
-	"route":                       "a route (session:<id> or role:<name>), null when hidden",
-	"target":                      "a route (session:<id> or role:<name>), null when hidden",
-	"thread_target":               "a route (session:<id> or role:<name>), null when hidden",
-	"suppressed_route":            "a route (session:<id> or role:<name>), null when hidden",
-	"suppressed_route_session_id": "a session id, null when hidden",
-	"claim":                       "a claim {actor,at} of a session or a person, null when its holder is hidden",
-	"previous_claim":              "a claim {actor,at} of a session or a person, left out when its holder is hidden",
-	"mentions":                    "targets {target,session_id,resolved_session_id}, each dropped when its session or role is hidden",
-	"deliveries":                  "attempts {target,session_id}, each dropped when its session or role is hidden",
+var payloadReferenceKeys = map[string]struct{}{
+	"blocked_by":                  {},
+	model.ReferencesChangedKey:    {},
+	"assignee":                    {},
+	"asked_of":                    {},
+	"thread_logins":               {},
+	"route":                       {},
+	"target":                      {},
+	"thread_target":               {},
+	"suppressed_route":            {},
+	"suppressed_route_session_id": {},
+	"claim":                       {},
+	"previous_claim":              {},
+	"mentions":                    {},
+	"deliveries":                  {},
 }
 
 // routeSession is the session a `session:<id>` route names, "" for a route of any other kind.

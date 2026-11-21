@@ -29,9 +29,13 @@ import (
 // alone. These are the only routes that do work for a caller with no credential besides the Google
 // sign-in's two.
 const (
-	passkeyCeremonyCookie = "dispatch_passkey_ceremony"
-	// passkeyCeremonyPath scopes the ceremony cookie to the ceremonies, so no other route reads it.
-	passkeyCeremonyPath = "/auth/passkey"
+	// passkeyCeremonyCookie is the ceremony cookie's name, with the `__Host-` prefix, which a
+	// browser takes only from this host itself, Secure, with Path=/ and no Domain: so no other host
+	// under the outside origin's domain can set a ceremony for this one. Under
+	// DISPATCH_INSECURE_COOKIE (plain http, which a browser refuses such a cookie over) it is
+	// passkeyCeremonyCookieInsecure (passkeyCeremonyCookieName).
+	passkeyCeremonyCookie         = "__Host-dispatch_passkey_ceremony"
+	passkeyCeremonyCookieInsecure = "dispatch_passkey_ceremony"
 	// passkeyCeremonyMaxAge is how long the ceremony cookie lives, the ceremony's own timeout
 	// (identity.Passkeys enforces it again from the session it carries).
 	passkeyCeremonyMaxAge = 5 * 60
@@ -48,16 +52,17 @@ const (
 	passkeySignIn = "passkey"
 )
 
-// mountPasskeys mounts the four ceremonies on mux where passkey sign-in is on.
+// mountPasskeys mounts the four ceremonies on mux where passkey sign-in is on; the two begins,
+// which write for a caller with no credential, under the begins' bounds (limitPasskeyBegins).
 func (r *router) mountPasskeys(mux *http.ServeMux) {
 	if r.ctx.Passkeys == nil {
 		return
 	}
 	none := []readclass.Class{readclass.None}
 	for path, handler := range map[string]http.HandlerFunc{
-		"/auth/passkey/register/begin":  r.passkeyRegisterBegin,
+		"/auth/passkey/register/begin":  r.limitPasskeyBegins(r.passkeyRegisterBegin),
 		"/auth/passkey/register/finish": r.passkeyRegisterFinish,
-		"/auth/passkey/login/begin":     r.passkeyLoginBegin,
+		"/auth/passkey/login/begin":     r.limitPasskeyBegins(r.passkeyLoginBegin),
 		"/auth/passkey/login/finish":    r.passkeyLoginFinish,
 	} {
 		readclass.Handle(mux, none, "POST "+path, accesslog.HandlerFunc(path, r.atOutsideOrigin(handler)))
@@ -116,7 +121,7 @@ func (r *router) whoamiSignIn(req *http.Request) string {
 
 // passkeyRegisterBegin is POST /auth/passkey/register/begin, body {"token"}: the link's fragment.
 // It answers the creation options (protocol.CredentialCreation) and sets the ceremony cookie; it
-// uses no link, and records only the ceremony a finish takes once (passkey_ceremonies).
+// uses no link and writes nothing: the ceremony rides in the signed cookie.
 func (r *router) passkeyRegisterBegin(w http.ResponseWriter, req *http.Request) {
 	var body struct {
 		Token string `json:"token"`
@@ -155,9 +160,9 @@ func (r *router) passkeyRegisterFinish(w http.ResponseWriter, req *http.Request)
 
 // passkeyLoginBegin is POST /auth/passkey/login/begin: the request options
 // (protocol.CredentialAssertion) of a discoverable sign-in, naming no credential, and the ceremony
-// cookie. It records only the ceremony a finish takes once (passkey_ceremonies).
+// cookie. It writes nothing: the ceremony rides in the signed cookie.
 func (r *router) passkeyLoginBegin(w http.ResponseWriter, req *http.Request) {
-	assertion, ceremony, err := r.ctx.Passkeys.BeginSignIn(req.Context())
+	assertion, ceremony, err := r.ctx.Passkeys.BeginSignIn()
 	if err != nil {
 		writePasskeyRefusal(w, err, false)
 		return
@@ -212,7 +217,7 @@ func (r *router) setPasskeyCeremony(w http.ResponseWriter, ceremony identity.Pas
 // a key of the set and that has not lapsed, else 400 CEREMONY_EXPIRED.
 func (r *router) takePasskeyCeremony(w http.ResponseWriter, req *http.Request) (identity.PasskeyCeremony, bool) {
 	http.SetCookie(w, passkeyCeremonyCookieFor("", -1, !r.ctx.InsecureCookie))
-	cookie, err := req.Cookie(passkeyCeremonyCookie)
+	cookie, err := req.Cookie(passkeyCeremonyCookieName(!r.ctx.InsecureCookie))
 	if err != nil {
 		writePasskeyRefusal(w, identity.ErrPasskeyCeremonyExpired, false)
 		return identity.PasskeyCeremony{}, false
@@ -225,11 +230,20 @@ func (r *router) takePasskeyCeremony(w http.ResponseWriter, req *http.Request) (
 	return ceremony, true
 }
 
+// passkeyCeremonyCookieName is the ceremony cookie's name: the `__Host-` one when the cookie is
+// Secure, the plain one under DISPATCH_INSECURE_COOKIE.
+func passkeyCeremonyCookieName(secure bool) string {
+	if secure {
+		return passkeyCeremonyCookie
+	}
+	return passkeyCeremonyCookieInsecure
+}
+
 func passkeyCeremonyCookieFor(value string, maxAge int, secure bool) *http.Cookie {
 	return &http.Cookie{
-		Name:     passkeyCeremonyCookie,
+		Name:     passkeyCeremonyCookieName(secure),
 		Value:    value,
-		Path:     passkeyCeremonyPath,
+		Path:     "/",
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
@@ -283,6 +297,7 @@ var passkeyRefusals = []struct {
 	{store.ErrInvitationUsed, "INVITATION_USED", http.StatusGone},
 	{store.ErrInvitationExpired, "INVITATION_EXPIRED", http.StatusGone},
 	{store.ErrInvitationNotListed, "INVITATION_NOT_LISTED", http.StatusForbidden},
+	{store.ErrListedByAnotherOwner, "LISTED_BY_ANOTHER_OWNER", http.StatusForbidden},
 	{store.ErrEnrollmentSuperseded, "CEREMONY_EXPIRED", http.StatusBadRequest},
 	{auth.ErrAddressHeldByMember, "FULL_MEMBER", http.StatusConflict},
 	{identity.ErrWorkspaceAddress, "WORKSPACE_ADDRESS", http.StatusForbidden},
@@ -291,6 +306,7 @@ var passkeyRefusals = []struct {
 	{store.ErrPasskeyAccountMoved, "PASSKEY_UNKNOWN", http.StatusUnauthorized},
 	{store.ErrPasskeySignCount, "PASSKEY_SIGN_COUNT", http.StatusUnauthorized},
 	{identity.ErrPasskeyCeremonyExpired, "CEREMONY_EXPIRED", http.StatusBadRequest},
+	{store.ErrPasskeyCeremonyUsed, "CEREMONY_EXPIRED", http.StatusBadRequest},
 	{identity.ErrPasskeyRefused, "PASSKEY_REFUSED", http.StatusBadRequest},
 }
 

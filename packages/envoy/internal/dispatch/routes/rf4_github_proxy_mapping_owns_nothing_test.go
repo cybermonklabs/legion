@@ -13,10 +13,6 @@ import (
 // a full member maps acme/pubonly to PRIV, and GitHub is asked nothing. Then with PRIV private: PRIV
 // maps acme/privonlymapped, which no issue resolves to, and alice, an open viewer who does not see
 // PRIV, reads it as GitHub answers it; carol reads it too.
-//
-// At the merge head before this change the mapping arm made PRIV an owner of each mapped
-// repository, so bob read acme/pubonly once it was mapped and alice did not read
-// acme/privonlymapped.
 func TestARepositoryMappingNeitherShowsNorHidesARepository(t *testing.T) {
 	database := seedProxyGate(t)
 	if _, err := database.Pool.Exec(context.Background(), `

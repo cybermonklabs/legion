@@ -115,15 +115,14 @@ type createAgentTokenInput struct {
 // address's advisory lock shared (store.AddressLockSharedSQL), which every such sign-in takes
 // before it reads or writes the address's row, and only then inserts, in a statement read after
 // that lock (mintAgentTokenSQL), on condition that its caller still holds the address: a cookie's
-// session generation is still its login's, a personal token is not revoked and its account still
-// holds the address (tokenAccountReplaced), and for a token the secrets broker issued, its account
-// still holds the address (brokerAccountReplaced): such a sign-in records another account, and
-// the time it did, in its transaction, and the comparison reads both. A sign-in in flight makes
-// the mint wait for it, a first sign-in on an address no row holds included; one that comes after
-// waits for the mint, and then the token it made is revoked or was made before the recording. A
-// mint whose caller lost the address inserts nothing and is refused as that caller's next request
-// is (mintCallerGone): 401 TOKEN_REVOKED for a personal token, 401 NO_IDENTITY for a cookie, and
-// for a broker token the code its admission would name (brokerReplacedRefusal). The lock is the
+// session generation is still its login's, and a personal token is not revoked and its account
+// still holds the address (tokenAccountReplaced): such a sign-in records another account, and the
+// time it did, in its transaction, and the comparison reads both. A sign-in in flight makes the
+// mint wait for it, a first sign-in on an address no row holds included; one that comes after
+// waits for the mint, and then the token it made is revoked. A mint whose caller lost the address
+// inserts nothing and is refused as that caller's next request is (mintCallerGone): 401
+// TOKEN_REVOKED for a personal token, 401 NO_IDENTITY for a cookie. A broker-issued token never
+// mints: none holds the approve scope this route requires (brokerPersonScopes). The lock is the
 // one statement a mint costs beyond what it always cost; the re-check rides in the insert.
 //
 // The token records the Google account its minting credential is bound to (agent_tokens.subject,
@@ -160,7 +159,6 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prefix := plaintext[len("dsp_") : len("dsp_")+agentTokenPrefixLength]
-	broker := s.mintBrokerCaller(r, actor)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -178,10 +176,9 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	}
 	recordsAccounts := s.deps.SignInIssuer != ""
 	token, err := scanAgentToken(tx.QueryRow(r.Context(), mintAgentTokenSQL,
-		actor.ID, input.Name, hash[:], prefix, scopes, projects, cookieLogin, cookieGeneration, tokenID,
-		broker.address, broker.subject, recordsAccounts, broker.created, broker.foreign, broker.issuer))
+		actor.ID, input.Name, hash[:], prefix, scopes, projects, cookieLogin, cookieGeneration, tokenID, recordsAccounts))
 	if errors.Is(err, pgx.ErrNoRows) {
-		s.writeAuthenticationError(w, mintCallerGone(r.Context(), tx, tokenID, broker))
+		s.writeAuthenticationError(w, mintCallerGone(tokenID))
 		return
 	}
 	if err != nil {
@@ -202,56 +199,45 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 // refused once the login's generation is another (a row the login lacks is a session nothing
 // ended since its cookie was checked); $9 is a personal token caller's token id, refused once
 // revoked or once its account no longer holds the address (tokenAccountReplaced: people records
-// another account, or the token records none and was made before people recorded the address's);
-// $10, $11, $15, $13 and $14 are a broker token caller's address, own account and its issuer
-// (model.Credential's BrokerAdmittedSubject and BrokerAdmittedIssuer), the time its credential
-// was made at the broker (BrokerCredentialCreatedAt) and whether that account is of another issuer
-// (BrokerForeignAccount), refused once its account no longer holds the address
-// (brokerAccountReplaced), as its admission is. Each is null, "" for the issuer, and $14 false,
-// for a caller of another kind. $12 is whether the deployment's sign-in records accounts. The
-// token records the minting credential's account (credentialSubjectSQL).
+// another account, or the token records none and was made before people recorded the address's).
+// Each is null for a caller of the other kind. $10 is whether the deployment's sign-in records
+// accounts. The token records the minting credential's account (credentialSubjectSQL).
 var mintAgentTokenSQL = `
 	insert into agent_tokens (owner, name, token_hash, prefix, scopes, projects, subject)
 	select $1::text, $2::text, $3::bytea, $4::text, $5::text[], $6::text[], ` +
-	credentialSubjectSQL("$1::text", "$7::text", "$9::uuid", "$11::text", "$12::boolean", "$13::timestamptz") + `
+	credentialSubjectSQL("$1::text", "$7::text", "$9::uuid", "$10::boolean") + `
 	where not exists (select 1 from user_sessions where login = $7::text and generation <> $8::bigint)
 	  and not exists (select 1 from agent_tokens left join people on people.email = canonical_login(agent_tokens.owner)
-		where agent_tokens.id = $9::uuid and (agent_tokens.revoked_at is not null or ` + tokenAccountReplaced("$12::boolean") + `))
-	  and not ` + brokerAccountReplaced("$10::text", "$11::text", "$15::text", "$14::boolean", "$13::timestamptz", "$12::boolean") + `
+		where agent_tokens.id = $9::uuid and (agent_tokens.revoked_at is not null or ` + tokenAccountReplaced("$10::boolean") + `))
 	returning id::text, name, prefix, scopes, projects, created_at, last_used_at, revoked_at
 `
 
 // credentialSubjectSQL is the SQL expression of the Google account (`sub`) a caller's own
-// credential is bound to, null for none, over the six values a statement names: the caller's
-// address, of the three credentials the one it presented (the other two null), whether the
-// deployment's sign-in records Google accounts (Deps.SignInIssuer non-empty), and a broker token's
-// credential's creation time. Each is read in the statement that also checks the credential still
-// stands, so it is the credential's account and never another's:
+// credential is bound to, null for none, over the four values a statement names: the caller's
+// address, of the two credentials that may mint or decide the one it presented (the other null),
+// and whether the deployment's sign-in records Google accounts (Deps.SignInIssuer non-empty).
+// Each is read in the statement that also checks the credential still stands, so it is the
+// credential's account and never another's:
 //
 //   - a session cookie: the address's recorded `sub`, which is the cookie's own while its session
 //     generation stands, since the one write of people.sub (store.PgPeopleStore.SignInSubject) ends
 //     every session of the address whenever it changes it; none where the sign-in records no
 //     account (a Cognito pool's), since a `sub` left there by a Google sign-in before a switch to
 //     the pool is not the account that signed this cookie in;
-//   - a personal token: the account it recorded at its own mint (agent_tokens.subject);
-//   - a broker token: the account its own credential records at the broker, which its admission
-//     held to the one people records for its person (model.Credential.BrokerAdmittedSubject).
+//   - a personal token: the account it recorded at its own mint (agent_tokens.subject).
 //
-// A token or broker token that records none is bound to the address's recorded account when it was
-// made after people recorded it (a broker credential at least brokerCredentialMargin after, the two
-// clocks apart): no account that held the address before made it, so what it mints records the
-// holder and the no-account state stops there. One made before is refused (tokenAccountReplaced,
-// brokerAccountReplaced) and binds nothing; one with no recording to compare with is bound to none,
-// as before. Any other caller (an identity of another kind) is bound to none.
-func credentialSubjectSQL(address, cookieLogin, tokenID, brokerSubject, recordsAccounts, brokerCreatedAt string) string {
-	recordedSince := func(createdAt string) string {
-		return "(select sub from people where email = " + address + " and " + recordsAccounts +
-			" and sub_recorded_at is not null and " + createdAt + " >= sub_recorded_at)"
-	}
+// A token that records none is bound to the address's recorded account when it was made after
+// people recorded it: no account that held the address before made it, so what it mints records
+// the holder and the no-account state stops there. One made before is refused
+// (tokenAccountReplaced) and binds nothing; one with no recording to compare with is bound to none,
+// as before. Any other caller is bound to none: a broker-issued token never mints or decides
+// (brokerPersonScopes).
+func credentialSubjectSQL(address, cookieLogin, tokenID, recordsAccounts string) string {
 	return "(case when " + cookieLogin + " is not null then (select sub from people where email = " + address + " and " + recordsAccounts + ")" +
 		" when " + tokenID + " is not null then coalesce((select subject from agent_tokens where id = " + tokenID + "), " +
-		recordedSince("(select created_at from agent_tokens where id = "+tokenID+")") + ")" +
-		" else coalesce(nullif(" + brokerSubject + ", ''), " + recordedSince(brokerCreatedAt+" - "+brokerCredentialMarginSQL) + ") end)"
+		"(select sub from people where email = " + address + " and " + recordsAccounts +
+		" and sub_recorded_at is not null and (select created_at from agent_tokens where id = " + tokenID + ") >= sub_recorded_at))" +
+		" end)"
 }
 
 // mintCookie is the login and session generation of the cookie a mint's caller signed in with, or
@@ -272,64 +258,16 @@ func (s *server) mintCookie(r *http.Request, actor model.Actor) (*string, *int64
 	return &login, &generation
 }
 
-// brokerMinter is the broker token a mint's or a decision's caller presented, as its own
-// resolution read it: its address, its own account and that account's issuer, when its credential
-// was made at the broker, and whether its account is of another issuer (model.Credential's
-// BrokerAdmittedSubject, BrokerAdmittedIssuer, BrokerCredentialCreatedAt and BrokerForeignAccount).
-// Every field is nil, "" or false for a caller that is no broker token.
-type brokerMinter struct {
-	address *string
-	subject string
-	issuer  string
-	created *time.Time
-	foreign bool
-}
-
-// mintBrokerCaller is the broker token a mint's caller presented (brokerMinter), or none when the
-// caller is no broker token: a cookie (actor.Act is nil) or a personal token (Act names its id);
-// actingPerson names an act with neither for a broker token alone, the one credential that proves
-// a session. The account and time are the ones the request's own resolution read, which
-// optionalActor answers from the decision decideBrokerToken carried, so nothing is resolved again;
-// a resolution it cannot read answers no account and no creation time, which counts as made
-// before any recording, so the mint is refused rather than admitted on a credential nobody read.
-func (s *server) mintBrokerCaller(r *http.Request, actor model.Actor) brokerMinter {
-	if actor.Act == nil || actor.Act.TokenID != "" {
-		return brokerMinter{}
-	}
-	minter := brokerMinter{address: &actor.ID}
-	if caller, _, err := s.optionalActor(r); err == nil && caller.Credential != nil {
-		minter.subject = caller.Credential.BrokerAdmittedSubject
-		minter.issuer = caller.Credential.BrokerAdmittedIssuer
-		minter.created = timeOrNull(caller.Credential.BrokerCredentialCreatedAt)
-		minter.foreign = caller.Credential.BrokerForeignAccount
-	}
-	return minter
-}
-
 // mintCallerGone is the refusal of a mint whose caller lost the address while it waited on the
 // address's lock, the one mintAgentTokenSQL's refusing arm names: a personal token caller's token was
 // revoked or its account no longer holds the address (401 TOKEN_REVOKED, as personalTokenActor
-// answers it next), a broker token caller's account no longer holds the address (the insert's one
-// arm a broker token meets, read after the address's lock, which every sign-in that changes the
-// address's account takes first, so nothing moved since: the refusal its next admission would
-// name, brokerReplacedRefusal, with whether a revocation names its account read in the mint's own
-// transaction), and a cookie caller's session was ended (401
-// NO_IDENTITY). It writes nothing: the caller is not resolved again, since resolving writes its
-// credential's bookkeeping, and a keyed write's handler writes only in the transaction that marks
-// its key (TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks). A read that fails is 503
-// IDENTITY_UNAVAILABLE.
-func mintCallerGone(ctx context.Context, tx pgx.Tx, tokenID *string, broker brokerMinter) error {
-	switch {
-	case tokenID != nil:
+// answers it next), and a cookie caller's session was ended (401 NO_IDENTITY). It writes nothing:
+// the caller is not resolved again, since resolving writes its credential's bookkeeping, and a
+// keyed write's handler writes only in the transaction that marks its key
+// (TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks).
+func mintCallerGone(tokenID *string) error {
+	if tokenID != nil {
 		return errTokenRevoked()
-	case broker.address != nil:
-		var named bool
-		if err := tx.QueryRow(ctx, brokerAccountNamedSQL, *broker.address, broker.subject).Scan(&named); err != nil {
-			slog.Warn("dispatch: a mint was refused: why its broker token no longer stands could not be read", "error", err)
-			return errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
-				"whether this token's person may still act could not be read; try again in a minute")
-		}
-		return brokerReplacedRefusal(broker.subject == "", named)
 	}
 	return identity.ErrNoIdentity
 }
@@ -472,27 +410,30 @@ func callerScopes(actor model.Actor) []string {
 }
 
 // codeTokenProjectsInput refuses a list no token may hold: more keys than
-// contracts.MaxTokenProjects, a key the caller does not see, or, from a credential that lists
-// projects, a list naming none.
+// contracts.MaxTokenProjects, a key the caller does not see, or, from a credential whose writes a
+// list holds, a list naming none.
 const codeTokenProjectsInput = "TOKEN_PROJECTS_INPUT"
 
 // tokenProjects is the list a mint or an edit gives a token: the one the body names, or, where it
-// names none, the list the caller's own writes are held to. It writes its own refusal and answers
-// false for a list of more than contracts.MaxTokenProjects keys, for a key the caller does not
-// see, and for an empty list from a credential whose writes are held to a list, because a token
-// listing nothing sees every public project its person sees. Every project a credential holding a
-// list sees is on that list (internal/dispatch/access, the rule), so such a credential gives a
-// token only a part of its own.
+// names none, the list that holds the caller's own writes (writesHeldTo). It writes its own refusal
+// and answers false for a list of more than contracts.MaxTokenProjects keys, for a key the caller
+// does not see, and for an empty list from a credential whose writes a list holds, because a token
+// listing nothing reaches what that list does not: every public project its person sees, for a
+// restricted member's list, and the rows of the whole deployment, for every list
+// (withinProjectScope). What the caller sees is the rule's answer for its credential
+// (Viewer.Sees, which access.CredentialCovers decides with its person), so a token takes no
+// project its caller does not reach: a restricted member's credential gives a token only a part of
+// its own list, and a full member's a part of the public projects and of the private ones it lists.
 // A key named twice is listed once, and the list is stored sorted, as Credential.Projects holds it.
 //
-// What the caller sees, and the list its writes are held to (writesHeldTo), are read off the
-// write's reader (resolveReader, which finds the one withinProjectScope put in the request's
-// context) and the request's credential: a credential's list as it holds the credential now, so a
-// broker token acting as its person, whose list holds nothing while no project is private, gives a
-// token what a credential listing none gives (R9). A key the caller does not see is refused in the
-// same words whether a hidden project holds it or none does, so the refusal says nothing of a
-// project the caller may not see. So the list a mint answers, and the one an edit names, is one its
-// caller sees whole, and needs no cut (seeToken).
+// What the caller sees, and the list its writes are held to, are read off the write's reader
+// (resolveReader, which finds the one withinProjectScope put in the request's context) and the
+// request's credential: a credential's list as it holds the credential now, so a broker token
+// acting as its person, whose list decides nothing while no project is private, gives a token
+// what a credential listing none gives (R9). A key the caller does not see is refused in the same
+// words whether a hidden project holds it or none does, so the refusal says nothing of a project
+// the caller may not see. So the list a mint answers, and the one an edit names, is one its caller
+// sees whole, and needs no cut (seeToken).
 func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested *[]string) ([]string, bool) {
 	caller, _, err := s.optionalActor(r)
 	if err != nil {
@@ -503,7 +444,7 @@ func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested
 	if !ok {
 		return nil, false
 	}
-	own := writesHeldTo(reader.Viewer, caller.Credential)
+	own := writesHeldTo(reader, caller.Credential)
 	named := own
 	if requested != nil {
 		named = *requested
@@ -516,7 +457,7 @@ func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested
 		return nil, false
 	case len(projects) == 0 && len(own) > 0:
 		writeError(w, codeTokenProjectsInput, http.StatusBadRequest,
-			"this request's credential lists projects, so a token it gives lists some of them: a token listing none sees every public project")
+			"this request's credential lists projects, so a token it gives lists some of them: a token listing none reaches what that list does not")
 		return nil, false
 	case len(projects) == 0:
 		// Not nil: agent_tokens.projects is not null, and its empty list is a token listing none.

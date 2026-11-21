@@ -4,11 +4,12 @@
 // file is the HTTP shape of those calls and the refusals they map to.
 //
 // A priority belongs to no project, so each of the three writes is classed scopeDeployment
-// (writeClasses, routes_table.go): a viewer that is not open - a restricted member, or a
-// credential that lists projects - is refused PROJECT_SCOPE_DEPLOYMENT, and a broker token naming
-// a service and no person is refused by writeNeedsASignedInPerson, as it is refused every write.
-// No guard of this file's own stands between an agent and a priority: a person signed in, a
-// personal token that lists no project, the shared token every pod carries and a broker token
+// (writeClasses, routes_table.go): a viewer that is not open, a restricted member, and a credential
+// whose writes a list holds (writesHeldTo), whatever its person, are refused
+// PROJECT_SCOPE_DEPLOYMENT, and a broker token naming a service and no person is refused by
+// writeNeedsASignedInPerson, as it is refused
+// every write. No guard of this file's own stands between an agent and a priority: a person signed
+// in, a personal token that lists no project, the shared token every pod carries and a broker token
 // naming a person and no project each write one.
 package api
 

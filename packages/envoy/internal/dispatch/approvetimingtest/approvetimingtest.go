@@ -5,7 +5,7 @@
 // reads the process environment only through its settings table and a test file is where a test's
 // own variable is read), each relay the broker receives prints one line, "APPROVE-RELAYED-IN
 // <nanoseconds> ns", to standard error; the greatest of them under load is Dispatch's half of the
-// measured in-flight time internal/broker/machine.ApprovalInFlightWindow's comment gives as context
+// measured in-flight time internal/cipher/machine.ApprovalInFlightWindow's comment gives as context
 // beside its bound. Until then both wrappers answer the handler they are given, and nothing is
 // timed.
 package approvetimingtest

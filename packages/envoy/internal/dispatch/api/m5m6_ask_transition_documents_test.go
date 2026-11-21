@@ -191,8 +191,8 @@ func TestM5M6AnApprovalsAnswerNamesNoDocumentItsWriterMayNotSee(t *testing.T) {
 
 // TestM5M6WithNoPrivateProjectAnAskWriteNamesItsDocumentsAsBefore (R9): with PRIV public alice, a
 // full member, reads in every write's 200 the document beside the ask, as the base answered it.
-// Each 200 is logged with its times and ids blanked, beside its sha256, for the report's
-// comparison of the two commits.
+// The sha256 of each 200, its times and ids blanked, is logged for the report's comparison of the
+// two commits.
 //
 // Control: askRowFromSeenBy's anchor clause made false for every reader; alice then reads no
 // anchor document in the question writes and the row fails.

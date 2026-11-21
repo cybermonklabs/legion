@@ -17,8 +17,9 @@ import (
 
 // The OAuth scopes a credential can hold. ScopePerson is "this credential acts as its person",
 // which every route a person reaches through the dashboard requires; ScopeApprove is the right to
-// settle what a person settles — an approval, an ask's answer — which no credential holds without
-// ScopePerson, since a credential that does not act as its person has nobody to approve for.
+// settle what a person settles — an approval, an ask's answer, who may see a project — which no
+// credential holds without ScopePerson, since a credential that does not act as its person has
+// nobody to approve for.
 const (
 	ScopePerson  = "person"
 	ScopeApprove = "approve"
@@ -75,38 +76,11 @@ type Credential struct {
 	// Projects are the projects the credential may use, sorted: a personal token's
 	// agent_tokens.projects (personalTokenActor), or a broker token's list (brokerTokenActor:
 	// the one project of a token an operator's entry mapped to it, or the list a token acting as
-	// its person traded for). Empty is a credential that names none, which sees only the public
-	// projects its person sees (internal/dispatch/access, the rule); what a list holds while no
-	// project is private is ListHoldsWhileNoPrivate's.
+	// its person traded for). Empty is a credential that names none. What a list decides is
+	// access.CredentialCovers': for a full member's credential, and one that names no person, only
+	// which private projects it reaches; for a restricted member's, every project it reaches.
 	Projects []string
-	// BrokerAdmittedSubject is, for such a token, the account (`sub`) the token's own credential
-	// records at the broker (the introspection's account_subject: the person token that made its
-	// sign-in, or the account that approved its machine login), under an issuer people records
-	// accounts of (Dispatch's sign-in issuer, or the outside origin for a restricted member's
-	// passkey), and "" for a token recording none or an account of another issuer
-	// (api.brokerTokenAccount). The token was admitted only while people recorded that account, or
-	// none, for its person (api.brokerPersonAdmitted). An approve by the token names it as the
-	// approving account (api.approverStanding), refused once people records another account; a
-	// token recording none names the account people records when its credential was made at least
-	// the margin after people recorded it (api.credentialSubjectSQL), and none otherwise, so the
-	// login the broker mints records none and any later revocation of the address ends it.
-	BrokerAdmittedSubject string
-	// BrokerAdmittedIssuer is BrokerAdmittedSubject's issuer as people.sub_issuer spells it: "" for
-	// Dispatch's sign-in issuer, the outside origin for a passkey's account.
-	BrokerAdmittedIssuer string
-	// BrokerCredentialCreatedAt is, for such a token, when its credential was made at the broker,
-	// from the broker database's clock (the introspection's credential_created_at: its sign-in on a
-	// machine, or the machine login it was exchanged from), and the zero time for one minted before
-	// the broker recorded it and for every other credential. A token recording no account is held
-	// to it against the moment people recorded its person's account (api.brokerAccountReplaced),
-	// at its admission, its mints and its approves.
-	BrokerCredentialCreatedAt time.Time
-	// BrokerForeignAccount is, for such a token, whether its credential records an account of an
-	// issuer people records no account of (api.brokerForeignAccount), which Dispatch cannot compare
-	// with the account it records: refused at its admission, its mints and its approves once people
-	// records an account for its person, whenever it was made.
-	BrokerForeignAccount bool
-	// ReadOnly is a broker-issued token that holds only the scope read (brokertoken.ScopeRead):
+	// ReadOnly is a broker-issued token that holds only the scope read (ciphertoken.ScopeRead):
 	// one the secrets broker minted from a read entry, naming a service and a session and no
 	// person and no project. Dispatch serves it on the routes its read list names
 	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
@@ -115,31 +89,13 @@ type Credential struct {
 	// requirement; it narrows what this credential may call rather than widening it. False for
 	// every other credential.
 	ReadOnly bool
-	// ListHoldsWhileNoPrivate is what Projects holds this credential to while the deployment
-	// holds no private project and its person is a full member (or it names none), which is what
-	// decides whether a list that existed before projects could be private changes what its
-	// credential reads (R9): once a project is private, and for a restricted member whatever the
-	// deployment holds, every list holds reads and writes alike (R3). Its zero value holds both,
-	// which is every credential that names no other. access.Resolve and api's writesHeldTo read it;
-	// brokerTokenActor sets it. A fact of the request, never written to a row or an answer.
-	ListHoldsWhileNoPrivate ListHold `json:"-"`
+	// NamedProject is the one project a broker token an operator's entry mapped to one project
+	// may write (ciphertoken.ProjectScopeNamed), set by brokerTokenActor beside Projects, and
+	// empty for every other credential. It is the write scope such a token had before projects
+	// could be private, which holds whatever the deployment holds: api's namedProjectOf reads it.
+	// A fact of the request, never written to a row or an answer.
+	NamedProject string `json:"-"`
 }
-
-// ListHold is what a credential's list of projects (Credential.Projects) holds it to while the
-// deployment holds no private project and its person is not a restricted member.
-type ListHold uint8
-
-const (
-	// ListHoldsAll holds reads and writes to the list: a personal token's list, which is new with
-	// private projects.
-	ListHoldsAll ListHold = iota
-	// ListHoldsWrites holds writes to the list and no read: a broker token an operator's entry
-	// mapped to its one project, which before projects could be private limited its writes alone.
-	ListHoldsWrites
-	// ListHoldsNothing holds neither: a broker token acting as its person, whose trade's list
-	// limited nothing before projects could be private.
-	ListHoldsNothing
-)
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
 // caller that resolved to no credential at all is refused by the same test.
@@ -203,14 +159,16 @@ type Actor struct {
 // Recorded is the actor as a write records it: the request's credential and viewer dropped. A
 // stored actor is decoded from JSON, which carries neither, so neither ever reaches a row.
 // Dispatch decides "the same writer" by kind and id (SameAs) and "the same credential" by those
-// and the names a credential carries (SameCredential); the one == left is the document
-// rooms' lost-write notice (docs/lostedit.go), so an actor handed to the document service must
-// carry none. actorFrom drops it here, bearerSessionActor builds a session actor without it, and
-// actingPerson answers the person with its Act alone. The handlers that record optionalActor's
-// own actor for a browser caller (messages.go, message_delivery.go, comment_delivery.go,
-// issue_claim.go) keep the cookie's credential in memory and hand that actor to no document
-// write. A layer that needs the request's own credential reads it from optionalActor
-// (callerHoldsScope). Proven is a fact of the record and stays.
+// and the names a credential carries (SameCredential); the one == left that decides anything is
+// the document rooms' lost-write notice (docs/lostedit.go), so an actor handed to the document
+// service must carry none. The store's writer compares recorded actors with == only to reuse one
+// encoding of a writer across the rows a write binds (graphstore.writerEncoder), and two equal
+// recorded actors encode alike. actorFrom drops it here, bearerSessionActor builds a session
+// actor without it, and actingPerson answers the person with its Act alone. The handlers that
+// record optionalActor's own actor for a browser caller (messages.go, message_delivery.go,
+// comment_delivery.go, issue_claim.go) keep the cookie's credential in memory and hand that actor
+// to no document write. A layer that needs the request's own credential reads it from
+// optionalActor (callerHoldsScope). Proven is a fact of the record and stays.
 func (a Actor) Recorded() Actor {
 	a.Credential = nil
 	a.Viewer = nil
@@ -236,12 +194,16 @@ const (
 )
 
 // Viewer is what one caller may see, resolved once a request (access.Resolve). Sees is every
-// project it sees, sorted. Open is a viewer that is neither restricted nor holds a list of
-// projects: it reads every row that belongs to no project, as every caller did before projects
-// could be private. All is ServerViewer alone. AnyPrivate is whether the deployment holds a
-// private project at all. Lists is the credential's own list of projects (Credential.Projects),
-// nil when it lists none: which projects it would see were its person to see them, which tells a
-// read whether the credential read a project before a change took it away (api: eventGapSQL).
+// project it sees, sorted. Open is a viewer that is not a restricted member: it reads every row
+// that belongs to no project, as every caller did before projects could be private, whatever its
+// credential lists, since a list decides only which private projects a full member's credential
+// sees. All is ServerViewer alone. AnyPrivate is whether the deployment holds a private project at
+// all. Lists is the credential's own list of projects (Credential.Projects) as its caller is told
+// it - every credential's but a broker token's, whose list is answered only while some project is
+// private or its person is a restricted member, as before projects could be private - and nil
+// otherwise: which projects it would see were its person to see them, which tells a read whether
+// the credential read a project before a change took it away (api: eventGapSQL), and which whoami
+// answers as projects.
 type Viewer struct {
 	Person, Session string
 	Restricted      bool
@@ -265,8 +227,19 @@ var ServerReader = Actor{Viewer: ServerViewer}
 // claim's holder against a caller, and an event's actor against the claimant it names. Where
 // the credential itself must be told apart rather than the writer, SameCredential compares the
 // names too.
+//
+// A person's id is compared in its canonical form (sameLogin), on both sides: a stored login may
+// keep the case an earlier build wrote it in, and no backfill rewrites it, so a comment stored
+// under "Alice" is alice's still. Every other kind's id - a session's, a system writer's - is no
+// login, and is compared byte for byte.
 func (a Actor) SameAs(other Actor) bool {
-	return a.Kind == other.Kind && a.ID == other.ID
+	if a.Kind != other.Kind {
+		return false
+	}
+	if a.Kind == "user" {
+		return sameLogin(a.ID, other.ID)
+	}
+	return a.ID == other.ID
 }
 
 // SameCredential reports whether two actors are the one credential: the kind and the id SameAs
@@ -277,28 +250,47 @@ func (a Actor) SameAs(other Actor) bool {
 // service-account token is {Service: &subject}. Under SameAs any two personal tokens are one
 // writer, whoever owns them, and the shared token is every pod's token.
 //
+// Owner is a person's login, and is compared in its canonical form (sameLogin) on both sides,
+// as SameAs compares a person's id: a stored owner may keep the case an earlier build wrote it
+// in, so a going run asked under "Dana@Example.COM" is the run of the token whose owner now reads
+// dana@example.com. Service is a workload's subject, no login, and is compared byte for byte.
+//
 // Origin, Act and Proven are not compared: they say where a write came from, who it acted for and
 // whether its credential proved its id, which two requests of one credential differ in, so
 // comparing them would call one credential two.
 func (a Actor) SameCredential(other Actor) bool {
-	return a.SameAs(other) && sameActorName(a.Owner, other.Owner) && sameActorName(a.Service, other.Service)
+	return a.SameAs(other) && sameActorName(a.Owner, other.Owner, sameLogin) && sameActorName(a.Service, other.Service, sameName)
 }
 
-// sameActorName compares one optional name of two actors: both unset, or both the same name.
-func sameActorName(left, right *string) bool {
+// sameActorName compares one optional name of two actors: both unset, or both set and the same
+// name as same compares them.
+func sameActorName(left, right *string, same func(left, right string) bool) bool {
 	if left == nil || right == nil {
 		return left == right
 	}
-	return *left == *right
+	return same(*left, *right)
+}
+
+// sameLogin reports whether two logins name one person: each is read in its canonical form
+// (CanonicalLogin), so two spellings that differ only in the case of their ASCII letters or in
+// the white space around them are one login.
+func sameLogin(left, right string) bool {
+	return CanonicalLogin(left) == CanonicalLogin(right)
+}
+
+// sameName reports whether two names are the one name, byte for byte.
+func sameName(left, right string) bool {
+	return left == right
 }
 
 // CanonicalLogin is the stored form of a person's email: trimmed, with its ASCII letters lowered
-// (fold.ASCII) and nothing else folded, the form the identity implementations name a person by and
+// and nothing else folded (fold.Login, the one spelling of that rule, which the broker's
+// record.CanonicalLogin reads too), the form the identity implementations name a person by and
 // the people table holds. canonical_login (migration 20261117000831) is this form in SQL, for a
 // statement that compares a stored login with people.email; store.TestCanonicalLoginIsModelCanonicalLogin
 // holds the two to one another, so a change here is a change there.
 func CanonicalLogin(login string) string {
-	return fold.ASCII(strings.TrimSpace(login))
+	return fold.Login(login)
 }
 
 // ActorOrigin describes the client environment of a session actor.
@@ -447,14 +439,26 @@ type ProjectAccess struct {
 	Passkeys *[]EnrolledPasskey `json:"passkeys,omitempty"`
 	// Invitable is, in that same answer alone, the people of People the owner can make a link for
 	// now (POST /api/v1/projects/{key}/access/people/{email}/invitations): each on no domain of the
-	// company's Workspace and with no full member's sign-in, sorted, [] for none.
+	// company's Workspace, with no full member's sign-in, and named by no project of another owner,
+	// sorted, [] for none.
 	Invitable *[]string `json:"invitable,omitempty"`
+	// ListedByAnotherOwner is, in that same answer alone, the people from outside of People (no
+	// full member, no Workspace address) a project of another owner names directly, sorted, [] for
+	// none: one owner binds a person from outside, so the owner makes no link for them (409
+	// LISTED_BY_ANOTHER_OWNER) until that project's owner takes them off its list, or an operator
+	// does.
+	ListedByAnotherOwner *[]string `json:"listed_by_another_owner,omitempty"`
 }
 
-// EnrolledPasskey is when one passkey of a person was enrolled (ProjectAccess.Passkeys).
+// EnrolledPasskey is one passkey of a person (ProjectAccess.Passkeys): when it was enrolled, who
+// made the link that enrolled it, and that link's project, which only a reader who sees it is
+// answered (nil otherwise), so the owner sees whose link a passkey came through before the person
+// reads their project.
 type EnrolledPasskey struct {
 	Email      string    `json:"email"`
 	EnrolledAt time.Time `json:"enrolled_at"`
+	MadeBy     string    `json:"made_by"`
+	Project    *string   `json:"project,omitempty"`
 }
 
 // AccessGroup is a named list of full members that an access list can name: its one owner, the
@@ -1592,7 +1596,8 @@ type ArtifactReviewEventPayload struct {
 
 // CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
 // results are compared with: the one commit a reader named in `at`, the head of a pull request
-// Dispatch holds for the check's issue, and a branch of the check's issue's repository.
+// Dispatch holds for the check's issue, and a branch of the check's issue's repository or, for
+// one result, of a repository the issue links a pull request in (CheckBasis.Repo).
 const (
 	CheckBasisNamed       = "named"
 	CheckBasisPullRequest = "pull_request"
@@ -1648,9 +1653,16 @@ const (
 
 // CheckBasis is one commit or branch a check's results are compared with. Commit is set for a
 // `named` and a `pull_request` basis, Branch for a `branch` one, and PullRequest is the number
-// of the pull request whose head the commit is.
+// of the pull request whose head the commit is. Repo is the `owner/repo` of a basis in a linked
+// repository, one the check's issue links a pull request in and does not resolve to: the head
+// of a pull request the issue links there, and a branch of it that a result whose commit is
+// that repository's stands at (CheckResult.CommitRepo). It is empty for every other basis,
+// which is of the repository the check's issue resolves to or is the commit a reader named, so
+// a reader can tell pull request #7 or branch main of the linked repository from those of the
+// issue's own.
 type CheckBasis struct {
 	Kind        string          `json:"kind" enum:"named,pull_request,branch"`
+	Repo        string          `json:"repo,omitempty"`
 	Commit      string          `json:"commit,omitempty"`
 	Branch      string          `json:"branch,omitempty"`
 	PullRequest *int            `json:"pull_request,omitempty"`
@@ -1677,11 +1689,17 @@ type CheckPassStands struct {
 // ResultCommitStands is where one result's commit stands against what its check compared with:
 // CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
 // (ReasonRepositoryUnreadable, ReasonReadFailed). It says nothing about the check's words,
-// which CheckResult.CheckWordsMoved answers on its own.
+// which CheckResult.CheckWordsMoved answers on its own. Repo is the `owner/repo` of the linked
+// repository an other_commit or unknown answer is about: the one the result's commit is taken to
+// be of (CheckResult.CommitRepo), one the check's issue links a pull request in and does not
+// resolve to, which decided the answer, so a reader names that repository and not the issue's
+// own. It is empty for every answer about the issue's own repository, and for at_basis, whose
+// basis names a linked repository itself (CheckBasis.Repo).
 type ResultCommitStands struct {
 	Answer string      `json:"answer" enum:"at_basis,other_commit,unknown"`
 	Basis  *CheckBasis `json:"basis,omitempty"`
 	Reason string      `json:"reason,omitempty" enum:"repository_unreadable,read_failed"`
+	Repo   string      `json:"repo,omitempty"`
 }
 
 // CheckResultRetracted is the retraction one result carries on a read of the results
@@ -1722,6 +1740,18 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
+	// CommitRepo is the linked repository the record route took CommitSHA to be of
+	// (check_results.commit_repo), one the check's issue links a pull request in and does not
+	// resolve to: one with an open or merged linked pull request that GitHub said holds the
+	// commit, and no other. A linked read that did not answer, where no repository was shown to
+	// hold the commit, and a failed read of the issue's links store no row at all. It is nil for
+	// every other result: a commit of the issue's own repository, a commit whose read there did
+	// not answer and that no linked repository was shown to hold, and a result nothing was asked
+	// about. The results read compares a branch check's result with that repository's branches,
+	// reads a `before_merge` result's pull requests through it, and decides such a result by it
+	// where it is set, and names it in CommitStands.Repo where it decided an other_commit or
+	// unknown answer. It is no part of the wire shape.
+	CommitRepo *string `json:"-"`
 	// ObservedTree is the ProseMirror tree Observed is shown as, present only on the results read
 	// for a caller that sent `Dispatch-Trees: 1`.
 	ObservedTree DisplayTree `json:"observed_tree,omitempty"`

@@ -31,7 +31,7 @@
  *  which runs the same rows against the real harness, writes each row's HAR normalised
  *  (e2e/stub/recording.ts) and each row's scene beside it under `e2e/__recordings__/`.
  *
- *  What a stubbed row may assert, and what it may not, is `packages/dispatch/AGENTS.md`, "The
+ *  What a stubbed row may assert, and what it may not, is `packages/dispatch/README.md`, "The
  *  stubbed layer". The short of it: a row that writes and then reads its own write does not
  *  belong here, because the recording answers the refetch with the state recorded before the
  *  write and the row would pass while proving nothing.

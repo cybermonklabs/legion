@@ -46,7 +46,8 @@ func requestOf(pattern string) (method, path string) {
 // otherwise. The process's handler is built as main builds it - the router, routes.Process's
 // mounts, then serveHandler's wrap - and every route the router serves is requested with no
 // credential: each row of the route index, each pattern readclass.Handle mounted in the process,
-// and both sockets once more as upgrades, whose 101 carries it too.
+// and both sockets once more as upgrades: /ws/live's 101 carries it, and /ws/doc/NOPE, a room no
+// document holds, is refused before any upgrade (refuseHiddenRoom), so that refusal carries it.
 func TestEveryResponseSaysWhetherAnyProjectIsPrivate(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)

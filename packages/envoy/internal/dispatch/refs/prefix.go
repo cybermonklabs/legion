@@ -104,18 +104,21 @@ type Scope struct {
 // ResolvePrefix is the one item kind names whose id starts with prefix: an ask, a comment, a
 // message, a document (`artifact`) or a document block, looked for where scope says, as viewer.
 // Both callers that resolve one short id at a time go through it - the resolver that rewrites a
-// body's short ids as it is indexed (text.Resolver.Items), with the zero Viewer and the owner the
-// reference names, and the API route that resolves one id for a person or a session, with the
-// viewer it authenticated and, where its route names no owner, the whole kind. ResolvePrefixes
-// is the batched second copy of these queries, which GET /api/v1/reference-targets uses to
-// resolve the short ids of a whole set at once. It shares the selection rule of this function
-// (choosePrefixCandidate) and binds the same predicate of each kind for its reader, so a short
-// id names the same item through either function for the same reader.
+// body's short ids as it is indexed (text.Resolver.Items), for the source's writer, with the zero
+// Viewer and the owner the reference names, and the API route that resolves one id for a person
+// or a session, with the viewer it authenticated and, where its route names no owner, the whole
+// kind. ResolvePrefixes is the batched second copy of these queries, which GET
+// /api/v1/reference-targets uses to resolve the short ids of a whole set at once. It shares the
+// selection rule of this function (choosePrefixCandidate) and binds the same predicate of each
+// kind for its reader, so a short id names the same item through either function for the same
+// reader.
 //
 // It answers for who: an item who may not see is no candidate, so a prefix it alone carries
 // matches nothing and one it shares with a visible item names that item, and neither its id nor
 // its first line is answered (VisibleKind, each kind's own predicate bound into the read). The
-// resolver acts for no person and reads every item (resolvePrefix, Reader.Items).
+// resolver answers for the writer of the text it indexes (Reader.Items), so what a short id
+// resolves to, and whether it stays ambiguous, tells that writer nothing of an item they may not
+// see.
 //
 // It answers the one match, ErrPrefixAmbiguous with the matches listed (at most
 // prefixCandidateLimit of them, in id order) where two or more carry the prefix, and
@@ -140,14 +143,6 @@ type Scope struct {
 // nothing without a query. A block's is matched among the block ids of the one document version
 // named. Either way it is one query, which fills every candidate's first line too.
 func ResolvePrefix(ctx context.Context, q Queryer, who model.Actor, kind string, scope Scope, prefix string, viewer Viewer) (Candidate, error) {
-	return resolvePrefix(ctx, q, &who, kind, scope, prefix, viewer)
-}
-
-// resolvePrefix is ResolvePrefix for who, or for no person at all where who is nil: the
-// index-time resolver's read (Reader.Items), which answers no reader. What it resolves becomes an
-// edge of the source it indexes, and every read of an edge binds the predicates of both its ends,
-// so it resolves among every item, as a write that names a whole id names any item.
-func resolvePrefix(ctx context.Context, q Queryer, who *model.Actor, kind string, scope Scope, prefix string, viewer Viewer) (Candidate, error) {
 	if !text.IsIDPrefix(prefix) {
 		return Candidate{}, pgx.ErrNoRows
 	}
@@ -155,13 +150,13 @@ func resolvePrefix(ctx context.Context, q Queryer, who *model.Actor, kind string
 	var err error
 	switch kind {
 	case "ask", "comment":
-		found, err = itemPrefixCandidates(ctx, q, who, kind, scope, prefix)
+		found, err = itemPrefixCandidates(ctx, q, &who, kind, scope, prefix)
 	case "message":
-		found, err = messagePrefixCandidates(ctx, q, who, scope, prefix, viewer)
+		found, err = messagePrefixCandidates(ctx, q, &who, scope, prefix, viewer)
 	case "artifact":
-		found, err = artifactPrefixCandidates(ctx, q, who, scope, prefix)
+		found, err = artifactPrefixCandidates(ctx, q, &who, scope, prefix)
 	case "block":
-		found, err = blockPrefixCandidates(ctx, q, who, scope, prefix)
+		found, err = blockPrefixCandidates(ctx, q, &who, scope, prefix)
 	}
 	if err != nil {
 		return Candidate{}, err
@@ -463,9 +458,11 @@ func (a *queryArgs) param(value any) string {
 }
 
 // visible is the predicate of node kind over address for who, the acting credential bound once
-// among the query's arguments (VisibilityArg), or `true` where who is nil: the index-time
-// resolver's own read, which answers no person (resolvePrefix, scopeOf, questionMap). A query
-// whose version binds no predicate binds no credential either, since Postgres refuses a
+// among the query's arguments (VisibilityArg), or `true` where who is nil: a read for no person,
+// as the index-time resolver's reads of the document a source's text belongs to and of that
+// document's question blocks are (scopeOf, questionMap). The short ids that resolver resolves
+// are no such read: it resolves them for the source's writer (Reader.Items, ResolvePrefix). A
+// query whose version binds no predicate binds no credential either, since Postgres refuses a
 // statement with a parameter it never reads.
 func (a *queryArgs) visible(who *model.Actor, kind, address string) string {
 	if who == nil {

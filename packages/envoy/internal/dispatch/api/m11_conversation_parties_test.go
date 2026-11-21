@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -13,10 +14,11 @@ import (
 // issue, is read by the parties its node names (access.MessageClause, PartyClause). One whose node
 // the store does not hold, or whose node names no party, passes no viewer but the server's once a
 // project is private, its own parties included, so a switch to private is refused while one
-// exists: 409 PRIVATE_PROJECTS_INCOMPLETE naming the message, with its cure, PRIV left public and
-// alice's, no event appended and no writer called. A direct message whose node names its parties,
-// as every message the route writes does, refuses nothing: once the broken one is gone or mended,
-// the same switch makes PRIV private.
+// exists: 409 PRIVATE_PROJECTS_INCOMPLETE saying how many such messages there are and naming none
+// of them, since they are the whole deployment's and the owner who pressed the switch may read
+// none; PRIV left public and alice's, no event appended and no writer called. A direct message
+// whose node names its parties, as every message the route writes does, refuses nothing: once the
+// broken one is gone or mended, the same switch makes PRIV private.
 //
 // Control: privateProjectIncomplete without its read of conversationsNamingNoParty; each refused
 // switch answers 200.
@@ -67,7 +69,11 @@ func TestASwitchToPrivateCountsADirectConversationThatNamesNoParty(t *testing.T)
 
 			before := allEvents(t, database)
 			response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
-			requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_INCOMPLETE", line)
+			requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_INCOMPLETE",
+				"1 direct messages name no party their conversation is with")
+			if strings.Contains(response.Body.String(), line) {
+				t.Errorf("%s: the switch's refusal names the message, %q: %s", broken.name, line, response.Body.String())
+			}
 			if calls := bus.taken(); len(calls) != 0 {
 				t.Fatalf("%s: the refused write called the writer: %+v", broken.name, calls)
 			}

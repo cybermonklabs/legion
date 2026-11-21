@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -115,5 +117,41 @@ func TestSweepDeletesOnlyTheRecordsThatCanNoLongerBePresented(t *testing.T) {
 	}
 	if used, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-live", "jkt", "", "GET", "https://dispatch.test/a", time.Now().Add(time.Minute)); err != nil || !used {
 		t.Fatalf("after the sweep the live record: used = %v, err = %v; want used", used, err)
+	}
+}
+
+// A proof whose jti and htu are maxStoredProofKey bytes together is recorded, and one a byte longer
+// is ErrUnstorableProof and records nothing: so the bound holds, and the longest key it lets
+// through fits the primary key's btree. The htu is random text (rand.Text), which PostgreSQL
+// cannot compress inside the index row, so the insert is the size it would be for a real path.
+//
+// Control in dpop_proofs.go: the length arm dropped (the longer key reaches the insert and fails
+// with SQLSTATE 54000, not ErrUnstorableProof).
+func TestADPoPProofTooLongToIndexIsRefusedAndTheLongestKeptIsRecorded(t *testing.T) {
+	ctx := context.Background()
+	proofs := proofFixture(t)
+	exp := time.Now().Add(time.Minute)
+	const jti = "a-jti-of-the-library's-length"
+	htu := func(total int) string {
+		path := "https://dispatch.test/api/v1/issues/"
+		for len(jti)+len(path) < total {
+			path += rand.Text()
+		}
+		return path[:total-len(jti)]
+	}
+	if used, err := proofs.CheckAndSetDPoPProofUsed(ctx, jti, "jkt", "", "GET", htu(maxStoredProofKey), exp); err != nil || used {
+		t.Fatalf("a proof of jti and htu %d bytes together: used = %v, err = %v; want recorded", maxStoredProofKey, used, err)
+	}
+	longer := htu(maxStoredProofKey + 1)
+	if used, err := proofs.CheckAndSetDPoPProofUsed(ctx, jti, "jkt", "", "GET", longer, exp); !errors.Is(err, ErrUnstorableProof) || used {
+		t.Fatalf("a proof of jti and htu %d bytes together: used = %v, err = %v; want ErrUnstorableProof", maxStoredProofKey+1, used, err)
+	}
+	var recorded int
+	if err := proofs.pool.QueryRow(ctx, `select count(*) from dpop_proofs where htu = $1`, longer).Scan(&recorded); err != nil || recorded != 0 {
+		t.Fatalf("the refused proof left %d records, %v; want none", recorded, err)
+	}
+	// What the bound keeps away: the same key, a thousand bytes longer, refused by the index itself.
+	if _, err := proofs.pool.Exec(ctx, `insert into dpop_proofs (jti, htu, expires_at) values ($1, $2, $3)`, jti, htu(maxStoredProofKey+1000), exp); err == nil {
+		t.Fatalf("an insert of a key %d bytes long succeeded; want the btree's refusal, which the bound is there to keep from a caller", maxStoredProofKey+1000)
 	}
 }

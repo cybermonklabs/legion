@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -218,22 +219,46 @@ func appendDocumentEvent(t *testing.T, ctx context.Context, tx pgx.Tx, kind stri
 	return event
 }
 
-// documentEvent records one event of issue CORE-1 in the write's own transaction. The sequence
-// comes off the issue's own counter, as events.Append takes it, so the settlement's next event
-// does not collide with this one. It answers an error rather than failing the test, so a write
-// run off the test's goroutine can record its event too.
+// documentEvent records one event of issue CORE-1 by alice in the write's own transaction
+// (recordIssueEvent). It answers an error rather than failing the test, so a write run off the
+// test's goroutine can record its event too.
 func documentEvent(ctx context.Context, tx pgx.Tx, kind string, payload []byte) (int64, error) {
+	return recordIssueEvent(ctx, tx, "CORE-1", kind, aliceActor, payload)
+}
+
+// aliceActor is alice, the fixture's person, as an event row stores its actor.
+var aliceActor = []byte(`{"kind":"user","id":"alice"}`)
+
+// recordIssueEvent records one event of issue key, of kind, by actor and with payload, each JSON,
+// through q: the write's own transaction, or the pool for an event that is a write of its own.
+// The sequence comes off the issue's own counter, as events.Append takes it, so the issue's next
+// event does not collide with this one. It answers the event's id.
+func recordIssueEvent(ctx context.Context, q Queryer, key, kind string, actor, payload []byte) (int64, error) {
 	var event int64
-	if err := tx.QueryRow(ctx, `
-		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
+	if err := q.QueryRow(ctx, `
+		with bumped as (update issues set last_seq = last_seq + 1 where key = $1 returning last_seq)
 		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', bumped.last_seq, $1, '{"kind":"user","id":"alice"}', $2, false
+		select $1, bumped.last_seq, $2, $3, $4, false
 		from bumped
 		returning id
-	`, kind, payload).Scan(&event); err != nil {
-		return 0, fmt.Errorf("record the %s event: %w", kind, err)
+	`, key, kind, actor, payload).Scan(&event); err != nil {
+		return 0, fmt.Errorf("record the %s event of %s: %w", kind, key, err)
 	}
 	return event, nil
+}
+
+// versionEventPayload is the payload of the artifact.version event an older build or the release
+// before this one records for version number of document artifactID, named name: the document,
+// its name and the version's number.
+func versionEventPayload(t *testing.T, artifactID, name string, number int) []byte {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"artifact_id": artifactID, "name": name, "version": map[string]any{"number": number},
+	})
+	if err != nil {
+		t.Fatalf("encode the payload of version %d of %s: %v", number, artifactID, err)
+	}
+	return payload
 }
 
 // The fixture document's two versions. Version 1 holds two callouts side by side; version 2 moves
@@ -446,6 +471,121 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 	requireTheTickIsFenced(t, database, service, earlierBuildRace)
 	requireOnlyTheFenceWritesTheOwedRow(t)
 	requireNoRevisionTestOutsideTheFence(t)
+}
+
+// A mark of a higher marking rule that a writer taking no owner lock commits between a lower-rule
+// pass's read phase and its stand survives the stand, the pass still states its version, and the
+// higher rule's build then states that version itself.
+//
+// Four writers of document_block_versions take no owner lock (R23): the tick's marking
+// (markVersionedDocuments), oweDocumentIndex, the re-index of a scope and refs.RebuildAll. Each may
+// write store_owed_rule while a pass that has read the row is planning, so the stand decides in
+// its own statement, against the row as it stands then, whether it clears the mark
+// (refs.BlockIndexing.queueStand): from what the read phase saw it would clear a mark of a higher
+// rule written meanwhile, and the higher rule's build would then list the document no more. The
+// race is built rather than waited for, with the harness of
+// TestAStaleWriteCannotAssertAParentANewerEditReplaced: a pass of the lower rule on a connection of
+// its own reads the document's index (refs.ReadBlockIndex), the version's row and its render and
+// plans the pass (refs.PlanBlocks), on a document whose row stands at the version it indexes, below
+// it in store_version, with a mark of the pass's own rule; a statement of the higher rule then
+// commits on that row, one statement at a time; and only then does the pass queue its write
+// phase (store.RunWrite of refs.BlockIndexing.Queue) and commit.
+func TestAHigherRulesMarkWrittenDuringALowerRulesPassSurvivesItsStand(t *testing.T) {
+	ctx := context.Background()
+	database, lower := blockIndexService(t)
+	higher := markingRuleBuild(t, database, nextBuildCommit, lower.markingRule+1)
+	v, w := lower.markingRule, higher.markingRule
+	for _, between := range []struct {
+		name  string
+		write func(document string) error
+	}{
+		{"markVersionedDocuments", func(document string) error {
+			_, err := database.Pool.Exec(ctx, markVersionedDocuments, []string{document}, w)
+			return err
+		}},
+		{"oweDocumentIndexStatement", func(document string) error {
+			return oweDocumentIndex(ctx, database.Pool, document, w)
+		}},
+	} {
+		slug := "raced-" + strings.ToLower(between.name)
+		document := createOwedDocument(t, database, lower, "CORE-1", "", slug, nestedSpec(slug), "")
+		settle(t, database, document)
+		drainBlockIndex(t, lower, "seed of "+slug)
+		version := restateAsThePreviousRelease(t, database, lower, document)
+		var marked int64
+		if err := database.Pool.QueryRow(ctx, markVersionedDocuments, []string{document}, v).Scan(&marked); err != nil || marked != 1 {
+			t.Fatalf("the marking of rule %d marked %d document(s) (%v), want %s", v, marked, err, document)
+		}
+		markdown, blocks, err := lower.TextWithBlocks(ctx, serverReader, document)
+		if err != nil {
+			t.Fatalf("read %s: %v", document, err)
+		}
+
+		// The lower rule's pass, through its read phase.
+		passConn, err := database.Pool.Dedicated(ctx, "block-index-lower-rule-pass")
+		if err != nil {
+			t.Fatalf("open the pass's connection: %v", err)
+		}
+		defer passConn.Close(ctx)
+		pass, err := passConn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the pass: %v", err)
+		}
+		defer pass.Rollback(ctx)
+		index, err := refs.ReadBlockIndex(ctx, pass, document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := refs.ReadIndexedVersion(ctx, pass, document, version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var versionAt, now time.Time
+		if err := pass.QueryRow(ctx, `
+			select created_at, now() from artifact_versions where artifact_id = $1 and number = $2
+		`, document, version).Scan(&versionAt, &now); err != nil {
+			t.Fatalf("read version %d of %s: %v", version, document, err)
+		}
+		indexing, err := refs.PlanBlocks(ctx, pass, index, v, now, refs.VersionBlocks{
+			ArtifactID: document, Record: record, Number: version, At: versionAt, Markdown: markdown, Blocks: blocks,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !indexing.Won() {
+			t.Fatalf("the pass of rule %d at version %d of %s lost the fence in its read phase: this test proves nothing", v, version, document)
+		}
+
+		// The higher rule's statement commits on the row between the read phase and the stand.
+		if err := between.write(document); err != nil {
+			t.Fatalf("commit %s of rule %d: %v", between.name, w, err)
+		}
+		if err := store.RunWrite(ctx, pass, func(b *store.WriteBatch) error {
+			indexing.Queue(b)
+			return nil
+		}); err != nil {
+			t.Fatalf("run the pass's write phase: %v", err)
+		}
+		if err := graphstore.Caused(ctx, pass, indexing.Stated(), graphstore.NoEvent); err != nil {
+			t.Fatalf("append what the pass stated: %v", err)
+		}
+		if err := pass.Commit(ctx); err != nil {
+			t.Fatalf("commit the pass: %v", err)
+		}
+
+		raced := fmt.Sprintf("%s of rule %d committed between the read phase and the stand of a pass of rule %d", between.name, w, v)
+		row := blockRowOf(t, database, document)
+		if !row.standsAt(version) {
+			t.Errorf("%s: the pass left %s at version %s and stand %s, want version %d stated",
+				raced, document, standsText(row.version), standsText(row.stand), version)
+		}
+		if !row.marked || row.rule != w {
+			t.Errorf("%s: the stand cleared the mark of rule %d on %s, want it left", raced, w, document)
+		}
+		if _, written := tickWrites(t, higher); !written[document] || !blockRowOf(t, database, document).clearedAt(version) {
+			t.Errorf("%s: a build of rule %d then left the version %d of %s unwritten, want it written", raced, w, version, document)
+		}
+	}
 }
 
 // nextVersionRow writes one more artifact_versions row holding markdown and answers its number,
@@ -713,7 +853,11 @@ func requireTheUploadIsFenced(t *testing.T, database *store.Store, service *Serv
 			if _, _, err := lockArtifactOwner(joined, tx, document); err != nil {
 				return 0, fmt.Errorf("take the document's owner: %w", err)
 			}
-			stored, err := service.ReplaceText(joined, document, "- alpha\n- gamma\n", alice)
+			precondition, err := replacementPrecondition(joined, service, document)
+			if err != nil {
+				return 0, fmt.Errorf("read the document's token: %w", err)
+			}
+			stored, err := service.ReplaceText(joined, document, "- alpha\n- gamma\n", alice, precondition)
 			if err != nil {
 				return 0, fmt.Errorf("replace the document's text: %w", err)
 			}
@@ -922,7 +1066,7 @@ func requireTheBackfillIsFenced(t *testing.T, database *store.Store) {
 // only owes a document an index writes no revision at all, so it is told apart by what it sets
 // rather than by where it is.
 const (
-	fenceWriterFile     = "refs/blocks.go"
+	fenceWriterFile     = "refs/block_stand.go"
 	fenceWriterFunction = "func (b BlockIndexing) queueStand("
 )
 
@@ -931,10 +1075,14 @@ const (
 var owedRowWrite = regexp.MustCompile("(?is)(insert into|update)\\s+document_block_versions\\b[^`]*")
 
 // requireOnlyTheFenceWritesTheOwedRow reads the source tree and fails on any statement that
-// writes a revision into document_block_versions outside the fenced writer. A statement that
-// sets the revision to null owes the document an index and asserts nothing, so it is allowed
-// wherever it is; one that writes a number is the fence's alone, and a backfill or a repair
-// that wrote one would be caught here rather than in production.
+// writes a revision into document_block_versions outside the fenced writer. Each part of a
+// statement is held on its own (writesTheRevision): an insert's column list, and the assignments
+// of an update's set or of an insert's `on conflict ... do update set`; the statement writes a
+// revision where any part does. A set that assigns the revision null owes the document an index
+// and asserts nothing, so it is allowed wherever it is, and it excuses no other part of its
+// statement: an insert whose column list names `version` is the fence's alone even where its
+// conflict arm sets `version = null`. A backfill or a repair that wrote one would be caught here
+// rather than in production.
 func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 	t.Helper()
 	found := 0
@@ -951,10 +1099,7 @@ func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 				// window pass clears `windows_owed_at` on a row the fence already wrote,
 				// which says nothing about which pass owns the version. What this scan
 				// holds a statement to is what it sets, not which table it touches, which
-				// is the same rule the null case below reads.
-				continue
-			}
-			if strings.Contains(statement, "version = null") {
+				// is the same rule that lets a part setting `version = null` stand anywhere.
 				continue
 			}
 			found++
@@ -1011,21 +1156,163 @@ func requireNoRevisionTestOutsideTheFence(t *testing.T) {
 	}
 }
 
-// writesTheRevision reports whether a statement of document_block_versions assigns its
-// `version` column: an update that sets it, or an insert that names it among its columns. A
-// statement that touches the row for any other reason writes no revision, so the fence has
+// writesTheRevision reports whether a statement of document_block_versions writes a revision
+// into its `version` column, reading each part of the statement on its own; the statement writes
+// one where any part does. `version` is that column alone: store_version, windows_owed_at and
+// the row's other columns write none.
+//
+//   - An insert writes one where its column list names `version`, whatever value fills it; its
+//     values and its select list are not read. The fence's is the one Go statement of the tree
+//     whose column list names `version`, and the inserts that write it as null, the triggers of
+//     migrations 0122 and 20261108070000, are SQL migrations, which this scan does not read. An
+//     insert with no column list, which fills every column by position, or whose list cannot be
+//     read, is held to write one.
+//   - An update's set, and an insert's `on conflict ... do update set`, write one in each
+//     assignment to `version` of anything but the literal null. A parenthesized target list that
+//     names `version` writes one whatever it assigns, and a set or an assignment that cannot be
+//     read is held to write one.
+//
+// A statement that touches the row for any other reason writes no revision, so the fence has
 // nothing to say about where it lives.
 func writesTheRevision(statement string) bool {
 	lowered := strings.ToLower(statement)
-	if strings.Contains(lowered, "insert into") {
-		return strings.Contains(lowered, "version")
+	rest := lowered[strings.Index(lowered, "document_block_versions")+len("document_block_versions"):]
+	if !strings.HasPrefix(lowered, "insert") {
+		set, found := sqlTopLevel(rest, "set")
+		return !found || setWritesTheRevision(rest[set+len("set"):])
 	}
-	for _, assignment := range []string{"version =", "version="} {
-		if strings.Contains(lowered, assignment) {
+	columns, listed := sqlParenthesized(rest[len(sqlInsertAlias.FindString(rest)):])
+	if !listed || slices.ContainsFunc(sqlList(columns), isVersionColumn) {
+		return true
+	}
+	conflict, found := sqlTopLevel(rest, "conflict")
+	if !found {
+		return false
+	}
+	rest = rest[conflict:]
+	arm, found := sqlTopLevel(rest, "set", "nothing")
+	if !found {
+		return true
+	}
+	return strings.HasPrefix(rest[arm:], "set") && setWritesTheRevision(rest[arm+len("set"):])
+}
+
+// sqlInsertAlias is the alias an insert may give its table before its column list.
+var sqlInsertAlias = regexp.MustCompile(`^\s*as\s+\w+`)
+
+// setWritesTheRevision reports whether the assignments of a set, s being the lowered statement
+// after its `set` and the list running to its from, where or returning, write a revision
+// (writesTheRevision).
+func setWritesTheRevision(s string) bool {
+	for _, assignment := range sqlList(s, "from", "where", "returning") {
+		target, value, found := strings.Cut(assignment, "=")
+		if !found {
+			return true
+		}
+		target = strings.TrimSpace(target)
+		if !strings.HasPrefix(target, "(") {
+			if isVersionColumn(target) && strings.TrimSpace(value) != "null" {
+				return true
+			}
+			continue
+		}
+		names, listed := sqlParenthesized(target)
+		if !listed || slices.ContainsFunc(sqlList(names), isVersionColumn) {
 			return true
 		}
 	}
 	return false
+}
+
+// isVersionColumn reports whether name, trimmed, is the column `version`.
+func isVersionColumn(name string) bool {
+	return strings.Trim(name, `"`) == "version"
+}
+
+// sqlParenthesized is the inside of the parenthesis s opens, after any spaces, or false where s
+// opens none or the parenthesis does not close.
+func sqlParenthesized(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "(") {
+		return "", false
+	}
+	end, _ := sqlTopLevel(s[1:])
+	if 1+end == len(s) || s[1+end] != ')' {
+		return "", false
+	}
+	return s[1 : 1+end], true
+}
+
+// sqlList is the items of the list s begins with, split at its top-level commas and each
+// trimmed. The list runs to the first of ends at its top level, or to where s ends
+// (sqlTopLevel).
+func sqlList(s string, ends ...string) []string {
+	end, _ := sqlTopLevel(s, ends...)
+	s = s[:end]
+	var items []string
+	for {
+		comma, found := sqlTopLevel(s, ",")
+		items = append(items, strings.TrimSpace(s[:comma]))
+		if !found {
+			return items
+		}
+		s = s[comma+1:]
+	}
+}
+
+// sqlTopLevel returns the offset in s of the first of words that stands at the top level of s -
+// outside parentheses, quotes and `--` comments, and as a whole word where it is one - and true.
+// Where none does before s ends, at a `;`, at a `)` that closes a parenthesis opened before s, or
+// at the end of s, it returns the offset of that end and false.
+func sqlTopLevel(s string, words ...string) (int, bool) {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '\'' || c == '"':
+			end := strings.IndexByte(s[i+1:], c)
+			if end < 0 {
+				return len(s), false
+			}
+			i += end + 1
+		case strings.HasPrefix(s[i:], "--"):
+			end := strings.IndexByte(s[i:], '\n')
+			if end < 0 {
+				return len(s), false
+			}
+			i += end
+		case c == '(':
+			depth++
+		case depth == 0 && (c == ')' || c == ';'):
+			return i, false
+		case c == ')':
+			depth--
+		case depth == 0:
+			for _, word := range words {
+				if sqlWordAt(s, i, word) {
+					return i, true
+				}
+			}
+		}
+	}
+	return len(s), false
+}
+
+// sqlWordAt reports whether word stands at offset i of s, not run into a word before or after
+// it where word itself starts or ends with a word character.
+func sqlWordAt(s string, i int, word string) bool {
+	if !strings.HasPrefix(s[i:], word) {
+		return false
+	}
+	if sqlWordByte(word[0]) && i > 0 && sqlWordByte(s[i-1]) {
+		return false
+	}
+	end := i + len(word)
+	return !sqlWordByte(word[len(word)-1]) || end == len(s) || !sqlWordByte(s[end])
+}
+
+// sqlWordByte reports whether c can be part of an SQL word: a letter, a digit, `_` or `$`.
+func sqlWordByte(c byte) bool {
+	return c == '_' || c == '$' || '0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }
 
 // dispatchSourceFiles is every non-test Go file of the Dispatch tree and of the commands that

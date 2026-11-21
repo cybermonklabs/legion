@@ -49,16 +49,59 @@ func TestAResumeAcrossAGroupTakenOffAListOwesARefreshToItsMembers(t *testing.T) 
 	requireResumeComplete(t, seed, url, callerCarol, since, true, "PRIV's list names her, so she reads PRIV before the change and after it")
 }
 
+// TestAResumeAcrossAGroupTakenOffAListOwesNothingToARestrictedMemberInIt: erin's address was put in
+// group team, which PRIV's list names, before anybody signed in as her, and she then signed in
+// from outside, a restricted member; dave, a full member, is in team too. A group admits only its
+// full members (access.PersonSeesProjectSQL), so erin never saw PRIV. carol takes team off PRIV's
+// list: dave's resume across the change owes his page a refresh, and erin's is complete, since
+// the change took nothing from her and tells her nothing of a project she never read.
+//
+// Control: lostSightSQL's group arm counting every member of the removed group, a restricted one
+// included (the rule before); erin's resume is not complete, and the test fails naming her.
+func TestAResumeAcrossAGroupTakenOffAListOwesNothingToARestrictedMemberInIt(t *testing.T) {
+	const dave, erin = "dave@example.com", "erin@outside.example"
+	seed := seedPrivateProject(t)
+	seedPeople(t, seed.database, dave)
+	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/access-groups/team", map[string]any{"members": []string{dave, erin}}, http.StatusOK)
+	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/groups/team", nil, http.StatusOK)
+	seedPeople(t, seed.database, erin)
+	markRestricted(t, seed.database, erin)
+	if reader, err := seed.server.readerFor(t.Context(), model.BrowserActor(erin)); err != nil || slices.Contains(reader.Viewer.Sees, seedPrivate) {
+		t.Fatalf("erin, restricted and in team on PRIV's list, reads as %+v (%v), want a reader that does not see PRIV", reader.Viewer, err)
+	}
+	since := eventHead(t, seed.database)
+	seed.mustRequest(t, callerCarol, http.MethodDelete, "/api/v1/projects/"+seedPrivate+"/access/groups/team", nil, http.StatusOK)
+
+	url := liveURLOf(t, seed.handler)
+	for _, member := range []struct {
+		login    string
+		complete bool
+		why      string
+	}{
+		{dave, false, "he read PRIV through team, reads it no more, and his page holds PRIV's rows"},
+		{erin, true, "team never admitted her, a restricted member, so its removal took nothing from her"},
+	} {
+		client := seed.dialLive(t, url, asUser(member.login))
+		if got := subscribeEventsStart(t, client, "feed", &since); got.ReplayComplete != member.complete {
+			t.Errorf("%s's resume from %d across team taken off PRIV's list answers replay complete %v, want %v: %s",
+				member.login, since, got.ReplayComplete, member.complete, member.why)
+		}
+	}
+}
+
 // TestAResumeAcrossItsPersonLeavingAGroupOwesARefreshToAListingToken: dave sees PRIV only through
 // group team, which PRIV's list names, and his token lists PRIV. carol takes dave out of team. The
 // token reads PRIV no more, so its resume across the change is not complete. The group's event
-// names no member, and a credential that lists projects may not read it (eventReadableSQL), so
-// nothing that credential may read says whether a group write moved what it sees: its resume
-// across any group write owes the refresh. dave at a browser reads the event and his resume is not
-// complete either; bob, a restricted member, whom no group admits, resumes complete.
+// names no member, and an open viewer reads it (eventReadableSQL), dave's token among them, since a
+// full member's credential is open whatever it lists: its resume across a group write owes the
+// refresh (sightMovedSQL). dave at a browser reads the event and his resume is not complete either.
+// bob, a restricted member, whom no group admits, resumes complete, and so does his token that lists
+// PRIV: no group write moves what a restricted member's credential sees, and it reads none.
 //
-// Control: the resume check asks nothing of a group write a listing credential may not read; the
-// token's resume is complete, and the test fails.
+// Controls: sightMovedSQL leaving out a group write, under which the token's resume is complete;
+// and the resume's gap holding every group write for a credential that lists projects (the rule
+// before, unreadGroupWriteSQL), under which bob's token's resume is not complete. Each fails the
+// test naming that caller.
 func TestAResumeAcrossItsPersonLeavingAGroupOwesARefreshToAListingToken(t *testing.T) {
 	const dave = "dave@example.com"
 	seed := seedPrivateProject(t)
@@ -73,4 +116,5 @@ func TestAResumeAcrossItsPersonLeavingAGroupOwesARefreshToAListingToken(t *testi
 		t.Errorf("dave's resume from %d across his leaving team says its replay is complete, so his page keeps PRIV: %+v", since, got)
 	}
 	requireResumeComplete(t, seed, url, callerBob, since, true, "no group admits a restricted member, so no group write moves what he sees")
+	requireResumeComplete(t, seed, url, callerBobPrivToken, since, true, "no group admits a restricted member, so no group write moves what his token sees")
 }

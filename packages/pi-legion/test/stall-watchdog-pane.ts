@@ -220,9 +220,7 @@ const MOVED_ON = {
   strandedClaims: [],
   capabilities: [],
   repositories: {
-    owners: ["acme"],
-    mapped: [{ repo: "acme/widgets", default: true }],
-    refused: [],
+    live: [{ repo: "acme/widgets", apps: { implement: true, review: true } }],
     withoutWebhookApp: [],
     caches: [],
   },
@@ -420,7 +418,11 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
     if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 });
-    if (url.pathname === "/legion/v1/state") return Response.json(MOVED_ON);
+    // The stall notice's record check and the phase reminder's both read one issue's record
+    // (dispatch://INFRA-2694); no reader of this pane asks for the whole project body.
+    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
+      return Response.json(MOVED_ON.issues[ISSUE]);
+    }
     if (url.pathname === "/legion/v1/grants") {
       grants += 1;
       return Response.json({
@@ -429,6 +431,12 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
       });
     }
     if (url.pathname.startsWith("/legion/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, the
+    // publish below, and any other `/v1/` read answer with an interest. A path outside it is a
+    // route this stand-in does not serve, and it is refused.
+    if (!url.pathname.startsWith("/v1/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
     if (url.pathname === "/v1/messages/publish") {
@@ -446,7 +454,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
         trace_id: `trace-${key}`,
       });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest. A
+    // Registration, the role claim, and any other `/v1/` read answer with an interest. A
     // registration is answered a consumer on the session's own relay subject, the one path a
     // message reaches a session by (INFRA-771); an answer without one leaves the pane deaf and
     // its claim boot fails.

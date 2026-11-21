@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -62,7 +63,7 @@ func TestAPinnedReadOfABlockHiddenFromTheReaderAnswersWhatNobodyHolds(t *testing
 	}
 
 	author := model.Actor{Kind: "user", ID: "alice"}
-	visibility, err := graphstore.VisibilityFor(graphstore.VisibilityAuthor, author)
+	visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(author))
 	if err != nil {
 		t.Fatalf("reserve the blocks for their author: %v", err)
 	}

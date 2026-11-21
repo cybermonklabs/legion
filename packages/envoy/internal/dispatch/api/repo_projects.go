@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -78,21 +79,23 @@ type putRepoProjectInput struct {
 // REPOSITORY_NOT_AVAILABLE when the GitHub proxy hides the repository from the caller
 // (refuseRepoHidden), as an issue's own repository is.
 //
-// Renamed_to is the full `owner/name` this repository is called today, canonicalised as the
-// route's own path is (externalRef). **Absent, and JSON null, leave the stored pair exactly as
-// it is**, as Default does, and `""` clears it: the page and the client that write this route
-// send `{project, default}` and nothing else (packages/dispatch/web/src/api/client.ts,
-// putRepoProject), so clearing on absence would drop an operator's rename every time someone
-// moved a mapping's project or its default in the dashboard. A pair naming this mapping's own
+// Renamed_to is the full `owner/name` this repository is called today, canonicalised and held to
+// GitHub's names as a source repository is (parseRepoRename). **Absent, and JSON null, leave the
+// stored pair exactly as it is**, as Default does, and `""` clears it: the page and the client
+// that write this route send `{project, default}` and nothing else
+// (packages/dispatch/web/src/api/client.ts, putRepoProject), so clearing on absence would drop an
+// operator's rename every time someone moved a mapping's project or its default in the
+// dashboard. A pair naming this mapping's own
 // repository, one naming a repository that is itself renamed, and one on a repository another
 // mapping is already renamed to are each refused (400 INVALID_REPO_PROJECT), so the canonical
 // name of a repository is reached in one step and no cycle exists (refs.CanonicalRepo).
 func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
-	repo, err := repoProjectPath(r)
+	owner, name, err := repoProjectPath(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	repo := owner + "/" + name
 	var input putRepoProjectInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
@@ -116,7 +119,9 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", input.Project).Scan(new(string)); err != nil {
+	// The target project as the writer reads it: one it does not see is a project no row holds.
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1 and "+
+		access.ProjectClause("key", "$2"), input.Project, refs.VisibilityArg(who)).Scan(new(string)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -144,10 +149,27 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 	}
 	// A project's default is the repository each of its issues that names none resolves to, so a
 	// mapping this write leaves as a default is held to the rule an issue's own repository is
-	// (refuseRepoHidden), under the mapping's locks and before anything is written.
-	if isDefault {
+	// (refuseRepoHidden), under the mapping's locks and before anything is written, and so is a
+	// write that moves or clears the default its project held: that takes the repository from the
+	// project's issues, which can show it to a reader the proxy hid it from. It is asked first, of
+	// the repository the path names, so a write naming a repository the proxy hides answers that
+	// refusal whether or not a hidden project's mapping holds it.
+	if isDefault || (previous != nil && previous.Default && (moved || !isDefault)) {
 		if err := refuseRepoHidden(r.Context(), tx, who, &repo); err != nil {
 			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	// A mapping of a project the writer does not see is one the write cannot move: it is answered
+	// exactly as a project no row holds, as the target above is (projectSeenBy).
+	if moved {
+		seen, err := projectSeenBy(r.Context(), tx, who, previous.Project)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !seen {
+			s.writeHandlerError(w, pgx.ErrNoRows)
 			return
 		}
 	}
@@ -224,6 +246,20 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 // repository is any owner/name and needs no mapping, so an issue that names this repository
 // keeps it and still resolves to it. An issue that names none resolves, as before, through its
 // parent chain and then its project's default, which is gone where this mapping was that default.
+//
+// Its path removes the mapping stored under the path's own spelling (deletedRepoProjectSpelling)
+// and no other. The lookup is `repo = $1` on the table's primary key, which compares the stored
+// name with the spelling byte for byte. A path the canonical reading (refs.ParseExternalRepo,
+// lower-cased and one trailing `.git` trimmed) reads as itself, `acme/x`, so names the canonical
+// row, and a path that reading reads as another name or refuses, `acme/x.git`, `Acme/X`,
+// `acme/x.git.git` or `acme/a%20b`, names only the mapping stored under that exact spelling, never
+// the row the reading names. So of `acme/x.git` (from a PUT of `acme/x.git.git`) and `acme/x`
+// stored together, each is removed by its own spelling, and the DELETE sent again removes nothing
+// more. A path that names no stored mapping is 204 where the canonical reading takes it, and 400
+// where that reading refuses it (checkRepoProjectPath).
+//
+// The write takes the locks of the path's own spelling (lockRepoProjectWrite), so the mapping
+// stored under it cannot appear or go between the lookup and the removal.
 func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
@@ -233,27 +269,53 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	repo, err := repoProjectPath(r)
-	if err != nil {
-		s.writeHandlerError(w, err)
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
+	spelled := deletedRepoProjectSpelling(r)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	previous, err := lockRepoProjectWrite(r.Context(), tx, s.deps.Events, repo, actor)
+	previous, err := lockRepoProjectWrite(r.Context(), tx, s.deps.Events, spelled, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// A mapping of a project the writer does not see is one no row holds (projectSeenBy): it is
+	// answered as a path that names no stored mapping, and nothing is removed.
+	if previous != nil {
+		seen, err := projectSeenBy(r.Context(), tx, who, previous.Project)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !seen {
+			previous = nil
+		}
+	}
 	if previous == nil {
+		if err := checkRepoProjectPath(spelled); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if _, err := tx.Exec(r.Context(), `delete from repo_projects where repo = $1`, repo); err != nil {
+	// A project's default is the repository each of its issues that names none resolves to, and
+	// removing it gives that repository to no issue of the project, which can show it to a reader
+	// the proxy hid it from: the removal is held to the rule an issue's own repository is
+	// (refuseRepoHidden), as a write that leaves a default is.
+	if previous.Default {
+		if err := refuseRepoHidden(r.Context(), tx, who, &previous.Repo); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	if _, err := tx.Exec(r.Context(), `delete from repo_projects where repo = $1`, previous.Repo); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -398,6 +460,21 @@ func repoProjectEvent(mapping model.RepoProject, actor model.Actor, deleted bool
 	)
 }
 
+// projectSeenBy reports whether who sees project key (access.ProjectClause). A mapping write reads
+// it of the project a mapping is in before it moves or removes that mapping, so a mapping of a
+// project the writer does not see is one the write cannot reach. A reader that sees every object,
+// as every open viewer of a deployment with no private project does, sees every project and reads
+// no statement for it (R9).
+func projectSeenBy(ctx context.Context, q queryer, who model.Actor, key string) (bool, error) {
+	if seesEveryObject(who) {
+		return true, nil
+	}
+	var seen bool
+	err := q.QueryRow(ctx, "select exists (select 1 from projects where key = $1 and "+
+		access.ProjectClause("key", "$2")+")", key, refs.VisibilityArg(who)).Scan(&seen)
+	return seen, err
+}
+
 // repoProject is the project repo maps to, as who reads the mapping: "" for a repository no
 // mapping holds, and for one a mapping of a project who does not see holds, so an external
 // reference into a hidden project answers as an unmapped repository and names nothing of it.
@@ -414,25 +491,78 @@ func (s *server) repoProject(ctx context.Context, who model.Actor, repo string) 
 	return "", err
 }
 
-func repoProjectPath(r *http.Request) (string, error) {
-	repo, _, err := externalRef(r.PathValue("owner") + "/" + r.PathValue("repo") + "#1")
-	return repo, err
+// repoProjectPath reads the {owner}/{repo} path of a mapping write, and of the App's installation
+// read (getAppInstallation), as parseSourceRepo reads a repository (sourcePathRepo): an owner and
+// a name of the characters GitHub allows, and never a name of `.` or `..`, before or after a
+// trailing `.git` is trimmed, canonicalised, held to that rule as it is stored, and answered as
+// its two halves. A path the rule refuses is 400 INVALID_REPO_PROJECT. The mapping's repository
+// becomes the repository of every issue of its project that names none, whose halves delivery
+// puts into GitHub paths, and the installation read puts its halves into one at once; `...git`
+// and `.git` are no dot segments, so the mux does not clean them, and the trailing `.git`
+// refs.ExternalRepo trims would leave `..` or an empty name behind.
+func repoProjectPath(r *http.Request) (owner, name string, err error) {
+	owner, name, err = sourcePathRepo(r)
+	if err != nil {
+		return "", "", errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT", `the path must name a repository "owner/name" (got %q)`,
+			r.PathValue("owner")+"/"+r.PathValue("repo"))
+	}
+	return owner, name, nil
+}
+
+// deletedRepoProjectSpelling is the {owner}/{repo} path of a mapping removal as it is spelled:
+// its two segments as the mux unescapes them, joined by `/`, nothing trimmed and nothing
+// lower-cased, so it names a mapping stored under any name the mux carries in two segments. The
+// mux unescapes each segment after it splits the path, so a `/` in a name is written `%2F`, and a
+// `.` or `..` segment `%2E` or `%2E%2E`. A caller that sends the path as it is written keeps such
+// a segment: curl with `--path-as-is`, or a Go client building the path by hand. A browser's URL
+// parser (WHATWG URL) reads `%2E` and `%2E%2E` as dot segments, as it reads `.` and `..`, and
+// resolves them away before the request is sent. The dashboard's DELETE is such a request: it
+// splits the stored name on `/` and puts each half into the path through encodeURIComponent,
+// which leaves a dot as it is (packages/dispatch/web/src/api/paths.ts, repoParams and routeUrl),
+// so its DELETE of a mapping stored under `acme/..` is sent as `/api/v1/settings/repo-projects/`,
+// no path of this route. An empty segment, and one that is `/` alone, reaches no wildcard of the
+// route, so a name each of whose `/` leaves nothing or a lone `/` on one side is no path's
+// spelling (spelledPath, which inverts this reading for the CI reconcile's WARN). No GitHub path
+// is built from it here.
+func deletedRepoProjectSpelling(r *http.Request) string {
+	return r.PathValue("owner") + "/" + r.PathValue("repo")
+}
+
+// checkRepoProjectPath refuses the spelling of a mapping removal's {owner}/{repo} path where the
+// canonical reading refuses it (refs.ParseExternalRepo), as every mapping's path was read before
+// repoProjectPath held it to GitHub's names: 400 INVALID_ISSUE_REF, and nil where that reading
+// takes it. A removal whose path names no stored mapping answers by it: 204 where it is nil, and
+// its 400 otherwise. Space before the owner is trimmed. After the name, a space, a tab, a newline,
+// a carriage return or a form feed is refused, since nothing trims it, while any other space, such
+// as a vertical tab or U+00A0, the reading trims (refs.ParseExternalRepo). That is how the route
+// read a path when it read it as the reference `<path>#1`, whose leading space alone a trim of the
+// reference took off. No GitHub path is built from it here.
+func checkRepoProjectPath(spelled string) error {
+	if _, ok := refs.ParseExternalRepo(strings.TrimLeftFunc(spelled, unicode.IsSpace)); !ok {
+		return errorf(http.StatusBadRequest, "INVALID_ISSUE_REF", `the path must name a repository "owner/name" (got %q)`, spelled)
+	}
+	return nil
 }
 
 // parseRepoRename reads the `renamed_to` of a mapping write: nil for an absent or null field,
 // which leaves the stored pair alone, nil for `""`, which clears it, and otherwise the
-// canonical `owner/name` the value names, validated the way this route validates its own path
-// (externalRef). A pair naming the mapping's own repository is refused here, where the one
-// cycle a single row can hold is cheapest to see; the database refuses it too, so direct SQL is
-// held to it (migration 20261105075455_repo_projects_renamed_to).
+// canonical `owner/name` the value names. The value is held to the rule a source repository is
+// (parseSourceRepo): an owner and a name of the characters GitHub allows, and never a name of
+// `.` or `..`, before or after a trailing `.git` is trimmed, in the form it is stored. The pair
+// becomes the name every comparison of the repository asks GitHub about, and delivery puts its
+// two halves into GitHub paths as they are (refs.SplitGitHubRepo), so `acme/..` would ask about
+// a path above the repository's. A pair naming the mapping's own repository is refused here,
+// where the one cycle a single row can hold is cheapest to see; the database refuses it too, so
+// direct SQL is held to it (migration 20261105075455_repo_projects_renamed_to).
 func parseRepoRename(repo string, raw *string) (*string, error) {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return nil, nil
 	}
-	canonical, _, err := externalRef(strings.TrimSpace(*raw) + "#1")
+	owner, name, err := parseSourceRepo(*raw)
 	if err != nil {
 		return nil, errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT", `renamed_to must be "owner/name" (got %q)`, *raw)
 	}
+	canonical := owner + "/" + name
 	if canonical == repo {
 		return nil, errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT", "%s cannot be renamed to itself", repo)
 	}

@@ -6,8 +6,50 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
+
+// A build counts as its backlog only the documents it would list: a mark of a higher marking rule
+// on a document whose stand is at its version is that rule's to drain, so neither the owed count
+// the tick logs nor the debts `census --store --sizing` reads (refs.OwedBlockIndexDebts) counts it
+// for a build of a lower rule. A build of rule 1 after a rollback from rule 2 would otherwise
+// report the marks of rule 2 as a backlog that only grows, since it never drains them (R13).
+func TestABuildsBacklogCountsOnlyTheDocumentsItLists(t *testing.T) {
+	ctx := context.Background()
+	database, service := blockIndexService(t)
+	rule, higherRule := service.markingRule, service.markingRule+1
+	left := createOwedDocument(t, database, service, "CORE-1", "", "left", nestedSpec("left"), "")
+	settle(t, database, left)
+	drainBlockIndex(t, service, "seed")
+	if _, err := database.Pool.Exec(ctx, graphcensus.BlockBatchMarkStatement, []string{left}, higherRule); err != nil {
+		t.Fatalf("mark %s at marking rule %d: %v", left, higherRule, err)
+	}
+	// The documents the build lists: each live ahead of its version, so the tick leaves them owed.
+	lists := 2
+	for index := range lists {
+		createOwedDocument(t, database, service, "CORE-1", "", fmt.Sprintf("listed-%d", index), shipItSpec, "Ship it.\n")
+	}
+	if listed(t, service, left) {
+		t.Fatalf("the build lists %s, which a mark of rule %d holds at its stand: this test proves nothing", left, higherRule)
+	}
+
+	tick := reconcileBlockIndex(t, service, "")
+	var debts int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from (`+refs.OwedBlockIndexDebts+`) owed`, rule).Scan(&debts); err != nil {
+		t.Fatalf("read the debts: %v", err)
+	}
+	for reader, got := range map[string]int{
+		"the owed count the tick logs (ReconcileBlockIndex)": tick.OwedDocuments,
+		"refs.OwedBlockIndexDebts":                           debts,
+	} {
+		if got != lists {
+			t.Errorf("a build of marking rule %d counts %d owed document(s) in %s, want %d, the documents it lists, which leave out %s, whose mark is of rule %d and whose stand is at its version",
+				rule, got, reader, lists, left, higherRule)
+		}
+	}
+}
 
 // dateOwedVersion dates the stored version of a document owed a block index, which is the write
 // that owed it one and what the tick measures its debt from. A test writes a backlog of known

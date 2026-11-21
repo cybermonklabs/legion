@@ -89,8 +89,8 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		reader = resolved
 	}
 	// The view keeps its GET row's rule (liveViewReads): a caller the row refuses, a restricted
-	// member or a credential that lists projects reading a row of the deployment, is refused here
-	// with the row's code, and holds no view.
+	// member or a credential acting for one reading a row of the deployment, is refused here with
+	// the row's code, and holds no view.
 	if refusal := liveReadRefusal(store.WithTransactionTracking(h.lifetime), frame.Sub, spec.kind, frame.Holds,
 		func(context.Context) (model.Actor, error) { return reader, nil }); refusal != nil {
 		conn.Send(*refusal)
@@ -628,19 +628,18 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 	return g
 }
 
-// goLocked runs f on a goroutine of the hub's, which running counts, with mu held, and reports
-// whether it did. Once the hub is closed (wait) it starts nothing: every Add of running is made
-// under mu before the close, so none can meet wait's Wait.
-func (h *deliveryHub) goLocked(f func()) bool {
+// goLocked runs f on a goroutine of the hub's, which running counts, with mu held. Once the hub
+// is closed (wait) it starts nothing: every Add of running is made under mu before the close, so
+// none can meet wait's Wait.
+func (h *deliveryHub) goLocked(f func()) {
 	if h.closed {
-		return false
+		return
 	}
 	h.running.Add(1)
 	go func() {
 		defer h.running.Done()
 		f()
 	}()
-	return true
 }
 
 // wait marks the hub closed, so no generation starts again and no goroutine of the hub's either

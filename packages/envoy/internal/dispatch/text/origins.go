@@ -1,6 +1,9 @@
 package text
 
-import "net/url"
+import (
+	"net/url"
+	"strings"
+)
 
 // Origins is the web origins one Dispatch answers at, whose dashboard URLs text reads as
 // references: the canonical origin (DISPATCH_SERVER_URL) first, then any other it also answers at
@@ -35,4 +38,13 @@ func (o Origins) base(page *url.URL) *url.URL {
 		}
 	}
 	return nil
+}
+
+// Hosts is each origin's host name in lower case, the canonical one first.
+func (o Origins) Hosts() []string {
+	hosts := make([]string, 0, len(o.urls))
+	for _, origin := range o.urls {
+		hosts = append(hosts, strings.ToLower(origin.Hostname()))
+	}
+	return hosts
 }

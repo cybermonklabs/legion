@@ -118,40 +118,41 @@ func TestDispatchRefusesAPublicOriginItCannotServe(t *testing.T) {
 		}
 	}
 	for _, row := range []struct {
-		name string
-		args func() *gcp.DispatchArgs
-		want string
+		name, input string
+		args        func() *gcp.DispatchArgs
+		want        string
 	}{
-		{"no scheme", with(func(a *gcp.DispatchArgs) { a.PublicOrigin = "dispatch.example.com" }),
+		{"no scheme", "publicOrigin", with(func(a *gcp.DispatchArgs) { a.PublicOrigin = "dispatch.example.com" }),
 			"publicOrigin: must be an absolute http or https URL with no path, user, query or fragment, as an origin is (not echoed)"},
-		{"a path", with(func(a *gcp.DispatchArgs) { a.PublicOrigin = "https://dispatch.example.com/dispatch" }),
+		{"a path", "publicOrigin", with(func(a *gcp.DispatchArgs) { a.PublicOrigin = "https://dispatch.example.com/dispatch" }),
 			"publicOrigin: must be an absolute http or https URL with no path, user, query or fragment, as an origin is (not echoed)"},
-		{"http", with(func(a *gcp.DispatchArgs) { a.PublicOrigin = "http://dispatch.example.com" }),
+		{"http", "publicOrigin", with(func(a *gcp.DispatchArgs) { a.PublicOrigin = "http://dispatch.example.com" }),
 			"publicOrigin must be an https origin: Dispatch's session cookie, browser sign-in and IAP need TLS at it, as they do at the front door's name"},
-		{"beside the tailnet inputs", func() *gcp.DispatchArgs {
+		{"beside the tailnet inputs", "publicOrigin", func() *gcp.DispatchArgs {
 			args := dispatchArgs()
 			args.PublicOrigin = dispatchPublicOrigin
 			return args
 		}, "publicOrigin is refused beside the tailnet inputs: the front door serves Dispatch at <hostname>.<tailnetDnsName>, which is then its origin, " +
 			"and a second origin beside that one is outsideOrigin; unset publicOrigin, or unset the tailnet inputs"},
-		{"an IP address with browser sign-in", with(func(a *gcp.DispatchArgs) { a.PublicOrigin = "https://10.0.0.1" }),
+		{"an IP address with browser sign-in", "publicOrigin", with(func(a *gcp.DispatchArgs) { a.PublicOrigin = "https://10.0.0.1" }),
 			"publicOrigin's host 10.0.0.1 is an IP address, which Google refuses as the host of an OAuth redirect URI, so browser sign-in at it could not complete: name the origin by a DNS name"},
-		{"a single label with browser sign-in", with(func(a *gcp.DispatchArgs) { a.PublicOrigin = "https://dispatch" }),
+		{"a single label with browser sign-in", "publicOrigin", with(func(a *gcp.DispatchArgs) { a.PublicOrigin = "https://dispatch" }),
 			"publicOrigin's host dispatch is a single label, with no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete"},
-		{"outsideOrigin on publicOrigin's host", with(func(a *gcp.DispatchArgs) { a.OutsideOrigin = "https://dispatch.example.com:8443" }),
+		{"outsideOrigin on publicOrigin's host", "outsideOrigin", with(func(a *gcp.DispatchArgs) { a.OutsideOrigin = "https://dispatch.example.com:8443" }),
 			"outsideOrigin's host dispatch.example.com is publicOrigin's: a second origin needs a host of its own"},
-		{"outsideOrigin over http", with(func(a *gcp.DispatchArgs) { a.OutsideOrigin = "http://dispatch-outside.example.com" }),
+		{"outsideOrigin over http", "outsideOrigin", with(func(a *gcp.DispatchArgs) { a.OutsideOrigin = "http://dispatch-outside.example.com" }),
 			"outsideOrigin must be an https origin: browser sign-in at it needs TLS, as publicOrigin's does"},
-		{"natsInCluster unset", with(func(a *gcp.DispatchArgs) { a.NatsInCluster = nil }),
+		{"natsInCluster unset", "natsInCluster", with(func(a *gcp.DispatchArgs) { a.NatsInCluster = nil }),
 			"natsInCluster is required without the tailnet inputs: the pods reach a tailnet NATS hub only through the front door's SOCKS5 proxy, and no front door is built, so the hub must run in the cluster"},
-		{"frontDoorReplicas", with(func(a *gcp.DispatchArgs) { a.FrontDoorReplicas = pulumi.IntRef(2) }),
+		{"frontDoorReplicas", "frontDoorReplicas", with(func(a *gcp.DispatchArgs) { a.FrontDoorReplicas = pulumi.IntRef(2) }),
 			"frontDoorReplicas sizes a front door, which is not built without the tailnet inputs: unset it, or set the tailnet inputs"},
-		{"frontDoorPdbMinAvailable", with(func(a *gcp.DispatchArgs) { a.FrontDoorPdbMinAvailable = pulumi.IntRef(1) }),
+		{"frontDoorPdbMinAvailable", "frontDoorPdbMinAvailable", with(func(a *gcp.DispatchArgs) { a.FrontDoorPdbMinAvailable = pulumi.IntRef(1) }),
 			"frontDoorPdbMinAvailable covers a front door, which is not built without the tailnet inputs: unset it, or set the tailnet inputs"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			_, err := gcp.ResolveDispatch(row.args())
 			require.EqualError(t, err, row.want)
+			requireInputError(t, err, row.input)
 		})
 	}
 	// Without browser sign-in Google's redirect rule does not apply: a deployment that serves
@@ -222,34 +223,35 @@ func TestDispatchRefusesWhatTheIAPDoorCannotServe(t *testing.T) {
 		}
 	}
 	for _, row := range []struct {
-		name string
-		args func() *gcp.DispatchArgs
-		want string
+		name, input string
+		args        func() *gcp.DispatchArgs
+		want        string
 	}{
-		{"in the sandbox", func() *gcp.DispatchArgs {
+		{"in the sandbox", "iapAudience", func() *gcp.DispatchArgs {
 			args := dispatchSandboxArgs()
 			args.IapAudience = pulumi.String(dispatchIAPAudience)
 			return args
 		}, needsOrigin},
-		{"behind the tailnet front door", func() *gcp.DispatchArgs {
+		{"behind the tailnet front door", "iapAudience", func() *gcp.DispatchArgs {
 			args := dispatchArgs()
 			args.IapAudience = pulumi.String(dispatchIAPAudience)
 			return args
 		}, needsOrigin},
-		{"signInClientId", with(func(a *gcp.DispatchArgs) { a.SignInClientId = "example-client-id" }), clientRefusal("signInClientId")},
-		{"signInClientSecret", with(func(a *gcp.DispatchArgs) { a.SignInClientSecret = pulumi.String("example-client-secret") }), clientRefusal("signInClientSecret")},
-		{"outsideOrigin", with(func(a *gcp.DispatchArgs) { a.OutsideOrigin = dispatchOutsideOrigin }),
+		{"signInClientId", "signInClientId", with(func(a *gcp.DispatchArgs) { a.SignInClientId = "example-client-id" }), clientRefusal("signInClientId")},
+		{"signInClientSecret", "signInClientSecret", with(func(a *gcp.DispatchArgs) { a.SignInClientSecret = pulumi.String("example-client-secret") }), clientRefusal("signInClientSecret")},
+		{"outsideOrigin", "outsideOrigin", with(func(a *gcp.DispatchArgs) { a.OutsideOrigin = dispatchOutsideOrigin }),
 			"outsideOrigin is refused beside iapAudience: a browser reaches Dispatch through IAP alone, at publicOrigin, and a second origin is for " +
 				"outside sign-in, which the IAP door does not run; unset outsideOrigin, or unset iapAudience"},
-		{"no signInDomain", with(func(a *gcp.DispatchArgs) { a.SignInDomain = "" }),
+		{"no signInDomain", "signInDomain", with(func(a *gcp.DispatchArgs) { a.SignInDomain = "" }),
 			`signInDomain "" must be a lowercase DNS name with iapAudience: the Workspace domain whose accounts may use Dispatch, ` +
 				"which Dispatch holds IAP's signed header's hd claim to and refuses to boot without"},
-		{"an uppercase signInDomain", with(func(a *gcp.DispatchArgs) { a.SignInDomain = "Example.com" }),
+		{"an uppercase signInDomain", "signInDomain", with(func(a *gcp.DispatchArgs) { a.SignInDomain = "Example.com" }),
 			`signInDomain "Example.com" must be a lowercase DNS name with iapAudience`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			_, err := gcp.ResolveDispatch(row.args())
 			require.ErrorContains(t, err, row.want)
+			requireInputError(t, err, row.input)
 		})
 	}
 	_, err := gcp.ResolveDispatch(dispatchIAPArgs())
@@ -278,6 +280,7 @@ func TestDispatchRefusesAnIAPAudienceOfAnotherFormOnceItResolves(t *testing.T) {
 			require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: ")
 			require.ErrorContains(t, err, row.want)
 			require.NotContains(t, strings.ToUpper(err.Error()), seed)
+			requireInputError(t, err, "iapAudience")
 		})
 	}
 }

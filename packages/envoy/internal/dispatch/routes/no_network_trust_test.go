@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/auth/forwardedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -338,19 +339,6 @@ func refusedForNoCredential(response *httptest.ResponseRecorder) bool {
 	return false
 }
 
-// networkHeaders are the headers a proxy or a tailnet writes to say where a request came from,
-// each set to an address of ours or a person of ours. X-Forwarded-Host, the host a proxy says it
-// was asked for, is set apart, to each of forwardedHosts.
-var networkHeaders = map[string]string{
-	"X-Forwarded-For":        "127.0.0.1, 10.0.0.1, 100.64.0.1, fd7a:115c:a1e0::1",
-	"X-Real-IP":              "100.64.0.1",
-	"Forwarded":              `for=127.0.0.1;proto=https, for="[fd7a:115c:a1e0::1]"`,
-	"Via":                    "1.1 10.0.0.1",
-	"Tailscale-User-Login":   "alice@example.com",
-	"Tailscale-User-Name":    "alice@example.com",
-	"Tailscale-Headers-Info": "https://tailscale.com/s/serve-headers",
-}
-
 // forwardedHosts are the hosts X-Forwarded-Host names on a request to at: at's own, so a route
 // that trusts what a proxy of ours says it forwarded is caught; and the process's other origin's
 // and foreignHost, which no route may read as the origin a request came to in place of its Host,
@@ -364,30 +352,37 @@ func (at walkOrigin) forwardedHosts() []string {
 }
 
 // TestNoRouteGrantsAccessByNetworkAddress (c-no-route-trusts-the-network): every route the
-// processes serve is sent the same request at each origin of the walk, once bare and once from a
-// loopback peer carrying every network header set to an internal address and X-Forwarded-Host set
-// to each of forwardedHosts, and answers them all alike. A route that needs a credential is thereby
-// refused on each, so no address of ours is what a credential gets, and no route takes the origin
-// a request came to from a header.
+// processes serve is sent the same request at each origin of the walk, once bare and once as from
+// an address of ours in each of forwardedtest's shapes - X-Forwarded-For holding every internal
+// address in every position a rule might read (leftmost, rightmost, second-to-last, alone, either
+// of two lines), on a loopback peer and on a peer of Google's load balancer, with every other
+// network header set to an internal address - with X-Forwarded-Host set to the origin's own host,
+// and the first shape with it set to each other of forwardedHosts too, and answers them all alike.
+// A route that needs a credential is thereby refused on each, so no address of ours is what a
+// credential gets, and no route takes the origin a request came to from a header.
 func TestNoRouteGrantsAccessByNetworkAddress(t *testing.T) {
 	walk := newProcessWalk(t)
 	if slices.Contains(walk.routes, "GET /auth/_dev/signin") {
 		t.Fatalf("the production-shaped process mounts GET /auth/_dev/signin, which signs anyone in from a loopback peer")
 	}
+	variants := forwardedtest.Variants()
 	for _, at := range walk.at {
 		for _, forwardedHost := range at.forwardedHosts() {
-			internal := func(r *http.Request) {
-				r.RemoteAddr = "127.0.0.1:40000"
-				for name, value := range networkHeaders {
-					r.Header.Set(name, value)
-				}
-				r.Header.Set("X-Forwarded-Host", forwardedHost)
+			shapes := variants
+			if forwardedHost != at.host {
+				shapes = variants[:1]
 			}
-			for _, route := range walk.routes {
-				bare, inside := at.send(t, route, nil), at.send(t, route, internal)
-				if bare.Code != inside.Code || answerOf(bare) != answerOf(inside) {
-					t.Errorf("%s %s answers a caller with no credential %d %s, and the same caller from an address of ours, forwarded for %s, %d %s",
-						route, at.name, bare.Code, firstLine(answerOf(bare)), forwardedHost, inside.Code, firstLine(answerOf(inside)))
+			for _, shape := range shapes {
+				internal := func(r *http.Request) {
+					shape.Apply(r)
+					r.Header.Set("X-Forwarded-Host", forwardedHost)
+				}
+				for _, route := range walk.routes {
+					bare, inside := at.send(t, route, nil), at.send(t, route, internal)
+					if bare.Code != inside.Code || answerOf(bare) != answerOf(inside) {
+						t.Errorf("%s %s answers a caller with no credential %d %s, and the same caller with %s, forwarded for %s, %d %s",
+							route, at.name, bare.Code, firstLine(answerOf(bare)), shape.Name, forwardedHost, inside.Code, firstLine(answerOf(inside)))
+					}
 				}
 			}
 		}

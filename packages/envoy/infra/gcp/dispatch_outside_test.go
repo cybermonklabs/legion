@@ -185,7 +185,9 @@ func TestDispatchPodWithoutOutsideInputsIsUnchanged(t *testing.T) {
 	committed, err := filepath.Glob("testdata/dispatch-pod*.golden")
 	require.NoError(t, err)
 	require.NotEmpty(t, committed, "the glob found the committed pod goldens")
-	covered := []string{"testdata/" + dispatchOutsideGolden}
+	// The two goldens rendered with an outside input set, which their own tests hold
+	// (TestDispatchPodWithOutsideSignInRendersBothSettings, TestDispatchPodWithPasskeySignInRendersTheSetting).
+	covered := []string{"testdata/" + dispatchOutsideGolden, "testdata/" + dispatchPasskeyGolden}
 	for _, row := range goldens {
 		covered = append(covered, "testdata/"+row.golden)
 		t.Run(row.golden, func(t *testing.T) {
@@ -215,12 +217,13 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 		}
 	}
 	for _, row := range []struct {
-		name string
-		args func() *gcp.DispatchArgs
-		want string
+		name, input string
+		args        func() *gcp.DispatchArgs
+		want        string
 	}{
 		{
-			name: "outsideOrigin in a sandbox",
+			name:  "outsideOrigin in a sandbox",
+			input: "outsideOrigin",
 			args: func() *gcp.DispatchArgs {
 				args := dispatchSandboxArgs()
 				args.OutsideOrigin = dispatchOutsideOrigin
@@ -229,46 +232,52 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 			want: "outsideOrigin needs the tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own origin is an in-cluster http:// address " +
 				"where browser sign-in is refused, and outside sign-in is what a second origin is for; unset outsideOrigin, or set the tailnet inputs or publicOrigin",
 		},
-		{"outsideOrigin over http", withOrigin("http://dispatch-outside.example.com"), "outsideOrigin must be an https origin: browser sign-in at it needs TLS, as the front door's does"},
-		{"outsideOrigin with no scheme", withOrigin("dispatch-outside.example.com"), notOrigin},
-		{"outsideOrigin with a path", withOrigin("https://dispatch-outside.example.com/dispatch"), notOrigin},
-		{"outsideOrigin with a query", withOrigin("https://dispatch-outside.example.com?a=b"), notOrigin},
-		{"outsideOrigin with a fragment", withOrigin("https://dispatch-outside.example.com#top"), notOrigin},
-		{"outsideOrigin with a user", withOrigin("https://example-user@dispatch-outside.example.com"), notOrigin},
+		{"outsideOrigin over http", "outsideOrigin", withOrigin("http://dispatch-outside.example.com"), "outsideOrigin must be an https origin: browser sign-in at it needs TLS, as the front door's does"},
+		{"outsideOrigin with no scheme", "outsideOrigin", withOrigin("dispatch-outside.example.com"), notOrigin},
+		{"outsideOrigin with a path", "outsideOrigin", withOrigin("https://dispatch-outside.example.com/dispatch"), notOrigin},
+		{"outsideOrigin with a query", "outsideOrigin", withOrigin("https://dispatch-outside.example.com?a=b"), notOrigin},
+		{"outsideOrigin with a fragment", "outsideOrigin", withOrigin("https://dispatch-outside.example.com#top"), notOrigin},
+		{"outsideOrigin with a user", "outsideOrigin", withOrigin("https://example-user@dispatch-outside.example.com"), notOrigin},
 		{
-			name: "outsideOrigin with the front door's host",
-			args: withOrigin("https://example-dispatch.example-tailnet.ts.net"),
-			want: "outsideOrigin's host example-dispatch.example-tailnet.ts.net is the front door's: a second origin needs a host of its own",
+			name:  "outsideOrigin with the front door's host",
+			input: "outsideOrigin",
+			args:  withOrigin("https://example-dispatch.example-tailnet.ts.net"),
+			want:  "outsideOrigin's host example-dispatch.example-tailnet.ts.net is the front door's: a second origin needs a host of its own",
 		},
 		{
-			name: "outsideOrigin with the front door's host on another port",
-			args: withOrigin("https://example-dispatch.example-tailnet.ts.net:8443"),
-			want: "outsideOrigin's host example-dispatch.example-tailnet.ts.net is the front door's: a second origin needs a host of its own",
+			name:  "outsideOrigin with the front door's host on another port",
+			input: "outsideOrigin",
+			args:  withOrigin("https://example-dispatch.example-tailnet.ts.net:8443"),
+			want:  "outsideOrigin's host example-dispatch.example-tailnet.ts.net is the front door's: a second origin needs a host of its own",
 		},
 		// With the sign-in inputs set people from outside sign in at outsideOrigin with a passkey
 		// whose relying party is its host, so a host that is no public domain name is refused: a raw
 		// IP address, and a host with no top-level domain on the public suffix list
 		// (TestDispatchOutsideOriginTakesAnyHostWithoutBrowserSignIn holds them taken without sign-in).
 		{
-			name: "outsideOrigin an IP address with browser sign-in",
-			args: withOrigin("https://10.0.0.1"),
-			want: "outsideOrigin's host 10.0.0.1 is an IP address, which no passkey takes as its relying party, so passkey sign-in at it could not complete: name the origin by a DNS name",
+			name:  "outsideOrigin an IP address with browser sign-in",
+			input: "outsideOrigin",
+			args:  withOrigin("https://10.0.0.1"),
+			want:  "outsideOrigin's host 10.0.0.1 is an IP address, which no passkey takes as its relying party, so passkey sign-in at it could not complete: name the origin by a DNS name",
 		},
 		{
-			name: "outsideOrigin a single label with browser sign-in",
-			args: withOrigin("https://dispatch"),
-			want: "outsideOrigin's host dispatch is a single label, with no top-level domain on the public suffix list, which Dispatch requires of a passkey's relying party, so passkey sign-in at it could not complete",
+			name:  "outsideOrigin a single label with browser sign-in",
+			input: "outsideOrigin",
+			args:  withOrigin("https://dispatch"),
+			want:  "outsideOrigin's host dispatch is a single label, with no top-level domain on the public suffix list, which Dispatch requires of a passkey's relying party, so passkey sign-in at it could not complete",
 		},
 		{
-			name: "outsideOrigin under a top-level domain off the public suffix list with browser sign-in",
-			args: withOrigin("https://dispatch-outside.example"),
-			want: "outsideOrigin's host dispatch-outside.example ends in example, no top-level domain on the public suffix list, which Dispatch requires of a passkey's relying party, so passkey sign-in at it could not complete",
+			name:  "outsideOrigin under a top-level domain off the public suffix list with browser sign-in",
+			input: "outsideOrigin",
+			args:  withOrigin("https://dispatch-outside.example"),
+			want:  "outsideOrigin's host dispatch-outside.example ends in example, no top-level domain on the public suffix list, which Dispatch requires of a passkey's relying party, so passkey sign-in at it could not complete",
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			_, err := gcp.ResolveDispatch(row.args())
 			require.EqualError(t, err, row.want)
 			require.NotContains(t, err.Error(), "example-user", "the refusal echoes no user, which could carry a credential")
+			requireInputError(t, err, row.input)
 		})
 	}
 }

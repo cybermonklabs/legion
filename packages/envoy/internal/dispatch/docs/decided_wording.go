@@ -59,11 +59,12 @@ const decidedWordingDiffers = `
 
 // decidedWordingPlan reads each ask decidedWordingRestore would give back its decided wording,
 // writing nothing: its id, its document and block (both null for an ask no block holds), the
-// wording, and the answer the decision was given on, which the restore leaves as it is and the
-// restored ask's parts are indexed with (restoreWordings). The answer is read as its canonical
-// jsonb text, which the restore's guard compares the row against.
+// wording, the answer the decision was given on, which the restore leaves as it is and the
+// restored ask's parts are indexed with (restoreWordings), and the ask's author, whom the restored
+// question's and parts' short ids resolve for (refs.NewReader). The answer is read as its
+// canonical jsonb text, which the restore's guard compares the row against.
 const decidedWordingPlan = decidedWordingEdits + `
-	select a.id::text, a.block_artifact_id::text, a.block_id, ` + decidedWordingColumns + `, a.answer::text
+	select a.id::text, a.block_artifact_id::text, a.block_id, ` + decidedWordingColumns + `, a.answer::text, a.author
 	from asks a join first_edit f on a.id = f.id
 	where ` + decidedWordingDiffers + `
 	order by a.id`
@@ -106,6 +107,8 @@ type restoredWording struct {
 	// so a pod that changed it meanwhile refuses the restoration (decidedWordingRestore).
 	answer     *model.AskAnswer
 	answerText *string
+	// author is the ask's author, whom the restored texts' short ids resolve for.
+	author model.Actor
 }
 
 // decidedWordingRollbackTimeout bounds the rollback of a boot restoration that did not commit,
@@ -269,13 +272,16 @@ func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) 
 	}
 	restored, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (restoredWording, error) {
 		var wording restoredWording
-		var options []byte
+		var options, author []byte
 		if err := row.Scan(&wording.ask, &wording.document, &wording.block, &wording.wording.Question, &options,
-			&wording.wording.Multiple, &wording.wording.Urgency, &wording.answerText); err != nil {
+			&wording.wording.Multiple, &wording.wording.Urgency, &wording.answerText, &author); err != nil {
 			return restoredWording{}, err
 		}
 		if err := json.Unmarshal(options, &wording.wording.Options); err != nil {
 			return restoredWording{}, fmt.Errorf("decode the options of ask %s: %w", wording.ask, err)
+		}
+		if err := json.Unmarshal(author, &wording.author); err != nil {
+			return restoredWording{}, fmt.Errorf("decode the author of ask %s: %w", wording.ask, err)
 		}
 		if wording.answerText != nil {
 			var decided model.AskAnswer
@@ -310,8 +316,9 @@ func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) 
 		planned = append(planned, wording.ask)
 		answers = append(answers, wording.answerText)
 		// The question and the parts of the restored ask through one reader, which holds what
-		// the database answered for the first of them.
-		reader := refs.NewReader(ctx, tx, "ask", wording.ask, s.origins)
+		// the database answered for the first of them and resolves their short ids for the ask's
+		// author.
+		reader := refs.NewReader(ctx, tx, wording.author, "ask", wording.ask, s.origins)
 		_, step, err := planAskReferences(ctx, tx, reader, wording.ask, wording.wording.Question)
 		if err != nil {
 			return nil, fmt.Errorf("index the restored question of ask %s: %w", wording.ask, err)

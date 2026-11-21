@@ -65,7 +65,7 @@ func MessageClause(alias, viewerParam string) string {
 // BroadcastClause passes the broadcast idExpr names (its uuid) - one person's message to many
 // sessions, a conversation of no project with each - when the viewer may see every session it was
 // sent to (SessionClause over each copy's target), and is open or is the person who sent it. A
-// viewer that is not open - a restricted member, or a credential that lists projects - reads its
+// viewer that is not open - a restricted member - reads its
 // own direct messages alone (R4), so it reads only its person's broadcasts; and a credential reads
 // its person's broadcast only where it sees every recipient, since it sees what its own list lets
 // it see and not all its person sees (R3). It reads the broadcast again by its id, so a statement

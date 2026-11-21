@@ -5,18 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/exchange"
-	"github.com/sjawhar/envoy/internal/broker/projectaccess"
-	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/dispatch/auth"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
 // newRestrictedTokenRig's broker asks a stand-in of Dispatch's membership answer
@@ -71,37 +66,15 @@ func newRealAccessRig(t *testing.T) (restrictedTokenRig, *realAccess) {
 	t.Cleanup(front.Close)
 	brokerAccount := accountTokenFile(t, issuer.Mint(t, issuer.signing, issuer.Claims(listedServiceAccount, serviceTokenAudience)))
 	access := &realAccess{fresh: func() *projectaccess.Client {
-		return projectaccess.New(front.URL, brokertoken.NewAccountToken(brokerAccount), nil)
+		return projectaccess.New(front.URL, ciphertoken.NewAccountToken(brokerAccount), nil)
 	}}
 	access.forget()
-	broker := brokertest.NewRig(t, brokertest.WithProjectAccess(access))
-	client := brokertest.NewClient(t, broker.URL, strings.TrimPrefix(broker.URL, "http://"))
-	client.DPoP, client.UIToken = brokerclient.NewDPoPTransport, broker.UIToken
-	dispatchAccount := accountTokenFile(t, broker.UIToken)
-	handler, database, registered := newRegisteredAccessServer(t, testServerOptions{
-		admitsRestricted: true,
-		oidc:             issuer.verifier(t),
-		accessAccounts:   []string{listedServiceAccount},
-		brokerTokens: func(database *store.Store) *brokertoken.Verifier {
-			verifier, err := brokertoken.New(brokertoken.Options{
-				BrokerURL: broker.URL, Account: brokertoken.NewAccountToken(dispatchAccount), Origin: testServerURL,
-				Replay: store.NewDPoPProofs(database.Pool), Address: auth.ForwardedAddress,
-			})
-			if err != nil {
-				t.Fatalf("build the broker token verifier: %v", err)
-			}
-			return verifier
-		},
-		agentSecretsURL: broker.URL, agentSecretsTokenFile: dispatchAccount,
-	})
-	served = handler
-	if listed := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
-		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
-	}
-	if created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTH", "name": "Another project"}, accessCarol); created.Code != http.StatusCreated {
+	r := newRestrictedTokenRigWith(t, access, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
+	served = r.dispatch
+	if created := dispatchRequest(t, r.dispatch, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTH", "name": "Another project"}, accessCarol); created.Code != http.StatusCreated {
 		t.Fatalf("carol creates OTH: %d %s", created.Code, created.Body.String())
 	}
-	return restrictedTokenRig{broker: broker, client: client, dispatch: handler, database: database, server: registered}, access
+	return r, access
 }
 
 // TestARestrictedMembersTradeAsksTheRealDispatch: against the real Dispatch's membership answer,
@@ -121,7 +94,7 @@ func TestARestrictedMembersTradeAsksTheRealDispatch(t *testing.T) {
 	}
 	token, _ := body["access_token"].(string)
 	answer := r.introspect(t, token)
-	if !answer.Active || answer.ProjectScope != brokertoken.ProjectScopeNamed || !slices.Equal(answer.Projects, []string{"ACC"}) || answer.Person != accessErin {
+	if !answer.Active || answer.ProjectScope != ciphertoken.ProjectScopeNamed || !slices.Equal(answer.Projects, []string{"ACC"}) || answer.Person != accessErin {
 		t.Fatalf("erin's token introspects as %+v, want named [ACC] for erin", answer)
 	}
 	if expiresIn, _ := body["expires_in"].(float64); expiresIn <= 0 || time.Duration(expiresIn)*time.Second > exchange.RestrictedLifetime {
@@ -144,7 +117,7 @@ func TestARestrictedMembersTradeAsksTheRealDispatch(t *testing.T) {
 			t.Fatalf("carol's trade naming %q = %d %v, want 200", asked, status, body)
 		}
 		token, _ := body["access_token"].(string)
-		if answer := r.introspect(t, token); !answer.Active || answer.ProjectScope != brokertoken.ProjectScopePerson {
+		if answer := r.introspect(t, token); !answer.Active || answer.ProjectScope != ciphertoken.ProjectScopePerson {
 			t.Errorf("carol's token naming %q introspects as %+v, want the person scope", asked, answer)
 		}
 	}

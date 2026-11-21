@@ -11,7 +11,7 @@ import "maps"
 func StoreWriteCallSites() map[string]string { return maps.Clone(storeWriteCallSites) }
 
 // storeWriteCallSites is every function outside the tests that calls one of graphstore's writers
-// (graphstore.WriteFunctions), named as docs' register names a pass: the file, from
+// (graphstoretest.WriteFunctions), named as docs' register names a pass: the file, from
 // internal/dispatch where it lives under it, and the function, without its receiver. Beside each
 // site is the test that drives its lock steps against the order written on api/inbox_read.go's
 // markInboxReadThreads, as "<package dir>#<Test>": the package's directory, named as a site's
@@ -47,10 +47,9 @@ var storeWriteCallSites = map[string]string{
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "cmd/dispatch-seed#TestTheSeedsDocumentWriteTakesTheStoreLockOrder",
 	"docs/block_index.go#indexOwedDocument":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
 	// The comment path: the comment's node before the comments row that names it, then its
-	// tuples and its cause under the event appended after both, and who wrote it.
-	"api/comment_create.go#caused":           "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// tuples and its cause under the event appended after both, and who wrote it
+	// (graphstore.QueueNodes, QueueCaused and QueueAuthored, each called by the path itself).
 	"api/comment_create.go#createCommentFor": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/comment_create.go#writeNode":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// A delivery's reply and the settle of a delivery attempt, which records the session the
 	// attempt reached, and the one record both replies share of what their answer makes of the
 	// attempt they answer: an attempt the answer flips to sent is one the listener took, and
@@ -90,14 +89,14 @@ var storeWriteCallSites = map[string]string{
 	// written before the store existed, the role and page nodes of the roles the census holds to
 	// one (addressedRoles), and the session nodes of the sessions it holds to one
 	// (recordedSessions). The comments are written through the backfill's comment write
-	// (graphcensus.CommentWrite.Queue), which the block-index tick queues too, for the comments
+	// (refs.CommentWrite.Queue), which the block-index tick queues too, for the comments
 	// the events after its build's cursor name whose rows name no node, after its cursor row and
 	// its marking statement's document_block_versions rows (docs' test holds it to that).
-	"graphcensus/backfill.go#writeBlockBatch":    "graphcensus#TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow",
-	"graphcensus/backfill.go#writeBlockRefBatch": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	"graphcensus/backfill.go#Queue":              "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	"graphcensus/backfill.go#writeRoleBatch":     "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	"graphcensus/backfill.go#writeSessionBatch":  "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/backfill_blocks.go#writeBlockBatch":        "graphcensus#TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow",
+	"graphcensus/backfill_block_refs.go#writeBlockRefBatch": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"refs/comment_nodes.go#Queue":                           "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/backfill_roles.go#writeRoleBatch":          "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/backfill_sessions.go#writeSessionBatch":    "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	// The backfill's passes over the project of every node: the nodes of the issues, documents,
 	// asks and messages that their marker does not mark, in QueueNodes and Caused over each run
 	// of the batch's nodes of one cause (a row's own create event, or the sentinel), after the

@@ -34,20 +34,6 @@ var issueReads = []string{
 	"/api/v1/issues?project={project}&limit=5",
 }
 
-// seesProject is which projects of verification v16's seed each caller sees: alice and carol's
-// token that lists no project see the public one, bob and carol's token that lists PRIV the
-// private one, carol both, alice's token that lists PRIV neither (alice does not see PRIV), and
-// the shared token the public one.
-var seesProject = map[privateCaller][]string{
-	callerAlice:          {seedPublic},
-	callerBob:            {seedPrivate},
-	callerCarol:          {seedPublic, seedPrivate},
-	callerCarolPrivToken: {seedPrivate},
-	callerAlicePrivToken: {},
-	callerCarolToken:     {seedPublic},
-	callerSharedToken:    {seedPublic},
-}
-
 // TestAnIssueOfAPrivateProjectAnswersAsMissing: every read of an issue answers a caller that does
 // not see the issue's project exactly as it answers a key no issue holds, status and bytes, the
 // key itself aside, and answers a caller that sees it the issue. Each caller of verification v16
@@ -85,7 +71,7 @@ func TestAnIssueOfAPrivateProjectAnswersAsMissing(t *testing.T) {
 	for _, caller := range privateCallers {
 		t.Run(string(caller), func(t *testing.T) {
 			for _, project := range []string{seedPublic, seedPrivate} {
-				sees := slices.Contains(seesProject[caller], project)
+				sees := slices.Contains(caller.sees(), project)
 				present := map[string]string{"{key}": seed.issue[project], "{project}": project, "{handoff}": handoffs[project]}
 				absent := map[string]string{"{key}": project + "-999999", "{project}": "NOPE", "{handoff}": uuid.NewString()}
 				for _, read := range issueReads {
@@ -118,7 +104,7 @@ func TestAnIssueOfAPrivateProjectAnswersAsMissing(t *testing.T) {
 				keys = append(keys, issue.Key)
 			}
 			want := []string{}
-			for _, project := range seesProject[caller] {
+			for _, project := range caller.sees() {
 				want = append(want, seed.issue[project])
 			}
 			slices.Sort(keys)

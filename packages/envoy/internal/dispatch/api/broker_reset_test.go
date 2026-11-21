@@ -20,9 +20,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -282,9 +282,9 @@ exit 22
 func (r *recoveryRig) approveAs(t *testing.T, email, account string, generation int64) error {
 	t.Helper()
 	ctx := context.Background()
-	client := brokertest.NewClient(t, r.rig.URL, strings.TrimPrefix(r.rig.URL, "http://"))
-	client.UIToken, client.DPoP = r.rig.UIToken, brokerclient.NewDPoPTransport
-	authorization := client.DeviceLogin(t, brokertest.NewSigningKey(t), email, "reset-box-"+account)
+	client := ciphertest.NewClient(t, r.rig.URL, strings.TrimPrefix(r.rig.URL, "http://"))
+	client.UIToken, client.DPoP = r.rig.UIToken, cipherclient.NewDPoPTransport
+	authorization := client.DeviceLogin(t, ciphertest.NewSigningKey(t), email, "reset-box-"+account)
 	lookedUp, err := r.broker.MachineLookup(ctx, json.RawMessage(`{"code":`+strconv.Quote(authorization.UserCode)+`}`))
 	if err != nil {
 		t.Fatalf("look up %s's machine login by its code: %v", email, err)
@@ -296,7 +296,7 @@ func (r *recoveryRig) approveAs(t *testing.T, email, account string, generation 
 		t.Fatalf("the lookup answered %s (%v), want a record", lookedUp, err)
 	}
 	code := authorization.UserCode
-	_, err = r.broker.Approve(ctx, record.RecordID, agentsecrets.Decision{
+	_, err = r.broker.Approve(ctx, record.RecordID, cipher.Decision{
 		Approver: email, Code: &code, ApproverIssuer: recoveryIssuer, ApproverSubject: account, ApproverSessionGeneration: &generation,
 	})
 	return err
@@ -329,7 +329,7 @@ func (r *recoveryRig) personalToken(t *testing.T, email, account string) string 
 
 // TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal runs the runbook's reset after a
 // Dispatch database restored or made again alone, every step from the runbook, against Dispatch's
-// database and a real broker's (brokertest.NewRig), over the three histories round 21's review
+// database and a real broker's (ciphertest.NewRig), over the three histories round 21's review
 // found the per-address recovery missed, and two the directory does not answer for:
 //
 //   - unapplied@ (F1): A held the address at the backup; after it, B took it, and the revocation of
@@ -376,9 +376,9 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 	token := r.personalToken(t, unapplied, "a-unapplied")
 	signIn := r.signInMachine(t, unapplied, "a-unapplied", strings.Repeat("u", 43))
 	r.pageSession(t, unapplied, "a-unapplied")
-	loginClient := brokertest.NewClient(t, r.rig.URL, strings.TrimPrefix(r.rig.URL, "http://"))
-	loginClient.UIToken, loginClient.DPoP = r.rig.UIToken, brokerclient.NewDPoPTransport
-	machine := loginClient.DeviceLogin(t, brokertest.NewSigningKey(t), unapplied, "unapplied-box")
+	loginClient := ciphertest.NewClient(t, r.rig.URL, strings.TrimPrefix(r.rig.URL, "http://"))
+	loginClient.UIToken, loginClient.DPoP = r.rig.UIToken, cipherclient.NewDPoPTransport
+	machine := loginClient.DeviceLogin(t, ciphertest.NewSigningKey(t), unapplied, "unapplied-box")
 	machineLogin := loginClient.ApproveMachineLogin(t, unapplied, machine.UserCode)
 
 	// noaccount@: no Dispatch row; the broker refuses X.
@@ -536,7 +536,7 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 		{unapplied, "a-unapplied"}, {noAccount, "x-noaccount"}, {takeback, "s-takeback"}, {takeback, "n-takeback"}, {alias, "n-alias"},
 	} {
 		err := r.approveAs(t, other.email, other.account, raised+1000)
-		var refusal *agentsecrets.Error
+		var refusal *cipher.Error
 		if !errors.As(err, &refusal) || refusal.Status != 403 || refusal.Code != "APPROVER_REPLACED" {
 			t.Errorf("an approve by %s at %s answered %v (%+v); want it refused 403 APPROVER_REPLACED", other.account, other.email, err, refusal)
 		}

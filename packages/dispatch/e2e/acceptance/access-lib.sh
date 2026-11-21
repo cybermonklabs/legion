@@ -369,9 +369,11 @@ readonly epoch_instants='["last_seen"]'
 
 # mask BUILD FILE [EXTRA] prints FILE with every id BUILD's seed recorded replaced by <LABEL>, each
 # `LABEL<tab>VALUE` line of the file EXTRA likewise, every RFC 3339 instant the run wrote (between
-# run_epoch and now) by <time>, and every duration by <duration>, and is otherwise the body byte
-# for byte: jq reads it as one raw string and writes it back as it was. Nothing else is masked:
-# keys, slugs, names, versions and event numbers are each seed's own and are compared as they are.
+# run_epoch and now) by <time>, every duration by <duration>, the window starts and epoch instants
+# named above by <time>, and the event cursors named above (`since`) by <event id>, and is
+# otherwise the body byte for byte: jq reads it as one raw string and writes it back as it was.
+# Nothing else is masked: keys, slugs, names, versions and the event numbers an event itself carries
+# are each seed's own and are compared as they are.
 mask() {
   local build=$1 file=$2 extra=${3:-/dev/null}
   jq -Rrj --slurp \

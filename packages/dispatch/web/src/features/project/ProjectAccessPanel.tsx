@@ -8,7 +8,13 @@ import {
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { ApiError, api, apiErrorMessage, type WriteBounds } from "../../api/client";
+import {
+  ApiError,
+  api,
+  apiErrorMessage,
+  type WriteBounds,
+  type WriteMethod,
+} from "../../api/client";
 import { accessGroupsQuery, projectAccessQuery, whoAmIQuery } from "../../api/queries";
 import type { AccessGroup, ProjectAccess } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -28,8 +34,9 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { dropSettledWrites } from "../writes/settled-writes";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { type KeyedPress, useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** One change of a project's access, as the owner presses it: the project given to another
  *  owner, made public or private, one person or group named on its access list or taken off it,
@@ -41,75 +48,103 @@ type AccessChange =
   | { readonly kind: "add-group" | "remove-group"; readonly name: string }
   | { readonly kind: "slack-channels"; readonly channels: readonly string[] };
 
-type AccessSave = Mutation<ProjectAccess | null, Error, AccessChange>;
+/** One save as the mutation cache holds it: the press the keyed write made of a change
+ *  (`KeyedPress`), the change inside it. */
+type AccessSave = Mutation<ProjectAccess | null, Error, KeyedPress<AccessChange>>;
 
 /** Which part of the panel a change belongs to, and so where its refusal is shown. */
 type AccessPart = "owner" | "visibility" | "people" | "groups" | "slack";
 
-/** What one change of a project's access is: the request that makes it, what the shell's
- *  pending-writes indicator names it, the part of the panel its refusal shows in, and what that
- *  refusal says when Dispatch gave no reason of its own (the request never reached it). */
+/** What one change of a project's access is: the request that makes it and that request's
+ *  method, what the shell's pending-writes indicator names it, the part of the panel its refusal
+ *  shows in, what that refusal says when Dispatch gave no reason of its own (the request never
+ *  reached it), and, for a save the reader stopped, what Dispatch has not confirmed and what that
+ *  save may have been (`stoppedWriteNote`'s `what` and `made`). */
 interface AccessOperation {
   readonly write: (bounds: WriteBounds) => Promise<ProjectAccess>;
+  readonly method: WriteMethod;
   readonly label: string;
   readonly part: AccessPart;
   readonly refusal: string;
+  readonly unconfirmed: string;
+  readonly made: string;
 }
 
-/** The operation of one change. Every kind returns all four, so a kind added to `AccessChange`
+/** The operation of one change. Every kind returns all seven, so a kind added to `AccessChange`
  *  does not compile until it says each of them. */
 function accessOperation(project: string, change: AccessChange): AccessOperation {
   switch (change.kind) {
     case "owner":
       return {
         write: (bounds) => api.patchProjectAccess(project, { owner: change.owner }, bounds),
+        method: "PATCH",
         label: `Give ${project} to ${change.owner}`,
         part: "owner",
         refusal: `Couldn't give ${project} to ${change.owner}.`,
+        unconfirmed: `${project}'s new owner, ${change.owner}`,
+        made: "saved",
       };
     case "visibility":
       return {
         write: (bounds) =>
           api.patchProjectAccess(project, { visibility: change.visibility }, bounds),
+        method: "PATCH",
         label: `Make ${project} ${change.visibility}`,
         part: "visibility",
         refusal: `Couldn't make ${project} ${change.visibility}.`,
+        unconfirmed: `${project}'s visibility, ${change.visibility}`,
+        made: "saved",
       };
     case "add-person":
       return {
         write: (bounds) => api.putProjectAccessPerson(project, change.email, bounds),
+        method: "PUT",
         label: `Add ${change.email} to ${project}`,
         part: "people",
         refusal: `Couldn't add ${change.email}.`,
+        unconfirmed: `the addition of ${change.email}`,
+        made: "made",
       };
     case "remove-person":
       return {
         write: (bounds) => api.deleteProjectAccessPerson(project, change.email, bounds),
+        method: "DELETE",
         label: `Remove ${change.email} from ${project}`,
         part: "people",
         refusal: `Couldn't remove ${change.email}.`,
+        unconfirmed: `the removal of ${change.email}`,
+        made: "made",
       };
     case "add-group":
       return {
         write: (bounds) => api.putProjectAccessGroup(project, change.name, bounds),
+        method: "PUT",
         label: `Add group ${change.name} to ${project}`,
         part: "groups",
         refusal: `Couldn't add group ${change.name}.`,
+        unconfirmed: `the addition of group ${change.name}`,
+        made: "made",
       };
     case "remove-group":
       return {
         write: (bounds) => api.deleteProjectAccessGroup(project, change.name, bounds),
+        method: "DELETE",
         label: `Remove group ${change.name} from ${project}`,
         part: "groups",
         refusal: `Couldn't remove group ${change.name}.`,
+        unconfirmed: `the removal of group ${change.name}`,
+        made: "made",
       };
     case "slack-channels":
       return {
         write: (bounds) =>
           api.patchProjectAccess(project, { slack_channels: [...change.channels] }, bounds),
+        method: "PATCH",
         label: `Name ${project}'s Slack channels`,
         part: "slack",
         refusal: `Couldn't name ${project}'s Slack channels.`,
+        unconfirmed: `${project}'s Slack channels`,
+        made: "saved",
       };
   }
 }
@@ -178,8 +213,13 @@ function useAccessWrite(
 ): {
   /** Every change of this project still out or waiting its turn, oldest first. */
   pending: readonly AccessChange[];
-  /** The project's newest save when Dispatch refused it, until another save starts. */
-  refused: { change: AccessChange; error: Error } | undefined;
+  /** The project's newest save when Dispatch refused it, until another save starts, and whether
+   *  this mount holds that press, which the reader stopped, to make again under its key
+   *  (`madeHere`): a panel opened after the save holds none. */
+  refused: { change: AccessChange; error: Error; madeHere: boolean } | undefined;
+  /** The Retry of the newest save's refusal: the very press where this mount made it and the
+   *  reader stopped it (`again`), else a new save of the same change. */
+  retry: () => void;
   save: (change: AccessChange) => void;
 } {
   const queryClient = useQueryClient();
@@ -195,6 +235,7 @@ function useAccessWrite(
     inline: true,
     label: (change) => accessOperation(project, change).label,
     write: (change, bounds) => accessOperation(project, change).write(bounds),
+    method: (change) => accessOperation(project, change).method,
     // A read already out was asked before this save and could land over its answer.
     onMutate: () => queryClient.cancelQueries({ queryKey: accessKey }),
     onSuccess: (answer, change) => {
@@ -219,21 +260,42 @@ function useAccessWrite(
   >({
     filters: { exact: true, mutationKey },
     select: (save) => ({
-      change: save.state.variables,
+      change: save.state.variables?.variables,
       error: save.state.error,
       status: save.state.status,
     }),
   });
   // The cache lists mutations in the order they were made, so the last is the newest.
   const newest = saves.at(-1);
+  // The press is read from the mutation cache rather than from `saves`, whose `select` result
+  // `useMutationState` shares structurally, as `useDefaultAssigneeWrite` reads it; the hook finds
+  // a press it holds by that very object.
+  const newestSave = queryClient.getMutationCache().findAll({ exact: true, mutationKey }).at(-1) as
+    | AccessSave
+    | undefined;
+  const press = newestSave?.state.status === "error" ? newestSave.state.variables : undefined;
+  const madeHere =
+    press !== undefined &&
+    mutation.stopped((variables) => variables === press.variables) !== undefined;
   return {
     pending: saves.flatMap((save) =>
       save.status === "pending" && save.change !== undefined ? [save.change] : []
     ),
     refused:
       newest?.status === "error" && newest.change !== undefined && newest.error !== null
-        ? { change: newest.change, error: newest.error }
+        ? { change: newest.change, error: newest.error, madeHere }
         : undefined,
+    retry: () => {
+      if (press === undefined) {
+        return;
+      }
+      // A press this mount made and the reader stopped is made again as that press, under its key
+      // where its method sends one; a refusal Dispatch decided, or a press of a mount made before
+      // this one, is retried as a new save.
+      if (!mutation.again(press)) {
+        mutation.mutate(press.variables);
+      }
+    },
     save: (change) => mutation.mutate(change),
   };
 }
@@ -339,20 +401,40 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
       return null;
     }
     // Dispatch's answer to the switch is said in the owner's words, with no Retry; a request
-    // Dispatch did not answer, and every other part's refusal, keeps the operation's line and its
-    // Retry.
+    // Dispatch did not answer, a save the reader stopped, and every other part's refusal keep the
+    // operation's line and its Retry.
     const shown =
       refused.change.kind === "visibility" && refused.error instanceof ApiError
         ? {
             message: switchRefusal(project, refused.change.visibility, refused.error.code),
             retry: false,
           }
-        : { message: apiErrorMessage(refused.error, operation.refusal), retry: true };
+        : {
+            message:
+              refused.error instanceof SendStoppedError
+                ? // The refusal is read from the mutation cache, not from a `KeyedWriteResult`,
+                  // so the method is the change's own (`accessOperation`). A panel opened after
+                  // the save holds no press to make again, so its Retry is a new save under a new
+                  // key. A save whose key ran out leaves no press to make again in any panel, the
+                  // one that made it included, and its note says what that Retry is
+                  // (`expiredRetryNote`).
+                  stoppedWriteNote(
+                    operation.unconfirmed,
+                    operation.made,
+                    refused.madeHere || !retriesUnderItsKey(refused.error)
+                      ? { method: operation.method, stopped: refused.error }
+                      : {
+                          anew: "This panel was opened after that save, so Retry sends it as a new save.",
+                        }
+                  )
+                : apiErrorMessage(refused.error, operation.refusal),
+            retry: true,
+          };
     return (
       <div className="mt-3">
         <QueryError
           message={shown.message}
-          onRetry={shown.retry ? () => write.save(refused.change) : undefined}
+          onRetry={shown.retry ? write.retry : undefined}
           retrying={pendingOf((change) => accessOperation(project, change).part === part)}
         />
       </div>

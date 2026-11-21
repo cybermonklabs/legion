@@ -91,8 +91,10 @@
 -- tuple's. It is the source's state alone: a mention of a block a version dropped is listed by
 -- the old arm, whose `block_refs` row stands, so it is listed here too.
 --
--- And a pointer a version dropped is retracted in the same statement that deletes its
--- `block_refs` row (`refs.replaceBlockRefs`), so the store and the row agree on it.
+-- And a pointer a version dropped is retracted in the same transaction that deletes its
+-- `block_refs` row: refs' `planBlockRefs` plans the retraction, `queueBlockRefs` deletes the row,
+-- and the append under the version's event (`graphstore.QueueCaused`) states the retraction, so
+-- the store and the row agree on it once the transaction commits.
 --
 -- Re-stating the view holds `graph_edges` ACCESS EXCLUSIVE for the migration's short
 -- transaction, so a reference read waits behind it. The arm list re-stated is

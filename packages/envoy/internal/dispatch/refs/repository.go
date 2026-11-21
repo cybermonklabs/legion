@@ -113,8 +113,9 @@ func ProjectRepositories(ctx context.Context, q Queryer, project string) ([]stri
 //     public project work in one repository, the public project's people read it whole;
 //   - the viewer is open, and no private project the viewer does not see owns it.
 //
-// So a viewer who is not open, a restricted member or a credential that lists projects, reads
-// only a repository an issue of a project it sees resolves to. A repository is held by its name
+// So a viewer who is not open, a restricted member or a credential acting for one, reads only a
+// repository an issue of a project it sees resolves to; a full member's credential is open whatever
+// it lists (access.CredentialCovers). A repository is held by its name
 // alone: once GitHub renames a private project's repository or moves it to another owner, an open
 // viewer reads it under the new name until an issue of that project resolves to the new name.
 //

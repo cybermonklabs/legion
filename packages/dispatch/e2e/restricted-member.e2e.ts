@@ -163,7 +163,7 @@ test("a restricted member's pages draw no refusal from Dispatch", async ({ brows
     await page.goto("/agents/broadcasts");
     await expect.soft(page.getByRole("heading", { name: "Page not found" })).toBeVisible();
     // The machine-login page is his: he approves there the device login of his own agents, and
-    // it asks him for no list of the deployment's machine logins, which Dispatch refuses him.
+    // it lists his own machine logins alone, as Dispatch answers him.
     await page.goto("/credentials/machine");
     await expect.soft(page.getByLabel("Code shown on the machine")).toBeVisible();
     await expect.soft(page.getByRole("heading", { name: "Page not found" })).toHaveCount(0);

@@ -3,9 +3,9 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -155,17 +155,26 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The repository is held to the GitHub proxy's rule for the writer before GitHub is asked
+	// anything (hiddenSourceRefusal): one the proxy would not show the writer answers exactly as
+	// one the App is not installed on.
+	refusal, err := s.hiddenSourceRefusal(r.Context(), who, owner, name)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The access check, of the repository and of the branch, runs before any write: a value that
 	// is not exactly the name of a branch the repository has (a commit SHA, a relative ref such as
 	// main~1, HEAD, a refs/ path) is refused like a missing branch, and a failed re-PUT leaves the
 	// stored source untouched.
-	installationID, err := s.checkArchitectureSource(r.Context(), owner, name, branch)
+	var installationID int64
+	if refusal != nil {
+		err = refusal
+	} else {
+		installationID, err = s.checkArchitectureSource(r.Context(), owner, name, branch)
+	}
 	if err != nil {
-		if errors.Is(err, githubapp.ErrNoAppKey) || errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrNoContentsRead) || errors.Is(err, githubapp.ErrNoBranch) {
-			writeError(w, "SOURCE_ACCESS", http.StatusConflict, err.Error())
-			return
-		}
-		s.writeHandlerError(w, err)
+		s.writeSourceRefusal(w, err)
 		return
 	}
 
@@ -254,7 +263,7 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 		return
 	}
 	repo := owner + "/" + name
-	if !s.sourceProjectVisible(w, r, key, func() { writeSourceNotFound(w, key, repo) }) {
+	if _, ok := s.sourceProjectVisible(w, r, key, func() { writeSourceNotFound(w, key, repo) }); !ok {
 		return
 	}
 	tx, err := s.begin(r.Context())
@@ -310,7 +319,35 @@ func (s *server) syncArchitectureSource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	repo := owner + "/" + name
-	if !s.sourceProjectVisible(w, r, key, func() { writeSourceNotFound(w, key, repo) }) {
+	who, ok := s.sourceProjectVisible(w, r, key, func() { writeSourceNotFound(w, key, repo) })
+	if !ok {
+		return
+	}
+	// A source whose repository the GitHub proxy would not show the caller, which only a source
+	// written before that rule held its writes can be, answers what a source of a repository the
+	// App is not installed on answers, and nothing is imported or written for it
+	// (hiddenSourceRefusal). A source nobody configured answers 404 first, as Sync answers it, so
+	// the hidden answer is given only where a source is there to answer it; the row is read only
+	// for a hidden repository, so every other sync reads what it read before.
+	refusal, err := s.hiddenSourceRefusal(r.Context(), who, owner, name)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if refusal != nil {
+		stored, err := querySources(r.Context(), s.deps.Store.Pool, who, "project_key = $1 and repo = $2", "id", key, repo)
+		switch {
+		case err != nil:
+			s.writeHandlerError(w, err)
+		case len(stored) == 0:
+			writeSourceNotFound(w, key, repo)
+		case architecture.IsAccessFailure(refusal):
+			writeError(w, "SOURCE_ACCESS", http.StatusConflict, refusal.Error())
+		default:
+			// Under a held App rate limit the sync of an uninstalled source records that limit on
+			// its row and answers the row: a hidden one's is answered as it stands.
+			WriteJSON(w, http.StatusOK, stored[0])
+		}
 		return
 	}
 	source, err := s.deps.Architecture.Sync(r.Context(), key, repo)
@@ -380,9 +417,60 @@ func (s *server) syncSingularArchitectureSource(w http.ResponseWriter, r *http.R
 // that could not be recorded on its row.
 func (s *server) syncProjectSources(w http.ResponseWriter, r *http.Request) ([]model.ArchitectureSource, bool) {
 	key := r.PathValue("key")
-	if !s.sourceProjectVisible(w, r, key, func() { writeProjectSourceNotFound(w, key) }) {
+	who, ok := s.sourceProjectVisible(w, r, key, func() { writeProjectSourceNotFound(w, key) })
+	if !ok {
 		return nil, false
 	}
+	// A source whose repository the GitHub proxy would not show the caller, which only a source
+	// written before that rule held its writes can be, is not imported for this caller: its row is
+	// answered as it stands, and GitHub is asked nothing about it (hiddenSourceRefusal's rule).
+	// Every other source is imported as SyncProject imports it, one at a time in id order. A
+	// reader that sees every object, and a deployment with no App key, sync as before, with no
+	// statement more (R9).
+	if s.deps.GitHub == nil || seesEveryObject(who) {
+		return s.syncEverySource(w, r, key)
+	}
+	held, err := querySources(r.Context(), s.deps.Store.Pool, who, "project_key = $1", "id", key)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return nil, false
+	}
+	repos := make([]string, 0, len(held))
+	for _, stored := range held {
+		repos = append(repos, stored.Repo)
+	}
+	hidden, err := s.repositoriesHidden(r.Context(), who, repos)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return nil, false
+	}
+	sources := make([]model.ArchitectureSource, 0, len(held))
+	for _, stored := range held {
+		if hidden[stored.Repo] {
+			sources = append(sources, stored)
+			continue
+		}
+		source, err := s.deps.Architecture.Sync(r.Context(), key, stored.Repo)
+		switch {
+		case errors.Is(err, architecture.ErrNoSource):
+			// Deleted while this call ran: left out, as SyncProject leaves it out.
+		case err != nil && source.Project == "":
+			s.writeHandlerError(w, err)
+			return nil, false
+		default:
+			sources = append(sources, source)
+		}
+	}
+	if len(sources) == 0 {
+		writeProjectSourceNotFound(w, key)
+		return nil, false
+	}
+	return sources, true
+}
+
+// syncEverySource is syncProjectSources for a caller from whom no repository can be hidden: every
+// source of project key imported by SyncProject, the rows answered in id order.
+func (s *server) syncEverySource(w http.ResponseWriter, r *http.Request, key string) ([]model.ArchitectureSource, bool) {
 	results, err := s.deps.Architecture.SyncProject(r.Context(), key)
 	if errors.Is(err, architecture.ErrNoSource) || (err == nil && len(results) == 0) {
 		writeProjectSourceNotFound(w, key)
@@ -403,6 +491,17 @@ func (s *server) syncProjectSources(w http.ResponseWriter, r *http.Request) ([]m
 	return sources, true
 }
 
+// writeSourceRefusal answers a source write whose access check failed: an access failure (no App
+// key, no installation, no Contents: read, no such branch; architecture.IsAccessFailure) is 409
+// SOURCE_ACCESS with its text, and any other failure the handler error.
+func (s *server) writeSourceRefusal(w http.ResponseWriter, err error) {
+	if architecture.IsAccessFailure(err) {
+		writeError(w, "SOURCE_ACCESS", http.StatusConflict, err.Error())
+		return
+	}
+	s.writeHandlerError(w, err)
+}
+
 func writeSourceNotFound(w http.ResponseWriter, key, repo string) {
 	writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source from "+repo+" configured for "+key)
 }
@@ -411,26 +510,54 @@ func writeProjectSourceNotFound(w http.ResponseWriter, key string) {
 	writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source configured for "+key)
 }
 
-// sourceProjectVisible reports whether the caller sees project key (requireVisibleProject), and,
-// where it does not, answers notFound, the answer of a source nobody configured, before any lock,
-// delete, GitHub call or sync: a source write to a hidden project answers exactly as one to a
-// project with no such source (TestNoWriteReachesAHiddenObject). A key no project holds answers
-// the same. A read that fails otherwise answers the handler error.
-func (s *server) sourceProjectVisible(w http.ResponseWriter, r *http.Request, key string, notFound func()) bool {
+// sourceProjectVisible answers the caller as a read binds it (readerOf) and whether it sees
+// project key (requireVisibleProject), and, where it does not, answers notFound, the answer of a
+// source nobody configured, before any lock, delete, GitHub call or sync: a source write to a
+// hidden project answers exactly as one to a project with no such source
+// (TestNoWriteReachesAHiddenObject). A key no project holds answers the same. A read that fails
+// otherwise answers the handler error.
+func (s *server) sourceProjectVisible(w http.ResponseWriter, r *http.Request, key string, notFound func()) (model.Actor, bool) {
 	who, ok := s.readerOf(w, r)
 	if !ok {
-		return false
+		return model.Actor{}, false
 	}
 	err := s.requireVisibleProject(r.Context(), who, key)
 	switch {
 	case err == nil:
-		return true
+		return who, true
 	case errors.Is(err, pgx.ErrNoRows):
 		notFound()
 	default:
 		s.writeHandlerError(w, err)
 	}
-	return false
+	return model.Actor{}, false
+}
+
+// hiddenSourceRefusal is what a source of owner/name answers in place of GitHub's answer when the
+// GitHub proxy would not show that repository to who (repositoriesHidden, over
+// refs.RepositoryClause): exactly what a repository the App is not installed on answers, with
+// GitHub asked nothing - the held rate limit on the App's scope where one is in force, as the
+// installation lookup of an uninstalled repository is held unsent then, and else the
+// not-installed error that lookup returns, which CheckSource and the sync's installation read
+// both answer. A source imports its repository's `.dispatch/architecture` prose into the project,
+// which every reader of the project then reads, and the not-installed answer would otherwise tell
+// who that the App reads a repository a private project's issues use. Nil where the repository is
+// not hidden from who, and with no App key, which answers every repository alike before this is
+// asked. A reader that sees every object, as every open viewer of a deployment with no private
+// project does, reads no statement for it (R9).
+func (s *server) hiddenSourceRefusal(ctx context.Context, who model.Actor, owner, name string) (refusal error, err error) {
+	if s.deps.GitHub == nil {
+		return nil, nil
+	}
+	repo := owner + "/" + name
+	hidden, err := s.repositoriesHidden(ctx, who, []string{repo})
+	if err != nil || !hidden[repo] {
+		return nil, err
+	}
+	if limited := s.deps.GitHub.HeldLimit(ctx, githubapp.AppScope); limited != nil {
+		return limited, nil
+	}
+	return fmt.Errorf("%w on %s/%s", githubapp.ErrNoInstallation, owner, name), nil
 }
 
 // sourcePathRepo reads the {owner}/{repo} path segments as parseSourceRepo reads a repository.
@@ -438,30 +565,16 @@ func sourcePathRepo(r *http.Request) (owner, name string, err error) {
 	return parseSourceRepo(r.PathValue("owner") + "/" + r.PathValue("repo"))
 }
 
-var sourceRepoNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-
-// parseSourceRepo validates and canonicalizes an owner/name repository input
-// the same way repository mappings are stored (lowercase, .git trimmed). The
-// owner is read by the grammar an issue's own repository is (repoOwnerPattern,
-// the daemon's ghrepo ownerName): a login as GitHub serves it, which is wider
-// than GitHub's sign-up charset, since a managed user's login ends in
-// `_<shortcode>` (`mona-cat_octo`) and a source in such an account is one a
-// project can hold. The name is held to letters, digits, `.`, `-` and `_`, and
-// `.` and `..` are refused, so a stored repo can never smuggle path segments
-// into an outbound API URL (".." would traverse); an underscore traverses
-// nothing, in either segment.
+// parseSourceRepo reads raw, trimmed of the space around it, as a repository GitHub could hold, in
+// the form repository mappings are stored, and answers that form's halves: refs.ParseGitHubRepo,
+// which lower-cases it, trims one trailing `.git` and holds the result to GitHub's names, so a
+// stored name puts no `..` into a GitHub path. Any other raw is 400 SOURCE_INPUT. A source's
+// repository, a mapping's path and its renamed_to, and the delivery settings' deploy repository
+// are each read through it.
 func parseSourceRepo(raw string) (owner, name string, err error) {
-	trimmed := strings.TrimSpace(raw)
-	parts := strings.Split(trimmed, "/")
-	if len(parts) != 2 || !repoOwnerPattern.MatchString(parts[0]) ||
-		!sourceRepoNamePattern.MatchString(parts[1]) || parts[1] == "." || parts[1] == ".." {
+	owner, name, err = refs.ParseGitHubRepo(strings.TrimSpace(raw))
+	if err != nil {
 		return "", "", errorf(http.StatusBadRequest, "SOURCE_INPUT", "repository must be owner/name, got %q", raw)
 	}
-	canonical := strings.SplitN(canonicalRepo(parts[0], parts[1]), "/", 2)
-	// canonicalRepo trims a trailing ".git", so the canonical name needs the same
-	// empty/"."/".." check as the raw input ("legion/...git" canonicalizes to "..").
-	if canonical[1] == "" || canonical[1] == "." || canonical[1] == ".." {
-		return "", "", errorf(http.StatusBadRequest, "SOURCE_INPUT", "repository must be owner/name, got %q", raw)
-	}
-	return canonical[0], canonical[1], nil
+	return owner, name, nil
 }

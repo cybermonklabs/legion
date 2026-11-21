@@ -22,7 +22,7 @@ body: |-
   passes its token from a file rather than on the command line.
   `envoy-dispatch clear-broker-revocation <address>` prints each owed revocation's session
   generation, or `none`. Every guard on the binding's tables, in Dispatch (`20261119065002`) and in
-  the broker (`0042_guards_search_path`), runs under its own `search_path`, so a session's temporary
+  the broker (`0043_guards_search_path`), runs under its own `search_path`, so a session's temporary
   table or operator cannot take its write. A database an early unreleased head migrated is refused
   at migrate with a message to reset it (`20261119064905`), in a schema whose name needs quotes too.
   The first recording of an address's account also revokes its personal tokens that record no

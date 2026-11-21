@@ -309,8 +309,9 @@ func checkReferenceLatestVersionsAnswerIsTheFullAnswerCutToEachLatestVersion(t *
 	if lastNumber != fixture.versions[forty.ID] {
 		t.Fatalf("latest version of %q = %d; want %d", forty.Name, lastNumber, fixture.versions[forty.ID])
 	}
-	updated := dispatchRequest(t, fixture.handler, http.MethodPost, "/api/v1/projects/OPS/artifacts", map[string]string{
+	updated := dispatchRequest(t, fixture.handler, http.MethodPost, "/api/v1/projects/OPS/artifacts", map[string]any{
 		"name": forty.Name, "content": "# " + forty.Name + "\nA new version\n",
+		"precondition": uploadBase(t, fixture.handler, forty.ID),
 	}, "alice")
 	if updated.Code != http.StatusCreated {
 		t.Fatalf("update %q: status=%d body=%s", forty.Name, updated.Code, updated.Body.String())

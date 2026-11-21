@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -13,8 +12,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
-
-var externalRefPattern = regexp.MustCompile(`^([^/\s]+)/([^/\s#]+)#([1-9][0-9]*)$`)
 
 // issueRefResolved is the body GET /api/v1/issues/resolve answers.
 type issueRefResolved struct {
@@ -98,18 +95,14 @@ func validateExternalURL(raw string) error {
 	return nil
 }
 
+// externalRef reads ref, an `owner/name#number` reference, by the one rule (refs.ParseExternalRef),
+// and refuses one of another shape 400 INVALID_ISSUE_REF.
 func externalRef(ref string) (repo string, number string, err error) {
-	match := externalRefPattern.FindStringSubmatch(strings.TrimSpace(ref))
-	if match == nil {
+	repo, number, ok := refs.ParseExternalRef(ref)
+	if !ok {
 		return "", "", errorf(http.StatusBadRequest, "INVALID_ISSUE_REF", "invalid issue reference %q", ref)
 	}
-	return canonicalRepo(match[1], match[2]), match[3], nil
-}
-
-func canonicalRepo(owner, repo string) string {
-	owner = strings.ToLower(strings.TrimSpace(owner))
-	repo = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(repo)), ".git")
-	return owner + "/" + repo
+	return repo, number, nil
 }
 
 func externalURL(repo, number string) string {

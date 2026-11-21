@@ -157,7 +157,10 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		gone := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), actor, removedAt)
 		gone.State = graphstore.StateGone
 		goneNode = graphstore.PlanUncaused([]graphstore.Node{gone}, nil)
-		if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, goneNode) }); err != nil {
+		if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, goneNode)
+			return nil
+		}); err != nil {
 			s.writeHandlerError(w, fmt.Errorf("state the node of the removed document %s gone: %w", artifact.ID, err))
 			return
 		}

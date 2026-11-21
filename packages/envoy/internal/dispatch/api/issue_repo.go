@@ -4,58 +4,29 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// The two halves of a repository GitHub could hold, copied from the daemon's own reading of the
-// same grammar (packages/daemon/internal/ghrepo's ownerName and repositoryName): packages/envoy
-// cannot import packages/daemon, and the two gates of one product must hold a repository to one
-// rule, so the rule is written out here with its source named. An owner is a letter or digit and
-// then up to 38 letters, digits, hyphens and underscores, which is looser than GitHub's sign-up
-// form on purpose: that form's rule, single hyphens with none leading or trailing, binds new
-// accounts alone, and GitHub still serves a login with a doubled hyphen (`hello--world`, the
-// organisation `foo--bar`), one ending in a hyphen (`ArtOfCode-`) and a managed user's
-// `_<shortcode>` (`mona-cat_octo`), whose repositories an issue has to be able to name. A
-// repository's own name is at most 100 letters, digits, `.`, `-` and `_`. Both cases are written
-// out because the grammar is the grammar whatever the case, though the value these are read
-// against is lowercased first (canonicalRepo), so a name GitHub holds is taken however it was
-// typed. The two names `.` and `..`, which no working copy could hold, are refused beside the
-// patterns, where a pattern would state them worse.
-var (
-	repoOwnerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$`)
-	repoNamePattern  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
-)
-
-// githubCouldHoldRepo answers whether GitHub could hold a repository at this canonical
-// `owner/name`. Since migration 20261112004945 no repo_projects row stands behind an issue's own
-// repository, so this grammar is the whole gate on the value, and the value goes on to GitHub
-// reads of its own: the CI repair asks GitHub about every distinct repository an issue names
-// (cireconcile's covered), once a pass, and the Legion daemon prepares a working copy from it. A
-// name GitHub's grammar refuses can only answer "no such repository" there, every pass, so it is
-// refused at the write instead.
-func githubCouldHoldRepo(canonical string) bool {
-	owner, name, found := strings.Cut(canonical, "/")
-	if !found || !repoOwnerPattern.MatchString(owner) {
-		return false
-	}
-	return name != "." && name != ".." && repoNamePattern.MatchString(name)
-}
-
 // parseIssueRepo decodes the tri-state `repo` field of an issue write. Absent → (nil, false): leave
 // it alone. JSON null → (nil, true): clear it, so the issue resolves through its parent chain and the
-// project's default again. A string → its canonical `owner/name` (externalRef's canonicalisation,
-// which lowercases and drops a `.git` suffix), provided GitHub could hold a repository of that
-// name (githubCouldHoldRepo); anything else → 400 INVALID_ISSUE. The grammar is checked here and
-// not in externalRef, which this borrows the shape check and the canonicalisation from, because
-// externalRef also resolves a reference to an external issue already linked
-// (resolveIssueRef): a row written before this gate existed is still to be found by the
-// reference that names it, and refusing the grammar there would answer INVALID_ISSUE_REF for a
-// link the server itself stored.
+// project's default again. A string, trimmed of the space around it → its canonical `owner/name`,
+// provided GitHub could hold a repository of that name (refs.ParseGitHubRepo, which lowercases,
+// drops a `.git` suffix and holds the stored form to GitHub's names); anything else → 400
+// INVALID_ISSUE. Since migration 20261112004945 no repo_projects row stands behind an issue's own
+// repository, so this is the whole gate on the value, and the value goes on to GitHub reads of its
+// own: the CI repair asks GitHub about every distinct repository an issue names (cireconcile's
+// covered), once a pass, and the Legion daemon prepares a working copy from it. A name GitHub's
+// rule refuses can only answer "no such repository" there, every pass, so it is refused at the
+// write instead. The rule is held here and not in the reading of an issue reference's repository
+// (refs.ParseExternalRef), because externalRef resolves a reference to an external issue already
+// linked (resolveIssueRef): a row written before this gate existed is still to be found by the
+// reference that names it, and refusing the rule there would answer INVALID_ISSUE_REF for a link
+// the server itself stored.
 func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error) {
 	if len(raw) == 0 {
 		return nil, false, nil
@@ -67,10 +38,11 @@ func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" or null`)
 	}
-	canonical, _, err := externalRef(strings.TrimSpace(value) + "#1")
-	if err != nil || !githubCouldHoldRepo(canonical) {
+	owner, name, err := refs.ParseGitHubRepo(strings.TrimSpace(value))
+	if err != nil {
 		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" (got %q)`, value)
 	}
+	canonical := owner + "/" + name
 	return &canonical, true, nil
 }
 
@@ -122,8 +94,8 @@ var repositoryHiddenFromWriterQuery = `select ` + refs.RepositoryHidden("$1::tex
 // write's transaction, after the write has read its issue or its project as who reads them, so an
 // object who does not see still answers as one nobody holds, and before anything is written. The
 // server's own viewer and every viewer of a deployment with no private project read nothing for
-// it and are refused nothing, as before (R9): there the clause would hide from a credential that
-// lists projects a repository no issue of its projects resolves to yet, which it has always named.
+// it and are refused nothing, as before (R9): there the clause hides nothing from an open viewer,
+// and a restricted member's repo is refused before this (refuseRepoOfRestrictedMember).
 func refuseRepoHidden(ctx context.Context, q queryer, who model.Actor, repo *string) error {
 	if repo == nil || (who.Viewer != nil && (who.Viewer.All || !who.Viewer.AnyPrivate)) {
 		return nil
@@ -158,4 +130,64 @@ func (r *repoScan) resolve(key string) (own, resolved *string, err error) {
 		return nil, nil, fmt.Errorf("resolve the repository of %s: its parent chain is deeper than %d links or loops", key, parentDepthCap)
 	}
 	return r.own, r.resolved, nil
+}
+
+// checkIssueRepository is the repository a check's issue resolves to: its own, the nearest one
+// above it, or its project's default (refs.IssueRepository), under the canonical name that
+// repository is called today (refs.CanonicalRepo). It answers three states, and every caller
+// says which it has: a repository; nil answered, the issue that resolves to none; and nil
+// unanswered, either read having failed, where Dispatch cannot say which of the two the issue
+// is. q is the pool or transaction the two reads are made on.
+//
+// The two nothings part here, where the reads are made and the error is in hand, rather than as
+// one nil standing for both that every caller has to guess the meaning of, because the guess has
+// one right answer and it is not the same one at each call site: an issue that resolves to no
+// repository is a fact about the work, and no pass of such a check stands, while a read of
+// Dispatch's own that did not answer is model.ReasonReadFailed, and a database hiccup must not
+// make a reviewer refuse an approval.
+//
+// The canonical name is taken here, before anything asks GitHub, because everything downstream
+// takes this answer: the results read's default branch and onBranch, and the record route's
+// refusal of a commit the repository does not hold and its read-through of the pull requests
+// GitHub names for that commit (results_linked.go's refuseUnknownCommit, results.go's
+// readThroughPullRequests).
+// An issue recorded under a name that was renamed away would otherwise have the App asked
+// about that name, which GitHub answers 404 for, and every result of that issue would read
+// unknown. A repository with no rename is its own canonical name, so this costs one read and
+// changes no answer for it.
+//
+// Both routes resolve through this one function: two hand-kept copies of this resolve are how
+// a refusal and a result's answer come to name different repositories.
+//
+// It answers a repository whether or not Dispatch can read it — the deployment holding no App
+// key, the App having lost the repository — because the results read needs it for an answer
+// that asks GitHub nothing: onBranch answers from the branch_commits row Dispatch already
+// holds while that row stands, with no call at all (delivery.Branches.CommitOnBranch), and a
+// nil here would turn every such answer unknown. branchBases walks the branches for that row
+// whenever Dispatch can name one with no read of GitHub, readable just now or not: an
+// `after_merge` check whose issue merged asks the merge's own branch first, and every check
+// compared with a default branch asks the name this process has already resolved once, which
+// delivery keeps for the purpose. A repository no read of this process ever named a default
+// branch for has that one name fewer to ask the stored answer about, since a row is keyed by
+// a branch: an `after_merge` check whose issue merged asks the branch of the merge there all
+// the same, and a check with no branch left to name is the one that compares nothing. The
+// record route makes the no-App-key check at its own call site, where every use of the answer
+// is a GitHub round trip, and takes the repository alone: a resolve that did not answer stores
+// the result there exactly as an issue with no repository does, since neither is GitHub's
+// proof that the repository holds no such commit (results_linked.go, refuseUnknownCommit).
+func (s *server) checkIssueRepository(ctx context.Context, q refs.Queryer, issueKey string) (*string, bool) {
+	repo, err := refs.IssueRepository(ctx, q, issueKey)
+	if err != nil {
+		slog.Warn("dispatch: resolve the repository of a check's issue", "issue", issueKey, "error", err)
+		return nil, false
+	}
+	if repo == nil {
+		return nil, true
+	}
+	canonical, err := refs.CanonicalRepo(ctx, q, *repo)
+	if err != nil {
+		slog.Warn("dispatch: canonical name of a check's repository", "issue", issueKey, "repo", *repo, "error", err)
+		return nil, false
+	}
+	return &canonical, true
 }

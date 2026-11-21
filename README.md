@@ -20,7 +20,7 @@ The coordinator: a Go daemon and the `legion` CLI. The daemon works the Dispatch
 it for you, and an agent that finds a problem outside its issue asks you before anything is filed.
 Each admitted issue gets an architect, which writes the spec, splits the work and asks you what
 only you can answer. Once you approve the spec, the daemon runs the phase workers in turn: planner,
-implementer, tester, reviewer and merger. Each agent is an [Oh My Pi](https://github.com/sjawhar/oh-my-pi) session, in a tmux
+implementer, tester, reviewer and merger. Each agent is an [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, in a tmux
 pane on one host or in an [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
 pod on Kubernetes, and each phase records a handoff on the issue in Dispatch for the next role,
 and a restarted agent, to read. The daemon writes the issue's status back to Dispatch as it moves
@@ -75,7 +75,7 @@ its deployment names a broker.
 
 [The Secrets Broker's documentation](https://cybermonklabs.github.io/legion/broker/) ·
 [a walkthrough video of one request](https://cybermonklabs.github.io/legion/broker/walkthrough/) ·
-[install `agent-secrets` and give a machine access](packages/envoy/cmd/agent-secrets/README.md#install)
+[install `agent-secrets` and give a machine access](packages/envoy/cmd/cipher/README.md#install)
 
 [![The secrets broker's approval page for one secret request: the secret, the enrollment the broker verified asked, the reason, how long the grant lasts, the approver, and Approve and Deny buttons](docs/site/public/media/broker/credential-request.png)](https://cybermonklabs.github.io/legion/broker/walkthrough/)
 
@@ -113,7 +113,7 @@ bun run docs:dev
 | Path | What it holds |
 | --- | --- |
 | `packages/daemon/` | The Legion daemon and the `legion` CLI, in Go, with the role prompts the binary embeds, and the worker image's Dockerfile. |
-| `packages/envoy/` | Go: the Envoy listener, Dispatch's server (`cmd/dispatch`), the Secrets Broker (`cmd/broker`) and its `agent-secrets` clients. |
+| `packages/envoy/` | Go: the Envoy listener, Dispatch's server (`cmd/dispatch`), the Secrets Broker (`cmd/cipherd`) and its `agent-secrets` clients. |
 | `packages/dispatch/` | Dispatch's web app, in React, which Dispatch's server serves. |
 | `packages/proof-editor/` | Dispatch's document editor, copied from [proof-sdk](https://github.com/EveryInc/proof-sdk). |
 | `packages/contracts/` | The event contracts and the Dispatch specs the `dispatch` command is built from, which the packages share, and the Go code generated from them. |
@@ -141,11 +141,19 @@ names. The default `GOTOOLCHAIN=auto` downloads that toolchain when the installe
 root `package.json`.
 
 ```sh
-bun install                                          # every workspace
-bunx biome check .                                   # what CI's required lint job runs; `<package>/` for one package
-cd packages/<package> && bun run typecheck && bun run test
-go -C packages/daemon test ./...                     # the Legion daemon
-go -C packages/envoy test ./...                      # Envoy, Dispatch's server and the Secrets Broker
+bun install                                                  # every workspace
+bunx biome check .                                           # what CI's required lint job runs; `<package>/` for one package
+(cd packages/<package> && bun run typecheck && bun run test) # the root has no tsconfig.json and no test script
+(cd packages/<package> && bun test <file> -t '<test name>')  # one test
+bun test scripts/<file or directory>                         # scripts/ is no workspace
+bunx tsc --noEmit -p scripts/dispatch                        # likewise each scripts/ directory with a tsconfig.json
+go -C packages/daemon test ./...                             # the Legion daemon
+go -C packages/envoy test ./...                              # Envoy, Dispatch's server and the Secrets Broker
+go -C packages/daemon test ./internal/api -run '^TestName$'  # one test
+go -C packages/daemon vet -tags e2e ./...                    # the live proofs' drivers, which build only with this tag
+gofmt -l packages/daemon packages/envoy
+(cd packages/daemon && go build ./cmd/legion)                # then ./legion <command> --help
+bun run dispatch:local                                       # Dispatch, seeded and signed in
 ```
 
 Envoy's Go tests start NATS in Docker, and the tests that need a Postgres read its address from the
@@ -154,10 +162,33 @@ tests use a running nats-server with JetStream instead when `LEGION_TEST_NATS_UR
 and `LEGION_TEST_NATS_MONITOR_URL` (its monitoring endpoint) are both set, one package at a time
 (`go test -p 1`); that server, and any nats-server an Envoy of your own runs against, must be 2.12
 or later, since an older one answers a retry of a publish its full stream refused as a duplicate
-it does not hold. The repository's conventions and each part's commands are in `AGENTS.md` at the
-root and in the `AGENTS.md` beside most packages; `skills/AGENTS.md` covers the skills. The
-documentation site's [contributing page](https://cybermonklabs.github.io/legion/contributing/) covers
-writing its pages.
+it does not hold. The suites that run the real Oh My Pi or Claude Code skip unless
+`LEGION_TEST_OMP` or `LEGION_TEST_CLAUDE` names the pinned binary, and the Bun ones print no line
+saying so; the Oh My Pi suites of `packages/pi-envoy` and `packages/pi-legion` that need NATS read
+`LEGION_TEST_NATS_URL` too. On GitHub Actions they fail instead, and `.github/actions/install-omp`
+and `.github/actions/install-claude-code` install the pins there.
+
+A change worth a changelog line adds a fragment to each package it changes that
+`.github/changelog-packages` lists. Open the pull request first, since the fragment carries its
+number, then run, in the package:
+
+```sh
+go run github.com/miniscruff/changie@v1.26.0 new --kind <Added|Changed|Removed|Fixed> --body '<text>' --custom Issue=pr<number>
+```
+
+Two such runs for one package and kind in the same second write one file, and the first entry is
+lost. The package's `.changie.yaml` header names the changie commands never to run there.
+
+After a merge of `main` that touched `bun.lock`, take one side whole
+(`git checkout origin/main -- bun.lock`), then run `bun install`. Commit what it writes only when
+the difference holds just the lines the change explains, `lockfileVersion` has not moved, and no
+entry names a registry other than npm's: a configured mirror writes its own address into every
+entry.
+
+A package's own commands are in its `README.md` where it has one, and the `AGENTS.md` at the root
+and beside most packages holds the rules for working in that part; `skills/AGENTS.md` covers the
+skills. The documentation site's [contributing page](https://cybermonklabs.github.io/legion/contributing/)
+covers writing its pages.
 
 ## License
 

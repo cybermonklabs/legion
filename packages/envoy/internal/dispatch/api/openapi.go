@@ -321,7 +321,7 @@ func openAPIReach(t reflect.Type, into map[reflect.Type]bool, carried *[]reflect
 // its own — the reflector writes its fields where they stand, as it writes an unnamed struct's,
 // and the document declares no schema for it — so it is walked here rather than reached as a
 // type, and a rawFieldSchemas row naming one of its fields is keyed by the object that carries
-// it, which is how the emitter reads the row back (rawFieldKey).
+// it, which is how the emitter reads the row back (propertyKey).
 func openAPIReachFields(owner, t reflect.Type, into map[reflect.Type]bool, carried *[]reflect.Type) {
 	for index := range t.NumField() {
 		field := t.Field(index)
@@ -391,15 +391,14 @@ func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 	if !p.Processed {
 		return nil
 	}
+	key, keyed := e.propertyKey(p)
 	// A field no answer carries is no property of the object: the document leaves it out, so no
 	// client is told of a member it will never read (unservedFields).
-	if key, keyed := e.propertyKey(p); keyed {
-		if _, unserved := unservedFields[key]; unserved {
-			e.unservedSeen[key] = true
-			return jsonschema.ErrSkipProperty
-		}
+	if _, unserved := unservedFields[key]; keyed && unserved {
+		e.unservedSeen[key] = true
+		return jsonschema.ErrSkipProperty
 	}
-	if named, key := e.rawFieldKey(p); named {
+	if _, named := rawFieldSchemas[key]; keyed && named {
 		e.rawFieldsSeen[key] = true
 		if p.Field.Type != reflect.TypeOf(json.RawMessage{}) {
 			return fmt.Errorf("rawFieldSchemas row %s names a %s field: the table is for the "+
@@ -504,17 +503,6 @@ func openAPIAllowNullEnum(schema *jsonschema.Schema) {
 		return
 	}
 	schema.Enum = append(schema.Enum, nil)
-}
-
-// rawFieldKey answers the rawFieldSchemas key of one property, the rawFieldKeyOf of the owning
-// struct's reflect.Type and the property's json name, and whether that table names it.
-func (e *openAPIEmitter) rawFieldKey(p jsonschema.InterceptPropParams) (bool, rawFieldKeyOf) {
-	key, keyed := e.propertyKey(p)
-	if !keyed {
-		return false, rawFieldKeyOf{}
-	}
-	_, named := rawFieldSchemas[key]
-	return named, key
 }
 
 // propertyKey is the rawFieldKeyOf of one property, the owning struct's reflect.Type and the

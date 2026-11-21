@@ -65,8 +65,8 @@ func (c *fragmentCensus) readAs(t *testing.T, seed privateSeed, caller privateCa
 }
 
 // gateWalkTarget is the path the walk reads a GET row at: its wildcards filled by its Probe with
-// objects (censusObjects.fill), a deploy run by an id no run holds, since the seed stores none and
-// the row resolves its caller before it reads one, and the query censusQueries gives the row.
+// objects (censusObjects.fill), a deploy run by an id no run holds, since the row resolves its
+// caller before it reads one, and the query censusQueries gives the row.
 func gateWalkTarget(t *testing.T, objects censusObjects, name, pattern string) string {
 	t.Helper()
 	probe := readClasses[name].Probe

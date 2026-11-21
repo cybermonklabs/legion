@@ -706,7 +706,7 @@ resources each of those is, the sandbox and the public origin in the paragraph u
 | Private services access range and connection | Cloud SQL receives a private IP on the component's VPC. | Not built |
 | Autopilot cluster | Enables the Secret Manager add-on, Secret Sync with rotation (GKE 1.33 or later; a new Secret Manager version reaches a synced Kubernetes Secret whose SecretProviderClass reads `versions/latest` without an apply), and Workload Identity. | Built |
 | Cloud SQL instance, database, user and generated password | PostgreSQL 18 by default (`databaseVersion`), private IP only, automated backups and point-in-time recovery. | Not built |
-| Kubernetes namespace (not with `existingNamespace`), ServiceAccount `<hostname>`, Secrets, ConfigMap and SecretProviderClass | The app's and the listener's account, which Workload Identity lets mount the NATS seed; the generated application secrets (`<hostname>-dispatch`), the listener's generated bearer in a Secret of its own (`<hostname>-listener`, one key `ENVOY_API_TOKEN`), the front door's auth key (`<hostname>-tailnet-auth-key`, one key `TS_AUTHKEY`), the Serve configuration (ConfigMap `<hostname>-serve`, rendered from the component's own names and registered after the Tailscale Service), and the NATS seed mount (and, with `azureEmbedKeySecret`, a second SecretProviderClass, `<hostname>-azure-embed-key`, for the Azure embedder's key, and with `chatTokenSecret` a third, `<hostname>-chat-token`, for the answerer's bearer token). | Not built |
+| Kubernetes namespace (not with `existingNamespace`), ServiceAccounts `<hostname>` and `<hostname>-listener`, Secrets, ConfigMap and SecretProviderClass | The app's account, `<hostname>`, which Workload Identity lets mount the NATS seed and whose projected token the app presents to the listener, and the listener's own, `<hostname>-listener`, which Workload Identity lets mount the seed and which holds nothing else, so no listener pod carries the app's account; the generated application secrets (`<hostname>-dispatch`), the listener's generated bearer in a Secret of its own (`<hostname>-listener`, one key `ENVOY_API_TOKEN`), the front door's auth key (`<hostname>-tailnet-auth-key`, one key `TS_AUTHKEY`), the Serve configuration (ConfigMap `<hostname>-serve`, rendered from the component's own names and registered after the Tailscale Service), and the NATS seed mount (and, with `azureEmbedKeySecret`, a second SecretProviderClass, `<hostname>-azure-embed-key`, for the Azure embedder's key, and with `chatTokenSecret` a third, `<hostname>-chat-token`, for the answerer's bearer token). | Not built |
 | Tailscale Service `svc:<hostname>` | The name every reader reaches Dispatch at, which the component declares itself through the `tailscale` provider it is given: one port, `tcp:443`, no tags, and a comment naming `<hostname>.<tailnetDnsName>`, the tailnet name it serves. It requests no tags because the OAuth client that creates it may not be allowed to set any, and Tailscale refuses a Service whose requested tags that client may not set; the hosts' own `tags` are what auto-approve them as the Service's hosts, and a tailnet policy grants the Service by its name. It is a tailnet resource and no child of the cluster, so it is parented on the component alone, its `protect` follows `deletionProtection` rather than being fixed (a child's explicit `Protect` overrides what it would inherit, so a fixed one could be changed only by a resource transform on the component or a state edit), and it is registered after the Cloud SQL instance. The provider's create is an upsert, so one that already exists under that name is adopted, its comment and ports overwritten; the request carries no tags, and Tailscale's API reference does not say whether the live Service keeps its own ([Moving a stack that declares the Service itself](#moving-a-stack-that-declares-the-service-itself)). | Not built |
 | ServiceAccount `<hostname>-tailnet`, Role and RoleBinding `<hostname>-tailnet-tls` | The front door's pods run as an account of their own, which the Role lets `get` and `patch` the one Secret `<hostname>-tailnet-tls` and nothing else (no `create`, since the component creates it, and no `update`, since the pods send merge patches), so neither the app nor the listener, nor the account `serviceAccountSubject` names, can write the certificate. The pod does not automount the account's token: only `cert-publish`, which calls the API server, mounts it, so the tailnet-facing `tailscale` and `advertiser` containers hold no credential for the Secret. The RoleBinding names the Role by an output that waits on the Role's ID, so a preview that creates the Role leaves the name unknown and pulumi-kubernetes sends no server-side dry run of the binding, which an account without the `bind` verb would see refused as "not found" while the Role does not exist. | Not built |
 | Secret `<hostname>-tailnet-tls` | The Tailscale Service's certificate, its key and the ACME account key (keys `tls.crt`, `tls.key` and `acme-account.key.pem`), which the front door's pods publish and seed from ([The front door](#the-front-door)). The component declares it with no data and ignores its contents, so a later preview never plans to undo what the pods wrote, and no pod template carries its checksum, so a renewed certificate rolls no pod. | Not built |
@@ -1021,10 +1021,10 @@ the `url` output and the app's `DISPATCH_SERVER_URL`. It is refused beside the t
 front door's name is then Dispatch's origin; a second origin beside that one is `outsideOrigin`.
 With it the component builds what the sandbox builds and requires `natsInCluster`, refuses
 `frontDoorReplicas` and `frontDoorPdbMinAvailable`, as the sandbox does, and takes the sign-in
-group and `outsideOrigin` as it takes them beside the front door; with the
-sign-in group its host must be one Google takes in a redirect URI, and the Google client lists
-`<publicOrigin>/auth/callback`. `allowedNamespaces` is optional there:
-the entrance forwards to the app's Service `<hostname>` on port 8766, or straight to the app's pods,
+group, `signInWorkspaceDomains`, `outsideOrigin` and `signInPasskey` as it takes them beside the
+front door; with the sign-in group its host must be one Google takes in a redirect URI, and the
+Google client lists `<publicOrigin>/auth/callback`. `allowedNamespaces` is optional there: the
+entrance forwards to the app's Service `<hostname>` on port 8766, or straight to the app's pods,
 labelled `app=<hostname>`, through a network endpoint group of that Service.
 
 `loadBalancerSourceRanges` and `networkEndpointGroupName`, unset by default, describe that
@@ -1058,9 +1058,9 @@ come from another resource or stack, such as one built from the backend service'
 resolves, a value of any other form is refused naming `iapAudience`, and one holding an nkey seed
 is refused without echoing it. It needs `publicOrigin`, the origin that load balancer serves, and
 `signInDomain`, the Workspace domain whose accounts may use Dispatch, which Dispatch holds the
-token's `hd` claim to; it refuses `signInClientId`, `signInClientSecret` and
-`outsideOrigin`, since IAP signs a person in and a browser reaches Dispatch through it alone. It
-renders `DISPATCH_IDENTITY=iap`, `DISPATCH_IAP_AUDIENCE=<iapAudience>` and
+token's `hd` claim to; it refuses `signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`,
+`signInPasskey` and `outsideOrigin`, since IAP signs a person in and a browser reaches Dispatch
+through it alone. It renders `DISPATCH_IDENTITY=iap`, `DISPATCH_IAP_AUDIENCE=<iapAudience>` and
 `DISPATCH_SIGNIN_DOMAIN=<signInDomain>` on the app's container, in the place the sign-in variables
 hold, right before `DISPATCH_SERVER_URL`, and no other `DISPATCH_SIGNIN_*` variable; the Secret
 holds no client secret. Its `envoyImage` must be built from a cybermonklabs/legion `main` commit
@@ -1104,6 +1104,44 @@ The input needs the tailnet group or `publicOrigin`, so the sandbox refuses it b
 not the front door's. An `envoyImage` whose `envoy-dispatch` predates the setting ignores it, as
 it ignores every variable its settings table (`packages/envoy/cmd/dispatch/settings.go`) does not
 list.
+
+`signInPasskey`, unset by default, renders `DISPATCH_SIGNIN_PASSKEY=1` on the app's container,
+right after `DISPATCH_OUTSIDE_ORIGIN`, which turns on Dispatch's passkey sign-in at `outsideOrigin`
+for people from outside the company: the passkey's relying party is that origin, and its relying
+party ID is that origin's host. It needs `outsideOrigin` and is refused without it, naming it. It
+needs the sign-in group too, though it is not in that group: a person from outside enrolls a
+passkey with an invitation a project owner makes while signed in through Google, so without that
+group nobody could invite anyone, and it is refused with the clause naming each sign-in input
+still unset. Google signs in the Workspace's own people alone, and Dispatch answers
+`/auth/start` and `/auth/callback` at `outsideOrigin` with 404 whether it is set or not, so the
+Google client lists no `<outsideOrigin>/auth/callback`. The second origin's host is held to the
+rule the `outsideOrigin` paragraph states, since the sign-in inputs are set, and that rule keeps it
+a domain name, never an IP address: a passkey's relying party ID must be a domain name. List every
+other domain the Workspace owns in `signInWorkspaceDomains` (below). Dispatch refuses an
+invitation to an address on `signInDomain`, on a listed domain or on a subdomain of either, and
+takes an address on a domain left out for an outside person's, so a Workspace account on that
+domain could hold a passkey, which Workspace offboarding does not end: suspending or deleting the
+account in the Workspace touches no passkey. The sandbox refuses it by
+name, as it refuses `outsideOrigin`, and so does `iapAudience`, since IAP signs a person in. With
+it unset the component renders exactly what it rendered before it existed. An `envoyImage` whose
+`envoy-dispatch` predates the setting ignores it, as it ignores every variable its settings table
+does not list.
+
+`signInWorkspaceDomains`, unset by default, lists the other domains the Google Workspace owns
+beside `signInDomain`. It renders `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` on the app's container, the
+entries comma-joined in the order given, right after `DISPATCH_SIGNIN_DOMAIN`. Dispatch treats an
+address on `signInDomain`, on one of these domains, or on a subdomain of either as a Workspace
+address, which no invitation or passkey may use, so list every domain the Workspace owns. Dispatch
+reads the setting
+only with Google sign-in, so the input needs the sign-in group, though it is not in that group. It
+is refused without that group, with the clause naming each sign-in input still unset; the sandbox
+and `iapAudience` refuse it by name. Each entry must be one Dispatch takes once it trims the
+entry's surrounding whitespace, as it does: lowercase, taken by IDNA lookup, written in Unicode
+(`bücher.example`) or as its A-labels (`xn--bcher-kva.example`), and then a DNS name of two labels
+or more, each of at most 63 characters, at most 253 characters in all. The entries render trimmed.
+An empty entry, or any other, is refused naming its index. With it unset the component
+renders exactly what it rendered before it existed. An `envoyImage` whose `envoy-dispatch`
+predates the setting ignores it.
 
 `databaseVersion` defaults to `POSTGRES_18`; envoy-infra v2.9.1 and every release before this
 change defaulted to `POSTGRES_16`. A stack that leaves `databaseVersion` unset is upgraded in place
@@ -1546,7 +1584,11 @@ paragraph above states for each label of that origin's host, since the front doo
 `<hostname>.<tailnetDnsName>` on a certificate. It refuses a hostname that breaks that rule in
 every mode, so a stack in the cluster-only mode or the sandbox keeps a hostname a front door can
 later serve, and before any resource registers. The component also refuses invalid tailnet DNS
-names, tags, image references, sign-in domains,
+names, tags, image references, a `signInDomain` Dispatch would refuse at its boot (any whose text,
+trimmed of surrounding whitespace as Dispatch trims it, is not a lowercase DNS name in ASCII of two
+labels or more, each of at most 63 characters, at most 253 in all, the rule `signInWorkspaceDomains`
+entries are held to once IDNA lookup has made them ASCII; the domain renders trimmed), a
+`signInClientId` of whitespace alone, which Dispatch trims to nothing and refuses to boot without,
 namespaces, allowed namespaces, an `appCpu`, `appMemory`, `proxyCpu`, `proxyMemory`,
 `appEphemeralStorage` or `proxyEphemeralStorage` outside
 Autopilot's bounds for the app pod (above), a `pprofPort` outside 1-65535 or on a port the app pod
@@ -1564,12 +1606,13 @@ refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is
 `accessAccounts` entry that is not a service account's subject
 (`system:serviceaccount:<namespace>:<name>`, so no entry holds a comma), an `accessAccounts` entry
 a set `oidcAccounts` leaves out, a `projectOwnerFallback` that is not a lowercase email (the three
-refusals Dispatch would otherwise make at boot), an `outsideOrigin` that
-breaks the rule the paragraph on it above states, a `publicOrigin` that breaks the rule its own
-paragraph states or is set beside the tailnet inputs, an `iapAudience` without `publicOrigin` or
-`signInDomain` or beside `signInClientId`, `signInClientSecret` or
+refusals Dispatch would otherwise make at boot), an `outsideOrigin` that breaks the rule the
+paragraph on it above states, a `publicOrigin` that breaks the rule its own paragraph states or is
+set beside the tailnet inputs, an `iapAudience` without `publicOrigin` or `signInDomain` or beside
+`signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`, `signInPasskey` or
 `outsideOrigin`, and, once it resolves, an `iapAudience` of another form than a backend service's,
-an
+a `signInPasskey` without `outsideOrigin` or the sign-in inputs, a `signInWorkspaceDomains`
+without the sign-in inputs or with an entry Dispatch would refuse, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside
@@ -1623,17 +1666,22 @@ the first apply stops at the app's readiness wait, and a grant made then lets th
 finish. The component itself grants that
 principal `roles/secretmanager.secretAccessor` only on the NATS seed secret (and on the Azure key
 secret when `azureEmbedKeySecret` is set, and on the chat token's secret when `chatTokenSecret`
-is), and the app and the listener, which mount the seed,
-wait for that grant to be written, as the app waits for the Azure key's and the chat token's. IAM can take minutes to apply
+is), and grants the listener's own account, `<hostname>-listener`, the same role on the NATS seed
+secret alone (`<hostname>-listener-nats-seed-accessor`); the app and the listener, which mount the
+seed, each wait for their own account's grant to be written, as the app waits for the Azure key's
+and the chat token's. IAM can take minutes to apply
 a new binding (Google cites typically two, sometimes seven or more), and a pod restarts until it
-can mount. The app and the listener share that one Kubernetes service account, which holds no
-Role: no pod creates a Secret, since each front-door node keeps its tailnet state on its own pod's
-`emptyDir`, and the front door's pods run as `<hostname>-tailnet`, whose Role lets it write only
-the Secret `<hostname>-tailnet-tls`.
+can mount. Each pod runs as an account of its own: the app as `<hostname>`, the listener as
+`<hostname>-listener` and the front door as `<hostname>-tailnet`, so only the app's pods can
+project a token naming `<hostname>`, the one account the listener takes a send's role mark from.
+The app's and the listener's accounts hold no Role: no pod creates a Secret, since each front-door
+node keeps its tailnet state on its own pod's `emptyDir`, and the front door's account's Role lets
+it `get` and `patch` only the Secret `<hostname>-tailnet-tls`, so no account of the component may
+create a pod or a service-account token.
 
 The `serviceAccountIssuer` and `serviceAccountSubject` outputs are the issuer and subject of the
-app's and the listener's Kubernetes service-account tokens (the front door's pods run as an
-account the subject never names): the cluster's own issuer,
+app's Kubernetes service-account tokens (the listener's and the front door's pods run as accounts
+the subject never names): the cluster's own issuer,
 `https://container.googleapis.com/v1/projects/<project id>/locations/<location>/clusters/<cluster name>`,
 and `system:serviceaccount:<namespace>:<hostname>`. For the component's own cluster, `<location>`
 is `region` and `<cluster name>` is `hostname`. With `existingCluster` they are the location that
@@ -1641,7 +1689,7 @@ the lookup reports and the name that `existingCluster` gives. The keyless Azure 
 them, for the embedder and the answerer alike: the
 managed identity `azureClientId` names holds a federated identity credential whose issuer is
 `serviceAccountIssuer`, whose subject is `serviceAccountSubject` and whose audience is
-`api://AzureADTokenExchange` (or the `azureFederationAudience` set), which admits these pods'
+`api://AzureADTokenExchange` (or the `azureFederationAudience` set), which admits the app pods'
 projected tokens and no other, and the identity needs a role on the Azure AI Foundry resource that
 lets it call each deployment it is given, the embedding deployment's and the chat deployment's.
 The component writes nothing in Azure: the consumer's Azure program
@@ -1661,9 +1709,24 @@ alone.
 
 The app pod runs `envoy-dispatch` with the Cloud SQL Auth Proxy native sidecar, which listens only
 on `127.0.0.1:5432` with `--private-ip`. The listener pod runs `envoy-listener` alone, bound to
-`0.0.0.0:9020` rather than to loopback, so its API demands a bearer: the component generates one,
-keeps it in the Secret `<hostname>-listener`, and gives the same value to `envoy-dispatch` as
-`ENVOY_TOKEN`. The listener runs as machine `<hostname>`, so the hub's user for this deployment
+`0.0.0.0:9020` rather than to loopback, so its API demands a bearer. It verifies the app's own
+projected service-account token: `ENVOY_OIDC_ISSUER` is the cluster's issuer (the
+`serviceAccountIssuer` output), `ENVOY_OIDC_AUDIENCE` the listener's own URL,
+`http://<hostname>-listener.<namespace>.svc.cluster.local:9020`, and `ENVOY_OIDC_ACCOUNTS` and
+`ENVOY_DISPATCH_PRINCIPAL` both `system:serviceaccount:<namespace>:<hostname>`, so that branch
+admits the app's account alone, and a send's role mark (the role a message for a `role:` route is
+sent for) is taken from that account alone. The app pod mounts that token, minted by the kubelet
+for the listener's URL with `expirationSeconds: 3600` and rewritten before it expires, read-only at
+`/var/run/secrets/envoy-listener/token`, which `ENVOY_ACCOUNT_TOKEN_FILE` names and Dispatch reads
+at every listener call. The component also generates a shared bearer, keeps it in the Secret
+`<hostname>-listener`, and gives it to the listener as `ENVOY_API_TOKEN` and to `envoy-dispatch`
+as `ENVOY_TOKEN`, which Dispatch presents only on a call with no role mark that the listener refused
+`401` on the account token twice: a listener of the release before this one verifies no account
+token, and the app does not wait for the listener's rollout (in the SOCKS5 mode the listener waits
+for the front door, which the app must come back without), so while both roll a new app pod can
+reach an old listener pod, and such a call is made again on the shared token rather than refused. A
+send for a `role:` route is never made on it: one an old listener refuses fails its attempt, which
+the delivery records. The listener runs as machine `<hostname>`, so the hub's user for this deployment
 sets `dispatchMachineId` to the component's `hostname`. Both Envoy containers mount the NATS seed
 at `/var/run/secrets/envoy/nats-seed`; the seed remains outside Pulumi state. With
 `agentSecretsUrl` set, the `envoy-dispatch` container alone also mounts its projected
@@ -2228,7 +2291,16 @@ every other property above is unchanged:
 ```
 
 Its app then carries `DISPATCH_OUTSIDE_ORIGIN=https://dispatch-outside.example.com`
-([Inputs](#inputs-1)).
+([Inputs](#inputs-1)). A deployment that signs them in with a passkey also sets
+`signInPasskey: true`, and its app then carries `DISPATCH_SIGNIN_PASSKEY=1` right after
+`DISPATCH_OUTSIDE_ORIGIN`. It lists the other domains its Workspace owns, so that Dispatch treats
+an address on any of them as the Workspace's:
+
+```yaml
+      signInWorkspaceDomains: [example.net, example.org]
+```
+
+Its app then also carries `DISPATCH_SIGNIN_WORKSPACE_DOMAINS=example.net,example.org`.
 
 A sandbox stack sets neither the tailnet group nor the sign-in group, and sets the two inputs the
 mode then requires: `natsInCluster`, since no front door runs a proxy to a tailnet hub, and
@@ -3693,8 +3765,9 @@ below 2 s moves it earlier). Measured on the hub's image (nats-server 2.15.1, na
 under an authorization timeout of 5 s, an answer after 3.5 s failed the client at 2.1 s. The
 TypeScript client the plugins use (nats.js 2.29.3) waits that PING out: on nats-server 2.15.1 it
 was admitted on answers at 1.0 s and 1.8 s under the default timeout and at 3.5 s under 5 s, while
-nats.go was admitted at 1.0 s and 1.8 s and failed at 3.5 s. So the 1.5 s budget is the Go
-client's. Without a callout the text is byte for byte what it was before callouts existed. With a
+nats.go was admitted at 1.0 s and 1.8 s and failed at 3.5 s. nats.go v1.55.0 still rejects an
+unexpected first protocol response during connection initialization (`nats.go:2942-3306`). So the
+1.5 s budget is the Go client's. Without a callout the text is byte for byte what it was before callouts existed. With a
 `noAuthUser`, `no_auth_user` follows the authorization block, naming that user's key.
 
 With a callout, the text then ends with three top-level lines, after the authorization block and
@@ -3724,8 +3797,8 @@ connection, because its process froze or its node lost its network. dispatch://I
 the auth service a liveness probe that restarts a replica whose process stops answering, which acts
 in seconds. A liveness probe does nothing when a replica's node loses its network: then only these
 lines act, in 40 to 80 s. The lines do not catch a replica whose request handler deadlocks while its
-process runs, since nats.go answers a PING from its read loop (nats.go v1.53.1 `processPing`, called
-at `parser.go:324`). Neither the ping nor the pod's readiness takes such a replica out of the queue
+process runs, since nats.go answers a PING from its read loop (nats.go v1.55.0 `processPing`,
+called at `nats.go:4278`, from `parser.go:324`). Neither the ping nor the pod's readiness takes such a replica out of the queue
 group: a queue subscriber leaves the group only when the service itself unsubscribes or closes its
 connection, so INFRA-840's service must do that when its handler stops answering.
 
@@ -3904,9 +3977,13 @@ sessions that share one user holding it, as a `gcp:NatsHub`'s `sessionUser` does
 each receive every other session's replies, so request/reply from such a session is refused by
 design.
 The listener's connection probe of a session needs no rule of its own: it is a request on that
-same relay subject, which the session's relay subscription receives and answers on the probe's own
-reply inbox under this set's `_INBOX.>` publish, and the listener's `notifications.>` publish and
-`_INBOX.>` subscribe carry the listener's side.
+same relay subject, which the session's relay subscription receives and answers under this set's
+`_INBOX.>` publish, and the listener's `notifications.>` publish and `_INBOX.>` subscribe carry the
+listener's side. Its reply subject names the session, `<reply inbox>.<session id>.<random token>`
+(`bus.SessionReplySubject`: a new reply inbox of the listener's, the session's id, and 128 random
+bits), as each relay frame's does under the relay's one reply inbox. The probe waits only on the
+subject it made for that session, and the relay moves a frame only on a reply whose subject names
+the session the frame was sent to: a reply naming another session changes nothing.
 A host's user, holding `HostPermissions`, subscribes to `_INBOX.>` for its listener.
 
 `HostPermissions(machineID)` is the grant of a host's one NATS user, which its listener and every
@@ -3924,8 +4001,9 @@ credential-free session user holding `SessionPermissions`, are checked against r
 2.10 and 2.15.1 servers, the session user's refusal of the stream's stored-message get included,
 as are a
 session consumer the listener's user creates, pulls, acks, restarts and deletes, both of its role
-lane queue groups, and the session user's refusal of a consumer create; `AGENTS.md` in this
-directory says how.
+lane queue groups, and the session user's refusal of a consumer create, in
+`core/permissions_live_test.go` under the `natslive` tag; "Changing the module", below, gives the
+command that runs it.
 
 `ListenerHostPermissions(machineID)` is the grant of a listener's own NATS user, one no session
 shares: `ListenerPermissions(machineID)`, the session consumers' calls included, then a plain
@@ -3987,5 +4065,35 @@ calls too), and its grant adds none of those calls, so the server refuses it the
 
 ## Changing the module
 
-`AGENTS.md` in this directory covers the module's own `go.work`, the rules every component follows,
-and how to run the unit and live tests.
+`AGENTS.md` in this directory gives the rules every change and every component follows. Run each
+go command from `packages/envoy/infra`, whose own `go.work` binds this module and `packages/envoy`;
+`./...` from `packages/envoy` does not reach this module.
+
+```bash
+gofmt -l .
+go vet -tags pulumilive,natslive ./...
+go test ./...                                   # unit tests
+go test -count=1 -run '<name>' ./gcp/           # one test
+go test -count=1 -timeout 30m -tags natslive ./core/ ./seed/ ./gcp/
+go test -count=1 -tags pulumilive -v -timeout 15m ./host/
+```
+
+The unit tests need no Pulumi CLI and no Docker. The `gcp` ones run the rendered shell scripts
+under `/bin/sh` (`ENVOY_TEST_SHELL=bash` runs them under bash) and need `curl`, `jq`, `openssl`,
+`blkid`, `mkfs.ext4` and GNU `cmp` on the machine; without one they fail, they do not skip.
+
+The `natslive` tests run a real nats-server: those of `core` and `seed` from the published NATS
+images, on Docker, and those of `gcp` from helm and the NATS tools they `go install` first, which
+takes minutes on a cold cache.
+
+The `pulumilive` tests need the `pulumi` CLI, `ENVOY_SMOKE_HELD_PORT_IMAGE` and
+`ENVOY_INFRA_DOCKER_PLUGIN`; without them a test fails and prints the commands that build both.
+Keep `-count=1`: the test cache cannot see a rebuilt image behind a fixed tag.
+
+CI runs the unit and `natslive` tests in `.github/workflows/ci-job-envoy-infra-go.yaml` at the
+repository root, and the `pulumilive` tests in the `envoy-smoke` job (`ci-job-envoy-smoke.yaml`).
+
+A plugin release is cut by a commit that changes a file in a package directory that
+`go list -deps ./cmd/...` reaches, Envoy's own packages included, or another input of the build
+that the "Determine next version" step of `.github/workflows/release-envoy-infra.yaml` lists. A
+commit to this README or to `docs/` cuts none.

@@ -71,10 +71,10 @@ func createdID(t *testing.T, response *httptest.ResponseRecorder) string {
 
 // The callers of verification v16 that do not see PRIV - alice, alice's token that lists PRIV
 // (alice is on no list of it), carol's token that lists no project (public projects only) and the
-// shared token - and those that do.
+// shared token - and those that do, bob's token that lists PRIV among them.
 var (
 	callersBlindToPrivate = []privateCaller{callerAlice, callerAlicePrivToken, callerCarolToken, callerSharedToken}
-	callersOfPrivate      = []privateCaller{callerBob, callerCarol, callerCarolPrivToken}
+	callersOfPrivate      = []privateCaller{callerBob, callerCarol, callerCarolPrivToken, callerBobPrivToken}
 )
 
 // TestThreadsOfAPrivateProjectAnswerAsMissing: an ask, a comment, a message and the event log of a

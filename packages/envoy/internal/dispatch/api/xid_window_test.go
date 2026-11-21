@@ -417,12 +417,15 @@ func xidWindowSpecEdit(t *testing.T, f *xidFixture) {
 }
 
 // An upload under the spec's name replaces it: the whole document is re-read, its anchors re-found
-// and a version written.
+// and a version written. It names the token of the version it replaces, as every replacement does,
+// read before the measured request.
 func xidWindowUploadReplace(t *testing.T, f *xidFixture) {
 	f.revise()
+	base := uploadBase(t, f.handler, f.specID)
 	f.measureAdvised(t, http.StatusCreated, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/artifacts", map[string]any{
 			"name": "spec.md", "content": f.spec, "summary": "Bump the revision", "actor": sessionActor(),
+			"precondition": base,
 		})
 	})
 }
@@ -440,13 +443,16 @@ func TestXidWindowUploadRestoringTheApprovedText(t *testing.T) {
 	f.revise()
 	if uploaded := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/artifacts", map[string]any{
 		"name": "spec.md", "content": f.spec, "summary": "Bump the revision", "actor": sessionActor(),
+		"precondition": uploadBase(t, f.handler, f.specID),
 	}); uploaded.Code != http.StatusCreated {
 		t.Fatalf("stale the approval before the restore: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
 	waitForArtifactVersion(t, f.handler, f.specID, approval.Version+1)
+	// The restore names the token of the version it replaces, read before the measured request.
+	base := uploadBase(t, f.handler, f.specID)
 	f.measureBatched(t, http.StatusCreated, func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/artifacts", map[string]any{
-			"name": "spec.md", "content": approved, "actor": sessionActor(),
+			"name": "spec.md", "content": approved, "actor": sessionActor(), "precondition": base,
 		})
 	})
 	// The measured request is the restore only while it carries the approval: a window measured
@@ -513,6 +519,7 @@ func xidWindowApprovalRequestHandedBack(t *testing.T, f *xidFixture) {
 	f.revise()
 	if uploaded := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/artifacts", map[string]any{
 		"name": "spec.md", "content": f.spec, "summary": "Bump the revision", "actor": sessionActor(),
+		"precondition": uploadBase(t, f.handler, f.specID),
 	}); uploaded.Code != http.StatusCreated {
 		t.Fatalf("version the spec under the open request: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}

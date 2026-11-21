@@ -56,7 +56,10 @@ func TestACommentOwnedByALongRefKeyLeavesOutItsTuple(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read what the comment states: %v", err)
 	}
-	if err := store.RunWrite(ctx, tx, stored.writeNode); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, stored.written)
+		return nil
+	}); err != nil {
 		t.Fatalf("write the comment's node: %v", err)
 	}
 	nodeKind, nodeAddress := stored.rowNode()
@@ -68,7 +71,7 @@ func TestACommentOwnedByALongRefKeyLeavesOutItsTuple(t *testing.T) {
 	}
 	// On the old code the owned_by tuple went in here and failed with "index row size ... exceeds
 	// btree ... 2704"; now the comment is left whole out of the store and the write commits.
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return stored.caused(b, graphstore.NoEvent) }); err != nil {
+	if err := graphstore.Caused(ctx, tx, stored.written, graphstore.NoEvent); err != nil {
 		t.Fatalf("state what the comment is: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -115,7 +118,10 @@ func TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode(t *testing.T)
 	if err != nil {
 		t.Fatalf("read what the comment states: %v", err)
 	}
-	if err := store.RunWrite(ctx, tx, stored.writeNode); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, stored.written)
+		return nil
+	}); err != nil {
 		t.Fatalf("write the comment's node: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -124,7 +130,7 @@ func TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode(t *testing.T)
 	`, commentID, issue.Key, `{"kind":"session","id":"`+pastSession+`"}`, graphstore.KindComment); err != nil {
 		t.Fatalf("insert the comment row: %v", err)
 	}
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return stored.caused(b, graphstore.NoEvent) }); err != nil {
+	if err := graphstore.Caused(ctx, tx, stored.written, graphstore.NoEvent); err != nil {
 		t.Fatalf("state what the comment is: %v", err)
 	}
 	// On the old code the session node's primary key and the authored_by tuple failed with "index

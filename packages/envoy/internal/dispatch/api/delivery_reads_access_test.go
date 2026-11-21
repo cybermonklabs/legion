@@ -288,12 +288,13 @@ func readShownDelivery(t *testing.T, seed privateSeed, caller privateCaller) sho
 //
 // For alice, who sees PUB and not PRIV, each of the three reads equals, field for field with
 // computed_at and the freshness masked, the answer of a seed where PRIV's rows were never written,
-// so her production_apply counts R1 alone and her pr_checks C9 alone. bob and carol's token that
+// so her production_apply counts R1 alone and her pr_checks C9 alone. bob and bob's token that
 // lists PRIV read the timeline and the measures of a seed where PUB's rows were never written: P2
 // and P5, R1 with P2 only, R2, and P4 waiting with R3 shipping it, the component K2 and the group
 // G2. Neither may read the Pipeline page or a run (403 DEPLOYMENT_READ_REFUSED). carol at her
-// browser reads all of it. A run's own read answers a run the caller is not shown exactly as an id
-// no run holds: alice's read of R2, of R3 and of C2.
+// browser, and carol's token that lists PRIV, a full member's, whose list decides only which
+// private projects it sees, read all of it. A run's own read answers a run the caller is not shown
+// exactly as an id no run holds: alice's read of R2, of R3 and of C2.
 //
 // Controls, each run on its own, each failing the test naming what it moved: answer every group
 // (alice's session_groups hold G2); filter the pull requests after the counts are made (alice's
@@ -314,7 +315,7 @@ func TestADeliveryReadShowsOnlyThePullRequestsItsViewerSees(t *testing.T) {
 	}{
 		{callerAlice, publicOnly, []string{"timeline", "measures", "pipeline"}},
 		{callerBob, privateOnly, []string{"timeline", "measures"}},
-		{callerCarolPrivToken, privateOnly, []string{"timeline", "measures"}},
+		{callerBobPrivToken, privateOnly, []string{"timeline", "measures"}},
 	} {
 		for _, read := range deliveryReadsTargets {
 			if !slices.Contains(compared.reads, read.name) {
@@ -335,21 +336,23 @@ func TestADeliveryReadShowsOnlyThePullRequestsItsViewerSees(t *testing.T) {
 		waiting: []string{"2026-09-25T20:00:00Z shipped " + shipped}, components: []string{"PRIV/k2"},
 		groups: []string{"Group two"}, unowned: []string{"PRIV-2"}, unfetchable: 1,
 	}
+	allOfIt := shownDelivery{
+		prs: []string{"acme/other#3", "acme/widgets#1", "acme/widgets#2", "acme/widgets#5"},
+		runs: map[int64][]string{
+			deliveryRunR1: {"acme/widgets#1", "acme/widgets#2"}, deliveryRunR2: {"acme/widgets#5"}, deliveryRunR3: {},
+		},
+		waiting: []string{"2026-09-25T20:00:00Z shipped " + shipped}, components: []string{"PRIV/k2", "PUB/k1"},
+		groups: []string{"Group one", "Group two"}, unowned: []string{"PRIV-2", "PUB-2"}, unfetchable: 2,
+	}
 	for caller, want := range map[privateCaller]shownDelivery{
 		callerAlice: {
 			prs: []string{"acme/other#3", "acme/widgets#1"}, runs: map[int64][]string{deliveryRunR1: {"acme/widgets#1"}},
 			waiting: []string{}, components: []string{"PUB/k1"}, groups: []string{"Group one"}, unowned: []string{"PUB-2"}, unfetchable: 1,
 		},
 		callerBob:            onlyPrivate,
-		callerCarolPrivToken: onlyPrivate,
-		callerCarol: {
-			prs: []string{"acme/other#3", "acme/widgets#1", "acme/widgets#2", "acme/widgets#5"},
-			runs: map[int64][]string{
-				deliveryRunR1: {"acme/widgets#1", "acme/widgets#2"}, deliveryRunR2: {"acme/widgets#5"}, deliveryRunR3: {},
-			},
-			waiting: []string{"2026-09-25T20:00:00Z shipped " + shipped}, components: []string{"PRIV/k2", "PUB/k1"},
-			groups: []string{"Group one", "Group two"}, unowned: []string{"PRIV-2", "PUB-2"}, unfetchable: 2,
-		},
+		callerBobPrivToken:   onlyPrivate,
+		callerCarol:          allOfIt,
+		callerCarolPrivToken: allOfIt,
 	} {
 		if got := readShownDelivery(t, whole, caller); !reflect.DeepEqual(got, want) {
 			t.Errorf("%s reads the timeline as %+v, want %+v", caller, got, want)
@@ -370,7 +373,7 @@ func TestADeliveryReadShowsOnlyThePullRequestsItsViewerSees(t *testing.T) {
 	}
 
 	run := func(id int64) string { return "/api/v1/delivery/runs/" + strconv.FormatInt(id, 10) }
-	for _, caller := range []privateCaller{callerBob, callerCarolPrivToken} {
+	for _, caller := range []privateCaller{callerBob, callerBobPrivToken} {
 		for _, target := range []string{deliveryReadsTargets[2].target, run(deliveryRunR1)} {
 			if refused := whole.request(t, caller, http.MethodGet, target, nil); refused.Code != http.StatusForbidden ||
 				decodeBody[struct {
@@ -469,7 +472,7 @@ func (s privateSeed) belowTheReadGate(t *testing.T, caller privateCaller, handle
 }
 
 // TestAViewerThatIsNotOpenSeesOnlyTheRunsThatShippedAPullRequestItSees: a viewer that is not open
-// (bob, a restricted member of PRIV, and carol's token that lists PRIV) is shown a deploy run only
+// (bob, a restricted member of PRIV, and bob's token that lists PRIV) is shown a deploy run only
 // when the run shipped a pull request that viewer is shown. The dogfood's run 702, which failed and
 // so shipped nothing, and whose only pull request is PUB's P25, still waiting, is in none of its
 // reads: its timeline and its measures equal those of a seed where run 702 and P25 were never
@@ -494,7 +497,7 @@ func TestAViewerThatIsNotOpenSeesOnlyTheRunsThatShippedAPullRequestItSees(t *tes
 	run := "/api/v1/delivery/runs/" + failedRun
 	pipeline := deliveryReadsTargets[2].target
 
-	for _, caller := range []privateCaller{callerBob, callerCarolPrivToken} {
+	for _, caller := range []privateCaller{callerBob, callerBobPrivToken} {
 		for _, read := range deliveryReadsTargets[:2] {
 			got := maskedDeliveryRead(t, carried, caller, read.target)
 			want := maskedDeliveryRead(t, without, caller, read.target)

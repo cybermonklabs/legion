@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -211,7 +211,7 @@ func TestAWorkspaceAccountTakingAPasskeyMembersAddressRevokesIt(t *testing.T) {
 		t.Fatalf("the passkey subject people records for %s: %q, %v; want one", email, passkeySubject, err)
 	}
 	outsideIssuer := oidc.CanonicalIssuer(passkeyOrigin)
-	box := brokertokentest.NewCaller(t)
+	box := ciphertokentest.NewCaller(t)
 	broker.holds(&fakeCredential{id: "signin-passkey", person: email, subject: passkeySubject, issuer: outsideIssuer, signIn: true, tokens: []string{"token-of-the-passkey-members-sign-in"}}, box)
 
 	r.workspaceSignIn(t, handler, email, firstHolder)

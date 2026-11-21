@@ -86,7 +86,10 @@ func MemberKind(ctx context.Context, q Querier, login string) (model.MemberKind,
 // then the projects its delete sweeps; a write of a project's list that names a group takes the
 // same name before the project (LockForAccessWrite), so a delete of that group and the write are
 // ordered by the name: the delete waits for the write and then sweeps its row, or the write,
-// seeing the delete committed, finds no group.
+// seeing the delete committed, finds no group. A removal of a person takes that person's
+// machine-login approval lock (store.LockMachineLoginApprovals) before any of these, since it may
+// wait there for an approve the secrets broker has not answered, and holds no project's lock while
+// it does; an approval of the person's takes that lock alone, so no cycle forms through it.
 
 // LockGroupName takes, for the rest of tx, the lock that orders every write of group name.
 func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {

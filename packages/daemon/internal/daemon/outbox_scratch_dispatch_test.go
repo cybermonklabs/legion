@@ -456,7 +456,7 @@ func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scrat
 	return d
 }
 
-// start runs the server and returns once GET /api/v1 answers 200. The first start serves on a port
+// start runs the server and returns once GET /healthz answers 200. The first start serves on a port
 // the kernel chooses; a restart serves on the same one again.
 func (d *scratchDispatch) start() {
 	t := d.t

@@ -48,8 +48,7 @@ const (
 	// internalColumn is a column no read answers: a queue, a backfill's cursor, a projection's
 	// bookkeeping.
 	internalColumn = "no read answers it"
-	// deploymentColumn is a deployment row's, read only by an open viewer (readclass.Deployment),
-	// which sees every session and person.
+	// deploymentColumn is a deployment row's, read only by an open viewer (readclass.Deployment).
 	deploymentColumn = "deployment row"
 	// filteredReference can name an object its reader does not see, and every read that answers
 	// it leaves such an object out: the reason names the reads and the filter.
@@ -169,6 +168,7 @@ var referenceDispositions = map[string]referenceDisposition{
 	"near_copy_checks.issue_key":                {ownColumn, "the issue its create wrote, of the row's project, whose candidates are issues of that project too (duplicateGate)"},
 	"near_copy_checks.project_key":              {ownColumn, "the create's project (nearCopyChecksPageQuery and getNearCopyCheck bind its project clause)"},
 	"outside_invitations.project_key":           {internalColumn, "the link's project, which the enrollment holds the person to (NamedDirectly) and logs; no read answers it"},
+	"passkeys.project_key":                      {filteredReference, "the project of the link that enrolled the passkey, which only the owner's access answer reads (withOwnersPasskeys), leaving it out where its reader does not see that project"},
 	"project_access.project_key":                {ownColumn, "the access list's project"},
 	"projects.default_assignee":                 {filteredReference, "a person the writer sees, read as an ask's waiting_on_person: leaveOutHiddenAskPersons"},
 	"pull_request_heads.issue_key":              {internalColumn, "the attribution pass's record, answered through delivery_pull_requests"},
@@ -235,11 +235,10 @@ func schemaReferenceColumns(t *testing.T, fixture fragmentCensusFixture) []strin
 }
 
 // crossReferences are the persons the cross seed (seedCrossReferences) names from each project's
-// rows, beside fragmentCensusFixture's own objects: a person each project's readers through one
-// caller do not see.
+// rows, beside fragmentCensusFixture's own objects.
 type crossReferences struct {
-	// publicPerson is a person no list of PUB's names, whom a token that lists PUB does not see:
-	// bob, PRIV's restricted member.
+	// publicPerson is a person no list of PUB's names: bob, PRIV's restricted member. Every walker
+	// that sees PUB is open and reads every person, so he is hidden from none of them.
 	publicPerson string
 	// privatePerson is a person whom a reader that sees PRIV alone does not see: dana.
 	privatePerson string
@@ -251,8 +250,11 @@ type crossReferences struct {
 // acted in the other alone; each issue's new ask is followed by that session; each issue's comment
 // mentions that session and cites the other's issue and document; each issue messages that
 // session; and each issue's design gate names the other's document. PUB's issue is assigned to bob,
-// whom its new ask then waits on, and PRIV's ask is handed to dana, PRIV's default assignee. PUB's
-// pull request is credited to PRIV's issue, as a mapping moved between the two would leave it.
+// whom its new ask then waits on; PRIV's issue is assigned to dana, PRIV's default assignee, whom a
+// reader that sees PRIV alone does not see, and its ask, which waits on dana as the assignee (an
+// ask asked of its issue's assignee stores no asked_of), is handed to alice, whom that reader does
+// not see either. PUB's pull request is credited to PRIV's issue, as a mapping moved between the two
+// would leave it.
 func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossReferences {
 	t.Helper()
 	seedPeople(t, fixture.database, hiddenPerson)
@@ -273,7 +275,7 @@ func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossRefer
 		assignee, handed string
 	}{
 		{fixture.public, fixture.private, sessionOfPrivate, cross.publicPerson, ""},
-		{fixture.private, fixture.public, sessionOfPublic, seedCarol, cross.privatePerson},
+		{fixture.private, fixture.public, sessionOfPublic, cross.privatePerson, seedAlice},
 	} {
 		issue := "/api/v1/issues/" + pair.from.issue
 		// The issue waits on an issue of the other project of its own, so the two waits close no
@@ -308,6 +310,12 @@ func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossRefer
 	if _, err := fixture.database.Pool.Exec(context.Background(), `update delivery_pull_requests set issue_key = $1 where repo = $2`,
 		fixture.private.issue, "acme/"+strings.ToLower(seedPublic)+"-app"); err != nil {
 		t.Fatalf("credit PUB's pull request to %s: %v", fixture.private.issue, err)
+	}
+	// A passkey names the project of the link that enrolled it; the owner's access answer alone
+	// reads it (withOwnersPasskeys), which leaves out a project its reader does not see.
+	if _, err := fixture.database.Pool.Exec(context.Background(), `insert into passkeys (credential_id, email, user_handle, public_key, aaguid, flags, project_key, made_by)
+		values ('\x0c'::bytea, $1, convert_to('census-passkey', 'UTF8'), '\x02'::bytea, ''::bytea, 0, $2, $3)`, cross.publicPerson, seedPrivate, seedCarol); err != nil {
+		t.Fatalf("store a passkey enrolled through a link of %s: %v", seedPrivate, err)
 	}
 	awaitBackgroundWrites(t, fixture.server)
 	return cross
@@ -424,12 +432,13 @@ func (h hiddenObjects) leaksOf(value any, path string) []leak {
 //
 // The census seed (seedFragmentCensus) is joined by seedCrossReferences, which writes a reference
 // from each project into the other in every column filteredReference names; the test reads back,
-// from the stored rows, that each such column holds one. Three readers then walk every GET row of
+// from the stored rows, that each such column holds one. Four readers then walk every GET row of
 // the route table whose read classes include project, graph, people or agents, filled with the
 // objects of the project each sees, and every answer is scanned for an object hidden from that
 // reader: alice, an open viewer who sees PUB and not PRIV's session, which has acted in PRIV
-// (access.SessionClause); alice's token that lists PUB, which sees PUB and neither PRIV's sessions
-// nor its people; and bob, a restricted member who sees PRIV alone. A found
+// (access.SessionClause); alice's token that lists PUB, a full member's and so an open viewer that
+// sees what alice sees; bob, a restricted member who sees PRIV alone; and bob's token that lists
+// PRIV, which sees what bob sees. A found
 // one fails naming the route, the JSON path of the answer, and what the object is. The stored
 // payloads are read too: every leaf of a payload a reader may read (eventReadableSQL) that names an
 // object hidden from that reader must sit under a key leaveOutHiddenReferences leaves out
@@ -461,8 +470,9 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 		hidden  hiddenObjects
 	}{
 		{callerAlice, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, nil)},
-		{callerAlicePubToken, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, []string{cross.publicPerson})},
+		{callerAlicePubToken, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, nil)},
 		{callerBob, fixture.private, hiddenObjectsOf(t, fixture, seedPublic, []string{sessionOfPublic}, []string{cross.privatePerson, seedAlice})},
+		{callerBobPrivToken, fixture.private, hiddenObjectsOf(t, fixture, seedPublic, []string{sessionOfPublic}, []string{cross.privatePerson, seedAlice})},
 	}
 	for _, column := range columns {
 		if referenceDispositions[column].kind != filteredReference {
@@ -629,11 +639,13 @@ func TestWithNoPrivateProjectAReferenceReadsAsToday(t *testing.T) {
 	safeHorizon(t, fixture.server)
 	namesPrivate := false
 	for _, read := range reads {
-		// Two answers stamp the moment they were read (as_of, a window ending now): each time is
-		// written as one placeholder, and every other byte compared.
+		// Two answers stamp the moment they were read (as_of, a window ending now), and the open
+		// asks count each ask's age in whole seconds at that moment (age_seconds), which two reads
+		// a second boundary falls between answer apart: each time and each age is written as one
+		// placeholder, and every other byte compared.
 		want := fixture.request(t, callerCarol, http.MethodGet, read, nil)
 		got := fixture.request(t, callerAlice, http.MethodGet, read, nil)
-		if got.Code != want.Code || maskTimes(got.Body.String()) != maskTimes(want.Body.String()) {
+		if got.Code != want.Code || maskAges(maskTimes(got.Body.String())) != maskAges(maskTimes(want.Body.String())) {
 			t.Errorf("PRIV public: alice reads %s = %d %s, want carol's answer byte for byte: %d %s",
 				read, got.Code, got.Body.String(), want.Code, want.Body.String())
 		}

@@ -255,7 +255,12 @@ export function ProjectPage(): ReactNode {
           id="project-architecture-panel"
           role="tabpanel"
         >
-          {activeTab === "architecture" ? <ArchitecturePage project={route.project} /> : null}
+          {/* Keyed by the project, as the list and the board are: a Refresh still out belongs
+              to the project it was pressed on, so another project's pane draws its own sources
+              ready to refresh, and that Refresh settling reloads its own project's architecture. */}
+          {activeTab === "architecture" ? (
+            <ArchitecturePage key={route.project} project={route.project} />
+          ) : null}
         </div>
       ) : null}
       <div
@@ -272,7 +277,17 @@ export function ProjectPage(): ReactNode {
           ) : (
             <>
               <IssueFilters key={route.project} project={route.project} />
-              <IssueBoard lanes={lanes} project={route.project} showEdges={showEdges} />
+              {/* Keyed by the project, as the list and the filters are: the board holds what
+                  became of its last move, and a refusal of one project's move names that
+                  project's issue, so another project's board is drawn with none of it. The key
+                  names the board too: the filters beside it are keyed by the same project, and
+                  siblings are told apart by their keys. */}
+              <IssueBoard
+                key={`board:${route.project}`}
+                lanes={lanes}
+                project={route.project}
+                showEdges={showEdges}
+              />
             </>
           )
         ) : null}
@@ -293,7 +308,12 @@ export function ProjectPage(): ReactNode {
         id="project-access-panel"
         role="tabpanel"
       >
-        {activeTab === "access" ? <ProjectAccessPanel project={route.project} /> : null}
+        {/* Keyed by the project, as the list and the board are: the panel holds the owner's
+            unsaved drafts (owner, person, group, Slack channels), which belong to the project
+            they were typed on, so another project's panel starts with none of them. */}
+        {activeTab === "access" ? (
+          <ProjectAccessPanel key={route.project} project={route.project} />
+        ) : null}
       </div>
     </section>
   );

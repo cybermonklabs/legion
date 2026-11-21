@@ -11,8 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipherclient"
 )
 
 // testerR26SweepLead opens the runbook's paragraph before the block that ends every person's
@@ -23,9 +23,9 @@ const testerR26SweepLead = "The secrets broker serves a machine login without as
 // account, and checks it is live.
 func testerR26PoolLogin(t *testing.T, r *recoveryRig, email string) string {
 	t.Helper()
-	client := brokertest.NewClient(t, r.rig.URL, strings.TrimPrefix(r.rig.URL, "http://"))
-	client.UIToken, client.DPoP = r.rig.UIToken, brokerclient.NewDPoPTransport
-	machine := client.DeviceLogin(t, brokertest.NewSigningKey(t), email, "sweep-box")
+	client := ciphertest.NewClient(t, r.rig.URL, strings.TrimPrefix(r.rig.URL, "http://"))
+	client.UIToken, client.DPoP = r.rig.UIToken, cipherclient.NewDPoPTransport
+	machine := client.DeviceLogin(t, ciphertest.NewSigningKey(t), email, "sweep-box")
 	login := client.ApproveMachineLogin(t, email, machine.UserCode)
 	var recordsNone bool
 	if err := r.rig.Store.Pool.QueryRow(context.Background(), `select approver_subject is null from launcher_credentials where id = $1::uuid`, login).Scan(&recordsNone); err != nil {

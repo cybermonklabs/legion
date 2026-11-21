@@ -118,18 +118,6 @@ func readNearCopyCorpus(t *testing.T, path string) nearCopyCorpus {
 	return corpus
 }
 
-// specAt is the issue's spec as the corpus holds it at the given time: the latest exported
-// version created by then.
-func (corpus nearCopyCorpus) specAt(key string, at time.Time) string {
-	spec := ""
-	for _, version := range corpus.issues[key].SpecVersions {
-		if !version.CreatedAt.After(at) {
-			spec = version.Markdown
-		}
-	}
-	return spec
-}
-
 func (corpus nearCopyCorpus) firstSpec(key string) string {
 	for _, version := range corpus.issues[key].SpecVersions {
 		if version.Number == 1 {

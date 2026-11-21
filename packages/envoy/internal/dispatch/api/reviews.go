@@ -890,7 +890,10 @@ func (s *server) openApprovalAsk(
 	// of its own.
 	project, parties := graphstore.SessionScope(artifact.Project, deref(artifact.SessionID))
 	askNode := graphstore.PlanUncaused([]graphstore.Node{graphstore.AskNode(ask.ID, project, parties, actor, ask.CreatedAt)}, nil)
-	if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, askNode) }); err != nil {
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, askNode)
+		return nil
+	}); err != nil {
 		return nil, nil, err
 	}
 	if err := queueExec(ledger, `
@@ -921,9 +924,7 @@ func (s *server) openApprovalAsk(
 	// it there. Nothing before the event reads the follower row: its payload's logins are the
 	// thread's (events.ThreadLogins), and the outbox reads the followers after the commit.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(b, askNode, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
 		_, err := asks.QueueFollowAuthor(b, ask.ID, actor, ask.CreatedAt, graphstore.LatestEvent)
 		return err
 	}); err != nil {
@@ -1043,7 +1044,8 @@ func (s *server) renewApprovalAsk(
 		heldCause = graphstore.LatestEvent
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, held, heldCause)
+		graphstore.QueueCaused(b, held, heldCause)
+		return nil
 	}); err != nil {
 		return nil, err
 	}

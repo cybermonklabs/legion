@@ -296,6 +296,19 @@ func accessLister(database *store.Store) identity.Lister {
 	})
 }
 
+// devRestrictedAdmission is what a dev sign-in server (DISPATCH_DEV_SIGNIN=1, which refuses every
+// DISPATCH_SIGNIN_* setting and so has no sign-in rule) holds a restricted member's credentials to:
+// the outside rule's list arm over database's access lists (identity.ListedAdmission,
+// accessLister), so a restricted member's token acts there while a project names them directly, as
+// it does under passkey sign-in. It is nil for every other server, whose sign-in rule, or none,
+// holds them, and with no database.
+func devRestrictedAdmission(boot bootConfig, database *store.Store) identity.RestrictedAdmission {
+	if !boot.DevSignIn || database == nil {
+		return nil
+	}
+	return identity.ListedAdmission{People: accessLister(database)}
+}
+
 // parseSignInSwitch reads the value of name, an on-or-off sign-in setting (DISPATCH_SIGNIN_PASSKEY):
 // "1" turns it on, unset or empty leaves it off, and any other value refuses startup, without
 // echoing it.

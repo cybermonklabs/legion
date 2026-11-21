@@ -10,9 +10,7 @@ body: |-
   the new account signs in, and `401 BROKER_ACCOUNT_NOT_SIGNED_IN` for a token of an account
   Google gave the address to, which approves nothing until that account signs in to Dispatch. A
   machine login's approve by a broker token names the token's own account, never the one
-  Dispatch records for the address. A token that records no account, or an account of another
-  issuer than Dispatch's sign-in issuer, acts as before, held to the refusal by address, and its
-  approve names no account.
+  Dispatch records for the address.
 time: 2026-11-17T10:11:47.000000000Z
 custom:
     Issue: pr4199

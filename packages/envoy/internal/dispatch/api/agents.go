@@ -73,12 +73,12 @@ func (s *server) agentOpenAskCounts(ctx context.Context, viewer any, sessionIDs 
 // reaches no reader but its own. The list decides a row and is served on none (agentResponse). A
 // reader that sees every object (seesEveryObject) passes every session, so listAgents does not ask
 // (R9).
-func (s *server) visibleRosterSessions(ctx context.Context, reader model.Actor, sessions []envoy.Session) ([]envoy.Session, error) {
+func (s *server) visibleRosterSessions(ctx context.Context, viewer any, sessions []envoy.Session) ([]envoy.Session, error) {
 	ids := make([]string, len(sessions))
 	for index, session := range sessions {
 		ids[index] = session.SessionID
 	}
-	seen, err := s.sessionsSeen(ctx, refs.VisibilityArg(reader), ids)
+	seen, err := s.sessionsSeen(ctx, viewer, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +229,7 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 	// A reader that sees every object passes SessionClause on every id, so the read would cut
 	// nothing (R9).
 	if !seesEveryObject(reader) {
-		if sessions, err = s.visibleRosterSessions(r.Context(), reader, sessions); err != nil {
+		if sessions, err = s.visibleRosterSessions(r.Context(), viewer, sessions); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

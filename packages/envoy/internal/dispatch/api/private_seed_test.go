@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -32,21 +32,26 @@ const (
 // privateCaller is one caller of verification v16, by the name a failure prints.
 type privateCaller string
 
-// The seven callers of verification v16: three people at a browser, three personal tokens and the
-// deployment's shared agent token.
+// The eight callers of verification v16 with plan A v87's #t-a-22: three people at a browser, four
+// personal tokens and the deployment's shared agent token. A full member's token that lists a
+// project sees every public project its person sees and the private projects it lists
+// (access.CredentialCovers), so the confined token is bob's, a restricted member's, which lists
+// PRIV.
 const (
 	callerAlice          privateCaller = "alice"
 	callerBob            privateCaller = "bob"
 	callerCarol          privateCaller = "carol"
 	callerCarolPrivToken privateCaller = "carol's token that lists PRIV"
 	callerAlicePrivToken privateCaller = "alice's token that lists PRIV"
+	callerBobPrivToken   privateCaller = "bob's token that lists PRIV"
 	callerCarolToken     privateCaller = "carol's token that lists no project"
 	callerSharedToken    privateCaller = "the shared token"
 )
 
-// privateCallers is every caller of the seed, in the order verification v16 names them.
+// privateCallers is every caller of the seed, in the order verification v16 names them, bob's
+// token last of the tokens.
 var privateCallers = []privateCaller{
-	callerAlice, callerBob, callerCarol, callerCarolPrivToken, callerAlicePrivToken, callerCarolToken, callerSharedToken,
+	callerAlice, callerBob, callerCarol, callerCarolPrivToken, callerAlicePrivToken, callerBobPrivToken, callerCarolToken, callerSharedToken,
 }
 
 // privateSeed is verification v16's seed on a running test server, written through the server's
@@ -69,9 +74,12 @@ type privateSeed struct {
 	issue map[string]string
 	// tokens are the plaintext personal tokens, by the caller each one is.
 	tokens map[privateCaller]string
+	// brokered are the broker-issued tokens a caller presents under DPoP with agent's key, by the
+	// caller each one is: requestIn presents one where a caller has one.
+	brokered map[privateCaller]string
 	// broker is the stub secrets broker the server asks about a DPoP-bound token, and agent the
 	// key an agent of carol's presents such a token with (asSession).
-	broker *brokertokentest.StubBroker
+	broker *ciphertokentest.StubBroker
 	agent  *brokerCaller
 }
 
@@ -85,18 +93,21 @@ func seedPrivateProject(t *testing.T) privateSeed {
 // takes broker-issued tokens from a stub broker, so a seed's session can act under a credential
 // that proves it (asSession), and, unless options names one, writes the private-projects record
 // through acceptingBus, as a deployment that holds a private project has a hub that takes it: a
-// mapping into PRIV writes that record before it commits.
+// mapping into PRIV writes that record before it commits. The deployment admits restricted
+// members (admitsRestricted), as one that holds a restricted member does: bob is one, and
+// his token acts only while that rule admits him (restrictedOwnerAdmitted), which PRIV's list does.
 func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed {
 	t.Helper()
-	broker := brokertokentest.NewStubBroker(t)
+	broker := ciphertokentest.NewStubBroker(t)
 	options.brokerTokens = stubBrokerTokens(t, broker)
+	options.admitsRestricted = true
 	if options.busProjects == nil {
 		options.busProjects = acceptingBus{}
 	}
 	handler, database, deps, served := newRegisteredTestServer(t, options)
 	seed := privateSeed{
 		handler: handler, database: database, deps: deps, server: served,
-		issue: map[string]string{}, tokens: map[privateCaller]string{},
+		issue: map[string]string{}, tokens: map[privateCaller]string{}, brokered: map[privateCaller]string{},
 		broker: broker, agent: newBrokerCaller(t),
 	}
 	seedPeople(t, database, seedBob, seedCarol)
@@ -122,6 +133,7 @@ func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed
 	}{
 		{callerCarolPrivToken, seedCarol, []string{seedPrivate}},
 		{callerAlicePrivToken, seedAlice, []string{seedPrivate}},
+		{callerBobPrivToken, seedBob, []string{seedPrivate}},
 		{callerCarolToken, seedCarol, []string{}},
 	} {
 		minted := decodeBody[agentTokenResponse](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens",
@@ -182,16 +194,17 @@ func (caller privateCaller) login() string {
 	return ""
 }
 
-// sees is the projects caller sees by verification v16's rule, sorted: carol both, bob and carol's
-// token that lists PRIV PRIV alone, alice, carol's token that lists none and the shared token PUB
-// alone, and alice's token that lists PRIV nothing, since alice does not see PRIV.
+// sees is the projects caller sees by the rule, sorted: carol and carol's token that lists PRIV
+// both, since a full member's list decides only which private projects it sees; bob and bob's token
+// that lists PRIV PRIV alone; and alice, alice's token that lists PRIV, carol's token that lists
+// none and the shared token PUB alone, since alice does not see PRIV.
 func (caller privateCaller) sees() []string {
 	switch caller {
-	case callerCarol:
+	case callerCarol, callerCarolPrivToken:
 		return []string{seedPrivate, seedPublic}
-	case callerBob, callerCarolPrivToken:
+	case callerBob, callerBobPrivToken:
 		return []string{seedPrivate}
-	case callerAlice, callerCarolToken, callerSharedToken:
+	case callerAlice, callerAlicePrivToken, callerCarolToken, callerSharedToken:
 		return []string{seedPublic}
 	}
 	return []string{}
@@ -215,6 +228,15 @@ func (s privateSeed) requestIn(t *testing.T, ctx context.Context, caller private
 			t.Fatalf("encode the body %s sends to %s %s: %v", caller, method, target, err)
 		}
 		payload = encoded
+	}
+	if token, brokered := s.brokered[caller]; brokered {
+		var sent any
+		if payload != nil {
+			sent = json.RawMessage(payload)
+		}
+		response := httptest.NewRecorder()
+		s.handler.ServeHTTP(response, s.agent.presenting(t, method, target, token, sent).WithContext(ctx))
+		return response
 	}
 	request := httptest.NewRequestWithContext(ctx, method, target, bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
@@ -247,10 +269,10 @@ func (s privateSeed) mustRequest(t *testing.T, caller privateCaller, method, tar
 func (s privateSeed) asSession(t *testing.T, session, project, method, target string, body any, status int) *httptest.ResponseRecorder {
 	t.Helper()
 	token := "broker-token-of-" + session + "-in-" + project
-	s.broker.Says(token, brokertoken.Introspection{
+	s.broker.Says(token, ciphertoken.Introspection{
 		Active: true, Session: session, Person: seedCarol,
-		ProjectScope: brokertoken.ProjectScopeNamed, Projects: []string{project}, Scope: "dispatch.write",
-		ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: brokertoken.ExchangeClientID, Thumbprint: s.agent.jkt,
+		ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{project}, Scope: "dispatch.write",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: ciphertoken.ExchangeClientID, Thumbprint: s.agent.jkt,
 	})
 	response := httptest.NewRecorder()
 	s.handler.ServeHTTP(response, s.agent.presenting(t, method, target, token, body))

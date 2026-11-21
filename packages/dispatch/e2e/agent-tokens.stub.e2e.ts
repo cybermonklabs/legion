@@ -93,10 +93,9 @@ hiddenTest(
   }
 );
 
-// A token whose every project is hidden from its reader can read nothing, and its picker opens
-// with nothing ticked. The row's button saves the list the reader sees, here none, once the
-// reader confirms it: the edit sends the empty list, and the token reads as one of the public
-// projects only.
+// The picker of a token whose every project is hidden from its reader opens with nothing ticked.
+// The row's button saves the list the reader sees, here none, once the reader confirms it: the
+// edit sends the empty list, and the token reads as one of the public projects only.
 hiddenTest(
   "a token listing only projects its reader cannot see is made public-only by one confirmed press @pr",
   async ({ page, scene }) => {

@@ -23,9 +23,14 @@ import (
 //   - `--store --sizing`, that census and the growth pass after it: what the database is
 //     written at, what every table this branch's migrations touch holds now, and where
 //     graph_tuples and graph_nodes reach in a year against pgmigrate.CensusTableLimit. The
-//     growth pass reads only tables that exist before this branch's first migration, so it runs
-//     on a database the store does not exist in yet, where the census says so and the growth
-//     pass alone decides the exit.
+//     growth pass refuses nothing: beside a table at or above that limit, and a store table it
+//     projects past it, it names the migration census's bounded-write rule, the gate a pending
+//     migration that writes rows of such a table meets (pgmigrate.BoundedWriteRows), so this form
+//     refuses only where the store census does. The growth pass counts only tables that exist
+//     before this branch's first migration, so it runs on a database the store does not exist in
+//     yet, where the census says so and passes on the growth pass alone; where the store exists
+//     it also reads the store's type nodes, so that it parses each version against the block
+//     schema the store declares.
 //
 // Each keeps the one exit convention: 0 when nothing refuses, 1 when the report refuses (every
 // reason is in the report), 2 when the census could not be taken (errOut says why). Each prints

@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -34,6 +35,12 @@ var timeStamp = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(
 
 // maskTimes is body with every RFC 3339 time written as one placeholder.
 func maskTimes(body string) string { return timeStamp.ReplaceAllString(body, "<time>") }
+
+// ageSeconds is an answer's `"age_seconds":N` member, a count of whole seconds since a row was made.
+var ageSeconds = regexp.MustCompile(`"age_seconds":[0-9]+`)
+
+// maskAges is body with every age in seconds written as one placeholder.
+func maskAges(body string) string { return ageSeconds.ReplaceAllString(body, `"age_seconds":<age>`) }
 
 // hiddenPerson is a full member no list of PRIV names, so a caller that sees PRIV alone does not
 // see them (access.PersonClause), and an open viewer does.
@@ -135,6 +142,8 @@ var missingAnswers = map[string]struct {
 		"the caller's own read mark, kept under any thread id and reading no message (idRoutes)"},
 	"POST /api/v1/issues/{key}/results": {http.StatusBadRequest, "UNKNOWN_CHECK",
 		"a result names a check of its issue's Verification document, and an issue the caller cannot read holds none"},
+	"POST /api/v1/issues/{key}/results/dry-run": {http.StatusBadRequest, "UNKNOWN_CHECK",
+		"the record's dry run makes the record's every refusal before its transaction (readResultRequest), so it answers the record's UNKNOWN_CHECK"},
 	"PUT /api/v1/issues/{key}/role-holders": {http.StatusForbidden, "ROLE_HOLDER_FORBIDDEN",
 		"only the session of the issue's own project's Legion daemon writes its role holders, and every other caller is refused before any read, naming only the key it sent (putIssueRoleHolders)"},
 }
@@ -214,31 +223,38 @@ func writeProbeProblems(rows []string) []string {
 	return problems
 }
 
+// walkSight is what one caller of the walk reads and writes. open is a caller that reads the rows of
+// no project and the sessions an open viewer reads; held one whose writes a list holds, so a write of
+// the deployment is refused it before its handler (writesHeldTo), though it may read the
+// deployment's rows; and named a full member's broker token scoped to one project, whose write of
+// any other project's object its scope refuses before the handler (namedProjectOf).
+type walkSight struct{ open, held, named bool }
+
 // hiddenFrom reports whether the walk names a hidden object of kind in place of one nobody holds,
-// for an open caller or not: an object of a project is hidden from every caller of the walk, a
+// for a caller of sight: an object of a project is hidden from every caller of the walk, a
 // personal token is someone else's, and a row of the deployment is hidden from a caller that is not
-// open. A session is hidden from every caller: privateSession, which has a session_projects pair of
-// PRIV, a private project, from an open caller, which does not see PRIV, and s-pub, which has acted
-// in no project, from a caller that is not open (access.SessionClause; probeFill.hiddenValue). Every
-// other kind is part of an object the path already names - a document's slug, a version, a block,
-// an attempt, a phase, a person or group on a list, a repository, a pause point - and is PRIV's own
-// in both calls.
-func hiddenFrom(object probeObject, open bool) bool {
+// open or whose writes a list holds. A session is hidden from every caller: privateSession, which
+// has a session_projects pair of PRIV, a private project, from an open caller, which does not see
+// PRIV, and s-pub, which has acted in no project, from a caller that is not open
+// (access.SessionClause; probeFill.hiddenValue). Every other kind is part of an object the path
+// already names - a document's slug, a version, a block, an attempt, a phase, a person or group on a
+// list, a repository, a pause point - and is PRIV's own in both calls.
+func hiddenFrom(object probeObject, sight walkSight) bool {
 	switch object {
 	case probeProject, probeIssue, probeDocument, probeAsk, probeComment, probeMessage, probeThread,
 		probeResult, probeAgentToken, probeSession:
 		return true
 	case probePriority, probeSessionGroup, probeCredentialRequest, probeCredentialGrant,
 		probeMachineLogin, probeSignin:
-		return !open
+		return !sight.open || sight.held
 	}
 	return false
 }
 
 // hides reports whether the probe names an object hidden from the caller.
-func (p writeProbe) hides(open bool) bool {
+func (p writeProbe) hides(sight walkSight) bool {
 	for _, object := range p.Probe {
-		if hiddenFrom(object, open) {
+		if hiddenFrom(object, sight) {
 			return true
 		}
 	}
@@ -246,9 +262,9 @@ func (p writeProbe) hides(open bool) bool {
 }
 
 // hidesOnlySessions reports whether every object the probe hides from the caller is a session.
-func (p writeProbe) hidesOnlySessions(open bool) bool {
+func (p writeProbe) hidesOnlySessions(sight walkSight) bool {
 	for _, object := range p.Probe {
-		if hiddenFrom(object, open) && object != probeSession {
+		if hiddenFrom(object, sight) && object != probeSession {
 			return false
 		}
 	}
@@ -310,9 +326,28 @@ type hiddenWriteSeed struct {
 	calls  *listenerCalls
 }
 
-// callerAlicePubToken is alice's token that lists PUB: it sees PUB alone and is not open, and a
-// token of carol's is someone else's to it.
+// callerAlicePubToken is alice's token that lists PUB: a full member's, so it sees PUB and is open,
+// and its list holds its writes from the deployment's rows; a token of carol's is someone else's
+// to it.
 const callerAlicePubToken privateCaller = "alice's token that lists PUB"
+
+// callerAliceNamedToken is a broker token an operator's entry mapped to PUB, alice's: a full
+// member's, so it reads as an open viewer that sees PUB, and its writes are held to PUB alone
+// (namedProjectOf), so the scope refuses its write of any other project's object before the
+// handler, an object it does not see answered as one nobody holds.
+const callerAliceNamedToken privateCaller = "alice's broker token scoped to PUB"
+
+// sayBrokered has the seed's broker answer for a live token of caller's, alice's and scoped to
+// project by an operator's entry, proving session, which requestIn presents for caller.
+func sayBrokered(seed privateSeed, caller privateCaller, session, project string) {
+	token := "broker-token-of-" + string(caller)
+	seed.broker.Says(token, ciphertoken.Introspection{
+		Active: true, Session: session, Person: seedAlice,
+		ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{project}, Scope: "dispatch.write",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: ciphertoken.ExchangeClientID, Thumbprint: seed.agent.jkt,
+	})
+	seed.brokered[caller] = token
+}
 
 // withProbeActor is a JSON object body with probeActor first among its fields: what a bearer that
 // proves no session names as itself.
@@ -356,6 +391,10 @@ func (w hiddenWriteSeed) recorded(t *testing.T, caller privateCaller, method, pa
 // volatileColumns are the columns a call stamps whatever it names, left out of a table's digest: a
 // personal token's use stamps its own row.
 var volatileColumns = map[string]string{"public.agent_tokens": "last_used_at"}
+
+// volatileTables are the tables a call writes whatever it names, left out of the digests: a broker
+// token's presentation records its DPoP proof, so a replay of that proof is refused.
+var volatileTables = map[string]bool{"public.dpop_proofs": true}
 
 // volatileStatement reports whether a statement is the stamp of volatileColumns' column, which a
 // token's first use in a minute writes and its next does not, whatever either call names.
@@ -489,6 +528,7 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	seed.mustRequest(t, callerCarolPrivToken, http.MethodPost, "/api/v1/issues/"+issue+"/claim",
 		map[string]any{"actor": map[string]string{"kind": "session", "id": "s1"}}, http.StatusOK)
 	mintListingToken(t, seed, callerAlicePubToken, seedAlice, []string{seedPublic})
+	sayBrokered(seed, callerAliceNamedToken, "s-alice-named", seedPublic)
 	// s-pub acts in PUB alone, through the shared token, which sees PUB: a session hidden from
 	// every caller that sees PRIV alone.
 	createdID(t, seed.request(t, callerSharedToken, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",
@@ -575,6 +615,7 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	if err != nil || len(tables) == 0 {
 		t.Fatalf("list the tables: %v (%d)", err, len(tables))
 	}
+	tables = slices.DeleteFunc(tables, func(table string) bool { return volatileTables[table] })
 	parts := make([]string, len(tables))
 	for index, table := range tables {
 		row := "to_jsonb(t)"
@@ -592,7 +633,7 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 // from it, or one nobody holds of that kind when hidden is false, and each other kind's value beside
 // it. It answers too what the second fill wrote in place of the first, so an answer that names what
 // the caller sent can be compared.
-func (w hiddenWriteSeed) fill(t *testing.T, pattern string, probe writeProbe, open, hidden bool) (string, map[string]string) {
+func (w hiddenWriteSeed) fill(t *testing.T, pattern string, probe writeProbe, sight walkSight, hidden bool) (string, map[string]string) {
 	t.Helper()
 	written := map[string]string{}
 	path := patternWildcard.ReplaceAllStringFunc(pattern, func(match string) string {
@@ -602,12 +643,12 @@ func (w hiddenWriteSeed) fill(t *testing.T, pattern string, probe writeProbe, op
 			t.Fatalf("%s: the walk holds no value of %q", pattern, object)
 		}
 		switch {
-		case !hiddenFrom(object, open):
+		case !hiddenFrom(object, sight):
 			return value.besideValue()
 		case hidden:
-			return value.hiddenValue(open)
+			return value.hiddenValue(sight.open)
 		}
-		written[value.missing] = value.hiddenValue(open)
+		written[value.missing] = value.hiddenValue(sight.open)
 		return value.missing
 	})
 	return path, written
@@ -674,7 +715,7 @@ func changedTables(before, after map[string]string) []string {
 
 // compare calls one row as caller on PRIV's objects and on objects nobody holds, and holds the two
 // to one answer and no write.
-func (w hiddenWriteSeed) compare(t *testing.T, caller privateCaller, open bool, name string) {
+func (w hiddenWriteSeed) compare(t *testing.T, caller privateCaller, sight walkSight, name string) {
 	t.Helper()
 	probe := writeProbes[name]
 	method, pattern, _ := strings.Cut(name, " ")
@@ -682,10 +723,10 @@ func (w hiddenWriteSeed) compare(t *testing.T, caller privateCaller, open bool, 
 	if probe.Body != "" {
 		body = json.RawMessage(probe.Body)
 	}
-	hiddenPath, _ := w.fill(t, pattern, probe, open, true)
-	missingPath, written := w.fill(t, pattern, probe, open, false)
+	hiddenPath, _ := w.fill(t, pattern, probe, sight, true)
+	missingPath, written := w.fill(t, pattern, probe, sight, false)
 	missing := w.callPair(t, caller, name, method, hiddenPath, missingPath, body, body, written, false)
-	if !answersMissing(name, open, missing) {
+	if !answersMissing(name, sight, missing) {
 		t.Errorf("%s as %s: the call naming nothing (%s) answered %d %s, which is no answer for a missing object: the row's probe never reaches its read of the object",
 			name, caller, missingPath, missing.Code, strings.TrimSpace(missing.Body.String()))
 	}
@@ -695,7 +736,7 @@ func (w hiddenWriteSeed) compare(t *testing.T, caller privateCaller, open bool, 
 // with that object the one of its kind project holds, which the caller sees, and the session one
 // hidden from it, then with the same object and a session nobody holds, and holds the two to one
 // answer and no write (callPair), the call naming nothing to a missing object's answer.
-func (w hiddenWriteSeed) compareSessionBeside(t *testing.T, caller privateCaller, open bool, project, name string) {
+func (w hiddenWriteSeed) compareSessionBeside(t *testing.T, caller privateCaller, sight walkSight, project, name string) {
 	t.Helper()
 	probe := writeProbes[name]
 	method, pattern, _ := strings.Cut(name, " ")
@@ -704,7 +745,7 @@ func (w hiddenWriteSeed) compareSessionBeside(t *testing.T, caller privateCaller
 		body = json.RawMessage(probe.Body)
 	}
 	session := w.fills[probeSession]
-	hidden := session.hiddenValue(open)
+	hidden := session.hiddenValue(sight.open)
 	path := func(sessionID string) string {
 		return patternWildcard.ReplaceAllStringFunc(pattern, func(match string) string {
 			object := probe.Probe[patternWildcard.FindStringSubmatch(match)[1]]
@@ -721,7 +762,7 @@ func (w hiddenWriteSeed) compareSessionBeside(t *testing.T, caller privateCaller
 	label := fmt.Sprintf("%s (%s beside an object of %s)", name, hidden, project)
 	missing := w.callPair(t, caller, label, method, path(hidden), path(session.missing), body, body,
 		map[string]string{session.missing: hidden}, false)
-	if !answersMissing(name, open, missing) {
+	if !answersMissing(name, sight, missing) {
 		t.Errorf("%s as %s: the call naming a session nobody holds (%s) answered %d %s, which is no answer for a missing session",
 			label, caller, path(session.missing), missing.Code, strings.TrimSpace(missing.Body.String()))
 	}
@@ -798,14 +839,18 @@ func answerAsHidden(answer string, written map[string]string) string {
 }
 
 // answersMissing reports whether a call naming no object was answered as the row answers a missing
-// one: the deployment's refusal of a caller that is not open, which comes before the row's
-// handler; else 404, the row's own answer (missingAnswers), or the refusal of a person at a
-// browser that comes before any read (refusedAtABrowser).
-func answersMissing(name string, open bool, answer *httptest.ResponseRecorder) bool {
+// one: the deployment's refusal of a caller that is not open or whose writes a list holds, which
+// comes before the row's handler; a named token's refusal of a project's row (403 PROJECT_SCOPE),
+// which comes before the handler too; else 404, the row's own answer (missingAnswers), or the
+// refusal of a person at a browser that comes before any read (refusedAtABrowser).
+func answersMissing(name string, sight walkSight, answer *httptest.ResponseRecorder) bool {
 	var refusal refusalAnswer
 	_ = json.Unmarshal(answer.Body.Bytes(), &refusal)
-	if !open && writeClasses[name] == scopeDeployment {
+	if (!sight.open || sight.held) && writeClasses[name] == scopeDeployment {
 		return answer.Code == http.StatusForbidden && refusal.Code == codeProjectScopeDeployment
+	}
+	if sight.named && writeClasses[name] == scopeProject {
+		return answer.Code == http.StatusForbidden && refusal.Code == codeProjectScope
 	}
 	if declared, ok := missingAnswers[name]; ok {
 		return answer.Code == declared.status && refusal.Code == declared.code
@@ -813,7 +858,7 @@ func answersMissing(name string, open bool, answer *httptest.ResponseRecorder) b
 	switch {
 	case answer.Code == http.StatusNotFound:
 		return true
-	case answer.Code == http.StatusForbidden && open:
+	case answer.Code == http.StatusForbidden && sight.open:
 		return refusedAtABrowser[name] != "" && refusal.Code == refusedAtABrowser[name]
 	}
 	return false

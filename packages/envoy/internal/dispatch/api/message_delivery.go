@@ -729,8 +729,7 @@ func (s *server) completeMessageDelivery(
 		// took, sent or queued (model.DeliveryTaken), is a delivery and its session is a node
 		// from this moment, a pending or failed one reached nobody and writes nothing.
 		func(b *store.WriteBatch, settled model.MessageDelivery) error {
-			_, err := graphstore.QueueReached(b, settled.State, settled.SessionID, actor, settled.CreatedAt, graphstore.LatestEvent)
-			return err
+			return graphstore.QueueReached(b, settled.State, settled.SessionID, actor, settled.CreatedAt, graphstore.LatestEvent)
 		},
 	)
 }
@@ -824,7 +823,7 @@ func (s *server) deliverMessageResuming(
 	err = takeover.retry(ctx,
 		func() string {
 			outcome = s.sendResolvedDelivery(
-				ctx, pending.resolved, message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
+				ctx, pending.resolved, messageTarget(message.Target), message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
 			)
 			return outcome.failure
 		},
@@ -953,7 +952,7 @@ func (s *server) planMessageReply(
 		return plan, err
 	}
 	plan.changes, plan.write, err = s.planPendingItem(
-		ctx, tx, refs.ItemMessage, plan.id, plan.body, refs.PendingSource{IssueKey: message.IssueKey},
+		ctx, tx, reader, refs.ItemMessage, plan.id, plan.body, refs.PendingSource{IssueKey: message.IssueKey},
 		plan.createdAt, message.IssueKey != nil,
 	)
 	return plan, err
@@ -998,13 +997,30 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-
 	// The writer's reader is resolved before the transaction holds a connection: the answer a
-	// repeat reads back is loaded as the writer may read it (loadMessage).
+	// repeat reads back is loaded as the writer may read it (loadMessage), and the role read below
+	// reads the message as the writer does.
 	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
+	// The message's target and the session its attempt names are read before the transaction,
+	// so a reply from a session the attempt does not name, to a message sent for a route to a
+	// role, asks the listener whether that session holds the role now with nothing held
+	// (lookUpRoleHolderReply). A message the writer does not see is one no row holds
+	// (access.MessageClause), so the read finds nothing and asks nothing for it, as for a missing
+	// one. A read that finds nothing asks nothing: the transaction below answers that message or
+	// attempt as it always has. A read that fails is the route's 500.
+	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
+		select coalesce(m.target, ''), d.session_id
+		from messages m left join message_deliveries d on d.message_id = m.id and d.attempt = $2
+		where m.id = $1 and `+access.MessageClause("m", "$3")+`
+	`, input.Attempt, refs.VisibilityArg(who))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1053,8 +1069,11 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
 		return
 	}
-	if attempt.SessionID != actor.ID {
-		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "session may reply only to its own delivery")
+	// The session the attempt names answers it, and so does the session that holds the role the
+	// message went to now, while it is live: a different session that took the role from the one
+	// the attempt names is handed what that session had not read (lookUpRoleHolderReply).
+	if attempt.SessionID != actor.ID && !roleReply.allows(messageTarget(message.Target)) {
+		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "session may reply only to its own delivery, or to one sent for a role it holds while it is live")
 		return
 	}
 	// Each outcome is a response, its status, and the event it appended, if any; they share one
@@ -1243,7 +1262,10 @@ func (s *server) insertSessionReply(
 	}
 	// The reply's node goes in before its row; what that write states is appended in the batch
 	// that appends the message.answered event below (appendCausingEvent).
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, plan.node) }); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, plan.node)
+		return nil
+	}); err != nil {
 		return model.Message{}, model.Event{}, err
 	}
 	reply, err := scanMessage(tx.QueryRow(ctx, `

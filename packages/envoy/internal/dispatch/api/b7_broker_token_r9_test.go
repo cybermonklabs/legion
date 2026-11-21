@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
 // b7Answer is one answer a row holds to the bytes it was answered before projects could be
@@ -32,9 +32,7 @@ func requireB7Answer(t *testing.T, what string, response *httptest.ResponseRecor
 // answers project BRK and no list; a write of the deployment, a write to another project's
 // object, a write to an object nobody holds, an issue filed in another project and a blocked_by
 // target of another project are each 403 in the words they were answered then; its write to its
-// own project's issue lands. This file runs as it is at the release before private projects
-// (506395beea), where it passes, and at the change's first head (99e11cdd50), where the token read
-// as a credential listing BRK and the reads, whoami and the writes all failed.
+// own project's issue lands.
 func TestABrokerTokenScopedToOneProjectAnswersAsBeforeWhileNoProjectIsPrivate(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -70,15 +68,13 @@ func TestABrokerTokenScopedToOneProjectAnswersAsBeforeWhileNoProjectIsPrivate(t 
 // project, reads and writes as it did before projects could be private, when the list limited
 // nothing: it reads the deployment's priorities and another project's issue, whoami answers no
 // project and no list, and it comments on another project's issue, files an issue there and
-// names a blocked_by target there. It passes at 506395beea and at 99e11cdd50, which ignored the
-// list, and holds the change that applies the list while a project is private to leaving it be
-// while none is.
+// names a blocked_by target there.
 func TestABrokerTokenActingAsItsPersonAnswersAsBeforeWhileNoProjectIsPrivate(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-person-token-whose-trade-named-one-project"
 	answer := liveNamedToken(caller.jkt)
-	answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, []string{brokerTestProject}
+	answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopePerson, []string{brokerTestProject}
 	rig.broker.Says(token, answer)
 	own := seedProject(t, rig, brokerTestProject, "Broker")
 	other := seedProject(t, rig, "OTHER", "Other")
@@ -90,7 +86,7 @@ func TestABrokerTokenActingAsItsPersonAnswersAsBeforeWhileNoProjectIsPrivate(t *
 	requireB7Answer(t, "GET /api/v1/priorities", as(http.MethodGet, "/api/v1/priorities", nil), b7Answer{status: http.StatusOK})
 	requireB7Answer(t, "GET another project's issue", as(http.MethodGet, "/api/v1/issues/"+other.issue, nil), b7Answer{status: http.StatusOK})
 	requireB7Answer(t, "GET /api/v1/whoami", as(http.MethodGet, "/api/v1/whoami", nil), b7Answer{http.StatusOK,
-		`{"kind":"agent","owner":"` + brokerTestPerson + `","project":null,"scopes":["person","approve"],"service":null,"session":"` + brokerTestSession + `"}`})
+		`{"kind":"agent","owner":"` + brokerTestPerson + `","project":null,"scopes":["person"],"service":null,"session":"` + brokerTestSession + `"}`})
 	requireB7Answer(t, "a comment on another project's issue", as(http.MethodPost, "/api/v1/issues/"+other.issue+"/comments", map[string]any{"body": "A remark."}), b7Answer{status: http.StatusCreated})
 	requireB7Answer(t, "an issue filed in another project", as(http.MethodPost, "/api/v1/issues", map[string]any{"project": "OTHER", "title": "Elsewhere", "spec": "# Spec"}), b7Answer{status: http.StatusCreated})
 	requireB7Answer(t, "a blocked_by target of another project", as(http.MethodPatch, "/api/v1/issues/"+own.issue, map[string]any{"blocked_by": []string{other.issue}}), b7Answer{status: http.StatusOK})

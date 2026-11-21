@@ -19,20 +19,6 @@ import (
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
-// documentCallerSees is what each caller of verification v16's seed sees, by the rule (K1): alice
-// and the token that lists no project see the public project, bob the private one his list names,
-// carol both, carol's token that lists PRIV PRIV alone, and alice's token that lists PRIV nothing,
-// since alice does not see PRIV and a list sees only what its person sees.
-var documentCallerSees = map[privateCaller][]string{
-	callerAlice:          {seedPublic},
-	callerBob:            {seedPrivate},
-	callerCarol:          {seedPrivate, seedPublic},
-	callerCarolPrivToken: {seedPrivate},
-	callerAlicePrivToken: {},
-	callerCarolToken:     {seedPublic},
-	callerSharedToken:    {seedPublic},
-}
-
 // documentObjects are the objects of one project a document read names: the project, its issue,
 // a document of the project and one of the issue, each document with its slug. The missing
 // objects are names nobody holds, each spelled as a real one is, so the answer for a hidden
@@ -138,7 +124,7 @@ func TestADocumentOfAPrivateProjectAnswersAsMissing(t *testing.T) {
 
 	for _, caller := range privateCallers {
 		t.Run(string(caller), func(t *testing.T) {
-			sees := documentCallerSees[caller]
+			sees := caller.sees()
 			// What a missing object answers does not turn on the project read beside it, so each
 			// read of one is made once.
 			absents := make([]*httptest.ResponseRecorder, len(documentReads))

@@ -441,7 +441,7 @@ func (s *Service) reconcileAskBlocks(
 			// this very document, which holds the question blocks they name - is named by the
 			// fields that row will hold rather than read from the row, and read only if the
 			// question names a block (refs.PendingAskDocument).
-			reader := refs.NewReaderInScope(ctx, tx, "ask", ask.ID, s.origins, refs.PendingAskDocument(ask))
+			reader := refs.NewReaderInScope(ctx, tx, ask.Author, "ask", ask.ID, s.origins, refs.PendingAskDocument(ask))
 			changes, index, err := planAskReferences(ctx, tx, reader, ask.ID, ask.Question)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index new ask block: %w", err)
@@ -485,7 +485,7 @@ func (s *Service) reconcileAskBlocks(
 			// back is a part again, and the event names what that moved. The parts are written
 			// after the restoring update, which this transaction has queued.
 			restoredAt := refs.AskPartsAt(ask)
-			changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.origins),
+			changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, s.origins),
 				ask, restoredAt, model.ReferenceChanges{})
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of restored ask %s: %w", ask.ID, err)
@@ -542,7 +542,7 @@ func (s *Service) reconcileAskBlocks(
 			ask.EditedAt = askTimestamp(&editedAt)
 			recordAskBlock(ctx, tx, artifactID, ask)
 			// The question and the parts through one reader (refs.NewReader).
-			reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.origins)
+			reader := refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, s.origins)
 			changes, index, err := planEditedAskReferences(ctx, tx, reader, ask.ID, previous.Question, ask.Question)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index reconciled ask: %w", err)
@@ -1046,9 +1046,7 @@ func createAskBlock(
 	node := graphstore.PlanUncaused([]graphstore.Node{graphstore.AskNode(id, project, parties, author, createdAt)}, nil)
 	opening.node = &node
 	if err := write(ctx, tx, func(b *store.WriteBatch) error {
-		if err := graphstore.QueueNodes(b, node); err != nil {
-			return err
-		}
+		graphstore.QueueNodes(b, node)
 		b.Queue("create ask block row", `
 			insert into asks (id, issue_key, artifact_id, block_id, block_artifact_id, author, question, options, multiple, urgency, kind, created_at)
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'question', $11)

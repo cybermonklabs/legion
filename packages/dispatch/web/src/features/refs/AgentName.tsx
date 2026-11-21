@@ -37,8 +37,7 @@ import { relativeTimeLabel, Timestamp } from "./Timestamp";
  * is the one other reader, and it does not show an agent. The root `biome.json` bans importing
  * them anywhere else in `web/src` (and `AGENT_LIVE_PATH` outside `app.tsx`, which mounts the
  * route), but not through a namespace import (`import * as contracts from "@legion/contracts"`):
- * the review audit in `packages/dispatch/AGENTS.md` ("How an agent is shown") catches that
- * member use.
+ * lint misses that member use, so a review looks for it.
  */
 
 type SessionActor = Actor & { kind: "session" };

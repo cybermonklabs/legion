@@ -1,12 +1,16 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { RecordResponse } from "../../api/types";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { MachineLoginPage } from "./MachineLoginPage";
 
 function machineRecord(overrides: Partial<RecordResponse> = {}): RecordResponse {
@@ -66,6 +70,7 @@ test("a restricted member's page approves their own login and lists and revokes 
         expires_at: "2026-12-20T00:00:00Z",
         host: "erin-laptop",
         issued_at: "2026-11-20T00:00:00Z",
+        person: null,
         service: null,
         subject: null,
       },
@@ -233,5 +238,116 @@ test("a pending service login from before token logins offers Deny alone, which 
     lookupMachineCredential.mockRestore();
     denyCredentialRecord.mockRestore();
     getMachineLogins.mockRestore();
+  }
+});
+
+/** A fetch that failed, which the write is tried again after: it goes late, for the reader to
+ *  stop. */
+const dropped = () => new NetworkError("/api/v1/credential-requests", new TypeError("Failed"));
+
+/** The page over `queryClient`, on the held clock, with the code looked up when `answerLookup`
+ *  is given: it answers the lookup the press of Look up sent, inside `act` once that press is
+ *  out, as docs/testing.md ("The act rule of a Dispatch unit test") says. */
+async function stoppedPage(
+  queryClient: QueryClient,
+  answerLookup?: (record: RecordResponse) => void
+) {
+  const user = userOnFakeClock();
+  render(
+    <MemoryRouter initialEntries={["/credentials/machine"]}>
+      <QueryClientProvider client={queryClient}>
+        <MachineLoginPage />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  await user.click(screen.getByLabelText("Code shown on the machine"));
+  await user.paste("abcd1234");
+  await user.click(screen.getByRole("button", { name: "Look up" }));
+  if (answerLookup !== undefined) {
+    await act(async () => {
+      answerLookup(machineRecord());
+    });
+    await screen.findByText("worker-7.example.com");
+  }
+  return user;
+}
+
+// A lookup, an approval or a denial the reader stopped may have been made: the page says so,
+// and what its button does now - a press of its own - rather than a failure it cannot know of.
+test("a lookup the reader stopped says it may have been made, not that it failed", async () => {
+  jest.useFakeTimers();
+  const lookup = spyOn(api, "lookupMachineCredential").mockRejectedValue(dropped());
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    await stoppedPage(queryClient);
+    await stopTheLateWrite(queryClient);
+    expect(
+      screen.getByText(
+        stoppedWriteNote("the lookup of that code", "made", {
+          anew: "Look up sends the code in the field as a new lookup.",
+        })
+      )
+    ).toBeDefined();
+  } finally {
+    realClock();
+    cleanup();
+    queryClient.clear();
+    lookup.mockRestore();
+    getMachineLogins.mockRestore();
+  }
+});
+
+test("an approval the reader stopped says it may have been made, not that it failed", async () => {
+  jest.useFakeTimers();
+  const lookedUp = Promise.withResolvers<RecordResponse>();
+  const lookup = spyOn(api, "lookupMachineCredential").mockReturnValue(lookedUp.promise);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const approve = spyOn(api, "approveCredentialRecord").mockRejectedValue(dropped());
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const user = await stoppedPage(queryClient, lookedUp.resolve);
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await stopTheLateWrite(queryClient);
+    expect(
+      screen.getByText(
+        stoppedWriteNote("the approval", "made", {
+          anew: "Pressing Approve again sends a new approval.",
+        })
+      )
+    ).toBeDefined();
+  } finally {
+    realClock();
+    cleanup();
+    queryClient.clear();
+    lookup.mockRestore();
+    getMachineLogins.mockRestore();
+    approve.mockRestore();
+  }
+});
+
+test("a denial the reader stopped says it may have been made, not that it failed", async () => {
+  jest.useFakeTimers();
+  const lookedUp = Promise.withResolvers<RecordResponse>();
+  const lookup = spyOn(api, "lookupMachineCredential").mockReturnValue(lookedUp.promise);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const deny = spyOn(api, "denyCredentialRecord").mockRejectedValue(dropped());
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const user = await stoppedPage(queryClient, lookedUp.resolve);
+    await user.click(screen.getByRole("button", { name: "Deny" }));
+    await stopTheLateWrite(queryClient);
+    expect(
+      screen.getByText(
+        stoppedWriteNote("the denial", "made", { anew: "Pressing Deny again sends a new denial." })
+      )
+    ).toBeDefined();
+  } finally {
+    realClock();
+    cleanup();
+    queryClient.clear();
+    lookup.mockRestore();
+    getMachineLogins.mockRestore();
+    deny.mockRestore();
   }
 });

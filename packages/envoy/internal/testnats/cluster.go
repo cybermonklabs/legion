@@ -10,6 +10,8 @@ import (
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Cluster is n nats-servers in this test process, routed to each other with JetStream clustered
@@ -18,6 +20,9 @@ import (
 // route URL.
 type Cluster struct {
 	Servers []*Server
+	// routes are the relays of the members' route ports, member i's at i, which a test in this
+	// package freezes to hold every message between the members.
+	routes []*relay
 }
 
 // StartCluster runs a cluster of n servers with JetStream, each with a store of its own, shut down
@@ -50,8 +55,9 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	members := make([]atomic.Pointer[Server], n)
 	routes := make([]string, n)
 	listeners := make([]net.Listener, n)
+	relays := make([]*relay, n)
 	for i := range n {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		listener, err := testport.ListenLoopback()
 		if err != nil {
 			t.Fatalf("hold member %d's route port: %v", i, err)
 		}
@@ -66,10 +72,11 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 			return server.clusterAddress()
 		}, false)
 		t.Cleanup(routeRelay.Close)
+		relays[i] = routeRelay
 	}
-	cluster := &Cluster{Servers: make([]*Server, n)}
+	cluster := &Cluster{Servers: make([]*Server, n), routes: relays}
 	for i := range n {
-		server := start(t, clusterConfig(i, routes)+config, []string{"-js"})
+		server := start(t, clusterConfig(i, routes, listeners[i].Addr().(*net.TCPAddr).IP.String())+config, []string{"-js"})
 		server.name = memberName(i)
 		members[i].Store(server)
 		cluster.Servers[i] = server
@@ -79,7 +86,8 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 }
 
 // clusterConfig is the configuration of member i of a cluster whose route relays listen at routes.
-func clusterConfig(i int, routes []string) string {
+// The member's own route listener takes host, the address of its route relay (testport.LoopbackIP).
+func clusterConfig(i int, routes []string, host string) string {
 	urls := make([]string, len(routes))
 	for j, route := range routes {
 		urls[j] = fmt.Sprintf("%q", "nats-route://"+route)
@@ -88,12 +96,12 @@ func clusterConfig(i int, routes []string) string {
 jetstream {}
 cluster {
   name: "envoy-test"
-  listen: "127.0.0.1:-1"
+  listen: %q
   advertise: %q
   no_advertise: true
   routes: [ %s ]
 }
-`, memberName(i), routes[i], strings.Join(urls, ", "))
+`, memberName(i), net.JoinHostPort(host, "-1"), routes[i], strings.Join(urls, ", "))
 }
 
 // memberName is member i's server_name.

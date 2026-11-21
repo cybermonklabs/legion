@@ -33,7 +33,7 @@ const BrokerRevocationsChannel = "dispatch_broker_revocations"
 // sign-in's people write moved it (people_account_ends_sessions, people_first_account_ends_sessions)
 // before this, its last statement, so it is the generation the replacement left, at the insert and
 // at the upsert alike (migration 20261118152422 refuses any other). The broker refuses an approve
-// whose check at Dispatch read a lower one (agentsecrets.Decision.ApproverSessionGeneration).
+// whose check at Dispatch read a lower one (cipher.Decision.ApproverSessionGeneration).
 const recordBrokerRevocationSQL = `
 	insert into broker_revocations (email, issuer, subject, holder_subject, recorded_at, session_generation)
 	values ($1, $2, $3, $4, clock_timestamp(), (select generation from user_sessions where login = $1))

@@ -836,11 +836,11 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 			want: `projects key "demo" must match ^[A-Z][A-Z0-9]*$`,
 		},
 		{
-			// Dispatch holds the project's repository mapping, so a file that still names a
-			// repository is refused, naming where the mapping is set.
+			// The daemon takes each issue's repository from Dispatch, so a file that still names a
+			// repository is refused, naming where the repository comes from.
 			name: "a project names its repository",
 			body: strings.Replace(minimalFile, "DEMO: {}", "DEMO: { repo: acme/widgets }", 1),
-			want: `Unknown key "projects.DEMO.repo": Dispatch holds the project's repository mapping (Settings → Repositories → Projects)`,
+			want: `Unknown key "projects.DEMO.repo": the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project`,
 		},
 		{
 			name: "review_workflows is no longer a key",

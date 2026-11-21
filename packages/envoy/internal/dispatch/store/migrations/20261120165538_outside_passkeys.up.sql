@@ -5,13 +5,17 @@
 --     link itself carries them in its URL fragment, and no row holds them), the email and project
 --     it is for, who made it and when, when it lapses (24 hours after), and when it was used. A
 --     link is used once: the enrollment that uses it sets used_at in its own transaction. A new
---     link for the same person and project, a removal from that project's list, and the owner's
---     Reset delete the person's unused links of that project (store.PgPasskeys).
+--     link for the same person and project and a removal from that project's list delete the
+--     person's unused links of that project, and the owner's Reset every unused link of the person
+--     (store.PgPasskeys).
 --   - passkeys holds each WebAuthn credential a person enrolled with such a link: its id, the
 --     person's email, the user handle the authenticator stores with it (the person's subject), the
 --     COSE public key, the signature counter, the AAGUID, the transports the browser reported, the
 --     credential's flags as go-webauthn packs them into one byte (webauthn.CredentialFlags:
---     backup eligible is checked at every sign-in), and when it was enrolled and last used. The
+--     backup eligible is checked at every sign-in), the project of the link that enrolled it and
+--     who made that link, and when it was enrolled and last used. A passkey reads every project
+--     that names its person, so one owner binds an outside person: a list of another owner refuses
+--     an address whose passkey a link of someone else enrolled (api.putProjectAccessPerson). The
 --     owner's Reset, a removal from the last list that names the person and the hourly check of a
 --     person no list names delete them, in the transaction that ends the sign-in.
 --   - people.sub_issuer is the issuer of the account people.sub records: null for an account of
@@ -25,12 +29,14 @@
 --     no refresh token; it stands while confirmed_at holds a time, and its hourly confirmation reads
 --     the access lists and the passkeys instead. So the pairing holds for a row of the sign-in
 --     issuer's account, and a passkey's row holds no refresh token at all.
---   - passkey_ceremonies holds each ceremony a begin started and no finish has used yet: the
---     SHA-256 of its challenge and when it lapses (5 minutes after the begin). A finish deletes its
---     ceremony's row before it verifies anything, and a finish whose row is gone is refused, so a
---     ceremony's answer is taken once: a replayed answer and its ceremony cookie are refused even
---     for a passkey whose signature counter stays 0, which the counter check cannot catch. Each
---     begin deletes the rows that lapsed, so the table holds the last 5 minutes of begins.
+--   - passkey_ceremonies holds each ceremony a finish used, until a minute after it lapses: the
+--     SHA-256 of its challenge, under a unique key, and when it lapses (5 minutes after its
+--     begin). A begin writes nothing; the finish whose answer verified records the challenge in
+--     the transaction that records what the answer does, so a ceremony's answer does that once: a
+--     replayed answer and its ceremony cookie are refused even for a passkey whose signature
+--     counter stays 0, which the counter check cannot catch. Each finish deletes the rows a minute
+--     past their lapse (a margin for the database's clock running ahead of the process's), so the
+--     table holds the last 6 minutes of finishes.
 --
 -- New tables, a nullable column with no default and its check added NOT VALID (as 20261117064356
 -- adds agent_tokens.subject's: an inline check on `add column` would read every row of people), a
@@ -63,6 +69,10 @@ create table passkeys (
   aaguid bytea not null check (octet_length(aaguid) in (0, 16)),
   transports text[] not null default '{}',
   flags smallint not null check (flags between 0 and 255),
+  -- The link's project and maker, which the owner's access answer shows. No foreign key to
+  -- projects: a project deleted later leaves the record of whose link enrolled the passkey.
+  project_key text not null check (project_key <> ''),
+  made_by text not null check (made_by <> ''),
   created_at timestamptz not null default now(),
   last_used_at timestamptz
 );

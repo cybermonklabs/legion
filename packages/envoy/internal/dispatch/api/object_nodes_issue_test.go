@@ -194,9 +194,11 @@ func TestABlockNodeCarriesItsDocumentsProject(t *testing.T) {
 	runbook := createProjectDocument(t, handler, "BLK", "Runbook.md", "# Runbook\n\nStep one.\n")
 
 	// A later version of the spec changes one paragraph, adds one and drops one, so the index
-	// writes a changed block, a new block and a gone block.
-	revised := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
+	// writes a changed block, a new block and a gone block. An upload replacing a document names
+	// the token of the version it replaces (main's #3000, PRECONDITION_REQUIRED).
+	revised := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"name": "spec.md", "content": "First paragraph, revised.\n\nA third paragraph.\n",
+		"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
 	}, "alice")
 	if revised.Code != http.StatusCreated {
 		t.Fatalf("upload a revised spec: status=%d body=%s", revised.Code, revised.Body.String())

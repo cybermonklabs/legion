@@ -148,7 +148,7 @@ func TestMentionsStoreTheWholeIdOfAShortReferenceAndTheKeysThatExist(t *testing.
 	} {
 		source := resolverSource(index + 1)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
-		located := NewReader(ctx, tx, "comment", source, text.NewOrigins(resolverServer)).Mentions(test.body)
+		located := NewReader(ctx, tx, prefixAuthor, "comment", source, text.NewOrigins(resolverServer)).Mentions(test.body)
 		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
@@ -225,7 +225,7 @@ func TestMentionsStoreTheWholeIdOfAProjectDocumentsShortReference(t *testing.T) 
 	} {
 		source := resolverSource(index + 100)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
-		located := NewReader(ctx, tx, "comment", source, text.NewOrigins(resolverServer)).Mentions(test.body)
+		located := NewReader(ctx, tx, prefixAuthor, "comment", source, text.NewOrigins(resolverServer)).Mentions(test.body)
 		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
@@ -295,7 +295,7 @@ func TestQuestionReferencesResolveAgainstTheTextsOwnDocument(t *testing.T) {
 		if test.source != anchored {
 			insertPrefixComment(t, tx, test.source, "ACME-1", test.body)
 		}
-		located := NewReader(ctx, tx, "comment", test.source, text.NewOrigins(resolverServer)).Mentions(test.body)
+		located := NewReader(ctx, tx, prefixAuthor, "comment", test.source, text.NewOrigins(resolverServer)).Mentions(test.body)
 		if _, err := replaceRefs(ctx, tx, "comment", test.source, text.Refs(located), nil); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
@@ -461,7 +461,7 @@ func TestAFailedResolverLeavesTheWriteStoringTheTextAsWritten(t *testing.T) {
 	logged := &countingHandler{}
 	logtest.SetDefault(t, logged)
 
-	located := NewReader(ctx, failingQueryer{}, "comment", source, text.NewOrigins(resolverServer)).Mentions(body)
+	located := NewReader(ctx, failingQueryer{}, prefixAuthor, "comment", source, text.NewOrigins(resolverServer)).Mentions(body)
 	if want := text.ExtractAt(body, text.NewOrigins(resolverServer)); !reflect.DeepEqual(located, want) {
 		t.Errorf("a failed resolver read %#v; want the text as written, %#v", located, want)
 	}
@@ -515,7 +515,7 @@ func TestAResolverResolvesEachPrefixOnce(t *testing.T) {
 
 	cite := "dispatch://ACME-1/ask/" + resolverAsk[:8]
 	reads := 0
-	resolve := NewReader(ctx, countingQueryer{Queryer: tx, reads: &reads}, "comment", resolverSource(1), text.NewOrigins(resolverServer))
+	resolve := NewReader(ctx, countingQueryer{Queryer: tx, reads: &reads}, prefixAuthor, "comment", resolverSource(1), text.NewOrigins(resolverServer))
 	if located := resolve.Mentions("See " + cite + "."); len(located) != 1 || located[0].ID != resolverAsk {
 		t.Fatalf("the first text read %#v; want the whole id of %s", located, resolverAsk)
 	}

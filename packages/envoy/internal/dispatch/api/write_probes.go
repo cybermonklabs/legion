@@ -63,6 +63,10 @@ var writeProbes = map[string]writeProbe{
 	"POST /api/v1/issues/{key}/comments":                   {byIssue, `{` + probeActor + `,"body":"A walked comment."}`},
 	"POST /api/v1/issues/{key}/results": {byIssue, `{` + probeActor +
 		`,"check":"k1","role":"implementer","verdict":"pass","commit":"1111111111111111111111111111111111111111"}`},
+	// The record's dry run reads its issue and check as the record does (readResultRequest), and
+	// writes nothing.
+	"POST /api/v1/issues/{key}/results/dry-run": {byIssue, `{` + probeActor +
+		`,"check":"k1","role":"implementer","verdict":"pass","commit":"1111111111111111111111111111111111111111"}`},
 	"POST /api/v1/issues/{key}/handoffs/{phase}": {readProbe{"key": probeIssue, "phase": probeHandoffPhase},
 		`{` + probeActor + `,"body":"{\"next\":\"walked\"}"}`},
 	"PUT /api/v1/issues/{key}/design-gates": {byIssue, `{` + probeActor + `,"gates":[]}`},

@@ -96,8 +96,11 @@ var planCacheModes = []string{"force_custom_plan", "force_generic_plan"}
 // answers fewer rows than the log holds fails here rather than passing as a faster plan; and it
 // reads the migration files and the catalog, so an index moved to a later migration - where an
 // existing deployment would build it on a full table - fails too, and so does a dropped one, and
-// so does any index outside the set a migration declares on graph_tuples, however its statement
-// spells the index and the table (indexDeclaration).
+// so does any index outside the set that a migration's create index statement declares on
+// graph_tuples, however that statement spells the index and the table (indexDeclaration,
+// TestIndexesOfReadsEveryCreateIndexSpelling). The scan of the files reads create index
+// statements alone: an index a constraint makes, a primary key or a unique constraint of a create
+// table or an alter table, is not one it reads.
 //
 // Each read is explained under both plan-cache modes (planCacheModes), and each plan of each
 // mode is held to one rule: it reads graph_tuples through one of the four read indexes, that
@@ -1593,6 +1596,85 @@ func indexesOf(migration, body, firstLine string) []declaredIndex {
 		})
 	}
 	return indexes
+}
+
+// TestIndexesOfReadsEveryCreateIndexSpelling holds indexesOf to reading the name, the table and
+// the rest of the index out of each spelling of a create index that indexDeclaration lists, one
+// row a spelling, so an index a migration declares in any of them is one the index-set scan
+// reads rather than one it passes over. It reads no database.
+func TestIndexesOfReadsEveryCreateIndexSpelling(t *testing.T) {
+	for _, row := range []struct {
+		spelling, statement string
+		want                declaredIndex
+	}{
+		{
+			spelling: "under a name of its own", statement: `create index graph_tuples_named on graph_tuples (kind, to_id) where to_kind <> 'value';`,
+			want: declaredIndex{name: "graph_tuples_named", table: "graph_tuples", keys: "kind, to_id", predicate: "to_kind <> 'value'"},
+		},
+		{
+			spelling: "under no name, which Postgres makes up", statement: `create index on graph_tuples (kind);`,
+			want: declaredIndex{name: "", table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "under a quoted name holding a doubled quote", statement: `create index "Graph ""Quoted"" Index" on graph_tuples (kind);`,
+			want: declaredIndex{name: `Graph "Quoted" Index`, table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "on a quoted table", statement: `create index graph_tuples_quoted_table on "Graph_Tuples" (kind);`,
+			want: declaredIndex{name: "graph_tuples_quoted_table", table: "Graph_Tuples", keys: "kind"},
+		},
+		{
+			spelling: "on the table under its schema", statement: `create index graph_tuples_schema on public.graph_tuples (kind);`,
+			want: declaredIndex{name: "graph_tuples_schema", table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "on the table under its quoted schema, spaced round the dot", statement: `create index graph_tuples_quoted_schema on "public" . graph_tuples (kind);`,
+			want: declaredIndex{name: "graph_tuples_quoted_schema", table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "on only the table", statement: `create index graph_tuples_only on only graph_tuples (kind);`,
+			want: declaredIndex{name: "graph_tuples_only", table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "in upper case", statement: `CREATE UNIQUE INDEX GRAPH_TUPLES_UPPER ON GRAPH_TUPLES (FROM_KIND, KIND) WHERE SOURCE_EVENT <> 0;`,
+			want: declaredIndex{name: "graph_tuples_upper", table: "graph_tuples", keys: "from_kind, kind", predicate: "source_event <> 0", unique: true},
+		},
+		{
+			spelling: "unique", statement: `create unique index graph_tuples_unique on graph_tuples (from_kind, md5(to_id)) where to_kind = 'value';`,
+			want: declaredIndex{name: "graph_tuples_unique", table: "graph_tuples", keys: "from_kind, md5(to_id)", predicate: "to_kind = 'value'", unique: true},
+		},
+		{
+			spelling: "if not exists", statement: `create index if not exists graph_tuples_maybe on graph_tuples (kind);`,
+			want: declaredIndex{name: "graph_tuples_maybe", table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "concurrently", statement: `create index concurrently graph_tuples_concurrent on graph_tuples (kind);`,
+			want: declaredIndex{name: "graph_tuples_concurrent", table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "concurrently, under no name", statement: `create index concurrently on graph_tuples (kind);`,
+			want: declaredIndex{name: "", table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "every option at once, over several lines", statement: "create unique index concurrently if not exists\n\tgraph_tuples_every\n\ton only public.graph_tuples (\n\t\tfrom_kind,\n\t\tkind\n\t)\n\twhere source_event <> 0;",
+			want: declaredIndex{name: "graph_tuples_every", table: "graph_tuples", keys: "from_kind, kind", predicate: "source_event <> 0", unique: true},
+		},
+	} {
+		const migration = "0_spelling.up.sql"
+		read := indexesOf(migration, "create table unrelated (id bigint);\n"+row.statement+"\nselect 1;\n", "")
+		if len(read) != 1 {
+			t.Errorf("%s: indexesOf reads %d indexes out of %q, want one", row.spelling, len(read), row.statement)
+			continue
+		}
+		got := read[0]
+		row.want.migration = migration
+		row.want.statement = strings.TrimSpace(whitespaceRun.ReplaceAllString(row.statement, " "))
+		if got != row.want {
+			t.Errorf("%s: indexesOf reads %q as %q unique=%v on %q (%s)%s, statement %q; want %q unique=%v on %q (%s)%s, statement %q",
+				row.spelling, row.statement, got.name, got.unique, got.table, got.keys, wherePart(got.predicate), got.statement,
+				row.want.name, row.want.unique, row.want.table, row.want.keys, wherePart(row.want.predicate), row.want.statement)
+		}
+	}
 }
 
 // splitIndexBody takes an index's key list and its partial predicate out of what follows the

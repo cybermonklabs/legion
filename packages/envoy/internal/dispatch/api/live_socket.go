@@ -90,8 +90,9 @@ type liveSocket struct {
 	// is where every socket's authorization is decided: a frame carries no credential of its own,
 	// so a view the socket serves reads what the caller proved when it opened (holds), and resolves
 	// from it what the caller sees now (caller, readerFor): the delivery hub at each subscribe and
-	// at each event that can move what the caller sees, and an events or agent subscription as it
-	// starts and at each such event (feedEvents, relayAgentConversation).
+	// at each event that can move what the caller sees, an events subscription as it starts and at
+	// each such event (feedEvents), and an agent subscription as it starts and at each re-arm
+	// (relayAgentConversation).
 	actor model.Actor
 	// queue holds the hub's frames and the socket's own refusals (Send).
 	queue chan any

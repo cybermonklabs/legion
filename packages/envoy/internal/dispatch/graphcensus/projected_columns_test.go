@@ -8,17 +8,28 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus/censustest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
 // projectedTables are the tables migration 20261109022248 made projections of the node and
-// tuple store, as api's scan of their writers (TestNoProjectionRowIsWrittenWithoutTheStore)
-// names them.
-var projectedTables = []string{"block_refs", "comments", "document_blocks"}
+// tuple store: the tables censustest.ProjectedColumns lists, in order, so a table added there is
+// one this test reads the census's statements for.
+var projectedTables = slices.Sorted(maps.Keys(censustest.ProjectedColumns))
 
-// censusTableRead matches where a statement reads a projected table, under the schema it may be
-// qualified by, with the word after it: the alias the statement gives the table, or a word of
-// the clause that follows a table given none (unaliasedTableWords).
-var censusTableRead = regexp.MustCompile(`(?i)\b(?:from|join)\s+(?:only\s+)?(?:\w+\.)?(block_refs|comments|document_blocks)\b(?:\s+(?:as\s+)?([a-z_][a-z0-9_]*))?`)
+// censusTableRead matches where a statement reads a projected table (projectedTables), under the
+// schema it may be qualified by, with the word after it: the alias the statement gives the table,
+// or a word of the clause that follows a table given none (unaliasedTableWords).
+var censusTableRead = regexp.MustCompile(`(?i)\b(?:from|join)\s+(?:only\s+)?(?:\w+\.)?(` + literalAlternation(projectedTables) +
+	`)\b(?:\s+(?:as\s+)?([a-z_][a-z0-9_]*))?`)
+
+// literalAlternation is a regular expression matching any one of words, each read literally.
+func literalAlternation(words []string) string {
+	quoted := make([]string, len(words))
+	for index, word := range words {
+		quoted[index] = regexp.QuoteMeta(word)
+	}
+	return strings.Join(quoted, "|")
+}
 
 // unaliasedTableWords are the words that may follow a table in a from list where the statement
 // gives it no alias.
@@ -63,6 +74,9 @@ func TestEveryColumnTheCensusComparesIsOneTheProjectionScanHolds(t *testing.T) {
 	if statements == 0 {
 		t.Fatal("no projection of the census has a row side statement, so no column the census compares was read")
 	}
+	if len(projectedTables) == 0 {
+		t.Fatal("censustest.ProjectedColumns lists no table, so no table that projects the store is held to the census")
+	}
 	for _, table := range projectedTables {
 		if len(compared[table]) == 0 {
 			t.Errorf("the census's row sides read no column of %s, a table that projects the store: either the census no longer holds it against the store, or this reading of its statements broke", table)
@@ -76,6 +90,35 @@ func TestEveryColumnTheCensusComparesIsOneTheProjectionScanHolds(t *testing.T) {
 			}
 		}
 		t.Logf("the census compares %s.%s", table, strings.Join(columns, ", "+table+"."))
+	}
+}
+
+// TestTheProjectedColumnsListEveryTableTheStoreProjects holds censustest.ProjectedColumns to
+// graphstore.ProjectedTables, the production list of the tables that project the store, which the
+// erase walks to read, lock and delete a node's rows of them. The two name the same tables. A
+// table the production list names and the column list does not is one whose writers api's scan
+// (TestNoProjectionRowIsWrittenWithoutTheStore) and whose columns the census test above never
+// read; a table the column list names and the production list does not is one whose rows the
+// erase never takes with their node. It reads no database.
+func TestTheProjectedColumnsListEveryTableTheStoreProjects(t *testing.T) {
+	stored := make([]string, len(graphstore.ProjectedTables))
+	for index, held := range graphstore.ProjectedTables {
+		stored[index] = held.Table
+	}
+	if len(stored) == 0 {
+		t.Fatal("graphstore.ProjectedTables lists no table, so no table that projects the store is held to censustest.ProjectedColumns")
+	}
+	for _, table := range stored {
+		if _, listed := censustest.ProjectedColumns[table]; !listed {
+			t.Errorf("graphstore.ProjectedTables lists %s, which censustest.ProjectedColumns does not: name there the columns of %s the store states, so api's scan holds its writers to the store",
+				table, table)
+		}
+	}
+	for _, table := range projectedTables {
+		if !slices.Contains(stored, table) {
+			t.Errorf("censustest.ProjectedColumns lists %s, which graphstore.ProjectedTables does not: add it there, with its key and the column naming its owning issue, so the erase takes a node's rows of it",
+				table)
+		}
 	}
 }
 

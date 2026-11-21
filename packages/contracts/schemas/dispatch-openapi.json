@@ -103,7 +103,7 @@
     },
     "/api/v1/access-groups/{name}": {
       "put": {
-        "description": "Make a group or write it again {members, owner?}: name is lowercase letters, digits, dots, underscores and dashes, at most 63, and members the emails of the people it holds, exactly (at most 1000). The first write makes the group and its writer becomes its owner; after that only the owner writes it (403 GROUP_OWNER_REQUIRED), and owner gives it to another full member. A restricted member cannot make a group (403 RESTRICTED_MEMBER), a member who is a restricted member is 400 GROUP_MEMBER_RESTRICTED, and a bad name or email is 400 PROJECT_ACCESS_INPUT. Appends access_group.changed and answers the group. Needs the person scope. An owner holds at most 100 groups; one more is 400 CAP_EXCEEDED.",
+        "description": "Make a group or write it again {members, owner?}: name is lowercase letters, digits, dots, underscores and dashes, at most 63, and members the emails of the people it holds, exactly (at most 1000). The first write makes the group and its writer becomes its owner; after that only the owner writes it (403 GROUP_OWNER_REQUIRED), and owner gives it to another full member. A restricted member cannot make a group (403 RESTRICTED_MEMBER), a member who is a restricted member is 400 GROUP_MEMBER_RESTRICTED, and a bad name or email is 400 PROJECT_ACCESS_INPUT. Appends access_group.changed and answers the group. Needs the person and approve scopes. An owner holds at most 100 groups; one more is 400 CAP_EXCEEDED.",
         "operationId": "putApiV1AccessGroupsByName",
         "parameters": [
           {
@@ -157,12 +157,13 @@
         },
         "x-auth": "any",
         "x-oauth-scopes": [
-          "person"
+          "person",
+          "approve"
         ],
         "x-write-scope": "deployment"
       },
       "delete": {
-        "description": "Delete a group, which takes it off every access list that named it; only its owner calls it (403 GROUP_OWNER_REQUIRED), and a group no row holds is 404 GROUP_NOT_FOUND. Appends project.access_changed for each such list and access_group.changed, and answers 204. Needs the person scope.",
+        "description": "Delete a group, which takes it off every access list that named it; only its owner calls it (403 GROUP_OWNER_REQUIRED), and a group no row holds is 404 GROUP_NOT_FOUND. Appends project.access_changed for each such list and access_group.changed, and answers 204. Needs the person and approve scopes.",
         "operationId": "deleteApiV1AccessGroupsByName",
         "parameters": [
           {
@@ -199,7 +200,8 @@
         },
         "x-auth": "any",
         "x-oauth-scopes": [
-          "person"
+          "person",
+          "approve"
         ],
         "x-write-scope": "deployment"
       }
@@ -545,6 +547,10 @@
                   },
                   "name": {
                     "description": "the artifact's name, trimmed",
+                    "type": "string"
+                  },
+                  "precondition": {
+                    "description": "the base this upload replaces as one JSON object, as the JSON body's `precondition` field",
                     "type": "string"
                   },
                   "summary": {
@@ -1830,7 +1836,8 @@
         },
         "x-auth": "any",
         "x-oauth-scopes": [
-          "person"
+          "person",
+          "approve"
         ],
         "x-write-scope": "project"
       }
@@ -3521,7 +3528,7 @@
     },
     "/api/v1/ci-reconcile/passes": {
       "get": {
-        "description": "The CI reconcile passes of the last 24 hours, newest first: each one's id, the server process that ran it, when it started and ended, what it did (graphql_queries, graphql_points, rest_requests, rest_not_modified, heads_over_rest, records, heads, heads_known) and where it left the cursor, which is where the pass after it takes the order up: the repository, from (the number naming the page of its open pull requests, one above the last head of the page before it), number (the first pull request of that page the pass did not finish, 0 for the whole page), rest (the page is read from the repository's REST listing rather than from a query) and counted (its heads are already among the heads the cycle knows the repository has). Both the counts and the cursor are null until the pass ends. state is running, complete, deadline (its own five-minute bound cut it short), rate_limit (a shared GitHub limit ended it), cancelled (its process shut down under it) or ended_without_completing, which is a pass whose process died before it could record its end. Rows are kept for 48 hours and pruned by the pass that ends. An open viewer reads the passes; a restricted member or a credential that lists projects is 403 DEPLOYMENT_READ_REFUSED.",
+        "description": "The CI reconcile passes of the last 24 hours, newest first: each one's id, the server process that ran it, when it started and ended, what it did (graphql_queries, graphql_points, rest_requests, rest_not_modified, heads_over_rest, records, heads, heads_known) and where it left the cursor, which is where the pass after it takes the order up: the repository, from (the number naming the page of its open pull requests, one above the last head of the page before it), number (the first pull request of that page the pass did not finish, 0 for the whole page), rest (the page is read from the repository's REST listing rather than from a query) and counted (its heads are already among the heads the cycle knows the repository has). Both the counts and the cursor are null until the pass ends. state is running, complete, deadline (its own five-minute bound cut it short), rate_limit (a shared GitHub limit ended it), cancelled (its process shut down under it) or ended_without_completing, which is a pass whose process died before it could record its end. Rows are kept for 48 hours and pruned by the pass that ends. An open viewer reads the passes, a full member's credential whatever projects it lists included; a restricted member, or a credential acting for one, is 403 DEPLOYMENT_READ_REFUSED.",
         "operationId": "getApiV1CiReconcilePasses",
         "parameters": [
           {
@@ -3945,7 +3952,7 @@
     },
     "/api/v1/comments/{id}/reply": {
       "post": {
-        "description": "The mentioned session's reply to a delivery; the session names itself in actor.",
+        "description": "The mentioned session's reply to a delivery; the session names itself in actor. For a mention of a role (role:\u003cname\u003e), the role's live holder may reply too, as the Envoy listener names it; a listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the mention is 500, never a refusal.",
         "operationId": "postApiV1CommentsByIdReply",
         "parameters": [
           {
@@ -4077,7 +4084,7 @@
     },
     "/api/v1/credential-grants": {
       "get": {
-        "description": "List credential grants the caller may revoke (?approver=me only).",
+        "description": "List the live credential grants of the caller's Live grants page (?approver=me only): those the caller approved, those of the caller's own sessions, those the model judge approved in anyone's stead, and those a pod that acts for no person took without asking (a service's pod, or a person's pod the broker no longer maps), which nobody may revoke. A grant the caller approved, or whose session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any other grant of a private project the caller may not see is left out, and one the broker cannot ask Dispatch about is left out while it cannot.",
         "operationId": "getApiV1CredentialGrants",
         "parameters": [
           {
@@ -4126,7 +4133,7 @@
     },
     "/api/v1/credential-grants/{id}/revoke": {
       "post": {
-        "description": "Revoke a credential grant as the caller, its approver or its enrollment's operator.",
+        "description": "Revoke a credential grant as the caller: its approver, or the person its enrollment acts for, ends it whatever project it touches. A grant revoked by someone it does not name is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke succeeds once it stays put.",
         "operationId": "postApiV1CredentialGrantsByIdRevoke",
         "parameters": [
           {
@@ -4288,7 +4295,7 @@
     },
     "/api/v1/credential-requests/{id}/approve": {
       "post": {
-        "description": "Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A restricted member approves at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs is 403 RESTRICTED_MEMBER, and one through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise.",
+        "description": "Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. A restricted member approves at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs is 403 RESTRICTED_MEMBER, and one through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise. While another approve of the member's is at the broker, or a removal of theirs from an access list is being recorded, their approve is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT, for them to approve again in a few seconds. While a revocation of the member's machine logins is owed after a removal from an access list, their approve is 409 MACHINE_LOGIN_REVOCATION_OWED, for them to approve again once it is paid, about a minute after the removal.",
         "operationId": "postApiV1CredentialRequestsByIdApprove",
         "parameters": [
           {
@@ -4349,7 +4356,7 @@
     },
     "/api/v1/credential-requests/{id}/deny": {
       "post": {
-        "description": "Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A restricted member denies at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs is 403 RESTRICTED_MEMBER, and one through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise.",
+        "description": "Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. A restricted member denies at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs is 403 RESTRICTED_MEMBER, and one through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise.",
         "operationId": "postApiV1CredentialRequestsByIdDeny",
         "parameters": [
           {
@@ -4410,7 +4417,7 @@
     },
     "/api/v1/credential-requests/{id}/dismiss": {
       "post": {
-        "description": "Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values.",
+        "description": "Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values.",
         "operationId": "postApiV1CredentialRequestsByIdDismiss",
         "parameters": [
           {
@@ -5127,7 +5134,7 @@
     },
     "/api/v1/github/app-installation/{owner}/{repo}": {
       "get": {
-        "description": "Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. A repository the GitHub proxy would not show the caller (no issue the caller sees resolves to it, and the caller is not an open viewer or an issue of a private project hidden from the caller resolves to it) answers exactly as one the App is not installed on (200 installed:false, or the held rate limit's 502), and GitHub is not asked.",
+        "description": "Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 400 INVALID_REPO_PROJECT, before GitHub is asked anything, when the path's owner or name has a character GitHub does not allow or the name is . or .. or empty or longer than 100 characters (a trailing .git trimmed); 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. A repository the GitHub proxy would not show the caller (no issue the caller sees resolves to it, and the caller is not an open viewer or an issue of a private project hidden from the caller resolves to it) answers exactly as one the App is not installed on (200 installed:false, or the held rate limit's 502), and GitHub is not asked.",
         "operationId": "getApiV1GithubAppInstallationByOwnerByRepo",
         "parameters": [
           {
@@ -5623,7 +5630,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A restricted member, or a credential acting for one, that names repo, a string or null, is 403 RESTRICTED_MEMBER before the body's project, parent or external ref is read and before anything is written: their issues take the repository they resolve to, their nearest parent's or their project's default. A repo the caller cannot read through Dispatch's GitHub proxy is 403 REPOSITORY_NOT_AVAILABLE, naming no project, once the body's project and parent are read as the caller reads them and before anything is written: for an open caller, a repository that only issues of private projects it does not see resolve to; for a credential that lists projects, any repository no issue of its projects resolves to. null is never refused, and with no private project nothing is. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
+        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A restricted member, or a credential acting for one, that names repo, a string or null, is 403 RESTRICTED_MEMBER before the body's project, parent or external ref is read and before anything is written: their issues take the repository they resolve to, their nearest parent's or their project's default. A repo the caller cannot read through Dispatch's GitHub proxy is 403 REPOSITORY_NOT_AVAILABLE, naming no project, once the body's project and parent are read as the caller reads them and before anything is written: a repository that only issues of private projects the caller does not see resolve to. null is never refused, and with no private project nothing is. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
         "operationId": "postApiV1Issues",
         "parameters": [
           {
@@ -5955,6 +5962,10 @@
                   },
                   "name": {
                     "description": "the artifact's name, trimmed",
+                    "type": "string"
+                  },
+                  "precondition": {
+                    "description": "the base this upload replaces as one JSON object, as the JSON body's `precondition` field",
                     "type": "string"
                   },
                   "summary": {
@@ -7510,7 +7521,7 @@
     },
     "/api/v1/issues/{key}/references": {
       "get": {
-        "description": "The eight-hop closure of documents the issue's content references: {members, truncated}, each member a document in the closure with its depth and the node it was reached via, under an ETag (If-None-Match answers 304). ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY.",
+        "description": "The eight-hop closure of documents the issue's content references: {members, truncated}, each member a document in the closure with its depth and the node it was reached via, under an ETag (If-None-Match answers 304). ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY. The closure's walk runs under a 2 s statement_timeout, and a walk past it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later.",
         "operationId": "getApiV1IssuesByKeyReferences",
         "parameters": [
           {
@@ -7567,7 +7578,7 @@
     },
     "/api/v1/issues/{key}/results": {
       "get": {
-        "description": "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the check's whole content as the tree a reader is shown, links and references kept, and each result's observed_tree, the tree its observed text is shown as. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:\u003ccheck run id\u003e, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session \"\", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=\u003ccommit\u003e replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks.",
+        "description": "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the check's whole content as the tree a reader is shown, links and references kept, and each result's observed_tree, the tree its observed text is shown as. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. Those are the open and merged pull requests attributed to the check's issue, and the open and merged pull requests its external links name (https://github.com/\u003cowner\u003e/\u003crepo\u003e/pull/\u003cn\u003e) in a repository it does not resolve to, each at the head its stored row holds now; the head of a linked one also carries that repository as repo (owner/name), so a reader can tell it from a pull request of the same number in the issue's own repository. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason, repo} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit; a basis in a repository the issue links a pull request in, rather than its own, carries that repository as repo, owner/name, whether it is the head of a pull request linked there, as in compared_with, or a branch of that repository, which a result whose commit is taken to be of it is compared with), other_commit, or unknown with the reason (repository_unreadable, read_failed). An other_commit or unknown answer that a repository the issue links a pull request in decided, the one the result's commit is taken to be of, carries that repository as repo (owner/name), so a reader can tell it from an answer about the issue's own repository, which carries none. check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:\u003ccheck run id\u003e, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session \"\", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=\u003ccommit\u003e replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks.",
         "operationId": "getApiV1IssuesByKeyResults",
         "parameters": [
           {
@@ -7619,7 +7630,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. A check reworded by a document version at each of the two attempts this write makes is 409 CHECK_CONTENDED with Retry-After: 1, the second the version that moved it needs to land, and nothing recorded: read the check and retry. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch.",
+        "description": "Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. The commit must be held by the repository the check's issue resolves to, or by a repository in which the external links of the check's issue name a GitHub pull request (https://github.com/\u003cowner\u003e/\u003crepo\u003e/pull/\u003cn\u003e) that is open or merged, in a repository Dispatch's GitHub App is installed on and can read; a commit no such repository holds is 400 RESULT_COMMIT_UNKNOWN, naming the commit, each owner/repo asked, each linked pull request Dispatch could not read as owner/repo#n (repository_unreadable), at most 10 and a count of the rest, and every linked pull request in whose repository it could not read the commit, named the same way, since each spent one of the record's 10 reads, with how to mend those: grant Dispatch's GitHub App that repository, or link a readable pull request. A link names a pull request only where its owner is a login GitHub serves and its name holds only letters, digits, ., - and _ and is not . or ..; any other link spends no read, and no refusal names it. A linked pull request whose repository's name GitHub's naming rule then refuses, such as one of acme/.git, which is empty once .git is trimmed, counts for nothing and spends one of the 10 reads, and the refusal names that repository as one whose links Dispatch set aside, which no grant of the App mends. One record reads at most 10 linked pull requests, and a refusal says how many it left unread past that bound. A linked repository the App is not installed on or cannot read (GitHub's 403 that is no rate limit) does not count. A read of a linked pull request or of a linked repository that does not answer (a rate limit, a 5xx, a transport failure), where no repository is shown to hold the commit, is 502 GITHUB_UNREADABLE naming that repository, the commit and GitHub's error, and stores nothing: record the result again, after the wait a rate limit names, which Retry-After carries too. No repository at all stores the result as before. A repository the check's issue resolves to that Dispatch cannot read stores the result as before only where every linked read answered and no linked repository holds the commit: a linked read that did not answer is the 502 GITHUB_UNREADABLE above, and stores nothing. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. A check reworded by a document version at each of the two attempts this write makes is 409 CHECK_CONTENDED with Retry-After: 1, the second the version that moved it needs to land, and nothing recorded: read the check and retry. The answer is {result, line}, line being the pull-request body line the result implies: its reading keeps only plain words, every rune a visible letter, a digit or one of . , ; : ! ? ' \" - ( ) /, and of those leaves out every one that holds a link (://), a host below or ending in .internal, a Tailscale MagicDNS host (.ts.net), this Dispatch's own host, or an issue key of a project this Dispatch holds, in any case, and judges the 80-rune cut again, so the line carries no link to Dispatch, no private host, no issue key and no markup.",
         "operationId": "postApiV1IssuesByKeyResults",
         "parameters": [
           {
@@ -7666,6 +7677,64 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CheckResultRecorded"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/issues/{key}/results/dry-run": {
+      "post": {
+        "description": "The dry run of a result's record: the record's body, refused as the record refuses it before it writes (400 RESULT_INPUT, 400 RESULT_CONTRADICTS, 400 UNKNOWN_CHECK, 409 CHECK_AMBIGUOUS, 409 CHECK_PROVED_BY_CI, 400 RESULT_COMMIT_UNKNOWN, 502 GITHUB_UNREADABLE), and otherwise answered {line}, the pull-request body line the record would answer, with nothing recorded and no event appended. A closed issue, a screenshot and a check reworded while the record writes are refused by the record alone.",
+        "operationId": "postApiV1IssuesByKeyResultsDryRun",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordCheckResultInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckResultDryRun"
                 }
               }
             }
@@ -8232,7 +8301,7 @@
     },
     "/api/v1/machine-logins": {
       "get": {
-        "description": "List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it. A restricted member lists at their browser alone, and is answered their own machine logins and no service's; through their personal token or a person-scope broker token they are 403 RESTRICTED_MEMBER, and through their agent's named token, which holds no scope, 403 OAUTH_SCOPE_REQUIRED.",
+        "description": "List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login. A restricted member lists at their browser alone, and is answered their own machine logins and no service's; a list through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token and any broker token of theirs do, and 403 RESTRICTED_MEMBER otherwise, as their personal token is.",
         "operationId": "getApiV1MachineLogins",
         "parameters": [
           {
@@ -8274,7 +8343,7 @@
     },
     "/api/v1/machine-logins/{id}/revoke": {
       "post": {
-        "description": "Revoke a machine login, expired or not, ending every session it enrolled, a service's pods included: anyone signed in revokes a service's login, and only the person who approved a person's machine login revokes that one. A restricted member revokes at their browser alone, and only a machine login of their own, whose approver is them and which names no service; any other id is 403 RESTRICTED_MEMBER, and a revoke through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise.",
+        "description": "Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the revoke does not keep the pod out: the pod logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person. A restricted member revokes at their browser alone, and only a machine login of their own, whose approver is them and which names no service; any other id is 403 RESTRICTED_MEMBER, and a revoke through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise.",
         "operationId": "postApiV1MachineLoginsByIdRevoke",
         "parameters": [
           {
@@ -8419,7 +8488,7 @@
         ]
       },
       "post": {
-        "description": "Mint a personal agent token {name, scopes?, projects?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A scope this deployment does not know, or approve without person, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED. projects is the list of projects the token may use, at most 16, each one the caller sees; 400 TOKEN_PROJECTS_INPUT otherwise. It defaults to the caller's own credential's list, and a credential that lists projects gives a token only some of its own. The answer is the one time the token's plaintext is shown.",
+        "description": "Mint a personal agent token {name, scopes?, projects?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A scope this deployment does not know, or approve without person, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED. projects is the list of projects the token may use, at most 16, each one the caller sees; 400 TOKEN_PROJECTS_INPUT otherwise. It defaults to the caller's own credential's list, and a credential that lists projects mints no token that lists none, which would reach the rows of the whole deployment its own list holds it from. The answer is the one time the token's plaintext is shown.",
         "operationId": "postApiV1MeAgentTokens",
         "parameters": [
           {
@@ -9358,7 +9427,7 @@
     },
     "/api/v1/messages/{id}": {
       "get": {
-        "description": "Read the conversation a message belongs to by any message id in it, issue-less or not: the thread root with its deliveries and every reply, oldest first. An issue thread follows the issue's rule. A direct (issue-less) thread is read whole by a credential holding the person scope, since the conversation is that person's own; every other credential names its session in ?session= and reads only one whose root targets that session or that it replied in (403 THREAD_FORBIDDEN), a guard against reading another session's conversation by mistake, not an authorization boundary. A direct conversation is read by its parties and by an open viewer, each only when it may see every session in it, so a restricted member or a credential that lists projects reads only its own, and only with sessions of its projects. A thread the caller may not read answers as an id nobody holds, and the live socket sends its text by the same rule.",
+        "description": "Read the conversation a message belongs to by any message id in it, issue-less or not: the thread root with its deliveries and every reply, oldest first. An issue thread follows the issue's rule. A direct (issue-less) thread is read whole by a credential holding the person scope, since the conversation is that person's own; every other credential names its session in ?session= and reads only one whose root targets that session or that it replied in (403 THREAD_FORBIDDEN), a guard against reading another session's conversation by mistake, not an authorization boundary. A direct conversation is read by its parties and by an open viewer, each only when it may see every session in it, so a restricted member or a credential acting for one reads only its own, and only with sessions of its projects. A thread the caller may not read answers as an id nobody holds, and the live socket sends its text by the same rule.",
         "operationId": "getApiV1MessagesById",
         "parameters": [
           {
@@ -9576,7 +9645,7 @@
     },
     "/api/v1/messages/{id}/reply": {
       "post": {
-        "description": "The targeted session's reply to a delivery; the session names itself in actor. Once the attempt is answered, ?follow_up=true posts other text as the session's follow-up, threaded under its first reply; with follow_up=false or absent, or with text the session already posted there, nothing is posted and the stored message comes back marked duplicate. Any other follow_up is 400 MESSAGE_INPUT.",
+        "description": "The targeted session's reply to a delivery; the session names itself in actor. For an attempt sent for a route to a role (role:\u003cname\u003e), the role's live holder may reply too, as the Envoy listener names it; a listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the attempt is 500, never a refusal. Once the attempt is answered, ?follow_up=true posts other text as the session's follow-up, threaded under its first reply; with follow_up=false or absent, or with text the session already posted there, nothing is posted and the stored message comes back marked duplicate. Any other follow_up is 400 MESSAGE_INPUT.",
         "operationId": "postApiV1MessagesByIdReply",
         "parameters": [
           {
@@ -9779,7 +9848,7 @@
     },
     "/api/v1/people/{login}/nodes": {
       "get": {
-        "description": "One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets; so is a person the caller may not see, or none of whose writes it may see, except the caller's own login.",
+        "description": "One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets, and so is a person the caller may not see or none of whose nodes the reader may see, with the same body, so the answer never says whether that person exists. The reader's own login is the one exception, answered 200 with the rows they may see, none where they may see none.",
         "operationId": "getApiV1PeopleByLoginNodes",
         "parameters": [
           {
@@ -9843,7 +9912,7 @@
     },
     "/api/v1/priorities": {
       "get": {
-        "description": "Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment: an open viewer reads it, the shared token every pod carries included, and a restricted member or a credential that lists projects is 403 DEPLOYMENT_READ_REFUSED. Each count counts only the work of the projects the caller sees. ?project=\u003cKEY\u003e, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads.",
+        "description": "Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment: an open viewer reads it, the shared token every pod carries and a full member's credential whatever projects it lists included, and a restricted member, or a credential acting for one, is 403 DEPLOYMENT_READ_REFUSED. Each count counts only the work of the projects the caller sees. ?project=\u003cKEY\u003e, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads.",
         "operationId": "getApiV1Priorities",
         "parameters": [
           {
@@ -10053,7 +10122,7 @@
     },
     "/api/v1/priorities/{id}/history": {
       "get": {
-        "description": "One priority's own history, newest first: every act stated about it as {field, value, issue, asserted, actor, at}. field is what was stated — title, description, owner and rank, the four a person writes, state (live when it was made, gone when it was deleted) and visibility; advances is the relation an issue states on it. value is what an attribute write wrote and is empty on an advances act; issue is the issue at the other end of an advances act and is empty on an attribute write; asserted is false on the act that retracted an advances and true on every other. A priority belongs to no project, so an open viewer reads this, the shared token every pod carries included; a restricted member or a credential that lists projects is 403 DEPLOYMENT_READ_REFUSED. A deleted priority still answers its history, the delete its newest act; an id no priority carries is 404 PRIORITY_NOT_FOUND.",
+        "description": "One priority's own history, newest first: every act stated about it as {field, value, issue, asserted, actor, at}. field is what was stated — title, description, owner and rank, the four a person writes, state (live when it was made, gone when it was deleted) and visibility; advances is the relation an issue states on it. value is what an attribute write wrote and is empty on an advances act; issue is the issue at the other end of an advances act and is empty on an attribute write; asserted is false on the act that retracted an advances and true on every other. A priority belongs to no project, so an open viewer reads this, the shared token every pod carries and a full member's credential whatever projects it lists included; a restricted member, or a credential acting for one, is 403 DEPLOYMENT_READ_REFUSED. A deleted priority still answers its history, the delete its newest act; an id no priority carries is 404 PRIORITY_NOT_FOUND.",
         "operationId": "getApiV1PrioritiesByIdHistory",
         "parameters": [
           {
@@ -10193,7 +10262,7 @@
     },
     "/api/v1/projects/{key}/access": {
       "get": {
-        "description": "Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), the owner's browser session also gets passkeys, [{email, enrolled_at}] for each passkey of a person people names, sorted by email then enrolled_at, and invitable, the emails of people the owner can make a link for now (on no domain of the company's Workspace, no full member's), sorted; each [] for none, and both absent from every other answer. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope.",
+        "description": "Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), the owner's browser session also gets passkeys, [{email, enrolled_at, made_by, project?}] for each passkey of a person people names, sorted by email then enrolled_at: made_by is who made the link that enrolled it, and project that link's project, absent where the reader does not see it; invitable, the emails of people the owner can make a link for now (on no domain of the company's Workspace, no full member's, and named by no project of another owner), sorted; and listed_by_another_owner, the emails of people from outside (never a full member's or a Workspace address, which no link is made for whatever else names them) a project of another owner names directly, for whom the owner makes no link until that project's owner takes them off its list, sorted; each [] for none, and all three absent from every other answer. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope.",
         "operationId": "getApiV1ProjectsByKeyAccess",
         "parameters": [
           {
@@ -10241,7 +10310,7 @@
         ]
       },
       "patch": {
-        "description": "Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. A private project's write of a Slack channel that another private project lists is 409 SLACK_CHANNEL_SHARED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT. private is 409 PRIVATE_PROJECTS_OFF when the deployment names no private project, 409 PRIVATE_PROJECT_NOT_PROVISIONED when DISPATCH_PRIVATE_PROJECTS does not name this one, and 409 PRIVATE_PROJECTS_INCOMPLETE until the store's backfills have run; public is never refused by them. private is 409 PRIVATE_PROJECTS_UNAVAILABLE, with nothing changed, while the hub does not take the project's key in its envoy_private_projects bucket. Appends project.access_changed and answers the project's access as GET answers it. Needs the person scope.",
+        "description": "Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. A private project's write of a Slack channel that another private project lists is 409 SLACK_CHANNEL_SHARED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; where passkey sign-in is on, giving the project to another owner while a person its list names directly holds a passkey a link of someone else enrolled is 409 PASSKEY_OF_ANOTHER_OWNER, until that link's maker resets the person; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT. private is 409 PRIVATE_PROJECTS_OFF when the deployment names no private project, 409 PRIVATE_PROJECT_NOT_PROVISIONED when DISPATCH_PRIVATE_PROJECTS does not name this one, and 409 PRIVATE_PROJECTS_INCOMPLETE until the store's backfills have run; public is never refused by them. private is 409 PRIVATE_PROJECTS_UNAVAILABLE, with nothing changed, while the hub does not take the project's key in its envoy_private_projects bucket. Appends project.access_changed and answers the project's access as GET answers it. Needs the person and approve scopes.",
         "operationId": "patchApiV1ProjectsByKeyAccess",
         "parameters": [
           {
@@ -10295,14 +10364,15 @@
         },
         "x-auth": "any",
         "x-oauth-scopes": [
-          "person"
+          "person",
+          "approve"
         ],
         "x-write-scope": "project"
       }
     },
     "/api/v1/projects/{key}/access/groups/{name}": {
       "put": {
-        "description": "Name a group on a project's access list; a group admits only its members who are full members. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a group no row holds is 404 GROUP_NOT_FOUND; a list of 500 people and groups is 409 ACCESS_LIST_FULL. Appends project.access_changed and answers the project's access. Needs the person scope.",
+        "description": "Name a group on a project's access list; a group admits only its members who are full members. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a group no row holds is 404 GROUP_NOT_FOUND; a list of 500 people and groups is 409 ACCESS_LIST_FULL. Appends project.access_changed and answers the project's access. Needs the person and approve scopes.",
         "operationId": "putApiV1ProjectsByKeyAccessGroupsByName",
         "parameters": [
           {
@@ -10354,12 +10424,13 @@
         },
         "x-auth": "any",
         "x-oauth-scopes": [
-          "person"
+          "person",
+          "approve"
         ],
         "x-write-scope": "project"
       },
       "delete": {
-        "description": "Take a group off a project's access list; one it does not name leaves it as it was. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Appends project.access_changed and answers the project's access. Needs the person scope.",
+        "description": "Take a group off a project's access list; one it does not name leaves it as it was. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Appends project.access_changed and answers the project's access. Needs the person and approve scopes.",
         "operationId": "deleteApiV1ProjectsByKeyAccessGroupsByName",
         "parameters": [
           {
@@ -10411,14 +10482,15 @@
         },
         "x-auth": "any",
         "x-oauth-scopes": [
-          "person"
+          "person",
+          "approve"
         ],
         "x-write-scope": "project"
       }
     },
     "/api/v1/projects/{key}/access/people/{email}": {
       "put": {
-        "description": "Name a person on a project's access list by email (stored trimmed, with A-Z lowered); a person it names already stays as they were. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a value that is no email, or that holds a capital letter beyond A-Z and so names nobody who could sign in, is 400 PROJECT_ACCESS_INPUT; a list of 500 people and groups is 409 ACCESS_LIST_FULL. Appends project.access_changed and answers the project's access. Needs the person scope.",
+        "description": "Name a person on a project's access list by email (stored trimmed, with A-Z lowered); a person it names already stays as they were. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a value that is no email, or that holds a capital letter beyond A-Z and so names nobody who could sign in, is 400 PROJECT_ACCESS_INPUT; a list of 500 people and groups is 409 ACCESS_LIST_FULL; where passkey sign-in is on, an address that holds a passkey a link of someone other than the project's owner enrolled is 409 PASSKEY_OF_ANOTHER_OWNER, since that passkey would read this project too, until that link's maker resets the person. Appends project.access_changed and answers the project's access. Needs the person and approve scopes.",
         "operationId": "putApiV1ProjectsByKeyAccessPeopleByEmail",
         "parameters": [
           {
@@ -10470,12 +10542,13 @@
         },
         "x-auth": "any",
         "x-oauth-scopes": [
-          "person"
+          "person",
+          "approve"
         ],
         "x-write-scope": "project"
       },
       "delete": {
-        "description": "Take a person off a project's access list; one it does not name leaves it as it was and owes nothing. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Taking a restricted member off it records that Dispatch owes the secrets broker the revocation of the member's machine logins, which Dispatch pays after the commit, again until the broker confirms; the removal never waits on the broker. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), it also ends the person's unused links of the project, and, once no project's owner is them and no list names them directly, ends a restricted member's sign-in and deletes their passkeys, in the same transaction. Appends project.access_changed and answers the project's access. Needs the person scope.",
+        "description": "Take a person off a project's access list; one it does not name leaves it as it was and owes nothing. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Taking a restricted member off it records that Dispatch owes the secrets broker the revocation of every machine login the member approved, whatever other list still names them, which Dispatch pays after the commit, again until the broker confirms; the removal never waits on the broker, and waits for an approval of the member's that Dispatch is relaying, holding no lock of the project's while it does. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), it also ends the person's unused links of the project, and, once no project's owner is them and no list names them directly, ends a restricted member's account in the same transaction, as the owner's Reset does: a new passkey subject, which revokes their personal tokens and owes the broker the old account's revocation, then their sign-in ended and their passkeys deleted. Appends project.access_changed and answers the project's access. Needs the person and approve scopes.",
         "operationId": "deleteApiV1ProjectsByKeyAccessPeopleByEmail",
         "parameters": [
           {
@@ -10527,14 +10600,15 @@
         },
         "x-auth": "any",
         "x-oauth-scopes": [
-          "person"
+          "person",
+          "approve"
         ],
         "x-write-scope": "project"
       }
     },
     "/api/v1/projects/{key}/access/people/{email}/invitations": {
       "post": {
-        "description": "Make a single-use link for a person the project's access list names directly, with which they enroll a passkey and sign in as a restricted member at the outside origin: 201 {url, expires_at}, url the outside origin's /enroll page with 32 random bytes, base64url, in its fragment, and expires_at 24 hours after now. It ends the person's earlier unused links of the project. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; any token is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. The answer is the one time the link is shown: a repeat under its Idempotency-Key is 409 KEY_COMMITTED. Needs the person scope.",
+        "description": "Make a single-use link for a person the project's access list names directly, with which they enroll a passkey and sign in as a restricted member at the outside origin: 201 {url, expires_at}, url the outside origin's /enroll page with 32 random bytes, base64url, in its fragment, and expires_at 24 hours after now. It ends the person's earlier unused links of the project. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; any token is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER; a person a project of another owner names directly is 409 LISTED_BY_ANOTHER_OWNER, since a passkey reads every project that names its person, so only an owner of every such project makes their link; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. The answer is the one time the link is shown: a repeat under its Idempotency-Key is 409 KEY_COMMITTED. Needs the person and approve scopes.",
         "operationId": "postApiV1ProjectsByKeyAccessPeopleByEmailInvitations",
         "parameters": [
           {
@@ -10593,7 +10667,7 @@
     },
     "/api/v1/projects/{key}/access/people/{email}/reset": {
       "post": {
-        "description": "Reset a person the project's access list names directly, in one transaction: record that Dispatch owes the secrets broker the revocation of the machine logins they approved, as a removal from the list does, delete their unused links of every project, give their address a new passkey account, which revokes their personal tokens and owes the broker the revocation of the old account, and end their sign-in and delete their passkeys, so they sign in again only with a new link and nothing the old account made or approved acts again; they stay on the list. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; any token is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED and a full member's 409 FULL_MEMBER; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. Answers the project's access. Needs the person scope.",
+        "description": "Reset a person the project's access list names directly, in one transaction: record that Dispatch owes the secrets broker the revocation of the machine logins they approved, delete their unused links of every project, give their address a new passkey account, which revokes their personal tokens and owes the broker the revocation of the old account, and end their sign-in and delete their passkeys, so they sign in again only with a new link and nothing the old account made or approved acts again; they stay on the list. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; any token is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER, read again under the address's lock; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. Answers the project's access. Needs the person and approve scopes.",
         "operationId": "postApiV1ProjectsByKeyAccessPeopleByEmailReset",
         "parameters": [
           {
@@ -10851,7 +10925,7 @@
     },
     "/api/v1/projects/{key}/architecture-sources/sync": {
       "post": {
-        "description": "Import every architecture source of a project now, each whatever another's import did; 200 carries every updated row in the order the sources were added, each with its own last_error (an access failure included).",
+        "description": "Import every architecture source of a project now, each whatever another's import did; 200 carries every updated row in the order the sources were added, each with its own last_error (an access failure included). A source whose repository the GitHub proxy would not show the caller is not imported for that caller: its row is answered as it stands.",
         "operationId": "postApiV1ProjectsByKeyArchitectureSourcesSync",
         "parameters": [
           {
@@ -10902,7 +10976,7 @@
     },
     "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}": {
       "put": {
-        "description": "Add a repository as an architecture source of a project, or change the branch of the source it is {branch}, after proving the GitHub App can read it and that branch is the name of a branch it has; a missing branch, a commit SHA, a relative ref (main~1, HEAD) or a refs/ path is 409 SOURCE_ACCESS naming the value and the repository, as a credential problem is, and nothing is written. A re-save resets the source's sync bookkeeping and keeps its components.",
+        "description": "Add a repository as an architecture source of a project, or change the branch of the source it is {branch}, after proving the GitHub App can read it and that branch is the name of a branch it has; a missing branch, a commit SHA, a relative ref (main~1, HEAD) or a refs/ path is 409 SOURCE_ACCESS naming the value and the repository, as a credential problem is, and nothing is written. A re-save resets the source's sync bookkeeping and keeps its components. A repository the GitHub proxy would not show the caller answers exactly as one the App is not installed on (409 SOURCE_ACCESS, or the held rate limit's answer), and GitHub is not asked.",
         "operationId": "putApiV1ProjectsByKeyArchitectureSourcesByOwnerByRepo",
         "parameters": [
           {
@@ -11040,7 +11114,7 @@
     },
     "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync": {
       "post": {
-        "description": "Import one architecture source's model now; 200 carries its updated row (last_error set when the import failed), 409 SOURCE_ACCESS a credential or branch problem.",
+        "description": "Import one architecture source's model now; 200 carries its updated row (last_error set when the import failed), 409 SOURCE_ACCESS a credential or branch problem. A source whose repository the GitHub proxy would not show the caller answers as a source of a repository the App is not installed on, and nothing is imported or written for it.",
         "operationId": "postApiV1ProjectsByKeyArchitectureSourcesByOwnerByRepoSync",
         "parameters": [
           {
@@ -11200,6 +11274,10 @@
                   },
                   "name": {
                     "description": "the artifact's name, trimmed",
+                    "type": "string"
+                  },
+                  "precondition": {
+                    "description": "the base this upload replaces as one JSON object, as the JSON body's `precondition` field",
                     "type": "string"
                   },
                   "summary": {
@@ -13098,7 +13176,7 @@
     },
     "/api/v1/settings/repo-projects/{owner}/{repo}": {
       "put": {
-        "description": "Map a GitHub repository to a project {project, default?, renamed_to?}; default true makes it the project's one default. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, \"\" clears it, and a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT. A write that leaves the mapping its project's default is 403 REPOSITORY_NOT_AVAILABLE, naming no project, when the caller cannot read the repository through Dispatch's GitHub proxy.",
+        "description": "Map a GitHub repository to a project {project, default?, renamed_to?}; default true makes it the project's one default. The path's owner and name are held to the characters GitHub allows, and a name that is . or .. or empty or longer than 100 characters (a trailing .git trimmed) is refused: such a path is 400 INVALID_REPO_PROJECT. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, \"\" clears it, and a pair that is not an owner and a name of the characters GitHub allows, or whose name is . or .. or longer than 100 characters (a trailing .git trimmed), a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT. A write that leaves the mapping its project's default, or moves or clears the default its project held, is 403 REPOSITORY_NOT_AVAILABLE, naming no project, when the caller cannot read the repository through Dispatch's GitHub proxy. A project the caller does not see, as the target or as the project the mapping is in, is answered exactly as a project no row holds.",
         "operationId": "putApiV1SettingsRepoProjectsByOwnerByRepo",
         "parameters": [
           {
@@ -13162,7 +13240,7 @@
         "x-write-scope": "deployment"
       },
       "delete": {
-        "description": "Remove a repository mapping, whether or not an issue names the repository as its repo: an issue's own repository needs no mapping, so such an issue keeps it. An issue that resolved to the mapping as its project's default resolves to no repository until the project has another default.",
+        "description": "Remove a repository mapping, whether or not an issue names the repository as its repo: an issue's own repository needs no mapping, so such an issue keeps it. An issue that resolved to the mapping as its project's default resolves to no repository until the project has another default. The path removes only the mapping stored under its own spelling, its two segments as unescaped and compared byte for byte: acme/x removes acme/x, and acme/x.git removes the mapping stored as acme/x.git and never acme/x, so the same DELETE sent again removes nothing more. A path naming no stored mapping removes nothing: 204, or 400 INVALID_ISSUE_REF where the path is no owner/name an issue reference takes. A mapping of a project the caller does not see is answered as a path naming no stored mapping, and nothing is removed; the removal of a project's default is 403 REPOSITORY_NOT_AVAILABLE when the caller cannot read the repository through Dispatch's GitHub proxy.",
         "operationId": "deleteApiV1SettingsRepoProjectsByOwnerByRepo",
         "parameters": [
           {
@@ -13314,7 +13392,7 @@
     },
     "/api/v1/users": {
       "get": {
-        "description": "Everyone who has signed in, by lowercase email: the assignee picker's options. Only the people of the projects the caller sees, for a restricted member or a credential that lists projects.",
+        "description": "Everyone who has signed in, by lowercase email: the assignee picker's options. Only the people of the projects the caller sees, for a restricted member or a credential acting for one.",
         "operationId": "getApiV1Users",
         "parameters": [
           {
@@ -13356,7 +13434,7 @@
     },
     "/api/v1/whoami": {
       "get": {
-        "description": "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. projects is the list of projects the credential may use, sorted, absent when it lists none. private_projects lists those of projects the caller must treat as private: a private project, or one the credential no longer sees, sorted, absent when there is none. project is deprecated, and is the one key of a one-key list, null otherwise. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. member_kind is restricted for a restricted member, and absent for everyone else; a member kind that cannot be read is 503 IDENTITY_UNAVAILABLE.",
+        "description": "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. projects is the credential's list of projects, sorted, absent when it lists none, and for a broker-issued token of a full member while no project is private, as before lists existed: a full member's credential reads every public project whatever it lists, and its list decides only which private projects it reads; a restricted member's list decides every project it reads. private_projects lists those of projects the caller must treat as private: a private project, or one the credential no longer sees, sorted, absent when there is none. project is deprecated, and is the one key of a one-key list, null otherwise. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. member_kind is restricted for a restricted member, and absent for everyone else; a member kind that cannot be read is 503 IDENTITY_UNAVAILABLE.",
         "operationId": "getApiV1Whoami",
         "parameters": [
           {
@@ -13453,7 +13531,7 @@
     },
     "/metrics": {
       "get": {
-        "description": "The process's Prometheus metrics, for an open viewer; a restricted member or a credential that lists projects is 403 DEPLOYMENT_READ_REFUSED.",
+        "description": "The process's Prometheus metrics, for an open viewer; a restricted member's credential, or one acting for one, is 403 DEPLOYMENT_READ_REFUSED.",
         "operationId": "getMetrics",
         "parameters": [
           {
@@ -16959,6 +17037,9 @@
           },
           "pull_request": {
             "type": "integer"
+          },
+          "repo": {
+            "type": "string"
           }
         },
         "required": [
@@ -17251,6 +17332,17 @@
           "session",
           "actor",
           "created_at"
+        ],
+        "type": "object"
+      },
+      "CheckResultDryRun": {
+        "properties": {
+          "line": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "line"
         ],
         "type": "object"
       },
@@ -21329,6 +21421,9 @@
           },
           "document": {
             "type": "string"
+          },
+          "version": {
+            "type": "integer"
           }
         },
         "required": [
@@ -21399,11 +21494,18 @@
           "enrolled_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "made_by": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
           }
         },
         "required": [
           "email",
-          "enrolled_at"
+          "enrolled_at",
+          "made_by"
         ],
         "type": "object"
       },
@@ -24408,6 +24510,16 @@
           "name": {
             "type": "string"
           },
+          "precondition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EditPrecondition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "primary": {
             "description": "refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): an artifact is made the issue's spec at issue creation and never by an upload",
             "type": "boolean"
@@ -24454,6 +24566,12 @@
             "format": "date-time",
             "type": "string"
           },
+          "person": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "service": {
             "type": [
               "null",
@@ -24472,6 +24590,7 @@
           "host",
           "service",
           "subject",
+          "person",
           "approved_by",
           "issued_at",
           "expires_at",
@@ -26771,6 +26890,12 @@
             },
             "type": "array"
           },
+          "listed_by_another_owner": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "not_signed_in": {
             "items": {
               "type": "string"
@@ -27846,6 +27971,9 @@
               "read_failed"
             ],
             "type": "string"
+          },
+          "repo": {
+            "type": "string"
           }
         },
         "required": [
@@ -28433,6 +28561,36 @@
         "required": [
           "method",
           "path"
+        ],
+        "type": "object"
+      },
+      "StandingReview": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "carried_from_version": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by",
+          "at",
+          "state",
+          "version"
         ],
         "type": "object"
       },
@@ -29782,6 +29940,9 @@
           },
           "session_writes_since_human": {
             "type": "integer"
+          },
+          "standing_review": {
+            "$ref": "#/components/schemas/StandingReview"
           },
           "suggestions": {
             "$ref": "#/components/schemas/Suggestions"

@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -63,17 +64,19 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
 	}})
 	// The failure the client notes is "<METHOD> <target>: status <n>: <body>" (githubapp's
-	// failedAnswer). The body is padded so that a three-byte character starts at byte 1,023 of
-	// that text, and is three-byte characters from there on, so one straddles byte 1,024 and one
+	// failedAnswer), with the body as githubapp.ShownBody shows it: its first 512 runes and its
+	// length. The body is padded so that a three-byte character starts at byte 1,023 of that
+	// text, and is three-byte characters from there on, so one straddles byte 1,024 and one
 	// straddles the cut inside it, wherever the marker's length puts the cut.
 	prefix := "GET " + github.URL + "/app/hook/deliveries?per_page=100: status 503: "
 	pad := strings.Repeat("x", (1023-len(prefix))%3)
 	body := pad + strings.Repeat("€", (4096-len(pad))/3)
-	if uncut := prefix + body; utf8.RuneStart(uncut[1024]) {
+	text := prefix + githubapp.ShownBody(body)
+	if utf8.RuneStart(text[1024]) {
 		t.Fatalf("byte 1,024 of the failure's text starts a character; want one straddling it")
 	}
 	failure.Store(&body)
-	marker := " … (cut from " + strconv.Itoa(len(prefix)+len(body)) + " bytes)"
+	marker := " … (cut from " + strconv.Itoa(len(text)) + " bytes)"
 
 	env := githubAppEnv(t, github.URL)
 	env["DISPATCH_TEST_HOOKS"] = "1"

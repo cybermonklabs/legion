@@ -17,6 +17,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -247,11 +248,16 @@ func TestALiveSocketClosesOnceItsPersonIsRestricted(t *testing.T) {
 // A live connection whose open-time resolution failed while the handler's own succeeded (a pool
 // with no connection free, a broker that did not answer) has no person to hold to a member kind and
 // no grant to compare, so it would outlive any change of its person's kind. It closes at its first
-// heartbeat instead, and the page opens a new one. The resolution here fails once, at the open, and
-// answers a person every time after.
+// heartbeat instead, and the page opens a new one. The request presents a broker-issued token, the
+// one caller whose open asks the socket's own resolution (resolves) rather than resolving the
+// request (withCallerResolved); that resolution fails once, at the open, and answers a person, with
+// a grant equal to the open's none, every time after, so nothing but the failed open can close the
+// connection.
 //
-// Control: the open's error is dropped, as it was. The connection then reads no member kind, its
-// grant compares nil with nil, and it outlives the window.
+// Control: the open's error dropped for a broker token (admitted, _, _ = resolves(check)). The
+// connection then reads no member kind, its grant compares nil with nil, and it outlives the
+// window. The earlier form of this test presented no credential, so its open took the request's
+// resolution, which failed for want of an identity provider, and it passed under this control.
 func TestALiveConnectionWhoseOpenResolutionFailedClosesAtItsFirstHeartbeat(t *testing.T) {
 	var resolutions atomic.Int32
 	resolves := func(*http.Request) (model.Actor, bool, error) {
@@ -270,7 +276,12 @@ func TestALiveConnectionWhoseOpenResolutionFailedClosesAtItsFirstHeartbeat(t *te
 			ended <- false
 		}
 	})
-	connection.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ws/live", nil))
+	request := httptest.NewRequest(http.MethodGet, "/ws/live", nil)
+	request.Header.Set("Authorization", "DPoP "+strings.Repeat("b", 43))
+	if _, presented := ciphertoken.Presented(request); !presented {
+		t.Fatal("control: the request presents no broker token, so its open would not ask resolves")
+	}
+	connection.ServeHTTP(httptest.NewRecorder(), request)
 	if !<-ended {
 		t.Fatalf("a live connection whose open-time resolution failed was still open 2s later, after %d resolutions: nothing held it to its person's member kind", resolutions.Load())
 	}

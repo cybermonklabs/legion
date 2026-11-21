@@ -136,7 +136,7 @@ func (s *Store) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []sup
 	}); err != nil {
 		return nil, fmt.Errorf("release the names of %s: %w", c.Token, err)
 	}
-	s.committedClaim(c, queued)
+	s.CommittedClaim(c, queued)
 	slices.SortFunc(freed, supervise.CompareHolds)
 	return freed, nil
 }

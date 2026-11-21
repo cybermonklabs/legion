@@ -66,7 +66,14 @@ func (r OutsideRule) AdmitsRestricted(ctx context.Context, email string) error {
 	if WorkspaceAddress(email, r.Domain, r.WorkspaceDomains) {
 		return fmt.Errorf("%s: %w", email, ErrWorkspaceAddress)
 	}
-	listed, err := r.People.Listed(ctx, email)
+	return admitsListed(ctx, r.People, email)
+}
+
+// admitsListed is the outside rule's list arm, which ListedAdmission asks too: nil while people
+// says some project names email directly, ErrNotListed once none does, and an error matching
+// ErrMembershipUnreadable when the lists cannot be read.
+func admitsListed(ctx context.Context, people Lister, email string) error {
+	listed, err := people.Listed(ctx, email)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrMembershipUnreadable, err)
 	}
@@ -74,6 +81,23 @@ func (r OutsideRule) AdmitsRestricted(ctx context.Context, email string) error {
 		return fmt.Errorf("%s: %w", email, ErrNotListed)
 	}
 	return nil
+}
+
+// ListedAdmission is what a dev sign-in server (cmd/dispatch's DISPATCH_DEV_SIGNIN=1) holds a
+// restricted member's credentials to: the outside rule's list arm alone (admitsListed), with no
+// Workspace-domain arm, since a dev sign-in server names no Workspace and signs anyone in by email.
+// Such a server has no sign-in rule, and without this a restricted member's token there would act
+// for nobody, which no deployment that holds a restricted member does; with it the token acts
+// while some project names the member directly, by the very check outside sign-in makes.
+type ListedAdmission struct {
+	People Lister
+}
+
+var _ RestrictedAdmission = ListedAdmission{}
+
+// AdmitsRestricted is admitsListed over People.
+func (a ListedAdmission) AdmitsRestricted(ctx context.Context, email string) error {
+	return admitsListed(ctx, a.People, email)
 }
 
 // WorkspaceAddress reports whether login, an address with its ASCII letters lowered, is on a domain

@@ -70,10 +70,11 @@ const CloneTimeout = 30 * time.Minute
 // CheckoutTimeout is the bound of a command that writes a whole working copy — every file of the
 // repository's tree into a workspace that holds none — which is the issue's checkout alone today
 // (`jj sparse reset`, Provision), so the next such command takes this constant rather than a third
-// one. One write of the largest repository mapped, example-org/oss-verify-proofs-internal, 282,134
-// files and 11.56 GiB, took 548.8 s and 554.9 s in an issue pod: this is 6.5 times that measured
-// run, and three times it at the worst rate measured over a 60-second window of it (10.0 MiB/s,
-// which writes the 11.56 GiB in 19.7 minutes).
+// one. One write of the largest repository a project then worked in,
+// example-org/oss-verify-proofs-internal, 282,134 files and 11.56 GiB, took 548.8 s and 554.9 s
+// in an issue pod: this is 6.5 times that measured run, and three times it at the worst rate
+// measured over a 60-second window of it (10.0 MiB/s, which writes the 11.56 GiB in 19.7
+// minutes).
 const CheckoutTimeout = time.Hour
 
 // Command is one process the provisioner runs, each bounded independently of every other: most
@@ -862,8 +863,11 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 
 // GitHubCredentialHelper is the `credential.helper` every shared clone gets: `legion
 // git-credential`, which answers git from the hosts.yml of the owner the repository's path names
-// (the owner's directory of LEGION_GH_OWNERS_DIR, and nothing else; ghconfig.HostsFile), since
-// every shared clone also sets credential.useHttpPath so git passes that path. The `legion` in it
+// (the owner's directory of LEGION_GH_OWNERS_DIR; ghconfig.HostsFile), since every shared clone
+// also sets credential.useHttpPath so git passes that path. For a repository of an owner with no
+// such directory it reads the repository from GitHub with GH_CONFIG_DIR's token, and answers a
+// fork with the token of its parent's owner, or else of its source's owner, where the bundle
+// holds that directory (cmd/legion's forkUpstreamDir). The `legion` in it
 // is resolved on PATH when git runs it, so the one it reaches is the process's own (a pane's
 // launcher directory, the image's /opt/legion/bin), and the value names no path of this machine's
 // that the clone would carry to another.
@@ -938,6 +942,44 @@ func configureRepositoryCredential(ctx context.Context, run Runner, cloneDir, cr
 func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error {
 	argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "core.warnAmbiguousRefs", "false"}
 	_, err := RunChecked(ctx, run, argv, nil, cloneDir)
+	return err
+}
+
+// configureCloneDefaultRepository marks origin as gh's default repository in the shared clone's
+// own configuration, `remote.origin.gh-resolved base`, the line `gh repo set-default` writes for
+// it, which every workspace of the clone reads too (each jj workspace of the clone is a git
+// worktree, and a git worktree reads its clone's config). gh 2.98.0 resolves the repository a
+// command of the groups that read the marker acts on (cli/cli pkg/cmd/root/root.go,
+// SmartBaseRepoFunc) to the first remote marked `base` (context/context.go,
+// ResolvedRemotes.BaseRepo), and, where none is and gh cannot prompt, to the first of its sorted
+// remotes, in which an `upstream` comes before origin. So with the marker, a worker who adds an
+// `upstream` remote leaves gh on origin, the issue's repository, and `legion gh` counts origin
+// alone there too (cmd/legion's markedOrigin).
+//
+// A clone whose own configuration holds any gh-resolved line gets nothing written: a marker a
+// person set stays as they set it, and so does one that moved with a renamed remote (`gh repo
+// fork --remote` renames origin to upstream, and git renames the remote's keys with it, so gh
+// stays on the repository the fork was made from). The read names the clone's own file alone
+// (--local), so a line of the global or system configuration cannot stop the write. Its exit is
+// the answer once the read answered (answered): exit 0, a gh-resolved line the clone holds, writes
+// nothing; exit 1, which git gives, printing nothing, where no key matches, writes the marker; and
+// any other answer fails the provision. The feed does not take the line, for the reason
+// configureCloneReads gives.
+func configureCloneDefaultRepository(ctx context.Context, run Runner, cloneDir string) error {
+	gitDir := cloneDir + "/.git"
+	read := []string{"git", "--git-dir=" + gitDir, "config", "--local", "--get-regexp", `^remote\..*\.gh-resolved$`}
+	markers, err := runCommand(ctx, run, read, nil, cloneDir)
+	if err := answered(read, markers, err); err != nil {
+		return err
+	}
+	switch markers.ExitCode {
+	case 0:
+		return nil
+	case 1:
+	default:
+		return commandFailure(read, markers)
+	}
+	_, err = RunChecked(ctx, run, []string{"git", "--git-dir=" + gitDir, "config", "--local", "remote.origin.gh-resolved", "base"}, nil, cloneDir)
 	return err
 }
 

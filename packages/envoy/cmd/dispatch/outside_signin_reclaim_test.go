@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
@@ -122,45 +121,36 @@ type reclaimCaller struct {
 	handler http.Handler
 	cookie  *httptest.ResponseRecorder
 	token   string
-	machine *brokertokentest.Caller
 }
 
 // A mint that races another account's reclaim of the address cannot leave the first holder a
 // token: the first holder holds reassignedEmail and a credential of it, and the second holder's
 // sign-in (PgPeopleStore.SignInSubject under another sub) is held open with the people row locked,
-// its sessions ended and its tokens revoked, until the test lets it commit. The first holder's mint
-// waits for that row, finds once the reclaim commits that its caller no longer holds the address,
-// and is refused as any later request of that caller is (401 NO_IDENTITY for the cookie, 401
-// TOKEN_REVOKED for the personal token, 401 BROKER_TOKEN_NOT_ACTIVE for a broker token, whose
-// credential the second holder's sign-in owes the broker a revocation of), with no token row
-// written. A mint with no reclaim in its way, the first holder's first, is answered 201 as before.
+// its sessions ended and its tokens revoked, until the test lets it commit. The first holder's mint,
+// by the cookie or by the personal token, waits for that row, finds once the reclaim commits that
+// its caller no longer holds the address, and is refused as any later request of that caller is
+// (401 NO_IDENTITY for the cookie, 401 TOKEN_REVOKED for the personal token), with no token row
+// written. A broker token mints nothing, reclaim or none: none holds the approve scope
+// (TestOutsideSignInABrokerTokenApprovesDeniesAndMintsNothing).
 func TestOutsideSignInReclaimRefusesAMintThatWaitedOnIt(t *testing.T) {
 	for _, test := range []struct {
 		name, code string
-		broker     bool
-		mint       func(t *testing.T, c reclaimCaller, body string) *httptest.ResponseRecorder
-		later      func(t *testing.T, c reclaimCaller) *httptest.ResponseRecorder
+		mint       func(c reclaimCaller, body string) *httptest.ResponseRecorder
+		later      func(c reclaimCaller) *httptest.ResponseRecorder
 	}{
-		{"by the cookie", "NO_IDENTITY", false,
-			func(_ *testing.T, c reclaimCaller, body string) *httptest.ResponseRecorder {
+		{"by the cookie", "NO_IDENTITY",
+			func(c reclaimCaller, body string) *httptest.ResponseRecorder {
 				return cookieRequest(c.handler, http.MethodPost, "/api/v1/me/agent-tokens", body, c.cookie)
 			},
-			func(_ *testing.T, c reclaimCaller) *httptest.ResponseRecorder {
+			func(c reclaimCaller) *httptest.ResponseRecorder {
 				return requestWith(c.handler, http.MethodGet, "/auth/whoami", c.cookie)
 			}},
-		{"by the token", "TOKEN_REVOKED", false,
-			func(_ *testing.T, c reclaimCaller, body string) *httptest.ResponseRecorder {
+		{"by the token", "TOKEN_REVOKED",
+			func(c reclaimCaller, body string) *httptest.ResponseRecorder {
 				return bearerRequest(c.handler, http.MethodPost, "/api/v1/me/agent-tokens", body, c.token)
 			},
-			func(_ *testing.T, c reclaimCaller) *httptest.ResponseRecorder {
+			func(c reclaimCaller) *httptest.ResponseRecorder {
 				return bearerRequest(c.handler, http.MethodGet, "/api/v1/whoami", "", c.token)
-			}},
-		{"by the broker token", "BROKER_TOKEN_NOT_ACTIVE", true,
-			func(t *testing.T, c reclaimCaller, body string) *httptest.ResponseRecorder {
-				return brokerTokenRequest(t, c.handler, c.machine, http.MethodPost, "/api/v1/me/agent-tokens", body, c.token)
-			},
-			func(t *testing.T, c reclaimCaller) *httptest.ResponseRecorder {
-				return brokerTokenRequest(t, c.handler, c.machine, http.MethodGet, "/api/v1/whoami", "", c.token)
 			}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -168,22 +158,13 @@ func TestOutsideSignInReclaimRefusesAMintThatWaitedOnIt(t *testing.T) {
 			s := newOutsideSignIn(t, nil)
 			var caller reclaimCaller
 			email := reassignedEmail
-			if test.broker {
-				broker := newFakeBroker(t)
-				caller.handler, _ = s.brokerRouter(t, broker)
-				caller.cookie = s.workspaceSignIn(t, caller.handler, email, firstHolder)
-				caller.machine, caller.token = brokertokentest.NewCaller(t), "token-of-the-first-holders-machine"
-				broker.holds(&fakeCredential{id: "login-first", person: email, subject: firstHolder, tokens: []string{caller.token}}, caller.machine)
-			} else {
-				caller.handler = s.routerWithSessions(t)
-				caller.cookie = s.workspaceSignIn(t, caller.handler, email, firstHolder)
-				caller.token = mintTokenOn(t, caller.handler, caller.cookie)
-			}
+			caller.handler = s.routerWithSessions(t)
+			caller.cookie = s.workspaceSignIn(t, caller.handler, email, firstHolder)
+			caller.token = mintTokenOn(t, caller.handler, caller.cookie)
 			// Used once now, a personal token records its use, so the mint's own use of it a moment
 			// later writes nothing (personalTokenActor records a use a minute apart) and waits on
-			// no row the reclaim holds: the mint waits only where the mint itself takes a lock. A
-			// broker token's use writes no row the reclaim holds either.
-			requireTokenActs(t, "GET /api/v1/whoami with the first holder's credential "+test.name+", before the reclaim", test.later(t, caller))
+			// no row the reclaim holds: the mint waits only where the mint itself takes a lock.
+			requireTokenActs(t, "GET /api/v1/whoami with the first holder's credential "+test.name+", before the reclaim", test.later(caller))
 
 			if _, err := s.database.Pool.Exec(ctx, `
 				create function hold_reclaim() returns trigger language plpgsql as $$ begin perform pg_advisory_xact_lock(4199); return new; end $$;
@@ -212,7 +193,7 @@ func TestOutsideSignInReclaimRefusesAMintThatWaitedOnIt(t *testing.T) {
 			minted, mintDone := make(chan *httptest.ResponseRecorder, 1), make(chan struct{})
 			go func() {
 				defer close(mintDone)
-				minted <- test.mint(t, caller, `{"name":"`+name+`"}`)
+				minted <- test.mint(caller, `{"name":"`+name+`"}`)
 			}()
 			if !waitForBlockedBackends(t, s, 2, "the first holder's mint", mintDone) {
 				t.Logf("the first holder's mint %s answered while the reclaim held the address, without waiting for it", test.name)
@@ -227,7 +208,7 @@ func TestOutsideSignInReclaimRefusesAMintThatWaitedOnIt(t *testing.T) {
 			if refused.Code != http.StatusUnauthorized || errorCode(refused) != test.code {
 				t.Errorf("the first holder's mint %s, which waited on the reclaim, answered %d %s, want 401 %s", test.name, refused.Code, refused.Body.String(), test.code)
 			}
-			if later := test.later(t, caller); later.Code != refused.Code || errorCode(later) != errorCode(refused) {
+			if later := test.later(caller); later.Code != refused.Code || errorCode(later) != errorCode(refused) {
 				t.Errorf("the first holder's next request %s answered %d %s, and the mint %d %s: want the mint refused as that request is", test.name, later.Code, later.Body.String(), refused.Code, refused.Body.String())
 			}
 			var written int

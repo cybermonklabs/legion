@@ -103,8 +103,14 @@ func BenchmarkTheWritePathsThatStoreADisplayTree(b *testing.B) {
 		version := 1
 		b.ReportAllocs()
 		for b.Loop() {
+			// The upload replaces the spec whole, so it names the token of the version it
+			// replaces, or Dispatch refuses it. The read is not the write this times.
+			b.StopTimer()
+			base := readDocumentPrecondition(b, handler, issue.PrimaryArtifactID).Token
+			b.StartTimer()
 			writeBoundRequest(b, handler, http.MethodPost, target, map[string]any{
 				"name": "spec.md", "content": writeBoundMarkdown(version),
+				"precondition": map[string]string{"document": base},
 			}, http.StatusCreated)
 			version++
 		}

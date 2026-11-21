@@ -2,15 +2,18 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // browserSessions is the rig's header identity with each caller a browser's session cookie of the
@@ -118,6 +121,31 @@ func TestAResetRevokesTheMembersDeviceLogins(t *testing.T) {
 	}
 }
 
+// TestAResetsRevocationIsLoggedAsTheResets: the broker revocation loop's lines for the owner's
+// Reset name the Reset: the account it replaced as a passkey account the owner's Reset replaced,
+// never one "another Google account took the address of", and the machine logins it revoked as a
+// member's reset by a project's owner, not only one taken off an access list. Either other wording
+// sends an operator looking for a sign-in or a removal that never happened.
+//
+// Control: log every revocation with the Google takeover's words (revokedLog ignoring passkey), and
+// the line names another Google account and the row fails.
+func TestAResetsRevocationIsLoggedAsTheResets(t *testing.T) {
+	r := newRestrictedTokenRig(t, withPasskeys)
+	ctx := t.Context()
+	recordPasskeyAccount(t, r.database, accessErin, "cmVzZXQtbG9nLXN1YmplY3Qh")
+	if reset := dispatchRequest(t, r.dispatch, http.MethodPost, "/api/v1/projects/ACC/access/people/"+accessErin+"/reset", nil, "alice"); reset.Code != http.StatusOK {
+		t.Fatalf("alice's Reset of erin: %d %s, want 200", reset.Code, reset.Body.String())
+	}
+	logged := &logtest.Buffer{}
+	logtest.SetDefault(t, slog.NewTextHandler(logged, nil))
+	r.server.revokeBrokerDebts(ctx)
+	written := logged.String()
+	if !strings.Contains(written, "the credentials of a passkey account the project owner's Reset replaced") || strings.Contains(written, "another Google account") ||
+		!strings.Contains(written, "machine logins of a restricted member taken off an access list or reset by a project's owner") {
+		t.Fatalf("the revocation pass after the Reset logged:\n%s\nwant the passkey account the owner's Reset replaced, no Google account, and the machine logins of a member reset by a project's owner", written)
+	}
+}
+
 // TestAnApprovalInFlightAcrossAResetMintsNoLogin (R5, R16): an approve whose standing Dispatch
 // read before the owner's Reset of the approver (approveCredentialRecord: the account and the
 // session generation it relays), and which reaches the secrets broker only after the Reset
@@ -126,7 +154,7 @@ func TestAResetRevokesTheMembersDeviceLogins(t *testing.T) {
 // Reset left, so the broker refuses an approve that names the old account, or an older
 // generation, and erin's machine never gets a token for that login.
 //
-// Control: the Reset keeps the address's account (store.PgPasskeys.ResetTx recording no new
+// Control: the Reset keeps the address's account (store.PgPasskeys.EndAccountTx recording no new
 // subject), and the late approve mints the login and the row fails naming its credential.
 func TestAnApprovalInFlightAcrossAResetMintsNoLogin(t *testing.T) {
 	r := newRestrictedTokenRig(t, withPasskeys)
@@ -139,7 +167,7 @@ func TestAnApprovalInFlightAcrossAResetMintsNoLogin(t *testing.T) {
 	if err := r.database.Pool.QueryRow(ctx, `select coalesce((select generation from user_sessions where login = $1), 0)`, accessErin).Scan(&generation); err != nil {
 		t.Fatalf("read erin's session generation: %v", err)
 	}
-	inFlight := agentsecrets.Decision{
+	inFlight := cipher.Decision{
 		Approver: accessErin, Code: &machine.device.UserCode,
 		ApproverIssuer: passkeyOutsideOrigin, ApproverSubject: subject, ApproverSessionGeneration: &generation,
 	}
@@ -178,8 +206,8 @@ func TestTwoRemovalsFromTheLastTwoListsEndThePasskeySignIn(t *testing.T) {
 	}
 	const subject = "dHdvLXJlbW92YWxzLWVyaW4h"
 	recordPasskeyAccount(t, database, accessErin, subject)
-	if _, err := database.Pool.Exec(ctx, `insert into passkeys (credential_id, email, user_handle, public_key, aaguid, flags)
-		values ('\x01'::bytea, $1, convert_to($2, 'UTF8'), '\x02'::bytea, ''::bytea, 0)`, accessErin, subject); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into passkeys (credential_id, email, user_handle, public_key, aaguid, flags, project_key, made_by)
+		values ('\x01'::bytea, $1, convert_to($2, 'UTF8'), '\x02'::bytea, ''::bytea, 0, 'ACC', 'alice')`, accessErin, subject); err != nil {
 		t.Fatalf("store erin's passkey: %v", err)
 	}
 

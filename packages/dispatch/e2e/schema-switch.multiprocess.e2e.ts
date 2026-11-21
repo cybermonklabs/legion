@@ -22,6 +22,7 @@ import {
   createIssue,
   createIssueArtifact,
   createProject,
+  documentBase,
   getArtifact,
   getArtifactText,
   getArtifactVersion,
@@ -73,17 +74,21 @@ async function contextOn(browser: Browser, target: DispatchProcess): Promise<Bro
   return context;
 }
 
-/** Uploads `markdown` as the issue's document `name` through one process, as the person alice,
- *  whose sign-in, when it is not cached yet, goes to that process too. It answers the status and
- *  the body, so a refusal is read rather than thrown. */
+/** Uploads `markdown` as a new version of the issue's document `name`, whose id is `artifact`,
+ *  through one process, as the person alice, whose sign-in, when it is not cached yet, goes to that
+ *  process too. The upload names the token of the version it replaces, read through that process,
+ *  as Dispatch requires of every replacement. It answers the status and the body, so a refusal is
+ *  read rather than thrown. */
 async function uploadThrough(
   target: DispatchProcess,
   issueKey: string,
+  artifact: string,
   name: string,
   markdown: string
 ): Promise<{ body: string; status: number }> {
+  const precondition = await documentBase(artifact, { process: target });
   const response = await fetch(new URL(`/api/v1/issues/${issueKey}/artifacts`, baseUrl), {
-    body: JSON.stringify({ content: markdown, name }),
+    body: JSON.stringify({ content: markdown, name, precondition }),
     headers: {
       ...(await userHeaders("alice", target)),
       ...pinnedTo(target),
@@ -257,7 +262,13 @@ test("two processes agree on the installed schema", async ({ browser }) => {
     // The transition: the second process still holds the old schema, so a document holding a
     // block of the new type written through it is refused rather than stored under that schema.
     const lost = "A claim the second process has not learned.";
-    const refused = await uploadThrough(second, issue.key, "notes.md", documentWithAddedType(lost));
+    const refused = await uploadThrough(
+      second,
+      issue.key,
+      notesID,
+      "notes.md",
+      documentWithAddedType(lost)
+    );
     // Every assertion from here names a process, the schema and the version it held at the
     // transition, and the write sent through the second process with its answer, so a failure
     // says which process held what and how that write was answered.
@@ -326,7 +337,13 @@ test("two processes agree on the installed schema", async ({ browser }) => {
     // The same document written again through the second process stores the new block, in a
     // version of its own.
     const kept = "A claim the second process now holds.";
-    const taken = await uploadThrough(second, issue.key, "notes.md", documentWithAddedType(kept));
+    const taken = await uploadThrough(
+      second,
+      issue.key,
+      notesID,
+      "notes.md",
+      documentWithAddedType(kept)
+    );
     expect(taken.status, took(second, taken)).toBe(201);
     const after = await storedVersions(notesID, second);
     expect(

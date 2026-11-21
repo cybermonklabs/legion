@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,9 +92,9 @@ func writeIssueComment(t *testing.T, database *store.Store, id string, author mo
 }
 
 // settleMention writes comment's mention of session and its first attempt, settled in state as
-// the mention sender's settle settles it: the attempt's row, the session it reached where the
-// listener took it (graphstore.QueueReached, which records nothing for a failed one), and the
-// comment.delivery receipt, onto which that session's node is moved (graphstore.Caused).
+// the mention sender's settle settles it: the attempt's row, the comment.delivery receipt, and
+// the session it reached where the listener took it, under that receipt (graphstore.QueueReached,
+// which records nothing for a failed one).
 func settleMention(t *testing.T, database *store.Store, comment string, by model.Actor, session, state string) {
 	t.Helper()
 	ctx := context.Background()
@@ -116,19 +117,13 @@ func settleMention(t *testing.T, database *store.Store, comment string, by model
 	`, comment, target, session, state).Scan(&attemptedAt); err != nil {
 		t.Fatalf("write the attempt at %s: %v", target, err)
 	}
-	var reached graphstore.Uncaused
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		var err error
-		reached, err = graphstore.QueueReached(b, state, session, by, attemptedAt, graphstore.NoEvent)
-		return err
-	}); err != nil {
-		t.Fatalf("record the session the attempt at %s reached: %v", target, err)
-	}
 	receipt := appendEventBy(t, tx, "CORE-1", "comment.delivery", by, model.CommentDeliveryEventPayload{
 		CommentID: comment, Target: target, Attempt: 1, Delivery: "steer", SessionID: new(session), State: state,
 	})
-	if err := graphstore.Caused(ctx, tx, reached, receipt); err != nil {
-		t.Fatalf("move the session the attempt at %s reached onto its receipt: %v", target, err)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return graphstore.QueueReached(b, state, session, by, attemptedAt, receipt)
+	}); err != nil {
+		t.Fatalf("record the session the attempt at %s reached: %v", target, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the settle of %s: %v", target, err)
@@ -226,4 +221,44 @@ func TestTheEraseOfAPersonAfterHisCommentLeavesTheCensusAtZero(t *testing.T) {
 	requireCensusZero(t, database, "after the comment's erase")
 	requireErased(t, database, graphstore.KindPerson, erasedAuthorPerson)
 	requireCensusZero(t, database, "after the person's erase")
+}
+
+// R5, R19: a person is named by the row of a comment a session the server proved hers wrote. The
+// comment's author is the session, whose act names that same session and whose `owner` is dana,
+// and the census names dana from that row (graphcensus's commentWriterPeople). Nothing the row
+// projects states a tuple into her: the comment's authored_by names the session, and the session's
+// alias_of is her one tuple in, from a node no row projects. An erase that went on would leave the
+// census naming her from the row with her node gone. So the erase of dana refuses, naming the
+// comment, and changes nothing, her node stays live and the census reads zero; once the comment is
+// erased she is, and the census reads zero again.
+func TestTheEraseRefusesAPersonWhoseProvedSessionsCommentStands(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedCommentsOnlyTheyName(t, database)
+	projected := make([]string, len(graphstore.ProjectedTables))
+	for index, held := range graphstore.ProjectedTables {
+		projected[index] = `exists (select 1 from ` + held.Table + ` p where p.node_kind = t.from_kind and p.node_address = t.from_id)`
+	}
+	var aliases, stated int64
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) filter (where t.kind = $3 and t.from_kind = $4 and t.from_id = $5),
+		       count(*) filter (where `+strings.Join(projected, " or ")+`)
+		from graph_tuples t where t.to_kind = $1 and t.to_id = $2`,
+		graphstore.KindPerson, erasedAuthorOwner, graphstore.TupleAliasOf, graphstore.KindSession, erasedAuthorSession).Scan(&aliases, &stated); err != nil {
+		t.Fatalf("read the tuples into %s:%s: %v", graphstore.KindPerson, erasedAuthorOwner, err)
+	}
+	if aliases != 1 || stated != 0 {
+		t.Fatalf("%s:%s holds %d alias_of tuple(s) from %s:%s and %d tuple(s) from a node a row projects, want one and none, or this test would prove nothing",
+			graphstore.KindPerson, erasedAuthorOwner, aliases, graphstore.KindSession, erasedAuthorSession, stated)
+	}
+
+	requireRefused(t, database, graphstore.KindPerson, erasedAuthorOwner, commentNodeKind+":"+seeded.bySession)
+	if held, found, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindPerson, erasedAuthorOwner); err != nil || !found || held.State != graphstore.StateLive {
+		t.Errorf("after the refused erase the store holds %s:%s found %t in state %q (%v), want it live", graphstore.KindPerson, erasedAuthorOwner, found, held.State, err)
+	}
+	requireCensusZero(t, database, "after the refused erase of the person")
+
+	requireErased(t, database, commentNodeKind, seeded.bySession)
+	requireErased(t, database, graphstore.KindPerson, erasedAuthorOwner)
+	requireCensusZero(t, database, "after the erases of the comment and the person")
 }

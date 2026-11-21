@@ -94,7 +94,8 @@ export interface AgentStreamMessage {
   /**
    * The Dispatch message this user message delivered, set when the session matched the user
    * message to a person's direct message it sent in as its user's own turn. A turn the session did
-   * not match carries none (`packages/pi-envoy/AGENTS.md` says which).
+   * not match carries none (`packages/pi-envoy/README.md`, "A person's message from Dispatch",
+   * says which).
    */
   readonly dispatchMessageId?: string;
   /**

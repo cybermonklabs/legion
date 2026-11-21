@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, type Mock, mock, spyOn, test } from "bun:test";
 import { type ArtifactRebuildReport, MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -81,6 +81,7 @@ import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { Timestamp } from "../refs/Timestamp";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useDialog } from "../shell/useDialog";
@@ -126,6 +127,12 @@ import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
  * Each case draws the controls through `draw` (`shared-controls-fixture.tsx`), every read answered
  * by a stub on `api` below.
  */
+
+// An Inbox row's card draws a question's text and its options through the Markdown engine, a
+// module loaded on first use (`markdown-engine.ts`). A row that holds the clock before it presses
+// an option spends its wait in moments of that clock, which a load on the real one does not keep
+// pace with, so the engine is loaded before the rows begin.
+beforeAll(warmMarkdownRenderer);
 
 function specEntry(approval?: ArtifactApproval): StepEntry {
   return { document: doc(SPEC_ID, "spec.md", approval), label: "Spec", step: "spec" };
@@ -2153,10 +2160,6 @@ test("the default shapes keep main's class strings", async () => {
     "MultiSelect option label": "truncate min-w-0 flex-1",
     "MultiSelect option detail": "shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400",
     "MultiSelect empty": "px-3 py-2 text-sm text-slate-500 dark:text-slate-400",
-    // The refusal and Clear stand in one footer pinned below the list (#4177's picker change:
-    // a refusal drawn after the rows sat below the row just pressed, or under the footer), so the
-    // footer is the sticky host on the card, and Clear's own host takes the rule above it only
-    // when a refusal stands over it.
     "MultiSelect refusal": "px-3 py-2 text-sm text-rose-700 dark:text-rose-400",
     "MultiSelect footer":
       "sticky bottom-0 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900",
@@ -5704,7 +5707,7 @@ test("inside NoTooltips a priority's Remove draws its cross as an inline svg and
         expect(paths[0]?.getAttribute("stroke")).toBe("currentColor");
       } else {
         expect(remove.textContent).toBe("✕");
-        expect(crosses).toEqual([]);
+        expect(crosses).toHaveLength(0);
       }
     } finally {
       undraw(view);

@@ -59,6 +59,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { listedReplies } from "../conversation/conversation-model";
 import { broadcastDelivery, deliveryModesOf, MODE_LABELS } from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
@@ -210,6 +211,7 @@ function AgentExchangeReply({
       void queryClient.invalidateQueries({
         queryKey: agentMessagesQuery(agent.session_id).queryKey,
       }),
+    method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
   const replies = read.replies ?? [];
@@ -287,6 +289,7 @@ function AgentTargetedMessage({
       void queryClient.invalidateQueries({
         queryKey: agentMessagesQuery(agent.session_id).queryKey,
       }),
+    method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(read.message.id, delivery, bounds),
   });
   const replies = read.replies ?? [];
@@ -400,6 +403,7 @@ function AgentMessageList({
   // compared against `created_at` (the server's clock), so a slow browser clock would otherwise
   // make Clear a silent no-op. This hides exactly what the viewer saw.
   const clear = useKeyedWrite({
+    method: "PUT",
     write: (cutoff: string, bounds) =>
       api.putAgentState(agent.session_id, { cleared_before: cutoff }, bounds),
     label: () => `Conversation with ${label} cleared`,
@@ -816,6 +820,15 @@ function AgentRowDetails({
   // The delivery modes the session lists, and only those: a capability that is no mode carries no
   // message, so a list of those alone takes none, as an empty one does.
   const modes = deliveryModesOf(agent.capabilities ?? []);
+  // The session's conversation as the row's list reads it (`AgentMessageList`), the same read,
+  // whatever a fold or a Clear shows of it: a draft the composer keeps for one of its messages
+  // goes back by that message's Reply, and one kept for a message the read no longer holds is
+  // drawn itself (`ListedReplies`). Until the read answers, every kept reply is as it was.
+  const messages = useQuery(agentMessagesQuery(agent.session_id));
+  const listed = useMemo(
+    () => (messages.data === undefined ? undefined : listedReplies(messages.data)),
+    [messages.data]
+  );
   return (
     <div className={`border-t px-4 pb-4 ${borderDefault}`} hidden={!expanded} id={id}>
       <div
@@ -848,6 +861,7 @@ function AgentRowDetails({
         <AgentMessageComposer
           agent={agent}
           hold={hold}
+          listed={listed}
           onCancelReply={() => setReplyTo(null)}
           onClose={leaveAgentComposer}
           replyTo={replyTo}

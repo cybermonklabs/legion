@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"slices"
 	"strings"
 	"testing"
 
@@ -116,25 +116,32 @@ func (r *passkeyRig) asOwner(method, path string, body any) *httptest.ResponseRe
 // the link's token, its URL fragment.
 func (r *passkeyRig) invite(t *testing.T, email string) string {
 	t.Helper()
-	response := r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+url.PathEscape(email)+"/invitations", nil)
+	return linkToken(t, "alice's link for "+email, r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+url.PathEscape(email)+"/invitations", nil))
+}
+
+// linkToken is the token of the link response answers, failing the test naming what for any
+// answer but 201 {url, expires_at} with a url of the outside origin's enrollment page.
+func linkToken(t *testing.T, what string, response *httptest.ResponseRecorder) string {
+	t.Helper()
 	var answer struct {
 		URL       string `json:"url"`
 		ExpiresAt string `json:"expires_at"`
 	}
 	if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &answer) != nil {
-		t.Fatalf("alice's link for %s answered %d %s, want 201 {url, expires_at}", email, response.Code, response.Body.String())
+		t.Fatalf("%s answered %d %s, want 201 {url, expires_at}", what, response.Code, response.Body.String())
 	}
 	page, token, ok := strings.Cut(answer.URL, "#")
 	if !ok || page != passkeyOrigin+"/enroll" || len(token) != 43 || answer.ExpiresAt == "" {
-		t.Fatalf("alice's link for %s is %+v, want %s/enroll#<43 characters> and when it lapses", email, answer, passkeyOrigin)
+		t.Fatalf("%s is %+v, want %s/enroll#<43 characters> and when it lapses", what, answer, passkeyOrigin)
 	}
 	return token
 }
 
-// ceremonyCookie is the ceremony cookie a begin set.
+// ceremonyCookie is the ceremony cookie a begin set, the `__Host-` one the rig's Secure cookies
+// carry.
 func ceremonyCookie(response *httptest.ResponseRecorder) *http.Cookie {
 	for _, cookie := range response.Result().Cookies() {
-		if cookie.Name == "dispatch_passkey_ceremony" && cookie.Value != "" {
+		if cookie.Name == "__Host-dispatch_passkey_ceremony" && cookie.Value != "" {
 			return cookie
 		}
 	}
@@ -380,120 +387,6 @@ func TestRemovingTheLastListingEndsSignInAndDeletesPasskeys(t *testing.T) {
 	wantCode(t, "a passkey sign-in after the last removal", r.signIn(t, r.handler, device), http.StatusUnauthorized, "PASSKEY_UNKNOWN")
 }
 
-// TestTheOwnersResetEndsSignInAndDeletesPasskeys (R5): the owner's Reset of a person the list still
-// names ends their sign-in and deletes their passkeys at once, and leaves them on the list, so a
-// new link enrolls them again. Reset is the owner's browser's alone: a full member's address is
-// 409 FULL_MEMBER.
-//
-// Control: skip the end in the Reset (store.EndPasskeySignInTx not called), and the row fails
-// naming the passkey still stored.
-func TestTheOwnersResetEndsSignInAndDeletesPasskeys(t *testing.T) {
-	r := newPasskeyRig(t, nil)
-	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
-	cookie := r.enrolled(t, device, r.invite(t, outsiderEmail), outsiderEmail)
-	unused := r.invite(t, outsiderEmail)
-
-	reset := r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/reset", nil)
-	if reset.Code != http.StatusOK || !strings.Contains(reset.Body.String(), `"people":["`+outsiderEmail+`"]`) {
-		t.Fatalf("alice's Reset of the outsider answered %d %s, want 200 with the outsider still listed", reset.Code, reset.Body.String())
-	}
-	if n := r.passkeysOf(t, outsiderEmail); n != 0 {
-		t.Fatalf("after the Reset %s holds %d passkey(s), want every one deleted", outsiderEmail, n)
-	}
-	if whoami := whoamiOutside(r.handler, cookie); whoami.Code != http.StatusUnauthorized {
-		t.Fatalf("whoami after the Reset answered %d %s, want 401", whoami.Code, whoami.Body.String())
-	}
-	wantCode(t, "a passkey sign-in after the Reset", r.signIn(t, r.handler, device), http.StatusUnauthorized, "PASSKEY_UNKNOWN")
-	wantCode(t, "the link made before the Reset", r.beginEnrollment(r.handler, unused), http.StatusNotFound, "INVITATION_UNKNOWN")
-
-	again := r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
-	signedInRestricted(t, r.handler, again, outsiderEmail)
-
-	r.listOn(t, "PRIV", access.PrincipalPerson, privOwner)
-	wantCode(t, "a Reset of a full member", r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+privOwner+"/reset", nil), http.StatusConflict, "FULL_MEMBER")
-}
-
-// TestTheOwnersResetRevokesThePersonsPersonalTokens (R5): a personal token the person's passkey
-// cookie minted stops at the owner's Reset, 401 TOKEN_REVOKED, while the person stays on the list:
-// the Reset gives the address a new passkey account, as another account's sign-in would, so
-// whoever used the link first keeps nothing the cookie made. The next link enrolls under that new
-// account.
-//
-// Control: the Reset keeps the address's account (store.PgPasskeys.ResetTx recording no new
-// subject), and the token still reads PRIV and the row fails.
-func TestTheOwnersResetRevokesThePersonsPersonalTokens(t *testing.T) {
-	r := newPasskeyRig(t, nil)
-	cookie := r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
-	minted := call(r.handler, passkeyOrigin, http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": "outsider's agent"}, cookie)
-	var token struct {
-		Token string `json:"token"`
-	}
-	if minted.Code != http.StatusCreated || json.Unmarshal(minted.Body.Bytes(), &token) != nil || token.Token == "" {
-		t.Fatalf("the outsider mints a personal token at their browser: %d %s", minted.Code, minted.Body.String())
-	}
-	read := func() *httptest.ResponseRecorder {
-		request := httptest.NewRequest(http.MethodGet, passkeyOrigin+"/api/v1/projects", nil)
-		request.Header.Set("Authorization", "Bearer "+token.Token)
-		response := httptest.NewRecorder()
-		r.handler.ServeHTTP(response, request)
-		return response
-	}
-	if before := read(); before.Code != http.StatusOK {
-		t.Fatalf("the outsider's token before the Reset answered %d %s, want 200", before.Code, before.Body.String())
-	}
-	subjectOf := func() string {
-		var subject string
-		if err := r.database.Pool.QueryRow(context.Background(), `select coalesce(sub, '') from people where email = $1`, outsiderEmail).Scan(&subject); err != nil {
-			t.Fatal(err)
-		}
-		return subject
-	}
-	enrolledUnder := subjectOf()
-
-	if reset := r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/reset", nil); reset.Code != http.StatusOK {
-		t.Fatalf("alice's Reset of the outsider answered %d %s, want 200", reset.Code, reset.Body.String())
-	}
-	wantCode(t, "the outsider's personal token after the Reset", read(), http.StatusUnauthorized, "TOKEN_REVOKED")
-	resetUnder := subjectOf()
-	if resetUnder == "" || resetUnder == enrolledUnder {
-		t.Fatalf("after the Reset the address records the account %q, want a new one in place of %q", resetUnder, enrolledUnder)
-	}
-	r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
-	if again := subjectOf(); again != resetUnder {
-		t.Fatalf("the enrollment after the Reset records the account %q, want the Reset's %q", again, resetUnder)
-	}
-}
-
-// TestTheOwnersResetEndsEveryProjectsUnusedLinks (R5): the owner's Reset ends the person's unused
-// links of every project, not only the Reset's own: a link OTHER's owner made before PRIV's Reset
-// enrolls nothing after it (404 INVITATION_UNKNOWN), so the person enrolls again only with a link
-// made after the Reset.
-//
-// Control: end only the Reset's own project's links (store.DeleteInvitationsTx of PRIV), and
-// OTHER's link begins an enrollment and the row fails.
-func TestTheOwnersResetEndsEveryProjectsUnusedLinks(t *testing.T) {
-	r := newPasskeyRig(t, nil)
-	if _, err := r.database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee, owner) values ('OTHER', 'Other', $1, $1)`, privOwner); err != nil {
-		t.Fatalf("seed OTHER: %v", err)
-	}
-	r.listOn(t, "OTHER", access.PrincipalPerson, outsiderEmail)
-	r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
-	made := r.asOwner(http.MethodPost, "/api/v1/projects/OTHER/access/people/"+outsiderEmail+"/invitations", nil)
-	_, fragment, found := strings.Cut(made.Body.String(), "#")
-	other, _, _ := strings.Cut(fragment, `"`)
-	if made.Code != http.StatusCreated || !found || len(other) != 43 {
-		t.Fatalf("OTHER's owner makes a link for the outsider: %d %s, want 201 and its token", made.Code, made.Body.String())
-	}
-
-	if reset := r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/reset", nil); reset.Code != http.StatusOK {
-		t.Fatalf("alice's Reset of the outsider on PRIV answered %d %s, want 200", reset.Code, reset.Body.String())
-	}
-	wantCode(t, "the enrollment with OTHER's link made before PRIV's Reset", r.beginEnrollment(r.handler, other), http.StatusNotFound, "INVITATION_UNKNOWN")
-	if n := r.passkeysOf(t, outsiderEmail); n != 0 {
-		t.Fatalf("after the Reset %s holds %d passkey(s), want none", outsiderEmail, n)
-	}
-}
-
 // TestADelistedPersonLosesSignInAndPasskeysAtTheHourlyCheck (R5): a person the lists stop naming
 // by any write but a removal keeps their sign-in until its confirmation is an hour old; the next
 // request after it ends the sign-in and deletes their passkeys in one transaction, and says why
@@ -547,17 +440,21 @@ func TestTheOutsideOriginServesNoGoogleSignIn(t *testing.T) {
 	}
 }
 
-// TestTheOutsideOriginIsItsHostHoweverSpelled (R5): a request whose Host is the outside origin's
-// host written with its default port (`:443`), with a trailing dot, or in capitals, is answered as
+// TestTheOutsideOriginIsItsHostHoweverSpelled (R5): a request whose Host names the outside origin's
+// host with its default port (`:443`, `:0443`), with trailing dots, or in capitals, is answered as
 // the outside origin: GET /auth/start is its 404, not the canonical origin's redirect to Google, and
 // a passkey sign-in begins there. The canonical origin's own host still starts Google's sign-in.
 //
 // Control: compare the Host with the outside origin's host as written (publicOrigin's
 // strings.EqualFold alone), and `/auth/start` at `outside.example.com:443` answers 302 and the row
-// fails.
+// fails; strip one trailing dot and the port written `443` alone, and `outside.example.com..`
+// answers 302 and the row fails.
 func TestTheOutsideOriginIsItsHostHoweverSpelled(t *testing.T) {
 	r := newPasskeyRig(t, nil)
-	for _, host := range []string{passkeyRPID + ":443", passkeyRPID + ".", "OUTSIDE.Example.COM", "outside.example.com.:443"} {
+	for _, host := range []string{
+		passkeyRPID + ":443", passkeyRPID + ":0443", passkeyRPID + ".", passkeyRPID + "..",
+		"OUTSIDE.Example.COM", "outside.example.com.:443",
+	} {
 		start := httptest.NewRequest(http.MethodGet, "https://"+host+"/auth/start", nil)
 		started := httptest.NewRecorder()
 		r.handler.ServeHTTP(started, start)
@@ -741,8 +638,8 @@ func TestTurningPasskeysOffTellsThePersonWhy(t *testing.T) {
 // cookie and body alike, is 400 CEREMONY_EXPIRED and signs nobody in, even for a passkey whose
 // signature counter stays 0, which the counter check cannot tell from a first use.
 //
-// Control: answer every ceremony as live (store.PgPasskeys.TakeCeremony answering true without
-// its row), and the replayed finish signs in and the row fails.
+// Control: record the used ceremony without its unique key (store's useCeremonyTx answering nil
+// when the insert found the challenge taken), and the replayed finish signs in and the row fails.
 func TestPasskeyCeremonyIsTakenOnce(t *testing.T) {
 	r := newPasskeyRig(t, nil)
 	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
@@ -757,6 +654,30 @@ func TestPasskeyCeremonyIsTakenOnce(t *testing.T) {
 	if sessionCookieSet(replayed) {
 		t.Fatal("the replayed finish set a session cookie")
 	}
+}
+
+// TestAReplayAfterTheDatabasesClockRanAheadIsRefused: a used ceremony's row is kept a minute past
+// when it lapses by the database's clock, so a database clock that runs ahead of the process's,
+// which accepts the ceremony's cookie until it lapses by its own, deletes no used row while its
+// cookie still verifies: the replay of a sign-in whose row the database already counts 30 seconds
+// lapsed is 400 CEREMONY_EXPIRED.
+//
+// Control: delete the used rows as soon as they lapse by the database's clock (useCeremonyTx
+// without its margin), and the replay signs in, 200, and the row fails.
+func TestAReplayAfterTheDatabasesClockRanAheadIsRefused(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
+	r.enrolled(t, device, r.invite(t, outsiderEmail), outsiderEmail)
+	begun := call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/login/begin", map[string]string{})
+	answer := device.assertAt(t, begun.Body.Bytes())
+	if first := call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/login/finish", answer, ceremonyCookie(begun)); first.Code != http.StatusOK {
+		t.Fatalf("the sign-in at counter 0 answered %d %s, want 200", first.Code, first.Body.String())
+	}
+	if _, err := r.database.Pool.Exec(context.Background(), `update passkey_ceremonies set expires_at = now() - interval '30 seconds'`); err != nil {
+		t.Fatal(err)
+	}
+	replayed := call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/login/finish", answer, ceremonyCookie(begun))
+	wantCode(t, "the same finish sent again, its row lapsed 30 seconds by the database's clock", replayed, http.StatusBadRequest, "CEREMONY_EXPIRED")
 }
 
 // TestPasskeyRefusesAWorkspaceAddress: no link is made, and no passkey is enrolled, for an
@@ -791,50 +712,6 @@ func TestPasskeyRefusesAWorkspaceAddress(t *testing.T) {
 	wantCode(t, "a passkey sign-in once the address's domain is the Workspace's", r.signIn(t, listedServer, device), http.StatusForbidden, "WORKSPACE_ADDRESS")
 	if n := r.passkeysOf(t, moved); n != 0 {
 		t.Fatalf("%s holds %d passkeys once its domain is the Workspace's, want every one deleted", moved, n)
-	}
-}
-
-// TestPasskeyAccessFieldsAreTheOwnersAlone: GET /api/v1/projects/{key}/access answers the owner's
-// browser session, where passkey sign-in is on, when each passkey of a listed person was enrolled
-// (passkeys) and the people a link can be made for now (invitable: on no Workspace domain, no full
-// member's); a full member the list names and the restricted member read neither field, and with
-// passkey sign-in off the owner reads neither either.
-//
-// Control: answer the two fields to every reader (withOwnersPasskeys skipping its owner check),
-// and the full member's read carries passkeys and the row fails.
-func TestPasskeyAccessFieldsAreTheOwnersAlone(t *testing.T) {
-	r := newPasskeyRig(t, nil)
-	cookie := r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
-	const dana = "dana@example.com"
-	danaSignIn := codeFlowSignIn(t, r.handler, r.pool, map[string]any{"sub": "google-dana", "email": dana, "email_verified": true, "hd": "example.com"})
-	r.listOn(t, "PRIV", access.PrincipalPerson, dana)
-	r.listOn(t, "PRIV", access.PrincipalPerson, "pending@other.example")
-
-	var owners struct {
-		Passkeys  []model.EnrolledPasskey `json:"passkeys"`
-		Invitable []string                `json:"invitable"`
-	}
-	read := r.asOwner(http.MethodGet, "/api/v1/projects/PRIV/access", nil)
-	if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &owners) != nil {
-		t.Fatalf("alice's read of PRIV's access: %d %s", read.Code, read.Body.String())
-	}
-	if len(owners.Passkeys) != 1 || owners.Passkeys[0].Email != outsiderEmail || owners.Passkeys[0].EnrolledAt.IsZero() {
-		t.Fatalf("alice reads passkeys %+v, want the outsider's one, with its enrollment time", owners.Passkeys)
-	}
-	if want := []string{outsiderEmail, "pending@other.example"}; !slices.Equal(owners.Invitable, want) {
-		t.Fatalf("alice reads invitable %v, want %v: no full member", owners.Invitable, want)
-	}
-	for who, response := range map[string]*httptest.ResponseRecorder{
-		"dana, a full member the list names": call(r.handler, canonicalOrigin, http.MethodGet, "/api/v1/projects/PRIV/access", nil, sessionCookieOf(t, "dana's sign-in", danaSignIn)),
-		"the restricted member":              call(r.handler, passkeyOrigin, http.MethodGet, "/api/v1/projects/PRIV/access", nil, cookie),
-	} {
-		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"passkeys"`) || strings.Contains(response.Body.String(), `"invitable"`) {
-			t.Fatalf("%s's read of PRIV's access: %d %s, want 200 with neither passkeys nor invitable", who, response.Code, response.Body.String())
-		}
-	}
-	off, _ := r.serverWith(t, map[string]string{"DISPATCH_SIGNIN_PASSKEY": ""})
-	if off := call(off, canonicalOrigin, http.MethodGet, "/api/v1/projects/PRIV/access", nil, r.alice); off.Code != http.StatusOK || strings.Contains(off.Body.String(), `"passkeys"`) {
-		t.Fatalf("alice's read with passkey sign-in off: %d %s, want 200 with no passkeys", off.Code, off.Body.String())
 	}
 }
 
@@ -897,4 +774,171 @@ func TestPasskeySettingsRefusals(t *testing.T) {
 		"DISPATCH_SIGNIN_ISSUER": "", "DISPATCH_SIGNIN_CLIENT_ID": "", "DISPATCH_SIGNIN_CLIENT_SECRET": "", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "",
 		"DISPATCH_SIGNIN_PASSKEY": "1",
 	}, "DISPATCH_SIGNIN_PASSKEY")
+}
+
+// TestThePasskeyBeginsAreBoundedPerAddress: a ceremony's begin takes no credential, so one client
+// address, as the load balancer names it, gets ten at once and then one a second: the eleventh at
+// once is 429 PASSKEY_RATE_LIMITED with Retry-After, while another address still begins.
+//
+// Control: mount the begins without limitPasskeyBegins, and the eleventh begin answers 200 and the
+// row fails.
+func TestThePasskeyBeginsAreBoundedPerAddress(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	begin := func(address string) *httptest.ResponseRecorder {
+		return beginThrough(r.handler, balancerPeer, address+", 35.191.0.10")
+	}
+	for n := range 10 {
+		if begun := begin("198.51.100.7"); begun.Code != http.StatusOK {
+			t.Fatalf("begin %d from 198.51.100.7 answered %d %s, want 200", n+1, begun.Code, begun.Body.String())
+		}
+	}
+	limited := begin("198.51.100.7")
+	wantCode(t, "the eleventh begin from 198.51.100.7 at once", limited, http.StatusTooManyRequests, "PASSKEY_RATE_LIMITED")
+	if limited.Header().Get("Retry-After") == "" {
+		t.Errorf("the 429 carries no Retry-After")
+	}
+	if other := begin("198.51.100.8"); other.Code != http.StatusOK {
+		t.Fatalf("a begin from 198.51.100.8 answered %d %s, want 200", other.Code, other.Body.String())
+	}
+}
+
+// TestTheCeremonyCookieIsTheHostsAlone: the ceremony cookie is `__Host-dispatch_passkey_ceremony`,
+// Secure, HttpOnly, SameSite=Strict, with Path=/ and no Domain, which a browser takes only from the
+// outside origin's own host, so no other host under its domain can plant a ceremony; a finish
+// carrying the same value under the plain name is 400 CEREMONY_EXPIRED. Under
+// DISPATCH_INSECURE_COOKIE, which a browser refuses a `__Host-` cookie with, it is the plain name,
+// not Secure.
+//
+// Control: name the cookie `dispatch_passkey_ceremony` with Path=/auth/passkey, and the begin sets
+// no `__Host-` cookie and the row fails.
+func TestTheCeremonyCookieIsTheHostsAlone(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
+	begun := r.beginEnrollment(r.handler, r.invite(t, outsiderEmail))
+	cookie := ceremonyCookie(begun)
+	if begun.Code != http.StatusOK || cookie == nil || !cookie.Secure || !cookie.HttpOnly || cookie.Path != "/" || cookie.Domain != "" || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("the begin answered %d and set %+v, want a Secure, HttpOnly, SameSite=Strict __Host- cookie with Path=/ and no Domain", begun.Code, begun.Result().Cookies())
+	}
+	plain := &http.Cookie{Name: "dispatch_passkey_ceremony", Value: cookie.Value}
+	wantCode(t, "a finish carrying the ceremony under the plain name", call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/register/finish", device.register(t, begun.Body.Bytes()), plain), http.StatusBadRequest, "CEREMONY_EXPIRED")
+
+	insecure, _ := r.serverWith(t, map[string]string{"DISPATCH_INSECURE_COOKIE": "1"})
+	set := call(insecure, passkeyOrigin, http.MethodPost, "/auth/passkey/login/begin", map[string]string{}).Result().Cookies()
+	if len(set) != 1 || set[0].Name != "dispatch_passkey_ceremony" || set[0].Secure || set[0].Path != "/" {
+		t.Fatalf("the begin under DISPATCH_INSECURE_COOKIE set %+v, want one plain dispatch_passkey_ceremony cookie, not Secure, with Path=/", set)
+	}
+}
+
+// balancerPeer is a connection's address in Google's external load balancer's ranges, whose
+// X-Forwarded-For a begin's bound reads.
+const balancerPeer = "35.191.0.10:443"
+
+// beginThrough is a sign-in's begin at the outside origin over a connection from peer, carrying
+// the X-Forwarded-For lines forwarded.
+func beginThrough(handler http.Handler, peer string, forwarded ...string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, passkeyOrigin+"/auth/passkey/login/begin", strings.NewReader("{}"))
+	request.RemoteAddr = peer
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", passkeyOrigin)
+	for _, line := range forwarded {
+		request.Header.Add("X-Forwarded-For", line)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+// TestABeginOffTheBalancerIsBoundedByItsConnection: a begin whose connection does not come from
+// the load balancer (a caller on the tailnet reaching the outside origin's backend) is bounded by
+// its connection's own address, whatever X-Forwarded-For it writes: eleven begins at once from one
+// connection, each naming another address, are ten served and one 429 PASSKEY_RATE_LIMITED.
+//
+// Control: bound such a begin by auth.ForwardedAddress (the rightmost entry the caller wrote), and
+// the eleventh begin answers 200 and the row fails.
+func TestABeginOffTheBalancerIsBoundedByItsConnection(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	for n := range 10 {
+		if begun := beginThrough(r.handler, "100.64.0.9:51000", fmt.Sprintf("198.51.100.%d", n)); begun.Code != http.StatusOK {
+			t.Fatalf("begin %d from one connection answered %d %s, want 200", n+1, begun.Code, begun.Body.String())
+		}
+	}
+	wantCode(t, "the eleventh begin at once from one connection, naming another address", beginThrough(r.handler, "100.64.0.9:51000", "198.51.100.200"), http.StatusTooManyRequests, "PASSKEY_RATE_LIMITED")
+}
+
+// TestAFloodOfBeginsFromManyAddressesLeavesAFreshAddressServed: 400 begins at once from 400
+// addresses through the load balancer do not refuse the person's begins, each from a fresh
+// address: the begins share no bound, only each address's own, so a stranger with many addresses
+// cannot lock the person out of signing in or enrolling.
+//
+// Control: bound every address together as well (a route-wide bucket of 50 a second, 200 at once,
+// as before), and the person's begin after the flood is 429 PASSKEY_RATE_LIMITED and the row fails.
+func TestAFloodOfBeginsFromManyAddressesLeavesAFreshAddressServed(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	for n := range 400 {
+		beginThrough(r.handler, balancerPeer, fmt.Sprintf("198.18.%d.%d, 35.191.0.10", n/250, n%250))
+	}
+	for n := range 20 {
+		if begun := beginThrough(r.handler, balancerPeer, fmt.Sprintf("203.0.113.%d, 35.191.0.10", n)); begun.Code != http.StatusOK {
+			t.Fatalf("the person's begin %d from a fresh address after the flood answered %d %s, want 200", n+1, begun.Code, begun.Body.String())
+		}
+	}
+}
+
+// TestAFullAddressMapLeavesAFreshAddressServed: 10,000 strangers' addresses, one begin each
+// through the load balancer, fill the bound's memory of addresses; the person's begin from an
+// address it does not hold is still served, so no number of strangers' addresses refuses it.
+//
+// Control: refuse a new address while the map is full (passkeyBeginLimiter.allow answering false
+// at the cap, as at aa6950fcf1), and the person's begin is 429 PASSKEY_RATE_LIMITED and the row
+// fails.
+func TestAFullAddressMapLeavesAFreshAddressServed(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	for n := range 10000 {
+		beginThrough(r.handler, balancerPeer, fmt.Sprintf("198.18.%d.%d, 35.191.0.10", n/250, n%250))
+	}
+	if begun := beginThrough(r.handler, balancerPeer, "203.0.113.77, 35.191.0.10"); begun.Code != http.StatusOK {
+		t.Fatalf("the person's begin from a fresh address with the map full answered %d %s, want 200", begun.Code, begun.Body.String())
+	}
+}
+
+// TestTheBeginsWriteNothing: a ceremony's begin, which takes no credential, writes no row: the
+// signed ceremony cookie carries what its finish needs, and the finish records the challenge as
+// used only after the answer verifies (store.PgPasskeys.SignIn and Enroll), so a flood of begins
+// costs the database nothing.
+//
+// Control: record each begin's ceremony in passkey_ceremonies, as the begins did before this row,
+// and the table holds a row per begin and the row fails.
+func TestTheBeginsWriteNothing(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	for range 3 {
+		if begun := beginThrough(r.handler, balancerPeer); begun.Code != http.StatusOK {
+			t.Fatalf("a sign-in's begin answered %d %s, want 200", begun.Code, begun.Body.String())
+		}
+	}
+	if begun := r.beginEnrollment(r.handler, r.invite(t, outsiderEmail)); begun.Code != http.StatusOK {
+		t.Fatalf("an enrollment's begin answered %d %s, want 200", begun.Code, begun.Body.String())
+	}
+	var rows int
+	if err := r.database.Pool.QueryRow(context.Background(), `select count(*) from passkey_ceremonies`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("after four begins passkey_ceremonies holds %d rows, want none", rows)
+	}
+}
+
+// TestABeginWithTwoForwardedForLinesIsRefused: Google's load balancer in front of the outside
+// origin writes X-Forwarded-For as one line, so a begin through it carrying two is no request it
+// forwarded as it writes them: it is 400 FORWARDED_FOR_INVALID, rather than bounded by the
+// balancer's own address, which every such request would share, while a begin with one line is
+// served.
+//
+// Control: bound the begin by auth.ForwardedAddress whatever its lines (auth.BoundAddress without
+// the line count), and the two-line begin answers 200 and the row fails.
+func TestABeginWithTwoForwardedForLinesIsRefused(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	wantCode(t, "a begin through the balancer with two X-Forwarded-For lines", beginThrough(r.handler, balancerPeer, "198.51.100.9", "203.0.113.7, 35.191.0.10"), http.StatusBadRequest, "FORWARDED_FOR_INVALID")
+	if begun := beginThrough(r.handler, balancerPeer, "203.0.113.7, 35.191.0.10"); begun.Code != http.StatusOK {
+		t.Fatalf("a begin with one X-Forwarded-For line answered %d %s, want 200", begun.Code, begun.Body.String())
+	}
 }

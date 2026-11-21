@@ -410,13 +410,13 @@ func TestAWriteRouteThatParsesNoIDActsOnTheResolvedItem(t *testing.T) {
 }
 
 // TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk: the project check runs behind the
-// prefix layer, so it judges the item the prefix named. While no project is private, a credential
-// scoped to one project is refused another project's ask by its prefix exactly as it is by its
-// whole id, and the refusal names both projects, as before projects could be private (R9). Once a
-// project is private the credential sees no other (refs' project clause), so another project's ask
-// is one it does not see: by its whole id the ask's loader answers it exactly as an id nobody
-// holds, and by its prefix the prefix layer finds no candidate and answers exactly what a prefix
-// nobody holds answers.
+// prefix layer, so it judges the item the prefix named. A full member's credential scoped to one
+// project is refused another project's ask by its prefix exactly as it is by its whole id, and the
+// refusal names both projects, as before projects could be private (R9), whatever the deployment
+// holds: its write scope is main's. Once a project is private, an ask of a project its person does
+// not see is one it does not see: by its whole id the scope answers it exactly as an id nobody
+// holds (its read of the ask's project binds the project clause), and by its prefix the prefix
+// layer finds no candidate and answers exactly what a prefix nobody holds answers.
 func TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk(t *testing.T) {
 	for _, private := range []bool{false, true} {
 		t.Run(map[bool]string{false: "while no project is private", true: "once a project is private"}[private], func(t *testing.T) {
@@ -426,45 +426,47 @@ func TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk(t *testing.T) {
 			rig.broker.Says(token, liveNamedToken(caller.jkt))
 			seedProject(t, rig, brokerTestProject, "Broker")
 			other := seedProject(t, rig, "OTH", "Other")
-			if private {
-				seedProject(t, rig, "HIDE", "Hidden")
-				makePrivate(t, rig.database, "HIDE")
-			}
 
 			const prefix = "b0000001"
 			id := chosenID(prefix, 1)
 			seedAsk(t, rig.database, other.issue, id, "Which way?")
 
 			body := map[string]any{"kind": "resolved", "reason": "Answered elsewhere."}
-			if !private {
-				for _, spelling := range []struct{ name, written string }{{"the whole id", id}, {"its prefix", prefix}} {
-					name, written := spelling.name, spelling.written
-					refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+written+"/resolve", token, body))
-					if refused.Code != http.StatusForbidden {
-						t.Fatalf("%s: status=%d body=%s, want 403", name, refused.Code, refused.Body.String())
-					}
-					refusal := decodeBody[refusalAnswer](t, refused)
-					if refusal.Code != codeProjectScope {
-						t.Fatalf("%s: refusal = %+v, want %s", name, refusal, codeProjectScope)
-					}
-					if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, other.key) {
-						t.Fatalf("%s: refusal %q names neither %s nor %s", name, refusal.Error, brokerTestProject, other.key)
-					}
+			for _, spelling := range []struct{ name, written string }{{"the whole id", id}, {"its prefix", prefix}} {
+				name, written := spelling.name, spelling.written
+				refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+written+"/resolve", token, body))
+				if refused.Code != http.StatusForbidden {
+					t.Fatalf("%s: status=%d body=%s, want 403", name, refused.Code, refused.Body.String())
 				}
+				refusal := decodeBody[refusalAnswer](t, refused)
+				if refusal.Code != codeProjectScope {
+					t.Fatalf("%s: refusal = %+v, want %s", name, refusal, codeProjectScope)
+				}
+				if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, other.key) {
+					t.Fatalf("%s: refusal %q names neither %s nor %s", name, refusal.Error, brokerTestProject, other.key)
+				}
+			}
+			if !private {
 				return
 			}
-			refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+id+"/resolve", token, body))
+			hiddenProject := seedProject(t, rig, "HIDE", "Hidden")
+			hideFromBrokerPerson(t, rig, hiddenProject.key)
+			const hiddenPrefix = "b0000003"
+			hiddenID := chosenID(hiddenPrefix, 1)
+			seedAsk(t, rig.database, hiddenProject.issue, hiddenID, "Which way, hidden?")
+
+			refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+hiddenID+"/resolve", token, body))
 			nobodysID := chosenID("b00000fe", 1)
 			missingID := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+nobodysID+"/resolve", token, body))
-			if refused.Code != http.StatusNotFound || strings.ReplaceAll(refused.Body.String(), id, nobodysID) != missingID.Body.String() {
+			if refused.Code != missingID.Code || strings.ReplaceAll(refused.Body.String(), hiddenID, nobodysID) != missingID.Body.String() {
 				t.Fatalf("the whole id: status=%d body=%s, want what an id nobody holds answers: status=%d body=%s",
 					refused.Code, refused.Body.String(), missingID.Code, missingID.Body.String())
 			}
 
-			hidden := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+prefix+"/resolve", token, body))
+			hidden := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+hiddenPrefix+"/resolve", token, body))
 			const nobodys = "b00000ff"
 			missing := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+nobodys+"/resolve", token, body))
-			if hidden.Code != http.StatusNotFound || strings.ReplaceAll(hidden.Body.String(), prefix, nobodys) != missing.Body.String() {
+			if hidden.Code != missing.Code || strings.ReplaceAll(hidden.Body.String(), hiddenPrefix, nobodys) != missing.Body.String() {
 				t.Fatalf("its prefix: status=%d body=%s, want what a prefix nobody holds answers: status=%d body=%s",
 					hidden.Code, hidden.Body.String(), missing.Code, missing.Body.String())
 			}

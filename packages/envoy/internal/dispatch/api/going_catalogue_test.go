@@ -75,6 +75,8 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/delivery/session-groups",
 	"POST /api/v1/going/requests",
 	"POST /api/v1/issues/{key}/artifacts/{slug}/versions",
+	// A result's dry run, which writes nothing: dispatch_result's record row is the write.
+	"POST /api/v1/issues/{key}/results/dry-run",
 	"POST /api/v1/machine-logins/{id}/revoke",
 	"POST /api/v1/markdown/round-trip",
 	"POST /api/v1/me/agent-tokens",
