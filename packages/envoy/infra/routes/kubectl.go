@@ -56,12 +56,14 @@ func OpenKubectl(target Target) (Source, error) {
 // kubectlSource reads a hub through kubectl: `get statefulset` for its replica count and `get pod`
 // for each ordinal pod, a `port-forward` per pod to its monitoring port and one to its route port,
 // each held for the check's pass over it, and `logs -c nats`. OpenKubectl makes the one value of
-// it that works: its zero value has no forwards map.
+// it that works: its zero value has no forwards map. secrets is the text of the context's
+// kubeconfig that Cluster found kubectl may print and no error may show (redact).
 type kubectlSource struct {
 	Target
 	path     string
 	mu       sync.Mutex
 	forwards map[string]*forward
+	secrets  []string
 }
 
 // forward is a running `kubectl port-forward` and the local port it listens on.
@@ -72,15 +74,33 @@ type forward struct {
 }
 
 // kubectl runs kubectl with args after the context and namespace and returns its stdout, or an
-// error carrying its stderr.
+// error carrying its stderr, redacted.
 func (k *kubectlSource) kubectl(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := k.command(ctx, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("kubectl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("kubectl %s: %w: %s", strings.Join(args, " "), err, k.redact(stderr.String()))
 	}
 	return stdout.Bytes(), nil
+}
+
+// urlUserInfo is a URL's scheme and its user information, which Go's url.Parse reads to the last
+// "@" of the authority, so the match runs to the last "@" before a "/", "?", "#" or a space.
+var urlUserInfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^/?#\s]*@`)
+
+// redact is kubectl's error output as an error shows it: with the context's proxy-url, when it
+// carries user information, replaced whole, as kubectl prints it and as quoted (Cluster), since
+// client-go prints a proxy-url it refuses whole, its user and password with it (k8s.io/client-go
+// tools/clientcmd, validation.go and helpers.go, parseProxyURL); and with any URL's user
+// information left in it replaced, as of an HTTPS_PROXY, which Go prints whole when it cannot
+// parse it. client-go prints no token or password of a kubeconfig's user, and a server with user
+// information is refused before any other call (clusterServer).
+func (k *kubectlSource) redact(stderr string) string {
+	for _, secret := range k.secrets {
+		stderr = strings.ReplaceAll(stderr, secret, "[redacted]")
+	}
+	return urlUserInfo.ReplaceAllString(strings.TrimSpace(stderr), "${1}[redacted]@")
 }
 
 // command is kubectl with args after the context and namespace, in the caller's environment with
@@ -146,6 +166,8 @@ var serviceAccountCA = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 // view --minify` fails, having no current context: with no context given, and
 // KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT set, as the kubelet sets them in every pod,
 // the cluster is in-cluster, at that address, with the digests of the pod's ServiceAccount CA.
+// Through a kubeconfig, it keeps the cluster's proxy-url when it carries user information, so
+// that no later error shows it (redact): record and check call it before any other read.
 func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
 	out, err := k.kubectl(ctx, "config", "view", "--minify", "--output", "json")
 	if err != nil {
@@ -167,7 +189,8 @@ func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
 		CurrentContext string `json:"current-context"`
 		Clusters       []struct {
 			Cluster struct {
-				Server string `json:"server"`
+				Server   string `json:"server"`
+				ProxyURL string `json:"proxy-url"`
 			} `json:"cluster"`
 		} `json:"clusters"`
 	}
@@ -176,6 +199,12 @@ func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
 	}
 	if config.CurrentContext == "" || len(config.Clusters) != 1 || config.Clusters[0].Cluster.Server == "" {
 		return Cluster{}, errors.New("kubectl's configuration names no context with one cluster and its server")
+	}
+	// `config view` redacts only the fields client-go marks a secret (datapolicy), so the proxy-url is
+	// here as the kubeconfig holds it; one with user information is kept for redact.
+	if proxy := config.Clusters[0].Cluster.ProxyURL; strings.Contains(proxy, "@") {
+		quoted := strconv.Quote(proxy)
+		k.secrets = []string{proxy, quoted[1 : len(quoted)-1]}
 	}
 	server, err := clusterServer(config.Clusters[0].Cluster.Server)
 	if err != nil {
@@ -420,7 +449,7 @@ func (k *kubectlSource) forwardTo(ctx context.Context, pod string, port int) (*f
 		k.forwards[key] = f
 		return f, nil
 	case <-f.done:
-		return nil, fmt.Errorf("kubectl port-forward pod/%s exited before it listened: %s", pod, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("kubectl port-forward pod/%s exited before it listened: %s", pod, k.redact(stderr.String()))
 	case <-timer.C:
 	case <-ctx.Done():
 	}

@@ -1226,7 +1226,12 @@ without `--dns-endpoint`: a context with no CA (GKE's DNS-based endpoint, one th
 system's roots, or one that skips verification) records none, and the Job's check, whose context
 is `in-cluster`, then exits 2.
 Every kubectl the two commands start runs with `KUBERC=off`, so
-no default of a `~/.kube/kuberc` changes a flag they rely on, such as the log's length. `routes
+no default of a `~/.kube/kuberc` changes a flag they rely on, such as the log's length. Their
+errors carry kubectl's own error output, with the context's `proxy-url` replaced by `[redacted]`
+when it carries user information, since client-go prints a `proxy-url` it refuses whole, password
+and all, and with the user information of any other URL in it replaced the same way, as of an
+`HTTPS_PROXY` Go cannot parse; an exec credential plugin's own error output passes through as
+kubectl prints it. `routes
 record` refuses until the `env` roll has finished: while any pod is not Ready with a running
 nats container, is not on the update revision of a finished roll of the StatefulSet (its
 `controller-revision-hash`, and the StatefulSet's `observedGeneration`, `updatedReplicas`, `currentRevision`

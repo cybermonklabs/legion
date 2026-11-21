@@ -69,7 +69,8 @@ func caDigests(bundle string) []string {
 // joined into one string first, since bash, unlike dash, cuts ${*#...} from each argument apart. A
 // forward writes its PID before it prints its port, since the Source goes on once it reads the port
 // and a test may then read the PID; $FAKE_KUBECTL_FORWARD_DELAY, when set, is the seconds a forward
-// waits between the two.
+// waits between the two. With get-stderr present, `get statefulset` fails, its stderr that file's
+// text; with forward-stderr present, so does `port-forward`, before it listens.
 //
 // The CA call fails as kubectl v1.36.4 does: with flatten-fails present, always, its stderr that
 // file's text; and for a context with no CA (no ca.b64) under a kuberc that sets
@@ -90,10 +91,12 @@ case "$args" in
   case "$args" in *" --allow-missing-template-keys=true "*) exit 0 ;; esac
   [ -f "$dir/kuberc-strict" ] && [ "$KUBERC" != off ] && { echo "error: error executing jsonpath: certificate-authority-data is not found. object given to jsonpath engine was: $(cat "$dir/kuberc-strict")" >&2; exit 1; }
   exit 0 ;;
-*" get statefulset envoy-nats --output json") [ -f "$dir/get-fails" ] && { echo "error: Get \"$(cat "$dir/get-fails")/apis/apps/v1/namespaces/envoy/statefulsets/envoy-nats\": dial tcp: connection refused" >&2; exit 1; }
+*" get statefulset envoy-nats --output json") [ -f "$dir/get-stderr" ] && { cat "$dir/get-stderr" >&2; exit 1; }
+  [ -f "$dir/get-fails" ] && { echo "error: Get \"$(cat "$dir/get-fails")/apis/apps/v1/namespaces/envoy/statefulsets/envoy-nats\": dial tcp: connection refused" >&2; exit 1; }
   exec cat "$dir/statefulset.json" ;;
 *" get pod "*" --output json") pod=${args#* get pod }; pod=${pod%% *}; exec cat "$dir/pod-$pod.json" ;;
-*" port-forward pod/"*) pod=${args#* port-forward pod/}; pod=${pod%% *}; remote=${args##*:}
+*" port-forward pod/"*) [ -f "$dir/forward-stderr" ] && { cat "$dir/forward-stderr" >&2; exit 1; }
+  pod=${args#* port-forward pod/}; pod=${pod%% *}; remote=${args##*:}
   port=$(cat "$dir/port-$pod-$remote") || exit 1
   echo $$ > "$dir/pid-$pod-$remote"
   [ -z "$FAKE_KUBECTL_FORWARD_DELAY" ] || sleep "$FAKE_KUBECTL_FORWARD_DELAY"
@@ -692,6 +695,100 @@ func TestKubectlRefusesAServerWithACredential(t *testing.T) {
 			calls, err = os.ReadFile(filepath.Join(dir, "calls"))
 			require.NoError(t, err)
 			require.NotContains(t, string(calls), " get ", "check reads no object of the cluster through such a server")
+		})
+	}
+}
+
+// kubectl's own error output reaches routes record's and routes check's errors, and client-go
+// prints a kubeconfig's proxy-url whole when it refuses one, user and password included
+// (k8s.io/client-go tools/clientcmd: validation.go's "invalid 'proxy-url' %q for cluster %q: %w",
+// and helpers.go's parseProxyURL, "could not parse: %v"). So the Source shows kubectl's error
+// output with the context's proxy-url, when it carries user information, replaced whole, as
+// printed and as quoted, and with the user information of any other URL in it replaced, as of an
+// HTTPS_PROXY Go prints when it cannot parse it. In each row the planted password is in no error
+// of the Source's and no output of the commands, and the rest of kubectl's message is. Control: a
+// proxy-url with no user information is shown as kubectl printed it.
+func TestKubectlKeepsAProxysPasswordOutOfItsErrors(t *testing.T) {
+	const canary = "CANARY-PROXY-PASSWORD"
+	const unsupported = `unsupported scheme "socks6", must be http, https, or socks5`
+	socks6 := canaryURL("socks6", "u", canary, "proxy.example.invalid:1080")
+	// User information with a space and a quote, which no URL parse takes, printed as it stands.
+	unparsed := "http://u:" + canary + ` "x@proxy.example.invalid`
+	envProxy := canaryURL("http", "u", canary, "proxy.example.invalid:port")
+	refused := func(proxy, why string) string {
+		return fmt.Sprintf("error: invalid configuration: invalid 'proxy-url' %q for cluster \"example\": %s\n", proxy, why)
+	}
+	for _, row := range []struct {
+		name, proxy, stderr string
+		forward             bool // the port-forward fails, after a record; else the get of the StatefulSet
+		want                string
+	}{
+		{"an unsupported scheme, as client-go refuses it", socks6, refused(socks6, unsupported), false,
+			`invalid 'proxy-url' "[redacted]" for cluster "example": ` + unsupported},
+		{"a value that does not parse, printed raw and quoted", unparsed, refused(unparsed, "could not parse: "+unparsed), false,
+			`invalid 'proxy-url' "[redacted]" for cluster "example": could not parse: [redacted]`},
+		{"a port-forward that prints it", socks6, refused(socks6, unsupported), true,
+			`invalid 'proxy-url' "[redacted]" for cluster "example": ` + unsupported},
+		{"another URL's user information, as Go prints an HTTPS_PROXY it cannot parse", "",
+			fmt.Sprintf("error: Get \"https://example-context.example.invalid/apis/apps/v1/namespaces/envoy/statefulsets/envoy-nats\": "+
+				"invalid proxy address %q: parse %q: invalid port \":port\" after host\n", envProxy, envProxy), false,
+			`invalid proxy address "http://[redacted]@proxy.example.invalid:port": parse "http://[redacted]@proxy.example.invalid:port"`},
+		{"control: a proxy-url with no user information", "socks6://proxy.example.invalid:1080",
+			refused("socks6://proxy.example.invalid:1080", unsupported), false,
+			`invalid 'proxy-url' "socks6://proxy.example.invalid:1080" for cluster "example": ` + unsupported},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			ctx := context.Background()
+			h := cleanHub()
+			src, dir := fakeKubeHub(t, h)
+			defer src.Close()
+			run := func(args ...string) (int, string) {
+				t.Helper()
+				var stdout, stderr bytes.Buffer
+				code := routes.Command(ctx, append(args, "--namespace", "envoy", "--statefulset", "envoy-nats", "--kubectl",
+					filepath.Join(dir, "kubectl")), &stdout, &stderr, routes.OpenKubectl)
+				return code, stdout.String() + stderr.String()
+			}
+			out := filepath.Join(t.TempDir(), "routes.json")
+			hook := "get-stderr"
+			if row.forward {
+				hook = "forward-stderr"
+				back := h.atEnv()
+				code, output := run("record", "--out", out)
+				back()
+				require.Equal(t, 0, code, output)
+			}
+			if row.proxy != "" {
+				config, err := json.Marshal(map[string]any{"current-context": "example-context", "clusters": []any{map[string]any{"name": "example",
+					"cluster": map[string]any{"server": "https://example-context.example.invalid", "proxy-url": row.proxy}}}})
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), config, 0o600))
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, hook), []byte(row.stderr), 0o600))
+
+			_, err := src.Cluster(ctx)
+			require.NoError(t, err)
+			if row.forward {
+				_, err = src.Monitor(ctx, "envoy-nats-0", "/varz")
+			} else {
+				_, err = src.Pods(ctx)
+			}
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), canary)
+			require.Contains(t, err.Error(), row.want)
+
+			var code int
+			var output string
+			if row.forward {
+				code, output = run("check", "--record", out)
+			} else {
+				back := h.atEnv()
+				code, output = run("record", "--out", out)
+				back()
+			}
+			require.Equal(t, 2, code, output)
+			require.NotContains(t, output, canary)
+			require.Contains(t, output, row.want)
 		})
 	}
 }
