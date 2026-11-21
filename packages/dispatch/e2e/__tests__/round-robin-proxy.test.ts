@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -130,60 +130,19 @@ function startUpstream(name: DispatchProcess) {
   return upstream;
 }
 
-/** A port nothing listens on at the moment it is asked for. */
-function freePort(): number {
-  const probe = Bun.serve({ fetch: () => new Response(), hostname: "127.0.0.1", port: 0 });
-  const port = Number(probe.url.port);
-  probe.stop(true);
-  return port;
-}
-
 const a = startUpstream("a");
 const b = startUpstream("b");
-const proxyPort = freePort();
-const origin = `http://127.0.0.1:${proxyPort}`;
-let proxy: Subprocess<"ignore", "pipe", "inherit">;
+/** The proxy of the row that runs, its port, and its origin, which `beforeEach` of the
+ *  "round-robin proxy" block below sets. */
+let proxy: Subprocess<"ignore", "pipe", "inherit"> | undefined;
+let proxyPort = 0;
+let origin = "";
 /** A home for every child this file starts, so none of them reads the caller's. */
 const childHome = temporaryDirectory("round-robin-proxy-home");
 
-beforeAll(async () => {
-  proxy = Bun.spawn(["bun", proxyScript], {
-    env: {
-      PATH: process.env.PATH ?? "",
-      HOME: childHome,
-      TMPDIR: tmpdir(),
-      DISPATCH_E2E_PORT: String(proxyPort),
-      DISPATCH_E2E_PORT_A: String(a.server.port),
-      DISPATCH_E2E_PORT_B: String(b.server.port),
-      DISPATCH_E2E_PROCESSES: "2",
-    },
-    stderr: "inherit",
-    stdout: "pipe",
-  });
-  // The proxy logs one line once it listens.
-  const reader = proxy.stdout.getReader();
-  let logged = "";
-  while (!logged.includes("round-robin proxy on")) {
-    const { done, value } = await reader.read();
-    if (done) throw new Error(`the proxy exited before it listened: ${logged}`);
-    logged += new TextDecoder().decode(value);
-  }
-  reader.releaseLock();
-});
-
-afterAll(async () => {
-  proxy.kill();
-  await proxy.exited;
+afterAll(() => {
   a.server.stop(true);
   b.server.stop(true);
-});
-
-beforeEach(async () => {
-  expect((await Bun.fetch(`${origin}/_proxy/reset`, { method: "POST" })).status).toBe(204);
-  a.seen.length = 0;
-  b.seen.length = 0;
-  a.hookStatus = 200;
-  b.hookStatus = 200;
 });
 
 const get = (path: string, headers: Record<string, string> = {}) =>
@@ -213,6 +172,59 @@ function openSocket(headers: Record<string, string>) {
 }
 
 describe("round-robin proxy", () => {
+  // Each row has a proxy of its own, which these hooks start before it and stop after it. Once a
+  // row passes its timeout, Bun's test runner kills every process that a row or hook of the file
+  // started and that is still running (it prints `killed N dangling processes`), whichever row
+  // started it. A proxy the rows shared died with the first row that timed out, and each row after
+  // it failed on a refused connection. A and B are servers in this process, which the runner does
+  // not kill, so the rows share them. A new proxy starts with empty logs and both alternations at
+  // A.
+  beforeEach(async () => {
+    a.seen.length = 0;
+    b.seen.length = 0;
+    a.hookStatus = 200;
+    b.hookStatus = 200;
+    // With DISPATCH_E2E_PORT unset the proxy binds a port the OS chooses, and names it in the
+    // line it logs once it listens.
+    const started = Bun.spawn(["bun", proxyScript], {
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: childHome,
+        TMPDIR: tmpdir(),
+        DISPATCH_E2E_PORT_A: String(a.server.port),
+        DISPATCH_E2E_PORT_B: String(b.server.port),
+        DISPATCH_E2E_PROCESSES: "2",
+      },
+      stderr: "inherit",
+      stdout: "pipe",
+    });
+    proxy = started;
+    const listens = /round-robin proxy on http:\/\/127\.0\.0\.1:(\d+) /;
+    const decoder = new TextDecoder();
+    const reader = started.stdout.getReader();
+    let logged = "";
+    let listening: RegExpExecArray | null = null;
+    while (listening === null) {
+      const { done, value } = await reader.read();
+      if (done) throw new Error(`the proxy exited before it listened: ${logged}`);
+      logged += decoder.decode(value);
+      listening = listens.exec(logged);
+    }
+    reader.releaseLock();
+    proxyPort = Number(listening[1]);
+    origin = `http://127.0.0.1:${proxyPort}`;
+  });
+
+  // A proxy the runner killed already, as one whose row timed out, has exited, and its stop
+  // returns at once.
+  afterEach(async () => {
+    const stopping = proxy;
+    proxy = undefined;
+    if (stopping === undefined) return;
+    stopping.kill();
+    await stopping.exited;
+  });
+
   test("alternates requests between A and B, forwarding Host and Origin unchanged", async () => {
     const answers = [];
     for (let index = 0; index < 4; index++) {

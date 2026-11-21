@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { fileURLToPath } from "node:url";
 import type { Server, Subprocess } from "bun";
@@ -22,6 +22,13 @@ import { plainHttpHost } from "../plain-http-origin";
 // `PLAYWRIGHT_BASE_URL` naming the stand-in as the server under test. The stand-in answers with
 // the global `Response`, which is Bun's own here: this half loads no preload and registers no DOM,
 // so nothing replaces it.
+//
+// Each row has a proxy of its own, which the hooks start before it and stop after it. Once a row
+// passes its timeout, Bun's test runner kills every process that a row or hook of the file
+// started and that is still running (it prints `killed N dangling processes`), whichever row
+// started it. A proxy the rows shared died with the first row that timed out, and each row after
+// it failed on a refused connection. The stand-in upstream is a server in this process, which the
+// runner does not kill, so the rows share it.
 const proxyModule = fileURLToPath(new URL("../plain-http-proxy.ts", import.meta.url));
 
 /** One request the stand-in upstream saw. */
@@ -32,10 +39,10 @@ interface Seen {
 
 const seen: Seen[] = [];
 let upstream: Server<undefined>;
-let proxy: Subprocess<"ignore", "pipe", "inherit">;
+let proxy: Subprocess<"ignore", "pipe", "inherit"> | undefined;
 let proxyPort = 0;
 
-beforeAll(async () => {
+beforeAll(() => {
   upstream = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -53,17 +60,25 @@ beforeAll(async () => {
       });
     },
   });
-  proxy = Bun.spawn(["bun", proxyModule], {
+});
+
+afterAll(() => {
+  upstream.stop(true);
+});
+
+beforeEach(async () => {
+  const started = Bun.spawn(["bun", proxyModule], {
     env: { ...withoutHarnessPort("plainHttp"), PLAYWRIGHT_BASE_URL: upstream.url.origin },
     stderr: "inherit",
     stdout: "pipe",
   });
+  proxy = started;
   // The proxy logs one line once it listens, naming the origin it bound. The pattern opens with
   // literal text, so it matches nothing until the first chunk arrives; one decoder serves every
   // chunk, holding nothing between calls.
   const listens = /plain-HTTP proxy on http:\/\/[^/:]+:(\d+) /;
   const decoder = new TextDecoder();
-  const reader = proxy.stdout.getReader();
+  const reader = started.stdout.getReader();
   let logged = "";
   let listening: RegExpExecArray | null = null;
   while (listening === null) {
@@ -76,10 +91,14 @@ beforeAll(async () => {
   proxyPort = Number(listening[1]);
 });
 
-afterAll(async () => {
-  proxy.kill();
-  await proxy.exited;
-  upstream.stop(true);
+// A proxy the runner killed already, as one whose row timed out, has exited, and its stop
+// returns at once.
+afterEach(async () => {
+  const stopping = proxy;
+  proxy = undefined;
+  if (stopping === undefined) return;
+  stopping.kill();
+  await stopping.exited;
 });
 
 interface PlainResponse {
