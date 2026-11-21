@@ -1,8 +1,10 @@
 // Package testdb is the half of internal/testpg that needs no container runtime: DatabaseOn makes
-// an empty Postgres database of a test's own on a server the test already holds. It imports no
-// testcontainers package, so a test helper every Postgres-backed test links (the broker's
-// storetest among them) does not pay testcontainers' package init, which walks every process on
-// the machine before any test runs. internal/testpg keeps the container path and calls this.
+// an empty Postgres database of a test's own on a server the test already holds, and
+// ProcessDatabaseOn one of the test binary's own, which Main drops after the binary's tests. It
+// imports no testcontainers package, so a test helper every Postgres-backed test links (the
+// broker's storetest among them) does not pay testcontainers' package init, which walks every
+// process on the machine before any test runs. internal/testpg keeps the container path and calls
+// this.
 package testdb
 
 import (
