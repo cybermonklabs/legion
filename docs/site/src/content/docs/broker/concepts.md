@@ -651,9 +651,11 @@ names that project** and whose person may still see it:
 - A **session** names its projects when it enrols. The helper sends the list
   `AGENT_SECRETS_PROJECTS` holds (project keys separated by spaces, `PRIV CORE`), or
   `agent-secrets register --projects`, and the broker takes it only when Dispatch says the session's
-  person may see every project on it. A restricted member's session must name at least one; a
-  session naming none enrols as before. The list is fixed for the session's life: start a new
-  session to name another, and `agent-secrets self` prints it as a `projects:` line.
+  person may see every project on it. A restricted member's machine login and pod enrol nothing,
+  whatever they name (`403 RESTRICTED_MEMBER_ENROLLS_NOTHING`); only a session under their
+  sign-in must name at least one. A session naming none enrols as before. The list is fixed for
+  the session's life: start a new session to name another, and `agent-secrets self` prints it as a
+  `projects:` line.
 - A **pod** names no list of its own: its project is the one its operator's entry in
   `BROKER_EXCHANGE_ACCOUNTS` maps its service account to, for that entry's person. A machine's own
   session likewise names the one `BROKER_VM_EXCHANGE_ACCOUNTS` maps its fleet's Google account to.

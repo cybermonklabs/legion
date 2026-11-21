@@ -389,8 +389,9 @@ type Config struct {
 	// Dispatch calls a restricted member is refused (enroll.Service.Projects), a session such a
 	// person already had is denied every secret (requests.Machine.Projects), and while Dispatch
 	// cannot say what kind of member a person is, every enrollment under that person's login and
-	// every secret request, approval and release of their sessions is refused 503
-	// MEMBER_KIND_UNCHECKABLE. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with
+	// every secret request and release of their sessions is refused 503 MEMBER_KIND_UNCHECKABLE,
+	// and an approval of one decides nothing (the approval page says it could not decide the
+	// request). Set with BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with
 	// neither, the broker asks Dispatch nothing. It then refuses every secret carrying a
 	// dispatch-project tag (project-unchecked) and serves every other secret as before; a token
 	// that names no project, and an operator entry's token, whose project that operator's own

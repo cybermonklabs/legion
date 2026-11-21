@@ -129,11 +129,12 @@ var (
 	// ErrProjectNotVisible refuses a session naming a project its person may not see, or one
 	// Dispatch does not hold: the two read alike, so a refusal never says whether a project exists.
 	ErrProjectNotVisible = errors.New("the session names a project its person cannot see")
-	// ErrProjectsRequired refuses a session of a restricted member that names no project, a
-	// person's pod among them: such a person sees only the projects that name them, so their
-	// session names which (projectaccess.ErrListRequired). `agent-secrets register`,
-	// `enroll --helper` and `enroll --pod` each read AGENT_SECRETS_PROJECTS, so the one setting
-	// the refusal names is the one each of them reads.
+	// ErrProjectsRequired refuses a session under the sign-in of a person Dispatch calls a
+	// restricted member that names no project: such a person sees only the projects that name
+	// them, so their session names which (projectaccess.ErrListRequired). A restricted member's
+	// machine login and pod login never reach it: they enroll nothing at all
+	// (ErrRestrictedMember). `agent-secrets register` and `enroll --helper` each read
+	// AGENT_SECRETS_PROJECTS, so the one setting the refusal names is the one each of them reads.
 	ErrProjectsRequired = errors.New("a restricted member's session names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on")
 )
 
@@ -718,8 +719,10 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 // An enrollment that acts for a person — under a person's machine login or pod login — is made
 // only once Dispatch has said that person is no restricted member (checkMember): a restricted
 // member's login enrolls nothing (ErrRestrictedMember), and while Dispatch cannot be asked
-// nothing is enrolled (projectaccess.MemberKindUncheckable). A person's sign-in on a machine asks
-// nothing.
+// nothing is enrolled (projectaccess.MemberKindUncheckable). A person's sign-in on a machine is
+// not held to that check; its session is held to the list rule alone (checkProjects), which asks
+// Dispatch the person's member kind for an empty list and whether they may see each project
+// named.
 //
 // An enrollment that names a session also records the principal its grants follow
 // (carryPrincipal), and takes what every predecessor of that name under that principal, or under
@@ -844,9 +847,9 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 //
 // It asks nothing for an enrollment that acts for no person (a service's pod, a machine's own
 // session), for a person's sign-in on a machine, whose person the broker verified against
-// BROKER_SIGNIN_DOMAIN itself when the token exchange minted the credential and so is a full
-// member's (the exchange asks no member kind of a sign-in either), and on a broker with no client
-// of Dispatch (Projects nil).
+// BROKER_SIGNIN_DOMAIN itself when the token exchange minted the credential (such a session is
+// held to checkProjects' list rule alone), and on a broker with no client of Dispatch (Projects
+// nil).
 func (s *Service) checkMember(ctx context.Context, cred Credential, in Enrollment) error {
 	if s.Projects == nil || in.Operator == nil || signInCredential(cred.Subject) {
 		return nil
