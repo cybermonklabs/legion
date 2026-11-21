@@ -246,10 +246,12 @@ func decodeText(err error, data []byte, t reflect.Type) string {
 	switch {
 	case errors.As(err, &syntax):
 		return fmt.Sprintf("the answer is not JSON that %s decodes from (at byte %d)", typeName(t), syntax.Offset)
-	case errors.As(err, &typed):
+	case errors.As(err, &typed) && (typed.Field != "" || failingMember(data, t) == ""):
 		kind, _, _ := strings.Cut(typed.Value, " ")
 		return fmt.Sprintf("the answer's %s is a JSON %s where %s holds %s", member(typed.Field), kind, typeName(t), typeName(typed.Type))
 	}
+	// A type error that names no field, from a member's own UnmarshalJSON - a RemoteText's, for a
+	// member that holds no JSON string - to which encoding/json adds none, names its member here.
 	if name := failingMember(data, t); name != "" {
 		return fmt.Sprintf("the answer's %q does not decode where %s holds %s", name, typeName(t), typeName(fieldType(t, name)))
 	}

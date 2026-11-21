@@ -4284,6 +4284,13 @@
       "production": "(*github.com/sjawhar/envoy/cmd/cipher.client).doStatus struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}: every printer at every placement"
     },
     {
+      "id": "redact-answer-decode-box-member",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersDecodeErrorQuotesNoValue/box",
+      "production": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode's decodeText: a box member's own type error, which names no field, names its member through failingMember"
+    },
+    {
       "id": "print-devrelay.apiError",
       "requirement": "r2-held",
       "package": "./cmd/cipher-devrelay",
