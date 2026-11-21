@@ -25,7 +25,9 @@ to `implementing` or `testing`. When the merger reports:
 
 ## The close
 
-The merge closes the issue (`done`). The production check after the close is not yours.
+The merge closes the issue (`done`). One whose merge lands while an issue beneath it is still in
+the workflow stays in `merging` until the last of them is done or out of the workflow; one
+`pr-merged` notice names what it waits for. The production check after the close is not yours.
 
 - A child's close reaches you as `child-closed`. Where the project's `production_check` names the
   role that works the check (the tester, unless the setting is `off`), the daemon retires five of

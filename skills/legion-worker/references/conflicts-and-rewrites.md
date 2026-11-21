@@ -16,7 +16,7 @@ A tree is a root issue and the issues beneath it. When another tree's open pull 
    jj -R "$LEGION_WORKSPACE" rebase -r @ -o <merge>
    ```
 
-   `jj new --no-edit` prints the merge's change id, `<merge>`; the rebase puts `@`, with whatever it holds, on top of the merge, so none of it leaves the disk or enters the merge.
+   `jj new --no-edit` prints `<merge>`, its id. After the rebase, an `@` line the base also changed leaves its file on disk in conflict markers, its text still in `@`: tell the phase's role.
 
    Write `<message>` in the repository's own commit convention, read from the repository itself: its commit-message check (a commitlint configuration or the workflow that lints commits) where it has one, else its recent commits on the base. Where it uses Conventional Commits, that is a listed type and the merge in words, such as `chore(<scope>): merge <base> into <branch>`; where neither shows a convention, the merge in words alone, such as `Merge <base> into <branch>`. Never a fixed prefix of this skill's own: a check that lints every commit of the pull request refuses a type its list does not hold, and `merge` is in no Conventional Commits list.
 2. Resolve any conflict in `@`. Then list what `@` holds beyond the merge: `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only`. Your resolutions are expected there; any other path is another role's write, or an edit of yours outside `implementing`. Move your resolutions into the merge:
