@@ -925,29 +925,29 @@ At `DISPATCH_SERVER_URL` it is `Secure` unless `DISPATCH_INSECURE_COOKIE` is set
 `DISPATCH_INSECURE_COOKIE=1` omits the `Secure` attribute for local plain-HTTP testing.
 Do not use it on an HTTPS deployment.
 
-The cookie's name depends on the origin, so that every release keeps the build before it working (Running more than one process, below):
+At `DISPATCH_SERVER_URL`, where the cookie is Secure, a sign-in issues it as `__Host-dsession`, which a browser takes only from that host itself over HTTPS, and clears `dsession`; under `DISPATCH_INSECURE_COOKIE`, since a browser refuses a `__Host-` cookie that is not `Secure`, it issues `dsession` and clears `__Host-dsession` (the passkey ceremony cookie is then `dispatch_passkey_ceremony`).
+What each origin issues and reads depends on what earlier releases issued there, so that every release keeps the build before it working (Running more than one process, below):
 
 - At `DISPATCH_OUTSIDE_ORIGIN` the session cookie has one name, which a sign-in there issues and a request there is read by alone.
   It follows the outside origin's scheme, whatever `DISPATCH_INSECURE_COOKIE` says: at an `https` outside origin it is `__Host-dsession`, `Secure`, which a browser takes only from that host itself over HTTPS, so no other host under its domain and no answer over plain HTTP can set a session there; at an `http` one (a test harness's) it is `dsession`, not `Secure`, since a browser takes no `Secure` cookie, a `__Host-` one included, over plain HTTP.
   Where it is `__Host-dsession`, a `dsession` there is no session, and an unsafe request carrying one is no request with a session cookie.
   A request is the outside origin's for this whenever its `Host` names the outside origin's host, at any port: a browser sends one host's cookies to every port of it.
-  The one name holds because no browser holds a session for the outside origin that the build before this one issued: the first release that serves `DISPATCH_OUTSIDE_ORIGIN` must be this one or a later one.
-  A build that served it earlier issued `dsession` there; a deployment that ran it would sign each person from outside out once when this release rolls out, and a roll between the two builds would answer them `401 NO_IDENTITY`.
+  The one name holds because no browser holds a session for the outside origin that an earlier name was issued under: the first release that serves `DISPATCH_OUTSIDE_ORIGIN` must be the release before this one, which reads it so, or a later one.
+  A build that served it earlier issued `dsession` there; a deployment that ran it would sign each person from outside out once when the release before this one rolls out, and a roll between the two builds would answer them `401 NO_IDENTITY`.
 
 - At `DISPATCH_SERVER_URL` the session cookie moves from `dsession` to `__Host-dsession` in three releases:
 
-  1. This release still issues `dsession` there under every setting, so the release before it reads every session it issues, during a rolling update and after a rollback.
+  1. The release before this one still issues `dsession` there under every setting, as every build before it does.
      It reads both names (`auth.SessionFromRequest`, and `auth.HasSessionCookie` for the origin check): the first one a request carries with a non-empty value, `__Host-dsession` before `dsession`, so a `__Host-dsession` beside a `dsession` is read alone, whether or not it verifies.
-     Each sign-in clears `__Host-dsession`, which the next release may have set, so the browser keeps only the session it is given.
+     Each of its sign-ins clears `__Host-dsession`, so a browser keeps only the session it is given.
 
-  2. The next release issues `__Host-dsession` there where the cookie is Secure, and clears `dsession` at each sign-in.
-     It rolls out only once every process runs this release, and a rollback from it goes back no further than this release: a rollback across both releases signs out everyone who signed in on the next one.
+  2. This release issues `__Host-dsession` there where the cookie is Secure, clears `dsession` at each sign-in, and reads as the release before it does, which in turn reads every session this one issues.
+     It rolls out only once every process runs the release before it, and a rollback from it goes back no further than that release: a rollback across both releases, to a build that reads `dsession` alone, signs out everyone who signed in on this one.
 
-  3. A release at least 30 days after the next one (a session's lifetime) stops reading `dsession` there where the cookie is Secure.
+  3. A release at least 30 days after this one (a session's lifetime) stops reading `dsession` there where the cookie is Secure.
      Under `DISPATCH_INSECURE_COOKIE` the cookie stays `dsession`.
 
-  So the `__Host-` prefix guards no session at `DISPATCH_SERVER_URL` before the next release.
-  From it, a browser that has signed in holds `__Host-dsession`, and a `dsession` another host sets beside it signs in nobody else; until the third release, a browser that holds no `__Host-dsession` (one that has not signed in since, or has signed out) can still be given a session as `dsession` by another host under the domain or by an answer over plain HTTP.
+  So, at `DISPATCH_SERVER_URL`, a browser that has signed in on this release holds `__Host-dsession`, and a `dsession` another host sets beside it signs in nobody else; until the third release, a browser that holds no `__Host-dsession` (one that has not signed in since this release, or has signed out) can still be given a session as `dsession` by another host under the domain or by an answer over plain HTTP.
 
 `POST /auth/logout` clears the cookie under both names at either origin (`auth.ClearSessionCookies`), each clear `Secure` where that origin issues the cookie `Secure`, and the `__Host-` one always.
 Nothing else writes the cookie: no request re-issues or extends a session.

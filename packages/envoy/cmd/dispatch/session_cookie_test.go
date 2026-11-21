@@ -28,13 +28,12 @@ const (
 )
 
 // issuedSessionCookie is the name a sign-in issues the session cookie under, at the outside origin
-// when outside is true and at the canonical origin otherwise. At the outside origin, which no
-// released build has served, it follows that origin's scheme: `__Host-dsession` at the walk's https
-// outside origin (passkeyOrigin), whatever DISPATCH_INSECURE_COOKIE says. At the canonical origin it
-// is `dsession` under every setting, as every earlier build issues it, so the build before this one
-// reads it in a roll and after a rollback.
-func issuedSessionCookie(outside bool) string {
-	if outside {
+// when outside is true and at the canonical origin otherwise: `__Host-dsession` where the session
+// is Secure (issuedSecure), and `dsession` where it is not, since a browser refuses a `__Host-`
+// cookie that is not Secure. The release before this one reads both names at the canonical origin,
+// so it reads every session this one issues there.
+func issuedSessionCookie(outside, insecure bool) string {
+	if issuedSecure(outside, insecure) {
 		return hostSessionCookie
 	}
 	return plainSessionCookie
@@ -182,11 +181,11 @@ func (w *cookieWalk) ceremonyCookie(response *httptest.ResponseRecorder) *http.C
 // writes it, at every origin that serves it, under each setting, from a browser holding another
 // person's session under the name the route does not issue there:
 //   - a sign-in sets one session, under the name its origin issues (issuedSessionCookie):
-//     `dsession` at the canonical origin (Google's callback, the dev sign-in), Secure as the
-//     setting says; `__Host-dsession`, Secure, at the https outside origin (a passkey enrollment or
-//     sign-in), whatever the setting says. It clears the other name, and the browser, keeping what
-//     those lines leave, is signed in as the person who signed in, not as the one whose cookie it
-//     held;
+//     `__Host-dsession`, Secure, where the session is Secure, and `dsession` where it is not; at
+//     the canonical origin (Google's callback, the dev sign-in) as the setting says, at the https
+//     outside origin (a passkey enrollment or sign-in) Secure whatever the setting says. It clears
+//     the other name, and the browser, keeping what those lines leave, is signed in as the person
+//     who signed in, not as the one whose cookie it held;
 //   - the sign-out clears both names, at either origin.
 //
 // Google's sign-in is the canonical origin's alone, and the outside origin's host at another port
@@ -206,13 +205,13 @@ func (w *cookieWalk) ceremonyCookie(response *httptest.ResponseRecorder) *http.C
 // origins serve a handler is the walk's rows to say: a handler a later change serves at another
 // origin needs a row there too.
 //
-// Controls: issue `__Host-dsession` without Secure, and every outside sign-in row fails; issue
-// `__Host-dsession` at the canonical origin, and its Secure sign-in rows fail; issue `dsession` at
-// the outside origin, and its sign-in rows fail; let the outside origin's sign-ins skip the outside
-// mark, and their rows fail; leave out the clear of the other name, and every sign-in row fails;
-// clear one name alone at the sign-out, and its rows fail; refuse Google's sign-in at the outside
-// origin by host and port (atOutside), and the row of the outside host's other port fails, its
-// callback signing the person in with `__Host-dsession`.
+// Controls: issue `__Host-dsession` without Secure, and every Secure sign-in row fails; issue
+// `dsession` where the cookie is Secure, and every Secure sign-in row fails; let the outside
+// origin's sign-ins skip the outside mark, and their rows under the setting fail; leave out the
+// clear of the other name, and every sign-in row fails; clear one name alone at the sign-out, and
+// its rows fail; refuse Google's sign-in at the outside origin by host and port (atOutside), and
+// the row of the outside host's other port fails, its callback signing the person in with
+// `__Host-dsession`.
 func TestEverySessionCookieTheServerWritesIsHostOnlyAtTheRoot(t *testing.T) {
 	root := filepath.Join("..", "..")
 	var want []string
@@ -277,7 +276,7 @@ func TestEverySessionCookieTheServerWritesIsHostOnlyAtTheRoot(t *testing.T) {
 					at = "outside origin"
 				}
 				t.Run(writer.route+" at the "+at, func(t *testing.T) {
-					issued := issuedSessionCookie(writer.outside)
+					issued := issuedSessionCookie(writer.outside, insecure)
 					other := otherSessionCookie(issued)
 					prior := &http.Cookie{Name: other, Value: w.rig.alice.Value}
 					response := writer.write(t, w, prior)

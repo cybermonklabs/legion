@@ -12,9 +12,9 @@ import (
 )
 
 // canonicalSessionCookie is the name a sign-in at the canonical origin issues the session cookie
-// under, Secure or not: `dsession`, as every earlier build issues it, so the build before this one
-// reads it in a roll and after a rollback (auth.SetSessionCookie).
-const canonicalSessionCookie = "dsession"
+// under where it is Secure: `__Host-dsession`, as at the outside origin (auth.SetSessionCookie).
+// Under DISPATCH_INSECURE_COOKIE it is `dsession`.
+const canonicalSessionCookie = "__Host-dsession"
 
 // The router of twoPeopleRouter answers at these two origins.
 const (

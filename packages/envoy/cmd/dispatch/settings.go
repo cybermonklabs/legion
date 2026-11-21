@@ -143,7 +143,7 @@ var settings = []setting{
 	{Name: "DISPATCH_SIGNING_KEY", Default: "a key kept in `~/.local/share/dispatch/signing-key`, created on first start", Required: "no",
 		Description: "One or more HMAC keys separated by whitespace, which sign session cookies and seal the refresh tokens Dispatch stores: the first signs and seals, and every one verifies a cookie and opens a seal. Every server process takes the same keys, and one whose keys a live server process does not share refuses to start. Dropping the key a cookie or seal was made under signs its person out; to rotate, add the new key second, then move it first, then remove the old key no sooner than 30 days later."},
 	{Name: "DISPATCH_INSECURE_COOKIE", Required: "no",
-		Description: "Any value drops the `Secure` attribute from Dispatch's cookies, for browsers that reach it over plain http, and with it the passkey ceremony cookie's `__Host-` prefix, which a browser takes only Secure; the session cookie at `DISPATCH_OUTSIDE_ORIGIN` follows that origin's scheme instead."},
+		Description: "Any value drops the `Secure` attribute from Dispatch's cookies, for browsers that reach it over plain http, and with it the `__Host-` prefix of the session cookie at `DISPATCH_SERVER_URL` and of the passkey ceremony cookie, which a browser takes only Secure; the session cookie at `DISPATCH_OUTSIDE_ORIGIN` follows that origin's scheme instead."},
 	{Name: "DISPATCH_OIDC_ISSUER", Required: "when `DISPATCH_OIDC_AUDIENCE` is set",
 		Description: "OIDC issuer whose projected service-account tokens authenticate as agents."},
 	{Name: "DISPATCH_OIDC_AUDIENCE", Required: "when `DISPATCH_OIDC_ISSUER` is set",

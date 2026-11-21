@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    Where the session cookie is Secure, a sign-in at `DISPATCH_SERVER_URL` now issues it as `__Host-dsession`, as at `DISPATCH_OUTSIDE_ORIGIN`, and clears `dsession`. A browser takes a `__Host-` cookie only from Dispatch's own host over https, so a browser that has signed in since this release holds a session that another host under the domain, or an answer over plain http, cannot replace: a `dsession` set beside it signs in nobody else. Under `DISPATCH_INSECURE_COOKIE` nothing changes.
+
+    Roll this release out only once every Dispatch process runs the release before it, which reads `__Host-dsession`; a rollback from this release goes back no further than that one, since an earlier build reads `dsession` alone and signs out everyone who signed in on this release. `DISPATCH_SERVER_URL` still reads `dsession`, so a session issued before this release stays good until it lapses; a release at least 30 days after this one stops reading it there.
+time: 2026-11-21T16:14:25.312981476Z
+custom:
+    Issue: pr4864

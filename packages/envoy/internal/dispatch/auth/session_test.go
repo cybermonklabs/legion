@@ -43,8 +43,8 @@ var testKeys = SingleSigningKey("signing-key")
 
 func TestIssueAndVerifySessionCookie(t *testing.T) {
 	setCookie := IssueSessionCookie("sami@example.com", 7, testKeys, true)
-	if !strings.HasPrefix(setCookie, "dsession=") {
-		t.Errorf("set-cookie %q, want the canonical origin's dsession=", setCookie)
+	if !strings.HasPrefix(setCookie, "__Host-dsession=") {
+		t.Errorf("set-cookie %q, want the Secure session's __Host-dsession=", setCookie)
 	}
 	for _, frag := range []string{"HttpOnly", "Path=/", "SameSite=Strict", "Max-Age=2592000", "Secure"} {
 		if !strings.Contains(setCookie, frag) {
@@ -112,18 +112,16 @@ func TestVerifySessionRejectsExpiredCookie(t *testing.T) {
 
 // A sign-in sets one session cookie and clears the other name, each line HttpOnly,
 // SameSite=Strict, host-only (no Domain) at Path=/, and every `__Host-` line Secure (a browser
-// takes none without it, a clear included). At the canonical origin the session is `dsession`,
-// Secure as the setting says, as every earlier build issues it, so the build before this one reads
-// it in a roll and after a rollback; the sign-in clears `__Host-dsession`, which a later build may
-// have set, so the browser keeps only the session it is given. At the outside origin the cookie
-// follows that origin's scheme, whatever DISPATCH_INSECURE_COOKIE says: `__Host-dsession`, Secure,
-// at an https outside origin, and `dsession`, not Secure, at an http one (a browser refuses a
-// `__Host-` cookie that is not Secure).
+// takes none without it, a clear included). The session is `__Host-dsession`, Secure, where the
+// cookie is Secure, and `dsession`, not Secure, where it is not (a browser refuses a `__Host-`
+// cookie that is not Secure): at the canonical origin as DISPATCH_INSECURE_COOKIE says, at the
+// outside origin as its scheme says, whatever the setting says. The release before this one reads
+// both names at the canonical origin and clears `__Host-dsession` there at its own sign-ins, so a
+// roll between the two, or a rollback to it, signs nobody out.
 //
-// Controls: issue `__Host-dsession` at the canonical origin, and its Secure row fails; issue
-// `dsession` at the outside origin, and its https rows fail; name the outside cookie by the
-// setting rather than the scheme, and the rows where the two differ fail; issue `__Host-dsession`
-// without Secure, and the https rows fail.
+// Controls: issue `dsession` at the canonical origin where Secure, and its Secure row fails; name
+// the outside cookie by the setting rather than the scheme, and the rows where the two differ
+// fail; issue `__Host-dsession` without Secure, and the Secure and https rows fail.
 func TestASignInSetsTheSessionForItsOriginAndSettingAndClearsTheOtherName(t *testing.T) {
 	for _, tc := range []struct {
 		row string
@@ -135,7 +133,7 @@ func TestASignInSetsTheSessionForItsOriginAndSettingAndClearsTheOtherName(t *tes
 		setting, secure bool
 		issued, cleared string
 	}{
-		{row: "canonical, Secure", setting: true, secure: true, issued: "dsession", cleared: "__Host-dsession"},
+		{row: "canonical, Secure", setting: true, secure: true, issued: "__Host-dsession", cleared: "dsession"},
 		{row: "canonical, DISPATCH_INSECURE_COOKIE", setting: false, secure: false, issued: "dsession", cleared: "__Host-dsession"},
 		{row: "https outside origin, Secure", outside: true, https: true, setting: true, secure: true, issued: "__Host-dsession", cleared: "dsession"},
 		{row: "https outside origin, DISPATCH_INSECURE_COOKIE", outside: true, https: true, setting: false, secure: true, issued: "__Host-dsession", cleared: "dsession"},
