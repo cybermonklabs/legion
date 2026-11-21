@@ -1392,6 +1392,7 @@ dispatch_ui:
   - *bun_install
   - 'packages/dispatch/**'
   - 'packages/proof-editor/**'
+  - '.github/workflows/dispatch-unit-repeat.yaml'
   - 'packages/test-fixtures/src/**'
   # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
   # tsc programs compile. An edit by hand is refused by that check, which writes these.
