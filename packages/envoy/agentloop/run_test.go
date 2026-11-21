@@ -677,17 +677,39 @@ func TestAServerErrorIsRetriedOnceAndARequestErrorIsNot(t *testing.T) {
 // A call whose connection drops before any answer is a transport error, retried once a second
 // later, and the retry's reply is the answer: the endpoint hears the call twice, and that is one
 // model call. The stand-in's one reply answers the retry, since an answer that never went out
-// uses no reply up.
+// uses no reply up. That holds when the handler that dropped the call has not run again by the
+// time the retry comes, as a handler the scheduler set aside after the close would not have: the
+// stand-in puts the reply back before the close, so the retry depends on nothing that handler
+// does later.
 func TestACallThatLosesItsConnectionIsRetriedOnce(t *testing.T) {
 	t.Parallel()
-	answered := anthropicStream("end_turn", anthropicUsage{Input: 1, Output: 1}, anthropicText("The note says plum."))
-	s := newStandIn(t, answered).dropping(1)
-	result, err := Run(context.Background(), newFixture(t, s, AnthropicMessages, 1).req)
-	if err != nil || result.Fault != "" || result.Text != "The note says plum." {
-		t.Fatalf("after a dropped connection: result %+v, %v", result, err)
-	}
-	if n, calls := len(s.attempts()), len(s.requests()); n != 2 || calls != 1 {
-		t.Errorf("the endpoint got %d requests, counted as %d model calls, want 2 and 1: the call and its one retry", n, calls)
+	for _, c := range []struct {
+		name string
+		// held is whether the dropping handler waits, after the close, until the row ends.
+		held bool
+	}{
+		{name: "the dropping handler returns"},
+		{name: "the dropping handler is held until the run ends", held: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			answered := anthropicStream("end_turn", anthropicUsage{Input: 1, Output: 1}, anthropicText("The note says plum."))
+			s := newStandIn(t, answered).dropping(1)
+			if c.held {
+				held := make(chan struct{})
+				s.holding(held)
+				// After the stand-in's own cleanup is registered, so it runs first and the
+				// server's close does not wait on the held handler.
+				t.Cleanup(func() { close(held) })
+			}
+			result, err := Run(context.Background(), newFixture(t, s, AnthropicMessages, 1).req)
+			if err != nil || result.Fault != "" || result.Text != "The note says plum." {
+				t.Fatalf("after a dropped connection: result %+v, %v", result, err)
+			}
+			if n, calls := len(s.attempts()), len(s.requests()); n != 2 || calls != 1 {
+				t.Errorf("the endpoint got %d requests, counted as %d model calls, want 2 and 1: the call and its one retry", n, calls)
+			}
+		})
 	}
 }
 

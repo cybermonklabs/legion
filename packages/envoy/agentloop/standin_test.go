@@ -16,9 +16,12 @@ import (
 // standIn is a provider endpoint that records every request it gets and answers each with the next
 // of its replies, or, where every is set, with that one reply however many requests come. A reply
 // is used up only by an answer that went out whole: a request whose answer was lost, its
-// connection dropped or its client gone before the stand-in wrote it, leaves its reply at the head
-// of the script, so the transport's one retry of a call whose connection broke is answered as the
-// call would have been (transport.go, RoundTrip; doc.go, "The retry").
+// connection dropped or its client gone before the stand-in wrote it, puts its reply back at the
+// head of the script, so the transport's one retry of a call whose connection broke is answered as
+// the call would have been (transport.go, RoundTrip; doc.go, "The retry"). That retry can arrive
+// before the lost call's handler runs again, so a reply's fate is settled before anything a later
+// request takes depends on it: a dropped call's reply goes back before its connection closes, and
+// a request that comes while a reply taken before it is unsettled waits for it to settle.
 type standIn struct {
 	server  *httptest.Server
 	mu      sync.Mutex
@@ -31,6 +34,13 @@ type standIn struct {
 	// when a call reaches the endpoint and its connection breaks before the answer. Each is a
 	// lost answer, so the reply it would have had answers the next request.
 	drops int
+	// held, where a row sets it (holding), is waited on by the handler of a dropped request
+	// after it closed the connection and before it returns, as a handler the scheduler set aside
+	// there would be: the client's retry then comes while that handler has not run again.
+	held chan struct{}
+	// unsettled is open while a reply taken off the script has not yet been settled: kept by an
+	// answer written whole, or put back by one that was lost. It is nil when no reply is.
+	unsettled chan struct{}
 	// got is every request the stand-in got, in order, a lost one and its retry each counted.
 	got []recorded
 }
@@ -83,12 +93,38 @@ func (s *standIn) dropping(n int) *standIn {
 	return s
 }
 
+// holding makes the handler of each dropped request wait for held to close after it has closed
+// the connection (standIn.held).
+func (s *standIn) holding(held chan struct{}) *standIn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.held = held
+	return s
+}
+
 func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	s.mu.Lock()
 	s.got = append(s.got, recorded{path: r.URL.Path, query: r.URL.RawQuery, header: r.Header.Clone(), body: body})
 	at := len(s.got) - 1
 	drop := len(s.got) <= s.drops
+	held := s.held
+	// A reply an earlier request took and has not settled may yet come back to the head of the
+	// script, so this request takes nothing until it has: an answer whose write failed is lost to
+	// the client, which may already be retrying, before its handler learns of it.
+	for s.unsettled != nil {
+		unsettled := s.unsettled
+		s.mu.Unlock()
+		select {
+		case <-unsettled:
+		case <-r.Context().Done():
+			s.mu.Lock()
+			s.got[at].lost = true
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Lock()
+	}
 	var next reply
 	taken := false
 	switch {
@@ -97,29 +133,44 @@ func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 	case len(s.replies) > 0:
 		next, taken = s.replies[0], true
 		s.replies = s.replies[1:]
+		s.unsettled = make(chan struct{})
 	case !drop:
 		s.mu.Unlock()
 		http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"the stand-in has no more replies"}}`, http.StatusBadRequest)
 		return
 	}
 	s.mu.Unlock()
-	// Every way out of here but an answer written whole loses the answer: the request is marked
-	// lost and the reply it took goes back to the head of the script, for the retry.
-	answered := false
-	defer func() {
-		if answered {
+	// settle ends this request's hold on the reply it took, once: an answer written whole keeps
+	// it, and a lost one marks the request lost and puts the reply back at the head of the
+	// script. Every way out of the handler but an answer written whole is a loss.
+	settled := false
+	settle := func(answered bool) {
+		if settled {
 			return
 		}
+		settled = true
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		s.got[at].lost = true
-		if taken {
-			s.replies = append([]reply{next}, s.replies...)
+		if !answered {
+			s.got[at].lost = true
+			if taken {
+				s.replies = append([]reply{next}, s.replies...)
+			}
 		}
-	}()
+		if taken {
+			close(s.unsettled)
+			s.unsettled = nil
+		}
+	}
+	defer settle(false)
 	if drop {
+		// Settled before the close, the moment the client can see the loss.
+		settle(false)
 		if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
 			_ = conn.Close()
+		}
+		if held != nil {
+			<-held
 		}
 		return
 	}
@@ -142,7 +193,7 @@ func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 	// The flush puts the answer on the connection now, so a connection that broke under it is
 	// a write error here rather than one the server meets after the handler has returned.
 	_, err := w.Write(next.body)
-	answered = err == nil && http.NewResponseController(w).Flush() == nil
+	settle(err == nil && http.NewResponseController(w).Flush() == nil)
 }
 
 // requests are the model calls the stand-in got, in order: every request but one whose answer was
