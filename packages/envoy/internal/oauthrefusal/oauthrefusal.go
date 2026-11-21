@@ -1,7 +1,7 @@
 // Package oauthrefusal holds the rules this module reads an OAuth token endpoint's answer by. The
 // status alone decides whether the endpoint answered: a 5xx, a 408 and a 429 are a server that
 // could not answer now (Outage), as no answer at all is, and every other answer is the endpoint
-// answering, whatever its body says; among those, a refusal is a 4xx (Refuses, Refused), and its
+// answering, whatever its body says; among those, a refusal is a 4xx (Refuses), and its
 // OAuth error code (RFC 6749 section 5.2) only names the refusal's reason (Refusal). Ending a grant
 // is narrower still (EndsGrant). Every reader of a token endpoint's answer that decides something
 // on it - a sign-in refused, a client rejected, a login denied or ended - reads it through these,
@@ -36,17 +36,9 @@ func Refuses(status int) bool {
 	return status >= 400 && status < 500 && !Outage(status)
 }
 
-// Refused reports whether err is a token endpoint's answer (*oauth2.RetrieveError, wrapped or not)
-// whose status Refuses, whatever OAuth error its body names, or none: the status alone decides a
-// refusal, and the code only names its reason (Refusal).
-func Refused(err error) bool {
-	var retrieve *oauth2.RetrieveError
-	return errors.As(err, &retrieve) && retrieve.Response != nil && Refuses(retrieve.Response.StatusCode)
-}
-
-// Refusal is the OAuth error code a refusal names (Refused), and empty for every other failure: an
-// answer of any other status, whatever error its body names, and no answer at all. A refusal that
-// names no error is Refused with an empty Refusal.
+// Refusal is the OAuth error code a refusal names, an answer whose status Refuses, and empty for
+// every other failure: an answer of any other status, whatever error its body names, and no answer
+// at all. A refusal that names no error has an empty Refusal.
 func Refusal(err error) string {
 	var retrieve *oauth2.RetrieveError
 	if !errors.As(err, &retrieve) || retrieve.Response == nil || !Refuses(retrieve.Response.StatusCode) {
