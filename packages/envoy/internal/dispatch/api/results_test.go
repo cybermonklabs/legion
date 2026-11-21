@@ -3683,10 +3683,11 @@ func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 	assertUnread(t, checkOf(t, readResults(t, keyless, other.Key), "c1"), "no private key")
 }
 
-// GitHub's refusal of a read carries its whole body in the error, up to the 16 MiB a page of
-// check runs may take, and none of it reaches the detail: the detail names the status and the
-// `message` of a JSON body, names the status alone for a body that is not JSON, and is cut to
-// 2,000 runes where the message itself is longer.
+// GitHub's refusal of a read carries its body in the error as githubapp.ShownBody shows it, the
+// start of a page of check runs that may take 16 MiB and its size, and none of it reaches the
+// detail: the detail names the status and the `message` of a JSON body, read from the whole body,
+// names the status alone for a body that is not JSON, and is cut to 2,000 runes where the message
+// itself is longer.
 func TestCIResultDetailNamesTheStatusAndMessageOfALargeRefusal(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCB", "acme/widgets", "Large refusal")
@@ -3737,19 +3738,36 @@ func TestCIResultDetailNamesTheStatusAndMessageOfALargeRefusal(t *testing.T) {
 
 // A rate limit carries GitHub's whole body in its error too, and none of it reaches the detail:
 // GitHub's 429, which needs no header to be a limit, is named by its status and the `message`
-// of its JSON body alone.
+// of its JSON body alone. The error's text ends with the body as githubapp.ShownBody shows it, and
+// that is what gives way to the message (gitHubErrorText), so a body padded far past ShownBody's
+// 512 characters is named by its message alone too, with none of its padding. Each case has a
+// server and a database of its own, so no limit one case's 429 leaves recorded holds a read of
+// the other.
 func TestCIResultDetailNamesTheStatusAndMessageOfARateLimit(t *testing.T) {
-	handler, database, fake := resultsGitHubCheckRuns(t)
-	issue := issueInRepository(t, handler, "RESCR", "acme/widgets", "Rate limit")
-	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
-	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
-	fake.failWithBody(http.StatusTooManyRequests,
-		`{"message":"API rate limit exceeded for installation ID 1.","documentation_url":"https://docs.github.com/rest/rate-limit"}`)
+	// fields is the JSON GitHub answers a limit with, up to its closing brace: its message first.
+	const fields = `{"message":"API rate limit exceeded for installation ID 1.","documentation_url":"https://docs.github.com/rest/rate-limit"`
+	padding := strings.Repeat("x", 1<<16)
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "a JSON body", body: fields + `}`},
+		{name: "a JSON body padded past the bound", body: fields + `,"padding":"` + padding + `"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler, database, fake := resultsGitHubCheckRuns(t)
+			issue := issueInRepository(t, handler, "RESCR", "acme/widgets", "Rate limit")
+			uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+			writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
+			fake.failWithBody(http.StatusTooManyRequests, test.body)
 
-	check := checkOf(t, readResults(t, handler, issue.Key), "c1")
-	assertUnread(t, check, "(status 429)", "(status 429), next request in 1m0s: API rate limit exceeded for installation ID 1.")
-	if strings.Contains(check.CI.Detail, "documentation_url") || strings.Contains(check.CI.Detail, "{") {
-		t.Fatalf("c1's detail %q carries GitHub's body", check.CI.Detail)
+			check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+			assertUnread(t, check, "(status 429)", "(status 429), next request in 1m0s: API rate limit exceeded for installation ID 1.")
+			if strings.Contains(check.CI.Detail, "documentation_url") || strings.Contains(check.CI.Detail, "{") ||
+				strings.Contains(check.CI.Detail, "xxxxxxxx") {
+				t.Fatalf("c1's detail %q carries GitHub's body", check.CI.Detail)
+			}
+		})
 	}
 }
 
@@ -4059,8 +4077,12 @@ func TestALinkedPullRequestDispatchCannotReadCountsAsNoLink(t *testing.T) {
 // Retry-After. Nothing is stored. Stored, the result would sit under a repository no read showed
 // to hold its commit. The installation token mint is such a read too, and a 403 on it — GitHub's
 // answer for a suspended installation — is refused the same way, the sentence naming the mint as
-// the read that failed. An error that carries GitHub's body whole, as the mint's does, half a
-// megabyte that is not JSON among them, is cut to about a kilobyte, and the refusal says so.
+// the read that failed. An error that carries GitHub's body, as the mint's does, carries it as
+// githubapp.ShownBody shows it, its first 512 characters and its size, so half a megabyte that is
+// not JSON never comes to the refusal whole. That page opens with characters of three bytes, so
+// its 512 characters take more than gitHubReasonBytes, and gitHubReason's cut, which bounds the
+// whole reason to its first 1024 bytes, is the bound that acts on it: the refusal holds the start
+// of the page and says it was cut.
 func TestALinkedReadThatDidNotAnswerRefusesTheRecordForNow(t *testing.T) {
 	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
 	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
@@ -4088,12 +4110,16 @@ func TestALinkedReadThatDidNotAnswerRefusesTheRecordForNow(t *testing.T) {
 			says:       []string{"status 500: Server Error", "Nothing was recorded: record the result again"},
 		},
 		{
-			name: "a read whose error carries half a megabyte that is not JSON",
+			// The page opens with 280 characters of three bytes, so the 512 characters ShownBody
+			// keeps of it take 1,072 bytes, more than gitHubReasonBytes, and gitHubReason cuts the
+			// reason they end to its first 1024 bytes. That cut falls in the ASCII after them, so it
+			// keeps 1024 bytes exactly.
+			name: "a read whose error carries half a megabyte that is not JSON, opening with three-byte characters",
 			unanswered: func(linked *linkedGitHub) {
 				linked.unminted = []string{"acme/tools"}
-				linked.mintStatus, linked.mintBody = http.StatusBadGateway, "<html>"+strings.Repeat("x", 1<<19)+"</html>"
+				linked.mintStatus, linked.mintBody = http.StatusBadGateway, "<html>"+strings.Repeat("€", 280)+strings.Repeat("x", 1<<19)+"</html>"
 			},
-			says:    []string{"status 502: <html>xxxx", "(GitHub's error, cut to its first 1024 of", "Nothing was recorded: record the result again"},
+			says:    []string{"status 502: <html>€€€€", "(GitHub's error, cut to its first 1024 of", "Nothing was recorded: record the result again"},
 			longest: gitHubReasonBytes + 512,
 		},
 		{

@@ -125,9 +125,10 @@ func LeaseHeld(ctx context.Context, db LeaseReader, name string) (bool, error) {
 // the scale would refuse a five-minute tick after a two-second record about 149 times in 150
 // (measured; and under the bucket-number form this replaces, which was scale-dependent in the same
 // way, it refused every later tick for ever). A lease's period changes when a release changes its
-// loop's interval and runs beside the release before it during a roll. A record made at another
-// period therefore serves nothing, so a change of period costs at most one pass. That is the
-// direction to err in - the other direction is a loop that stops.
+// loop's interval, or the period it hands for that interval, and runs beside the release before it
+// during a roll. A record made at another period therefore serves nothing, so a change of period
+// costs at most one pass. That is the direction to err in - the other direction is a loop that
+// stops.
 //
 // The previous build keeps one row per lease, keyed by the name alone, and reads and writes only
 // that row. A process counts that row as serving its tick when the row's period is its own. It
@@ -240,9 +241,14 @@ type ExclusiveFunc func(ctx context.Context, leases Leases, name string, due tim
 // first - so their passes almost never overlap and a guard that only excluded concurrent passes
 // would let every process run the whole pass every period.
 //
-// period is the loop's own interval, the time it means to leave between passes, and due is the
-// moment this tick was scheduled for - the value its ticker delivered (RunLeased) or its timer
-// delivered (RunJittered, RunLeasedAfterEachPass), not the moment the pass got round to running.
+// period is the span one pass serves, and due is the moment this tick was scheduled for - the
+// value its ticker delivered (RunLeased) or its timer delivered (RunJittered,
+// RunLeasedAfterEachPass), not the moment the pass got round to running. A loop hands a period no
+// longer than the least time it leaves between two of its due times, so that its own previous pass
+// never refuses its tick: RunLeased's ticks are its interval apart, and it hands the interval;
+// RunLeasedAfterEachPass hands the wait before the tick; and a RunJittered loop's due times are
+// more than LeasePeriod(interval) apart, so it hands that, and not the interval its waits are
+// drawn under.
 // The tick is placed in the period-aligned bucket due falls in, and that bucket is compared
 // against the database's record of the bucket this lease's last pass at that period served
 // (duty_passes, migration 0115; readPeriod). A period of zero or less is no period at all -
