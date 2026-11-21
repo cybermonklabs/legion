@@ -6,7 +6,8 @@ body: |-
   projects. A credential scoped to one project is refused a parent outside it with
   `403 PROJECT_SCOPE`, naming the parent and its project, as it is refused such a `blocked_by`
   target; a create meets either refusal before the near-copy check, so it gets no
-  `409 POSSIBLE_DUPLICATE` in its place and records no near-copy check. A parent of another
+  `409 POSSIBLE_DUPLICATE` in its place and records no near-copy check, and a PATCH that also
+  closes the issue meets it before the close settles the issue's documents. A parent of another
   project passes on no repository, components, architecture owner,
   `legion` label or assignee: the walks that resolve `resolved_repo`, an inherited component
   attachment, the architecture tree's owner, `legion_managed_status` and the delivery views'

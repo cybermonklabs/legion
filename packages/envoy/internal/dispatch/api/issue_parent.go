@@ -207,10 +207,11 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // before any lock is taken (foreignDependencyTargets): the pre-handler check reads the project of
 // the object the path names and no key of the body (project_scope.go), and a caller that may not
 // write at all would otherwise take the deployment-wide lock first. A create runs the same check
-// earlier still, before its near-copy gate writes anything (createIssue). The write refuses it
-// again under the locks, which is the authoritative refusal: writeBlockedBy for a target, and
-// validateIssueParent or the create's own read for the parent. Each pair words it through one
-// function, refuseBlockedByOutsideCallerProject and refuseParentOutsideCallerProject.
+// earlier still, before its near-copy gate writes anything (createIssue), and a PATCH before a
+// close settles the issue's documents (patchIssue). The write refuses it again under the locks,
+// which is the authoritative refusal: writeBlockedBy for a target, and validateIssueParent or the
+// create's own read for the parent. Each pair words it through one function,
+// refuseBlockedByOutsideCallerProject and refuseParentOutsideCallerProject.
 func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller string, targets []string, parent string) error {
 	foreign, err := foreignDependencyTargets(ctx, tx, project, caller, targets, parent)
 	if err != nil {
@@ -237,8 +238,9 @@ func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller st
 // that belongs to a project other than project, the issue's own, targets first, read with no
 // lock held. caller is the one project the request's credential may write, empty for a
 // credential that names none; such a caller is refused the first target outside it, then a
-// parent outside it, before anything else is read. The lock step and a create's check before
-// its near-copy gate both run it, so the two refuse the same key in the same words.
+// parent outside it, before anything else is read. The lock step, a create's check before its
+// near-copy gate and a PATCH's check before a close's settlement all run it, so each refuses the
+// same key in the same words.
 func foreignDependencyTargets(ctx context.Context, q queryer, project, caller string, targets []string, parent string) ([]foreignTarget, error) {
 	foreign, err := foreignTargets(ctx, q, project, targets)
 	if err != nil {
