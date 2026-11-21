@@ -29,14 +29,21 @@ import (
 // the JetStream context that code holds.
 
 const (
-	// createSendWait bounds one send of a test fixture's own create of a stream or a bucket
-	// (sendCreate), after which the create is sent again. A create on a cluster is proposed
-	// through the meta group and answered once the stream, a bucket's included, is made, and a
-	// stream of more than one copy answers it from its first leader, once its members have
-	// elected one: 25 bucket creates on an idle two-CPU machine took from 60 ms to 1.03 s. A send
-	// it ends decides nothing: the next send is answered with the stream the first one made, so
-	// it paces the sends and no more.
+	// createSendWait bounds each request of a test fixture's own create of a stream or a bucket
+	// (sendCreate), and a send the requests of which drew no answer within it is sent again. A
+	// create on a cluster is proposed through the meta group and answered once the stream, a
+	// bucket's included, is made, and a stream of more than one copy answers it from its first
+	// leader, once its members have elected one: 25 bucket creates on an idle two-CPU machine took
+	// from 60 ms to 1.03 s. A send it ends decides nothing: the next send is answered with the
+	// stream the first one made, so it paces the sends and no more. A stream's create is one
+	// request (nats.go v1.55.0 jsm.go:924), so createSendWait bounds its send as well.
 	createSendWait = 10 * time.Second
+
+	// bucketSendWait bounds one send of a bucket's create, which makes up to four requests, each
+	// bounded by createSendWait: nats.go v1.55.0's CreateKeyValue reads the account's JetStream
+	// information, then creates the bucket's stream, and on "stream name already in use" reads
+	// that stream and may update it (kv.go:432, 525, 535 and 542).
+	bucketSendWait = 4 * createSendWait
 
 	// bucketLookupWait bounds one member's lookup of a bucket's stream, which that member
 	// answers out of metadata it holds. A hang guard.
@@ -49,9 +56,10 @@ const (
 
 // waitBound is bound, or what the test binary's deadline (go test -timeout) leaves less margin
 // when that is sooner, as the shared wait bounds a wait (testwait.Bounded), so the wait fails
-// naming its fact before go test ends the binary. margin covers what one ask of the fact can take,
-// and the one more ask the shared wait makes once its bound has passed. A t that is not a
-// *testing.T has no deadline to read, and is bounded by bound.
+// naming its fact before go test ends the binary. margin covers what the caller does past the
+// bound before its failure: the ask of the fact under way as the bound passes, the one more ask
+// the shared wait makes once its bound has passed, and whatever the caller reads after the
+// answer. A t that is not a *testing.T has no deadline to read, and is bounded by bound.
 func waitBound(t testing.TB, bound, margin time.Duration) time.Duration {
 	if test, ok := t.(*testing.T); ok {
 		return testwait.Bounded(test, bound, margin)
@@ -59,10 +67,10 @@ func waitBound(t testing.TB, bound, margin time.Duration) time.Duration {
 	return bound
 }
 
-// sendCreate sends a test fixture's own create of a stream or a bucket, one send each
-// createSendWait, until the cluster answers it, and returns the answer: nil once the stream is
-// made, or the cluster's refusal. send makes one create through a JetStream context whose
-// requests createSendWait bounds.
+// sendCreate sends a test fixture's own create of a stream or a bucket until the cluster answers
+// it, and returns the answer: nil once the stream is made, or the cluster's refusal. send makes
+// one create through a JetStream context whose requests createSendWait bounds, and sendWait is the
+// longest one send can take: createSendWait for a stream's create, bucketSendWait for a bucket's.
 //
 // nats-server v2.15.1 leaves a stream create unanswered on several paths, which internal/bus's
 // sentAgain lists with their source lines: a create through a member that is not the leader of a
@@ -79,12 +87,15 @@ func waitBound(t testing.TB, bound, margin time.Duration) time.Duration {
 // stream answers it (processClusterCreateStream). So a create that landed costs one more send,
 // never a refusal, and the sends end only on an answer, or at the test binary's deadline
 // (waitBound) through the shared wait (testwait.Holds), where the failure names the sends that
-// drew none.
-func sendCreate(t testing.TB, what string, send func() error) error {
+// drew none. The wait's margin before that deadline covers the send under way as its bound
+// passes, the one more send the shared wait makes after the bound, and the one read of the
+// stream held that a caller makes on an "already in use" answer, so the caller's failure comes
+// before go test's timeout panic.
+func sendCreate(t testing.TB, what string, sendWait time.Duration, send func() error) error {
 	t.Helper()
 	sends := 0
 	var unanswered, answer error
-	if !testwait.Holds(waitBound(t, noDeadline, 2*createSendWait+time.Second), testwait.Poll, func() bool {
+	if !testwait.Holds(waitBound(t, noDeadline, 2*sendWait+createSendWait+time.Second), testwait.Poll, func() bool {
 		sends++
 		err := send()
 		if errors.Is(err, natsgo.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
@@ -112,7 +123,7 @@ func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo
 		t.Fatalf("open JetStream: %v", err)
 	}
 	var kv natsgo.KeyValue
-	err = sendCreate(t, "create KV bucket "+config.Bucket, func() error {
+	err = sendCreate(t, "create KV bucket "+config.Bucket, bucketSendWait, func() error {
 		var err error
 		kv, err = js.CreateKeyValue(config)
 		return err

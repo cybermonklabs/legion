@@ -37,14 +37,16 @@ func (c *Cluster) JetStream(t testing.TB) natsgo.JetStreamContext {
 
 // CreateStream creates the stream config names on a connection of its own to the cluster, sending
 // the create until the cluster answers it (sendCreate), and fails the test with the cluster's
-// refusal. The connection reconnects after a drop, so a create whose answer the drop lost is sent
-// again on it. A stream the cluster already holds under the name with another configuration is
-// refused as "stream name already in use", and the failure then names each field config sets
+// refusal. The connection retries its first dial as it reconnects after a drop, every
+// retryInterval: a create sent before it has connected waits in it, as on a loaded machine whose
+// members take longer than dialTimeout to answer a dial, and a create whose answer a drop lost is
+// sent again on it. A stream the cluster already holds under the name with another configuration
+// is refused as "stream name already in use", and the failure then names each field config sets
 // that the stream the cluster holds sets otherwise (streamDifference): a send again of this
 // create is answered with the stream it made, so that refusal is never this create's own stream.
 func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 	t.Helper()
-	conn, err := natsgo.Connect(c.URL(), natsgo.Timeout(dialTimeout), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(retryInterval))
+	conn, err := natsgo.Connect(c.URL(), natsgo.Timeout(dialTimeout), natsgo.RetryOnFailedConnect(true), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(retryInterval))
 	if err != nil {
 		t.Fatalf("connect to the cluster to create stream %s: %v", config.Name, err)
 	}
@@ -53,7 +55,7 @@ func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	err = sendCreate(t, "create stream "+config.Name, func() error {
+	err = sendCreate(t, "create stream "+config.Name, createSendWait, func() error {
 		_, err := js.AddStream(&config)
 		return err
 	})
@@ -70,12 +72,13 @@ func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 }
 
 // streamDifference names each field asked sets that held sets otherwise, as the stream API writes
-// the field, held's value first: asked's unset fields are left out, as the server fills them in,
+// the field, held's value first, asked's as the server stores it (asStored). Of the fields the API
+// leaves out when they are unset, asked's unset ones are left out, as the server fills them in,
 // and of asked's metadata only the keys asked names, as the server adds keys of its own. When no
 // field asked sets differs, the server judged a field asked leaves unset, and the whole of held
 // is named.
 func streamDifference(asked, held natsgo.StreamConfig) string {
-	askedFields, heldFields := apiFields(asked), apiFields(held)
+	askedFields, heldFields := apiFields(asStored(asked)), apiFields(held)
 	if len(asked.Metadata) > 0 {
 		kept := make(map[string]string, len(asked.Metadata))
 		for key := range asked.Metadata {
@@ -101,8 +104,32 @@ func streamDifference(asked, held natsgo.StreamConfig) string {
 	return strings.Join(differences, "; ")
 }
 
-// apiFields is config as the stream API writes it, field by field: the fields config leaves at
-// their zero value are absent, as the API omits them.
+// asStored is config with each field that the stream API writes even when config leaves it
+// unset, and that the server stores otherwise when it is unset, set as the server stores it.
+// nats.go v1.55.0 writes max_consumers, max_msgs, max_bytes, max_msgs_per_subject and
+// num_replicas with no omitempty (jsm.go:130, 135, 140, 156 and 167), so an unset one goes out as
+// 0, and nats-server v2.15.1 stores one copy for num_replicas and -1, no limit, for the other four
+// (checkStreamCfgLocked, server/stream.go:1959-1997). Every other field the API writes when it is
+// unset goes out as the value the server stores for it, but two the server sets beside another
+// field, which no caller of CreateStream sets: allow_msg_ttl beside a subject delete marker TTL
+// (:2067-2076), and mirror_direct beside a mirror (:2221-2228).
+func asStored(config natsgo.StreamConfig) natsgo.StreamConfig {
+	if config.Replicas == 0 {
+		config.Replicas = 1
+	}
+	if config.MaxConsumers == 0 {
+		config.MaxConsumers = -1
+	}
+	for _, limit := range []*int64{&config.MaxMsgs, &config.MaxBytes, &config.MaxMsgsPerSubject} {
+		if *limit == 0 {
+			*limit = -1
+		}
+	}
+	return config
+}
+
+// apiFields is config as the stream API writes it, field by field: a field the API marks
+// omitempty is absent at its zero value.
 func apiFields(config natsgo.StreamConfig) map[string]json.RawMessage {
 	encoded, _ := json.Marshal(config)
 	fields := map[string]json.RawMessage{}
