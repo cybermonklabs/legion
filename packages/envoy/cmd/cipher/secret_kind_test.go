@@ -1162,7 +1162,7 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheTypesMinterRefuses(t *testing
 						t.Errorf("a refused %s of a %s value with %s wrote it", form.args[0], row.secretType, row.name)
 					}
 					rereads, answers := broker.recorded()
-					if got := rereads[len(asked):]; !slices.Equal(got, form.rereads) || slices.ContainsFunc(answers[len(asked):], func(r Reread) bool { return r.Served || r.Reason != policy.ReasonAbsent }) {
+					if got := rereads[len(asked):]; !slices.Equal(got, form.rereads) || slices.ContainsFunc(answers[len(asked):], func(r rereadReply) bool { return r.Served || r.Reason != policy.ReasonAbsent }) {
 						t.Errorf("a refused %s of a %s value with %s asked the broker to reread %v, answered %v; want %v, answered absent", form.args[0], row.secretType, row.name, got, answers[len(asked):], form.rereads)
 					}
 				}

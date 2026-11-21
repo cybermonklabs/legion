@@ -955,18 +955,18 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 		writeVerbatim(stdout, raw)
 	} else {
 		// Every value on these lines is the broker's, so each prints as the broker's address
-		// lets its answer print (cipheraddr.Address.Words): on one line beside a clean address,
-		// and not at all beside one that carries a credential, which whoever answers there can
-		// repeat in any value. It was redact.OneLine alone until the values beside a
-		// credentialed address were found to print whole; --json still prints the body as it
-		// came, since it is asked for by name.
-		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", idWords(c.baseURL, result.RequestID), c.baseURL.Words(result.State), c.source(ctx))
+		// lets its answer print (cipheraddr.Address.WordsOf): on one line beside a clean
+		// address, as the rule reads it with the credentials the request carried redacted (each
+		// is held as redact.RemoteText with the answer's record), and not at all beside one that
+		// carries a credential, which whoever answers there can repeat in any value. --json
+		// still prints the body as it came, since it is asked for by name.
+		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", idWordsOf(c.baseURL, result.RequestID), c.baseURL.WordsOf(result.State), c.source(ctx))
 		printDetail(stdout, c.baseURL, result.Detail)
-		if result.State == "pending" {
+		if result.State.Equal("pending") {
 			fmt.Fprintln(stdout, waitingOn(c.baseURL, result.Approver, result.ApproveURL, result.JudgeDeciding))
 		}
 	}
-	switch result.State {
+	switch stateOf(result.State) {
 	case "pending":
 		return exitPending
 	case "denied":
@@ -1006,15 +1006,15 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		writeVerbatim(stdout, raw)
 		return 0
 	}
-	fmt.Fprintf(stdout, "state: %s\nsource: %s\n", c.baseURL.Words(result.State), c.source(ctx))
-	if result.State == "pending" {
+	fmt.Fprintf(stdout, "state: %s\nsource: %s\n", c.baseURL.WordsOf(result.State), c.source(ctx))
+	if result.State.Equal("pending") {
 		fmt.Fprintln(stdout, waitingOn(c.baseURL, result.Approver, result.ApproveURL, result.JudgeDeciding))
 	}
 	if result.GrantID != nil {
-		fmt.Fprintf(stdout, "grant_id: %s\n", idWords(c.baseURL, *result.GrantID))
+		fmt.Fprintf(stdout, "grant_id: %s\n", idWordsOf(c.baseURL, *result.GrantID))
 	}
 	if result.Decision != nil {
-		fmt.Fprintf(stdout, "decided_by: %s\n", c.baseURL.Words(result.Decision.By))
+		fmt.Fprintf(stdout, "decided_by: %s\n", c.baseURL.WordsOf(result.Decision.By))
 	}
 	printDetail(stdout, c.baseURL, result.Detail)
 	return 0
@@ -1117,19 +1117,20 @@ func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 		writeVerbatim(stdout, raw)
 		return 0
 	}
-	operator := ""
+	// No operator prints as the empty text does, as it always has: nothing beside a clean address,
+	// and cipheraddr.WordsNotPrinted beside one that is not clean.
+	operator := c.baseURL.Words("")
 	if result.Operator != nil {
-		operator = *result.Operator
+		operator = c.baseURL.WordsOf(*result.Operator)
 	}
-	words := c.baseURL.Words
 	fmt.Fprintf(stdout, "enrollment_id: %s\nkind: %s\noperator: %s\nlease_expires_at: %s\nsource: %s\n",
-		idWords(c.baseURL, result.EnrollmentID), words(result.Kind), words(operator), result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
+		idWordsOf(c.baseURL, result.EnrollmentID), c.baseURL.WordsOf(result.Kind), operator, result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
 	for _, g := range result.Grants {
 		if g.ExpiresAt == nil {
-			fmt.Fprintf(stdout, "grant: %s (request %s, until this session ends)\n", idWords(c.baseURL, g.GrantID), idWords(c.baseURL, g.RequestID))
+			fmt.Fprintf(stdout, "grant: %s (request %s, until this session ends)\n", idWordsOf(c.baseURL, g.GrantID), idWordsOf(c.baseURL, g.RequestID))
 			continue
 		}
-		fmt.Fprintf(stdout, "grant: %s (request %s, expires %s)\n", idWords(c.baseURL, g.GrantID), idWords(c.baseURL, g.RequestID), g.ExpiresAt.Format(time.RFC3339))
+		fmt.Fprintf(stdout, "grant: %s (request %s, expires %s)\n", idWordsOf(c.baseURL, g.GrantID), idWordsOf(c.baseURL, g.RequestID), g.ExpiresAt.Format(time.RFC3339))
 	}
 	return 0
 }
@@ -1220,17 +1221,20 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	state, grantID, requestID, detail := result.State, result.GrantID, result.RequestID, result.Detail
+	state, grantID, detail := result.State, result.GrantID, result.Detail
 	// shownID is the request's id as the lines below print it: the broker's, so as its address
-	// lets its answer print, and beside an address that does not, whole where it has the broker's
-	// id shape (idWords). requestID itself is what the polls ask after.
-	shownID := idWords(c.baseURL, requestID)
+	// lets its answer print - as the rule reads it, with the credentials the request carried
+	// redacted - and beside an address that does not, whole where it has the broker's id shape
+	// (idWordsOf). pollID is what the polls ask after: the id as RemoteText.SendBack answers it,
+	// and nothing (polled false) where the rule does not print it as it came, which no poll sends.
+	shownID := idWordsOf(c.baseURL, result.RequestID)
+	pollID, polled := result.RequestID.SendBack()
 	// pollErr is the last status poll's failure while the polls fail in a way a retry can cure
 	// (retryable), and nil once one reads the request again. Such a poll does not end the wait:
 	// the approver may still decide before --wait runs out, and a grant this command has stopped
 	// waiting for is one nothing collects.
 	var pollErr error
-	if state == "pending" {
+	if state.Equal("pending") {
 		reportPending(stderr, c.baseURL, shownID, result.Approver, result.ApproveURL, result.JudgeDeciding, *wait, src())
 		judging := result.JudgeDeciding
 		deadline := time.Now().Add(*wait)
@@ -1240,9 +1244,15 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		// which answers every read at once; a failed read that comes back sooner gets the same
 		// sleep. Without it the loop would ask such a broker as fast as it answers.
 		backoff := 2 * time.Second
-		for state == "pending" {
+		for state.Equal("pending") {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
+				break
+			}
+			// The request stays pending, as the line after the wait says, with the command that
+			// reads it again where its id prints.
+			if !polled {
+				fmt.Fprintf(stderr, "agent-secrets: request %s to %s is not read again: %s\n", shownID, src(), notSentBack)
 				break
 			}
 			// Each read asks the broker to hold it for what is left of --wait, in whole seconds
@@ -1251,14 +1261,14 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 			// the command learns of it at once rather than at its next poll.
 			asked := min(record.MaxRequestWaitSeconds, int((remaining+time.Second-1)/time.Second))
 			sent := time.Now()
-			status, _, err := c.GetRequest(ctx, signer, requestID, asked)
+			status, _, err := c.GetRequest(ctx, signer, pollID, asked)
 			switch {
 			case err == nil:
 				pollErr = nil
 				state, grantID, detail = status.State, status.GrantID, status.Detail
 				// The judge held the request and has given it up: it is its person's now, and the
 				// agent is told who that is and where they decide it, once.
-				if judging && !status.JudgeDeciding && state == "pending" {
+				if judging && !status.JudgeDeciding && state.Equal("pending") {
 					fmt.Fprintf(stderr, "agent-secrets: the model judge could not decide it; %s\n", waitingOn(c.baseURL, status.Approver, status.ApproveURL, false))
 					judging = false
 				}
@@ -1272,42 +1282,49 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				refuse(stderr, "agent-secrets", src(), err)
 				return 1
 			}
-			if state == "pending" && time.Since(sent) < time.Duration(asked)*time.Second {
+			if state.Equal("pending") && time.Since(sent) < time.Duration(asked)*time.Second {
 				time.Sleep(min(backoff, time.Until(deadline)))
 				backoff = nextBackoff(backoff)
 			}
 		}
 	}
-	switch state {
+	switch known := stateOf(state); known {
 	case "granted":
 	case "pending":
 		if pollErr != nil {
-			fmt.Fprintf(stderr, "agent-secrets: the wait for request %s to %s ran out while its status could not be read: %v; nothing was run. %s\n", shownID, src(), pollErr, statusHint(c.baseURL, requestID))
+			fmt.Fprintf(stderr, "agent-secrets: the wait for request %s to %s ran out while its status could not be read: %v; nothing was run. %s\n", shownID, src(), pollErr, statusHint(c.baseURL, result.RequestID))
 			return exitPending
 		}
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. %s\n", shownID, src(), statusHint(c.baseURL, requestID))
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. %s\n", shownID, src(), statusHint(c.baseURL, result.RequestID))
 		return exitPending
 	case "denied":
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was denied%s\n", shownID, src(), deniedBecause(c.baseURL, detail))
 		return exitDenied
 	case "cancelled", "expired":
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was %s\n", shownID, src(), state)
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was %s\n", shownID, src(), known)
 		return 1
 	default:
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is in unexpected state %s\n", shownID, src(), c.baseURL.Words(strconv.Quote(state)))
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is in unexpected state %s\n", shownID, src(), c.baseURL.Words(strconv.Quote(state.String())))
 		return 1
 	}
 	if grantID == nil {
 		fmt.Fprintf(stderr, "agent-secrets: request %s was granted but its grant from %s is no longer live; request it again\n", shownID, src())
 		return 1
 	}
+	// The grant's id goes back to the broker in the release's path, and names the airlock's
+	// directory, only as RemoteText.SendBack answers it.
+	releaseID, sent := grantID.SendBack()
+	if !sent {
+		fmt.Fprintf(stderr, "agent-secrets: request %s was granted, but its grant %s from %s is not released: %s; nothing was run\n", shownID, idWordsOf(c.baseURL, *grantID), src(), notSentBack)
+		return 1
+	}
 
-	values, err := c.GrantValues(ctx, signer, *grantID, narrowing, releaseCall{Command: record.ClipCommand(command), Reason: *reason})
+	values, err := c.GrantValues(ctx, signer, releaseID, narrowing, releaseCall{Command: record.ClipCommand(command), Reason: *reason})
 	if err != nil {
 		refuse(stderr, "agent-secrets", src(), err)
 		return 1
 	}
-	if err := narrowedAsAsked(narrowing, values.GitHubApp); err != nil {
+	if err := narrowedAsAsked(c.baseURL, narrowing, values.GitHubApp); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets: %v; nothing was run\n", err)
 		return 1
 	}
@@ -1337,9 +1354,10 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	// released and before the airlock writes a file, so a refusal leaves nothing behind and runs
 	// nothing. A name the broker holds behind its airlock is in no released value at all, so a
 	// grant of such a name alone is refused rather than run with a document GitHub reads as no
-	// token.
+	// token. A name the release holds that this run did not ask for is named nowhere
+	// (releasedName).
 	if *githubToken {
-		if err := githubTokensAlone(values.Values); err != nil {
+		if err := githubTokensAlone(values.Values, names); err != nil {
 			fmt.Fprintf(stderr, "agent-secrets: %v; nothing was run\n", err)
 			return 1
 		}
@@ -1350,12 +1368,12 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	// better refused here than failed halfway through its own work.
 	var files airlockFiles
 	if values.Airlock != nil {
-		if files, err = prepareAirlock(os.Environ(), values.Airlock, *grantID, values.ExpiresAt); err != nil {
+		if files, err = prepareAirlock(os.Environ(), values.Airlock, releaseID, values.ExpiresAt); err != nil {
 			fmt.Fprintf(stderr, "agent-secrets: %v; nothing was run\n", err)
 			return 1
 		}
 	}
-	childEnv, err := buildChildEnv(os.Environ(), values.Values, values.Airlock, files)
+	childEnv, err := buildChildEnv(os.Environ(), values.Values, values.Airlock, files, names)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets: %v; nothing was run\n", err)
 		return 1
@@ -1398,15 +1416,17 @@ var sessionIdentityVars = map[string]bool{
 // (release, and files, the two files prepareAirlock has written for it), that name's placeholder,
 // the AWS variables its slots fill, the proxy, and the trust bundle (airlockVars). release is nil
 // for every grant the airlock holds no name of, which is every grant of a broker with no rules
-// file, and then nothing of the airlock is in the child's environment at all.
+// file, and then nothing of the airlock is in the child's environment at all. asked is the names
+// this run asked for, the only names of the release a refusal of airlockVars prints
+// (releasedName).
 //
 // The set entries are appended in sorted order, so one grant's child environment is one string
 // whatever Go's map iteration gave.
-func buildChildEnv(environ []string, values map[string]string, release *AirlockRelease, files airlockFiles) ([]string, error) {
+func buildChildEnv(environ []string, values map[string]string, release *AirlockRelease, files airlockFiles, asked []string) ([]string, error) {
 	set := make(map[string]string, len(values))
 	maps.Copy(set, values)
 	if release != nil {
-		vars, err := airlockVars(environ, release, files)
+		vars, err := airlockVars(environ, release, files, asked)
 		if err != nil {
 			return nil, err
 		}

@@ -422,26 +422,26 @@ func (bearerOf) RequireTransportSecurity() bool { return false }
 // DeletedDate does), pending-value for one with no version that carries the create label (a
 // create waiting for its value: the fake makes every secret now, so it is always young enough),
 // no-current-value for any other with no version, served otherwise.
-func gcpServedBy(f *fakeSecretManager, settings Settings) func(name string) Reread {
-	return func(name string) Reread {
+func gcpServedBy(f *fakeSecretManager, settings Settings) func(name string) rereadReply {
+	return func(name string) rereadReply {
 		slug, err := policy.NameToSlug(name)
 		if err != nil {
-			return Reread{Name: name, Reason: policy.ReasonAbsent}
+			return rereadReply{Name: name, Reason: policy.ReasonAbsent}
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		entry, ok := f.secrets[settings.SecretsPrefix+slug]
 		switch {
 		case !ok:
-			return Reread{Name: name, Reason: policy.ReasonAbsent}
+			return rereadReply{Name: name, Reason: policy.ReasonAbsent}
 		case entry.secret.GetExpireTime() != nil:
-			return Reread{Name: name, Reason: policy.ReasonAbsent}
+			return rereadReply{Name: name, Reason: policy.ReasonAbsent}
 		case len(entry.versions) == 0 && entry.secret.GetLabels()[createLabel] != "":
-			return Reread{Name: name, Reason: policy.ReasonPendingValue}
+			return rereadReply{Name: name, Reason: policy.ReasonPendingValue}
 		case len(entry.versions) == 0:
-			return Reread{Name: name, Reason: policy.ReasonNoCurrentValue}
+			return rereadReply{Name: name, Reason: policy.ReasonNoCurrentValue}
 		}
-		return Reread{Name: name, Served: true, Type: policy.TypeFromTags(entry.secret.GetAnnotations())}
+		return rereadReply{Name: name, Served: true, Type: policy.TypeFromTags(entry.secret.GetAnnotations())}
 	}
 }
 
@@ -751,7 +751,7 @@ func refuseValueReads(t *testing.T) {
 	t.Cleanup(func() { secretStdin = restore })
 }
 
-func alwaysServed(name string) Reread { return Reread{Name: name, Served: true} }
+func alwaysServed(name string) rereadReply { return rereadReply{Name: name, Served: true} }
 
 func TestGCPSecretCreateShowSetRetagDeleteRestoreLifecycle(t *testing.T) {
 	fake := newFakeSecretManager()

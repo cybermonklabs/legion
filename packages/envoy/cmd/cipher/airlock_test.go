@@ -8,9 +8,11 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -35,10 +37,11 @@ func testRelease(name string, hosts []string, slots map[string]string) *AirlockR
 	}
 }
 
-// childEnvMap is buildChildEnv's answer as a map, for a test that asks after single variables.
+// childEnvMap is buildChildEnv's answer as a map, for a test that asks after single variables,
+// for a run that asked for every name values and release hold.
 func childEnvMap(t *testing.T, environ []string, values map[string]string, release *AirlockRelease, files airlockFiles) map[string]string {
 	t.Helper()
-	env, err := buildChildEnv(environ, values, release, files)
+	env, err := buildChildEnv(environ, values, release, files, releaseNames(values, release))
 	if err != nil {
 		t.Fatalf("buildChildEnv: %v", err)
 	}
@@ -49,6 +52,17 @@ func childEnvMap(t *testing.T, environ []string, values map[string]string, relea
 		}
 	}
 	return out
+}
+
+// releaseNames is every name values and release hold, sorted: the names a run asked for when it
+// asked for all of them.
+func releaseNames(values map[string]string, release *AirlockRelease) []string {
+	names := slices.Collect(maps.Keys(values))
+	if release != nil {
+		names = append(names, slices.Collect(maps.Keys(release.Names))...)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy pins the one list the airlock gets wrong in both
@@ -183,7 +197,7 @@ func TestAirlockRefusesTwoAWSNames(t *testing.T) {
 	slots := map[string]string{"aws-access-key-id": testAirlockPlaceholder, "aws-secret-access-key": testAirlockPlaceholder}
 	release := testRelease("AWS_ONE", []string{"*.amazonaws.com"}, slots)
 	release.Names["AWS_TWO"] = AirlockName{Value: testAirlockPlaceholder, Slots: slots, Hosts: []string{"*.amazonaws.com"}}
-	_, err := buildChildEnv([]string{"AGENT_SECRETS_URL=https://broker.internal.example"}, nil, release, testAirlockFiles)
+	_, err := buildChildEnv([]string{"AGENT_SECRETS_URL=https://broker.internal.example"}, nil, release, testAirlockFiles, []string{"AWS_ONE", "AWS_TWO"})
 	if err == nil {
 		t.Fatalf("buildChildEnv accepted two AWS names, want a refusal")
 	}

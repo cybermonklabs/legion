@@ -44,7 +44,11 @@ type Settings struct {
 // words is text of these settings - a field, or a value read out of one, or a check's words that
 // quote one - as a message may print it (cipheraddr.Address.Words): whoever answered at an address
 // that is not clean can repeat its credential in any field, so beside such an address no field
-// prints. Settings no client read (the zero answeredBy) print none of their text either.
+// prints. Settings no client read (the zero answeredBy) print none of their text either. Beside a
+// clean address the request they answer carried no credential to echo - GET /v1/settings goes
+// with no header and no body (client.Settings), and a clean address holds no user information and
+// no query - so the record redact.RemoteText would hold a field with is empty, and the rule's
+// reading of the field (redact.Field) is the whole of what may print.
 func (s Settings) words(text string) string { return s.answeredBy.Words(text) }
 
 // JudgeKey is one key in Settings.JudgeKeys.
@@ -73,12 +77,18 @@ func (c *client) Settings(ctx context.Context) (Settings, error) {
 // broker older than the field), and, when it does not serve it, why. Told is whether the broker
 // said so at all: a broker answers a call with no proof 202, the same for every name, and says
 // nothing of what it serves, only that it took the reread.
+//
+// Reason and Type are the broker's text, or the text of whatever answers in its place, which can
+// echo the Proof header a session's reread carried: each is held as redact.RemoteText, which
+// Answer.Decode holds with that request's record, so a form's line prints it only as the rule
+// reads it with the proof redacted, and a form tells it apart as it came (Equal, IsEmpty). Name
+// prints nowhere.
 type Reread struct {
-	Name   string `json:"name"`
-	Served bool   `json:"served"`
-	Reason string `json:"reason"`
-	Type   string `json:"type"`
-	Told   bool   `json:"-"`
+	Name   string            `json:"name"`
+	Served bool              `json:"served"`
+	Reason redact.RemoteText `json:"reason"`
+	Type   redact.RemoteText `json:"type"`
+	Told   bool              `json:"-"`
 }
 
 // RereadSecret asks the broker to read the secret name from its store now, as whoever just wrote

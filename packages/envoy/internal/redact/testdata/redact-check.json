@@ -85,6 +85,74 @@
         "test": "print-agent-secrets.client.doStatus.envelope"
       },
       {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.RequestResult",
+        "test": "print-agent-secrets.RequestResult"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.requestDecision",
+        "test": "print-agent-secrets.requestDecision"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.RequestStatus",
+        "test": "print-agent-secrets.RequestStatus"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.Grant",
+        "test": "print-agent-secrets.Grant"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.SelfResult",
+        "test": "print-agent-secrets.SelfResult"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.OperatorMachine",
+        "test": "print-agent-secrets.OperatorMachine"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.OperatorMachines",
+        "test": "print-agent-secrets.OperatorMachines"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.OperatorGrantEnrollment",
+        "test": "print-agent-secrets.OperatorGrantEnrollment"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.OperatorGrant",
+        "test": "print-agent-secrets.OperatorGrant"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.OperatorGrants",
+        "test": "print-agent-secrets.OperatorGrants"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.AppliedNarrowing",
+        "test": "print-agent-secrets.AppliedNarrowing"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.GrantValues",
+        "test": "print-agent-secrets.GrantValues"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.Reread",
+        "test": "print-agent-secrets.Reread"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.googleUserinfo",
+        "test": "print-agent-secrets.googleUserinfo"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.enrollUnderCredential struct{EnrollmentID redact.RemoteText \"json:\\\"enrollment_id\\\"\"}",
+        "test": "print-agent-secrets.enrollUnderCredential.answer"
+      },
+      {
+        "holder": "(*github.com/sjawhar/envoy/cmd/cipher.client).CreatePodEnrollment struct{EnrollmentID redact.RemoteText \"json:\\\"enrollment_id\\\"\"}",
+        "test": "print-agent-secrets.client.CreatePodEnrollment.answer"
+      },
+      {
+        "holder": "(*github.com/sjawhar/envoy/cmd/cipher.client).TokenLogin struct{CredentialID redact.RemoteText \"json:\\\"credential_id\\\"\"}",
+        "test": "print-agent-secrets.client.TokenLogin.answer"
+      },
+      {
         "holder": "github.com/sjawhar/envoy/cmd/cipher-devrelay.apiError",
         "test": "print-devrelay.apiError"
       },
@@ -4291,6 +4359,300 @@
       "production": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode's decodeText: a box member's own type error, which names no field, names its member through failingMember"
     },
     {
+      "id": "print-agent-secrets.RequestResult",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.RequestResult",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.RequestResult: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.requestDecision",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.requestDecision",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.requestDecision: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.RequestStatus",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.RequestStatus",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.RequestStatus: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.Grant",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.Grant",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.Grant: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.SelfResult",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.SelfResult",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.SelfResult: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.OperatorMachine",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.OperatorMachine",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.OperatorMachine: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.OperatorMachines",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.OperatorMachines",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.OperatorMachines: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.OperatorGrantEnrollment",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.OperatorGrantEnrollment",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.OperatorGrantEnrollment: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.OperatorGrant",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.OperatorGrant",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.OperatorGrant: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.OperatorGrants",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.OperatorGrants",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.OperatorGrants: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.AppliedNarrowing",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.AppliedNarrowing",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.AppliedNarrowing: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.GrantValues",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.GrantValues",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.GrantValues: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.Reread",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.Reread",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.Reread: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.googleUserinfo",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.googleUserinfo",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.googleUserinfo: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.enrollUnderCredential.answer",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.enrollUnderCredential.answer",
+      "production": "github.com/sjawhar/envoy/cmd/cipher.enrollUnderCredential struct{EnrollmentID redact.RemoteText \"json:\\\"enrollment_id\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.client.CreatePodEnrollment.answer",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.client.CreatePodEnrollment.answer",
+      "production": "(*github.com/sjawhar/envoy/cmd/cipher.client).CreatePodEnrollment struct{EnrollmentID redact.RemoteText \"json:\\\"enrollment_id\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.client.TokenLogin.answer",
+      "requirement": "r2-held",
+      "package": "./cmd/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.client.TokenLogin.answer",
+      "production": "(*github.com/sjawhar/envoy/cmd/cipher.client).TokenLogin struct{CredentialID redact.RemoteText \"json:\\\"credential_id\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "agentsecrets-answer-words-request",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/request",
+      "production": "agent-secrets cmdRequest: request_id, state and detail held as redact.RemoteText with the request's record, printed through idWordsOf and cipheraddr.Address.WordsOf (printDetail)"
+    },
+    {
+      "id": "agentsecrets-answer-words-request-pending",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/request-pending",
+      "production": "agent-secrets cmdRequest and waitingOn: the approver and approve_url held as redact.RemoteText with the request's record, printed through cipheraddr.Address.WordsOf"
+    },
+    {
+      "id": "agentsecrets-answer-words-status",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/status",
+      "production": "agent-secrets cmdStatus: state, grant_id, decision.by and detail held as redact.RemoteText with the read's record, printed through cipheraddr.Address.WordsOf and idWordsOf"
+    },
+    {
+      "id": "agentsecrets-answer-words-status-pending",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/status-pending",
+      "production": "agent-secrets cmdStatus and waitingOn: the approver and approve_url held as redact.RemoteText with the read's record"
+    },
+    {
+      "id": "agentsecrets-answer-words-self",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/self",
+      "production": "agent-secrets cmdSelf: enrollment_id, kind, operator and each grant's ids held as redact.RemoteText with the read's record, printed through idWordsOf and cipheraddr.Address.WordsOf"
+    },
+    {
+      "id": "agentsecrets-answer-words-exec-denied",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-denied",
+      "production": "agent-secrets cmdExec and deniedBecause: the request id and the detail held as redact.RemoteText with the request's record, printed through idWordsOf and cipheraddr.Address.WordsOf"
+    },
+    {
+      "id": "agentsecrets-answer-words-exec-pending",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-pending",
+      "production": "agent-secrets cmdExec, reportPending, waitingOn and statusHint: the request id, approver and approve_url held as redact.RemoteText with the request's record"
+    },
+    {
+      "id": "agentsecrets-answer-words-exec-state",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-state",
+      "production": "agent-secrets cmdExec: an unexpected state held as redact.RemoteText, told apart as it came (stateOf) and printed as the rule reads it with the request's record"
+    },
+    {
+      "id": "agentsecrets-answer-words-exec-handover",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-handover",
+      "production": "agent-secrets cmdExec's judge hand-over line: the polled approver and approve_url held as redact.RemoteText with the poll's record (waitingOn)"
+    },
+    {
+      "id": "agentsecrets-answer-words-exec-poll",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-poll",
+      "production": "agent-secrets cmdExec: the request id polls send back only as RemoteText.SendBack answers it, and one it answers nothing for is read again by no poll"
+    },
+    {
+      "id": "agentsecrets-answer-words-exec-grant",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-grant",
+      "production": "agent-secrets cmdExec: the grant id the release sends back, and the airlock names, only as RemoteText.SendBack answers it"
+    },
+    {
+      "id": "agentsecrets-answer-words-exec-narrowing",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-narrowing",
+      "production": "agent-secrets narrowedAsAsked: the applied narrowing held as AppliedNarrowing (redact.RemoteText), compared as it came and printed as the rule reads it beside a clean address, cipheraddr.WordsNotPrinted beside any other"
+    },
+    {
+      "id": "agentsecrets-answer-words-exec-airlock-names",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-airlock-names",
+      "production": "agent-secrets airlockVars: the AWS pair refusal names a release key only where this run asked for it (releasedName)"
+    },
+    {
+      "id": "agentsecrets-answer-words-exec-github-token",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-github-token",
+      "production": "agent-secrets githubTokensAlone: the --github-token refusals name a released key only where this run asked for it (releasedName, releasedNames)"
+    },
+    {
+      "id": "agentsecrets-answer-words-ttl-revoke",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/ttl-revoke",
+      "production": "agent-secrets grantedLifetime: the grant id it revokes sent back only as RemoteText.SendBack answers it, and printed through idWordsOf"
+    },
+    {
+      "id": "agentsecrets-answer-words-ttl-cancel",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/ttl-cancel",
+      "production": "agent-secrets grantedLifetime: the request id it cancels sent back only as RemoteText.SendBack answers it, and printed through idWordsOf"
+    },
+    {
+      "id": "agentsecrets-answer-words-grant-list",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/grant-list",
+      "production": "agent-secrets grantRow: each cell's field held as redact.RemoteText with the list's record, printed through idWordsOf and cipheraddr.Address.Words of the rule's reading"
+    },
+    {
+      "id": "agentsecrets-answer-words-machine-list",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/machine-list",
+      "production": "agent-secrets machineRow: the credential id, host and approver held as redact.RemoteText with the list's record, printed through idWordsOf and cipheraddr.Address.WordsOf"
+    },
+    {
+      "id": "agentsecrets-answer-words-login",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAnEnrollmentIDTheBrokerEchoesIsNotKept/login",
+      "production": "agent-secrets enrollUnderCredential: the enrollment id held as redact.RemoteText with the registration's record and taken only as RemoteText.SendBack answers it"
+    },
+    {
+      "id": "agentsecrets-answer-words-pod-enrollment",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAnEnrollmentIDTheBrokerEchoesIsNotKept/pod-enrollment",
+      "production": "agent-secrets CreatePodEnrollment: the enrollment id held as redact.RemoteText with the enrolment's record and taken only as RemoteText.SendBack answers it"
+    },
+    {
+      "id": "agentsecrets-answer-words-pod-credential",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAnEnrollmentIDTheBrokerEchoesIsNotKept/pod-credential",
+      "production": "agent-secrets TokenLogin: the credential id held as redact.RemoteText with the login's record and taken only as RemoteText.SendBack answers it"
+    },
+    {
+      "id": "agentsecrets-answer-words-reread-reason",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestARereadAnswerPrintsNoProofItEchoes/reread-reason",
+      "production": "agent-secrets reread: the reread's reason held as redact.RemoteText (Reread) with the signed reread's record, printed through cipheraddr.Address.WordsOf"
+    },
+    {
+      "id": "agentsecrets-answer-words-reread-type",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestARereadAnswerPrintsNoProofItEchoes/reread-type",
+      "production": "agent-secrets reread, rereadValue and servedTypeName: the reread's type held as redact.RemoteText (Reread) with the signed reread's record"
+    },
+    {
+      "id": "agentsecrets-answer-words-retag-type",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestARereadAnswerPrintsNoProofItEchoes/retag-type",
+      "production": "agent-secrets rereadRetag and servedTypeName: the reread's type held as redact.RemoteText (Reread), compared as it came and printed through cipheraddr.Address.WordsOf"
+    },
+    {
+      "id": "agentsecrets-answer-words-userinfo-email",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestTheUserinfoEmailPrintsNoTokenItsReadCarried/an_email_that_echoes_the_bearer",
+      "production": "agent-secrets gcpUserinfo and personEmail: the email held as redact.RemoteText (googleUserinfo) with the read's record and taken only as RemoteText.SendBack answers it"
+    },
+    {
       "id": "print-devrelay.apiError",
       "requirement": "r2-held",
       "package": "./cmd/cipher-devrelay",
@@ -6852,6 +7214,81 @@
       "site": "agent-secrets-devrelay machine-approve's line for a looked-up state that is not pending, which printed the state as the rule reads it beside a broker address that is not clean",
       "source": "the class search of the retried-trade finding",
       "guard": "devrelay-machine-approve-state-fragment"
+    },
+    {
+      "site": "agent-secrets request form's request_id, state, detail and waiting line, decoded from a 2xx answer into plain strings and printed without the request's record",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-request"
+    },
+    {
+      "site": "agent-secrets status form's state, grant_id, decided_by, detail and waiting line, decoded into plain strings and printed without the read's record",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-status"
+    },
+    {
+      "site": "agent-secrets self's enrollment, kind, operator and grant ids, decoded into plain strings and printed without the read's record",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-self"
+    },
+    {
+      "site": "agent-secrets exec form's request id, approver, page, detail, state and hand-over lines, decoded into plain strings and printed without the request's record",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-exec-pending"
+    },
+    {
+      "site": "agent-secrets exec form's polls and release, which sent the broker's request and grant ids back whatever they held",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-exec-poll"
+    },
+    {
+      "site": "agent-secrets narrowedAsAsked, which printed the broker's applied github_app raw",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-exec-narrowing"
+    },
+    {
+      "site": "agent-secrets airlockVars' AWS pair refusal, which printed the release's airlock name keys raw",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-exec-airlock-names"
+    },
+    {
+      "site": "agent-secrets githubTokensAlone's refusals, which printed the release's value keys raw",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-exec-github-token"
+    },
+    {
+      "site": "agent-secrets grantedLifetime's --ttl refusal, which printed the request and grant ids without the record and sent them back whatever they held",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-ttl-revoke"
+    },
+    {
+      "site": "agent-secrets grant list's table cells, decoded into plain strings and printed without the list's record",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-grant-list"
+    },
+    {
+      "site": "agent-secrets machine list's table cells, decoded into plain strings and printed without the list's record",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-machine-list"
+    },
+    {
+      "site": "agent-secrets login's enrollment id, decoded into a plain string, kept, signed with and printed without the registration's record",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-login"
+    },
+    {
+      "site": "agent-secrets enroll --pod's enrollment and credential ids, decoded into plain strings, kept, signed with and printed without the record",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-pod-enrollment"
+    },
+    {
+      "site": "agent-secrets secret forms' reread reason and type lines (reread, rereadValue, rereadRetag, servedTypeName), decoded into plain strings and printed without the signed reread's record",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-reread-reason"
+    },
+    {
+      "site": "agent-secrets --owner me's Google userinfo email, decoded into a plain string and printed without the read's record",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-answer-words-userinfo-email"
     },
     {
       "site": "an answer's status line printed as the answering party wrote it (net/http Response.Status), at 33 sites of both modules",

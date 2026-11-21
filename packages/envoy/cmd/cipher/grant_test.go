@@ -46,7 +46,7 @@ func TestGrantListNamesTheApproverAndTheDecider(t *testing.T) {
 		owner = "ada@example.com"
 		judge = "judge:claude-opus-4-6"
 	)
-	owned := func(s string) *string { return &s }
+	owned := boxOf
 	for _, tc := range []struct {
 		name              string
 		grant             OperatorGrant
@@ -54,17 +54,17 @@ func TestGrantListNamesTheApproverAndTheDecider(t *testing.T) {
 	}{
 		{
 			name:     "the model judge approved it in the owner's stead",
-			grant:    OperatorGrant{Granted: "approval", Approver: owned(owner), DecidedBy: owned(judge)},
+			grant:    OperatorGrant{Granted: box("approval"), Approver: owned(owner), DecidedBy: owned(judge)},
 			approver: owner, decider: judge,
 		},
 		{
 			name:     "the owner approved it herself",
-			grant:    OperatorGrant{Granted: "approval", Approver: owned(owner), DecidedBy: owned(owner)},
+			grant:    OperatorGrant{Granted: box("approval"), Approver: owned(owner), DecidedBy: owned(owner)},
 			approver: owner, decider: owner,
 		},
 		{
 			name:     "the policy gave it without asking",
-			grant:    OperatorGrant{Granted: "automatic"},
+			grant:    OperatorGrant{Granted: box("automatic")},
 			approver: "-", decider: "-",
 		},
 	} {

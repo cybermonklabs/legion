@@ -2,7 +2,9 @@
 //
 // How the request, status and exec forms word a broker's answer about a request: who decides it and
 // where, the broker's sentence about it, and its id, each as the broker's address lets its answer
-// print (cipheraddr.Address.Words), and the command that reads it again.
+// print (cipheraddr.Address.WordsOf), and the command that reads it again. Each member is held as
+// redact.RemoteText, which Answer.Decode holds with the record of the request it answers, so beside
+// a clean address it prints as the rule reads it with that request's credentials redacted.
 package main
 
 import (
@@ -10,18 +12,20 @@ import (
 	"io"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // reportPending says, once, before the exec form's wait, who decides the request — a person, or
 // the model judge while it holds the request — where the secrets it would inject come from (src),
 // and on which page of the broker a person decides it when its answer names one (waitingOn).
 // shownID is the request's id as the exec form prints it.
-func reportPending(stderr io.Writer, base cipheraddr.Address, shownID string, approver *string, brokerPage string, judging bool, wait time.Duration, src source) {
+func reportPending(stderr io.Writer, base cipheraddr.Address, shownID string, approver *redact.RemoteText, brokerPage redact.RemoteText, judging bool, wait time.Duration, src source) {
 	fmt.Fprintf(stderr, "agent-secrets: request %s to %s is waiting for approval; waiting up to %s\n", shownID, src, wait)
 	fmt.Fprintf(stderr, "agent-secrets: %s\n", waitingOn(base, approver, brokerPage, judging))
 }
@@ -39,29 +43,30 @@ func reportPending(stderr io.Writer, base cipheraddr.Address, shownID string, ap
 // opens the broker themselves. The broker names an approver for every pending request; one from
 // before it did names none, and the sentence says so rather than guessing. The page and the
 // approver are the broker's, so each prints as the broker's address base lets its answer print
-// (cipheraddr.Address.Words): on one line beside a clean address, Go-quoted where a control
-// character in it would start a line of its own, and not at all beside one that carries a
-// credential.
+// (cipheraddr.Address.WordsOf): on one line beside a clean address, Go-quoted where a control
+// character in it would start a line of its own, with the credentials the request carried
+// redacted, and not at all beside one that carries a credential. The approver is told apart from
+// anyone as it came (RemoteText.Equal).
 //
 // A request the model judge holds (judging, the answer's judge_deciding) carries no page: its
 // keys are ones the judge decides, so the sentence says the judge is deciding it and that nobody
 // is asked, and never that its approver must approve it. If the judge cannot decide it, a later
 // answer carries the page, and the exec form says so.
-func waitingOn(base cipheraddr.Address, approver *string, brokerPage string, judging bool) string {
+func waitingOn(base cipheraddr.Address, approver *redact.RemoteText, brokerPage redact.RemoteText, judging bool) string {
 	if judging {
 		return "the model judge is deciding it; nobody is asked to approve it unless the judge cannot decide it"
 	}
 	where := ""
-	if brokerPage != "" {
-		where = ": " + base.Words(brokerPage)
+	if !brokerPage.IsEmpty() {
+		where = ": " + base.WordsOf(brokerPage)
 	}
 	switch {
 	case approver == nil:
 		return "waiting for approval on the secrets broker" + where + "; the broker does not say whose"
-	case *approver == record.AnyoneApprover:
+	case approver.Equal(record.AnyoneApprover):
 		return "waiting for anyone signed in to the secrets broker to approve it" + where
 	default:
-		return "waiting for " + base.Words(*approver) + " to approve it on the secrets broker" + where
+		return "waiting for " + base.WordsOf(*approver) + " to approve it on the secrets broker" + where
 	}
 }
 
@@ -71,25 +76,46 @@ func waitingOn(base cipheraddr.Address, approver *string, brokerPage string, jud
 // line on stderr then knows which secret it may not have and that asking again will not help,
 // rather than only that something was denied. A broker that recorded no detail, and one from
 // before the field, adds nothing, so such a denial reads exactly as it always has. The sentence
-// prints as the broker's address base lets its answer print (cipheraddr.Address.Words).
-func deniedBecause(base cipheraddr.Address, detail *string) string {
+// prints as the broker's address base lets its answer print (cipheraddr.Address.WordsOf).
+func deniedBecause(base cipheraddr.Address, detail *redact.RemoteText) string {
 	if detail == nil {
 		return ""
 	}
-	return ": " + base.Words(*detail)
+	return ": " + base.WordsOf(*detail)
 }
 
 // printDetail writes the broker's own sentence about a request, the one the request row keeps as
 // its decision_detail, as the "detail: <text>" line the request and status forms both end with,
-// as the broker's address base lets its answer print (cipheraddr.Address.Words). A broker that
+// as the broker's address base lets its answer print (cipheraddr.Address.WordsOf). A broker that
 // recorded none, and one from before the field, writes no line at all, so such an answer reads
 // exactly as it always has.
-func printDetail(stdout io.Writer, base cipheraddr.Address, detail *string) {
+func printDetail(stdout io.Writer, base cipheraddr.Address, detail *redact.RemoteText) {
 	if detail == nil {
 		return
 	}
-	fmt.Fprintf(stdout, "detail: %s\n", base.Words(*detail))
+	fmt.Fprintf(stdout, "detail: %s\n", base.WordsOf(*detail))
 }
+
+// requestStates are the states of a request this CLI acts on, as the broker spells them.
+var requestStates = []string{"pending", "granted", "denied", "cancelled", "expired"}
+
+// stateOf is the one of requestStates the broker's state is, compared as it came
+// (RemoteText.Equal), and "" for any other: a word of this CLI's own, which a line may name
+// whatever the address.
+func stateOf(state redact.RemoteText) string {
+	for _, known := range requestStates {
+		if state.Equal(known) {
+			return known
+		}
+	}
+	return ""
+}
+
+// notSentBack is what a line says of an id the broker answered that this client does not send
+// back to it (RemoteText.SendBack answers no text): one the rule does not print as it came - it
+// echoes a credential its request carried, or the rule cannot read it as clean - which no request
+// carries and no file keeps, since nothing of a field leaves it that a print of it does not show.
+const notSentBack = "its id is text the rule does not print as it came, which this command sends nowhere"
 
 // brokerIDShape is the shape of an id the broker makes: a lower-case UUID, which it gives every
 // request, grant and enrollment (uuid.NewString, uuid.New) and every launcher credential.
@@ -103,12 +129,26 @@ var brokerIDShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 // credential, and a person needs it to follow the request (statusHint) beside an address Clean
 // refuses only for its host, such as one with an underscore or a trailing dot. An id the address
 // holds is the one value an answerer there could echo to have it print - a password that is a
-// UUID, as many API tokens are - so it prints as Words.
+// UUID, as many API tokens are - so it prints as Words. id is text this client keeps: an id
+// RemoteText.SendBack answered, which is the rule's reading of the id with its request's
+// credentials redacted; an id held as the box prints through idWordsOf.
 func idWords(base cipheraddr.Address, id string) string {
 	if !base.Clean() && brokerIDShape.MatchString(id) && plainAddress(base) && !addressHolds(base, id) {
 		return id
 	}
 	return base.Words(id)
+}
+
+// idWordsOf is idWords of id, an id held as the broker answered it: the id as RemoteText.SendBack
+// answers it, where the rule prints it as it came, by idWords' rule, so its UUID exception beside
+// an address that is not clean is judged on that text; and any other id as base lets the broker's
+// words print (cipheraddr.Address.WordsOf) - beside a clean address as the rule reads it, with the
+// credentials its request carried redacted.
+func idWordsOf(base cipheraddr.Address, id redact.RemoteText) string {
+	if text, sent := id.SendBack(); sent {
+		return idWords(base, text)
+	}
+	return base.WordsOf(id)
 }
 
 // plainAddress reports whether base, as written, has no user info, no query, no fragment and no
@@ -131,17 +171,57 @@ func addressHolds(base cipheraddr.Address, id string) bool {
 }
 
 // statusHint is the command that reads requestID's state again, as a person pastes it: agent-secrets
-// status and the id, quoted for the shell, where the id prints as it is (idWords); beside a clean
-// address, an id with a control character in it Go-quoted, as the lines before it print it; and
-// beside an address that is not clean, for an id that does not print, the form to run and that
-// its id is not printed, since a command with no id would not run.
-func statusHint(base cipheraddr.Address, requestID string) string {
-	shown := idWords(base, requestID)
+// status and the id, quoted for the shell, where the id prints as it came (idWordsOf, of the text
+// RemoteText.SendBack answers); beside a clean address, an id the rule changes as the lines before
+// it print it - Go-quoted for a control character, a credential its request carried redacted; and
+// beside an address that is not clean, for an id that does not print, the form to run and that its
+// id is not printed, since a command with no id would not run.
+func statusHint(base cipheraddr.Address, requestID redact.RemoteText) string {
+	id, sent := requestID.SendBack()
+	shown := idWordsOf(base, requestID)
 	switch {
-	case shown == requestID:
-		return "Check it with: agent-secrets status " + shellWord(requestID)
+	case sent && shown == id:
+		return "Check it with: agent-secrets status " + shellWord(id)
 	case base.Clean():
 		return "Check it with: agent-secrets status " + shown
 	}
 	return "Check it with agent-secrets status and the request's id, which is not printed: the broker's address is not clean, and the id is no UUID the broker makes apart from the address's own text"
+}
+
+// unaskedNames is what a line prints in place of the names a release holds that this run did not
+// ask for (releasedName): a key of the broker's answer, which no record holds.
+const unaskedNames = "not printed: a name of the broker's answer, which the rule cannot read with the release request's credentials redacted"
+
+// releasedName is name, a name a release holds - a key of its values or of its airlock's names -
+// as a line names it: as this run asked for it (asked, the names the person typed, which the key
+// equals as it came), and otherwise as a name this run did not ask for, not printed. A key is the
+// broker's text, or the text of whatever answers in its place, which can echo the release's Proof
+// header; encoding/json decodes a key into no redact.RemoteText, so no record of the request holds
+// it and the rule could not read it with that request's credentials redacted.
+func releasedName(name string, asked []string) string {
+	if slices.Contains(asked, name) {
+		return name
+	}
+	return "a name this run did not ask for (" + unaskedNames + ")"
+}
+
+// releasedNames is names, each a name a release holds, as a line lists them: each this run asked
+// for as it typed it, then how many others the release holds, none of them printed (releasedName).
+func releasedNames(names, asked []string) string {
+	var listed []string
+	others := 0
+	for _, name := range names {
+		if slices.Contains(asked, name) {
+			listed = append(listed, name)
+		} else {
+			others++
+		}
+	}
+	switch {
+	case others == 1:
+		listed = append(listed, "1 name this run did not ask for ("+unaskedNames+")")
+	case others > 1:
+		listed = append(listed, fmt.Sprintf("%d names this run did not ask for (%s)", others, unaskedNames))
+	}
+	return strings.Join(listed, ", ")
 }

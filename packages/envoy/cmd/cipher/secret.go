@@ -1000,14 +1000,14 @@ func rereadValue(s *secretSession, stdout, stderr io.Writer, form, name, secretT
 	if !ok {
 		return 1
 	}
-	if !r.Told || r.Type == secretType {
+	if !r.Told || r.Type.Equal(secretType) {
 		return 0
 	}
 	retag, releases := secretType, ""
 	if retag == "" {
 		retag = tagNone
 	}
-	if r.Type == "" {
+	if r.Type.IsEmpty() {
 		releases = ", so every grant of it releases what it stores as it is"
 	}
 	fmt.Fprintf(stderr, "agent-secrets %s: the value of %s in %s stands, but %s serves %s as %s, not %s%s. Run `%s` to write the type again and ask it to reread %s, until that exits 0\n",
@@ -1026,7 +1026,10 @@ func rereadValue(s *secretSession, stdout, stderr io.Writer, form, name, secretT
 // contradicts nothing, so the form exits on the type tag alone; it prints the one line that says
 // the broker's view was not checked, why, and the command that checks it (sayUnchecked).
 // Otherwise r is the broker's own answer to a session's reread, whose type the caller holds to
-// secretType.
+// secretType. The reason and the type are the broker's text, each held with the record of the
+// signed reread (Reread), so a line prints it as the broker's address lets its answer print
+// (cipheraddr.Address.WordsOf), with the reread's proof redacted, and a decision reads it as it
+// came.
 func reread(s *secretSession, stdout, stderr io.Writer, form, name, secretType string, wantServed bool, restorable *time.Time) (Reread, bool) {
 	r, unsigned, err := s.askReread(s.ctx, name)
 	ok := true
@@ -1038,18 +1041,18 @@ func reread(s *secretSession, stdout, stderr io.Writer, form, name, secretType s
 		fmt.Fprintf(stdout, "broker: rereading %s from %s\n", name, s.storeName())
 	default:
 		switch {
-		case r.Served && r.Type != "":
-			fmt.Fprintf(stdout, "broker: serving %s from %s (type %s)\n", name, s.storeName(), s.settings.words(r.Type))
+		case r.Served && !r.Type.IsEmpty():
+			fmt.Fprintf(stdout, "broker: serving %s from %s (type %s)\n", name, s.storeName(), s.broker.baseURL.WordsOf(r.Type))
 		case r.Served:
 			fmt.Fprintf(stdout, "broker: serving %s from %s\n", name, s.storeName())
-		case !wantServed && r.Reason == policy.ReasonAbsent:
+		case !wantServed && r.Reason.Equal(policy.ReasonAbsent):
 			fmt.Fprintf(stdout, "broker: %s is deleted in %s (restorable until %s)\n", name, s.storeName(), formatTime(restorable))
 		default:
-			fmt.Fprintf(stdout, "broker: refusing %s from %s (reason=%s)\n", name, s.storeName(), s.settings.words(r.Reason))
+			fmt.Fprintf(stdout, "broker: refusing %s from %s (reason=%s)\n", name, s.storeName(), s.broker.baseURL.WordsOf(r.Reason))
 		}
 		switch {
 		case wantServed && !r.Served:
-			fmt.Fprintf(stderr, "agent-secrets %s: %s refuses %s after the write to %s (reason=%s)\n", form, s.src.brokerAt(), name, s.storeName(), s.settings.words(r.Reason))
+			fmt.Fprintf(stderr, "agent-secrets %s: %s refuses %s after the write to %s (reason=%s)\n", form, s.src.brokerAt(), name, s.storeName(), s.broker.baseURL.WordsOf(r.Reason))
 			ok = false
 		case !wantServed && r.Served:
 			fmt.Fprintf(stderr, "agent-secrets %s: %s still serves %s after its delete in %s\n", form, s.src.brokerAt(), name, s.storeName())

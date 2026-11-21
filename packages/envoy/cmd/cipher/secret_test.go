@@ -153,6 +153,17 @@ const testAccount = "111122223333"
 // adaSignIn is ada@example.com's Identity Center sign-in in testAccount.
 const adaSignIn = "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc123/ada@example.com"
 
+// rereadReply is a reread's answer as a test's stand-in broker writes it: Reread's wire shape,
+// each field the text the test gives it. Reread holds the reason and the type as
+// redact.RemoteText, which marshals the rule's reading of them, so a stand-in that wrote a Reread
+// would never write the text a test plants.
+type rereadReply struct {
+	Name   string `json:"name"`
+	Served bool   `json:"served"`
+	Reason string `json:"reason"`
+	Type   string `json:"type"`
+}
+
 // secretBroker is a fake broker for the secret forms: GET /v1/settings answers settings, and each
 // reread a session signs is answered by answer and recorded, in order, or refused with the status
 // fail names when it is set, or with failSigned's status and code where only a signed reread is
@@ -161,10 +172,10 @@ const adaSignIn = "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_ab
 type secretBroker struct {
 	mu          sync.Mutex
 	rereads     []string
-	answers     []Reread
+	answers     []rereadReply
 	signers     []string
 	unsigned    []string
-	answer      func(name string) Reread
+	answer      func(name string) rereadReply
 	fail        int
 	failSigned  int
 	signedCode  string
@@ -199,7 +210,7 @@ func (b *secretBroker) lapseSignedRereads() {
 // reads the type tag. The forms find a session's key directory as their broker identity
 // (AGENT_SECRETS_KEY_DIR, newKeyDir), so their rereads are signed and answered in full; a row
 // about a form with no identity sets up the environment that has none (withNoBrokerIdentity).
-func startSecretBroker(t *testing.T, answer func(name string) Reread) *secretBroker {
+func startSecretBroker(t *testing.T, answer func(name string) rereadReply) *secretBroker {
 	t.Helper()
 	return startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1", SecretTypeTag: true}, answer)
 }
@@ -214,7 +225,7 @@ func (b *secretBroker) readNoTypeTag() {
 
 // startSecretBrokerWith is startSecretBroker with settings of the caller's choosing, so a test for
 // another store (e.g. GCP) can reuse the same fake broker.
-func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name string) Reread) *secretBroker {
+func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name string) rereadReply) *secretBroker {
 	t.Helper()
 	b := &secretBroker{answer: answer, settings: settings}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -292,25 +303,25 @@ func withNoBrokerIdentity(t *testing.T) {
 }
 
 // recorded is every reread the broker answered, and its answers, in order.
-func (b *secretBroker) recorded() ([]string, []Reread) {
+func (b *secretBroker) recorded() ([]string, []rereadReply) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return append([]string(nil), b.rereads...), append([]Reread(nil), b.answers...)
+	return append([]string(nil), b.rereads...), append([]rereadReply(nil), b.answers...)
 }
 
 // servedBy answers a reread as the broker would from what sm holds: absent for a secret it does
 // not hold or one scheduled for deletion, no-current-value for one with no AWSCURRENT version,
 // served otherwise, as the type its type tag names.
-func servedBy(sm secretsAPI) func(name string) Reread {
-	return func(name string) Reread {
+func servedBy(sm secretsAPI) func(name string) rereadReply {
+	return func(name string) rereadReply {
 		out, err := sm.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID(name))})
 		switch {
 		case err != nil || out.DeletedDate != nil:
-			return Reread{Name: name, Reason: policy.ReasonAbsent}
+			return rereadReply{Name: name, Reason: policy.ReasonAbsent}
 		case !secrets.HasCurrentVersion(out.VersionIdsToStages):
-			return Reread{Name: name, Reason: policy.ReasonNoCurrentValue}
+			return rereadReply{Name: name, Reason: policy.ReasonNoCurrentValue}
 		}
-		return Reread{Name: name, Served: true, Type: policy.TypeFromTags(secrets.TagMap(out.Tags))}
+		return rereadReply{Name: name, Served: true, Type: policy.TypeFromTags(secrets.TagMap(out.Tags))}
 	}
 }
 
@@ -1725,7 +1736,7 @@ func (r *recordingDeletes) DeleteSecret(ctx context.Context, in *secretsmanager.
 // naming the broker's reason: a set it refuses (no-current-value), a delete it still serves.
 func TestSecretWriteExitsOneWhenTheBrokerRefuses(t *testing.T) {
 	local := secrets.NewLocal(policytest.Secret("REFUSED_KEY", "ada@example.com", policy.TierAgent, "v1"))
-	startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Reason: policy.ReasonNoCurrentValue} })
+	startSecretBroker(t, func(name string) rereadReply { return rereadReply{Name: name, Reason: policy.ReasonNoCurrentValue} })
 	useAWS(t, local, testAccount, adaSignIn)
 	useStdin(t, "v2")
 	stdout, stderr, code := runSecret("set", "REFUSED_KEY")
@@ -1739,7 +1750,7 @@ func TestSecretWriteExitsOneWhenTheBrokerRefuses(t *testing.T) {
 		t.Fatalf("value = %q, want the write to stand at %q", v, "v2")
 	}
 
-	startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Served: true} })
+	startSecretBroker(t, func(name string) rereadReply { return rereadReply{Name: name, Served: true} })
 	if _, stderr, code := runSecret("delete", "REFUSED_KEY"); code != 1 || !strings.Contains(stderr, "still serves REFUSED_KEY") {
 		t.Fatalf("a delete the broker still serves: exit %d, stderr %q; want 1 saying so", code, stderr)
 	}

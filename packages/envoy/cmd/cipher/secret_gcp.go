@@ -168,6 +168,12 @@ const googleUserinfoURL = "https://www.googleapis.com/oauth2/v2/userinfo"
 // (redact.Answered), or the failure's class (redact.Class), and never Google's body or x/oauth2's
 // words: a Google error body has carried a token, and x/oauth2 keeps the token endpoint's body in
 // the error a refused refresh answers. Tests replace it so no form makes a network call for it.
+//
+// The email is Google's text, or the text of whatever answers in Google's place, which can echo
+// the bearer the read carried: it is held as redact.RemoteText with the read's record (the answer
+// googleUserinfo) and answered only as RemoteText.SendBack answers it, since the form prints it and
+// writes it as the secret's owner. An email the rule does not print as it came is
+// errUserinfoEmailWithheld, which names none of it.
 var gcpUserinfo = func(ctx context.Context, creds *google.Credentials) (string, error) {
 	s := redact.Scope[*http.Response](ctx)
 	httpClient := oauth2.NewClient(s.Context(), redact.TokenSource(creds.TokenSource))
@@ -187,14 +193,30 @@ var gcpUserinfo = func(ctx context.Context, creds *google.Credentials) (string, 
 		_, _ = answer.StreamTo(&body)
 		return "", fmt.Errorf("read the Google sign-in's email from %s: %s", googleUserinfoURL, redact.Answered(resp.StatusCode, body.Bytes()))
 	}
-	var userinfo struct {
-		Email string `json:"email"`
-	}
+	var userinfo googleUserinfo
 	if err := answer.Decode(&userinfo); err != nil {
 		return "", fmt.Errorf("decode the Google sign-in's email: %w", err)
 	}
-	return userinfo.Email, nil
+	if userinfo.Email.IsEmpty() {
+		return "", nil
+	}
+	email, sent := userinfo.Email.SendBack()
+	if !sent {
+		return "", errUserinfoEmailWithheld
+	}
+	return email, nil
 }
+
+// googleUserinfo is the part of Google's userinfo answer gcpUserinfo reads: the account's email,
+// Google's text held as redact.RemoteText, which Answer.Decode holds with the read's record.
+type googleUserinfo struct {
+	Email redact.RemoteText `json:"email"`
+}
+
+// errUserinfoEmailWithheld is gcpUserinfo's answer for an email the rule does not print as it
+// came: one that echoes the bearer the read carried, or that the rule cannot read as clean. It
+// names none of it, and no form takes it as anyone's email.
+var errUserinfoEmailWithheld = errors.New("Google's userinfo endpoint answered an email the rule does not print as it came (not printed)")
 
 // gcpClientDial builds the Secret Manager client for creds, every call it makes through
 // interceptor (storeInterceptor, which words each failure). Tests replace it to dial a local fake
@@ -864,11 +886,14 @@ func (b *gcpBackend) requireAccount(context.Context) error { return nil }
 // Google's userinfo endpoint (gcpUserinfo) names the account behind its token. It is the one
 // userinfo call any form makes. It refuses a token userinfo does not answer, which is any token
 // without an email scope (an access token minted for cloud-platform alone, as a lent token or a
-// machine's commonly is), and an account that is no person's (personAccount): a service account's
-// email names no person.
+// machine's commonly is), an account that is no person's (personAccount): a service account's
+// email names no person, and an email the rule does not print as it came
+// (errUserinfoEmailWithheld), which it names nowhere.
 func (b *gcpBackend) personEmail(ctx context.Context) (string, error) {
 	email, err := gcpUserinfo(ctx, b.creds)
 	switch {
+	case errors.Is(err, errUserinfoEmailWithheld):
+		return "", fmt.Errorf("Google's userinfo endpoint names %s as an account whose email is not printed: the rule does not print the email it answered as it came", b.sourcePhrase)
 	case err != nil:
 		return "", fmt.Errorf("Google's userinfo endpoint does not name the account behind %s, as it names none for a token without an email scope: %w", b.sourcePhrase, err)
 	case email == "":
