@@ -964,3 +964,42 @@ test("Reset asks first, then the person's passkeys are gone from the row", async
     reset.mockRestore();
   }
 });
+
+// Reset deletes the person's unused links in its own transaction, so the link an earlier Invite
+// showed in the row no longer enrolls anyone: the row stops showing it, and its Copy, the moment
+// the owner confirms, rather than offer a dead link to send.
+test("Reset takes away the link an earlier Invite showed, since Dispatch deletes it", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: withPasskeys() });
+  const invite = spyOn(api, "createProjectInvitation").mockResolvedValue({
+    expires_at: "2026-11-21T10:00:00Z",
+    url: `https://dispatch.example/enroll#${"a".repeat(43)}`,
+  });
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const reset = spyOn(api, "resetProjectAccessPerson").mockImplementation(
+    panel.lands(withPasskeys({ passkeys: [] }))
+  );
+  try {
+    await user.click(await screen.findByRole("button", { name: `Invite ${ana}` }));
+    const link = { name: `Enrollment link for ${ana}` };
+    expect(await within(personRow(ana)).findByRole("textbox", link)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: `Reset ${ana}` }));
+    await waitFor(() =>
+      expect(within(personRow(ana)).queryByTestId("access-passkey")).not.toBeInTheDocument()
+    );
+    expect(reset).toHaveBeenCalledWith("CORE", ana, keyedAttempt);
+    expect(within(personRow(ana)).queryByRole("textbox", link)).not.toBeInTheDocument();
+    expect(
+      within(personRow(ana)).queryByRole("button", { name: `Copy the link for ${ana}` })
+    ).not.toBeInTheDocument();
+    expect(within(personRow(ana)).queryByTestId("access-invitation-expiry")).not.toBeInTheDocument();
+    // Invite still makes a new link.
+    expect(within(personRow(ana)).getByRole("button", { name: `Invite ${ana}` })).toBeInTheDocument();
+  } finally {
+    panel.restore();
+    invite.mockRestore();
+    confirm.mockRestore();
+    reset.mockRestore();
+  }
+});

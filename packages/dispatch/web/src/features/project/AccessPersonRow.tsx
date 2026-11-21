@@ -54,7 +54,8 @@ const linkFieldClass = `min-h-11 w-full min-w-0 rounded-md px-3 py-2 font-mono t
  * the device logins they approved.
  *
  * The link is shown only in this row, once: its token is in the answer alone, which Dispatch keeps
- * under no write key, so a later Invite makes a new link, which ends this one.
+ * under no write key, so a later Invite makes a new link, which ends this one. A Reset deletes it,
+ * so the row stops showing it once the owner confirms the Reset.
  */
 export function AccessPersonRow({
   email,
@@ -105,6 +106,11 @@ export function AccessPersonRow({
     ) {
       return;
     }
+    // Reset deletes the person's unused links with their passkeys, so the link an earlier Invite
+    // showed here, or made with its answer lost, enrolls nobody now: the row stops offering it.
+    setInvitation(undefined);
+    setCopied(false);
+    invite.forgetUnanswered();
     onReset();
   };
   const shown = passkeys !== undefined;
