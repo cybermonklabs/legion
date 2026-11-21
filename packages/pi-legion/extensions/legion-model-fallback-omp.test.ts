@@ -290,12 +290,21 @@ async function fallbackPane(options: {
         const ended = runsEnded;
         const key = `card-${randomUUID()}`;
         seq += 1;
+        // The send is offered until the session takes it, with no deadline of its own: a pane
+        // that never takes it is left to the test runner's timeout, and one whose omp has exited
+        // fails the send at once with omp's stderr.
+        const stopped: { error?: unknown } = {};
+        rpc.closed.catch((error: unknown) => {
+          stopped.error = error;
+        });
         await sendRelayFrame({
           connection: nc,
           newHeaders: headers,
           sessionID,
           subject: `notifications.agent.${sessionID}`,
           seq,
+          withinMs: Number.POSITIVE_INFINITY,
+          stopped,
           payload: codec.encode(
             JSON.stringify({
               event_id: `evt-${key}`,
