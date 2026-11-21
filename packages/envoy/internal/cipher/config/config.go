@@ -808,8 +808,8 @@ type Config struct {
 	// hub that keeps JetStream in an account of its own names the account its clients sit in, never
 	// the account JetStream sits in (JETSTREAM, which is refused), and must declare it before the
 	// broker names it, since a hub refuses every client placed in an account it does not have. Any
-	// value but $G or one subject token of at most 64 letters, digits, '_' and '-' that is not
-	// shaped like an nkey seed refuses the start, naming the setting and never the value
+	// value but $G or one subject token of at most 64 letters, digits, '_' and '-' that holds no
+	// nkey seed in any spelling refuses the start, naming the setting and never the value
 	// (ParseNATSAccount). All unset, or BROKER_NATS_SERVICES alone holding only edge listeners'
 	// entries, the broker runs no auth service; any other set needs the URLs and the three seed
 	// files.

@@ -50,7 +50,7 @@ func entryTexts(services []NATSService) string {
 // seed files, each holding a seed of its own kind; an audience for a kind of platform token needs
 // that kind's issuer, and an edge listener's account the issuer its identity token comes from; the
 // hub account is $G unset, and refused naming its setting and never its value unless it is $G or
-// one subject token of at most 64 characters that is not shaped like an nkey seed, nor JETSTREAM;
+// one subject token of at most 64 characters that holds no nkey seed in any spelling, nor JETSTREAM;
 // and the shared Envoy bearer is gone, its variables refused naming the account token file that
 // replaces it.
 func TestNATSCalloutSettings(t *testing.T) {
@@ -249,19 +249,25 @@ func TestNATSCalloutSettings(t *testing.T) {
 	// A malformed BROKER_NATS_ACCOUNT refuses the start naming the setting and never the value,
 	// so a credential set there by mistake reaches neither the refusal nor, accepted, the boot
 	// record: a value of two tokens, a space, a wildcard, the system account, one past 64
-	// characters, an nkey seed (one subject token, which the rule's own shape check refuses), and a
-	// URL carrying a password. JETSTREAM, the account a private render keeps JetStream in, is
-	// refused by name: the rule names it.
+	// characters, an nkey seed in any spelling that stays one subject token of at most 64
+	// characters (as nkeys spells it, in lower case, behind a prefix, and split by '-'), each of
+	// which the token rule admits and bus.HoldsSeed finds, and a URL carrying a password.
+	// JETSTREAM, the account a private render keeps JetStream in, is refused by name: the rule
+	// names it.
 	password := rand.Text()
+	seed := seeds[0]
 	accountRefusals := map[string]string{
-		"an account of two tokens":        "a.b",
-		"an account with a space":         "ENVOY X",
-		"an account that is a wildcard":   ">",
-		"the system account":              "$SYS",
-		"an account past 64 characters":   longest + "e",
-		"an account that is an nkey seed": seeds[0],
-		"an account that is a URL":        (&url.URL{Scheme: "nats", User: url.UserPassword("svc", password), Host: "hub-b:4222"}).String(),
-		"the account JetStream sits in":   JetStreamNATSAccount,
+		"an account of two tokens":                     "a.b",
+		"an account with a space":                      "ENVOY X",
+		"an account that is a wildcard":                ">",
+		"the system account":                           "$SYS",
+		"an account past 64 characters":                longest + "e",
+		"an account that is an nkey seed":              seed,
+		"an account that is a lower-case nkey seed":    strings.ToLower(seed),
+		"an account that is a prefixed nkey seed":      "acct_" + seed,
+		"an account that is an nkey seed split by '-'": seed[:29] + "-" + seed[29:],
+		"an account that is a URL":                     (&url.URL{Scheme: "nats", User: url.UserPassword("svc", password), Host: "hub-b:4222"}).String(),
+		"the account JetStream sits in":                JetStreamNATSAccount,
 	}
 	for name, raw := range accountRefusals {
 		t.Run(name, func(t *testing.T) {

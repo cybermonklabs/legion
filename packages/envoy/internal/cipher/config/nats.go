@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/internal/bus"
 )
 
 // NATSAccountVariable is the setting ParseNATSAccount reads.
@@ -30,12 +32,8 @@ const JetStreamNATSAccount = "JETSTREAM"
 const maxNATSAccountLength = 64
 
 // natsAccountName is an account NATSAccountVariable may name besides GlobalNATSAccount: one subject
-// token of letters, digits, '_' and '-'. natsSeedShape is the shape of an nkey seed, an S, its
-// kind's letter and base32 of the rest, 58 characters, which that token admits.
-var (
-	natsAccountName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
-	natsSeedShape   = regexp.MustCompile(`^S[A-Z2-7]{57}$`)
-)
+// token of letters, digits, '_' and '-'.
+var natsAccountName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // ParseNATSAccount is the account BROKER_NATS_ACCOUNT names, raw: the account every client the NATS
 // auth service admits is placed in, which the user JWT it answers names as its audience, and which
@@ -43,14 +41,15 @@ var (
 // assignAccountAndPermissions). Unset, it is GlobalNATSAccount, where a hub with no accounts block
 // keeps every user; a hub that keeps JetStream in an account of its own keeps its clients in
 // another, which this names, and never JetStreamNATSAccount, which is refused. Any other value but
-// GlobalNATSAccount or one subject token of [A-Za-z0-9_-], at most maxNATSAccountLength long and not
-// shaped like an nkey seed, is refused, naming the setting and the rule and never the value: the
-// server writes the account as one token of its own subjects ($SYS.ACCOUNT.<account>.CONNECT), a
-// hub that declares no account of the name refuses every client the service admits, and a
-// credential set here by mistake would otherwise reach the pod's log through the refusal, or
-// through the boot record and the hub's own refusals once accepted. It is the one reader of the
-// setting: the broker's start checks it (loadNATSCallout), and the service reads its account with
-// it (natscallout.Start).
+// GlobalNATSAccount or one subject token of [A-Za-z0-9_-], at most maxNATSAccountLength long and
+// holding no nkey seed (bus.HoldsSeed, the module's one seed detector, which finds a seed in any
+// case, behind a prefix or split by '-' or '_', as that token admits), is refused, naming the
+// setting and the rule and never the value: the server writes the account as one token of its own
+// subjects ($SYS.ACCOUNT.<account>.CONNECT), a hub that declares no account of the name refuses
+// every client the service admits, and a credential set here by mistake would otherwise reach the
+// pod's log through the refusal, or through the boot record and the hub's own refusals once
+// accepted. It is the one reader of the setting: the broker's start checks it (loadNATSCallout),
+// and the service reads its account with it (natscallout.Start).
 func ParseNATSAccount(raw string) (string, error) {
 	switch {
 	case raw == "":
@@ -59,10 +58,10 @@ func ParseNATSAccount(raw string) (string, error) {
 		return raw, nil
 	case raw == JetStreamNATSAccount:
 		return "", fmt.Errorf("%s names %s, the account a private render keeps JetStream in, where no client may sit: name the account its clients sit in", NATSAccountVariable, JetStreamNATSAccount)
-	case len(raw) <= maxNATSAccountLength && natsAccountName.MatchString(raw) && !natsSeedShape.MatchString(raw):
+	case len(raw) <= maxNATSAccountLength && natsAccountName.MatchString(raw) && !bus.HoldsSeed(raw):
 		return raw, nil
 	}
-	return "", fmt.Errorf("%s must be %s or one subject token of at most %d letters, digits, '_' and '-' that is not shaped like an nkey seed; the value it holds is not printed", NATSAccountVariable, GlobalNATSAccount, maxNATSAccountLength)
+	return "", fmt.Errorf("%s must be %s or one subject token of at most %d letters, digits, '_' and '-' that holds no nkey seed; the value it holds is not printed", NATSAccountVariable, GlobalNATSAccount, maxNATSAccountLength)
 }
 
 // loadNATSCallout reads the NATS auth service's settings (Config.NATS). BROKER_NATS_SERVICES is
