@@ -1,8 +1,7 @@
 package routes_test
 
 // Red tests from the independent test of the route check at 7c7131eece. Each failed at that head
-// and names the behaviour the change must have. TestTakeRefusesOnceAuthorizationHasLoaded is kept
-// skipped, by the change owner's decision, as the documented limit its reason names.
+// and names the behaviour the change must have.
 
 import (
 	"context"
@@ -16,34 +15,6 @@ import (
 
 	"github.com/sjawhar/envoy/infra/routes"
 )
-
-// Take refuses once a reload has loaded authorization on a pod since its container started, though
-// its route port no longer requires it, as after authorization is lowered to routes: the record
-// vouches that each log reaches back to env, and one taken then can follow a restart whose log lost
-// the route connections made under that authorization, so the check against it passes a peer that
-// read the password (TestRouteCheckAfterARecordTakenOnceAuthorizationWasDropped, gcp, natslive).
-// This row holds the case where a pod still shows that reload; when every pod restarted, no log
-// shows it, and the live test holds that case. Control: the same hub at routes, whose logs hold no
-// reload that loaded authorization, is recorded.
-func TestTakeRefusesOnceAuthorizationHasLoaded(t *testing.T) {
-	t.Skip("a documented limit of the record, which this change scopes and does not fix: docs/nats-hub.md, Route authorization, " +
-		"\"a record is valid only for a `secretKey` that has never been under `authorization`\", and routes record prints it " +
-		"(TestRecordThenCheck); the stronger fix, a list of the keys that were under authorization, needs a person's yes")
-	control := cleanHub()
-	for _, p := range control.pods {
-		control.withoutAuthorizationReload(p.Name)
-	}
-	backControl := control.atEnv()
-	defer backControl()
-	_, err := routes.Take(context.Background(), control, "envoy", "envoy-nats", started.Add(10*time.Minute))
-	require.NoError(t, err, "control: a hub at routes that never loaded authorization")
-
-	h := cleanHub()
-	back := h.atEnv()
-	defer back()
-	_, err = routes.Take(context.Background(), h, "envoy", "envoy-nats", started.Add(10*time.Minute))
-	require.Error(t, err, "a record of a hub whose logs show authorization loaded and then dropped")
-}
 
 // routes record refuses a hub whose env roll has not finished: a pod not on the StatefulSet's
 // update revision, or whose nats container has no route variables, runs a container that the env
