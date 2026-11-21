@@ -169,7 +169,8 @@ The tailnet leg does these steps, in this order:
 6. It starts the public leg, within the code's 15 minutes, and only in a private or internal
    repository (`gh repo view` reads `PRIVATE` or `INTERNAL`), since a run's inputs are as readable
    as its repository and an internal one is readable by the owning enterprise's members alone; a
-   public repository, or a visibility not read, reads UNKNOWN and starts no run: `gh workflow run
+   public repository, or a visibility not read (a `gh repo view` that exits non-zero reads nothing,
+   whatever it printed), reads UNKNOWN and starts no run: `gh workflow run
    --json` of `OUTSIDE_WORKFLOW` (default `outside-edge-e2e.yaml`) in `OUTSIDE_WORKFLOW_REPO`, its inputs
    `checks=all`, `project`, `peer_session`, `tailnet_user_code`, `sweep_project`, `sweep_fills`
    (the fills file, base64, when fills mode made one) and `OUTSIDE_WORKFLOW_INPUTS` on stdin. With

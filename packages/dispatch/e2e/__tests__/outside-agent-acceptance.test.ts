@@ -814,32 +814,36 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     test(
       "the workflow gets only the inputs its file declares, on stdin, the sweep's project among them, only in a private or internal repository, and a refused dispatch holds the gate at once",
       async () => {
-        const [started, refused, inPublic, unread, internal] = await runStandIns(
+        const [started, refused, inPublic, unread, internal, failedView] = await runStandIns(
           { ...passingControls, workflow: {} },
           { ...passingControls, workflow: { inputs: "edge_host=dispatch.edge.example" } },
           { ...passingControls, workflow: { visibility: "PUBLIC" } },
           { ...passingControls, workflow: { visibility: "" } },
-          { ...passingControls, workflow: { visibility: "INTERNAL" } }
+          { ...passingControls, workflow: { visibility: "INTERNAL" } },
+          { ...passingControls, workflow: { visibility: "INTERNAL", viewExit: 1 } }
         );
         if (
           started === undefined ||
           refused === undefined ||
           inPublic === undefined ||
           unread === undefined ||
-          internal === undefined
+          internal === undefined ||
+          failedView === undefined
         ) {
-          throw new Error("five runs, want five");
+          throw new Error("six runs, want six");
         }
         // An INTERNAL repository, which only the owning enterprise's members read, gets its run.
         expect({ verdicts: verdictsOf(internal.stdout), stdout: internal.stdout }).toMatchObject({
           verdicts: { T1: "PASS", public: "PASS" },
         });
         expect(existsSync(join(internal.state, "workflow-args"))).toBe(true);
-        // A repository read as neither PRIVATE nor INTERNAL gets no run: its inputs would be as
-        // readable as it is. The controls are the first run, in a PRIVATE one, and the one above.
+        // A repository read as neither PRIVATE nor INTERNAL gets no run, nor one whose `gh repo
+        // view` printed INTERNAL and exited 1: that view read nothing. The controls are the first
+        // run, in a PRIVATE one, and the one above.
         for (const [run, said] of [
           [inPublic, "is PUBLIC, not PRIVATE or INTERNAL"],
           [unread, "could not be read"],
+          [failedView, "gh repo view exited 1"],
         ] as const) {
           expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
             verdicts: { T1: "UNKNOWN", public: "UNKNOWN" },
@@ -879,8 +883,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         );
         expect(rowsOf(refused.stdout).get("T1")?.got).toContain("only the public leg approves");
       },
-      // The five runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+      // The six runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short", "short", "short"] })
     );
 
     test(

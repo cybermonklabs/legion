@@ -87,8 +87,12 @@ export interface StandIns {
   /** How the public leg starts: the local command (default), or the workflow through `gh`, its
    *  other inputs those `OUTSIDE_WORKFLOW_INPUTS` holds (default the invite link alone), its
    *  repository's visibility as `gh repo view` reads it (default PRIVATE; INTERNAL and PUBLIC as
-   *  GitHub names them; empty, unreadable). */
-  readonly workflow?: { readonly inputs?: string; readonly visibility?: string };
+   *  GitHub names them; empty, unreadable), and that view's exit status (default 0). */
+  readonly workflow?: {
+    readonly inputs?: string;
+    readonly visibility?: string;
+    readonly viewExit?: number;
+  };
   /** The read sweep beside the leg and on the runner: the writer's one line (default a write
    *  delivered inside the runner's window, in the `write <UTC> <comment id> <message id>
    *  delivered` form); fills mode refusing to write a file, as it refuses one that lacks a fill;
@@ -178,7 +182,10 @@ function standInPath(scratch: Scratch, state: string, publicCommand: string): st
     `#!/usr/bin/env bash
 state='${state}'
 case $1 in
-  repo) [ ! -f "$state/visibility" ] || cat "$state/visibility" ;;
+  repo)
+    [ ! -f "$state/visibility" ] || cat "$state/visibility"
+    exit "$(cat "$state/view-exit" 2>/dev/null || echo 0)"
+    ;;
   api)
     path=\${2#repos/${deployRepository}/contents/}
     path=\${path%%\\?ref=main}
@@ -521,6 +528,7 @@ esac
   if (standIns.t3Kills === true) writeFileSync(join(state, "t3-kills"), "");
   const visibility = standIns.workflow?.visibility ?? "PRIVATE";
   if (visibility !== "") writeFileSync(join(state, "visibility"), `${visibility}\n`);
+  writeFileSync(join(state, "view-exit"), `${standIns.workflow?.viewExit ?? 0}\n`);
   const approve =
     standIns.approve === false ? "" : `: >'${state}/approved-'"$OUTSIDE_TAILNET_USER_CODE"`;
   const moves =
