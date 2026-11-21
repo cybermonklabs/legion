@@ -25,7 +25,7 @@ const varies = "(varies)"
 
 // refusalWriters is each API function that answers a refusal, called (w, status, code, message,
 // …), with the type of the body it answers when that body carries more than code and error.
-var refusalWriters = map[string]string{"writeError": "", "writePageRefusal": "pageRefusal"}
+var refusalWriters = map[string]string{"writeError": "", "writePageRefusal": "pageRefusal", "writeRetryRefusal": "retryRefusal"}
 
 // pageAnswerers is each method of another of the broker's packages that answers a request the
 // API package is serving, with the directory of the package declaring it. A table is needed

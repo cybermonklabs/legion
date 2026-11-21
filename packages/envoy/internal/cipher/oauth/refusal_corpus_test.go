@@ -48,6 +48,8 @@ var corpusRefusals = []corpusRefusal{
 	{oauth2.ErrInvalidRequest, "The subject token was refused: its entry names the project %s, which its person %s cannot see.", []any{corpusProject, corpusPerson}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The subject token was refused: its entry names no project, and its person %s is a restricted member, who sees only the projects that name them.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrTemporarilyUnavailable, "Dispatch could not be asked whether the token's person sees the projects it names; try again.", nil, "exchange.go"},
+	{oauth2.ErrInvalidTarget, "The token names the project %s, which is private or turning private, and a developer box gets no token of such a project: work on it in a session of the project's own namespace.", []any{corpusProject}, "exchange.go"},
+	{oauth2.ErrTemporarilyUnavailable, "Dispatch's answer about the token's projects aged out before the token was stored; try again.", nil, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "The session name '%s' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last %d days. Ask under a name of your own.", []any{corpusSession, 30}, "exchange.go"},
 	// The broker writes this one's description as oauthwire.PodSessionNotRegistered and a colon in
 	// place of the library's invalid_grant sentence (registeredPodSession).

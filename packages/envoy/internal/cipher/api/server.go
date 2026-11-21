@@ -725,6 +725,23 @@ func writePageRefusal(w http.ResponseWriter, status int, code, msg, approveURL s
 	writeJSON(w, status, pageRefusal{Code: code, Error: msg, ApproveURL: approveURL})
 }
 
+// retryRefusal is the body of a refusal that a caller sends again after a wait, beside the code
+// and error every refusal carries.
+type retryRefusal struct {
+	// The refusal's code.
+	Code string `json:"code"`
+	// What was refused, and that the same request is answered after the wait.
+	Error string `json:"error"`
+	// The whole seconds to wait before sending the same request again, at least 1.
+	RetryAfterSeconds int64 `json:"retry_after_seconds"`
+}
+
+// writeRetryRefusal is writeError for a refusal the caller sends again after retryAfterSeconds,
+// which its body carries as retry_after_seconds (retryRefusal).
+func writeRetryRefusal(w http.ResponseWriter, status int, code, msg string, retryAfterSeconds int64) {
+	writeJSON(w, status, retryRefusal{Code: code, Error: msg, RetryAfterSeconds: retryAfterSeconds})
+}
+
 // approveURL is recordID's page on the broker's own approval page (GET /approve/{record}), on the
 // public URL the broker resolved at boot: the one place a person signed in to the broker decides
 // a secret request, which every answer naming a pending one links. A broker with

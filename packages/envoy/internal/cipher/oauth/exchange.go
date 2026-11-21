@@ -441,6 +441,12 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // (registeredPodSession). The claim on the session name is made
 // for every type once the library has built the answer, because that is when the issued token's
 // expiry is set, and the claim must not end before the token it is made for.
+//
+// A developer box's token rests on Dispatch's answers that no project it lists is closed to
+// developer boxes (projectAccess), and is committed only while the oldest of them is younger than
+// projectaccess.CacheTTL (developerBoxAnswerAged). So no token stored more than CacheTTL after a
+// project's closing state began rests on an answer from before it, which is the bound Dispatch
+// waits out before it completes a switch to private on the broker's count of live tokens.
 func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := p.reserveSessions(ctx); err != nil {
@@ -465,7 +471,8 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := p.projectAccess(ctx, subjectTokenType, session); err != nil {
+	developerBoxAsked, err := p.projectAccess(ctx, subjectTokenType, session)
+	if err != nil {
 		p.writeError(ctx, w, request, err)
 		return
 	}
@@ -532,6 +539,10 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 	taken, fixed, err := p.claimSession(txCtx, session)
 	if err != nil {
 		p.writeError(ctx, w, request, err)
+		return
+	}
+	if projectaccess.Stale(p.exchange.Projects, developerBoxAsked) {
+		p.writeError(ctx, w, request, developerBoxAnswerAged())
 		return
 	}
 	if err := p.store.Commit(txCtx); err != nil {
@@ -767,15 +778,39 @@ func dispatchUnreachable(err error) error {
 	return oauth2.ErrTemporarilyUnavailable.WithHint("Dispatch could not be asked whether the token's person sees the projects it names; try again.").WithWrap(err).WithDebugError(err)
 }
 
+// developerBoxClosed is the trade's refusal of a developer box's token that names a project
+// Dispatch answers closed to developer boxes (projectaccess.ErrClosed): invalid_target, because
+// the project is the one target this broker mints a developer box no token for, and every other
+// part of the request may be sound. It names the project, which its person sees.
+func developerBoxClosed(project string, err error) error {
+	return oauth2.ErrInvalidTarget.WithHintf("The token names the project %s, which is private or turning private, and a developer box gets no token of such a project: work on it in a session of the project's own namespace.", project).WithWrap(err).WithDebugError(err)
+}
+
+// developerBoxAnswerAged is the trade's refusal when Dispatch's answers a developer box's token
+// rests on aged past projectaccess.CacheTTL before the token could be stored (exchangeGrant): it
+// stores nothing, and a client asks again, which asks Dispatch afresh.
+func developerBoxAnswerAged() error {
+	return oauth2.ErrTemporarilyUnavailable.WithHint("Dispatch's answer about the token's projects aged out before the token was stored; try again.")
+}
+
 // projectAccess holds the claims decide wrote onto session to what Dispatch says, before the
 // exchange opens its transaction (exchangeGrant). It reads the claims back off the session, so
-// what it checks is exactly what the token will carry.
+// what it checks is exactly what the token will carry. It answers when the oldest answer a
+// developer box's token rests on was asked, and the zero time for every other token.
 //
 // A token acting as its person: every project it names must be one Dispatch says that person
 // sees (projectaccess.Visible), and a restricted member's must name at least one
 // (projectaccess.ListAllowed). A person's sign-in is taken as a full member's and asks no member
 // kind at all, since the broker verified its account against BROKER_SIGNIN_DOMAIN itself; every
 // other trade acting as its person asks.
+//
+// Such a token that names a project is a developer box's: only a machine login's trade and a
+// person's sign-in on a machine act as their person and name projects, an entry's token being
+// named and one of no person naming none. So none of the projects it names may be one Dispatch
+// answers closed to developer boxes (projectaccess.DeveloperBoxAsOf): one in its closing state,
+// or private after its full switch. Such a trade is refused invalid_target naming the project
+// (developerBoxClosed), a renewal included, since a renewal is a fresh trade. A project private
+// on its first day, before its full switch, is not closed, and its trades are answered.
 //
 // A token an operator's entry maps: its one project must be one Dispatch says the entry's person
 // sees, and a pairing Dispatch refuses is refused invalid_request naming both. An account entry
@@ -796,76 +831,81 @@ func dispatchUnreachable(err error) error {
 // misconfiguration, never an outage to mint through.
 //
 // A token that names no person names no project (exchange.ErrProjectsNoPerson) and asks nothing.
-func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, session *oauthstore.ExchangeSession) error {
+func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, session *oauthstore.ExchangeSession) (time.Time, error) {
 	person, _ := session.Extra[ClaimPerson].(string)
 	scope, _ := session.Extra[ClaimProjectScope].(string)
 	name, _ := session.Extra[ClaimSession].(string)
 	if person == "" {
-		return nil
+		return time.Time{}, nil
 	}
 	stored, ok := session.Extra[ClaimProjects].(string)
 	if !ok {
-		return oauth2.ErrServerError.WithDebugf("the decided projects are a %T, not their string", session.Extra[ClaimProjects])
+		return time.Time{}, oauth2.ErrServerError.WithDebugf("the decided projects are a %T, not their string", session.Extra[ClaimProjects])
 	}
 	projects, err := oauthwire.ParseProjects(stored)
 	if err != nil {
-		return oauth2.ErrServerError.WithWrap(err).WithDebugf("the decided projects %q do not parse: %v", stored, err)
+		return time.Time{}, oauth2.ErrServerError.WithWrap(err).WithDebugf("the decided projects %q do not parse: %v", stored, err)
 	}
 	access := p.exchange.Projects
 	if scope == oauthwire.ProjectScopeNamed {
 		if access == nil {
-			return nil
+			return time.Time{}, nil
 		}
 		err := projectaccess.ListAllowed(ctx, access, person, projects)
 		var unseen *projectaccess.NotVisibleError
 		switch {
 		case err == nil:
-			return nil
+			return time.Time{}, nil
 		case errors.As(err, &unseen):
-			return oauth2.ErrInvalidRequest.WithHintf("The subject token was refused: its entry names the project %s, which its person %s cannot see.", unseen.Project, person).WithWrap(err).WithDebugError(err)
+			return time.Time{}, oauth2.ErrInvalidRequest.WithHintf("The subject token was refused: its entry names the project %s, which its person %s cannot see.", unseen.Project, person).WithWrap(err).WithDebugError(err)
 		case errors.Is(err, projectaccess.ErrListRequired):
-			return oauth2.ErrInvalidRequest.WithHintf("The subject token was refused: its entry names no project, and its person %s is a restricted member, who sees only the projects that name them.", person).WithWrap(err).WithDebugError(err)
+			return time.Time{}, oauth2.ErrInvalidRequest.WithHintf("The subject token was refused: its entry names no project, and its person %s is a restricted member, who sees only the projects that name them.", person).WithWrap(err).WithDebugError(err)
 		case errors.Is(err, dispatchread.ErrBrokerRefused):
-			return refusedByDispatch(err)
+			return time.Time{}, refusedByDispatch(err)
 		case errors.Is(err, projectaccess.ErrUnknownMemberKind):
-			return unknownMemberKind(err)
+			return time.Time{}, unknownMemberKind(err)
 		case errors.Is(err, projectaccess.ErrUnchecked):
 			slog.WarnContext(ctx, "broker: the token exchange goes on to mint an entry's token naming no project unchecked, since Dispatch could not be asked what kind of member its person is",
 				"principal", session.Principal, "session", name, "person", person, "error", err)
-			return nil
+			return time.Time{}, nil
 		default:
-			return dispatchUnreachable(err)
+			return time.Time{}, dispatchUnreachable(err)
 		}
 	}
 	if access == nil {
 		if len(projects) == 0 {
-			return nil
+			return time.Time{}, nil
 		}
-		return oauth2.ErrInvalidRequest.WithHintf("The token names projects, and this broker checks no project against Dispatch: its operator sets BROKER_PROJECT_ACCESS_URL and BROKER_PROJECT_ACCESS_TOKEN_FILE to take a list of projects.")
+		return time.Time{}, oauth2.ErrInvalidRequest.WithHintf("The token names projects, and this broker checks no project against Dispatch: its operator sets BROKER_PROJECT_ACCESS_URL and BROKER_PROJECT_ACCESS_TOKEN_FILE to take a list of projects.")
 	}
-	if subjectTokenType == oauthwire.SubjectTokenTypePerson {
-		err = projectaccess.Visible(ctx, access, person, projects)
-	} else {
+	var asked time.Time
+	switch {
+	case len(projects) > 0:
+		asked, err = projectaccess.DeveloperBoxAsOf(ctx, access, person, projects)
+	case subjectTokenType != oauthwire.SubjectTokenTypePerson:
 		err = projectaccess.ListAllowed(ctx, access, person, projects)
 	}
 	var unseen *projectaccess.NotVisibleError
+	var closed *projectaccess.ClosedError
 	switch {
 	case err == nil:
-		return nil
+		return asked, nil
 	case errors.As(err, &unseen):
-		return oauth2.ErrInvalidRequest.WithHintf("The token names a project its person cannot see: %s.", unseen.Project).WithWrap(err).WithDebugError(err)
+		return time.Time{}, oauth2.ErrInvalidRequest.WithHintf("The token names a project its person cannot see: %s.", unseen.Project).WithWrap(err).WithDebugError(err)
+	case errors.As(err, &closed):
+		return time.Time{}, developerBoxClosed(closed.Project, err)
 	case errors.Is(err, projectaccess.ErrListRequired):
-		return oauth2.ErrInvalidRequest.WithHintf("%s is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.", person).WithWrap(err).WithDebugError(err)
+		return time.Time{}, oauth2.ErrInvalidRequest.WithHintf("%s is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.", person).WithWrap(err).WithDebugError(err)
 	case errors.Is(err, dispatchread.ErrBrokerRefused):
-		return refusedByDispatch(err)
+		return time.Time{}, refusedByDispatch(err)
 	case errors.Is(err, projectaccess.ErrUnknownMemberKind):
-		return unknownMemberKind(err)
+		return time.Time{}, unknownMemberKind(err)
 	case errors.Is(err, projectaccess.ErrUnchecked):
 		slog.WarnContext(ctx, "broker: the token exchange goes on to mint a person's token naming no project unchecked, since Dispatch could not be asked what kind of member the person is",
 			"principal", session.Principal, "session", name, "person", person, "error", err)
-		return nil
+		return time.Time{}, nil
 	default:
-		return dispatchUnreachable(err)
+		return time.Time{}, dispatchUnreachable(err)
 	}
 }
 

@@ -27,6 +27,10 @@ func writePageRefusal(w http.ResponseWriter, status int, code, msg, approveURL s
 	writeError(w, status, code, msg)
 }
 
+func writeRetryRefusal(w http.ResponseWriter, status int, code, msg string, retryAfterSeconds int64) {
+	writeError(w, status, code, msg)
+}
+
 func writeJSON(w http.ResponseWriter, status int) { w.WriteHeader(status) }
 
 func served(w http.ResponseWriter) {
