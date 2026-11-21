@@ -164,9 +164,9 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
     end as text
   ) txt on true
   left join lateral (
-    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
+    select translate(search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
              then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-             else left(txt.text, 4000) end) as text
+             else left(txt.text, 4000) end), E'\uE000\uE001', E'\uFFFD\uFFFD') as text
   ) src on true
  order by r.score desc, r.updated_at desc, r.id
 `, legsSource)

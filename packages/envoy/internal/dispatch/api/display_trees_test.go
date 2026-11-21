@@ -666,8 +666,13 @@ type snippetNode struct {
 	Content []snippetNode `json:"content"`
 }
 
+// snippetMark is a mark of a display tree as a test reads it: its type, and the href a link mark
+// carries.
 type snippetMark struct {
-	Type string `json:"type"`
+	Type  string `json:"type"`
+	Attrs struct {
+		Href string `json:"href"`
+	} `json:"attrs"`
 }
 
 // treeText is every character of text the tree holds, in document order.

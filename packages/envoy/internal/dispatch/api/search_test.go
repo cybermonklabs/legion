@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // searchRequestOn is one search sent to one of the two paths the search handler serves
@@ -665,6 +667,85 @@ func TestSearchOnlyReturnsServerInsertedMarks(t *testing.T) {
 	}
 	if strings.Count(snippet, "<mark>") != 1 || !strings.Contains(snippet, "<mark>astrolabe</mark>") {
 		t.Fatalf("snippet %q did not retain exactly one search mark", snippet)
+	}
+}
+
+// The sentinels ts_headline writes around a match (markStart, markEnd) are private-use characters
+// any author can write too, and ts_headline passed an author's through, so the scan read them as
+// highlights the search had made: the HTML snippet drew a <mark> nothing matched, SearchSnippet
+// took them out of the headline and then could not find it in the text that still held them, so
+// the hit showed its raw markdown, and the tree took them out of a link's address, so
+// `[click here](java\uE000script:alert(document.domain))` read as a link to
+// javascript:alert(document.domain) (INFRA-1702). The search replaces each with U+FFFD before
+// ts_headline reads the text (searchPageAndTailSQL's src), so the snippet is the comment's own
+// text with the matched word alone marked, and the link's address keeps a character where the
+// author wrote one.
+func TestSearchSnippetShowsTheSentinelsAnAuthorWroteAsReplacementCharacters(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "SNTL", "Navigation", "No search term here.")
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]string{
+		"body": "Open [click here](java" + markStart + "script:alert(document.domain)) and keep " +
+			markStart + "this" + markEnd + " plain.",
+	}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create comment: status=%d body=%s", created.Code, created.Body.String())
+	}
+	comment := decodeBody[model.Comment](t, created)
+	replaced := strings.NewReplacer(markStart, "\uFFFD", markEnd, "\uFFFD").Replace(comment.Body)
+
+	var body model.SearchResponse
+	if err := json.Unmarshal(treesRequest(t, handler, "/api/v1/search?q=click", true).Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode the search answer: %v", err)
+	}
+	if len(body.Results) != 1 || body.Results[0].Kind != "comment" || body.Results[0].ID != comment.ID {
+		t.Fatalf("results = %#v, want comment %q alone", body.Results, comment.ID)
+	}
+	result := body.Results[0]
+	// The comment is shorter than ts_headline's window, so the snippet is the whole of the text
+	// ts_headline read, set back into it: the stored body with each sentinel its author wrote
+	// replaced, and the one word the query matched marked.
+	if want := markSnippet(strings.Replace(replaced, "click", markStart+"click"+markEnd, 1)); result.Snippet != want {
+		t.Errorf("snippet = %q, want %q", result.Snippet, want)
+	}
+
+	var root snippetNode
+	if err := json.Unmarshal(result.SnippetTree, &root); err != nil {
+		t.Fatalf("decode the snippet tree %s: %v", result.SnippetTree, err)
+	}
+	var text, highlighted strings.Builder
+	var hrefs []string
+	var walk func(snippetNode)
+	walk = func(node snippetNode) {
+		text.WriteString(node.Text)
+		for _, mark := range node.Marks {
+			switch mark.Type {
+			case "link":
+				hrefs = append(hrefs, mark.Attrs.Href)
+			case pmdoc.DisplayHighlightMark:
+				highlighted.WriteString(node.Text)
+			}
+		}
+		for _, child := range node.Content {
+			walk(child)
+		}
+	}
+	walk(root)
+	if want := "Open click here and keep \uFFFDthis\uFFFD plain."; text.String() != want {
+		t.Errorf("the snippet tree reads %q, want %q: %s", text.String(), want, result.SnippetTree)
+	}
+	if highlighted.String() != "click" {
+		t.Errorf("the snippet tree highlights %q, want click alone: %s", highlighted.String(), result.SnippetTree)
+	}
+	if len(hrefs) == 0 {
+		t.Errorf("the snippet tree lost the comment's link: %s", result.SnippetTree)
+	}
+	for _, href := range hrefs {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(href)), "javascript:") {
+			t.Errorf("the snippet tree links to %q: %s", href, result.SnippetTree)
+		}
+		if want := "java\uFFFDscript:alert(document.domain)"; href != want {
+			t.Errorf("the snippet tree's link points at %q, want %q", href, want)
+		}
 	}
 }
 
