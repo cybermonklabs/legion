@@ -1095,18 +1095,20 @@ machine's loopback), or a login directory of this user's own that this user can 
 and others cannot write to, it exits 2 before any request, so no person approves a login the
 machine could not keep there. It exits 2 too, before any request, for a file setting that names
 something other than a regular file, a link to one included: a directory, which no save can
-replace, or a named pipe, which a read waits on until a process writes to it. It reads the login
-a new one replaces, and every login it trades, only from a regular file. It exits 1 when the
-broker refuses the login, the person denies it, its code expires, or the broker answers a poll
-with any other 4xx, with an OAuth error or without one (a proxy's page, a bare challenge), naming
-its status; a poll the broker did not answer, its 429 and a 5xx are polled again, at the broker's
-interval, from 1 s and at most 60 s before any `slow_down` (each of which adds 5 s), and 5 s where
-it names none. It then writes no file. It exits 1 too when a login that was approved cannot be
-kept: it names the login's credential, which the broker holds live, and says to revoke it in
-Machine logins on the page the code was typed into. Where it wrote a copy of the login whole, the
-copy is kept beside the file, under the file's name with `.kept-<uuid>` added, and the message
-names that suffix: moved over the file, the copy is the login and its credential needs no revoke;
-unused, the person deletes it, since it holds the login's key and refresh token, and revokes the
+replace, a named pipe, which a read waits on until a process writes to it, a socket, a device or a
+loop of links. It reads the login a new one replaces, and every login it trades, only from a
+regular file of at most 64 KiB, in a directory it checks before it opens the file. It exits 1
+when the broker refuses the login, the person denies it, its code expires, or the broker answers
+a poll with any other 4xx, with an OAuth error or without one (a proxy's page, a bare
+challenge), naming its status; a poll the broker did not answer, its 429 and a 5xx are polled
+again, at the broker's interval, from 1 s and at most 60 s before any `slow_down` (each of which
+adds 5 s), and 5 s where it names none. It then writes no file. It exits 1 too when a login that
+was approved cannot be kept: it names the login's credential, which the broker holds live, and
+says to revoke it in Machine logins on the page the code was typed into. Where it wrote a copy of
+the login whole, the copy is kept beside the file, under the file's name with `.kept-<uuid>`
+added, and the message names that suffix, whatever fails after it, letting go of the lock
+included: moved over the file, the copy is the login and its credential needs no revoke; unused,
+the person deletes it, since it holds the login's key and refresh token, and revokes the
 credential. A login kept whose lock the command then cannot let go of is kept all the same: it
 exits 0, says why the lock was left, and names no credential to revoke; another process takes that
 lock over once it is 15 s old. A code or an access token is taken to live an hour at most,

@@ -129,8 +129,9 @@ test("a login directory others may write is refused, as a file others may read i
 });
 
 test("a login path that is not a regular file is refused before it is read", async () => {
-  // A read of a named pipe that no process writes to never returns: the read refuses it, and a
-  // link to one, before it opens it. The other end is never opened, so a read would hang the row.
+  // A read of a named pipe that no process writes to never returns: the read opens it, and a link
+  // to one, without waiting, and refuses it on the open file before any read of it. No process
+  // opens it to write, so a read of it would hang the row.
   const pipe = loginPath();
   await mkdir(dirname(pipe), { recursive: true, mode: 0o700 });
   expect(Bun.spawnSync(["mkfifo", pipe]).exitCode).toBe(0);

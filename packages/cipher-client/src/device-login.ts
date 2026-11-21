@@ -433,9 +433,9 @@ export interface KeptDeviceLogin extends DeviceLogin {
  * once, naming the status, rather than polling until the code lapses and saying it expired. Each
  * refusal names {@link DEVICE_LOGIN_COMMAND}, and none writes a file. An approved login that
  * cannot be kept is refused naming its credential, which the broker holds live, and where to
- * revoke it, and a copy of it written whole is kept beside the file ({@link keptCopy}). One kept
- * whose lock is then not let go is answered as kept: the machine uses that login, so it is not one
- * to revoke.
+ * revoke it, and a copy of it written whole is kept beside the file ({@link KeptCopyError}), which
+ * the refusal names whatever fails after it, letting go of the lock included. One kept whose lock
+ * is then not let go is answered as kept: the machine uses that login, so it is not one to revoke.
  */
 export async function finishDeviceLogin(
   started: DeviceAuthorization,

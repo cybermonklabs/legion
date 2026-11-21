@@ -100,8 +100,9 @@ function parseLogin(argv: readonly string[]): ParsedLogin {
  * broker, and any copy of it kept); 2 for a usage error, before any request: no `--device`, no
  * person (`--person`, else `AGENT_SECRETS_PERSON`), no broker (`AGENT_SECRETS_URL`) a device login
  * may use (https, or http on this machine's loopback), a login directory others may write to,
- * another user owns, or this user cannot enter and write to, or a login file setting that names a
- * directory.
+ * another user owns, or this user cannot enter and write to, or a login file setting that names
+ * something other than a regular file (a directory, a named pipe, a socket, a device, a loop of
+ * links).
  */
 export async function loginCommand(
   argv: readonly string[],
@@ -144,8 +145,8 @@ export async function loginCommand(
   try {
     // An http broker off this machine's loopback is refused here, before any request, and so is
     // a login directory another user could replace the login in, one this user cannot enter and
-    // write to, and a file setting that names a directory: no person approves a login this
-    // machine could not keep.
+    // write to, and a file setting that names anything but a regular file: no person approves a
+    // login this machine could not keep.
     deviceLoginBroker(brokerUrl);
     path = deviceLoginFile(env);
     await deviceLoginPlace(path);
