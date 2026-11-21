@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"encoding/binary"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -417,6 +418,89 @@ func TestSentStatementsIgnoreTheSyncsCopyInIgnores(t *testing.T) {
 			if ranCopy != scenario.ran || refused != scenario.refused || ranAfter != 1 || len(sent.Blind()) != 0 {
 				t.Fatalf("recorded the copy %d run and %d refused, the select after it %d run, blind %v; want %d, %d, 1 and nothing it could not read",
 					ranCopy, refused, ranAfter, sent.Blind(), scenario.ran, scenario.refused)
+			}
+		})
+	}
+}
+
+// A refusal ends a copy, and the recorder forgets it: pgx's own CopyFrom into a table that does not
+// exist, whose data and CopyDone pgx sends before it reads the refusal, and an extended COPY FROM
+// whose data the server refuses before the client's CopyDone. In each the copy is recorded as
+// refused, and the select after it on the same connection as run, with nothing the recorder could
+// not read.
+func TestSentStatementsForgetACopyTheServerRefuses(t *testing.T) {
+	ctx := context.Background()
+	database := Open(t)
+	const after = "select 1"
+	for _, scenario := range []struct {
+		name string
+		copy func(t *testing.T, conn *pgx.Conn)
+	}{
+		{name: "pgx's CopyFrom into a missing table", copy: func(t *testing.T, conn *pgx.Conn) {
+			if _, err := conn.PgConn().CopyFrom(ctx, strings.NewReader("1\n"), "copy no_such_table from stdin"); err == nil {
+				t.Fatal("control: the server took a copy into a table that does not exist")
+			}
+		}},
+		{name: "an extended copy whose data is refused before its CopyDone", copy: func(t *testing.T, conn *pgx.Conn) {
+			if _, err := conn.Exec(ctx, "create temporary table copy_refused (n int)"); err != nil {
+				t.Fatalf("create the table: %v", err)
+			}
+			frontend := conn.PgConn().Frontend()
+			send := func(messages ...pgproto3.FrontendMessage) {
+				t.Helper()
+				for _, message := range messages {
+					frontend.Send(message)
+				}
+				if err := frontend.Flush(); err != nil {
+					t.Fatalf("send: %v", err)
+				}
+			}
+			until := func(want func(pgproto3.BackendMessage) bool) {
+				t.Helper()
+				for {
+					message, err := frontend.Receive()
+					if err != nil {
+						t.Fatalf("read the server's answer: %v", err)
+					}
+					if want(message) {
+						return
+					}
+				}
+			}
+			send(&pgproto3.Parse{Query: "copy copy_refused from stdin"}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{})
+			until(func(message pgproto3.BackendMessage) bool {
+				_, copyIn := message.(*pgproto3.CopyInResponse)
+				return copyIn
+			})
+			send(&pgproto3.CopyData{Data: []byte("not a number\n")})
+			until(func(message pgproto3.BackendMessage) bool {
+				_, refused := message.(*pgproto3.ErrorResponse)
+				return refused
+			})
+			send(&pgproto3.Sync{})
+			until(func(message pgproto3.BackendMessage) bool {
+				_, ready := message.(*pgproto3.ReadyForQuery)
+				return ready
+			})
+		}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			sent := &SentStatements{}
+			conn, err := SentStore(t, database, sent).Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatalf("acquire a connection: %v", err)
+			}
+			defer conn.Release()
+			before := len(sent.Statements())
+			scenario.copy(t, conn.Conn())
+			var one int
+			if err := conn.QueryRow(ctx, after).Scan(&one); err != nil {
+				t.Fatalf("the select after the copy: %v", err)
+			}
+			ran, refused := counted(sent, before, after)
+			if ran != 1 || refused != 1 || len(sent.Blind()) != 0 {
+				t.Fatalf("recorded the select after the copy %d run and %d statements refused, blind %v; want 1, 1 (the copy) and nothing it could not read",
+					ran, refused, sent.Blind())
 			}
 		})
 	}

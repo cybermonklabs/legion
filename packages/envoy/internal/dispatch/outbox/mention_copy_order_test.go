@@ -358,10 +358,11 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 //
 // The test sees what the test store's own connections send, and a connection the outbox opened
 // from a copy of their configuration; a read on a connection the code opens itself from a
-// connection string is outside it. The outbox reads the rule only through copyrule.Holder, on the
-// pool it is given, which TestOnlyHolderReadsTheCopyRule (internal/dispatch/outbox/copyrule) keeps
-// so, and a pass whose only reads of the rule moved to such a connection fails the floor of one
-// read when it holds rows.
+// connection string is outside it. The pass reads the rule through copyrule.Holder on the store's
+// pool (copyHolder passes deps.Store.Pool), which is the recorded pool here;
+// TestOnlyHolderReadsTheCopyRule keeps the rule's SQL and names in Holder and each road calling it,
+// and does not check which pool a call is given. A pass whose only reads of the rule moved to
+// another connection fails the floor of one read when it holds rows.
 func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 	const rows = 50
 	const readEvery = 2 * time.Second

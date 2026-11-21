@@ -339,8 +339,10 @@ func (c *sendingConn) sentMessage(kind byte, body []byte) {
 			c.copying = false
 			return
 		}
-		// Any other message ends copy-in with an error the server answers the copy with.
+		// Any other message ends copy-in with an error the server answers the copy with, and the
+		// server takes it as that end, not as a message of its own.
 		c.copying = false
+		return
 	}
 	switch kind {
 	case 'c', 'f':
@@ -502,15 +504,25 @@ func (c *sendingConn) copyIn() {
 }
 
 // refused reads the server's ErrorResponse to the oldest message waiting. An Execute, a simple
-// query or a function call it refuses is recorded as Failed. In an extended query the server then
-// discards every message up to the next Sync, so none of them has any effect, and those sent after
-// this answer are discarded as they come (discarding). A simple query, a function call or a Sync
-// it refuses still waits for its ReadyForQuery.
+// query or a function call it refuses is recorded as Failed. A refusal ends any copy-in, and with
+// it the marks of a CopyDone or CopyFail sent before a CopyInResponse that will not come now
+// (copyEnd), up to the next Sync. In an extended query the server then discards every message up
+// to the next Sync, so none of them has any effect, and those sent after this answer are
+// discarded as they come (discarding). A simple query, a function call or a Sync it refuses still
+// waits for its ReadyForQuery.
 func (c *sendingConn) refused(body []byte) {
 	var refusal pgproto3.ErrorResponse
 	if err := refusal.Decode(body); err != nil {
 		c.lose(fmt.Sprintf("an ErrorResponse that does not decode: %v", err))
 		return
+	}
+	c.copying = false
+	for index := 1; index < len(c.waiting) && c.waiting[index].kind != 'S'; {
+		if c.waiting[index].kind == copyEnd {
+			c.waiting = append(c.waiting[:index], c.waiting[index+1:]...)
+			continue
+		}
+		index++
 	}
 	head := c.waiting[0]
 	switch head.kind {
