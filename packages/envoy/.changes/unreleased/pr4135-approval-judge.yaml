@@ -21,12 +21,16 @@ body: |-
   was lost after it applied leaves only its own row, one still committing is waited for, and where
   the broker cannot tell whether it applied, the row it writes says `applied` `unknown`, never
   false, and ends no hold: the request reaches its person when the hold runs out.
-  A stop of the broker during the approval is logged as that, not as a refusal. A new request or
-  machine login whose reason names the issue keys of more than 16 projects is refused when it is
-  made, on every broker, `400 REQUEST_INVALID` naming the bound; a request stored before that whose
-  reason names more is still shown, its keys counted as naming no project. A sign-in started from
-  a private project's request sends the provider no `login_hint`. A broker with no
-  `BROKER_PROJECT_ACCESS_URL` judges exactly as before and asks Dispatch nothing about projects.
+  A stop of the broker during the approval is logged as that, not as a refusal. A broker with
+  `BROKER_PROJECT_ACCESS_URL` refuses a new request or machine login whose reason names the issue
+  keys of more than 16 projects when it is made, `400 REQUEST_INVALID` naming the bound; a request
+  made before that, or by a broker without the setting, whose reason names more is read whole,
+  every project its keys name asked, 16 at a time and once for each list, and a private one among
+  them hides it. The approval page prints each record, and each other request it lists, as the
+  person rule read it, so a secret tagged with a private project while the page is read is never
+  printed with that project unchecked. A sign-in started from a private project's request sends
+  the provider no `login_hint`. A broker with no `BROKER_PROJECT_ACCESS_URL` judges, and takes a
+  request's reason, exactly as before and asks Dispatch nothing about projects.
 time: 2026-11-16T02:58:17Z
 custom:
     Issue: pr4135

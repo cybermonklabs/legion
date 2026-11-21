@@ -712,18 +712,28 @@ its page, and cannot decide it ([Approve a request](/legion/broker/guides/approv
 tell, a broker with `BROKER_PROJECT_ACCESS_URL` asks Dispatch, for the person reading, about each
 project a request touches, the project of each issue key its reason names included, even in a
 deployment that tags nothing: the reason `INFRA-12: rotate the deploy key` costs one read of
-`INFRA` for that person, kept 30 seconds, and `SHA-256` in a reason reads as a key too. A new
-request whose reason names the issue keys of more than 16 projects is refused when it is made
-(`400 REQUEST_INVALID`, naming the bound), so the reads one request costs are bounded. A request
-stored before that rule whose reason names more is still shown: its keys are not read and count
-as naming no project, as every reader saw it when it was written, while its secrets' tags and its
-credential's projects are still asked, and the broker's log names its row, once every 30 seconds
-however often it is read. While Dispatch cannot answer, a request it must ask about is left out of
-the pending list, and a grant it must ask about out of the grant list of everyone but that grant's
-approver and its session's operator, who still list it and may end it whatever project it
-touches, each with a line in the broker's log naming its record; its page answers
-503 and shows only its record id, and an approval of it decides nothing. Every other request is
-listed and decided as before. A decision reads the projects of both credentials a request has had:
+`INFRA` for that person, kept 30 seconds, and `SHA-256` in a reason reads as a key too. Such a
+broker refuses a new request whose reason names the issue keys of more than 16 projects when it
+is made (`400 REQUEST_INVALID`, naming the bound), so the reads one request costs are bounded; a
+broker without `BROKER_PROJECT_ACCESS_URL` reads no reason's projects and takes any reason. A
+request made before that rule, or by a broker without the setting, whose reason names more is
+read whole: each project its keys name is asked, at most 80 in a reason of 400 characters, and a
+private one among them hides it as any other does. A request's projects are asked 16 at a time,
+and a list asks each project once for each person however many of its requests name it, so a
+reason of 80 projects costs a list five rounds of questions: half a second while Dispatch takes
+100 ms an answer, inside the 5 seconds Dispatch waits for the list. The broker keeps at most
+4,096 answers at once and keeps no new one past that, so many people reading many such requests
+can leave their answers unkept, and each of their lists then asks again. While Dispatch cannot
+answer, a request it must ask about is left out of the pending list, and a grant it must ask
+about out of the grant list of everyone but that grant's approver and its session's operator,
+who still list it and may end it whatever project it touches, each with a line in the broker's
+log naming its record; its page answers 503 and shows only its record id, and an approval of it
+decides nothing. A list gives the requests it must ask Dispatch about at most 3 seconds from the
+moment it reads them, inside the 5 seconds Dispatch waits for it, and asks for each request
+waiting on its reader, and each grant, at once: a request whose answers have not come by then is
+left out of that list and logged the same way, so a project Dispatch is slow to answer, or never
+answers, costs a list only the requests that name it. Every other request is listed and decided
+as before. A decision reads the projects of both credentials a request has had:
 the one that asked, which the lists and the page read, and the one it hangs off now, which a
 session that moved to another box makes it; a person either would hide it from does not decide
 it. The model judge grants no private project's request

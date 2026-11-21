@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -158,6 +159,7 @@ type rigConfig struct {
 	maxConns   int
 	minters    map[string]requests.Minter
 	personPods []personPod
+	projects   projectaccess.Access
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -177,6 +179,15 @@ func WithPoolMaxConns(n int) Option {
 // upstream; none by default.
 func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
+}
+
+// WithProjectAccess gives the broker a client of Dispatch's project access, as
+// BROKER_PROJECT_ACCESS_URL does in cmd/cipherd/main.go: the enrollment and the request machine
+// ask it, and the machine login reads it through that enrollment. None by default, as on a broker
+// with that setting unset. The rig's secrets carry no project tag, so its policy is the same
+// either way.
+func WithProjectAccess(projects projectaccess.Access) Option {
+	return func(c *rigConfig) { c.projects = projects }
 }
 
 // personPod is one WithPersonPod: an account that BROKER_POD_OPERATORS maps to person, and the
@@ -263,6 +274,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	enr := &enroll.Service{
 		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
+		Projects: config.projects,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	// A session name is held here as the real broker holds one with no account paired
@@ -275,7 +287,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
-		PodOperators: podOperators,
+		PodOperators: podOperators, Projects: config.projects,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := NewOAuthProvider(t, st, issuer)

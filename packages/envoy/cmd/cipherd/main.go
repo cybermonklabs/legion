@@ -359,7 +359,7 @@ func main() {
 	var projectRepositories api.ProjectRepositoriesReader
 	if cfg.ProjectAccessURL != "" {
 		account := ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile)
-		projectAccess = projectaccess.New(cfg.ProjectAccessURL, account, nil)
+		projectAccess = projectaccess.New(cfg.ProjectAccessURL, account, projectAccessHTTPClient())
 		projectRepositories = projectrepos.New(cfg.ProjectAccessURL, account, nil)
 	}
 	// The broker's one reader of Google group members, which every decision site asks who is a
@@ -1277,6 +1277,17 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		m.Assignees = dispatch
 	}
 	return m
+}
+
+// projectAccessHTTPClient is the HTTP client the broker reads Dispatch's project access with: Go's
+// default transport, but keeping requests.MaySeeAtOnce idle connections to Dispatch rather than
+// the default two, since one row, and one list, asks Dispatch that many questions at once. With
+// two kept, each round of a row's questions would close all but two of the connections the round
+// before it opened, and open as many again.
+func projectAccessHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = requests.MaySeeAtOnce
+	return &http.Client{Transport: transport}
 }
 
 // The broker's group reader answers every question a decision site asks of group members.
