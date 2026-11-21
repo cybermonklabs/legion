@@ -360,11 +360,11 @@ func (c *Client) RequestCore(ctx context.Context, subject, reply string, header 
 		return nil, err
 	}
 	select {
-	case reply := <-replies:
-		if len(reply.Data) == 0 && reply.Header.Get("Status") == "503" {
+	case answer := <-replies:
+		if len(answer.Data) == 0 && answer.Header.Get("Status") == "503" {
 			return nil, nats.ErrNoResponders
 		}
-		return reply, nil
+		return answer, nil
 	case <-ctx.Done():
 		return nil, cmp.Or(err, ctx.Err())
 	}
