@@ -632,9 +632,8 @@ func checkLog(ctx context.Context, r *Report, src Source, s server, ips map[stri
 	if body, err := src.Log(ctx, pod); err != nil {
 		r.add(pod, Unknown, "its nats container's log could not be read: %v", err)
 	} else {
-		var lines []logLine
-		var whole bool
-		lines, startFinding, whole = serversLines(r, s, parseLog(body))
+		lines, start, whole := serversLines(r, s, parseLog(body))
+		startFinding = start
 		ownLines(r, pod, lines)
 		window, from, loaded := authorizationWindow(r, s, lines, auth)
 		routeConnections(r, pod, window, from, ips, split)
