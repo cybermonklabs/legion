@@ -1615,6 +1615,7 @@
         "files": [
           "packages/envoy/internal/oidc/status_line_test.go",
           "packages/envoy/internal/oidc/oidctest/issuer.go",
+          "packages/envoy/internal/oidc/oidctest/codeflow.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "oidc.status-line/check-client"
@@ -1625,6 +1626,7 @@
         "files": [
           "packages/envoy/internal/oidc/status_line_test.go",
           "packages/envoy/internal/oidc/oidctest/issuer.go",
+          "packages/envoy/internal/oidc/oidctest/codeflow.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "oidc.status-line/exchange"
@@ -1635,6 +1637,7 @@
         "files": [
           "packages/envoy/internal/dispatch/routes/callback_status_line_test.go",
           "packages/envoy/internal/oidc/oidctest/issuer.go",
+          "packages/envoy/internal/oidc/oidctest/codeflow.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "routes.callback-502"
