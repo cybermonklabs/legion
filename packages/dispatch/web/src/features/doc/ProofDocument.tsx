@@ -467,6 +467,7 @@ export function ProofDocument({
     method: "POST",
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
   });
+  const liveMarkdown = liveTextQuery.data?.markdown ?? "";
   const versionMarkdown =
     versionQuery.data !== undefined && "markdown" in versionQuery.data
       ? versionQuery.data.markdown
@@ -1322,12 +1323,8 @@ export function ProofDocument({
         </section>
       ) : versionMarkdown === undefined ? (
         <p>Loading version…</p>
-      ) : showDiff && liveTextQuery.data !== undefined ? (
-        <ChangeView after={liveTextQuery.data.markdown} before={versionMarkdown} />
-      ) : showDiff && liveTextQuery.isError ? (
-        <p>Could not load the current version to compare.</p>
       ) : showDiff ? (
-        <p>Loading the current version…</p>
+        <ChangeView after={liveMarkdown} before={versionMarkdown} />
       ) : (
         <div data-testid="version-view">
           <VersionView

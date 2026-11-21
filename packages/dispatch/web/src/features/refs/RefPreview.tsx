@@ -405,8 +405,7 @@ function Body({
 }
 
 /** The issue's full read, not the summary its links share: the card shows priority, labels, open
- *  asks and the spec, and holds that read only while it is shown. A spec whose text read failed
- *  with no answer is said to be unreadable in place of its text. */
+ *  asks and the spec, and holds that read only while it is shown. */
 function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
   const key = "key" in route ? route.key : undefined;
   const { data: issue } = useQuery({ ...issueQuery(key), enabled: key !== undefined });
@@ -451,11 +450,7 @@ function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
           </span>
         )}
       </span>
-      {specText.isLoadingError ? (
-        <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>
-          Could not load this issue's spec.
-        </span>
-      ) : specMarkdown === undefined || specMarkdown.trim() === "" ? null : (
+      {specMarkdown === undefined || specMarkdown.trim() === "" ? null : (
         <Body markdown={specMarkdown} source={textSourceOf("artifact", spec?.id)} tree={specTree} />
       )}
     </>
@@ -478,7 +473,7 @@ function documentOwner(route: DispatchReferenceRoute): ReactNode {
 }
 
 function DocumentPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
-  const { artifact, markdown, markdownTree, textFailed } = useReferenceData(route, { text: true });
+  const { artifact, markdown, markdownTree } = useReferenceData(route, { text: true });
   if (artifact === undefined) {
     return <Heading>{shortForm(route)}</Heading>;
   }
@@ -493,11 +488,7 @@ function DocumentPreview({ route }: { route: DispatchReferenceRoute }): ReactNod
       {latest === null ? null : (
         <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>v{latest}</span>
       )}
-      {textFailed ? (
-        <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>
-          Could not load this document's text.
-        </span>
-      ) : markdown === undefined || markdown.trim() === "" ? null : (
+      {markdown === undefined || markdown.trim() === "" ? null : (
         <Body
           markdown={markdown}
           source={textSourceOf("artifact", artifact.id)}

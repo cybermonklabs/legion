@@ -67,13 +67,11 @@ interface ReferenceCards {
 /** A Dispatch reference's card: its title, and under it what the target says. A post its author
  *  edited carries ` · edited` after its title, as its byline does. A post its author deleted
  *  has neither title nor text left, so the deleted line is the card's title and nothing is drawn
- *  under it; it never falls back to the words the body wrote, which would read as the post's. A
- *  document whose text read failed with no answer says so under its title. */
+ *  under it; it never falls back to the words the body wrote, which would read as the post's. */
 function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
-  const { title, deleted, description, descriptionTree, edited, textFailed } = useReferenceTarget(
-    card.route,
-    { text: true }
-  );
+  const { title, deleted, description, descriptionTree, edited } = useReferenceTarget(card.route, {
+    text: true,
+  });
   const path = useReferencePath(card.route);
 
   return (
@@ -87,11 +85,7 @@ function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
             {title ?? card.text}
             <EditedMark at={edited} className={`font-normal ${textMutedOnSurfaceMuted}`} />
           </span>
-          {textFailed ? (
-            <span className={`mt-1 block text-xs ${textMutedOnSurfaceMuted}`}>
-              Could not load this document's text.
-            </span>
-          ) : description === undefined ? null : (
+          {description === undefined ? null : (
             <Body markdown={description} tree={descriptionTree} />
           )}
         </>

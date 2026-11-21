@@ -11,7 +11,6 @@ import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type {
-  Artifact,
   AskRead,
   BlockPin,
   CommentRead,
@@ -74,11 +73,11 @@ const issues: Record<string, IssueDetails> = {
   "CORE-2": issue("CORE-2", "Second target"),
 };
 
-function Harness({ children, client }: { children?: ReactNode; client?: QueryClient }): ReactNode {
+function Harness({ children }: { children?: ReactNode }): ReactNode {
   return (
     <MemoryRouter>
       <QueryClientProvider
-        client={client ?? new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
         <Link to="/issues/CORE-1" {...referenceTriggerProps({ key: "CORE-1", kind: "issue" })}>
           first
@@ -884,92 +883,6 @@ test("a document's card shows its owner, name, latest version and text from its 
     getProjectArtifact.mockRestore();
     getArtifactText.mockRestore();
     getProjectDocumentSummary.mockRestore();
-    getIssue.mockRestore();
-  }
-});
-
-const unavailable = () =>
-  new ApiError(503, { code: "DOC_SERVICE_UNAVAILABLE", error: "document service is unavailable" });
-
-// The card of a reference to a document that pins no version draws the document's live text, from
-// the page's read of it. While that read has failed with no answer to draw, the card says the text
-// could not load in place of it.
-test("a document's card whose text read fails says its text could not load", async () => {
-  const getProjectDocumentSummary = spyOn(api, "getProjectDocumentSummary").mockResolvedValue({
-    id: "doc-9",
-    kind: "doc",
-    latest_version: 4,
-    name: "Runbook.md",
-    project: "CORE",
-    slug: "runbook-md",
-  });
-  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(unavailable());
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <Harness client={client}>
-      <Link
-        to="/projects/CORE/documents/runbook-md"
-        {...referenceTriggerProps({ kind: "document", project: "CORE", slug: "runbook-md" })}
-      >
-        the runbook
-      </Link>
-    </Harness>
-  );
-  try {
-    act(() => {
-      screen.getByRole("link", { name: "the runbook" }).focus();
-    });
-    const card = screen.getByRole("tooltip");
-    await waitFor(() => expect(card).toHaveTextContent("Could not load this document's text."));
-    expect({
-      name: card.textContent?.includes("CORE · Runbook.md"),
-      read: client.getQueryState(["artifact", "doc-9", "text"])?.status,
-    }).toEqual({ name: true, read: "error" });
-  } finally {
-    view.unmount();
-    client.clear();
-    getArtifactText.mockRestore();
-    getProjectDocumentSummary.mockRestore();
-  }
-});
-
-// The same for an issue's card, which draws its spec's live text from the same read.
-test("an issue's card whose spec's text read fails says the spec could not load", async () => {
-  const spec: Artifact = {
-    created_at: "2026-09-09T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
-    id: "spec",
-    issue_key: "CORE-1",
-    kind: "doc",
-    name: "spec.md",
-    primary: true,
-    project: "CORE",
-    ref_key: "CORE-1/spec",
-    session_id: null,
-    slug: "spec",
-    versions: [],
-  };
-  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
-    ...(issues["CORE-1"] as IssueDetails),
-    artifacts: [spec],
-  });
-  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(unavailable());
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(<Harness client={client} />);
-  try {
-    act(() => {
-      screen.getByRole("link", { name: "first" }).focus();
-    });
-    const card = screen.getByRole("tooltip");
-    await waitFor(() => expect(card).toHaveTextContent("Could not load this issue's spec."));
-    expect({
-      read: client.getQueryState(["artifact", "spec", "text"])?.status,
-      title: card.textContent?.includes("Design decision"),
-    }).toEqual({ read: "error", title: true });
-  } finally {
-    view.unmount();
-    client.clear();
-    getArtifactText.mockRestore();
     getIssue.mockRestore();
   }
 });

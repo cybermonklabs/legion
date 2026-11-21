@@ -579,53 +579,6 @@ test("ProofDocument compares a selected version with the current settled text wh
   }
 });
 
-// Diff vs current draws its current side from the page's read of the document's live text. While
-// that read has failed with no answer to draw, the diff says it could not load the current version
-// rather than comparing the version with no text at all.
-test("Diff vs current says it could not load the current version while the live text read fails", async () => {
-  const versionOne = {
-    authors: [{ id: "alice", kind: "user" as const }],
-    created_at: "2026-09-09T00:00:00Z",
-    markdown: "Use SQLite",
-    named: false,
-    number: 1,
-    summary: null,
-  };
-  const document = {
-    ...artifact,
-    versions: [
-      {
-        authors: versionOne.authors,
-        created_at: versionOne.created_at,
-        named: false,
-        number: 1,
-        summary: null,
-      },
-    ],
-  };
-  const queryClient = createQueryClient();
-  queryClient.setQueryData(["artifact", artifact.id, "version", 1], versionOne);
-  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  spyOn(api, "getArtifactText").mockRejectedValue(
-    new ApiError(503, {
-      code: "DOC_SERVICE_UNAVAILABLE",
-      error: "document service is unavailable",
-    })
-  );
-  const { view } = renderProofDocument({ document, queryClient, showDiff: true, version: 1 });
-
-  try {
-    await within(view.container).findByText("Could not load the current version to compare.");
-    await act(settle);
-    expect({
-      diff: within(view.container).queryByTestId("change-view"),
-      read: queryClient.getQueryState(["artifact", artifact.id, "text"])?.status,
-    }).toEqual({ diff: null, read: "error" });
-  } finally {
-    view.unmount();
-  }
-});
-
 test("ProofDocument shows the current document when Version changes back to Current", async () => {
   const queryClient = createQueryClient();
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });

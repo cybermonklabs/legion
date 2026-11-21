@@ -141,38 +141,6 @@ test("Unfurl reads the immutable document version named by a reference", async (
   }
 });
 
-// The card of a reference to a document that pins no version draws the document's live text, from
-// the page's read of it. While that read has failed with no answer to draw, the card says the text
-// could not load under its title.
-test("Unfurl says a document's text could not load in its card while the text read fails", async () => {
-  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(coreSummary);
-  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
-    new ApiError(503, {
-      code: "DOC_SERVICE_UNAVAILABLE",
-      error: "document service is unavailable",
-    })
-  );
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <QueryClientProvider client={queryClient}>
-      <Unfurl body="dispatch://CORE-1/artifact/design" />
-    </QueryClientProvider>
-  );
-  try {
-    const card = await within(view.container).findByRole("link", { name: /design\.md/ });
-    await waitFor(() => expect(card.textContent).toContain("Could not load this document's text."));
-    expect({
-      read: queryClient.getQueryState(["artifact", "artifact-1", "text"])?.status,
-      title: card.textContent?.includes("design.md"),
-    }).toEqual({ read: "error", title: true });
-  } finally {
-    view.unmount();
-    queryClient.clear();
-    getArtifactText.mockRestore();
-    getIssueSummary.mockRestore();
-  }
-});
-
 test("Unfurl unfurls a dispatch project document reference with its name and document link", async () => {
   const getProjectDocumentSummary = spyOn(api, "getProjectDocumentSummary").mockResolvedValue({
     id: "artifact-1",
