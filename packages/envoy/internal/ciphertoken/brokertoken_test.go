@@ -232,6 +232,12 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	namedNoName.Person, namedNoName.Service, namedNoName.Projects = "", "system:serviceaccount:ns", nil
 	namedUpperCase := liveToken(caller.jkt, time.Hour)
 	namedUpperCase.Person, namedUpperCase.Service, namedUpperCase.Projects = "", "system:serviceaccount:NS:Name", nil
+	// An account with text after it, and an account with text before it: the grammar is anchored
+	// at both ends, so neither is the account it holds.
+	namedTrailing := liveToken(caller.jkt, time.Hour)
+	namedTrailing.Person, namedTrailing.Service, namedTrailing.Projects = "", "system:serviceaccount:example-ns:example-public===x", nil
+	namedLeading := liveToken(caller.jkt, time.Hour)
+	namedLeading.Person, namedLeading.Service, namedLeading.Projects = "", "xsystem:serviceaccount:example-ns:example-public", nil
 	namedServiceProject := liveToken(caller.jkt, time.Hour)
 	namedServiceProject.Person, namedServiceProject.Service = "", "system:serviceaccount:example-ns:example-public"
 	namedTwo := liveToken(caller.jkt, time.Hour)
@@ -248,6 +254,8 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 		"a named scope naming the bare account prefix":  namedPrefixOnly,
 		"a named scope naming an account with no name":  namedNoName,
 		"a named scope naming an upper-case account":    namedUpperCase,
+		"a named scope naming an account and more":      namedTrailing,
+		"a named scope naming text and an account":      namedLeading,
 		"a named scope naming an account and a project": namedServiceProject,
 		"a named scope naming two projects":             namedTwo,
 		"a list no exchange mints":                      unsorted,

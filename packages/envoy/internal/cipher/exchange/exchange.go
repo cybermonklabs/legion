@@ -98,7 +98,8 @@ var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[A-Z
 // carries it in its `email` claim: lowercase, since that is the one spelling a token holds. It is
 // the grammar the broker's configuration states for the same accounts, repeated here because this
 // package reads no configuration and so cannot import the one that parses it. A Kubernetes
-// account's grammar is oauthwire.AccountSubject, which the resource servers read too.
+// account's grammar is oauthwire.AccountSubject, which the configuration and the resource
+// servers read too.
 var googleAccountPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._%+-]*@[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$`)
 
 // ProjectScope says what a minted token's list of projects means. Its zero value is no scope at
