@@ -77,7 +77,7 @@ env:
       "worker-image": "worker_image",
       "browser-image": "browser_image"
     }
-  CI_OK_PULL_REQUEST_ONLY: '["worker-image"]'
+  CI_OK_PULL_REQUEST_ONLY: '["worker-image", "envoy-smoke", "browser-image"]'
   # why: .github/ci-notes/ci.md#the-jobs-that-run-on-every-change
   CI_OK_ALWAYS_RUN: |
     [
@@ -102,118 +102,118 @@ jobs:
     outputs:
       # Each output reads the one dorny/paths-filter step below. Rule 19 of
       # .github/scripts/check-ci-filters.sh refuses an output naming a filter .github/ci-filters.yaml does not hold.
-      typecheck: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.typecheck }}
-      test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.test }}
+      typecheck: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.typecheck }}
+      test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.test }}
       # why: .github/ci-notes/ci.md#why-the-daemons-go-suite-has-an-output-of-its-own
-      daemon_go_tests: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.daemon_go_tests }}
+      daemon_go_tests: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.daemon_go_tests }}
       # why: .github/ci-notes/ci.md#why-the-plugin-pack-has-an-output-of-its-own
-      plugin_pack: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.plugin_pack }}
+      plugin_pack: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.plugin_pack }}
       # why: .github/ci-notes/ci.md#why-the-private-name-port-harness-has-an-output-of-its-own
-      private_names_port: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.private_names_port }}
+      private_names_port: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.private_names_port }}
       # why: .github/ci-notes/ci.md#why-the-session-message-wait-suite-has-an-output-of-its-own
-      sessions_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.sessions_script }}
+      sessions_script: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.sessions_script }}
       # The guides' layout step of the test job, which has a filter of its own: the job's other
       # steps read none of the guides, so a run that changed none of them skips that step.
-      guide_layout: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.guide_layout }}
+      guide_layout: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.guide_layout }}
       # why: .github/ci-notes/ci.md#one-output-per-testsh-step-of-the-test-job
-      release_push_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.release_push_test }}
-      release_bump_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.release_bump_test }}
-      check_bun_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_bun_version_test }}
-      check_playwright_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_playwright_version_test }}
-      check_bun_workspace_manifests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_bun_workspace_manifests_test }}
-      check_zod_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_zod_version_test }}
-      check_gh_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_gh_version_test }}
-      check_gitleaks_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_gitleaks_version_test }}
-      workflow_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.workflow_paths_test }}
-      check_image_trigger_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_image_trigger_paths_test }}
-      check_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_images_test }}
-      mirror_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.mirror_ci_images_test }}
-      ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_tools_test }}
-      mirror_ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.mirror_ci_tools_test }}
-      check_ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_tools_test }}
-      ci_tools_proof_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_tools_proof_test }}
-      check_action_pins_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_action_pins_test }}
-      check_workflow_files_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_workflow_files_test }}
-      check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
-      check_private_names_terms_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_terms_test }}
-      check_private_names_keys_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_keys_test }}
-      check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
-      check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
-      check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
-      check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
-      repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.repo_paths_test }}
-      select_e2e_proofs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.select_e2e_proofs_test }}
-      go_tagged_tests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_tagged_tests_test }}
-      ci_ok_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_test }}
-      ci_ok_report_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_report_test }}
-      ci_ok_reconcile_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_reconcile_test }}
-      find_pr_payload_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.find_pr_payload_test }}
-      merge_group_cancels_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.merge_group_cancels_test }}
-      main_bypass_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.main_bypass_check_test }}
-      edited_migrations_base_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.edited_migrations_base_test }}
-      dispatch_browser_latest_blobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_latest_blobs_test }}
-      dispatch_browser_run_reads_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_run_reads_test }}
-      dispatch_browser_samples_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_samples_test }}
-      race_memory_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.race_memory_test }}
-      disk_watch_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.disk_watch_test }}
-      priorities_seed_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.priorities_seed_check_test }}
-      check_ci_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_filters_test }}
-      check_ts_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ts_filters_test }}
-      go_test_step_expansion_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_test_step_expansion_test }}
+      release_push_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.release_push_test }}
+      release_bump_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.release_bump_test }}
+      check_bun_version_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_bun_version_test }}
+      check_playwright_version_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_playwright_version_test }}
+      check_bun_workspace_manifests_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_bun_workspace_manifests_test }}
+      check_zod_version_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_zod_version_test }}
+      check_gh_version_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_gh_version_test }}
+      check_gitleaks_version_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_gitleaks_version_test }}
+      workflow_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.workflow_paths_test }}
+      check_image_trigger_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_image_trigger_paths_test }}
+      check_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_ci_images_test }}
+      mirror_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.mirror_ci_images_test }}
+      ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.ci_tools_test }}
+      mirror_ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.mirror_ci_tools_test }}
+      check_ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_ci_tools_test }}
+      ci_tools_proof_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.ci_tools_proof_test }}
+      check_action_pins_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_action_pins_test }}
+      check_workflow_files_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_workflow_files_test }}
+      check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_private_names_test }}
+      check_private_names_terms_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_private_names_terms_test }}
+      check_private_names_keys_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_private_names_keys_test }}
+      check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_plugin_names_test }}
+      check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_fireevent_reasons_test }}
+      check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_daemon_api_contract_test }}
+      check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_release_credentials_test }}
+      repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.repo_paths_test }}
+      select_e2e_proofs_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.select_e2e_proofs_test }}
+      go_tagged_tests_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.go_tagged_tests_test }}
+      ci_ok_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.ci_ok_test }}
+      ci_ok_report_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.ci_ok_report_test }}
+      ci_ok_reconcile_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.ci_ok_reconcile_test }}
+      find_pr_payload_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.find_pr_payload_test }}
+      merge_group_cancels_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.merge_group_cancels_test }}
+      main_bypass_check_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.main_bypass_check_test }}
+      edited_migrations_base_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.edited_migrations_base_test }}
+      dispatch_browser_latest_blobs_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.dispatch_browser_latest_blobs_test }}
+      dispatch_browser_run_reads_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.dispatch_browser_run_reads_test }}
+      dispatch_browser_samples_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.dispatch_browser_samples_test }}
+      race_memory_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.race_memory_test }}
+      disk_watch_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.disk_watch_test }}
+      priorities_seed_check_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.priorities_seed_check_test }}
+      check_ci_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_ci_filters_test }}
+      check_ts_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.check_ts_filters_test }}
+      go_test_step_expansion_test: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.go_test_step_expansion_test }}
       # Selected like any other job now that no run of this workflow is a push to main.
       # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
-      docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
+      docs: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.docs }}
       worker_image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.worker_image }}
       # why: .github/ci-notes/ci.md#why-the-browser-images-build-carries-no-full-ci-term
       browser_image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.browser_image }}
-      contracts: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.contracts }}
-      test_fixtures: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.test_fixtures }}
-      conflicts_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.conflicts_script }}
-      broker_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.broker_client }}
-      envoy_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_client }}
-      pi_shared: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_shared }}
-      pi_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_envoy }}
-      pi_legion: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_legion }}
+      contracts: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.contracts }}
+      test_fixtures: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.test_fixtures }}
+      conflicts_script: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.conflicts_script }}
+      broker_client: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.broker_client }}
+      envoy_client: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.envoy_client }}
+      pi_shared: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.pi_shared }}
+      pi_envoy: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.pi_envoy }}
+      pi_legion: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.pi_legion }}
       # The dashboard's and the proof editor's fast checks: no `full-ci` term, only the
       # dispatched one above, so they come back on every push.
-      dispatch_ui: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_ui }}
+      dispatch_ui: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.dispatch_ui }}
       # why: .github/ci-notes/ci.md#why-the-browser-suite-is-ungated-and-what-the-label-decides
-      dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser }}
-      claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
+      dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.dispatch_browser }}
+      claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.claude_envoy }}
       # why: .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the
-      envoy_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go || 'false' }}
+      envoy_go: ${{ github.event_name == 'workflow_dispatch' && 'false' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go || 'false' }}
       # why: .github/ci-notes/ci.md#why-envoy-gos-fast-half-comes-back-on-every-push
-      envoy_go_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_go_checks }}
-      envoy_infra_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_infra_go }}
+      envoy_go_checks: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.envoy_go_checks }}
+      envoy_infra_go: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.envoy_infra_go }}
       # The checks whose subject is text, in a job with no database: no `full-ci` term, only
       # the dispatched one above, since it is one of the cheapest jobs of the file.
-      text_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.text_checks }}
+      text_checks: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.text_checks }}
       # Eight slow suites, gated as .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
-      envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race || 'false' }}
-      envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
-      envoy_go_claim_model: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_claim_model || 'false' }}
-      envoy_go_race_docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_docs || 'false' }}
-      dispatch_memory: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_memory || 'false' }}
-      dispatch_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_multiprocess || 'false' }}
+      envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'false' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race || 'false' }}
+      envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'false' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
+      envoy_go_claim_model: ${{ github.event_name == 'workflow_dispatch' && 'false' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_claim_model || 'false' }}
+      envoy_go_race_docs: ${{ github.event_name == 'workflow_dispatch' && 'false' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_docs || 'false' }}
+      dispatch_memory: ${{ github.event_name == 'workflow_dispatch' && 'false' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_memory || 'false' }}
+      dispatch_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'false' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_multiprocess || 'false' }}
       # why: .github/ci-notes/ci.md#the-two-build-job-builds-the-previous-release-and-runs-both-halves-against
-      dispatch_two_builds: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_two_builds || 'false' }}
+      dispatch_two_builds: ${{ github.event_name == 'workflow_dispatch' && 'false' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_two_builds || 'false' }}
       # why: .github/ci-notes/ci.md#the-two-build-jobs-go-step-alone-behind-a-gate-of-its-own
-      dispatch_two_builds_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_two_builds_go }}
-      listener_server_change: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.listener_server_change }}
-      broker_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.broker_multiprocess }}
+      dispatch_two_builds_go: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.dispatch_two_builds_go }}
+      listener_server_change: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.listener_server_change }}
+      broker_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.broker_multiprocess }}
       # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
       # so it comes back on every push that selects it, as the two suites above do.
-      airlock_lean: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.airlock_lean }}
+      airlock_lean: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.airlock_lean }}
       # A slow suite, gated as .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
       envoy_smoke: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_smoke || 'false' }}
-      envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_e2e_local }}
-      envoy_session_stall: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_session_stall }}
-      go_notices: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_notices }}
-      ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_filters }}
-      ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_images }}
+      envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.envoy_e2e_local }}
+      envoy_session_stall: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.envoy_session_stall }}
+      go_notices: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.go_notices }}
+      ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.ci_filters }}
+      ci_images: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.ci_images }}
       # why: .github/ci-notes/ci.md#why-the-tool-fallback-proof-carries-no-full-ci-term
-      tool_fallback: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.tool_fallback }}
-      proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.proof_sdk_offline }}
+      tool_fallback: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.tool_fallback }}
+      proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'false' || steps.filter.outputs.proof_sdk_offline }}
       # why: .github/ci-notes/ci.md#the-paths-filters-own-verdict-for-every-filter-before-the-full-ci-term
       filter_verdicts: ${{ github.event_name == 'workflow_dispatch' && '{}' || toJSON(steps.filter.outputs) }}
     steps:
@@ -747,7 +747,7 @@ jobs:
   # why: .github/ci-notes/ci.md#why-the-container-smoke-test-is-a-job-of-its-own
   envoy-smoke:
     needs: changes
-    if: needs.changes.outputs.envoy_smoke == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    if: github.event_name == 'pull_request' && needs.changes.outputs.envoy_smoke == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     permissions:
       contents: read
       actions: read
@@ -824,7 +824,7 @@ jobs:
   # why: .github/ci-notes/ci.md#why-the-browser-images-build-runs-on-a-merge-group-too
   browser-image:
     needs: changes
-    if: needs.changes.outputs.browser_image == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    if: github.event_name == 'pull_request' && needs.changes.outputs.browser_image == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     uses: ./.github/workflows/browser-image.yaml
     # why: .github/ci-notes/ci.md#why-the-browser-image-job-grants-every-scope-the-called-workflow-declares
     permissions:
