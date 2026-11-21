@@ -306,7 +306,8 @@ func TestTheReaderReadsEachGroupOncePerHour(t *testing.T) {
 }
 
 // TestRunReadsEveryWantedGroupEachTick: Run reads every wanted group at each tick until its
-// context ends, and no more once it has.
+// context ends, and returns then. Run makes its reads on its own goroutine, one after another, so
+// once it has returned no read of its can start: its return is what the test waits for.
 func TestRunReadsEveryWantedGroupEachTick(t *testing.T) {
 	r := newRig(t, map[string][]listed{approvers: {user(member)}, reviewers: {user(member)}})
 	r.want(approvers, reviewers)
@@ -322,11 +323,40 @@ func TestRunReadsEveryWantedGroupEachTick(t *testing.T) {
 		return r.directory.calls(approvers) >= 4 && r.directory.calls(reviewers) >= 4
 	})
 	cancel()
-	<-done
-	after := len(r.directory.received())
-	time.Sleep(50 * time.Millisecond)
-	if got := len(r.directory.received()); got != after {
-		t.Fatalf("the Directory received %d requests after Run returned, want none", got-after)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return within 10s of its context's end")
+	}
+}
+
+// TestAReadWantStartsEndsWithTheReadersContext: the read Want starts for a group it names first
+// runs on the reader's Context, the broker's serving context, so a read the Directory never
+// answers ends when the broker stops serving rather than holding on to its timeout, and keeps no
+// members; with no Context it would run out its own timeout.
+func TestAReadWantStartsEndsWithTheReadersContext(t *testing.T) {
+	r := newRig(t, map[string][]listed{approvers: {user(member)}})
+	r.directory.set(func(d *directory) { d.hang = approvers })
+	ctx, cancel := context.WithCancel(t.Context())
+	r.reader.Context = ctx
+	r.reader.Want([]string{approvers})
+	testwait.Eventually(t, "the Directory asked for the group", func() bool { return r.directory.calls(approvers) == 1 })
+	cancel()
+	settled := make(chan struct{})
+	go func() {
+		defer close(settled)
+		groups.Settle(r.reader)
+	}()
+	select {
+	case <-settled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the read Want started outlived the reader's context by 10s")
+	}
+	if r.reader.Fresh(approvers) || r.reader.HasMember(approvers, member) {
+		t.Fatal("a read its context ended kept members")
+	}
+	if lines := r.readsOf(approvers); len(lines) != 1 || !strings.Contains(lines[0].result, "context canceled") {
+		t.Fatalf("the read's lines are %+v; want one naming the context's end", lines)
 	}
 }
 

@@ -30,6 +30,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -39,6 +40,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/api"
@@ -46,6 +49,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/groups"
 	"github.com/sjawhar/envoy/internal/cipher/judge"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
@@ -341,10 +345,13 @@ func main() {
 	// reads are counted with every read after them; broker_unservable_secrets, which reads the
 	// live policy, is registered on it once that first load has answered (LoadPolicy).
 	registry := metrics.New()
-	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
-	// policy version is the one it has today.
-	loader := policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: rules.Digest,
-		StoreReads: policy.NewStoreReads(registry)}
+	// The broker's one reader of Google group members, which every decision site asks who is a
+	// member of a group: the policy's sets (the loader stamps it on each), the request machine,
+	// its chain check and the approval page. A full policy load names its groups to it; it reads
+	// each once an hour (Run, started with the first load below) with the reader account's
+	// token (BROKER_DIRECTORY_ACCOUNT), minted with this pod's own credential.
+	groupReader := newGroupReader(cfg, "", &ownGoogleCredential{})
+	loader := policyLoader(cfg, secretStore, rules, registry, groupReader)
 	// One key source per issuer, read by everything that needs that issuer's keys: the verifiers
 	// discoverVerifiers builds and, for the cluster's issuer and Google's, the RFC 8693 exchange
 	// below, which resolves a subject token's own key through the same *oidc.Keys. So the boot
@@ -388,6 +395,11 @@ func main() {
 		// from `again` and answers with os.Exit(1) (measured: gone within 30 ms of that signal),
 		// or the kubelet's SIGKILL at the end of the grace period.
 		LoadPolicy: func(serving context.Context) (*policy.Current, error) {
+			// The group reads run on serving, as the reload does: a read a load starts, and the
+			// hourly read, end when the broker stops serving rather than at the signal, so a
+			// draining pod still admits the members it read.
+			groupReader.Context = serving
+			go groupReader.Run(serving)
 			current, err := policy.NewCurrent(serving, loader, policyRefresh)
 			if err != nil {
 				return nil, err
@@ -462,7 +474,7 @@ func main() {
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
 	// machine and the model judge share it, its token cache and its client.
 	dispatch := judgeDispatch(cfg)
-	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch)
+	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch, groupReader)
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
@@ -593,10 +605,7 @@ func main() {
 	// request machine denies at once what the page would have put to a person.
 	var page *approval.Page
 	if !cfg.SignInOff {
-		page, err = approval.New(approval.Config{
-			SignIn: cfg.SignIn, PublicURL: cfg.PublicURL, MachineLoginURL: cfg.MachineLoginURL,
-			Store: st, Machine: reqMachine,
-		})
+		page, err = approval.New(approvalConfig(cfg, st, reqMachine, groupReader))
 		fatal(err)
 	}
 
@@ -1191,8 +1200,10 @@ func airlockCACertificatePEM(ca *proxy.Authority) string {
 // spends the budget leaves a Google mint's failure unretried too: each holds the one pointer,
 // which typeMinters' copies keep. dispatch is the broker's one read of Dispatch (judgeDispatch),
 // nil where BROKER_JUDGE_DISPATCH_URL is unset; where it is set it also names a Legion pod's
-// issue's assignee, whose Inbox lists that pod's request for a shared secret.
-func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules proxyrules.Rules, caCertificate string, retry *secrets.Retry, dispatch *judge.Dispatch) *requests.Machine {
+// issue's assignee, whose Inbox lists that pod's request for a shared secret. groupReader is the
+// broker's one reader of group members (newGroupReader), which the machine's decisions, revokes
+// and lists and its chain check ask who is a member of a group.
+func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules proxyrules.Rules, caCertificate string, retry *secrets.Retry, dispatch *judge.Dispatch, groupReader record.Directory) *requests.Machine {
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
@@ -1230,12 +1241,80 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		// BROKER_SIGNIN=off: nobody signs in to approve, so a name that would wait for a
 		// person is denied at once.
 		SignInOff: cfg.SignInOff,
+		Groups:    groupReader,
 	}
 	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
+	m.Chain.Groups = groupReader
 	if dispatch != nil {
 		m.Assignees = dispatch
 	}
 	return m
+}
+
+// The broker's group reader answers every question a decision site asks of group members.
+var _ record.Directory = (*groups.Reader)(nil)
+
+// newGroupReader is the broker's one reader of Google group members: it reads the Directory API
+// at BROKER_DIRECTORY_URL (Google's when unset) with the token of the reader account
+// BROKER_DIRECTORY_ACCOUNT names, which it mints at IAM's generateAccessToken (iamURL, Google's
+// when empty, where a test names its stand-in) with own, this pod's own Google credential. With no
+// reader account it reads no group, and every group admits nobody. Its Context, the serving
+// context, is set where the first policy load starts.
+func newGroupReader(cfg config.Config, iamURL string, own oauth2.TokenSource) *groups.Reader {
+	return &groups.Reader{
+		BaseURL: cfg.DirectoryURL,
+		Source:  groups.NewTokenSource(groups.TokenOptions{Account: cfg.DirectoryAccount, IAMCredentialsURL: iamURL, Default: own}),
+		Log:     slog.Default(),
+	}
+}
+
+// policyLoader is the loader of the broker's policy: the namespace secretStore holds under
+// BROKER_SECRETS_PREFIX, the registered services, the service-account bindings, the airlock's
+// entries, the store-read counter on registry, and groupReader, which the loader's Current stamps
+// on every set it makes live and names each full load's groups to.
+func policyLoader(cfg config.Config, secretStore secrets.Store, rules proxyrules.Rules, registry *metrics.Registry, groupReader record.Directory) policy.Loader {
+	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
+	// policy version is the one it has today.
+	return policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: rules.Digest,
+		StoreReads: policy.NewStoreReads(registry), Groups: groupReader}
+}
+
+// approvalConfig is the approval page's configuration: the broker's own sign-in client, its
+// public URL, Dispatch's machine-login page, the store, the request machine, and groupReader,
+// which says whether the signed-in person is a member of a group approver and so sees the
+// buttons.
+func approvalConfig(cfg config.Config, st *store.Store, reqMachine *requests.Machine, groupReader record.Groups) approval.Config {
+	return approval.Config{
+		SignIn: cfg.SignIn, PublicURL: cfg.PublicURL, MachineLoginURL: cfg.MachineLoginURL,
+		Store: st, Machine: reqMachine, Groups: groupReader,
+	}
+}
+
+// ownGoogleCredential is this pod's own Google credential, the application default credentials at
+// the cloud-platform scope (in production the pod's Workload Identity), with which the group
+// reader mints the reader account's token. They are found on the first Token call and kept once
+// found, as secrets.GoogleServiceAccount finds its own, so a broker that names no reader account,
+// or runs where no Google credential exists, looks for none at boot, and a failure to find them
+// is tried again at the next read rather than kept. Their own error names the file or metadata
+// server they tried, so only its class is answered.
+type ownGoogleCredential struct {
+	mu     sync.Mutex
+	source oauth2.TokenSource
+}
+
+func (c *ownGoogleCredential) Token() (*oauth2.Token, error) {
+	c.mu.Lock()
+	source := c.source
+	if source == nil {
+		found, err := google.DefaultTokenSource(context.Background(), "https://www.googleapis.com/auth/cloud-platform")
+		if err != nil {
+			c.mu.Unlock()
+			return nil, errors.New("the broker found no Google credentials of its own")
+		}
+		c.source, source = found, found
+	}
+	c.mu.Unlock()
+	return source.Token()
 }
 
 // vmPersonsByAccount is the person each BROKER_VM_EXCHANGE_ACCOUNTS entry names, keyed by its

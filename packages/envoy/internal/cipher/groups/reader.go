@@ -53,13 +53,16 @@ const readTimeout = time.Minute
 // BaseURL is the Directory API's (BROKER_DIRECTORY_URL), Google's when empty; HTTP its client,
 // http.DefaultClient when nil; Source the directory token (NewTokenSource); Now the clock that
 // dates each read, time.Now when nil; Log where each read's line goes, slog.Default() when nil.
-// Every method may be called from any goroutine.
+// Context is what the read Want starts for a group it names first runs on: the broker's serving
+// context, so such a read ends when the broker stops serving; context.Background() when nil. It
+// is set before the first Want and never after. Every method may be called from any goroutine.
 type Reader struct {
 	BaseURL string
 	HTTP    *http.Client
 	Source  oauth2.TokenSource
 	Now     func() time.Time
 	Log     *slog.Logger
+	Context context.Context
 
 	mu sync.Mutex
 	// wanted is each group the last Want named, by its bare address.
@@ -96,9 +99,13 @@ func (r *Reader) Want(names []string) {
 		}
 		next[name] = &group{}
 		r.inflight.Add(1)
+		ctx := r.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		go func() {
 			defer r.inflight.Done()
-			r.read(context.Background(), name)
+			r.read(ctx, name)
 		}()
 	}
 	r.wanted = next
