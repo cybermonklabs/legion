@@ -13,8 +13,8 @@
 # comment, is listed and left with its version and its approval. The second is the block of the
 # document that holds the secret: its rows, its document's version holding the text and the
 # approval over it, its document's live state, search rows, windows and events. It proves, in
-# order: each run without --confirm refuses; a run against a role, a page, a session or a
-# supertag node is refused, with --confirm too, and changes no row; a run whose --confirm names
+# order: each run without --confirm refuses; a run against a role, a page, a session, a
+# supertag node, or an issue or a document whose row stands is refused, with --confirm too, and changes no row; a run whose --confirm names
 # the digest of another listing is refused and changes no row; the block's listing holds the
 # version and the review it would end and the document whose live state it would replace; after
 # the erases a read of the comment's address answers what a deleted node answers, byte for byte,
@@ -85,6 +85,7 @@ require_env DISPATCH_URL PROJECT DATABASE_URL
 require_commands curl envoy-dispatch jq psql
 read_bearer
 
+# shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own subshell's; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
 # The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
 # authenticates must name it (enforceCookieOrigin).
@@ -203,14 +204,6 @@ held_soon() {
   pass "$1" "$2: $answer row(s)"
 }
 
-# declared SECTION WHAT FILE SED: the one value SED prints out of a Go source file, refused when
-# the file or the declaration is gone, so a build that moved the lease moves this driver with it.
-declared() {
-  [[ -r "$3" ]] || fail "$1" "$2" "$3 is unreadable"
-  answer="$(sed -n "$4" "$3")"
-  [[ -n "$answer" ]] || fail "$1" "$2" "no such declaration in $3"
-}
-
 # hold_block_index SECTION: takes the block-index pass's own lease, waiting out a tick that holds
 # it, so no tick writes an embedding window while this driver erases: duty.Exclusive takes this
 # lease before every pass and skips the pass where another session holds it. The lease is a
@@ -219,7 +212,7 @@ declared() {
 hold_block_index() {
   local polls=0
   : >"$work/lease"
-  env -u PGHOSTADDR psql "$database_url" -Atq -o /dev/null >/dev/null 2>"$work/lease" <<SQL &
+  env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atq -o /dev/null >/dev/null 2>"$work/lease" <<SQL &
 select pg_advisory_lock($lease_namespace, hashtext('$lease_name'));
 \\warn the $lease_name lease is held
 select pg_sleep($lease_seconds);
@@ -287,7 +280,7 @@ erase() {
 # so dropped with the session, and searches it with the rest: a search that reached no row would
 # answer none for every column, and the caller reads the control's line to tell that apart.
 held_anywhere() {
-  answer="$(env -u PGHOSTADDR psql "$database_url" -Atq -v ON_ERROR_STOP=1 -v needle="$2" \
+  answer="$(env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atq -v ON_ERROR_STOP=1 -v needle="$2" \
     -v comment="$3" -v document="$4" -v ref="$5" -v kept="$6" -f - 2>"$work/psql" <<'SQL'
 select set_config('erase_driver.needle', :'needle', false) \g /dev/null
 select set_config('erase_driver.comment', :'comment', false) \g /dev/null
@@ -380,8 +373,9 @@ whole() {
     "$1" "${2:+ where $2}"
 }
 
-# refused SECTION NODE: runs the erase against NODE, which it refuses by its kind before it reads
-# a row (grapherase.Erase), as an operator runs it: without --confirm, then with --confirm and the
+# refused SECTION NODE: runs the erase against NODE, which it refuses by its kind, or for an issue
+# and a document while its row stands, before it lists a row (grapherase.Erase, Erasure.read), as
+# an operator runs it: without --confirm, then with --confirm and the
 # digest that first run printed, the zero digest where it printed none. Each run must exit
 # non-zero and say the erase refuses NODE. A build that listed such a node rather than refusing it
 # would erase it here for real, and the caller's read of the store whole says so.
@@ -403,13 +397,9 @@ refused() {
 }
 
 # E1: the inputs, and the database this run works on.
-host="${database_url#*://}"
-host="${host#*@}"
-host="${host%%[:/]*}"
-case "$host" in
-  127.0.0.1 | ::1 | localhost) pass E1 "DATABASE_URL names this machine ($host)" ;;
-  *) fail E1 "DATABASE_URL names this machine" "host $host is not loopback; this driver erases rows and reads this pod's own test database, never a deployment's" ;;
-esac
+loopback_database_url "$database_url" ||
+  fail E1 "DATABASE_URL names this machine" "the URL must name one loopback host with no connection override; this driver erases rows and reads this pod's own test database, never a deployment's"
+pass E1 "DATABASE_URL names this machine"
 
 # E2: the issue, the document whose version holds the secret, and the person's approval of it.
 send POST "/api/v1/issues" "$(jq -cn --arg p "$project" --arg s "$session" \
@@ -510,11 +500,12 @@ readonly other_key other_document other_ref other_comment
 pass E2 "planted the secret in $other_ref and comment:$other_comment of $other_key, which no erase here derives from"
 
 # A row of every kind the store census covers, which E8 reads: the census refuses a kind it checked
-# no row of (R19), and a database this driver runs over need hold no block reference and no role.
-# A document of the other issue that cites that issue gives the block references a row, and the
-# other issue routed to a role gives the role and its page theirs. Neither holds the secret, and no
-# erase here derives from them. The publisher writes the role's node and its page from the route's
-# event, so the driver waits for both.
+# no row of (R19), and a database this driver runs over need hold no block reference, no role and
+# no person. A document of the other issue that cites that issue gives the block references a row,
+# the other issue routed to a role gives the role and its page theirs, and a comment the signed-in
+# person writes on it gives the person its node. None holds the secret, and no erase here derives
+# from them. The publisher writes the role's node and its page from the route's event, so the
+# driver waits for both.
 readonly census_role="graph-erase-reader"
 send POST "/api/v1/issues/$other_key/artifacts" "$(jq -cn --arg s "$session" --arg key "$other_key" \
   '{name: "census-cites.md", content: ("# Cites\n\nA block reference of this run, to " + $key + ".\n"), actor: {kind: "session", id: $s}}')"
@@ -522,6 +513,8 @@ want_status 201 E2 "write a document of $other_key that cites it"
 send PATCH "/api/v1/issues/$other_key" "$(jq -cn --arg r "role:$census_role" --arg s "$session" \
   '{route: $r, actor: {kind: "session", id: $s}}')"
 want_status 200 E2 "route $other_key to role $census_role"
+person_send POST "/api/v1/issues/$other_key/comments" '{"body":"A remark the person wrote, for the census of persons."}'
+want_status 201 E2 "$login comments on $other_key"
 populated_polls=0
 while :; do
   query E2 "read the block reference and the role's node and page" \
@@ -577,6 +570,18 @@ readonly -a store_reads=(
   "block text|select count(*) from document_block_texts where artifact_id = '$document' and text like '%$secret%'"
   "block excerpt|select count(*) from document_blocks where artifact_id = '$document' and excerpt like '%$secret%'"
 )
+
+# The rows an earlier build or a seed wrote without their node. A database this driver runs over
+# may hold issues, documents, asks or messages that no node writer wrote, and E8's census refuses
+# on each of them, so the backfill writes their nodes, as an operator runs it before an erase.
+# It runs before the first erase and not after the last, so a node an erase took from a row that
+# stayed is a difference E8 still reads.
+backfill_code=0
+env -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE DATABASE_URL="$database_url" \
+  envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 || backfill_code=$?
+[[ "$backfill_code" == 0 ]] ||
+  fail E2 "run the backfill before the erases" "envoy-dispatch backfill-graph-store exited $backfill_code: $(tail -n 5 "$work/backfill")"
+pass E2 "envoy-dispatch backfill-graph-store ran, so every row the census reads has its node"
 
 # E3: each erase refuses until it has listed what it would remove, and each listing names what
 # derives from its node and what it leaves.
@@ -655,11 +660,14 @@ query E3 "read the id, time and actor of each event row holding the secret" \
 readonly events_before="$answer"
 
 # The nodes no erase may remove: a role, a page, a session and a supertag node, each one this
-# run's database holds. None of them holds text anybody wrote, so no erasure is owed for it, and
-# the event log keeps addressing a role, a page and a session while a type is data the block
-# schema seeds. Each run against one, with --confirm too, is refused, and the store read whole is
-# what it was after both.
-readonly -a kept_nodes=("role:$census_role" "page:role/$census_role" "session:$session" "supertag:${supertags_before%%,*}")
+# run's database holds, and this run's issue and its document. None of the first four holds text
+# anybody wrote, so no erasure is owed for it, and the event log keeps addressing a role, a page
+# and a session while a type is data the block schema seeds. An issue and a document hold their
+# text in their own rows, which the erase does not reach, so erasing the node alone would report
+# an erasure that left that text in place. Each run against one, with --confirm too, is refused,
+# and the store read whole is what it was after both.
+readonly -a kept_nodes=("role:$census_role" "page:role/$census_role" "session:$session" "supertag:${supertags_before%%,*}"
+  "issue:$key" "artifact:$document_ref")
 for kept in "${kept_nodes[@]}"; do
   want_rows E3 "the store holds $kept" 1 \
     "select count(*) from graph_nodes where kind = '${kept%%:*}' and id = '${kept#*:}'"

@@ -172,6 +172,11 @@ type Service struct {
 	// blockIndexHorizon builds under horizonOnce on the first tick that asks for it.
 	horizonOnce  sync.Once
 	eventHorizon *events.Horizon
+	// objectPassFinished is when this process's last object pass finished with nothing left, in
+	// Unix nanoseconds by the service's clock (now), and zero before one has: a block-index tick
+	// owes the pass on the process's first tick and once objectPassInterval has passed since
+	// (readEventsAfterCursor).
+	objectPassFinished atomic.Int64
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
 	// queue the check a room's load is compared with takes (validateUpdate). New sets it to
@@ -431,7 +436,8 @@ type Service struct {
 	// between the mutation's read of it and its write, where a peer's update can land: Apply runs
 	// the mutation outside the document's lock and takes the lock for each transaction alone.
 	inServiceTransaction func(txn *crdt.Transaction)
-	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks).
+	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks), and the
+	// block-index tick times its object pass by (objectPassInterval).
 	now      func() time.Time
 	settleWG sync.WaitGroup
 	// evictWG counts the forced evictions failRoomLocked spawns. They flush the room through

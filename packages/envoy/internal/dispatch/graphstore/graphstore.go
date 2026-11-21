@@ -60,10 +60,19 @@ func AddressFits(address string) bool { return len(address) <= MaxAddressBytes }
 
 // Node is one thing the store holds. Its row is the projection of its own tuples: Write may
 // write it again, and a second write moves every column but MadeAt and MadeBy, which stay as the
-// row's first write left them, and the state, the visibility and the attributes a write that
-// Restates the node keeps.
+// row's first write left them, Project, which never moves once a write has stated it
+// (ErrProjectMoved), and the state, the visibility and the attributes a write that Restates the
+// node keeps.
+//
+// Project is the key of the project the node belongs to, and Parties the parties a node no
+// project owns is between (PartyPerson, PartySession). Both are base attributes, stated by the
+// write that stores the node and projected to graph_nodes.project_key and graph_nodes.parties;
+// the empty string and nil state nothing, and leave what the row holds as it is. A node of a
+// person, a session or the block schema carries neither.
 type Node struct {
 	Kind, ID, Supertag, Visibility, State string
+	Project                               string
+	Parties                               []string
 	Attributes                            map[string]any
 	MadeAt                                time.Time
 	MadeBy                                model.Actor

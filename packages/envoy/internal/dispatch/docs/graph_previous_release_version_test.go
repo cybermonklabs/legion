@@ -426,6 +426,48 @@ func TestABuildOfANewerMarkingRuleReadsFromTheBackfillHorizon(t *testing.T) {
 	requireCensusReadsZero(t, database, "after the newer rule's first tick, with no second backfill")
 }
 
+// A build of this code's marking rule (refs.BlockIndexMarkingRule, 2), with no event cursor of its
+// own, starts reading the event log at the horizon the backfill of its own rule recorded, and not
+// at the cursor a build of rule 1 left above it, and marks the version between the two. Rule 1 is
+// the rule a build had before every node carried its scope: a version such a build indexed wrote
+// its block nodes with no project, and a build of rule 2 that took rule 1's cursor as its own would
+// leave them so. TestABuildOfANewerMarkingRuleReadsFromTheBackfillHorizon holds any two rules to
+// this; this row holds the two this code ships, by the rule the build is built with. Control: with
+// BlockIndexMarkingRule kept at 1 the two builds share a rule, this build starts at the cursor the
+// rule-1 build left, and the version is left unmarked.
+func TestARuleOneCursorDoesNotStopARuleTwoBuildFromMarking(t *testing.T) {
+	database, ruleOne := blockIndexService(t)
+	const slug = "rule-one"
+	// The document is seeded, backfilled and drained at this build's rule, so the census reads zero
+	// before the rule-1 build writes; that build's own ticks then record rule 1 on its cursor row.
+	document := backfilledDocument(t, database, ruleOne, slug)
+	ruleOne.markingRule = 1
+	horizon := recordHorizonOfRule(t, database, refs.BlockIndexMarkingRule)
+
+	// The rule-1 build writes the document's next version itself and indexes it in the request,
+	// so its stand is at the version, and its ticks read the version's event, mark nothing and move
+	// its cursor above this build's horizon.
+	version, event := writeNextVersionAsThisBuild(t, ruleOne, document, nestedSpec(slug)+"\nA paragraph the next version adds.\n")
+	tick := awaitedBlockIndexTick(t, ruleOne)
+	cursor := blockIndexEventCursor(t, database, "")
+	if tick.Events == 0 || tick.Marked != 0 || cursor < event || event <= horizon {
+		t.Fatalf("the rule-1 build's tick read %d event(s) and marked %d document(s), its cursor at %d, the version's event %d and this build's horizon %d; want the event read, nothing marked and the event between the horizon and the cursor: this test proves nothing",
+			tick.Events, tick.Marked, cursor, event, horizon)
+	}
+	oweTheNewerRule(t, database, document)
+
+	current := markingRuleBuild(t, database, nextBuildCommit, refs.BlockIndexMarkingRule)
+	tick = awaitedBlockIndexTick(t, current)
+	if started := tickStart(t, database, tick); started != horizon {
+		t.Errorf("the first tick of this build, of marking rule %d, started at %d, the cursor a build of rule 1 left, want its own rule's horizon %d",
+			refs.BlockIndexMarkingRule, started, horizon)
+	}
+	if row := blockRowOf(t, database, document); !row.marked && !row.standsAt(version) {
+		t.Errorf("the version %d of %s below the rule-1 build's cursor is not marked owed by this build of marking rule %d, want it marked",
+			version, document, refs.BlockIndexMarkingRule)
+	}
+}
+
 // A build of a higher marking rule, with no event cursor of its own, starts at the horizon the
 // backfill of its own rule recorded, even where a backfill of a lower rule recorded a higher one
 // since, and marks the version between the two that the lower rule leaves unmarked.

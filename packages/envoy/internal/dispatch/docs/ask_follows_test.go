@@ -55,8 +55,8 @@ func TestAnAskOpenedBesideAWithheldAnswerIsCausedByItsOwnEvent(t *testing.T) {
 		t.Fatal("the repair writing the answer back changed nothing")
 	}
 	opened := model.Ask{ID: "ask-row-1", State: "open"}
-	var followed graphstore.Uncaused
-	reconciled.follows = append(reconciled.follows, openedFollow{ask: opened.ID, followed: &followed})
+	var node, followed graphstore.Uncaused
+	reconciled.follows = append(reconciled.follows, openedFollow{ask: opened.ID, node: &node, followed: &followed})
 	reconciled.events = append(reconciled.events, model.Event{Type: "ask.opened", Payload: model.AskEventPayload{Ask: opened}})
 	reconciled.withholdAnswers("document", tree, before)
 	if len(reconciled.events) != 1 || reconciled.events[0].Type != "ask.opened" {
@@ -70,8 +70,8 @@ func TestAnAskOpenedBesideAWithheldAnswerIsCausedByItsOwnEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("match the follows to their events: %v", err)
 	}
-	if len(caused) != 1 || caused[1] != &followed {
-		t.Fatalf("the follows matched to %v, want the follow of ask %s at the ask.opened's place, 1", caused, opened.ID)
+	if stated := caused[1]; len(caused) != 1 || len(stated) != 2 || stated[0] != &node || stated[1] != &followed {
+		t.Fatalf("the follows matched to %v, want the node and the follow of ask %s at the ask.opened's place, 1", caused, opened.ID)
 	}
 	if _, err := reconciled.followsByEvent(appended[:1]); err == nil || !strings.Contains(err.Error(), opened.ID) {
 		t.Fatalf("matching a follow whose ask.opened was not appended answered %v, want an error naming ask %s", err, opened.ID)

@@ -52,7 +52,7 @@ func TestACommentOwnedByALongRefKeyLeavesOutItsTuple(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	stored, err := commentStored(ctx, tx, commentID, author, time.Now().UTC(), nil, &artifactID)
+	stored, err := commentStored(ctx, tx, commentID, author, time.Now().UTC(), nil, &artifactID, "CB", nil)
 	if err != nil {
 		t.Fatalf("read what the comment states: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode(t *testing.T)
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	stored, err := commentStored(ctx, tx, commentID, author, time.Now().UTC(), nil, nil)
+	stored, err := commentStored(ctx, tx, commentID, author, time.Now().UTC(), nil, nil, "CA", nil)
 	if err != nil {
 		t.Fatalf("read what the comment states: %v", err)
 	}

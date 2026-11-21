@@ -354,10 +354,13 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 
 // markingStatementDigests is, for each value refs.BlockIndexMarkingRule has held, the digest of the
 // statements that decide what a build of that rule marks (markingStatements), as TestGoldenDigest
-// (internal/broker/policy/load_test.go) pins its digest. A change to those statements is a change
+// (internal/cipher/policy/load_test.go) pins its digest. A change to those statements is a change
 // of what a pass owes, which raises the rule and records the new digest here beside the old.
 var markingStatementDigests = map[int]string{
 	1: "97bd4060ef80efd44ce39779a06e81b9a4707dae2c55ee8374ea0d11109ea81a",
+	// Rule 2: every node's scope - the project or the parties the comment write and the backfill's
+	// block and comment reads carry, and the node write that states them.
+	2: "e87bbdc7816050c1285eacf35c762de95b3fd58b6b8b93e0b427208609e988d1",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
@@ -407,7 +410,7 @@ func markingStatements(t *testing.T) []namedStatement {
 	statements = append(statements, namedStatement{"refs.CommentsNamingNoNode", read.sql[0]})
 	author := model.Actor{Kind: "user", ID: "alice"}
 	at := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	node, tuples := graphstore.CommentFacts(nil, "00000000-0000-0000-0000-000000000001", author, at, 1, "CORE-1", "CORE-1")
+	node, tuples := graphstore.CommentFacts(nil, "00000000-0000-0000-0000-000000000001", author, at, 1, "CORE-1", "CORE-1", "CORE", nil)
 	write := refs.CommentWrite{Nodes: []graphstore.Node{node}, Tuples: tuples}
 	if authors, facts, named := graphstore.AuthorFacts(graphstore.KindComment, node.ID, author, at, 1); named {
 		write.Nodes = append(write.Nodes, authors...)

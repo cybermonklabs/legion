@@ -301,23 +301,45 @@ func planBlockIndex(
 
 // indexedVersionOf is what version's own row says of its block index (refs.IndexedVersion): the
 // document's ref_key, from its address as this transaction leaves it (addressOfDocument), and the
-// version's writer (versionWriterOf).
+// version's first author and the document's scope, from the version and the address this
+// transaction queued and has not written where that is the version, which no read of the table
+// answers yet, and else from the stored rows.
 func indexedVersionOf(ctx context.Context, tx pgx.Tx, artifactID string, version int) (refs.IndexedVersion, error) {
 	address, err := addressOfDocument(ctx, tx, artifactID)
 	if err != nil {
 		return refs.IndexedVersion{}, err
 	}
-	writer, err := versionWriterOf(ctx, tx, artifactID, version)
+	if ledger := queueFor(ctx, tx); ledger != nil {
+		if pending, queued := ledger.latest[artifactID]; queued && pending.version.Number == version {
+			record := refs.IndexedVersion{RefKey: address.RefKey}
+			if len(pending.version.Authors) > 0 {
+				record.Writer = pending.version.Authors[0]
+			}
+			if _, created := pendingArtifact(ctx, artifactID); created {
+				record.Project, record.Parties = graphstore.SessionScope(address.Project, address.Session)
+				return record, nil
+			}
+			stored, err := refs.ReadIndexedVersion(ctx, tx, artifactID, version)
+			if err != nil {
+				return refs.IndexedVersion{}, err
+			}
+			record.Project, record.Parties = stored.Project, stored.Parties
+			return record, nil
+		}
+	}
+	record, err := refs.ReadIndexedVersion(ctx, tx, artifactID, version)
 	if err != nil {
 		return refs.IndexedVersion{}, err
 	}
-	return refs.IndexedVersion{RefKey: address.RefKey, Writer: writer}, nil
+	record.RefKey = address.RefKey
+	return record, nil
 }
 
 // versionWriterOf is the writer version's own row records, its first author: from the version
 // this transaction queued and has not written where that is the version, which no read of the
 // table answers yet, and else from the stored row (refs.ReadIndexedVersion). A version that
-// records no author has the zero actor, nobody.
+// records no author has the zero actor, nobody. It is the part of indexedVersionOf a version
+// with no block index reads (indexUnrenderedVersion).
 func versionWriterOf(ctx context.Context, tx pgx.Tx, artifactID string, version int) (model.Actor, error) {
 	if ledger := queueFor(ctx, tx); ledger != nil {
 		if pending, queued := ledger.latest[artifactID]; queued && pending.version.Number == version {

@@ -71,11 +71,16 @@ type BlockIndex struct {
 // tick's cursor rows and the backfill's horizons (marking_rule, migration 20261120122600): a build
 // starts reading the event log where a build or a backfill of its own rule left off and never
 // where one of another rule did, since that build marked what its own rule owes and not what this
-// one owes, and a pass of one rule clears no mark of a higher rule. Rule 1 is the first rule this
-// code ships, so a build of rule 1 already honours the marks of every later rule. It is declared
-// here, where docs and graphcensus both read it: docs' own tests import graphcensus, so graphcensus
-// cannot import docs.
-const BlockIndexMarkingRule = 1
+// one owes, and a pass of one rule clears no mark of a higher rule. Rule 1 is the rule's first
+// value, and a build of rule 1 already honours the marks of every later rule. Rule 2 is
+// rule 1 with the scope of every node: the tick's comment write and the backfill's block and
+// comment reads carry the project or the parties of each node they write
+// (CommentsNamingNoNode, graphcensus.BlockRowsStatement, graphstore's node write), so a build of
+// rule 2 reads none of rule 1's cursors or horizons, and a node a build of rule 1 wrote with no
+// project is the backfill's of rule 2 to fill (graphcensus.Backfill). It is declared here, where
+// docs and graphcensus both read it: docs' own tests import graphcensus, so graphcensus cannot
+// import docs.
+const BlockIndexMarkingRule = 2
 
 // indexedLink is one block_refs row the index holds: its pair, when the row was written, the
 // source event it stands at, and whether it names its block's node.
@@ -123,16 +128,22 @@ func ReadBlockIndex(ctx context.Context, q Queryer, artifactID string) (BlockInd
 	return BlockIndex{blocks: blocks, links: links, stand: stand}, nil
 }
 
-// IndexedVersion is what a version's own row says of its block index: the document's ref_key,
-// which every block's address starts with, and the actor the row records as the version's writer,
-// which every node and tuple the index writes carries. A version no row records - a caller
-// indexing blocks of its own, as the seed does - leaves the writer nobody, the zero actor, exactly
-// as a node of the store written on a credential that names nobody carries. A writer whose
-// version row is only queued hands it over from what that row will hold (docs' planBlockIndex),
-// since no read of the row answers yet; one whose row is stored reads it (ReadIndexedVersion).
+// IndexedVersion is what a version's own row and its document's row say of its block index: the
+// document's ref_key, which every block's address starts with; the actor the row records as the
+// version's writer, which every node and tuple the index writes carries; and the project the
+// document belongs to, or for an agent conversation's file the session it is between, which every
+// block node the index writes carries (graphstore.Node's Project and Parties). A conversation
+// holds no markdown document (api's agentOwnsFilesOnly), so no block has parties today; the record
+// keeps the one rule every document's node follows. A version no row records - a caller indexing
+// blocks of its own, as the seed does - leaves the writer nobody, the zero actor, exactly as a
+// node of the store written on a credential that names nobody carries. A writer whose version row
+// is only queued hands it over from what that row will hold (docs' planBlockIndex), since no read
+// of the row answers yet; one whose row is stored reads it (ReadIndexedVersion).
 type IndexedVersion struct {
-	RefKey string
-	Writer model.Actor
+	RefKey  string
+	Writer  model.Actor
+	Project string
+	Parties []string
 }
 
 // VersionBlocks is the version a block-index pass indexes (PlanBlocks), the inputs that travel
@@ -287,7 +298,7 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	writer := version.Record.Writer
 	nodes, fits := indexing.indexedNodes(version.Blocks)
 	texts := indexing.planBlockTexts(index, version.Markdown, nodes, fits, now)
-	statement, err := indexing.planBlockNodes(ctx, q, stale, nodes, texts, writer, now)
+	statement, err := indexing.planBlockNodes(ctx, q, stale, nodes, texts, version.Record, now)
 	if err != nil {
 		return BlockIndexing{}, err
 	}
@@ -1294,6 +1305,12 @@ type DocumentAddress struct {
 	// that parent followed by its own. A pending issue with no parent is a root, and both paths
 	// answer the empty list.
 	PendingParent string
+	// Project is the project the document belongs to, an issue's or its own, and Session the
+	// session whose conversation holds it, "" where it is a project's: the scope its block
+	// nodes carry (IndexedVersion's Project and Parties). Only an address this transaction
+	// recorded for a row it is creating carries them; a stored row's version is read with its
+	// scope (ReadIndexedVersion).
+	Project, Session string
 }
 
 // BlockTargets is where a write to document artifactID, which sits at address, lands and the

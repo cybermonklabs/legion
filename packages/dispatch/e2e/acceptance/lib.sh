@@ -29,6 +29,39 @@ require_env() {
   done
 }
 
+# loopback_database_url URL: succeeds only for a single loopback postgres URL authority.
+# Connection overrides and escaped parameter names are refused, and so is any `@` after the
+# authority: libpq reads user credentials up to the first `@` or `/`, not stopping at `?`, so a query
+# value holding `@` can name the host, and an override can replace even an explicit loopback one.
+loopback_database_url() {
+  local url="$1" authority host query parameter name
+  [[ "$url" == postgres://* || "$url" == postgresql://* ]] || return 1
+  [[ "$url" != *\#* ]] || return 1
+  authority="${url#*://}"
+  authority="${authority%%[/?]*}"
+  [[ "${url#*://"$authority"}" != *@* ]] || return 1
+  host="${authority#*@}"
+  [[ "$host" =~ ^(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?$ ]] || return 1
+  if [[ "$url" == *\?* ]]; then
+    query="${url#*\?}"
+    while :; do
+      parameter="${query%%&*}"
+      name="${parameter%%=*}"
+      case "$name" in host | hostaddr | service | *%*) return 1 ;; esac
+      [[ "$query" == *'&'* ]] || break
+      query="${query#*&}"
+    done
+  fi
+}
+
+# declared SECTION WHAT FILE SED: the one value SED prints out of a source file, refused when the
+# file or the declaration is gone, so a build that moved it moves the driver that reads it.
+declared() {
+  [[ -r "$3" ]] || fail "$1" "$2" "$3 is unreadable"
+  answer="$(sed -n "$4" "$3")"
+  [[ -n "$answer" ]] || fail "$1" "$2" "no such declaration in $3"
+}
+
 # require_commands COMMAND…: refuses the first named command that is not on PATH.
 require_commands() {
   local command
@@ -115,11 +148,13 @@ expect() {
 q() { jq -rn --arg v "$1" '$v|@uri'; }
 
 # query SECTION WHAT SQL: one value of one row, read through DATABASE_URL into $answer. psql runs
-# without PGHOSTADDR, which libpq would otherwise connect to in place of the DSN's host.
+# without PGHOSTADDR, which libpq would otherwise connect to in place of the DSN's host, and without
+# PGSERVICE and PGSERVICEFILE, whose service entry can carry a hostaddr of its own: the DSN alone
+# names the server, as the loopback guard read it.
 # shellcheck disable=SC2034 # $answer is this function's answer, read by its caller
 query() {
   local section="$1" what="$2" sql="$3"
-  answer="$(env -u PGHOSTADDR psql "$database_url" -Atqc "$sql" 2>"$work/psql")" ||
+  answer="$(env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atqc "$sql" 2>"$work/psql")" ||
     fail "$section" "$what" "psql: $(<"$work/psql")"
 }
 
@@ -140,8 +175,10 @@ cli() {
     if [[ -n "$saved_tmpdir" ]]; then
       export TMPDIR="$saved_tmpdir"
     fi
+    # shellcheck disable=SC2154 # session is set by the driver that sources this file
     export DISPATCH_HOST=omp DISPATCH_SESSION_ID="$session" DISPATCH_URL="$base"
     export DISPATCH_TOKEN="$token"
+    # shellcheck disable=SC2154 # cli_entry is set by the driver that sources this file
     exec "$bun_bin" "$cli_entry" "$@"
   )
 }

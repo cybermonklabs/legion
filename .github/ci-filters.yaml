@@ -1780,6 +1780,7 @@ dispatch_memory:
   - '!packages/envoy/cmd/dispatch/twobuild_harness_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_messages_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_migrations_test.go'
+  - '!packages/envoy/cmd/dispatch/twobuild_nodes_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_owner_lock_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_transition_test.go'
   - '!packages/envoy/cmd/dispatch/write_cost_test.go'
@@ -1822,6 +1823,7 @@ dispatch_multiprocess:
   - '!packages/envoy/cmd/dispatch/twobuild_harness_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_messages_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_migrations_test.go'
+  - '!packages/envoy/cmd/dispatch/twobuild_nodes_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_owner_lock_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_transition_test.go'
   - '!packages/envoy/cmd/dispatch/write_cost_test.go'
@@ -2074,6 +2076,9 @@ listener_server_change:
   - 'packages/envoy/internal/dispatch/githubapp/*'
   - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
   - 'packages/envoy/internal/dispatch/githubreads/*'
+  # docs imports graphcensus for the roll tick's object pass (EventsOweObjectPass,
+  # WriteOwedObjectNodes, the orphan sweep), so cmd/listener's test binary compiles it again.
+  - 'packages/envoy/internal/dispatch/graphcensus/*'
   - 'packages/envoy/internal/dispatch/graphstore/*'
   - 'packages/envoy/internal/dispatch/identity/*'
   - 'packages/envoy/internal/dispatch/itemblocks/*'
@@ -3118,6 +3123,8 @@ envoy_go_race_docs:
   - 'packages/envoy/internal/dispatch/githubreads/*'
   - 'packages/envoy/internal/dispatch/graphcensus/*'
   - 'packages/envoy/internal/dispatch/graphstore/*'
+  # docs' register of the store's writers reads graphstoretest.WriteFunctions (storeWriterCall).
+  - 'packages/envoy/internal/dispatch/graphstore/graphstoretest/*'
   - 'packages/envoy/internal/dispatch/identity/*'
   - 'packages/envoy/internal/dispatch/itemblocks/*'
   - 'packages/envoy/internal/dispatch/model/*'
@@ -3135,6 +3142,9 @@ envoy_go_race_docs:
   - 'packages/envoy/internal/dispatch/store/migrations/**'
   - 'packages/envoy/internal/dispatch/store/searchtest/*'
   - 'packages/envoy/internal/dispatch/store/storetest/*'
+  # The lock-step helpers the roll tick's object-pass driver holds its steps with
+  # (docs' requireTheRollTicksObjectPassLockOrder).
+  - 'packages/envoy/internal/dispatch/store/storetest/lockstep/*'
   - 'packages/envoy/internal/dispatch/testlimits/*'
   - 'packages/envoy/internal/dispatch/text/*'
   - 'packages/envoy/internal/dispatch/texttrees/*'

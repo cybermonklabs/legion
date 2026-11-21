@@ -63,8 +63,10 @@ func ParseNode(value string) (kind, id string, err error) {
 // document whose margin record holds its body. The run deletes those, or rewrites them with the
 // marker where it may take no row away. Every other row that holds the same bytes derives from
 // another node and is that node's text - a sibling block of the same document among them: the
-// run lists it with its address and changes nothing in it, and an operator erases that node by a
-// run of its own.
+// run lists it with its address and changes nothing in it. An operator erases a comment's or a
+// block's text by a run over that node; an issue's, a document's, an ask's or a message's text is
+// in its own row and the events about it, which no run reaches, and is changed through that
+// object's own route (an issue's title, a document's name and versions).
 //
 // confirm is the digest of a listing. With none the run reads everything it would delete,
 // rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no
@@ -91,6 +93,18 @@ func ParseNode(value string) (kind, id string, err error) {
 // one of those kinds holds no text anybody wrote, so no erasure is owed for it, and the event log
 // keeps addressing it, so deleting it leaves the census a difference no erase can close
 // (graphcensus's addressedRoles reads the roles every event ever named).
+//
+// It refuses an issue, a document, an ask and a message while their row stands
+// (graphcensus.ObjectRowStands, read in Erasure.read, under the node's lock on a confirmed run).
+// A node of one of those kinds holds its text in its own row - an issue's title, a document's
+// name and versions, an ask's question, a message's body - and the erase reads text only from the
+// comments and the document blocks that derive from a node. A run over one would delete the node
+// and its tuples, record an erasure and answer applied with every byte of that text still in
+// place, the project census would read the row as missing its node, and the backfill would write
+// the node again (graphcensus.ProjectComplete). A node of one of those kinds, at any state but
+// gone, that no row stands behind - a document a build before this one removed, during a roll or after a rollback,
+// without stating its node gone - holds no text and is the project census's orphaned class; the
+// erase removes it with its tuples, which is that class's one remedy.
 //
 // What it did goes into `graph_erasures`: what was removed, who ran it and when, and no erased
 // text. Nobody addresses that row and no read of the graph answers it.

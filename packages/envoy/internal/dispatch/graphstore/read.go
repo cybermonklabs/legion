@@ -239,8 +239,9 @@ func ReadNode(ctx context.Context, q Queryer, kind, id string) (Node, bool, erro
 	return node, true, nil
 }
 
-// nodeColumns is what every node read answers, in the order a node scan takes them.
-const nodeColumns = `kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event`
+// nodeColumns is what every node read answers, in the order a node scan takes them, and what
+// every node write writes (nodeArrays binds one array per column).
+const nodeColumns = `kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event, project_key, parties`
 
 // ProjectedTable is one table that projects the store: each of its rows names the node it is the
 // projection of by its node_kind and node_address, which migration 20261109022248 gave it with a
@@ -294,13 +295,18 @@ func NodesOfKind(ctx context.Context, q Queryer, kind string) ([]Node, error) {
 	return nodes, nil
 }
 
-// scanNode reads one node row, as ReadNode and NodesOfKind both take it.
+// scanNode reads one node row, as ReadNode and NodesOfKind both take it. A null project_key is the
+// empty Project, and a null parties nil Parties.
 func scanNode(row pgx.Row) (Node, error) {
 	var node Node
 	var attributes, madeBy []byte
+	var project *string
 	if err := row.Scan(&node.Kind, &node.ID, &node.Supertag, &node.Visibility, &node.State,
-		&attributes, &node.MadeAt, &madeBy, &node.SourceEvent); err != nil {
+		&attributes, &node.MadeAt, &madeBy, &node.SourceEvent, &project, &node.Parties); err != nil {
 		return Node{}, err
+	}
+	if project != nil {
+		node.Project = *project
 	}
 	if err := json.Unmarshal(attributes, &node.Attributes); err != nil {
 		return Node{}, fmt.Errorf("decode attributes of node %s/%s: %w", node.Kind, node.ID, err)
