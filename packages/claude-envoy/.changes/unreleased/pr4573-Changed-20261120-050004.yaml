@@ -1,5 +1,5 @@
 kind: Changed
-body: The plugin declares daemon API contract 191, the contract that removes `park_child`.
+body: The plugin declares daemon API contract 205, the contract that removes `park_child`.
 time: 2026-11-20T05:00:04.546261828Z
 custom:
     Issue: pr4573

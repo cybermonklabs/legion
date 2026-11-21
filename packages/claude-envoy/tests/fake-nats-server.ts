@@ -37,14 +37,30 @@ function matches(pattern: string, subject: string): boolean {
 export class FakeNatsServer {
   /** SUB subjects in arrival order, across every client connection. */
   readonly subscribed: string[] = []
+  /** How many CONNECTs the hub had read when each SUB in `subscribed` arrived, by index: which
+   *  credential the connection that sent it presented is `connects[subscribedAfter[i] - 1]`. */
+  readonly subscribedAfter: number[] = []
   /** Subjects whose SUB was later UNSUBed, in arrival order. */
   readonly unsubscribed: string[] = []
   /** PUB frames from clients, in arrival order. */
   readonly published: PublishedFrame[] = []
   /** Each client's CONNECT options, in arrival order: an nkey sign-in carries `nkey` and `sig`. */
   readonly connects: Record<string, unknown>[] = []
+  /** The port each CONNECT came from (its socket's remote port), by index into `connects`. */
+  readonly connectPorts: number[] = []
   /** Client connections accepted so far. */
   connections = 0
+  /** While false, a PING is left unanswered, so a flush waits on it: a path that stopped carrying
+   *  the hub's answers. A connection already open stays open. */
+  answerPings = true
+  /** PINGs read so far, answered or not: a flush the client sent is one. */
+  pings = 0
+  /** The nonce INFO carries, as a server that asks for nkey sign-in or runs an auth service sends
+   *  one; INFO carries none from the moment it is set to undefined. */
+  nonce: string | undefined
+  /** While set, each CONNECT is answered as nats-server refuses one: `-ERR 'Authorization
+   *  Violation'`, and the connection closed. */
+  refuseConnects = false
   private readonly clients = new Set<Socket<Client>>()
   private waiters: Waiter[] = []
   private readonly listener: TCPSocketListener<Client>
@@ -52,7 +68,8 @@ export class FakeNatsServer {
   private held: Socket<Client>[] | null = null
 
   /** `nonce`, when given, goes in INFO, as a server that asks for nkey sign-in sends one. */
-  constructor(private readonly options: { readonly nonce?: string } = {}) {
+  constructor(options: { readonly nonce?: string } = {}) {
+    this.nonce = options.nonce
     this.listener = Bun.listen<Client>({
       hostname: "127.0.0.1",
       port: 0,
@@ -166,7 +183,7 @@ export class FakeNatsServer {
       proto: 1,
       client_id: this.connections,
       client_ip: "127.0.0.1",
-      ...(this.options.nonce === undefined ? {} : { nonce: this.options.nonce }),
+      ...(this.nonce === undefined ? {} : { nonce: this.nonce }),
     }
     socket.write(`INFO ${JSON.stringify(info)}\r\n`)
   }
@@ -180,6 +197,13 @@ export class FakeNatsServer {
     for (const socket of this.clients) {
       socket.write("-ERR 'Authorization Violation'\r\n-ERR 'Authorization Violation'\r\n")
     }
+    return this.until(() => this.clients.size === 0)
+  }
+
+  /** Drop every client connection without a word, as a hub that restarts does: nats.js
+   *  reconnects. Resolves once every client socket is gone. */
+  dropClients(): Promise<void> {
+    for (const socket of this.clients) socket.end()
     return this.until(() => this.clients.size === 0)
   }
 
@@ -219,12 +243,19 @@ export class FakeNatsServer {
 
   private command(socket: Socket<Client>, line: string): void {
     if (line === "PING") {
-      socket.write("PONG\r\n")
+      this.pings += 1
+      this.notify()
+      if (this.answerPings) socket.write("PONG\r\n")
       return
     }
     if (line === "PONG") return
     if (line.startsWith("CONNECT ")) {
       this.connects.push(JSON.parse(line.slice("CONNECT ".length)) as Record<string, unknown>)
+      this.connectPorts.push(socket.remotePort)
+      if (this.refuseConnects) {
+        socket.write("-ERR 'Authorization Violation'\r\n")
+        socket.end()
+      }
       this.notify()
       return
     }
@@ -232,6 +263,7 @@ export class FakeNatsServer {
     if (sub?.[1] !== undefined && sub[2] !== undefined) {
       socket.data.subscriptions.set(sub[2], sub[1])
       this.subscribed.push(sub[1])
+      this.subscribedAfter.push(this.connects.length)
       this.notify()
       return
     }

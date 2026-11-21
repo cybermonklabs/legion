@@ -119,6 +119,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 	controller := "the controller's grant notes no requester (redeem): the controller runs no step"
 	table := map[string]agentRoute{
 		"GET /legion/v1/state":                         {none: "a read of the daemon's state; " + noFact},
+		"GET /legion/v1/issues/{key}/record":           {none: "a read of one issue's record; " + noFact},
 		"GET /healthz":                                 {none: "the liveness answer; " + noFact},
 		"GET /readyz":                                  {none: "the readiness answer; " + noFact},
 		"POST /legion/v1/claims/register":              {none: "a launch's registration of its session; " + noFact},

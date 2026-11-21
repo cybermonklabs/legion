@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // unansweredBucket is the bucket the handle-open rows below open a jetstream handle on, created
@@ -82,7 +83,7 @@ func startUnansweredRelayOn(t *testing.T, target, subject string) *unansweredRel
 		t.Fatalf("read the NATS URL %q the relay relays to: %v", target, err)
 		return nil
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the relay: %v", err)
 		return nil
@@ -552,9 +553,9 @@ func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
 }
 
 // A caller that is no start sends the open once, whatever the server does with it.
-// roles.Buckets.bucket reaches WrapKeyValue through OpenKeyValue, under its own lock and on a
-// request whose budget is two seconds, so an open that kept sending would stop every role and
-// session read of the process instead of saving a start.
+// roles.Buckets.bucket reaches WrapKeyValue through OpenKeyValue for a read whose caller waits two
+// seconds for it, so an open that kept sending would leave that read and every one after it
+// unanswered instead of saving a start.
 func TestAnUnansweredHandleOpenOffAStartIsSentOnce(t *testing.T) {
 	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, _, kv := unansweredKeyValue(t, relay)

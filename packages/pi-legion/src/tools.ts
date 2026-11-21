@@ -21,10 +21,19 @@ import {
   mintClaimGrant,
   PHASE_OP_SENTENCES,
   phaseOpParameters,
+  pluginBuildOf,
+  readBuild,
   unknownFieldsRefusal,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext, ToolResult } from "@legion/pi-shared/pi-types";
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
+import pkg from "../package.json";
+
+/** This plugin's own build, which `read_build` answers with: the manifest of the module this
+ * process loaded, never a path on the image. A relaunch installs the plugin pair fresh under
+ * the role's state home and loads it with `--extension`, so `/opt/legion/pi-legion` is another
+ * build on every pod made from an older image. */
+const BUILD = pluginBuildOf(pkg);
 
 export type LegionToolRole = "architect" | "phase-worker" | "controller";
 
@@ -45,7 +54,9 @@ export interface LegionControllerToolSession {
 export type LegionToolSession = LegionClaimToolSession | LegionControllerToolSession;
 
 /** Each session kind's operations, in the order the tool's `op` enum lists them. The phase ops
- * (`@legion/pi-shared/legion-phase-ops`) are an architect's too. */
+ * (`@legion/pi-shared/legion-phase-ops`) are an architect's too, and `read_build` is every
+ * session's: the controller holds a claim like any other role and reads its own build the same
+ * way. An operation two kinds hold is one `op` value, listed once (`toolSchema`). */
 const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
   architect: [
     "register_gate",
@@ -59,6 +70,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "read_release_records",
     "handoff_complete",
     "ready_for_update",
+    "read_build",
   ],
   "phase-worker": [
     "request_backward_move",
@@ -66,11 +78,23 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "read_release_records",
     "handoff_complete",
     "ready_for_update",
+    "read_build",
   ],
-  controller: ["read_state", "set_status", "fresh_session", "compact", "pause", "resume"],
+  controller: [
+    "read_build",
+    "read_state",
+    "set_status",
+    "fresh_session",
+    "compact",
+    "pause",
+    "resume",
+  ],
 };
 
-/** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
+/** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'.
+ * `read_build` is a phase op and has a line here too: a controller session runs it on this
+ * file's own branch rather than through `executePhaseOp`, so this is where its one check that
+ * it takes no field stands. */
 const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   register_gate: ["issue", "artifactId", "version", "step"],
   release_children: ["issues"],
@@ -78,6 +102,7 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   sign_off: ["issue"],
   close_root: ["issue", "reason"],
   rerun_child: ["issue"],
+  read_build: [],
   read_state: ["issue", "issues", "phase", "settings"],
   set_status: ["issue", "status"],
   fresh_session: ["issue", "role"],
@@ -98,20 +123,15 @@ const STATE_FILTERS = ["issue", "issues", "phase", "settings"] as const;
 /** One claim as the summary shows it, the architect's or a phase worker's. */
 type SummaryClaim = NonNullable<LegionIssue["architect"]>;
 
-/** Who paused the project or ended its pause, as the state names them. */
-type PauseActor = NonNullable<LegionState["lastPause"]>["by"];
-
-/** Who acted on a pause, in the summary's words: the controller with the session it acted from,
- * or the operator. */
-const pauseActorWords = (by: PauseActor): string =>
-  by.kind === "controller" ? `the controller (session ${by.session})` : "the operator";
+/** Who acted on a pause, in the summary's words: the controller with `session`, the session it
+ * acted from, or the operator where the entry names none. */
+const pauseActorWords = (session: string | undefined): string =>
+  session === undefined ? "the operator" : `the controller (session ${session})`;
 
 /** A pause as the summary's line names it: its id, since when, who paused and why (`pauseWords`
  * in `packages/daemon/cmd/legion/project.go`). */
-const pauseWords = (
-  pause: Pick<NonNullable<LegionState["lastPause"]>, "id" | "since" | "by" | "reason">
-): string =>
-  `pause ${pause.id} since ${pause.since} by ${pauseActorWords(pause.by)}: ${pause.reason}`;
+const pauseWords = (id: number, since: string, by: string, reason: string): string =>
+  `pause ${id} since ${since} by ${by}: ${reason}`;
 
 /**
  * The summary's line on the project's pause, in the words `legion state` prints for an operator
@@ -123,9 +143,13 @@ const pauseWords = (
  * JSON. While the project runs after a pause has ended: that pause, then when and by whom it was
  * ended. The state carries one of the two at most, and neither before the project's first pause,
  * when the summary has no such line.
+ *
+ * Each field is taken off the pause it belongs to, under the state's own names, which
+ * `LEGION_ANSWER_READS` declares as `paused.id`, `paused.by|0.kind` and
+ * `lastPause.endedBy|0.session` among others.
  */
 function pauseSummary(state: LegionState): string | undefined {
-  const { paused, lastPause } = state;
+  const paused = state.paused;
   if (paused !== undefined) {
     const roles = paused.waitsOn.map((stop) => `${stop.issue} ${stop.role}`);
     const waitsOn =
@@ -134,13 +158,20 @@ function pauseSummary(state: LegionState): string | undefined {
         : `${roles.length} ${roles.length === 1 ? "role" : "roles"} — ${roles.join(", ")}`;
     const rows = paused.held.length;
     const holds = rows === 0 ? "no row" : `${rows} ${rows === 1 ? "row" : "rows"}`;
-    return `paused: ${pauseWords(paused)}; waits on ${waitsOn}; holds ${holds}`;
+    const by = pauseActorWords(paused.by.kind === "controller" ? paused.by.session : undefined);
+    const pause = pauseWords(paused.id, paused.since, by, paused.reason);
+    return `paused: ${pause}; waits on ${waitsOn}; holds ${holds}`;
   }
+  const lastPause = state.lastPause;
   if (lastPause !== undefined) {
-    return (
-      `last pause: ${pauseWords(lastPause)}; ` +
-      `ended ${lastPause.endedAt} by ${pauseActorWords(lastPause.endedBy)}`
+    const by = pauseActorWords(
+      lastPause.by.kind === "controller" ? lastPause.by.session : undefined
     );
+    const endedBy = pauseActorWords(
+      lastPause.endedBy.kind === "controller" ? lastPause.endedBy.session : undefined
+    );
+    const pause = pauseWords(lastPause.id, lastPause.since, by, lastPause.reason);
+    return `last pause: ${pause}; ended ${lastPause.endedAt} by ${endedBy}`;
   }
   return undefined;
 }
@@ -153,21 +184,22 @@ function pauseSummary(state: LegionState): string | undefined {
  * a state outside every wave. A state that carries no such key has no such line, because it says
  * nothing of what waits, where a 0 would say that nothing does: the daemon leaves the key off the
  * state it serves a caller it reads as below the contract that added the key (`api.stateFor`,
- * `withoutWakesWaiting`; `LegionStateResponse` says which callers those are).
+ * `withoutWakesWaiting`; `LegionStateResponse` says which callers those are). The loop runs over
+ * the state's own list, so each `dueAt` is read under `wakesWaiting`, the name
+ * `LEGION_ANSWER_READS` declares.
  */
 function wakesWaitingSummary(state: LegionState): string | undefined {
-  const wakes = state.wakesWaiting;
-  if (wakes === undefined) return undefined;
+  if (state.wakesWaiting === undefined) return undefined;
   let next: string | undefined;
   let nextAt = Number.POSITIVE_INFINITY;
-  for (const wake of wakes) {
+  for (const wake of state.wakesWaiting) {
     const dueAt = Date.parse(wake.dueAt);
     if (dueAt < nextAt) {
       nextAt = dueAt;
       next = wake.dueAt;
     }
   }
-  return `wakes waiting ${wakes.length}${next === undefined ? "" : ` next ${next}`}`;
+  return `wakes waiting ${state.wakesWaiting.length}${next === undefined ? "" : ` next ${next}`}`;
 }
 
 /** The first line of every summary: what the lines below it are, since they are not JSON. */
@@ -199,21 +231,28 @@ const SUMMARY_LEGEND =
  */
 function stateSummary(state: LegionState): string {
   const { admission, daemon } = state;
+  const lines = [SUMMARY_LEGEND];
+  // Every field but the issues is optional on the reader, because the daemon serves a caller
+  // below the contract that added one the body without it (dispatch://INFRA-2694). A line
+  // whose fact the body does not carry is left out rather than printed empty.
+  if (daemon !== undefined) {
+    lines.push(`project ${daemon.project} boots ${daemon.boots} started ${daemon.startedAt}`);
+  }
   const pause = pauseSummary(state);
-  const lines = [
-    SUMMARY_LEGEND,
-    `project ${daemon.project} boots ${daemon.boots} started ${daemon.startedAt}`,
-    ...(pause === undefined ? [] : [pause]),
-    `admission cap ${admission.cap}${admission.free === undefined ? "" : ` free ${admission.free}`}`,
-    `active ${admission.active.join(" ") || "(none)"}`,
-    `waiting ${admission.waiting.join(" ") || "(none)"}`,
-  ];
-  for (const blocked of admission.blocked) {
-    lines.push(`blocked ${blocked.issue} on ${blocked.blockedBy.join(" ")}`);
+  if (pause !== undefined) lines.push(pause);
+  if (admission !== undefined) {
+    lines.push(
+      `admission cap ${admission.cap}${admission.free === undefined ? "" : ` free ${admission.free}`}`,
+      `active ${admission.active?.join(" ") || "(none)"}`,
+      `waiting ${admission.waiting?.join(" ") || "(none)"}`
+    );
+    for (const blocked of admission.blocked ?? []) {
+      lines.push(`blocked ${blocked.issue} on ${blocked.blockedBy?.join(" ") ?? "(none)"}`);
+    }
   }
   const wakesWaiting = wakesWaitingSummary(state);
   if (wakesWaiting !== undefined) lines.push(wakesWaiting);
-  for (const capability of state.capabilities) {
+  for (const capability of state.capabilities ?? []) {
     // A row that is not `present` is one someone acts on, so it keeps the fact its check found
     // and the legion.yaml line that would record a decision; no filter answers for capabilities.
     const detail = capability.status === "present" ? "" : ` ${capability.detail}`;
@@ -239,8 +278,8 @@ function stateSummary(state: LegionState): string {
     const claims: Array<readonly [string, SummaryClaim]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect]);
     for (const role of LEGION_ROLES) {
-      const worker = issue.workers[role];
-      if (worker !== undefined) claims.push([role, worker.claim]);
+      const claim = issue.workers?.[role]?.claim;
+      if (claim !== undefined) claims.push([role, claim]);
     }
     for (const [role, claim] of claims) {
       // A working claim whose last turn began hours ago is wedged; an idle claim's end is when
@@ -296,7 +335,9 @@ function toolSchema(pi: PiApi): unknown {
   const z = pi.zod;
   const phaseOp = phaseOpParameters(z);
   return z.object({
-    op: z.enum([...OPERATIONS.architect, ...OPERATIONS.controller]),
+    // `read_build` belongs to the architect's roster and the controller's, and the enum names
+    // every value once, so the two rosters are joined through a set.
+    op: z.enum([...new Set([...OPERATIONS.architect, ...OPERATIONS.controller])]),
     issue: phaseOp.issue,
     since: phaseOp.since,
     artifactId: z
@@ -425,14 +466,15 @@ export function createLegionTool(deps: {
     // The shared sentence on read_record, since its name does not say that it reads the caller's
     // own issue when the call names none; the shared sentence on read_release_records before
     // handoff_complete's contract, since the records it answers are not read from its name;
-    // after that contract the shared sentence on request_backward_move (an architect's names the
-    // issue it returns from accepting), then the architect's retry_or_escalate, its sign_off and
-    // the controller's operations: the exact text tools.test.ts pins, so a change to the shared
-    // template cannot reach an Oh My Pi agent unnoticed. The rules for ending a child, from "End a
-    // child" to "write it again", are the words of the daemon's record.EndChildRule, and the
-    // sentence after them, "A status that you wrote … read_record shows it.", is the daemon's
-    // record.StatusNotTakenYet (both in packages/daemon/internal/record/project.go). Two tests
-    // hold the two copies together. The daemon's TestTheEndChildRuleGolden writes both texts to
+    // after that contract the shared sentences on request_backward_move (an architect's names
+    // the issue it returns from accepting) and read_build, then the architect's
+    // retry_or_escalate, its sign_off and the controller's operations: the exact text
+    // tools.test.ts pins, so a change to the shared template cannot reach an Oh My Pi agent
+    // unnoticed. The rules for ending a child, from "End a child" to "write it again", are the
+    // words of the daemon's record.EndChildRule, and the sentence after them, "A status that you
+    // wrote … read_record shows it.", is the daemon's record.StatusNotTakenYet (both in
+    // packages/daemon/internal/record/project.go). Two tests hold the two copies together. The
+    // daemon's TestTheEndChildRuleGolden writes both texts to
     // packages/contracts/fixtures/daemon-api/end-child-rule.json, and tools.test.ts holds this
     // description to that file.
     description: legionToolDescription({
@@ -440,6 +482,7 @@ export function createLegionTool(deps: {
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
       after:
         PHASE_OP_SENTENCES.requestBackwardMove +
+        PHASE_OP_SENTENCES.readBuild +
         "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
         "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
         "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
@@ -559,7 +602,7 @@ export function createLegionTool(deps: {
         }
         if (active.kind !== "controller" && isPhaseOp(operation)) {
           const answer = await executePhaseOp(
-            { daemon: daemon(), claim: active, handoffReport, branchHead, restart },
+            { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
             parameters
           );
           // A call that returned without throwing: a completion, and a backward move, which hands
@@ -578,6 +621,12 @@ export function createLegionTool(deps: {
         assertOperationInput(parameters, operation);
         const client = daemon();
         if (active.kind === "controller") {
+          // A controller session holds no claim, so it cannot reach `executePhaseOp`, which
+          // mints from one. It answers the same values here: this build's package, version and
+          // contract, and the contract the daemon states on the health route.
+          if (operation === "read_build") {
+            return jsonSuccess(await readBuild({ daemon: client, build: BUILD }));
+          }
           if (operation === "read_state") return readState(await client.state(), parameters);
           // The project's pause and its resume name no issue: the daemon acts on its own project.
           // Each is validated whole before its grant is minted, and each answer is the daemon's

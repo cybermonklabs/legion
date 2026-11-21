@@ -131,6 +131,34 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 	}
 }
 
+func TestExpediteOutboxReportsWhetherItMovedARow(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
+	row, err := NewOutboxRow("LEGION-208", MessagePost{Body: "A row to wake."}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("make the row: %v", err)
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		id, err := records.EnqueueID(ctx, tx, row)
+		must(t, err)
+		row.ID = id
+		moved, err := records.ExpediteOutbox(ctx, tx, row, now)
+		must(t, err)
+		if !moved {
+			t.Fatalf("first expedite of a row due at %s = not moved, want moved", row.NextAt)
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		moved, err := records.ExpediteOutbox(ctx, tx, row, now)
+		must(t, err)
+		if moved {
+			t.Fatalf("second expedite of the row at %s = moved, want not moved", now)
+		}
+	})
+}
+
 // Every kind of status row has a constructor of its own, and no constructor leaves Kind empty:
 // the kind is the one thing a row cannot be queued without (validateOutboxPayload refuses a write
 // without one), so a kind nothing builds has no way into the outbox at all. The table is read
@@ -1050,6 +1078,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "message-refused", Role: claim.RoleArchitect, Reason: "Dispatch refused the message Legion was posting on LEGION-208"},
 		{Kind: "session-lost", Role: claim.RoleImplementer, Phase: phase.Implementing,
 			Reason: "the session store holds no session for this claim, so its agent starts afresh"},
+		{Kind: "session-forgotten", Role: claim.RoleImplementer, Phase: phase.Implementing,
+			Reason: "the pod's launcher could not look this claim's session up by its id, and Oh My Pi did not resume it by that id, so its agent starts afresh"},
 		{Kind: "session-store-fault", Role: claim.RoleImplementer, Phase: phase.Implementing,
 			Reason: "the session store did not answer, so this claim's agent is not started again yet"},
 		{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec"},

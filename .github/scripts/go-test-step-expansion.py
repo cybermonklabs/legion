@@ -217,9 +217,9 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
-            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the NATS auth service"),
+            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/natscallout",
+        package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),
         requirement=(
             "c-callout-available (the NATS auth service's verification): five hundred "
@@ -285,7 +285,7 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-airlock-lean.yaml", "Fuzz the Go airlock against the model"),
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("FuzzAirlock",),
         requirement=(
             "R3 (dispatch://INFRA-1408/spec): airlock-lean holds the Go airlock to its Lean model, "
@@ -305,7 +305,7 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestModelAgreesOnHostShapes",),
         requirement=(
             "The same reason as FuzzAirlock above: airlock-lean's corpus comparison runs the host "
@@ -323,7 +323,7 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestTheModelReadsAHostlessEntryWithGuidance",),
         requirement=(
             "The same reason as TestModelAgreesOnHostShapes above: airlock-lean's corpus "
@@ -374,26 +374,26 @@ BACKEND_COUNT_TESTS = (
 AUDITED_SCRIPTS = {
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1` over its packages, then counts the skips in its report. With no package argument it
-    # runs its DEFAULT_PACKAGES, ./internal/broker/... and ./cmd/broker/, less the import paths its
-    # DEFAULT_EXCEPT's `grep -Ev '/internal/broker/natscallout$'` takes out of `go list` of them (the
+    # runs its DEFAULT_PACKAGES, ./internal/cipher/... and ./cmd/cipherd/, less the import paths its
+    # DEFAULT_EXCEPT's `grep -Ev '/internal/cipher/natscallout$'` takes out of `go list` of them (the
     # race lane's packages under the tree, ci_job_reads.DATABASE_SKIPS_PATTERN), with no -tags,
     # -race, -run or -skip, under -timeout "${GO_TEST_TIMEOUT:-15m}". A package argument replaces
     # those packages, `--race` adds -race, `--skip P` adds -skip P, `--timeout D` sets the -timeout,
     # and `--var NAME` decides only whether it runs at all. With `--report FILE` it reads a report
     # and runs no test. envoy-go's count step passes the first argument list below, whose command
     # is that run in the listing form this script reads, and envoy-go-race-api's race step the
-    # second. The first's --skip leaves out the backend count's test of ./internal/broker/api/.
+    # second. The first's --skip leaves out the backend count's test of ./internal/cipher/api/.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
             "--timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'":
-                "go list ./internal/broker/... ./cmd/broker/ | grep -Ev '/internal/broker/natscallout$' | "
+                "go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | "
                 "xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
                 "-timeout 20m",
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
         },
-        sha256="b09bf6fe60a6d033eeccd41b2256662fee4f986526c3a1e2953c8fb2f9b2daa6",
+        sha256="668c7223b926bbad0066b0866b8f308f7c08db55ae4db167ea33bf8769401e6d",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -403,11 +403,11 @@ AUDITED_SCRIPTS = {
     "packages/envoy/scripts/backend-count.sh": AuditedScript(
         module="packages/envoy",
         commands={
-            "./cmd/agent-secrets/ ./internal/broker/api/ -- " + " ".join(BACKEND_COUNT_TESTS):
+            "./cmd/cipher/ ./internal/cipher/api/ -- " + " ".join(BACKEND_COUNT_TESTS):
                 f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
-                "./cmd/agent-secrets/ ./internal/broker/api/",
+                "./cmd/cipher/ ./internal/cipher/api/",
         },
-        sha256="034c00d5c296c9f1ef112e2a0d2df27b5aac0754ac1cdd29d9551e45c1750ae1",
+        sha256="bea62eaf32791a70c86e0350053bda35bae7dfa81685ad3338022849f0587a0e",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

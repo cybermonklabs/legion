@@ -30,7 +30,7 @@ when one of its patterns without `!` matches and none of its `!` patterns does.
 worker_image's drop what the .dockerignore keeps out of the
 worker image's build context. envoy_e2e_local and ci_images each end in '!**/*.md': no
 step of either job reads a Markdown file, so a guide written under a directory pattern
-of theirs (patches/**, packages/broker-client/**, .github/actions/install-crane/**)
+of theirs (patches/**, packages/cipher-client/**, .github/actions/install-crane/**)
 starts neither. No Markdown file of the repository matches either filter today, so the
 pattern holds no run back now; it keeps the next guide from riding in, which is what a
 week of Markdown-only pull requests cost 1,504 runner-minutes (dispatch://INFRA-1413).
@@ -204,9 +204,9 @@ staleness and the listener call's attempts) through this one public package: it
 is a module of its own, so Go's internal rule bars it from internal/contracts,
 where the generated values are.
 
-## legion_command: The broker's OAuth wire types: packages/envoy/internal/brokerclient
+## legion_command: The broker's OAuth wire types: packages/envoy/internal/cipherclient
 
-The broker's OAuth wire types: packages/envoy/internal/brokerclient (legion_command's `'packages/envoy/internal/brokerclient/*'`)
+The broker's OAuth wire types: packages/envoy/internal/cipherclient (legion_command's `'packages/envoy/internal/cipherclient/*'`)
 imports them, so `go list -deps ./cmd/legion` lists this package and the anchor
 was one package short of its own definition until this line. Every other filter
 naming this anchor already named the package through a second pattern of its
@@ -236,7 +236,7 @@ and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, b
 packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
 for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
 outside the daemon: contracts' fixtures
-(internal/api/state_golden_test.go:868, internal/intake/intake_test.go:802), the
+(internal/api/state_golden_test.go:1391, internal/intake/intake_test.go:856,960), the
 agents internal/prompts/roles_test.go:261 stats, the tools skill its :689 holds
 roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:432
 holds the reviewer's prompt to, the GitHub App helper
@@ -297,9 +297,9 @@ $CLAUDE_ENVOY_VERSION_ARGS carries the build inputs" holds release.yaml's
 $CLAUDE_ENVOY_VERSION_ARGS equal to scripts/build-inputs.txt, so a change to either
 must run both jobs.
 
-## claude_envoy_build: Its src/broker-credential.ts imports @legion/broker-client
+## claude_envoy_build: Its src/broker-credential.ts imports @legion/cipher-client
 
-Its src/broker-credential.ts imports @legion/broker-client (brokerTokenClient from its
+Its src/broker-credential.ts imports @legion/cipher-client (brokerTokenClient from its
 /environment module, chooseSignIn from /signins and isFinalRefusal from /token-client), whose exports
 map every entry to `./src/<module>.ts`, so a build compiles that package's seven
 sources with envoy-client's. check-ci-filters.test.sh holds a hand-written list of
@@ -572,8 +572,8 @@ command now, since a job inside a container can do neither. The shard job starts
 the `weed` binary its own image carries instead, so neither file reaches it.
 The real secrets broker e2e/broker-approval.e2e.ts approves a request on, the dev
 OIDC issuer it trusts, and the seeding step that logs its service in and enrols its
-pods: the packages `go list -deps ./cmd/broker ./cmd/dev-oidc-issuer
-./internal/broker/brokertest/requestseed` lists in packages/envoy beyond the
+pods: the packages `go list -deps ./cmd/cipherd ./cmd/dev-oidc-issuer
+./internal/cipher/ciphertest/requestseed` lists in packages/envoy beyond the
 Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
 
 ## envoy_go: internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
@@ -585,7 +585,7 @@ alone must start both jobs, or the side it disagrees with stays green.
 ## envoy_go: The three jobs whose tag steps lean on this job's untagged
 
 The three jobs whose tag steps lean on this job's untagged run of ./cmd/dispatch
-and ./cmd/broker: each runs only what its tag adds, so a change that starts one
+and ./cmd/cipherd: each runs only what its tag adds, so a change that starts one
 must start this job too (check-ci-filters.sh's rule 15).
 
 ## envoy_go_checks: envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
@@ -695,7 +695,7 @@ that run the tests: the chat client and the router.
 The Lean model of the airlock and the Go code it covers (airlock-lean): `lake build`
 and the axiom print read the model's own project, and the two fuzz runs compile the
 airlock package and compare it against the model's program, so a change to either
-side runs the job. Both sides live under internal/broker/airlock, which one glob
+side runs the job. Both sides live under internal/cipher/proxyrules, which one glob
 names, and the Go side also compiles internal/fold, the case fold it compares names
 in; the axiom check is a script of its own, which check k15 runs too; the Lean
 toolchain comes from the elan the job's action installs, and that action reads the
@@ -730,9 +730,9 @@ workspace. The envoy_smoke filter's two hand-written `!` patterns, `'!packages/e
 which neither .dockerignore lets in; the generated block leaves out the test files
 (internal/integration holds nothing else).
 
-## envoy_e2e_local: And @legion/broker-client with it: the tsc program of
+## envoy_e2e_local: And @legion/cipher-client with it: the tsc program of
 
-And @legion/broker-client with it: the tsc program of envoy-client holds all seven
+And @legion/cipher-client with it: the tsc program of envoy-client holds all seven
 of its modules, and at runtime, which is what this job's bun scripts do,
 transport.ts's own closure holds two of them (delivery.ts's holds none), so the
 pattern is needed through transport.ts (ci_job_reads.py's envoy_client_dep).
@@ -741,7 +741,7 @@ pattern is needed through transport.ts (ci_job_reads.py's envoy_client_dep).
 
 The job reads no Markdown file: the listener, the renderer and the contracts
 between them are its whole input, so a guide written under one of the directory
-patterns of the envoy_e2e_local filter (`'packages/envoy-client/src/**'`, `'packages/broker-client/**'` and the rest) would start it for nothing.
+patterns of the envoy_e2e_local filter (`'packages/envoy-client/src/**'`, `'packages/cipher-client/**'` and the rest) would start it for nothing.
 
 ## worker_image: Every file packages/daemon/docker/worker.Dockerfile builds
 
@@ -907,9 +907,9 @@ start it too, though the row leaves them out: this filter takes no `!` pattern.
 ## envoy_go_race: The shared race job: the closure of `go test -race`
 
 The shared race job: the closure of `go test -race` over delivery, the Dispatch
-store, the bus, the listener, the registry store, the session cache, kvwatch, natscred
-and the NATS auth service (`go list -deps -test -race` in packages/envoy), and every
-.md file under packages/envoy, which internal/dispatch/store's
+store, the bus, the listener, the registry store, the session cache, kvwatch, natscred,
+the NATS auth service and the sign-in code flow (`go list -deps -test -race` in
+packages/envoy), and every .md file under packages/envoy, which internal/dispatch/store's
 search_text_test.go:104-120 walks (the RULES row for
 that file in .github/scripts/ci_job_reads.py declares packages/envoy/**/*.md). The
 filter names the wide root rather than that package list and that glob, and its
@@ -1763,9 +1763,11 @@ expiry timer's callback as kvwatch's resume point is read while a replaced watch
 applies, natscred, whose service keeper probes with the connection's options while
 internal/bus may be setting its handlers (natscred/probe_race_test.go, which only the race
 build compiles, so this lane is its one run), the NATS auth service
-(internal/broker/natscallout), which starts a goroutine per request from nats.go's delivery
-callback, counts those waiting for a decision slot and waits them out at Close, and the
-Dispatch API and the document service - all under the race detector. A read
+(internal/cipher/natscallout), which starts a goroutine per request from nats.go's delivery
+callback, counts those waiting for a decision slot and waits them out at Close, the sign-in
+code flow (internal/oidc), whose sign-ins and refreshes use one shared x/oauth2 config at the
+same time (TestCodeFlowGrantsUseTheDiscoveredConfigWithoutARace checks that use for a data
+race), the Dispatch API and the document service - all under the race detector. A read
 that walks a live document without its lock races the room's peers, which no ordinary run
 shows: envoy-go's unit-test step runs without -race (LEGION-499). The lane sits beside
 envoy-go because -race runs these packages several times slower, and each job carries a
@@ -1776,8 +1778,9 @@ what the race build cannot run at all or at full size", which runs the handful o
 assertions the detector makes impossible or shrinks and nothing else.
 
 The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener,
-the registry store, the session cache, kvwatch, natscred and the NATS auth service),
-envoy-go-race-api and envoy-go-race-docs, whose notes, .github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector,
+the registry store, the session cache, kvwatch, natscred, the NATS auth service and the sign-in
+code flow), envoy-go-race-api and envoy-go-race-docs, whose notes,
+.github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector,
 say why the document service runs alone.
 
 api sits apart because isolation is what made it fast: sharing a runner, the race binaries
@@ -1805,12 +1808,13 @@ runs in the test process (internal/testnats), so no job here needs a container r
 own.
 
 Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache,
-kvwatch, natscred and the NATS auth service share this runner. The Dispatch store's tests
+kvwatch, natscred, the NATS auth service and the sign-in code flow share this runner. The
+Dispatch store's tests
 (store_test.go:28) and delivery's take their databases from storetest.Open
 (storetest.go:64-66), which reads DISPATCH_TEST_DATABASE_URL and skips without it, and
 cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so the
 job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
-natscred's and the auth service's tests open no store, so they need none.
+natscred's, the auth service's and the code flow's tests open no store, so they need none.
 
 ## The mention sender's claim model alone, on a runner of its own
 
@@ -1923,8 +1927,8 @@ no container runtime and no database.
 
 ## The secrets broker's two-process tests
 
-The two-process tests of the secrets broker (packages/envoy/cmd/broker/multiprocess_test.go,
-INFRA-236): each row starts real cmd/broker binaries against one Postgres - which is what the
+The two-process tests of the secrets broker (packages/envoy/cmd/cipherd/multiprocess_test.go,
+INFRA-236): each row starts real cmd/cipherd binaries against one Postgres - which is what the
 broker's Deployment runs once it carries more than one replica - and drives them over real
 HTTP and their own logs. They race one refresh token and one device code against both
 processes, migrate one empty database with both at once, prove a retag read by one process is
@@ -1940,7 +1944,7 @@ Postgres service and shape this copies, so that each runs only on what it reads:
 closure (broker_multiprocess) shares little with the Dispatch server's
 (dispatch_multiprocess). They need no NATS and no test-container pull - the broker starts
 nothing in a container - so neither step is here. The step runs only the tests the tag adds:
-`-tags multiprocess ./cmd/broker` would run the package's untagged tests a second time,
+`-tags multiprocess ./cmd/cipherd` would run the package's untagged tests a second time,
 envoy-go's unit step having run them already, so the -run comes from
 .github/scripts/go-tagged-tests.sh, which reads the names off the source at run time. The
 assignment is a line of its own: under bash -e it carries the script's exit status, so an
