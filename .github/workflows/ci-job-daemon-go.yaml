@@ -156,14 +156,16 @@ jobs:
 
       # The daemon's NATS tests start testnats.Image (the hub's 2.15.1) and SkippingImage (nats:2.10,
       # for the one test of its refusal), and, for its grant test, Envoy's HubImage
-      # (packages/envoy/testnatsimages), pulled first for the reason the action gives.
-      - name: Pull the NATS test container images
+      # (packages/envoy/testnatsimages); internal/ompsessions' TestEveryPoolPinsItsSearchPath starts
+      # PoolImage, PgBouncer 1.25.2, with docker. Each is pulled first for the reason the action gives.
+      - name: Pull the NATS and PgBouncer test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
             packages/daemon/internal/testnats/nats.go Image
             packages/daemon/internal/testnats/nats.go SkippingImage
             packages/envoy/internal/testnats/nats.go HubImage
+            packages/daemon/internal/ompsessions/searchpath_test.go PoolImage
 
       # internal/launcher's role-namespace tests start each role generation in unprivileged user,
       # mount, PID and IPC namespaces, as an issue pod's launcher does, and t.Fatal rather than

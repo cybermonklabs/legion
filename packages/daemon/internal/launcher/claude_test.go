@@ -38,7 +38,7 @@ const claudeSession = "0b9c2f4e-2d3a-4c55-9a1e-6f7d8e9a0b1c"
 type claudeRig struct {
 	*rig
 	dsnFile    string
-	conn       *pgx.Conn
+	conn       *ompsessions.Conn
 	configDir  string
 	transcript string
 	record     string
@@ -309,7 +309,18 @@ func TestAClaudeSaveMarksAFreshTranscriptOnlyAfterItsFirstCommit(t *testing.T) {
 	pid := pidOf(t, pidFile)
 	marker := c.transcript + SavedMarkerSuffix
 	ctx := context.Background()
-	tx, err := c.conn.Begin(ctx)
+	// The lock is the test's own statement, on a connection of its own: the rig's is the package's
+	// Conn, on which no statement but the package's runs.
+	dsn, err := ompsessions.ReadDSN(c.dsnFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locker, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = locker.Close(context.Background()) })
+	tx, err := locker.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +550,7 @@ const (
 type keeperRig struct {
 	t          *testing.T
 	k          *claudeKeeper
-	conn       *pgx.Conn
+	conn       *ompsessions.Conn
 	log        *lockedBuffer
 	transcript string
 	record     string
@@ -574,7 +585,7 @@ func newKeeperRig(t *testing.T, dsnFile string) *keeperRig {
 
 // faulty is write meeting the rig's fault.
 func (c *keeperRig) faulty(write rowWrite) rowWrite {
-	return func(ctx context.Context, conn *pgx.Conn, path string, saved int64, content []byte, mtime time.Time) error {
+	return func(ctx context.Context, conn *ompsessions.Conn, path string, saved int64, content []byte, mtime time.Time) error {
 		fault := c.fault
 		c.fault = noFault
 		switch fault {
