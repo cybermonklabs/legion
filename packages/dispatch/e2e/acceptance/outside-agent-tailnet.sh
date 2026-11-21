@@ -46,7 +46,8 @@
 #   OUTSIDE_FULL_COOKIE_FILE     a file holding a full member's browser session at Dispatch's
 #                                private origin, `<name>=<value>` as the Cookie header carries it.
 #                                The positive controls of P7 and of the sweep's GitHub proxy rows
-#                                read with it, and the sweep's fills mode reads the proxy with it.
+#                                read with it, and the sweep's fills mode reads the proxy with it
+#                                (as SWEEP_FULL_COOKIE), so rows P7 and sweep need it.
 #   OUTSIDE_WORKFLOW_REPO        owner/name of the repository whose workflow runs the public leg;
 #                                OUTSIDE_WORKFLOW names the workflow (outside-edge-e2e.yaml), and
 #                                OUTSIDE_WORKFLOW_INPUTS holds its other inputs, one name=value a
@@ -699,22 +700,25 @@ fi
 # runs the sweep's fills mode, which makes the full member's half of every row, and passes the file
 # to the workflow as `sweep_fills`; and it runs the sweep's writer, which comments on the write
 # issue every 15 s and reads the full member's own feed, as the live socket's control. The token
-# reaches the sweep through the environment of a subshell alone. ---
+# and the cookie reach the sweep through the environment of a subshell alone. Fills mode writes
+# the full member's half of the GitHub proxy rows (a `can_fail` line for each read that can fail)
+# only with the full member's browser session, since the proxy reads no token, so the sweep needs
+# OUTSIDE_FULL_COOKIE_FILE. ---
 sweep_script="$here/restricted-sweep.sh"
 sweep_fills=''
-sweep_problem=$(lacking OUTSIDE_TAILNET_DISPATCH_URL OUTSIDE_SWEEP_PROJECT OUTSIDE_SWEEP_FULL_TOKEN_FILE OUTSIDE_SWEEP_CONVERSATION_FILE OUTSIDE_SWEEP_WRITE_ISSUE)
+sweep_problem=$(lacking OUTSIDE_TAILNET_DISPATCH_URL OUTSIDE_SWEEP_PROJECT OUTSIDE_SWEEP_FULL_TOKEN_FILE OUTSIDE_SWEEP_CONVERSATION_FILE OUTSIDE_SWEEP_WRITE_ISSUE OUTSIDE_FULL_COOKIE_FILE)
 [ -n "$sweep_problem" ] || [ -f "$sweep_script" ] || sweep_problem="restricted-sweep.sh is not beside this file in $here"
 [ -n "$sweep_problem" ] || [ -r "${OUTSIDE_SWEEP_FULL_TOKEN_FILE:-}" ] ||
   sweep_problem="OUTSIDE_SWEEP_FULL_TOKEN_FILE names $OUTSIDE_SWEEP_FULL_TOKEN_FILE, which cannot be read"
+[ -n "$sweep_problem" ] || [ -z "$browser_problem" ] ||
+  sweep_problem="the sweep's fills mode writes its GitHub proxy rows only with the full member's browser session, which was not read: $browser_problem"
 # sweep_run MODE OUT: the sweep in MODE with the box's full member, its output in OUT.
 sweep_run() {
   (
     SWEEP_FULL_TOKEN=$(tr -d '\r\n' <"$OUTSIDE_SWEEP_FULL_TOKEN_FILE")
     export SWEEP_FULL_TOKEN
-    if [ -z "$browser_problem" ]; then
-      SWEEP_FULL_COOKIE=$(tr -d '\r\n' <"$OUTSIDE_FULL_COOKIE_FILE")
-      export SWEEP_FULL_COOKIE
-    fi
+    SWEEP_FULL_COOKIE=$(tr -d '\r\n' <"$OUTSIDE_FULL_COOKIE_FILE")
+    export SWEEP_FULL_COOKIE
     SWEEP_MODE=$1 SWEEP_ORIGIN=$OUTSIDE_TAILNET_DISPATCH_URL SWEEP_PROJECT=$OUTSIDE_SWEEP_PROJECT \
       SWEEP_MEMBER=$person SWEEP_CONVERSATION_FILE=$OUTSIDE_SWEEP_CONVERSATION_FILE \
       SWEEP_FILLS_FILE="$work/sweep-fills" \
@@ -741,19 +745,40 @@ fi
 # The sweep's proxy rows' positive control. The runner reads the GitHub proxy as the test person
 # for the repository the fills name as one only the sweep's project's issues resolve to, and must
 # be answered as for a repository the App is not installed on. That answer means something only
-# where the proxy answers the same repository to a person who may see it: the full member's
-# browser reads, through the proxy, the workflow runs of the commit the sweep's own proxy rows
-# name, and must get 200 with a list of workflow runs. Without that, the sweep row reads UNKNOWN.
+# where the proxy answers the same repository to a person who may see it. So the fills must hold
+# the full member's answer that can fail for each proxy read the runner makes (a `can_fail` line
+# each), and this box's browser reads, through the proxy, the workflow runs of the commit the
+# sweep's own proxy rows name, and must get 200 with a list of workflow runs. Without either, the
+# sweep row reads UNKNOWN.
 proxy_sha=0123456789abcdef0123456789abcdef01234567
+proxy_reads='GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}
+GET /api/github/rest/repos/{owner}/{repo}/issues/{number}
+GET /api/github/rest/repos/{owner}/{repo}/commits/{sha}/check-runs
+GET /api/github/rest/repos/{owner}/{repo}/actions/runs?head_sha={sha}
+GET /api/v1/github/app-installation/{owner}/{repo}'
 proxy_control=''
 proxy_control_problem=$browser_problem
 [ -n "$proxy_control_problem" ] || [ -z "$sweep_problem" ] ||
   proxy_control_problem="the sweep's fills, which name the repository, were not made: $sweep_problem"
 if [ -z "$proxy_control_problem" ]; then
   proxy_repo=''
+  can_fail=$newline
   while IFS="$tab" read -r name value; do
-    [ "$name" != proxy_repo ] || proxy_repo=$value
+    case $name in
+      proxy_repo) proxy_repo=$value ;;
+      can_fail) can_fail="$can_fail$value$newline" ;;
+    esac
   done <"$work/sweep-fills"
+  blind=''
+  while IFS= read -r each; do
+    case $can_fail in *"$newline$each$newline"*) ;; *) blind="${blind:+$blind, }$each" ;; esac
+  done <<EOF
+$proxy_reads
+EOF
+  [ -z "$blind" ] ||
+    proxy_control_problem="the sweep's fills hold no full member's answer that can fail for $blind"
+fi
+if [ -z "$proxy_control_problem" ]; then
   case $proxy_repo in
     '') proxy_control_problem="the sweep's fills name no repository that only $OUTSIDE_SWEEP_PROJECT's issues resolve to" ;;
     *[!A-Za-z0-9_./-]* | */*/* | /* | */) proxy_control_problem="the sweep's fills name no owner/name repository: $proxy_repo" ;;

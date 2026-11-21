@@ -332,6 +332,9 @@ interface StandIns {
   readonly canaryRefusal: string;
   /** Whether Dispatch's build holds every commit OUTSIDE_DISPATCH_COMMITS names. */
   readonly dispatchCommits: "held" | "lacking";
+  /** Whether OUTSIDE_FULL_COOKIE_FILE is given, and the proxy read the fills leave out, if any. */
+  readonly cookie?: "given" | "absent";
+  readonly fillsLeaveOut?: string;
 }
 
 interface StandInRun extends LegRun {
@@ -524,6 +527,24 @@ interface PreparedStandIn {
 function prepareStandIn(standIns: StandIns): PreparedStandIn {
   const state = scratch("state");
   writeFileSync(join(state, "canary-refusal"), `${standIns.canaryRefusal}\n`);
+  // The fills the sweep's fills mode writes: the repository, and a `can_fail` line for each proxy
+  // read, but only with the full member's cookie, as restricted-sweep.sh does.
+  const canFail = [
+    "GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}",
+    "GET /api/github/rest/repos/{owner}/{repo}/issues/{number}",
+    "GET /api/github/rest/repos/{owner}/{repo}/commits/{sha}/check-runs",
+    "GET /api/github/rest/repos/{owner}/{repo}/actions/runs?head_sha={sha}",
+    "GET /api/v1/github/app-installation/{owner}/{repo}",
+  ].filter((read) => read !== standIns.fillsLeaveOut);
+  writeFileSync(
+    join(state, "fills"),
+    [
+      "restricted-sweep-fills\t1",
+      `proxy_repo\t${proxyRepository}`,
+      ...canFail.map((read) => `can_fail\t${read}`),
+      "",
+    ].join("\n")
+  );
   const repo = checkout();
   const inputs = scratch("inputs");
   const legDir = scratch("leg");
@@ -534,8 +555,9 @@ function prepareStandIn(standIns: StandIns): PreparedStandIn {
     `#!/usr/bin/env bash
 case $SWEEP_MODE in
   fills)
-    [ -z "\${SWEEP_FULL_COOKIE:-}" ] || : >'${state}/fills-read-the-cookie'
-    printf 'restricted-sweep-fills\\t1\\nproxy_repo\\t${proxyRepository}\\n' >"$SWEEP_FILLS_FILE"
+    [ -n "\${SWEEP_FULL_COOKIE:-}" ] || { echo 'UNKNOWN: SWEEP_FULL_COOKIE is required'; exit 2; }
+    : >'${state}/fills-read-the-cookie'
+    cat '${state}/fills' >"$SWEEP_FILLS_FILE"
     ;;
   writer)
     echo 'write 2026-01-01T00:00:05Z delivered'
@@ -583,7 +605,7 @@ echo 0 >"$out/restricted-sweep.exit"
       standIns.dispatchCommits === "held" ? repo.held : `${repo.held} ${repo.apart}`,
     OUTSIDE_TAILNET_BROKER_URL: `http://127.0.0.1:${closedPort()}`,
     OUTSIDE_TAILNET_DISPATCH_URL: dispatch.origin,
-    OUTSIDE_FULL_COOKIE_FILE: join(inputs, "cookie"),
+    ...(standIns.cookie === "absent" ? {} : { OUTSIDE_FULL_COOKIE_FILE: join(inputs, "cookie") }),
     OUTSIDE_PERSON: "outside-e2e@example.com",
     OUTSIDE_CANARY: "EXAMPLE_CANARY",
     OUTSIDE_REPOSITORY: "example-owner/example-repo",
@@ -710,6 +732,45 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64"))(
       },
       // The leg, a bounded child under the short bound.
       rowLimit("short")
+    );
+
+    test(
+      "the sweep reads UNKNOWN without the full member's cookie, and with fills that lack a proxy read's line",
+      async () => {
+        const prepared = [
+          prepareStandIn({
+            controls: "answered",
+            canaryRefusal: memberRefusal,
+            dispatchCommits: "held",
+            cookie: "absent",
+          }),
+          prepareStandIn({
+            controls: "answered",
+            canaryRefusal: memberRefusal,
+            dispatchCommits: "held",
+            fillsLeaveOut: "GET /api/v1/github/app-installation/{owner}/{repo}",
+          }),
+        ];
+        const [noCookie, gap] = await Promise.all(prepared.map(runStandIn));
+        if (noCookie === undefined || gap === undefined) throw new Error("two runs, want two");
+        // Without the cookie the sweep does not run, and P7 has no positive control either.
+        expect({ verdicts: verdictsOf(noCookie.stdout), stdout: noCookie.stdout }).toMatchObject({
+          verdicts: { sweep: "UNKNOWN", P7: "UNKNOWN" },
+        });
+        expect(rowsOf(noCookie.stdout).get("sweep")?.got).toContain(
+          "OUTSIDE_FULL_COOKIE_FILE is unset"
+        );
+        expect(existsSync(join(noCookie.state, "fills-read-the-cookie"))).toBe(false);
+        // Fills that lack a proxy read's full-member answer hold the sweep, and only the sweep.
+        expect({ verdicts: verdictsOf(gap.stdout), stdout: gap.stdout }).toMatchObject({
+          verdicts: { sweep: "UNKNOWN", P7: "PASS" },
+        });
+        expect(rowsOf(gap.stdout).get("sweep")?.got).toContain(
+          "the sweep's fills hold no full member's answer that can fail for GET /api/v1/github/app-installation/{owner}/{repo}"
+        );
+      },
+      // The two runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short"] })
     );
   }
 );

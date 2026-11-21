@@ -88,13 +88,19 @@ The tailnet leg does these steps, in this order:
 5. It runs the read sweep's full-member half: `restricted-sweep.sh` (beside this file) in
    its fills mode with the box's full member (`OUTSIDE_SWEEP_PROJECT`,
    `OUTSIDE_SWEEP_FULL_TOKEN_FILE`, `OUTSIDE_SWEEP_CONVERSATION_FILE`, the test person as
-   `SWEEP_MEMBER`, and the full member's cookie, with which it reads the GitHub proxy), and starts
-   its writer, which comments on the scratch issue `OUTSIDE_SWEEP_WRITE_ISSUE` every 15 s until the
-   public leg ends. No full member's credential goes to the runner: the fills file holds none, and
-   is at most 40 KiB so that it fits one input. Then the sweep's proxy control: the full member's
-   browser reads, through the GitHub proxy, the workflow runs of one commit of the repository the
-   fills name (the one only the sweep's project's issues resolve to, which the runner's proxy rows
-   read), and must get 200 with a list of workflow runs.
+   `SWEEP_MEMBER`, and the full member's cookie as `SWEEP_FULL_COOKIE`, with which it reads the
+   GitHub proxy; without `OUTSIDE_FULL_COOKIE_FILE` the sweep does not run and its row reads
+   UNKNOWN), and starts its writer, which comments on the scratch issue
+   `OUTSIDE_SWEEP_WRITE_ISSUE` every 15 s until the public leg ends. No full member's credential
+   goes to the runner: the fills file holds none, and is at most 40 KiB so that it fits one input.
+   Then the sweep's proxy control. The fills must hold a `can_fail` line, the full member's
+   answer that can fail, for each GitHub proxy read the runner makes:
+   `GET /api/github/rest/repos/{owner}/{repo}/` with `pulls/{number}`, `issues/{number}`,
+   `commits/{sha}/check-runs` and `actions/runs?head_sha={sha}`, and
+   `GET /api/v1/github/app-installation/{owner}/{repo}`. And the full member's browser reads,
+   through the GitHub proxy, the workflow runs of one commit of the repository the fills name
+   (the one only the sweep's project's issues resolve to, which the runner's proxy rows read), and
+   must get 200 with a list of workflow runs.
 6. It starts the public leg, within the code's 15 minutes: `gh workflow run` of
    `OUTSIDE_WORKFLOW` (default `outside-edge-e2e.yaml`) in `OUTSIDE_WORKFLOW_REPO`, with
    `checks=all`, `project`, `peer_session`, `tailnet_user_code`,
@@ -183,7 +189,7 @@ shim finds its program through the caller's HOME.
 | T3 | A fresh session enrolled through the box's own helper is granted the canary at once, and its value is 64 characters long. This is T2's positive control: the same broker build and the same route grant the canary, so a refusal in T2 is the member kind's. |
 | T4 | The public leg's revoke step, before the T5 window, revokes the scratch login (its `revoke-<credential id>` row passes), and `agent-secrets machine list` through the scratch helper is then refused `LAUNCHER_INVALID`. |
 | T5 | The owner's removal, made during the public run's T5 window; before it, the test person is on the project's access list (the control, read with this box's own credential at `OUTSIDE_TAILNET_DISPATCH_URL`), and after the run the list no longer names them (else UNKNOWN). From the public leg's rows: the cookie got 401 within 30 s of the removal, and the passkey sign-in, a fresh trade of the person's device login, and the relay socket open then each stopped within 325 s of it, none before it. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. No terminal, no peer to open the window to, or a part not read, reads UNKNOWN. |
-| sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and two controls of this box hold: at least one of the writer's comments was delivered to the full member's own feed strictly inside the sweep's `live window`, so its finding that nothing reached the test person's feed means something; and the proxy control was answered, so the runner's finding that the GitHub proxy answers the test person as for a repository the App is not installed on means something. Without either it reads UNKNOWN; a FAIL of the sweep stands. |
+| sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and two controls of this box hold: at least one of the writer's comments was delivered to the full member's own feed strictly inside the sweep's `live window`, so its finding that nothing reached the test person's feed means something; and the proxy control held (a `can_fail` line in the fills for each of the five proxy reads, and the full member's browser answered 200 by the proxy), so the runner's finding that the GitHub proxy answers the test person as for a repository the App is not installed on means something. Without either, or without `OUTSIDE_FULL_COOKIE_FILE`, it reads UNKNOWN; a FAIL of the sweep stands. |
 | gate | Every row above and P1-P9 pass, and the pins read at the end are the pins read at the start. |
 
 The tailnet leg holds a public row to what it saw beside it. P4 reads UNKNOWN when the peer did not
