@@ -29,7 +29,7 @@ func TestAServerThatCannotOpenAListenerFailsItsStartAtOnce(t *testing.T) {
 		start(recorder, fmt.Sprintf("leafnodes {\n  listen: %q\n}\n", held.Addr().String()), nil)
 	}()
 	<-done
-	if !strings.Contains(recorder.message, "logged a fatal error") || !strings.Contains(recorder.message, "leafnode") {
+	if !strings.Contains(recorder.message, "logged a fatal error") || !strings.Contains(recorder.message, "Error listening on leafnode port") {
 		t.Fatalf("a start whose leafnode port %s is held failed with %q, want the fatal error naming the leafnode listener", held.Addr(), recorder.message)
 	}
 }
@@ -115,4 +115,16 @@ func TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady(t *testing.T) {
 	if err := awaitReady(t, srv, log); err == nil || !strings.Contains(err.Error(), "fatal error") {
 		t.Fatalf("awaitReady of a server that accepts connections after logging a fatal error answered %v, want the fatal error: %s", err, log)
 	}
+}
+
+// A server started again forgets a fatal error an earlier run of it logged: launch runs again at
+// each Start, Restart and member restart, on the server's one log, and a flag the earlier run set
+// would fail the new start at once. The row plants a fatal line in a running server's log, stops
+// it and starts it again, which must answer.
+func TestARestartedServerForgetsAFatalErrorOfItsEarlierRun(t *testing.T) {
+	server := start(t, "", []string{"-js"})
+	server.log.Fatalf("a planted fatal error of the earlier run")
+	server.Stop(t)
+	server.Start(t)
+	Connect(t, server.URL()).Close()
 }

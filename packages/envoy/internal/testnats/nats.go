@@ -147,10 +147,10 @@ func sharedServer(t testing.TB) *accountServer {
 // replaces to have a start fail.
 var startShared = startAccountServer
 
-// sharedTB stands in for the test that first asks for the package's shared server. That server
-// outlives the test, so the cleanup start registers on it runs from Main, after the last test, and
-// what the cleanup reports goes to stderr and the exit code: a t.Errorf on a test that has already
-// ended panics.
+// sharedTB stands in for the test that asks for the package's shared server and starts it. That
+// server outlives the test, so the cleanup start registers on it runs from Main, after the last
+// test, and what the cleanup reports goes to stderr and the exit code: a t.Errorf on a test that
+// has already ended panics. A start that fails runs its cleanups at once instead (sharedServer).
 type sharedTB struct {
 	testing.TB
 	cleanups []func()
@@ -626,7 +626,8 @@ func start(t testing.TB, config string, serverArgs []string) *Server {
 }
 
 // launch runs a nats-server on the server's configuration and store, and returns once it accepts
-// connections.
+// connections. It runs again at each Start, Restart and member restart, on the same log, so a
+// fatal error an earlier run logged is forgotten first.
 func (s *Server) launch(t testing.TB) {
 	t.Helper()
 	opts, err := serverOptions(s.configPath, s.args, s.store, s.host)
@@ -637,12 +638,15 @@ func (s *Server) launch(t testing.TB) {
 	if err != nil {
 		t.Fatalf("create the NATS server: %v", err)
 	}
+	s.log.clearFatal()
 	srv.SetLoggerV2(s.log, opts.Debug, opts.Trace, false)
 	go srv.Start()
 	if err := awaitReady(t, srv, s.log); err != nil {
+		// The log as the wait left it, before a shutdown that has no bound of its own.
+		log := s.log.String()
 		srv.Shutdown()
 		srv.WaitForShutdown()
-		t.Fatalf("NATS did not accept connections: %v: %s", err, s.log.String())
+		t.Fatalf("NATS did not accept connections: %v: %s", err, log)
 	}
 	// Before s.srv is set the relay refuses every connection, so no client request reaches the
 	// server before its system account's response timers are set past any test (responseThreshold).
@@ -663,8 +667,8 @@ func (s *Server) launch(t testing.TB) {
 // startMargin is how long before the test's own deadline (go test's -timeout) a wait on a server's
 // own fact gives up (testDeadline), so a server that never gets there fails its test, naming the
 // wait, rather than the binary panicking with every goroutine's stack. With less than twice that
-// left, the wait gives up halfway to the deadline instead, so a short -timeout still leaves it most
-// of what remains.
+// left, the wait gives up halfway to the deadline instead, so a short -timeout still leaves it
+// half of what remains.
 const startMargin = 30 * time.Second
 
 // testDeadline is when a wait of t on a server's own fact gives up: startMargin before t's
@@ -795,6 +799,13 @@ func (c *logCapture) String() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.text.String()
+}
+
+// clearFatal forgets a fatal error an earlier run of the server logged, before the next (launch).
+func (c *logCapture) clearFatal() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fatal = false
 }
 
 // fatalLogged reports whether the server has logged a fatal error.
