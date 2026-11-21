@@ -319,12 +319,13 @@ func (h *stagedHub) Cluster(context.Context) (routes.Cluster, error) {
 }
 
 // Pods is the three servers as the API server reports the pods: each pod's IP 127.0.0.1, where it
-// listens, a uid of its own, and its container's restarts and start.
+// listens, a uid of its own, a UUID as Kubernetes gives each pod and as routes check requires of a
+// record, and its container's restarts and start.
 func (h *stagedHub) Pods(context.Context) ([]routes.Pod, error) {
 	var pods []routes.Pod
-	for _, s := range h.servers {
-		pods = append(pods, routes.Pod{Name: s.name, UID: "uid-" + s.name, IP: "127.0.0.1", Ready: true, Updated: true, RouteEnv: true,
-			RestartCount: s.restarts, StartedAt: s.startedAt})
+	for i, s := range h.servers {
+		pods = append(pods, routes.Pod{Name: s.name, UID: fmt.Sprintf("00000000-0000-4000-8000-%012d", i), IP: "127.0.0.1", Ready: true,
+			Updated: true, RouteEnv: true, RestartCount: s.restarts, StartedAt: s.startedAt})
 	}
 	return pods, nil
 }
