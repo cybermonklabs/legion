@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sync"
 	"time"
 
@@ -114,22 +115,37 @@ var (
 	// could not be asked for: the list is allowed, as it is today, but unchecked, so the caller
 	// that goes on to mint or enroll logs that it did so. It wraps the failure it stands for.
 	ErrUnchecked = errors.New("projectaccess: dispatch could not be asked, so the empty list is allowed unchecked")
-	// errUnavailable is Dispatch, or a gateway in front of it, answering 502, 503 or 504: an
-	// answer that says Dispatch is not answering now (Unanswered).
+	// errUnavailable is a 502, 503 or 504 that says Dispatch is not answering now (Unanswered):
+	// one whose body names no code of Dispatch's, a gateway's or a load balancer's page in front
+	// of it, or one that names a code Dispatch answers for its own outage (outageCodes).
 	errUnavailable = errors.New("projectaccess: dispatch is unavailable")
 )
+
+// outageCodes are the codes Dispatch answers its access routes with, beside a 503, for an outage
+// of its own that says nothing of the person or the project asked about: OIDC_ISSUER_UNAVAILABLE
+// while it cannot reach the issuer of the broker's own account token (internal/dispatch/api,
+// serviceTokenActor), and DATABASE_UNAVAILABLE while it has no database to read (readyPool). A
+// 502, 503 or 504 whose body names any other code, such as FEATURE_OFF or
+// GITHUB_APP_UNCONFIGURED, is Dispatch answering, and that answer lasts until somebody fixes it.
+var outageCodes = []string{"DATABASE_UNAVAILABLE", "OIDC_ISSUER_UNAVAILABLE"}
 
 // Unanswered reports whether err, a failed read of Dispatch, is Dispatch not answering: a failure
 // that clears by itself once Dispatch answers again. That is the read's deadline passing, its
 // caller's own bound (RelayedReadBound) included; the transport failing before Dispatch's whole
-// answer arrived (dispatchread.ErrNoAnswer); and Dispatch, or a gateway in front of it, answering
-// 502, 503 or 504. Every other failure is an answer, one that lasts until somebody fixes it:
-// Dispatch refusing the broker's own account (dispatchread.ErrBrokerRefused), answering a member
-// kind this broker does not know (ErrUnknownMemberKind), a 404 that answers nothing of the person
-// or the project, any other status, or a body that does not decode; and so is a read its caller
-// gave up on, which says nothing of Dispatch. A caller that lets something through only while
-// Dispatch does not answer goes ahead on Unanswered alone (requests.Machine.RevokeByApprover).
+// answer arrived (dispatchread.ErrNoAnswer); and a 502, 503 or 504 whose body names no code of
+// Dispatch's, or one of the codes Dispatch answers for its own outage (outageCodes). Every other
+// failure is an answer, one that lasts until somebody fixes it: Dispatch refusing the broker's own
+// account (dispatchread.ErrBrokerRefused), answering a member kind this broker does not know
+// (ErrUnknownMemberKind), a 404 that answers nothing of the person or the project, a 502, 503 or
+// 504 naming any other code of Dispatch's, any other status, or a body that does not decode; a
+// certificate that does not verify and a name that does not resolve (dispatchread.Reader.Get); and
+// so is a read its caller gave up on (context.Canceled), which says nothing of Dispatch. A caller
+// that lets something through only while Dispatch does not answer goes ahead on Unanswered alone
+// (requests.Machine.RevokeByApprover).
 func Unanswered(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, dispatchread.ErrNoAnswer) || errors.Is(err, errUnavailable)
 }
 
@@ -693,25 +709,28 @@ func (c *Client) sweepLocked() {
 // its status with no error, only when its body's code is PROJECT_NOT_FOUND, the code Dispatch's
 // project route answers a project it does not hold with; any other 404 (a Dispatch that does not
 // serve the route, a wrong path behind an ingress) is a failure naming its code. A 502, 503 or 504
-// is errUnavailable, Dispatch not answering now (Unanswered). Every other status, a transport
+// whose body names no code, or one of outageCodes, is errUnavailable, Dispatch not answering now
+// (Unanswered); one naming any other code is Dispatch's answer. Every other status, a transport
 // failure and a body it could not read or decode are errors naming what failed and never the token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
 	answer, err := c.read.Get(ctx, path, query)
 	if err != nil {
 		return 0, err
 	}
-	switch answer.Status {
-	case http.StatusOK:
-	case http.StatusNotFound:
+	if answer.Status != http.StatusOK {
 		code := dispatchread.RefusalCode(answer.Body)
-		if code == projectNotFoundCode {
-			return http.StatusNotFound, nil
+		switch answer.Status {
+		case http.StatusNotFound:
+			if code == projectNotFoundCode {
+				return http.StatusNotFound, nil
+			}
+			return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
+		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			if code == "" || slices.Contains(outageCodes, code) {
+				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)
+			}
 		}
-		return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
-	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, dispatchread.RefusalCode(answer.Body))
-	default:
-		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, answer.Status, dispatchread.RefusalCode(answer.Body))
+		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, answer.Status, code)
 	}
 	if err := json.Unmarshal(answer.Body, into); err != nil {
 		return 0, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", path, err)

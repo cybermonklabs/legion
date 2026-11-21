@@ -468,10 +468,13 @@ func routes() []apiRoute {
 		// GRANT_MOVING. A person Dispatch calls a restricted member ends a grant only as the person
 		// its enrollment acts for, and one the grant admits only as an approver is 403
 		// NOT_APPROVER, saying why. Each of these revokes nothing. While Dispatch does not answer
-		// what kind of member the person is (a timeout, a failed connection, a 502, 503 or 504),
-		// the revoke of the person the grant names as its approver goes ahead; every other revoke
-		// as an approver then, and every revoke while Dispatch answers anything else the broker
-		// cannot read (a refused account, a kind this broker does not know), is 503
+		// what kind of member the person is (a timeout, a failed connection, a gateway's 502, 503
+		// or 504, or Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE), a revoke goes
+		// ahead where nobody else could end the grant: the person the grant names as its approver,
+		// and anyone a grant whose session acts for no person (a service's pod) admits as an
+		// approver. Every other revoke as an approver then, and every revoke while Dispatch answers
+		// anything else the broker cannot read (a refused account, a kind this broker does not
+		// know, another code, a certificate or a name that does not resolve), is 503
 		// MEMBER_KIND_UNCHECKABLE, revoking nothing. The revoking person is the login the request
 		// names, which the broker still takes on the caller's word: a revoke only takes power away.
 		{http.MethodPost, "/v1/grants/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeByApprover)},

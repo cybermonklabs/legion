@@ -101,10 +101,11 @@ func (s *server) revokeByApprover(w http.ResponseWriter, r *http.Request, caller
 // is 409 GRANT_MOVING; each revokes nothing. A person Dispatch calls a restricted member is no
 // approver of a secret, and ends a grant only as the person its enrollment acts for: one the grant
 // admits only as an approver is 403 NOT_APPROVER, saying why, revoking nothing. While Dispatch does
-// not answer what kind of member the person is, the revoke of the person the grant names as its
-// approver goes ahead, since a revoke only takes access away; every other revoke as an approver
-// then, and every revoke while Dispatch answers anything else the broker cannot read, is 503
-// MEMBER_KIND_UNCHECKABLE, revoking nothing. When the operator
+// not answer what kind of member the person is, a revoke goes ahead where nobody else could end
+// the grant, since a revoke only takes access away: the person the grant names as its approver,
+// and anyone a grant whose session acts for no person (a service's pod) admits as an approver.
+// Every other revoke as an approver then, and every revoke while Dispatch answers anything else
+// the broker cannot read, is 503 MEMBER_KIND_UNCHECKABLE, revoking nothing. When the operator
 // revokes a grant the session got without asking, its secrets are withheld from that session, even
 // when the grant had already ended: its other grants that got them without asking end too, and its
 // later requests for them ask their owner.
@@ -132,8 +133,9 @@ func writeRevokeRefusal(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "NOT_APPROVER", err.Error())
 	case writeMemberKindUncheckable(w, "the revoke", err):
 		// The grant admits the person only as an approver, and the broker could not read what kind
-		// of member they are: Dispatch answered what the broker cannot read, or did not answer at
-		// all and the grant does not name the person as its approver. Nothing was revoked.
+		// of member they are: Dispatch answered what the broker cannot read, the caller went away,
+		// or Dispatch did not answer and the grant's session acts for a person who is not the one
+		// the grant names as its approver. Nothing was revoked.
 	case errors.Is(err, requests.ErrGrantMoving):
 		// Adoptions kept moving the grant between the person rule and the transaction, so the
 		// revoke decided nothing; it succeeds once the grant stays on one session.

@@ -136,7 +136,7 @@ func (s *Server) ProjectCalls() int {
 }
 
 // SetDown makes every later request fail 503 (true) or be answered again (false), which is what a
-// Dispatch the broker cannot reach looks like to it.
+// Dispatch the broker cannot reach looks like to it: a gateway's 503, whose body names no code.
 func (s *Server) SetDown(down bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -208,7 +208,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	down, canned, stall := s.down || projectRoute && s.projectsDown, s.answer, s.stall
 	s.mu.Unlock()
 	if down {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "UNAVAILABLE", "error": "the stand-in is down"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "the stand-in is down"})
 		return
 	}
 	if r.Method != http.MethodGet {
