@@ -21,6 +21,7 @@ import {
   chooseSignIn,
   PERSON_TRADE_VAR,
   PERSON_VAR,
+  personTradeOff,
   SIGNIN_CLIENT_ID_VAR,
   SIGNIN_CLIENT_SECRET_FILE_VAR,
   SIGNIN_DIR_VAR,
@@ -283,7 +284,10 @@ export interface MadeBrokerClient {
  * {@link PROJECTS_VAR} lists, which the broker names only when Dispatch says the login's person
  * may see each one, and sends no launcher credential parameter: a trade of a machine login's
  * token mints no launcher credential. A machine with no login yet, or whose login file cannot be
- * read, is an error naming `dispatch login --device`.
+ * read, is an error naming `dispatch login --device`. A process that turns the person trade off
+ * ({@link PERSON_TRADE_VAR} set to `off`) is refused one: the broker mints its trade as the
+ * login's person, so a controller would act on Dispatch and Envoy in its operator's name, and
+ * there is no machine identity to trade in its place.
  */
 export async function brokerTokenClient(
   env: BrokerEnvironment,
@@ -296,6 +300,11 @@ export async function brokerTokenClient(
   // into the variable.
   if (!isHttpUrl(brokerUrl)) throw new Error(`${BROKER_URL_VAR} is not an http or https URL`);
   if (machine instanceof DeviceLoginIdentity) {
+    if (personTradeOff(env)) {
+      throw new Error(
+        `${PERSON_TRADE_VAR}=off turns off every trade made as a person, and ${IDENTITY_VAR}=${IDENTITY_DEVICE_LOGIN} trades this machine's device login as the person who approved it; unset one of them`
+      );
+    }
     const client = new BrokerTokenClient({
       brokerUrl,
       key: await machine.key(),

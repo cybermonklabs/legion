@@ -1,0 +1,267 @@
+// packages/cipher-client/src/device-login-lock.ts
+//
+// The lock every process of one machine takes before it reads, refreshes or trades the machine's
+// device login (`device-login.ts`, `withDeviceLoginLock`): `<file>.lock`, beside the login's file.
+//
+// - It is taken by creating the file exclusively, holding this process's pid and a value of this
+//   call's own, and its holder touches it every 5 s while it holds it.
+// - A lock untouched for 15 s is taken as one whose holder died. Only one caller takes it over:
+//   the one that creates the take-over's own lock, `<file>.lock.steal`, and finds the lock still
+//   stale under it. A `.lock.steal` left for 5 s by a caller that died or stopped is removed.
+// - Every removal is of the very file the caller looked at: the file is moved aside to
+//   `<name>.stale-<uuid>`, and removed only where its device, inode, modification time and holder
+//   value are all the ones the caller saw; otherwise it is linked back. The inode alone tells
+//   nothing, since a filesystem can give a new file the number of one removed a moment before
+//   (XFS does at once).
+// - Two windows can still leave two holders. One is a file made in the instant between a move
+//   aside and its link back, after a caller stopped inside a take-over for over 5 s. The other
+//   needs no race: a holder alive but stopped for over 15 s (a laptop asleep, a process stopped)
+//   cannot touch its lock, so another caller takes it while the first still works. `work` is
+//   handed `held`, which reads the lock again, so such a holder can stop before it does harm.
+
+import { randomUUID } from "node:crypto";
+import type { Stats } from "node:fs";
+import {
+  type FileHandle,
+  link,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  utimes,
+} from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { readErrorCode } from "./error-text";
+import { sleep, TRADE_ATTEMPT_MS } from "./token-client";
+
+/**
+ * A lock its holder has not touched for this long is taken as one whose holder died: half of a
+ * trade's attempt (`TRADE_ATTEMPT_MS`), so a trade that waited out a dead holder's lock from the
+ * moment it was touched still has half its attempt for the refresh and the exchange.
+ */
+export const DEVICE_LOGIN_STALE_LOCK_MS = TRADE_ATTEMPT_MS / 2;
+
+/** How often a lock's holder touches it: three times in each {@link DEVICE_LOGIN_STALE_LOCK_MS}. */
+export const LOCK_HEARTBEAT_MS = DEVICE_LOGIN_STALE_LOCK_MS / 3;
+
+/** How long a caller waits between two tries of a lock another process holds. */
+const LOCK_RETRY_MS = 100;
+
+/** How long a take-over's own lock (`<lock>.steal`) may stand before it is one whose taker
+ *  died: a take-over is a look, a rename and a removal, so this is far longer than one takes. */
+const STEAL_STALE_MS = 5_000;
+
+/** How {@link withLoginLock} waits. */
+export interface DeviceLoginLockOptions {
+  /** Ends the wait for a lock another process holds, with the signal's reason. */
+  readonly signal?: AbortSignal | undefined;
+  /** Waits between two tries of a held lock; a timer that holds the process open unless a test
+   *  replaces it. */
+  readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
+  /** Runs at each step of a take-over where another caller can act between this caller's look
+   *  and what it does next ({@link TakeOverStep}). Only a test holds a caller there. */
+  readonly at?: ((step: TakeOverStep) => Promise<void>) | undefined;
+}
+
+/**
+ * The windows of a take-over in which another caller can act: `lock-stale`, after this caller
+ * finds the lock stale and before it tries `<lock>.steal`; `steal-stale`, after it finds another
+ * caller's `<lock>.steal` stale and before it removes it; `taking`, under its own
+ * `<lock>.steal`, after it finds the lock still stale and before it moves it aside.
+ */
+export type TakeOverStep = "lock-stale" | "steal-stale" | "taking";
+
+/** `path`'s status, or null where nothing is there. `named` names the login in an error. */
+async function statOrNone(path: string, named: string): Promise<Stats | null> {
+  try {
+    return await stat(path);
+  } catch (error) {
+    if (readErrorCode(error) === "ENOENT") return null;
+    throw new Error(`read the lock beside ${named}: ${readErrorCode(error)}`);
+  }
+}
+
+/** Creates `path` exclusively, 0600, holding `value`, and says whether it did: false where a
+ *  file is already there. `named` names the login in an error. */
+async function createOwn(path: string, value: string, named: string): Promise<boolean> {
+  let handle: FileHandle;
+  try {
+    handle = await open(path, "wx", 0o600);
+  } catch (error) {
+    if (readErrorCode(error) === "EEXIST") return false;
+    throw new Error(`take the lock beside ${named}: ${readErrorCode(error)}`);
+  }
+  try {
+    await handle.writeFile(value);
+  } finally {
+    await handle.close();
+  }
+  return true;
+}
+
+/** Removes `path` where it still holds `value`, the one its creator wrote, and leaves it where
+ *  another caller's file has taken its place. */
+async function removeOwn(path: string, value: string): Promise<void> {
+  const held = await readFile(path, "utf8").catch(() => "");
+  if (held === value) await rm(path, { force: true });
+}
+
+/** A lock file as a caller looked at it: its status and the holder value written in it. */
+interface Seen {
+  readonly stats: Stats;
+  readonly value: string;
+}
+
+/** `path` as it is now ({@link Seen}), or null where nothing is there. */
+async function look(path: string, named: string): Promise<Seen | null> {
+  const stats = await statOrNone(path, named);
+  if (stats === null) return null;
+  const value = await readFile(path, "utf8").catch(() => "");
+  return { stats, value };
+}
+
+/**
+ * Removes `path` where it is still the file `was` names, and says whether the caller may go on:
+ * true where it removed that file or nothing was there. It moves the file aside first, and then
+ * compares what it moved with `was`: the device, the inode, the modification time and the holder
+ * value. A file that is not the one `was` names is linked back in place, unless a file is there
+ * again, and the answer is false. `what` names the file in an error.
+ */
+async function removeIfStill(path: string, was: Seen, what: string): Promise<boolean> {
+  const moved = `${path}.stale-${randomUUID()}`;
+  try {
+    await rename(path, moved);
+  } catch (error) {
+    if (readErrorCode(error) === "ENOENT") return true;
+    throw new Error(`take ${what}: ${readErrorCode(error)}`);
+  }
+  const took = await look(moved, what);
+  const same =
+    took !== null &&
+    took.stats.dev === was.stats.dev &&
+    took.stats.ino === was.stats.ino &&
+    took.stats.mtimeMs === was.stats.mtimeMs &&
+    took.value === was.value;
+  if (!same) await link(moved, path).catch(() => {});
+  await rm(moved, { force: true });
+  return same;
+}
+
+/**
+ * Takes the lock at `lock` where its holder has not touched it for
+ * {@link DEVICE_LOGIN_STALE_LOCK_MS}, and says whether the caller should try to create it again
+ * at once: true where it took it or it was gone. A look and a take-over are two steps, so two
+ * callers that both find one lock stale could otherwise both take it: the second would take the
+ * first's fresh lock in the gap. So only the caller that creates `<lock>.steal` takes over, and
+ * it looks at the lock again under it first: a caller that comes second finds the first's fresh
+ * lock and waits for it. A take-over lock left {@link STEAL_STALE_MS} is removed, so two callers
+ * can then be inside one take-over; each removal is of the very file the caller looked at
+ * ({@link removeIfStill}), so a caller that comes second puts the other's file back and waits.
+ */
+async function takeStale(
+  lock: string,
+  mine: string,
+  named: string,
+  options: DeviceLoginLockOptions
+): Promise<boolean> {
+  const found = await statOrNone(lock, named);
+  if (found === null) return true;
+  if (Date.now() - found.mtimeMs <= DEVICE_LOGIN_STALE_LOCK_MS) return false;
+  await options.at?.("lock-stale");
+  const steal = `${lock}.steal`;
+  if (!(await createOwn(steal, mine, named))) {
+    const taking = await look(steal, named);
+    if (taking !== null && Date.now() - taking.stats.mtimeMs > STEAL_STALE_MS) {
+      await options.at?.("steal-stale");
+      await removeIfStill(steal, taking, `the dead take-over lock beside ${named}`);
+    }
+    return false;
+  }
+  try {
+    const again = await look(lock, named);
+    if (again === null) return true;
+    if (Date.now() - again.stats.mtimeMs <= DEVICE_LOGIN_STALE_LOCK_MS) return false;
+    await options.at?.("taking");
+    return await removeIfStill(lock, again, `the stale lock beside ${named}`);
+  } finally {
+    await removeOwn(steal, mine);
+  }
+}
+
+/**
+ * Runs `work` holding the lock of the login at `path`, `<path>.lock`, and answers what it
+ * answers. A lock another process holds is tried again every 100 ms until it is free, `signal`
+ * ends (rejecting with its reason, `work` never run), or it is stale and this caller alone takes
+ * it ({@link takeStale}). The holder touches the lock every {@link LOCK_HEARTBEAT_MS} while
+ * `work` runs, so a holder that is slow is never taken for dead, and removes it when `work`
+ * settles, only while it still holds its own value. `work` is handed `held`, which reads the
+ * lock again and says whether it still holds this call's value: false once another caller took
+ * it from a holder that was stopped. `named` names the login in an error.
+ */
+export async function withLoginLock<T>(
+  path: string,
+  named: string,
+  work: (held: () => Promise<boolean>) => Promise<T>,
+  options: DeviceLoginLockOptions = {}
+): Promise<T> {
+  const lock = `${path}.lock`;
+  const mine = `${process.pid} ${randomUUID()}\n`;
+  const wait = options.sleep ?? ((ms: number, signal?: AbortSignal) => sleep(ms, signal, true));
+  try {
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  } catch (error) {
+    throw new Error(`make the directory of ${named}: ${readErrorCode(error)}`);
+  }
+  while (true) {
+    options.signal?.throwIfAborted();
+    if (await createOwn(lock, mine, named)) break;
+    if (await takeStale(lock, mine, named, options)) continue;
+    await wait(LOCK_RETRY_MS, options.signal);
+  }
+  const beat = setInterval(() => {
+    const now = new Date();
+    // A touch that fails leaves the lock as it was; the holder is still the one working.
+    utimes(lock, now, now).catch(() => {});
+  }, LOCK_HEARTBEAT_MS);
+  beat.unref();
+  try {
+    return await work(async () => (await readFile(lock, "utf8").catch(() => "")) === mine);
+  } finally {
+    clearInterval(beat);
+    await removeOwn(lock, mine);
+  }
+}
+
+/**
+ * Removes each file in `dir` whose name `left` matches and that is untouched for
+ * {@link DEVICE_LOGIN_STALE_LOCK_MS}: a file another caller left when it died. A younger one may be
+ * a live caller's, mid-step, and is left alone, and so is one that cannot be read.
+ */
+export async function removeUntouched(dir: string, left: RegExp): Promise<void> {
+  const names = await readdir(dir).catch(() => [] as string[]);
+  for (const name of names.filter((one) => left.test(one))) {
+    const path = join(dir, name);
+    const info = await stat(path).catch(() => null);
+    if (info !== null && Date.now() - info.mtimeMs > DEVICE_LOGIN_STALE_LOCK_MS) {
+      await rm(path, { force: true });
+    }
+  }
+}
+
+/**
+ * Removes what a caller that died mid take-over left beside the login at `path`: a lock or a
+ * take-over lock it moved aside (`<path>.lock.stale-<uuid>`, `<path>.lock.steal.stale-<uuid>`)
+ * and never removed or linked back ({@link removeUntouched}). A file moved aside lives for a look
+ * and a removal; a younger one may be another caller's, mid take-over, whose link back its removal
+ * would break. A caller holds the lock.
+ */
+export async function removeLeftLocks(path: string): Promise<void> {
+  const name = basename(path).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  await removeUntouched(
+    dirname(path),
+    new RegExp(`^${name}\\.lock(\\.steal)?\\.stale-[0-9a-f-]{36}$`)
+  );
+}

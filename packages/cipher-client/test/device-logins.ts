@@ -24,14 +24,29 @@ export interface DeviceLoginRequest {
 }
 
 /** How the stand-in answers one poll of a device code: `invalid_client` is an OAuth refusal the
- *  poll does not expect, which the broker answers a client it does not know. */
+ *  poll does not expect, which the broker answers a client it does not know, and `unknown-code`
+ *  one under a code no client knows; `invalid_grant` is the broker's answer to a code it no
+ *  longer knows; `html-403` and `challenge-401` are 4xx answers with no OAuth error in them, as a
+ *  proxy or a load balancer in front of the broker gives (an HTML page, a bare
+ *  `WWW-Authenticate: DPoP` challenge); `busy-429` and `unavailable-503` are answers a later poll
+ *  can get past. */
 export type PollAnswer =
   | "pending"
   | "slow_down"
   | "approve"
   | "deny"
   | "expired"
-  | "invalid_client";
+  | "invalid_grant"
+  | "invalid_client"
+  | "unknown-code"
+  | "html-403"
+  | "challenge-401"
+  | "busy-429"
+  | "unavailable-503";
+
+/** The OAuth error code the stand-in answers an `unknown-code` poll with: one no client knows,
+ *  which a text must not show. */
+export const STAND_IN_UNKNOWN_CODE = "stand_in_code_of_its_own";
 
 /** What the stand-in is told to do. */
 export interface DeviceLoginBrokerOptions {
@@ -52,10 +67,31 @@ export interface DeviceLoginBrokerOptions {
    * wait, which a row that passes pays once per trade.
    */
   readonly tradeHoldMs?: number;
+  /**
+   * Mint each refresh's answer when it arrives, as the broker does, and hold it until the
+   * stand-in has been sent this many refreshes in all, with no time limit. A control row sets it
+   * in place of {@link refreshOverlapMs}: there the second refresh must come, so no clock decides
+   * whether the first is answered before it. A row whose client gives up on the first sets it to
+   * 2 to stand for an answer that never reached the client.
+   */
+  readonly refreshesBeforeAnswer?: number;
+  /**
+   * Hold each exchange's answer until the stand-in has been sent this many refreshes in all,
+   * with no time limit. A control row sets it in place of {@link tradeHoldMs}: there the second
+   * process's refresh must come while the first one's trade is out, so no clock decides it.
+   */
+  readonly refreshesBeforeTrade?: number;
   /** How long an access token the stand-in mints lasts. Default 900 s, the broker's own. */
   readonly accessSeconds?: number;
   /** Answer every refresh `400 invalid_grant`, as the broker answers one whose login ended. */
   readonly refuseRefresh?: boolean;
+  /** The device authorization's `interval`, in seconds; 1 by default, and none where null. */
+  readonly interval?: number | null;
+  /** The device authorization's user code and page, in place of the stand-in's own. */
+  readonly userCode?: string;
+  readonly verificationUri?: string;
+  /** The credential id a grant answers, in place of {@link STAND_IN_CREDENTIAL}. */
+  readonly credentialId?: string;
 }
 
 /** The credential every device login of this stand-in holds. */
@@ -121,8 +157,9 @@ function oauthError(error: string, status = 400): Response {
  * token. The device code grant and a refresh carry the credential's id and expiry, as the
  * broker's token hooks add them (`machine.Service.TokenHooks`). A refresh revokes every access
  * token of the login but the one it answers, as the broker's `RotateRefreshToken` does, so an
- * exchange presenting any other after a refresh is refused `invalid_grant`. Before the first
- * refresh, any subject token is taken, so a test may keep an access token of its own in the file.
+ * exchange presenting any other after a refresh is refused `400 invalid_request`, with the
+ * broker's own description of a token it no longer honours. Before the first refresh, any subject
+ * token is taken, so a test may keep an access token of its own in the file.
  */
 export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): DeviceLoginBroker {
   const polls = options.polls ?? ["approve"];
@@ -148,6 +185,25 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
     await promise;
     clearTimeout(timer);
   };
+  // The refreshes and exchanges waiting, with no time limit, for the stand-in to have been sent a
+  // number of refreshes in all (`refreshesBeforeAnswer`, `refreshesBeforeTrade`).
+  const awaitingRefreshes: { count: number; resolve: () => void }[] = [];
+  const awaitingRefreshedTrades: { count: number; resolve: () => void }[] = [];
+  const untilRefreshes = async (
+    into: { count: number; resolve: () => void }[],
+    count: number
+  ): Promise<void> => {
+    if (refreshes.length >= count) return;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    into.push({ count, resolve });
+    await promise;
+  };
+  const releaseReached = (from: { count: number; resolve: () => void }[]): void => {
+    for (const waiter of from.filter((one) => one.count <= refreshes.length)) {
+      from.splice(from.indexOf(waiter), 1);
+      waiter.resolve();
+    }
+  };
   const loginAnswer = (): Response => {
     const access = fixtureSecret("login");
     loginTokens.push(access);
@@ -157,7 +213,7 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
       expires_in: accessSeconds,
       refresh_token: fixtureSecret("refresh"),
       scope: "machine",
-      credential_id: STAND_IN_CREDENTIAL,
+      credential_id: options.credentialId ?? STAND_IN_CREDENTIAL,
       credential_expires_at: new Date(Date.now() + 30 * 86_400_000)
         .toISOString()
         .replace(/\.\d{3}Z$/, "Z"),
@@ -173,10 +229,10 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
         authorizations.push(seen);
         return Response.json({
           device_code: deviceCode,
-          user_code: STAND_IN_USER_CODE,
-          verification_uri: `${origin}/credentials/machine`,
+          user_code: options.userCode ?? STAND_IN_USER_CODE,
+          verification_uri: options.verificationUri ?? `${origin}/credentials/machine`,
           expires_in: 600,
-          interval: 1,
+          ...(options.interval === null ? {} : { interval: options.interval ?? 1 }),
         });
       }
       if (request.method !== "POST" || pathname !== "/v1/oauth/token") {
@@ -196,8 +252,29 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
               return oauthError("access_denied");
             case "expired":
               return oauthError("expired_token");
+            case "invalid_grant":
+              return oauthError("invalid_grant");
             case "invalid_client":
               return oauthError("invalid_client", 401);
+            case "unknown-code":
+              return oauthError(STAND_IN_UNKNOWN_CODE);
+            case "html-403":
+              return new Response("<html><body><h1>403 Forbidden</h1></body></html>", {
+                status: 403,
+                headers: { "Content-Type": "text/html" },
+              });
+            case "challenge-401":
+              return new Response(null, {
+                status: 401,
+                headers: { "WWW-Authenticate": 'DPoP algs="ES256"' },
+              });
+            case "busy-429":
+              return new Response("too many requests", { status: 429 });
+            case "unavailable-503":
+              return new Response("<html><body>503 Service Unavailable</body></html>", {
+                status: 503,
+                headers: { "Content-Type": "text/html" },
+              });
             default:
               return loginAnswer();
           }
@@ -205,19 +282,34 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
         case "refresh_token": {
           refreshes.push(seen);
           for (const release of holding.splice(0)) release();
+          releaseReached(awaitingRefreshes);
           if (options.refreshOverlapMs !== undefined) await hold(holding, options.refreshOverlapMs);
           if (options.refuseRefresh === true) return oauthError("invalid_grant");
           const answer = loginAnswer();
           live = loginTokens.at(-1);
           for (const release of trading.splice(0)) release();
+          releaseReached(awaitingRefreshedTrades);
+          if (options.refreshesBeforeAnswer !== undefined) {
+            await untilRefreshes(awaitingRefreshes, options.refreshesBeforeAnswer);
+          }
           return answer;
         }
         case "urn:ietf:params:oauth:grant-type:token-exchange": {
           trades.push(seen);
           if (options.tradeHoldMs !== undefined) await hold(trading, options.tradeHoldMs);
+          if (options.refreshesBeforeTrade !== undefined) {
+            await untilRefreshes(awaitingRefreshedTrades, options.refreshesBeforeTrade);
+          }
           if (live !== undefined && seen.form.get("subject_token") !== live) {
             revokedTrades.push(seen);
-            return oauthError("invalid_grant");
+            return Response.json(
+              {
+                error: "invalid_request",
+                error_description:
+                  "The request is missing a required parameter, includes an invalid parameter value, includes a parameter more than once, or is otherwise malformed. Token is not valid or has expired.",
+              },
+              { status: 400 }
+            );
           }
           const token = fixtureSecret("traded");
           tradeTokens.push(token);

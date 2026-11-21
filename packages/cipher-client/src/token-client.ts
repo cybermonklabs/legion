@@ -38,14 +38,17 @@ import {
   None,
   ResponseBodyError,
   type TokenEndpointResponse,
+  WWWAuthenticateChallengeError,
 } from "openid-client";
 import type { DpopKey } from "./dpop";
 import { messageOf } from "./error-text";
+import type { RefusalContext } from "./refusal-text";
 import type { SubjectToken, TokenSource } from "./source";
 import {
   BrokerRefusedError,
   BrokerTradeFailedError,
   isFinalRefusal,
+  LockHeldError,
   RegistrationPendingError,
   TokenClientClosedError,
   TradeRetryingError,
@@ -89,8 +92,9 @@ export interface BrokerToken {
 }
 
 /** What names the broker's URL in a text where it does not parse (`urlForText`); the constructor
- *  refuses such a URL, and `brokerTokenClient` names AGENT_SECRETS_URL in its refusal. */
-const BROKER_URL_SETTING = "the broker URL";
+ *  refuses such a URL, and `brokerTokenClient` names AGENT_SECRETS_URL in its refusal. A device
+ *  login names it the same way (`device-login.ts`). */
+export const BROKER_URL_SETTING = "the broker URL";
 
 /** The first wait before trading again after a trade the broker did not answer, answered with a
  *  5xx, its 429 or a DPoP refusal, or that failed before it reached the broker, doubling to
@@ -117,10 +121,12 @@ const UNREGISTERED_LOG_EVERY_MS = 30 * 60_000;
 export const TRADE_ATTEMPT_MS = 30_000;
 
 /** Waits `ms`, or less when `signal` aborts first: the default of
- *  {@link BrokerTokenClientOptions.sleep}. Its timer holds no process open: the wait runs behind
- *  the calls that need it, and a `dispatch` command that is done exits rather than waiting out a
- *  retry nobody awaits. */
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+ *  {@link BrokerTokenClientOptions.sleep}, of the device login's poll and of its lock's wait.
+ *  `holdsProcess` says whether its timer holds the process open. The retry loop's does not: the
+ *  wait runs behind the calls that need it, and a `dispatch` command that is done exits rather
+ *  than waiting out a retry nobody awaits. A wait its caller awaits to go on (a poll of a code, a
+ *  lock another process holds) does, or the process would exit printing nothing of why. */
+export function sleep(ms: number, signal?: AbortSignal, holdsProcess = false): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   if (signal?.aborted) {
     resolve();
@@ -132,7 +138,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     resolve();
   };
   const timer = setTimeout(done, ms);
-  timer.unref();
+  if (!holdsProcess) timer.unref();
   signal?.addEventListener("abort", done, { once: true });
   return promise;
 }
@@ -236,18 +242,61 @@ export interface BrokerTokenClientOptions {
 }
 
 /**
- * The HTTP status behind `error`, or 0 where it carries none: a status `openid-client` reports
- * as an unconforming answer is left in the response it hangs off the error's `cause` chain. The
- * person's identity source reads its issuer's errors with it too (`person-identity.ts`).
+ * The HTTP status behind `error`, or 0 where it carries none: an OAuth error answer and a
+ * `WWW-Authenticate` challenge carry the status of the answer they were read from (their `cause`
+ * is the body and the challenge), and a status `openid-client` reports as an unconforming answer
+ * is left in the response it hangs off the error's `cause` chain. The person's identity source
+ * reads its issuer's errors with it too (`person-identity.ts`).
  */
 export function statusOf(error: unknown): number {
   let cause: unknown = error;
   for (let depth = 0; depth < 4; depth += 1) {
     if (cause instanceof Response) return cause.status;
+    if (cause instanceof ResponseBodyError || cause instanceof WWWAuthenticateChallengeError) {
+      return cause.status;
+    }
     if (typeof cause !== "object" || cause === null || !("cause" in cause)) return 0;
     cause = cause.cause;
   }
   return 0;
+}
+
+/**
+ * What a failed request to the broker's `endpoint` is, the one way every client of this package
+ * words it: a trade, and a device login's code request, poll and refresh. An OAuth error the
+ * broker answered with a 4xx is its refusal of `refused` (`BrokerRefusedError`), which shows the
+ * code only where it is one the clients know and the description only where it is a known
+ * refusal; anything else (no answer, a 5xx, a 4xx with no OAuth error, an answer that is not the
+ * grant's) is a failure of `doing` it (`BrokerTradeFailedError`), named by the status where there
+ * is one and by the error's class, never by its message, which can repeat the URL it was handed,
+ * and with no `cause`: an answer the library refused hangs off its error (oauth4webapi's `cause`
+ * is the body it read), and that answer can hold a minted token, which no log may carry.
+ * `context` is what the request sent that a known refusal may name.
+ */
+export function brokerRefusal(
+  doing: string,
+  refused: string,
+  endpoint: string,
+  error: unknown,
+  context: RefusalContext = {}
+): BrokerRefusedError | BrokerTradeFailedError {
+  if (error instanceof ResponseBodyError && error.status >= 400 && error.status < 500) {
+    // The library checks only that `error` is a string; a description of any other type is a
+    // peer's value the client reads as none.
+    const description: unknown = error.error_description;
+    return new BrokerRefusedError(
+      error.status,
+      error.error,
+      typeof description === "string" ? description : "",
+      refused,
+      context
+    );
+  }
+  const status = statusOf(error);
+  const said = status === 0 ? errorClass(error) : `HTTP ${status}: ${errorClass(error)}`;
+  return new BrokerTradeFailedError(
+    `${doing} ${refused} at ${urlForText(endpoint, BROKER_URL_SETTING)}: ${said}`
+  );
 }
 
 /**
@@ -674,8 +723,9 @@ export class BrokerTokenClient {
    * refusal no trade cures ({@link isFinalRefusal}). Each class's text names the identity traded
    * and the session and nothing the broker wrote: a refusal prints as it prints
    * (`BrokerRefusedError.said`), a trade that got no answer as broker-client words it
-   * (`BrokerTradeFailedError`), and a trade its identity's source could not make in that
-   * source's own words, scrubbed: the words a caller of `token` was always handed.
+   * (`BrokerTradeFailedError`), a trade whose time ran out while its source waited for a lock
+   * (`LockHeldError`) as a trade never sent, and a trade its identity's source could not make in
+   * that source's own words, scrubbed: the words a caller of `token` was always handed.
    */
   #failure(error: unknown, timedOut: boolean): Retried | null {
     if (isFinalRefusal(error)) return null;
@@ -688,6 +738,12 @@ export class BrokerTokenClient {
         };
       }
       return { kind: "busy", said: error.message };
+    }
+    if (error instanceof LockHeldError) {
+      return {
+        kind: "unsent",
+        said: `the trade of ${this.describe()} could not be made: ${scrub(error.message)}`,
+      };
     }
     if (timedOut) {
       return {
@@ -775,44 +831,13 @@ export class BrokerTokenClient {
     try {
       answered = await genericGrantRequest(config, GRANT_TYPE_TOKEN_EXCHANGE, form);
     } catch (error) {
-      throw this.#refusal(endpoint, error);
+      throw brokerRefusal("trade", this.#subject.describe(), endpoint, error, {
+        ...(this.#subject.person === undefined ? {} : { person: this.#subject.person }),
+        ...(this.#session === "" ? {} : { session: this.#session }),
+      });
     }
     // Named as every text of a trade names the broker (`urlForText`).
     return this.#read(urlForText(endpoint, BROKER_URL_SETTING), answered, raw.body);
-  }
-
-  /**
-   * What a failed trade is. An OAuth error the broker answered with a 4xx is a refusal of the
-   * identity, which no retry can cure; everything else — a broker that did not answer, a 5xx, an
-   * answer that is not this grant's — is an error a renewal may ask about again. A status the
-   * library reports without naming it is named here, since "the broker answered HTTP 503" is what
-   * tells a reader to look at the broker rather than at this process.
-   */
-  #refusal(endpoint: string, error: unknown): Error {
-    if (error instanceof ResponseBodyError && error.status >= 400 && error.status < 500) {
-      // The library checks only that `error` is a string; a description of any other type is a
-      // peer's value the client reads as none.
-      const description: unknown = error.error_description;
-      return new BrokerRefusedError(
-        error.status,
-        error.error,
-        typeof description === "string" ? description : "",
-        this.#subject.describe(),
-        {
-          ...(this.#subject.person === undefined ? {} : { person: this.#subject.person }),
-          ...(this.#session === "" ? {} : { session: this.#session }),
-        }
-      );
-    }
-    const status = statusOf(error);
-    const said = status === 0 ? errorClass(error) : `HTTP ${status}: ${errorClass(error)}`;
-    // The broker as `urlForText` names it, and the failure by its class: the library's or the
-    // runtime's message can repeat the URL it was handed. No `cause`: an answer the library
-    // refused hangs off its error (oauth4webapi's `cause` is the body it read), and that answer can
-    // hold the minted token, which no log of this error may carry.
-    return new BrokerTradeFailedError(
-      `trade ${this.#subject.describe()} at ${urlForText(endpoint, BROKER_URL_SETTING)}: ${said}`
-    );
   }
 
   /**

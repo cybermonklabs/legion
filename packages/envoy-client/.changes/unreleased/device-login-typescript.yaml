@@ -10,5 +10,10 @@ body: |-
   `AGENT_SECRETS_PROJECTS` lists. Each trade runs under the login's lock, so two sessions of one
   machine never spend one refresh token, and none refreshes while another presents the access
   token that refresh would end.
-  A stale lock is taken by one caller alone. A second `dispatch login --device` names the earlier
-  login's credential, which stays live until it lapses or is revoked, and says where to revoke it.
+  A stale lock is taken by one caller alone, and a holder that lost its lock while it was stopped
+  refreshes and keeps nothing. A kept access token the broker refuses is refreshed at once, so a
+  revoked login names `dispatch login --device` at its next trade. A second
+  `dispatch login --device` names the earlier login's credential, which stays live until it lapses
+  or is revoked, and says where to revoke it. The broker must be https, or http on this machine's
+  loopback, and a process with `PERSON_SIGNIN_TRADE=off` is refused a device login, since the
+  broker trades it as the person who approved it.

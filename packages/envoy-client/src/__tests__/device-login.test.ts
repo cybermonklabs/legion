@@ -117,6 +117,13 @@ test("dispatch login refuses a call it cannot make, and says why", async () => {
   expect(noBroker.code).toBe(2);
   expect(noBroker.stdout).toContain("AGENT_SECRETS_URL");
   expect(stub.authorizations).toHaveLength(0);
+  // A broker off this machine's loopback is https: the login's tokens cross that connection.
+  const offMachine = await dispatch(["login", "--device", "--person", PERSON], {
+    ...env,
+    AGENT_SECRETS_URL: "http://broker.test",
+  });
+  expect(offMachine.code, offMachine.stdout).toBe(2);
+  expect(offMachine.stdout).toContain("loopback");
 
   const denied = await dispatch(["login", "--device", "--person", PERSON], env);
   expect(denied.code).toBe(1);
@@ -163,24 +170,18 @@ test("a laptop session's Dispatch credential is its device login's trade, naming
   expect(trade?.proofThumbprint).toBe(written.thumbprint);
 });
 
-/** Where the device login's module is: a child script in a temporary directory imports it by
- *  path, since no package resolves from there. */
-const DEVICE_LOGIN_MODULE = path.resolve(
-  import.meta.dir,
-  "../../../cipher-client/src/device-login.ts"
-);
-const TOKEN_CLIENT_MODULE = path.resolve(
-  import.meta.dir,
-  "../../../cipher-client/src/token-client.ts"
-);
+/** Where the device login's module is, resolved through cipher-client's own exports: a child
+ *  script in a temporary directory imports it by path, since no package resolves from there. */
+const DEVICE_LOGIN_MODULE = Bun.resolveSync("@legion/cipher-client/device-login", import.meta.dir);
+const TOKEN_CLIENT_MODULE = Bun.resolveSync("@legion/cipher-client/token-client", import.meta.dir);
 
 /**
  * Two processes on one laptop that each trade the device login at `file` at the same moment, as
  * two sessions starting together do: each says it is ready, waits for the parent's line, trades,
  * and prints the token it got. The lock is the controls' one difference: "file" is the login's
  * own, which covers the whole trade; "none" holds nothing; "refresh-only" covers the read and the
- * refresh of the login and leaves its trade outside, built from the module's own read, refresh
- * and lock with the same one-minute rule.
+ * refresh of the login and leaves its trade outside. Both controls are built from the module's own
+ * read and refresh, with the same one-minute rule.
  */
 async function tradeTwiceAtOnce(
   brokerUrl: string,
@@ -193,24 +194,28 @@ async function tradeTwiceAtOnce(
     `import { DeviceLoginIdentity, readDeviceLogin, refreshDeviceLogin, withDeviceLoginLock } from ${JSON.stringify(DEVICE_LOGIN_MODULE)};
 import { BrokerTokenClient } from ${JSON.stringify(TOKEN_CLIENT_MODULE)};
 const [file, brokerUrl, session, lock] = process.argv.slice(2);
-const identity = new DeviceLoginIdentity({
-  path: file,
-  brokerUrl,
-  ...(lock === "none" ? { lock: (_path, work) => work() } : {}),
-});
-const refreshOnly = {
-  describe: () => "a device login whose lock covers its refresh alone",
+const identity = new DeviceLoginIdentity({ path: file, brokerUrl });
+const readOrRefresh = async (held) => {
+  const kept = await readDeviceLogin(file);
+  const left = (kept.accessExpiresAt?.getTime() ?? 0) - Date.now();
+  if (kept.accessToken !== "" && left >= 60_000) return kept;
+  return await refreshDeviceLogin(file, kept, { describe: "the control's login", held });
+};
+const control = (describe, read) => ({
+  describe: () => describe,
   async read() {
-    const login = await withDeviceLoginLock(file, async () => {
-      const kept = await readDeviceLogin(file);
-      const left = (kept.accessExpiresAt?.getTime() ?? 0) - Date.now();
-      if (kept.accessToken !== "" && left >= 60_000) return kept;
-      return await refreshDeviceLogin(file, kept, { describe: "the control's login" });
-    });
+    const login = await read();
     return { token: login.accessToken, tokenType: "urn:ietf:params:oauth:token-type:access_token" };
   },
+});
+const subjects = {
+  file: identity,
+  none: control("a device login traded with no lock", () => readOrRefresh(async () => true)),
+  "refresh-only": control("a device login whose lock covers its refresh alone", () =>
+    withDeviceLoginLock(file, readOrRefresh)
+  ),
 };
-const subject = lock === "refresh-only" ? refreshOnly : identity;
+const subject = subjects[lock];
 const client = new BrokerTokenClient({ brokerUrl, key: await identity.key(), subject, session, log: () => {} });
 const stdin = Bun.stdin.stream().getReader();
 console.log("ready");
@@ -285,7 +290,9 @@ test("two processes trading at once spend the device login's refresh token once"
 }, 30_000);
 
 test("control: with no lock, the two processes spend one refresh token twice", async () => {
-  const stub = broker({ refreshOverlapMs: 2_000 });
+  // The broker answers no refresh until it has been sent two, with no time limit, so no clock
+  // decides whether the second process reads the file before the first one's refresh is kept.
+  const stub = broker({ refreshesBeforeAnswer: 2 });
   const written = await loginFile(stub.url);
   await tradeTwiceAtOnce(stub.url, written.path, "none");
   expect(presented(stub.refreshes).get(written.refreshToken)).toBe(2);
@@ -306,9 +313,12 @@ test("a process refreshes the login only once another's trade of it is answered"
 }, 30_000);
 
 test("control: with a lock around the refresh alone, the second refresh revokes the first trade's token", async () => {
-  const stub = broker({ accessSeconds: 30, tradeHoldMs: 2_000 });
+  // The broker answers no trade until it has been sent two refreshes, with no time limit, so no
+  // clock decides whether the second process's refresh lands while the first one's trade is out.
+  const stub = broker({ accessSeconds: 30, refreshesBeforeTrade: 2 });
   const written = await loginFile(stub.url);
   const outcomes = await tradeTwiceAtOnce(stub.url, written.path, "refresh-only");
   expect(stub.revokedTrades).toHaveLength(1);
-  expect(outcomes.filter((outcome) => outcome.error?.includes("invalid_grant"))).toHaveLength(1);
+  // The broker refuses a revoked access token `400 invalid_request`.
+  expect(outcomes.filter((outcome) => outcome.error?.includes("invalid_request"))).toHaveLength(1);
 }, 30_000);

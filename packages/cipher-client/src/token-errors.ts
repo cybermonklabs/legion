@@ -250,6 +250,23 @@ export class DeviceLoginEndedError extends Error {
 }
 
 /**
+ * A trade whose time ran out while its identity's source still waited for a lock that another
+ * process of this machine holds (a device login's, `device-login.ts`): no request of the trade
+ * reached the broker, so its text names the lock, never the broker. `lock` names the lock, and
+ * `cause` is the signal's reason. A later trade cures it, once the holder lets go or its lock is
+ * stale and taken.
+ */
+export class LockHeldError extends Error {
+  constructor(lock: string, options?: ErrorOptions) {
+    super(
+      `another process of this machine held ${lock} for all of this trade's time, so nothing was sent to the secrets broker`,
+      options
+    );
+    this.name = "LockHeldError";
+  }
+}
+
+/**
  * Whether `error` ends the identity a client trades for good: a broker's refusal no retry can
  * cure (`BrokerRefusedError.permanent`), a sign-in the issuer has ended
  * ({@link SignInEndedError}), or a device login the broker has ended

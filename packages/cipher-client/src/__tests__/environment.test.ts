@@ -7,9 +7,12 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { writeDeviceLoginFile } from "../../test/device-logins";
+import { DEVICE_LOGIN_FILE_VAR } from "../device-login";
 import {
   BROKER_URL_VAR,
   brokerTokenClient,
+  IDENTITY_DEVICE_LOGIN,
   IDENTITY_VAR,
   MACHINE_AUDIENCE_VAR,
   MACHINE_TOKEN_FILE_VAR,
@@ -19,6 +22,7 @@ import {
   tradeProjects,
   tradeSession,
 } from "../environment";
+import { PERSON_TRADE_VAR } from "../signins";
 import {
   FORM_LAUNCHER_CREDENTIAL,
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
@@ -195,4 +199,29 @@ test("the session a trade writes under is the caller's own, and the variable's w
   expect(tradeSession(deployment, "   ")).toBe("legion-demo-controller");
   // Neither: the trade names no session, and the fleet entry's own name stands.
   expect(tradeSession({})).toBe("");
+});
+
+test("a process that turns the person trade off is refused a device login's trade", async () => {
+  // The controller sets PERSON_SIGNIN_TRADE=off so it never acts in its operator's name, and the
+  // broker mints a device login's trade as the person who approved the login.
+  const path = join(makeDirectory(), "legion", "device-login.json");
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const env = {
+    [BROKER_URL_VAR]: "http://127.0.0.1:1",
+    [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN,
+    [DEVICE_LOGIN_FILE_VAR]: path,
+  };
+  // Control: with the person trade on, the same machine's device login makes its client.
+  const made = await brokerTokenClient(env, "ses-laptop-1");
+  expect(made).toBeDefined();
+  made?.client.close();
+  const refusal = await brokerTokenClient(
+    { ...env, [PERSON_TRADE_VAR]: "off" },
+    "ses-laptop-1"
+  ).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(refusal?.message).toContain(`${PERSON_TRADE_VAR}=off`);
+  expect(refusal?.message).toContain(`${IDENTITY_VAR}=${IDENTITY_DEVICE_LOGIN}`);
 });

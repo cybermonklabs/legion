@@ -10,14 +10,15 @@
 
 import { afterEach, expect, test } from "bun:test";
 import { createPrivateKey, createPublicKey } from "node:crypto";
-import { readFile, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { calculateJwkThumbprint, compactVerify, EmbeddedJWK, type JWK } from "jose";
 import {
   STAND_IN_CREDENTIAL,
+  STAND_IN_UNKNOWN_CODE,
   STAND_IN_USER_CODE,
   stubDeviceLoginBroker,
   writeDeviceLoginFile,
@@ -30,9 +31,11 @@ import {
   deviceLoginSessionName,
   finishDeviceLogin,
   readDeviceLogin,
+  refreshDeviceLogin,
   startDeviceLogin,
   withDeviceLoginLock,
 } from "../device-login";
+import { LOCK_HEARTBEAT_MS } from "../device-login-lock";
 import {
   BROKER_URL_VAR,
   brokerTokenClient,
@@ -42,6 +45,7 @@ import {
   PROJECTS_VAR,
   SESSION_VAR,
 } from "../environment";
+import { BrokerTokenClient, TRADE_ATTEMPT_MS } from "../token-client";
 import { DEVICE_LOGIN_COMMAND, isFinalRefusal } from "../token-errors";
 
 const PERSON = "ada@example.com";
@@ -182,8 +186,13 @@ test("a poll the broker refuses with an error it does not expect stops at once, 
   expect(await stat(path).catch(() => null)).toBeNull();
 });
 
-test("a login nobody approves is refused, and writes no file", async () => {
-  for (const answer of ["deny", "expired"] as const) {
+test("a poll the broker answers with a 4xx that carries no OAuth error stops at once, naming the status", async () => {
+  // An HTML page, as a proxy or a load balancer in front of the broker answers, and a bare DPoP
+  // challenge: neither is an answer a later poll changes.
+  for (const [answer, status] of [
+    ["html-403", 403],
+    ["challenge-401", 401],
+  ] as const) {
     const stub = broker({ polls: [answer] });
     const path = loginPath();
     const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
@@ -191,10 +200,118 @@ test("a login nobody approves is refused, and writes no file", async () => {
       () => null,
       (error: unknown) => error as Error
     );
-    expect(refusal?.message).toContain(answer === "deny" ? "denied" : "expired");
+    // One poll, not one every interval until the code lapses and a refusal that says it expired.
+    expect(stub.polls, answer).toHaveLength(1);
+    expect(refusal?.message, answer).toContain(`HTTP ${status}`);
+    expect(refusal?.message, answer).not.toContain("expired");
+    expect(refusal?.message, answer).toContain(DEVICE_LOGIN_COMMAND);
+    expect(await stat(path).catch(() => null)).toBeNull();
+  }
+});
+
+test("a poll the broker answers with its 429 or a 5xx is polled again", async () => {
+  const stub = broker({ polls: ["busy-429", "unavailable-503", "approve"] });
+  const path = loginPath();
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const login = await finishDeviceLogin(started, { path, sleep: noSleep });
+  expect(stub.polls).toHaveLength(3);
+  expect(login.credentialId).toBe(STAND_IN_CREDENTIAL);
+});
+
+test("a broker refusal shows its OAuth code only where the clients know it", async () => {
+  // A code is the peer's choice of characters, which can be a token the client sent it.
+  const stub = broker({ polls: ["unknown-code"] });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const refusal = await finishDeviceLogin(started, { path: loginPath(), sleep: noSleep }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(stub.polls).toHaveLength(1);
+  expect(refusal?.message).toContain(
+    `HTTP 400 unrecognised error code (${STAND_IN_UNKNOWN_CODE.length} chars)`
+  );
+  expect(refusal?.message).not.toContain(STAND_IN_UNKNOWN_CODE);
+  // The description of a refusal the clients do not know is withheld too.
+  expect(refusal?.message).not.toContain("the stand-in answered");
+});
+
+test("a code is polled no more often than once a second, and every 5 s where the broker names no interval", async () => {
+  for (const [interval, wait] of [
+    [0.001, 1_000],
+    [null, 5_000],
+  ] as const) {
+    const stub = broker({ interval });
+    const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+    const waits: number[] = [];
+    await finishDeviceLogin(started, {
+      path: loginPath(),
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+    });
+    expect(waits, String(interval)).toEqual([wait]);
+  }
+});
+
+test("what the broker answers for a person to read is refused where it holds a control character", async () => {
+  // A terminal runs an escape sequence it is sent: an OSC 52 clipboard write, an OSC 8 link.
+  const clipboardWrite = "WDJB\u001b]52;c;cGFzdGVk\u0007";
+  for (const [options, what] of [
+    [{ userCode: clipboardWrite }, "user code"],
+    [{ verificationUri: "http://127.0.0.1:1/\u001b]8;;http://elsewhere.test\u0007" }, "page"],
+    [{ verificationUri: "javascript:alert(1)" }, "page"],
+  ] as const) {
+    const stub = broker(options);
+    const refusal = await startDeviceLogin({
+      brokerUrl: stub.url,
+      person: PERSON,
+      host: HOST,
+    }).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(refusal?.message, JSON.stringify(options)).toContain(what);
+    expect(refusal?.message).not.toContain("\u001b");
+  }
+  const stub = broker({ credentialId: "cred\u001b[2Jdevice" });
+  const path = loginPath();
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const refusal = await finishDeviceLogin(started, { path, sleep: noSleep }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(refusal?.message).toContain("credential_id");
+  expect(refusal?.message).not.toContain("\u001b");
+  expect(await stat(path).catch(() => null)).toBeNull();
+});
+
+test("a login nobody approves is refused, and writes no file", async () => {
+  // Denied, expired, and a code the broker no longer knows (`invalid_grant`), which is an expiry.
+  for (const answer of ["deny", "expired", "invalid_grant"] as const) {
+    const stub = broker({ polls: [answer] });
+    const path = loginPath();
+    const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+    const refusal = await finishDeviceLogin(started, { path, sleep: noSleep }).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(stub.polls, answer).toHaveLength(1);
+    expect(refusal?.message, answer).toContain(answer === "deny" ? "denied" : "expired");
     expect(refusal?.message).toContain(DEVICE_LOGIN_COMMAND);
     expect(await stat(path).catch(() => null)).toBeNull();
   }
+  // A code whose lifetime has passed is not polled at all.
+  const stub = broker();
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const lapsed = await finishDeviceLogin(
+    { ...started, expiresAt: new Date(Date.now() - 1) },
+    { path: loginPath(), sleep: noSleep }
+  ).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(stub.polls).toHaveLength(0);
+  expect(lapsed?.message).toContain("expired");
 });
 
 test("the identity trades the login's access token with no actor, proved with the login's key", async () => {
@@ -311,6 +428,94 @@ test("a login file others may read, or one made at another broker, is refused", 
   expect(stub.refreshes).toHaveLength(0);
 });
 
+test("a session started before another login of this machine refuses to trade the new one", async () => {
+  const stub = broker();
+  const path = loginPath();
+  const live = {
+    access_token: fixtureSecret("access"),
+    access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+  };
+  await writeDeviceLoginFile(path, stub.url, live);
+  const identity = new DeviceLoginIdentity({ path, brokerUrl: stub.url });
+  await identity.key();
+  // `dispatch login --device` ran again since: the file holds a login of another key, which the
+  // client this session made does not prove.
+  await writeDeviceLoginFile(path, stub.url, live);
+  const refusal = await identity
+    .spend(async () => {})
+    .then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+  expect(refusal?.message).toContain("holds another login");
+  expect(refusal?.message).toContain("start this session again");
+  expect(stub.refreshes).toHaveLength(0);
+});
+
+test("a save removes the copies and locks a process that died left beside the login", async () => {
+  const stub = broker();
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url);
+  const dir = dirname(path);
+  const old = new Date(Date.now() - 2 * TRADE_ATTEMPT_MS);
+  const leftCopy = join(dir, ".device-login-00000000-0000-4000-8000-000000000001.json.tmp");
+  const leftLock = `${path}.lock.stale-00000000-0000-4000-8000-000000000002`;
+  const leftSteal = `${path}.lock.steal.stale-00000000-0000-4000-8000-000000000003`;
+  for (const left of [leftCopy, leftLock, leftSteal]) {
+    await writeFile(left, "left by a process that died");
+    await utimes(left, old, old);
+  }
+  // A copy written a moment ago may be a live save's, and stays.
+  const freshCopy = join(dir, ".device-login-00000000-0000-4000-8000-000000000004.json.tmp");
+  await writeFile(freshCopy, "a live save's");
+  const identity = new DeviceLoginIdentity({ path, brokerUrl: stub.url });
+  await identity.spend(async () => {});
+  expect(stub.refreshes).toHaveLength(1);
+  for (const left of [leftCopy, leftLock, leftSteal]) {
+    expect(await stat(left).catch(() => null), left).toBeNull();
+  }
+  expect(await readFile(freshCopy, "utf8")).toBe("a live save's");
+});
+
+test("a machine with no login file is told to log in", async () => {
+  const refusal = await readDeviceLogin(loginPath()).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(refusal?.message).toContain("this machine has no device login");
+  expect(refusal?.message).toContain(`log this machine in with: ${DEVICE_LOGIN_COMMAND}`);
+});
+
+test("a login directory others may write is refused, as a file others may read is", async () => {
+  const stub = broker();
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url);
+  await chmod(dirname(path), 0o775);
+  const refused = await readDeviceLogin(path).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(refused?.message).toContain("mode 0775");
+  expect(refused?.message).toContain("chmod 700");
+
+  // A login made into such a directory is refused before its file is written there.
+  const fresh = join(makeDirectory(), "open", "device-login.json");
+  await mkdir(dirname(fresh));
+  await chmod(dirname(fresh), 0o777);
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const unsaved = await finishDeviceLogin(started, { path: fresh, sleep: noSleep }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(unsaved?.message).toContain("chmod 700");
+  expect(await stat(fresh).catch(() => null)).toBeNull();
+
+  // A directory others may only read and enter, as `mkdir -p` leaves the `~/.config/legion` that
+  // envoy.json lives in, holds a login: its file is 0600, and no one else can replace it there.
+  await chmod(dirname(path), 0o755);
+  expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
+});
+
 test("the login's lock waits for a live holder and takes a stale one", async () => {
   const path = loginPath();
   await writeDeviceLoginFile(path, "http://127.0.0.1:1");
@@ -371,6 +576,192 @@ test("the login's lock waits for a live holder and takes a stale one", async () 
   // The holder's lock is the holder's: a caller that gave up leaves it where it was.
   expect(await readFile(lock, "utf8")).toBe("another process");
   await Bun.file(lock).delete();
+});
+
+test(
+  "a lock its holder touched just before it died costs a trade no more than one attempt",
+  async () => {
+    const stub = broker();
+    const path = loginPath();
+    await writeDeviceLoginFile(path, stub.url, {
+      access_token: fixtureSecret("access"),
+      access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+    });
+    // The holder touched its lock a moment ago and then died: the trade waits out the lock's stale
+    // bound, takes the lock, and must still be answered within its one attempt.
+    await writeFile(`${path}.lock`, "a process that died holding it");
+    const identity = new DeviceLoginIdentity({ path, brokerUrl: stub.url });
+    const lines: string[] = [];
+    const client = new BrokerTokenClient({
+      brokerUrl: stub.url,
+      key: await identity.key(),
+      subject: identity,
+      session: "ses-laptop-1",
+      log: (line) => lines.push(line),
+    });
+    const began = Date.now();
+    const token = await client.token().finally(() => client.close());
+    expect(lines).toEqual([]);
+    expect(token.accessToken).toBe(stub.tradeTokens[0] as string);
+    expect(stub.trades).toHaveLength(1);
+    expect(Date.now() - began).toBeLessThan(TRADE_ATTEMPT_MS);
+  },
+  2 * TRADE_ATTEMPT_MS
+);
+
+test("a trade whose time runs out while a live holder keeps the lock names the lock, not the broker", async () => {
+  const stub = broker();
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url, {
+    access_token: fixtureSecret("access"),
+    access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+  });
+  const lock = `${path}.lock`;
+  await writeFile(lock, "a live holder");
+  const identity = new DeviceLoginIdentity({ path, brokerUrl: stub.url });
+  const client = new BrokerTokenClient({
+    brokerUrl: stub.url,
+    key: await identity.key(),
+    subject: identity,
+    session: "ses-laptop-1",
+    attemptMs: 1_000,
+    log: () => {},
+  });
+  const refusal = await client.token().then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  client.close();
+  expect(refusal?.message).toContain("lock beside");
+  expect(refusal?.message).not.toContain("did not answer");
+  expect(stub.trades).toHaveLength(0);
+  expect(await readFile(lock, "utf8")).toBe("a live holder");
+  await Bun.file(lock).delete();
+});
+
+test("a holder that lost its lock while it was stopped refreshes nothing, and keeps nothing", async () => {
+  // A holder stopped past the lock's stale bound, as a laptop that sleeps is, has had its lock
+  // taken over: a refresh would spend the refresh token the new holder may be spending too.
+  const stub = broker();
+  const path = loginPath();
+  const written = await writeDeviceLoginFile(path, stub.url);
+  const login = await readDeviceLogin(path);
+  const lost = await refreshDeviceLogin(path, login, {
+    describe: "this machine's device login",
+    held: async () => false,
+  }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(stub.refreshes).toHaveLength(0);
+  expect(lost?.message).toContain("lock beside");
+
+  // Lost while the refresh was out: the broker's answer is not kept over what the new holder
+  // keeps, so the file still holds the refresh token this holder spent.
+  let reads = 0;
+  const lostMeanwhile = await refreshDeviceLogin(path, login, {
+    describe: "this machine's device login",
+    held: async () => {
+      reads += 1;
+      return reads === 1;
+    },
+  }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(stub.refreshes).toHaveLength(1);
+  expect(lostMeanwhile?.message).toContain("lock beside");
+  expect((await readDeviceLogin(path)).refreshToken).toBe(written.refreshToken);
+});
+
+test(
+  "the lock tells its holder whether it still holds it, and its holder keeps it fresh",
+  async () => {
+    const path = loginPath();
+    await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+    const lock = `${path}.lock`;
+    await withDeviceLoginLock(path, async (held) => {
+      expect(await held()).toBe(true);
+      // A lock its holder last touched a while ago is touched again at the next beat, so a holder
+      // that is slow is never taken for dead. The beat is a real interval timer touching the real
+      // file's modification time, which a fake clock does not move, so this waits for the touch it
+      // looks for, up to a bound well past one beat.
+      const old = new Date(Date.now() - 12_000);
+      await utimes(lock, old, old);
+      const deadline = Date.now() + 4 * LOCK_HEARTBEAT_MS;
+      while ((await stat(lock)).mtimeMs <= old.getTime() + 1_000 && Date.now() < deadline) {
+        await Bun.sleep(100);
+      }
+      expect(Date.now() - (await stat(lock)).mtimeMs).toBeLessThan(LOCK_HEARTBEAT_MS * 2);
+      // Another caller took it over.
+      await writeFile(lock, "another process that took the lock over");
+      expect(await held()).toBe(false);
+    });
+    // The lock is the new holder's, and stays where it is.
+    expect(await readFile(lock, "utf8")).toBe("another process that took the lock over");
+    await Bun.file(lock).delete();
+  },
+  6 * LOCK_HEARTBEAT_MS
+);
+
+test(
+  "a refresh the broker did not answer is sent once more at once, with the same refresh token",
+  async () => {
+    // The broker mints the first refresh's answer and keeps it until the second refresh arrives,
+    // which is after the client gave the first up: an answer that never reached the client. The
+    // client gives it up on its request's real deadline, which is the behaviour under test, so the
+    // row pays that deadline once.
+    const stub = broker({ refreshesBeforeAnswer: 2 });
+    const path = loginPath();
+    const written = await writeDeviceLoginFile(path, stub.url);
+    const identity = new DeviceLoginIdentity({ path, brokerUrl: stub.url });
+    const spent: string[] = [];
+    await identity.spend(async (subject) => {
+      spent.push(subject.token);
+    });
+    expect([...stub.refreshes.map((refresh) => refresh.form.get("refresh_token"))]).toEqual([
+      written.refreshToken,
+      written.refreshToken,
+    ]);
+    // The login kept is the second answer's, whose access token the broker honours.
+    expect(spent).toEqual([stub.loginTokens[1] as string]);
+    expect((await readDeviceLogin(path)).accessToken).toBe(stub.loginTokens[1] as string);
+  },
+  2 * TRADE_ATTEMPT_MS
+);
+
+test("a kept access token the broker refuses is refreshed at once, and traded again", async () => {
+  // Another process's refresh made the token this file keeps one the broker refuses: a refresh
+  // now gets a token it honours, and the trade goes through.
+  const stub = broker();
+  const path = loginPath();
+  const kept = fixtureSecret("access");
+  await writeDeviceLoginFile(path, stub.url, {
+    access_token: kept,
+    access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+  });
+  const rival = await readDeviceLogin(path);
+  await withDeviceLoginLock(path, (held) =>
+    refreshDeviceLogin(path, rival, { describe: "the rival's login", held })
+  );
+  await writeDeviceLoginFile(path, stub.url, {
+    refresh_token: (await readDeviceLogin(path)).refreshToken,
+    access_token: kept,
+    access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+  });
+  const made = await brokerTokenClient(
+    {
+      [BROKER_URL_VAR]: stub.url,
+      [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN,
+      [DEVICE_LOGIN_FILE_VAR]: path,
+    },
+    "ses-laptop-1"
+  );
+  const token = await made?.client.token();
+  made?.client.close();
+  expect(stub.revokedTrades).toHaveLength(1);
+  expect(stub.refreshes).toHaveLength(2);
+  expect(token?.accessToken).toBe(stub.tradeTokens[0] as string);
 });
 
 test("of two callers that find one stale lock, exactly one takes it", async () => {
@@ -580,7 +971,7 @@ test("device-login is an identity of its own, named with its variables", () => {
   );
   const named = machineIdentity({
     [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN,
-    [BROKER_URL_VAR]: "http://broker.test",
+    [BROKER_URL_VAR]: "https://broker.test",
     HOME: "/home/ada",
   });
   expect(named?.describe()).toContain(DEVICE_LOGIN_FILE_VAR);
@@ -589,6 +980,44 @@ test("device-login is an identity of its own, named with its variables", () => {
   expect(deviceLoginFile({ HOME: "/home/ada", [DEVICE_LOGIN_FILE_VAR]: "/x/login.json" })).toBe(
     "/x/login.json"
   );
+});
+
+test("a device login takes an http broker on this machine's loopback alone", async () => {
+  // The login's refresh token and access tokens cross this connection, so a broker off this
+  // machine is https; a dev stack's broker on the loopback is http.
+  const sent: string[] = [];
+  const recording = (async (input: string | URL | Request) => {
+    sent.push(String(input));
+    return new Response("{}", { status: 500 });
+  }) as typeof fetch;
+  for (const brokerUrl of ["http://broker.test", "http://10.0.0.5:8080"]) {
+    const refusal = await startDeviceLogin({
+      brokerUrl,
+      person: PERSON,
+      host: HOST,
+      fetch: recording,
+    }).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(refusal?.message, brokerUrl).toContain("loopback");
+    expect(refusal?.message, brokerUrl).toContain(BROKER_URL_VAR);
+    expect(() => new DeviceLoginIdentity({ path: loginPath(), brokerUrl }), brokerUrl).toThrow(
+      "loopback"
+    );
+  }
+  expect(sent).toEqual([]);
+  for (const brokerUrl of [
+    "https://broker.test",
+    "http://127.0.0.1:1",
+    "http://localhost:1",
+    "http://[::1]:1",
+  ]) {
+    expect(
+      () => new DeviceLoginIdentity({ path: loginPath(), brokerUrl }),
+      brokerUrl
+    ).not.toThrow();
+  }
 });
 
 test("a caller acting as no session trades under the session variable, else the login's own name", async () => {
@@ -612,8 +1041,9 @@ test("a caller acting as no session trades under the session variable, else the 
     made?.client.close();
     expect(stub.trades.at(-1)?.form.get("session")).toBe(session);
   }
-  expect(deviceLoginSessionName(written.thumbprint)).toBe(
-    `device-login-${written.thumbprint.slice(0, 12)}`
+  // The name's form, held apart from the function that makes it.
+  expect(deviceLoginSessionName("abcdefghijklmnopqrstuvwxyz0123456789-_ABCDEFG")).toBe(
+    "device-login-abcdefghijkl"
   );
 });
 

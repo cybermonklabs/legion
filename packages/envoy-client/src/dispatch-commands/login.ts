@@ -14,6 +14,7 @@
 import { hostname } from "node:os";
 import {
   DEVICE_LOGIN_FILE_NAMED,
+  deviceLoginBroker,
   deviceLoginFile,
   deviceLoginHost,
   finishDeviceLogin,
@@ -94,7 +95,8 @@ function parseLogin(argv: readonly string[]): ParsedLogin {
  * Runs `dispatch login` with `argv` (the words after `login`) in `env`, and answers its exit
  * code: 0 once the login is approved and kept; 1 when the broker refused it, the person denied it,
  * its code expired, or it could not be kept; 2 for a usage error, before any request: no
- * `--device`, no person (`--person`, else `AGENT_SECRETS_PERSON`), or no broker (`AGENT_SECRETS_URL`).
+ * `--device`, no person (`--person`, else `AGENT_SECRETS_PERSON`), or no broker
+ * (`AGENT_SECRETS_URL`) a device login may use: https, or http on this machine's loopback.
  */
 export async function loginCommand(
   argv: readonly string[],
@@ -135,6 +137,8 @@ export async function loginCommand(
   }
   let path: string;
   try {
+    // An http broker off this machine's loopback is refused here, before any request.
+    deviceLoginBroker(brokerUrl);
     path = deviceLoginFile(env);
   } catch (error) {
     return refuse(messageFor(error), USAGE);

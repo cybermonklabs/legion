@@ -855,32 +855,35 @@ An identity with one of its variables missing is an error that names the variabl
 `AGENT_SECRETS_DEVICE_LOGIN_FILE` names, else `~/.config/legion/device-login.json`, mode 0600:
 the login's P-256 key as base64 PKCS#8 DER, its launcher credential's `credential_id` and
 `expires_at`, its `refresh_token`, the `broker` it was made at, and the last `access_token` with
-its `access_expires_at`. A trade presents that access token as the subject, under RFC 8693's own
-`urn:ietf:params:oauth:token-type:access_token`, with no actor, and every proof is signed with the
-login's key. A login made at another broker than `AGENT_SECRETS_URL` names is refused. It names
-the projects `AGENT_SECRETS_PROJECTS` lists, and its session is the caller's own, else
-`AGENT_SECRETS_SESSION`, else `device-login-<thumbprint>`, the first 12 characters of the key's
-thumbprint. The login is the person's own credential, so no `agent-secrets login` sign-in on the
-machine is read beside it. Only this client trades a device login; the Go client knows no such
-identity, so a machine that runs no Go binary can still trade one.
+its `access_expires_at`. The file is refused when its group or anyone else may read it, when its
+directory lets them write to it, or when another user owns either. A trade presents that access
+token as the subject, under RFC 8693's own `urn:ietf:params:oauth:token-type:access_token`, with
+no actor, and every proof is signed with the login's key. A login made at another broker than
+`AGENT_SECRETS_URL` names is refused, and so is a broker on `http` off this machine's loopback:
+the login's tokens cross that connection. It names the projects `AGENT_SECRETS_PROJECTS` lists,
+and its session is the caller's own, else `AGENT_SECRETS_SESSION`, else
+`device-login-<thumbprint>`, the first 12 characters of the key's thumbprint. The login is the
+person's own credential, so no `agent-secrets login` sign-in on the machine is read beside it, and
+a process with `PERSON_SIGNIN_TRADE=off` (the controller `legion controller start` launches) is
+refused it, since the broker mints its trade as that person. Only this client trades a device
+login. The Go tools that read `AGENT_SECRETS_MACHINE_IDENTITY` (`agent-secrets`, the helper,
+`legion controller start`) refuse `device-login`, naming it as the TypeScript client's alone, so a
+machine that sets it for its sessions sets it for them, not for those tools.
 
 A refresh rotates the login's refresh token and revokes every access token the login answered
 before, and the broker revokes the whole login when a rotated refresh token is presented again
 after its five-minute grace. So each trade runs under the login's lock, the file beside it with
-`.lock` added: it is created exclusively, its holder touches it every 10 s, and a lock untouched
-for 30 s is taken as one whose holder died. Only one caller takes a stale lock: it first creates
-the take-over's own lock, `.lock.steal`, and looks at the lock again under it, so a second caller
-that found the same stale lock finds the first one's fresh lock and waits. A `.lock.steal` left
-for 5 s by a caller that died or stopped taking over is removed. Every removal is of the very file
-the caller looked at: the file is moved aside, and removed only where its device, inode,
-modification time and holder value are all the ones the caller saw; otherwise it is put back. The
-inode alone tells nothing, since XFS gives a new file the number of one removed a moment before.
-Under the lock a process reads the file again,
-refreshes only when the access token kept there has less than a minute left, keeps the rotated
-login, and trades. Two sessions of one machine never spend one refresh token, and none refreshes
-while another still presents the access token that the refresh would end. The broker's
-`invalid_grant` to a refresh is final (`DeviceLoginEndedError` in `token-errors.ts`): the login
-was revoked or ran out, and only a new `dispatch login --device` cures it.
+`.lock` added, which its holder touches every 5 s; a lock untouched for 15 s is taken as one whose
+holder died (`device-login-lock.ts` holds the protocol). A holder stopped for longer, as a laptop
+that sleeps is, loses the lock the same way: once it goes on, it refreshes and keeps nothing, and
+its trade may be refused and traded again. Under the lock a process reads the file again,
+refreshes when the access token kept there has less than a minute left, or when the broker refuses
+it (a revoke ends a login before its token lapses), keeps the rotated login, and trades. A refresh
+the broker did not answer is sent once more at once: the broker redeems the spent refresh token
+again within its five-minute grace, and past it the login ends. The broker's `invalid_grant` to a
+refresh is final (`DeviceLoginEndedError` in `token-errors.ts`): the login was revoked or ran out,
+and only a new `dispatch login --device` cures it. A trade whose time ran out while another
+process of the machine held the lock says so, and not that the broker did not answer.
 
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
@@ -1050,13 +1053,21 @@ nothing. A retraction's dry run sends nothing.
 
 `dispatch login --device [--person <address>]` logs the machine in at the secrets broker
 (`dispatch-commands/login.ts`). It is the one command that is no Dispatch call. A person runs
-it in a terminal, once per machine, so it reads no host, no session and no envoy.json. It reads
-`AGENT_SECRETS_URL`, and the person who approves the login from `--person`, else
-`AGENT_SECRETS_PERSON`. It prints the broker's page and the code to type there, waits while that
-person approves it in Dispatch, and keeps the login (above). Without `--device`, a person or a
-broker, it exits 2 before any request. It exits 1 when the broker refuses the login, the person
-denies it, its code expires, or the broker refuses a poll with any other OAuth error of a 4xx
-(its 429 and a 5xx are polled again), and then writes no file. The host it names is this
+it once per machine, in a terminal of their own: it waits for the approval until the code
+lapses, which a command timeout of an agent's shell can cut short. The command is each plugin's
+`bin/dispatch`, under the directory the host installed the plugin in (claude-envoy's or
+pi-envoy's), or `bun packages/envoy-client/bin/dispatch.ts` from a checkout of this repository.
+It reads no host, no session and no envoy.json. It reads `AGENT_SECRETS_URL`, and the person who
+approves the login from `--person`, else `AGENT_SECRETS_PERSON`. It prints the broker's page and
+the code to type there, waits while that person approves it in Dispatch, and keeps the login
+(above). Without `--device`, a person, or a broker a device login may use (https, or http on this
+machine's loopback), it exits 2 before any request. It exits 1 when the broker refuses the login,
+the person denies it, its code expires, or the broker answers a poll with any other 4xx, with an
+OAuth error or without one (a proxy's page, a bare challenge), naming its status; a poll the
+broker did not answer, its 429 and a 5xx are polled again, at the broker's interval, at least 1 s,
+and 5 s where it names none. It then writes no file. What the broker answers for the person to
+read (the page, the code, the credential's id) is refused where it holds a control character, and
+an OAuth code is shown only where it is one the clients know. The host it names is this
 machine's name in the form the broker takes (`Adas-MacBook-Pro.local` is
 `adas-macbook-pro.local`). A second login of the machine replaces the file, and the earlier
 login's credential stays live at the broker until it lapses or is revoked, so the command names
