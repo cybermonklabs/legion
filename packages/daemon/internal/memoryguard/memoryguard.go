@@ -3343,6 +3343,80 @@ func (g *Guard) keepKillSizes() {
 // shared pages, counted whatever program it ran next, and its program's growth since the kill was
 // hidden (thread PRRT_kwDORFy7ds66UWB0 of review round 5 of cybermonklabs/legion#4273; INFRA-3531
 // R1 of spec version 48; INFRA-3368's architect, 2026-11-21T08:54Z, item 2).
+//
+// The fork-flag rule is INFRA-3368's architect's rule of 2026-11-21T16:43Z on INFRA-3531 R1 of
+// spec version 48 (dispatch://INFRA-3531/comment/4c8b69b6-6047-4b2b-9380-55e6536809aa, item 1):
+//   - A read is a fork's read when the program it found, its executable and arguments, is its
+//     parent's program, as read anywhere in the same reading or earlier in the stay.
+//   - The flag belongs to each read on its own. It is never copied from a read of another program.
+//   - The size at a kill is the lowest of the reads of the program the process runs now, together
+//     with that read's own flag. With no such read, the size is 0, unless the guard never read the
+//     process before the kill.
+//
+// The rule's table has one row for each case the architect named. Each row gives the case, which
+// of the process's reads are a fork's reads, its size as of a kill that follows, and the test that
+// pins the row. "The kill's reading" is the reading the kill is sent at. "The reading before" is
+// the process's last read at an earlier reading (before). The sizes in MiB are those of the tests.
+//   - (1) The same search reads the fork before its parent, and then the parent. Fork's reads: the
+//     search's read, which the search flags once it reads the parent (startedSince), and each
+//     later read there that finds the parent's program, as the full read's after the kill. Size:
+//     the lowest of them before the kill, a fork's read (305). It counts from 0 once the fork runs
+//     a program of its own (keepGrowth), so that program's growth makes the guard go on. Test:
+//     TestMemoryGuardTakesAForksReadAsTheSizeAsOfAKillWhereTheSearchReadsItBeforeItsParentAndThenTheParent.
+//   - (2) The search reads the fork before its parent and stops, and a later pass of the same
+//     reading, the full read after the kill, reads the parent. Fork's reads: both of its reads
+//     there. The search's read found the program that the parent's read finds at that reading,
+//     though discountFork set no flag on it: that later pass flags only its own read. Size: the
+//     lowest of them before the kill, a fork's read (305). Where the kill came before the search,
+//     the guard never read the fork before the kill, and its size is its first read after the
+//     kill, a fork's read (305). It counts from 0 once the fork runs a program of its own. Tests:
+//     the subtest "the budget stops the search before pid 400" of
+//     TestMemoryGuardCountsItsProgramsGrowthSinceTheKillForAForkTheSearchReadBeforeItsParentBeforeTheKill;
+//     and, with the kill before the search,
+//     TestMemoryGuardCountsItsProgramsGrowthSinceTheKillForAForkTheSearchReadBeforeItsParentAfterTheKill.
+//   - (3) The fork starts a program of its own between the reading before and the kill's reading.
+//     Fork's reads: the reading before's alone. Size: the lowest of its reads at the kill's reading
+//     before the kill, no fork's (150). The reading before's read is of another program, so it is
+//     not the size, though it is lower (100). With no read at the kill's reading before the kill,
+//     the size is 0. Tests:
+//     TestMemoryGuardTakesTheNewProgramsReadAsTheSizeAsOfAKillWhereTheReadingBeforeReadAForkLower;
+//     and, for the size 0, TestMemoryGuardEndsAGrowerTheBandReadBeforeItsExecBeforeTheParentAfterAFall.
+//   - (4) The fork starts a program of its own between two reads of the kill's reading, both
+//     before the kill. Fork's reads: the first of the two, and the reading before's. Size:
+//     the lowest of the reads of its own program before the kill, no fork's (150), whether the
+//     fork's read at that reading is higher (260) or lower (100). Tests:
+//     TestMemoryGuardTakesNoGrowthSinceAKillFromAForkThatRunsItsOwnProgramBetweenTwoReadsOfTheKillsReading
+//     and TestMemoryGuardTakesTheNewProgramsReadAsTheSizeAsOfAKillWhereTheForksReadAtThatReadingIsLower.
+//     Both fail at 6b8c4d9b. There forkAtReading gave each read of the kill's reading the flag of
+//     any of them, so the size was the lowest of the fork's reads and its own program's, with a
+//     fork's flag, which counts from 0; and the guard ended the fork too (thread
+//     PRRT_kwDORFy7ds66ZPu6 of review round 6 of cybermonklabs/legion#4273).
+//   - (5) An orphan: the fork's parent has ended. Fork's reads: each read that finds the program
+//     of its last read that passed the fork test (forkProgram), its parent gone or not, until its
+//     executable or arguments change (discountFork; the architect's answer of 2026-11-20T09:24Z).
+//     Size: the lowest of those reads, a fork's read (600). It counts while the orphan runs that
+//     program, and from 0 once that program changes. Test:
+//     TestMemoryGuardKeepsAnOrphansForkReadAsItsSizeAsOfAKillUntilItsArgumentsChange.
+//   - (6) An argument rewrite, as setproctitle makes, with the same executable. Fork's reads: for a
+//     process that was no fork, none, and the rewrite is no new program (anotherProgram); for a
+//     fork, its reads before the rewrite, and none after it. Size: for a process that was no fork,
+//     no fork's read (600), which counts whatever its arguments become; for a fork, a fork's read
+//     (600), which counts from 0 once it has rewritten them, the risk that the architect's decision
+//     of 2026-11-20T08:13Z accepts. Tests:
+//     TestMemoryGuardTakesNoGrowthSinceAKillFromAProcessThatRewritesItsArguments, for a process
+//     that was no fork; and
+//     TestMemoryGuardCountsFromNothingAForkThatRewritesItsArgumentsAfterAKillAndNotAProcessThatWasNoFork.
+//   - (7) A zombie: the process has exited, and its parent has not reaped it. Fork's reads: none.
+//     The scan leaves a zombie out, and keepSizes drops the reads of a process that the table no
+//     longer lists. Size: none. No size or flag as of the kill is kept for it, and no kill goes to
+//     it. Test: the subtest "its stat reads a zombie" of
+//     TestMemoryGuardTakesNoSizeOrFlagAsOfAKillFromAZombieOrFromAPidsEarlierProcess.
+//   - (8) A pid that another process now holds, with another start time. Fork's reads: its own
+//     alone. A read is kept by pid and start time, so no read of the earlier process is its read.
+//     Size: as for any process, from its own reads. Where the guard never read it before the kill,
+//     the size is its first read after the kill (150, no fork's). It takes neither the size of the
+//     earlier process (600) nor that process's flag (a fork's). Test: the subtest "its pid names a
+//     process started since" of the same test.
 func (r *procReads) asOfKill(at time.Time) (asOf forkRead, afterKill bool) {
 	if !r.readAt(at) {
 		return r.atReading[len(r.atReading)-1], false
