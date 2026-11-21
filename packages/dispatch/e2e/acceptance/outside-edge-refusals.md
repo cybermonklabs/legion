@@ -80,9 +80,11 @@ another body, and so may an edge whose own 404 differs by Host; the run cannot t
 so such a line reads `UNKNOWN`, never refused. An edge's own 404 with an empty body tells nothing
 either, since such a forward could give an empty body too, so it reads `UNKNOWN` as well. A body's
 SHA-256 counts only when the hasher exits 0 printing exactly one, so a line whose body or whose
-control's the hasher gave none of reads `UNKNOWN` too: two failed hashes would compare equal. An
-`UNKNOWN` line that says "another body than its unrouted control's 404" is a possible forward: look
-into it before running the check again.
+control's the hasher gave none of reads `UNKNOWN` too: two failed hashes would compare equal. And
+before any list is read or any request sent, the run hashes the empty input and `abc` and stops at
+`UNKNOWN` unless both digests are SHA-256's, since a hasher that ignored its input would make every
+body look alike. An `UNKNOWN` line that says "another body than its unrouted control's 404" is a
+possible forward: look into it before running the check again.
 
 The comparison rests on a rule this check cannot hold: every route of the edge sets the marker. A
 route with no hostname that forwards without a marker to a backend that answers 404 would give the

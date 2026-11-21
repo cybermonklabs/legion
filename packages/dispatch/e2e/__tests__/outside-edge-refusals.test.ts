@@ -408,19 +408,36 @@ describe(scriptName, () => {
   // failed is no digest: two failed hashes compared equal, so a line whose 404 body differed from
   // the edge's own read refused and the run passed. Each row runs the script on a PATH of its own:
   // links to the host's curl, mktemp, rm and date, and a hasher script, `sha256sum`, or `shasum`
-  // alone, which the script takes where no sha256sum is on PATH. In the fault rows a route
-  // forwards broker-pending without a marker to a backend whose 404 body is not the edge's own:
-  // the false PASS the faults made. A working hasher, the control, reads PASS on equal bodies.
+  // alone, which the script takes where no sha256sum is on PATH. Before any list is read the
+  // script hashes the empty input and `abc` and stops unless both are SHA-256's, so a fault row's
+  // hasher answers its first two calls as the host's sha256sum does and fails from the third, the
+  // first body. In the fault rows a route forwards broker-pending without a marker to a backend
+  // whose 404 body is not the edge's own: the false PASS the faults made. A working hasher, the
+  // control, reads PASS on equal bodies.
   const hostSha256sum = hostTool("sha256sum");
   /** A PATH directory of the row's own: the host's curl, mktemp, rm and date, and `tool`, a bash
-   *  script of `body`. */
-  function hasherPath(tool: string, body: string): string {
+   *  script that runs the host's sha256sum for its first `working` calls (dropping shasum's
+   *  `-a 256`) and `body` from then on. */
+  function hasherPath(tool: string, body: string, working = 0): string {
     const directory = directoryOf("path");
     for (const name of ["curl", "mktemp", "rm", "date"]) {
       const found = hostTool(name);
       if (found !== null) symlinkSync(found, join(directory, name));
     }
-    writeFileSync(join(directory, tool), `#!${bash}\n${body}\n`, { mode: 0o755 });
+    const calls = join(directory, "calls");
+    const script = [
+      `#!${bash}`,
+      "count=0",
+      `[ ! -r '${calls}' ] || read -r count <'${calls}'`,
+      `printf '%s\\n' "$((count + 1))" >'${calls}'`,
+      `if [ "$count" -lt ${working} ]; then`,
+      '  [ "$1" != -a ] || shift 2',
+      `  exec ${hostSha256sum} "$@"`,
+      "fi",
+      body,
+      "",
+    ].join("\n");
+    writeFileSync(join(directory, tool), script, { mode: 0o755 });
     return directory;
   }
   const hasherFaults = [
@@ -437,10 +454,23 @@ describe(scriptName, () => {
       body: `printf '%s  -\\n' ${sha("hasher")}; exit 1`,
     },
     { name: "a shasum, the only hasher, that exits 1", tool: "shasum", body: "exit 1" },
+    // The body's true SHA-256 with more on its line, or on a line of its own: the first field is
+    // right, so only the exact form of the line refuses it, and without that the run would compare
+    // the true digests and name broker-pending alone.
+    {
+      name: "a sha256sum that prints its SHA-256 with more text on the line",
+      tool: "sha256sum",
+      body: `out=$(${hostSha256sum}) || exit 1; printf '%s extra\\n' "$out"`,
+    },
+    {
+      name: "a sha256sum that prints its SHA-256 and a second line",
+      tool: "sha256sum",
+      body: `out=$(${hostSha256sum}) || exit 1; printf '%s\\nextra\\n' "$out"`,
+    },
   ];
   const unhashedVerdict = `UNKNOWN: the hasher gave no SHA-256 of the 404 body or of the edge's own 404 for its path, so the two could not be compared, for ${fiveFields.map((line) => line.name).join(" ")}`;
   for (const { name, tool, body } of hasherFaults) {
-    test.skipIf(withoutTools)(
+    test.skipIf(withoutTools || hostSha256sum === null)(
       `(i) reads UNKNOWN, never refused, with ${name}, naming each line of five fields`,
       async () => {
         const edge = await standIn([
@@ -451,7 +481,7 @@ describe(scriptName, () => {
           const run = await check(
             `i ${name}`,
             { OUTSIDE_EDGE_ADDRESS: edge.address, ...planLists() },
-            { path: hasherPath(tool, body) }
+            { path: hasherPath(tool, body, 2) }
           );
           expect(linesOf(run, "UNKNOWN"), said(run)).toEqual(
             fiveFields.map(
@@ -476,7 +506,7 @@ describe(scriptName, () => {
   }
 
   // A reached line keeps the run at FAIL whatever the hasher did.
-  test.skipIf(withoutTools)(
+  test.skipIf(withoutTools || hostSha256sum === null)(
     "(i) fails naming a line reached when the hasher exits 1 with no output",
     async () => {
       const [first] = refusals as [Line];
@@ -485,7 +515,7 @@ describe(scriptName, () => {
         const run = await check(
           "i reached, hasher failing",
           { OUTSIDE_EDGE_ADDRESS: edge.address, ...planLists() },
-          { path: hasherPath("sha256sum", "exit 1") }
+          { path: hasherPath("sha256sum", "exit 1", 2) }
         );
         expect(linesOf(run, "REACHED"), said(run)).toEqual([
           `REACHED ${first.name} 200 canary body-sha256 unreadable`,
@@ -503,14 +533,10 @@ describe(scriptName, () => {
   // The control: the same PATH of the row's own, with a hasher that works, reads PASS where the
   // bodies are equal, through sha256sum and through shasum alone.
   const workingHashers = [
-    { name: "sha256sum", tool: "sha256sum", body: `exec ${hostSha256sum} "$@"` },
-    {
-      name: "shasum, the only hasher",
-      tool: "shasum",
-      body: `[ "$1 $2" = "-a 256" ] && shift 2; exec ${hostSha256sum} "$@"`,
-    },
+    { name: "sha256sum", tool: "sha256sum" },
+    { name: "shasum, the only hasher", tool: "shasum" },
   ];
-  for (const { name, tool, body } of workingHashers) {
+  for (const { name, tool } of workingHashers) {
     test.skipIf(withoutTools || hostSha256sum === null)(
       `(i) passes with a working ${name} where each line's 404 is the edge's own`,
       async () => {
@@ -519,7 +545,7 @@ describe(scriptName, () => {
           const run = await check(
             `i working ${name}`,
             { OUTSIDE_EDGE_ADDRESS: edge.address, ...planLists() },
-            { path: hasherPath(tool, body) }
+            { path: hasherPath(tool, "exit 70", Number.MAX_SAFE_INTEGER) }
           );
           expect(linesOf(run, "refused"), said(run)).toEqual(refusals.map(refusedLine));
           expect(verdict(run), said(run)).toBe(passVerdict);
@@ -529,6 +555,48 @@ describe(scriptName, () => {
         }
       },
       // The script, a bounded child under the bound of a run that probes.
+      rowLimit("edgeRun")
+    );
+  }
+
+  // The hasher is tested before any list is read or any request sent: it hashes the empty input
+  // and `abc`, and the run stops unless both are SHA-256's. A hasher that ignores its input, and
+  // one that fails from its first call, each make it stop there, with the stand-in seeing no
+  // request. The script before this test read PASS with the first: every body hashed alike.
+  const selfTests = [
+    {
+      name: "a sha256sum that ignores its input",
+      body: `printf '%s  -\\n' ${sha("hasher")}; exit 0`,
+      gave: [sha("hasher"), sha("hasher")],
+    },
+    {
+      name: "a sha256sum that fails from its first call",
+      body: "exit 1",
+      gave: ["unreadable", "unreadable"],
+    },
+  ];
+  for (const { name, body, gave } of selfTests) {
+    test.skipIf(withoutTools)(
+      `(i) reads UNKNOWN before any request with ${name}`,
+      async () => {
+        const edge = await standIn(production);
+        try {
+          const run = await check(
+            `i self-test ${name}`,
+            { OUTSIDE_EDGE_ADDRESS: edge.address, ...planLists() },
+            { path: hasherPath("sha256sum", body) }
+          );
+          expect(run.stdout, said(run)).toBe(
+            `UNKNOWN: the hasher sha256sum gives no SHA-256: it gave ${gave[0]} for an empty input and ${gave[1]} for 'abc', where SHA-256 gives ${sha("")} and ${sha("abc")}\n`
+          );
+          expect(run.code, said(run)).toBe(2);
+          expect(await edge.seen()).toEqual([]);
+        } finally {
+          await edge.stop();
+        }
+      },
+      // The script, a bounded child under the bound of a run that probes: with the old script it
+      // probes.
       rowLimit("edgeRun")
     );
   }

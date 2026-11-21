@@ -101,16 +101,18 @@
 # came, `unreadable` where the hasher did not exit 0 printing exactly one SHA-256, 64 lowercase
 # hexadecimal digits and the name `-`), so two runs can be compared, and curl's exit code and
 # first message where curl did not exit 0; an unrouted control prints `unrouted <name>` the same
-# way. Then the verdict:
+# way. Before any list is read or any request sent, the hasher hashes the empty input and `abc`,
+# and the run stops at UNKNOWN unless both digests are SHA-256's: a hasher that ignored its input,
+# or used another function, would make every body look alike. Then the verdict:
 #   PASS     exit 0: every routed control showed its marker and every refusal line was refused.
 #   FAIL     exit 1: a refusal line was REACHED, whatever else the run could not read, a signal
 #            that stopped it afterwards included: an answer is evidence, where a probe that came
 #            short only failed to look.
 #   UNKNOWN  exit 2: anything that proved nothing, which is never a pass: an input refused, a
-#            tool missing or too old, an empty or unreadable list, a routed control whose marker
-#            was not visible, a refusal line whose answer could not be read as a refusal or a
-#            reach, or a run that a HUP, INT or TERM stopped before its verdict and before any
-#            line was REACHED.
+#            tool missing, too old or not hashing SHA-256, an empty or unreadable list, a routed
+#            control whose marker was not visible, a refusal line whose answer could not be read
+#            as a refusal or a reach, or a run that a HUP, INT or TERM stopped before its verdict
+#            and before any line was REACHED.
 #
 # A HUP, INT or TERM ends the run at a verdict, never at bash's own exit with nothing printed. From
 # the first line of any verdict on, through the exit's cleanup, the three are ignored, so a second
@@ -429,6 +431,43 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/outside-edge-refusals.XXXXXX" 2>/dev/null) && 
   unknown "mktemp could not make a directory under ${TMPDIR:-/tmp} for the answers"
 trap 'trap "" HUP INT TERM; left=$(jobs -p); [ -z "$left" ] || { kill -KILL $left; wait $left; } 2>/dev/null; rm -rf "$work"' EXIT
 
+# digest_of FILE: sets `digest` to the SHA-256 of FILE, or `unreadable` unless the hasher exited 0
+# and printed exactly one line, 64 lowercase hexadecimal digits and the name of its stdin, `-`
+# (`<hex>  -`, or `<hex> *-` from a hasher reading in binary mode). A hash that failed is never a
+# digest: two of them would compare equal, and two 404 bodies that differ would read as the same.
+digest_of() {
+  local out status hex
+  if [ "$hasher" = sha256sum ]; then
+    out=$(sha256sum <"$1" 2>/dev/null)
+    status=$?
+  else
+    out=$(shasum -a 256 <"$1" 2>/dev/null)
+    status=$?
+  fi
+  digest=unreadable
+  [ "$status" -eq 0 ] || return 0
+  hex=${out%% *}
+  case $hex in '' | *[!0-9a-f]*) return 0 ;; esac
+  [ "${#hex}" -eq 64 ] || return 0
+  [ "$out" = "$hex  -" ] || [ "$out" = "$hex *-" ] || return 0
+  digest=$hex
+}
+
+# The SHA-256 of an empty input, and of `abc` (FIPS 180-2's first example).
+nothing=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+abc=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+# The hasher must give SHA-256 before any digest of it is compared: one that ignored its input,
+# or hashed with another function, would make every body look alike, and a forwarded 404 would
+# read as the edge's own. So before any list is read or any request sent, it hashes the empty
+# input and `abc`, and the run stops unless both digests are SHA-256's.
+digest_of /dev/null
+empty_digest=$digest
+printf 'abc' >"$work/abc" 2>/dev/null || unknown "could not write under $work to test the hasher"
+digest_of "$work/abc"
+if [ "$empty_digest" != "$nothing" ] || [ "$digest" != "$abc" ]; then
+  unknown "the hasher $hasher gives no SHA-256: it gave $empty_digest for an empty input and $digest for 'abc', where SHA-256 gives $nothing and $abc"
+fi
+
 # The probe table: the routed controls in rows 1 to `routed`, then the refusal lines to `total`.
 total=0
 taken=''
@@ -451,28 +490,6 @@ printf 'outside-edge-refusals: time %s\n' "${now:-unknown (no date command answe
 printf 'outside-edge-refusals: curl %s\n' "$version"
 printf 'outside-edge-refusals: routed %s (%s)\n' "$OUTSIDE_EDGE_ROUTED" "$routed"
 printf 'outside-edge-refusals: refusals %s (%s)\n' "$OUTSIDE_EDGE_REFUSALS" $((total - routed))
-
-# digest_of FILE: sets `digest` to the SHA-256 of FILE, or `unreadable` unless the hasher exited 0
-# and printed exactly one line, 64 lowercase hexadecimal digits and the name of its stdin, `-`
-# (`<hex>  -`, or `<hex> *-` from a hasher reading in binary mode). A hash that failed is never a
-# digest: two of them would compare equal, and two 404 bodies that differ would read as the same.
-digest_of() {
-  local out status hex
-  if [ "$hasher" = sha256sum ]; then
-    out=$(sha256sum <"$1" 2>/dev/null)
-    status=$?
-  else
-    out=$(shasum -a 256 <"$1" 2>/dev/null)
-    status=$?
-  fi
-  digest=unreadable
-  [ "$status" -eq 0 ] || return 0
-  hex=${out%% *}
-  case $hex in '' | *[!0-9a-f]*) return 0 ;; esac
-  [ "${#hex}" -eq 64 ] || return 0
-  [ "$out" = "$hex  -" ] || [ "$out" = "$hex *-" ] || return 0
-  digest=$hex
-}
 
 # The Host of each refusal line's unrouted control: a name no route can name, since RFC 6761 keeps
 # `.invalid` out of the DNS.
@@ -579,8 +596,6 @@ uncontrolled=''
 unhashed=''
 unlike=''
 bodiless=''
-# The SHA-256 of an empty body.
-nothing=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 while [ "$row" -le "$total" ]; do
   # own: the body's SHA-256 of the edge's own 404 for this line, from its unrouted control; empty
   # for a line of six fields, and where the control did not answer 404 with no marker, read whole.
