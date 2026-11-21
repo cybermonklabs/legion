@@ -155,10 +155,10 @@ which is what the record can hold at all; `reviews_in_window`, every `artifact.a
 `artifact.changes_requested` row by the document's name and the acting kind, which is who
 agrees to a plan, to a spec and to a Verification document; and `results_in_window`, every
 `result.recorded` row by the role it names and the acting kind, which is who says a check
-passed.  `issues_resolved` is the number of issues the tree walks of comments and messages
-passed through.
+passed.  `issues_resolved` counts the issues the tree walks of comments and messages visited.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -247,23 +247,23 @@ def quote_matches(p):
     return out
 
 
-# What each paragraph of a text holds, keyed by the paragraph itself, so a paragraph a
-# document carries across many versions is matched once; the key is the whole text, never its
-# hash, which two paragraphs may share.  No match of the three patterns can cross a blank
-# line (a reference and a commit hold no white space, and a quotation is read a paragraph at
-# a time), so a text's matches are its paragraphs' matches in order.
+# What each paragraph of a text holds, so a paragraph a document carries across many versions
+# is matched once, keyed by its sha256 digest, 32 bytes: the text would keep every version's
+# paragraphs alive, and two paragraphs may share a hash().  No match of the three patterns
+# crosses a blank line (a reference and a commit hold no white space, and a quotation is read
+# a paragraph at a time), so a text's matches are its paragraphs' matches in order.
 PARA_CACHE = {}
 NO_MATCH = ((), frozenset(), frozenset())
 
 
 def paragraph_matches(p):
-    hit = PARA_CACHE.get(p)
+    hit = PARA_CACHE.get(key := hashlib.sha256(p.encode("utf-8", "surrogatepass")).digest())
     if hit is None:
         refs = tuple(PAT_REF.findall(p)) if "dispatch://" in p else ()
         shas = frozenset(PAT_SHA.findall(p))
         quotes = frozenset(quote_matches(p))
         hit = (refs, shas, quotes) if (refs or shas or quotes) else NO_MATCH
-        PARA_CACHE[p] = hit
+        PARA_CACHE[key] = hit
     return hit
 
 

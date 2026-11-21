@@ -4689,6 +4689,37 @@ grep -qxF "The fixture's count reads 12,617 rows [f-figure-1]." "$dir/judgement.
 honest_result "a sentence citing f-figure-1 that writes 12,617, grouped by thousands, passes citation-figures" citation-figures \
     "$(fixture_run "$dir" --citations)"
 
+# 157. A count.py the machine ends by a signal is no source that did not answer (the
+# architect's item of round 45 after the fresh-clone --replay of e54dbfa0). The pod's memory
+# guard killed that run's count.py at 09:08Z on 2026-11-21, and --replay ended 'check.sh
+# cannot run --replay: Dispatch, the feed of the count's window did not answer: ... Killed
+# python3 ... count.py', of the kind source, though no read of Dispatch had failed. The case
+# plants a count.py that kills its own process with SIGKILL before it prints anything, and
+# runs --replay, which must end exit 2, cannot run, every assertion it leaves of the kind
+# environment, its last line saying count.py was ended by signal 9 (SIGKILL) and that no
+# read of Dispatch failed. Either stop of --replay at the count is the case's own plant,
+# so a stop of the kind source there fails the case rather than leaving it unrun.
+KILLED_LINE='^check\.sh cannot run --replay: coordination/count\.py was ended by signal 9 \(SIGKILL\), so the count was not taken again, and no read of Dispatch failed$'
+dir="$(fresh count-killed)"
+cat >"$dir/repo/docs/research/internet-of-cognition/coordination/count.py" <<'PY'
+# A walker the machine ends by SIGKILL, as the pod's memory guard ended count.py: it kills its
+# own process before it reads or prints anything.
+import os
+import signal
+
+os.kill(os.getpid(), signal.SIGKILL)
+PY
+out="$(fixture_run "$dir" --replay)"
+killed_case="a count.py the machine ends by SIGKILL makes --replay cannot run, of the kind environment, saying no read of Dispatch failed"
+if ! case_read "$killed_case" "$out" "^check\\.sh cannot run --replay: (coordination/count\\.py was ended by signal|Dispatch, the feed of the count's window did not answer)"; then
+    :
+elif [ "$RUN_STATUS" = 2 ] && printf '%s\n' "$RUN_LINE" | grep -qE -- "$KILLED_LINE" &&
+    [ -n "$RUN_UNRUN" ] && ! printf '%s' "$RUN_UNRUN" | cut -f2 | grep -qvx environment; then
+    case_passed "$killed_case"
+else
+    case_failed "$killed_case" "exit $RUN_STATUS, kinds $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u | tr '\n' ' ')last line: $RUN_LINE"
+fi
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this

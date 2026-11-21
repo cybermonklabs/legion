@@ -39,13 +39,14 @@
 # history, the clone root) or a tool its ending is written with; gate, env.sh or the install
 # reader when it cannot load because env.sh is missing or python3 cannot start it, or a mode
 # that does not exist; environment, the environment env.sh builds from the package index and
-# the clones, or the run's own scratch and record (below); and source, the GitHub budget or a
-# live source the gate reads itself (the live-read rule below). What the evidence holds is
-# never such a reason: a line of claims.jsonl the one parse cannot read is a FAIL (below),
-# and a reader that loaded and then stopped is a failure of the gate. A run that cannot run
-# ends exit 2 with the reason as its last line, which names what is missing, and for a
-# missing prerequisite ends with what provides it; for --self-test it names the run of the
-# gate it made that could not run, ends with that run's own last line, and carries that
+# the clones, the run's own scratch and record (below), or the machine the run is on, as
+# when it ends coordination/count.py by a signal (count_load); and source, the GitHub budget
+# or a live source the gate reads itself (the live-read rule below). What the evidence holds
+# is never such a reason: a line of claims.jsonl the one parse cannot read is a FAIL
+# (below), and a reader that loaded and then stopped is a failure of the gate. A run that
+# cannot run ends exit 2 with the reason as its last line, which names what is missing, and
+# for a missing prerequisite ends with what provides it; for --self-test it names the run of
+# the gate it made that could not run, ends with that run's own last line, and carries that
 # run's kind. One more kind marks an assertion that was not judged without ending a run
 # exit 2: evidence, each assertion --replay leaves after it failed claim-form on a row
 # env.sh reads a value from, since env.sh builds what every recorded command reads from
@@ -1404,17 +1405,24 @@ PY
 # found", "No block", "no version N of", "document ... not found", or its refusal to read a
 # reference it does not take ("dispatch read was not called"), each measured against
 # Dispatch on 2026-11-15, each with or without the refusal's code before it ("NOT_FOUND: not
-# found"), which the CLI of the worker image printed from 2026-11-17. Anything else that
-# fails, a Dispatch that is unreachable, a curl or git transport error, a count.py that
-# raised on a read and exited non-zero, is no answer at all: the mode cannot run, and it
-# ends here, naming the source, exit 2, or exit 1 after a FAIL, by the precedence of the
-# header.
+# found"), which the CLI of the worker image printed from 2026-11-17. A command that failed
+# for the run's own machine and not for the source writes as the first line of its stderr
+# "check.sh stop environment: " and what happened, as count_run does for a count.py the
+# machine ended by a signal: the mode cannot run, of the kind environment, its last line
+# that line's rest, and the source is not named as one that did not answer. Anything else
+# that fails, a Dispatch that is unreachable, a curl or git transport error, a count.py that
+# raised on a read and exited non-zero, is no answer at all: the mode cannot run, of the kind
+# source, and it ends here, naming the source, exit 2, or exit 1 after a FAIL, by the
+# precedence of the header.
 LIVE_ANSWER_NO='^(NOT_FOUND: )?(not found$|No block |no version [0-9]+ of |document "[^"]*" not found|dispatch [a-z-]+ was not called)'
+LIVE_STOP_ENVIRONMENT='check.sh stop environment: '
 live_read() {
-    local source="$1" file="$2"
+    local source="$1" file="$2" stop
     shift 2
     "$@" >"$file" 2>"$file.err" && return 0
     head -1 "$file" "$file.err" 2>/dev/null | grep -qE "$LIVE_ANSWER_NO" && return 1
+    stop="$(head -1 "$file.err" 2>/dev/null)"
+    [[ "$stop" == "$LIVE_STOP_ENVIRONMENT"* ]] && cannot_run environment " --$MODE: ${stop#"$LIVE_STOP_ENVIRONMENT"}"
     cannot_run source " --$MODE: $source did not answer: $(cat "$file" "$file.err" 2>/dev/null | head -c 240 | tr '\n' ' ')"
 }
 
@@ -4704,17 +4712,33 @@ replay_our_data() {
 # nothing on stdout, which is the feed not answering: the mode cannot run, exit 2, or
 # exit 1 after a FAIL, by the precedence of the header, and no assertion over the count
 # is judged. Its reason is the last line of count.py's traceback, the error it raised,
-# which count_run hands live_read in place of the frames above it. A document version
-# the deployment no longer holds is no failed read: count.py counts it as unreadable,
-# and the count it prints then differs. A count.py that is not there is not run, and
-# count-reruns fails naming it. The run takes about twelve minutes against Dispatch:
-# 721 seconds, measured on 2026-11-18.
+# which count_run hands live_read in place of the frames above it. A count.py the machine
+# ended by a signal, a status above 128, as the pod's memory guard ends one with SIGKILL,
+# made no read that failed: count_run writes "check.sh stop environment:
+# coordination/count.py was ended by signal N (SIGNAME), so the count was not taken again,
+# and no read of Dispatch failed" as the first line of its stderr, and live_read ends the
+# mode cannot run, of the kind environment, with that line, never as Dispatch not
+# answering. A document version the deployment no longer holds is no failed read: count.py
+# counts it as unreadable, and the count it prints then differs. A count.py that is not
+# there is not run, and count-reruns fails naming it. The run takes about twelve minutes
+# against Dispatch: 721 seconds, measured on 2026-11-18.
 count_load() {
     [ -f "$EVIDENCE/coordination/count.py" ] || return 0
     live_read "Dispatch, the feed of the count's window" "$RUN_SCRATCH/count-rerun.json" count_run || :
 }
+# count_run; runs count.py, its stderr into the trace. The braces hold bash's own report of a
+# child it reaped dead of a signal ("line N: PID Killed ...") inside the trace too, so the
+# first line of count_run's stderr is the line it writes.
 count_run() {
-    python3 "$EVIDENCE/coordination/count.py" 2>"$RUN_SCRATCH/count-rerun.trace" && return 0
+    local status signal name
+    { python3 "$EVIDENCE/coordination/count.py"; } 2>"$RUN_SCRATCH/count-rerun.trace" && return 0
+    status=$?
+    if [ "$status" -gt 128 ]; then
+        signal=$((status - 128))
+        name="$(kill -l "$signal" 2>/dev/null)" && name="SIG$name" || name="a signal of no name"
+        printf 'check.sh stop environment: coordination/count.py was ended by signal %s (%s), so the count was not taken again, and no read of Dispatch failed\n' "$signal" "$name" >&2
+        return 1
+    fi
     tail -1 "$RUN_SCRATCH/count-rerun.trace" >&2
     return 1
 }
