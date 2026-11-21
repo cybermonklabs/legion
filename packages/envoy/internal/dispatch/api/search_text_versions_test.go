@@ -337,7 +337,9 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 //
 // The fill is still catching up when the read turns slow because the test holds it there: a
 // share lock on search_text_versions, which only the fill writes, holds the fill's first batch at
-// its insert until the read is slow, and is then released, so that batch is the one in flight.
+// its insert until the read is slow, and is then released, so that batch is the one in flight. If
+// the batch's own 5 s lock_timeout ends its wait first, the pass fails and the fill retries it a
+// second later, and the retry asks the pause before it writes, so the pause holds that batch.
 // The fill asks the pause before each batch, and one with nothing left to write asks nothing, so
 // a fill left to run on its own was caught up before the read turned slow wherever its batches
 // are quicker than the read takes to turn slow: on a fast machine all 4,000 events were written
