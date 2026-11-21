@@ -890,6 +890,40 @@ test("a trade refused after its holder lost the lock is one a later trade cures,
   }
 });
 
+test("a trade traded again after a refusal is retryable too when the lock was lost meanwhile", async () => {
+  // The kept token is refused under the holder's own lock, so the holder refreshes and trades
+  // again; it stopped before that second answer, and another process took the lock and
+  // refreshed. The second refusal is then the new holder's doing, and a later trade cures it.
+  const stub = broker();
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url, {
+    access_token: fixtureSecret("access"),
+    access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+  });
+  const identity = new DeviceLoginIdentity({ path, brokerUrl: stub.url });
+  let trades = 0;
+  const refusal = await identity
+    .spend(async () => {
+      trades += 1;
+      if (trades === 2) await writeFile(`${path}.lock`, "another process that took the lock over");
+      throw new BrokerRefusedError(
+        400,
+        "invalid_request",
+        "Token is not valid or has expired.",
+        "this machine's device login"
+      );
+    })
+    .then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+  expect(trades).toBe(2);
+  expect(stub.refreshes).toHaveLength(1);
+  expect(isFinalRefusal(refusal)).toBe(false);
+  expect(refusal?.message).toContain("lock beside");
+  await Bun.file(`${path}.lock`).delete();
+});
+
 test("a kept access token the broker refuses is refreshed at once, and traded again", async () => {
   // Another process's refresh made the token this file keeps one the broker refuses: a refresh
   // now gets a token it honours, and the trade goes through.

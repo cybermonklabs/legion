@@ -824,9 +824,10 @@ export class DeviceLoginIdentity implements TokenSource {
    * the lock is still this process's (`refreshDeviceLogin`'s `held`).
    *
    * A trade made under a lock another caller took from this one while it was stopped may be
-   * refused: the new holder's refresh revoked its token. That refusal, refreshed first or not, is
-   * the retryable {@link lockLost}, which a later trade cures by reading the login the new holder
-   * kept; a refusal under a lock still held after a refresh just made is the broker's, and final.
+   * refused: the new holder's refresh revoked its token. That refusal, at the first trade or at
+   * the one made again after a refresh, is the retryable {@link lockLost}, which a later trade
+   * cures by reading the login the new holder kept; a refusal under a lock still held after a
+   * refresh just made is the broker's, and final.
    *
    * `signal` ends the wait for the lock, as `LockHeldError`, which names the lock, since nothing
    * was sent. A refresh does not run on it: it waits on deadlines of its own.
@@ -850,20 +851,20 @@ export class DeviceLoginIdentity implements TokenSource {
         const refresh = (): Promise<DeviceLogin> =>
           refreshDeviceLogin(this.#path, login, { describe: this.describe(), held });
         const expires = login.accessExpiresAt?.getTime() ?? 0;
-        const due = login.accessToken === "" || expires - Date.now() < ACCESS_MARGIN_MS;
-        if (due) login = await refresh();
-        const subject = (): SubjectToken => ({
-          token: login.accessToken,
-          tokenType: SUBJECT_TYPE_ACCESS,
-        });
-        try {
-          return await trade(subject());
-        } catch (error) {
-          if (!subjectRefused(error)) throw error;
-          if (!(await held())) throw lockLost();
-          if (due) throw error;
-          login = await refresh();
-          return await trade(subject());
+        let refreshed = login.accessToken === "" || expires - Date.now() < ACCESS_MARGIN_MS;
+        if (refreshed) login = await refresh();
+        // At most two trades and one refresh: a refused token is refreshed once, unless it was
+        // just refreshed. Each refusal is read the same way: after a lost lock it is retryable.
+        while (true) {
+          try {
+            return await trade({ token: login.accessToken, tokenType: SUBJECT_TYPE_ACCESS });
+          } catch (error) {
+            if (!subjectRefused(error)) throw error;
+            if (!(await held())) throw lockLost();
+            if (refreshed) throw error;
+            login = await refresh();
+            refreshed = true;
+          }
         }
       },
       { signal }
