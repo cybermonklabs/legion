@@ -1064,7 +1064,7 @@ func parseRulesFile(path string) (proxyrules.Rules, error) {
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
 // "LEGION-SLACK-BOT-TOKEN" matches no release at all: the broker would hand the command the real
 // value of the very secret the file was reviewed as holding back. The check is here rather than
-// in proxyrules.Validate because the airlock knows nothing of how a secret is named under the
+// in proxyrules.Validate because that package knows nothing of how a secret is named under the
 // policy's prefix, and config.go refuses BROKER_AZURE_LOGIN_SECRET by the same NameToSlug.
 func validateRulesFile(rules proxyrules.Rules) error {
 	for i, s := range rules.Secrets {
@@ -1099,7 +1099,7 @@ const maxGuidanceRunes = 2000
 // every secret. Anything else refuses the boot: a path that cannot be read, a file proxyrules.Parse
 // will not read as JSON (whose refusal names the parse position), and a file validateRulesFile
 // refuses (whose refusal names the entry). Each refusal names the variable beside what that
-// reader said about the file, since the airlock package names a rules file no way but by its
+// reader said about the file, since the proxyrules package names a rules file no way but by its
 // contents. Extracted from main so a test can drive it without exiting the test process.
 func readAirlockRules(path string) (proxyrules.Rules, error) {
 	if path == "" {

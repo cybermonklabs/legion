@@ -1093,9 +1093,10 @@ check_k5() {
 		"the stored secret's second call carries the new value, and every call succeeds" \
 		"the first call carried the old value and the second the new one, by SHA-256 and length; the two answered $K5_FIRST_STATUS and $K5_SECOND_STATUS"
 
-	# The google-login half. The stack's Google stand answers one fixed access token and a
-	# lifetime of an hour, so nothing here can make the proxy mint again after three minutes,
-	# and two mints could not be told apart if it did.
+	# The google-login half. The stack's Google stand answers a new numbered access token at
+	# each refresh, with the 7-minute lifetime dev-airlock.sh gives it, so the proxy's
+	# five-minute margin falls due before the second call three minutes on, which must carry a
+	# fresh mint.
 	local google_before google_after first_status second_status s_mark got_first got_second recs
 	google_before="$(records_count google)"
 	s_mark="$(records_count s)"
@@ -1109,7 +1110,7 @@ check_k5() {
 	got_second="$(printf '%s' "$recs" | jq -r '[.[] | .header.Authorization // [] | .[]] | .[1] // ""')"
 	observe "the google-login secret: the call at once answered $first_status carrying $(shape "$got_first"), and the one three minutes later $second_status carrying $(shape "$got_second"); the stand-in minter was asked $((google_after - google_before)) times"
 	if [ "$got_first" = "$got_second" ]; then
-		fail "the google-login secret's second call carries the new value — this step cannot run on this stack. dev-airlock.sh's Google stand answers one fixed access token ('the-stand-in-google-access-token') with a lifetime of an hour, so the proxy's five-minute margin never falls due within three minutes, and two mints could not be told apart if it did. It needs dev-airlock.sh to pass --google-lifetime 7m to dev-airlock-stands and airlocktest.GoogleStand to answer a different token for each mint. Here the minter was asked $((google_after - google_before)) times, both calls answered $first_status and $second_status, and the two carried one value by SHA-256 and length."
+		fail "the google-login secret's second call carries the new value — it carried the first call's. The stand answers a new numbered access token at each refresh, with the 7-minute lifetime dev-airlock.sh gives it, so the proxy's five-minute margin falls due two minutes after the first mint and the call three minutes on should have carried a fresh one. Here the minter was asked $((google_after - google_before)) times, both calls answered $first_status and $second_status, and the two carried one value by SHA-256 and length."
 	else
 		judge "$([ "$first_status" = 200 ] && [ "$second_status" = 200 ] && echo 0 || echo 1)" \
 			"the google-login secret's second call carries the new value, and every call succeeds" \

@@ -13,7 +13,7 @@ lines, its only comments are the lines of the blocks .github/scripts/check-ci-fi
 .github/scripts/check-ts-filters.sh write. A comment of it that said which files a job reads
 was deleted, since the filter beneath it is that record.
 In the text moved here, "this file" and "this workflow" refer to `.github/workflows/ci.yaml`,
-where every one of these comments stood before this change, the filters' comments among them.
+where every one of these comments first stood, the filters' comments among them.
 
 ## How a filter of the filters file is written
 
@@ -194,7 +194,7 @@ worker_image name it too and the image check, .github/scripts/check-image-trigge
 
 The airlock's rules, its decision and its header swap. Not the whole tree: lean/
 holds the model, which airlock-lean alone reads, and testdata/ the fuzz seeds and
-the mutant patches, which the airlock package's own tests read - the daemon
+the mutant patches, which the proxyrules package's own tests read - the daemon
 compiles that package without running them.
 
 ## daemon_envoy_deps: The daemon reads the Envoy session timings (heartbeat
@@ -694,7 +694,7 @@ that run the tests: the chat client and the router.
 
 The Lean model of the airlock and the Go code it covers (airlock-lean): `lake build`
 and the axiom print read the model's own project, and the two fuzz runs compile the
-airlock package and compare it against the model's program, so a change to either
+proxyrules package and compare it against the model's program, so a change to either
 side runs the job. Both sides live under internal/cipher/proxyrules, which one glob
 names, and the Go side also compiles internal/fold, the case fold it compares names
 in; the axiom check is a script of its own, which check k15 runs too; the Lean

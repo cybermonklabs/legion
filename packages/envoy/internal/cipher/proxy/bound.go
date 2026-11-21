@@ -270,7 +270,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// The three names the decision compares are ASCII lower-cased, as the entry's hosts
 		// are: host names are case-insensitive and the model compares them exactly, so a
 		// client that wrote "API.example.com" in one of the three is not a mismatch. The fold
-		// is fold.ASCII, ASCII-only for the reason the airlock package gives.
+		// is fold.ASCII, ASCII-only for the reason the proxyrules package gives.
 		SNI:        fold.ASCII(sniOf(r)),
 		HostHeader: fold.ASCII(hostHeaderOf(r.Host)),
 		Method:     r.Method,
@@ -411,7 +411,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		header, rawQuery = signed, signedQuery
 	} else {
 		// The swap first, and the decision only to explain a refusal. Decide and Rewrite take
-		// the one decision (airlock.check), which is deterministic and has no side effect, so
+		// the one decision (proxyrules.check), which is deterministic and has no side effect, so
 		// Rewrite answers nil for exactly the requests Decide refuses: running it first costs
 		// an allowed swap - the commonest request the proxy serves - one decision rather than
 		// two, and leaves the refusal, the order its reasons are reported in and the 403

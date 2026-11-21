@@ -166,9 +166,9 @@ function tradeUnanswered(source: string, deadlineMs: number): string {
  * HTTP status, OAuth code and what it said where that is one of its known refusals, else "(its
  * text is withheld)" (`BrokerRefusedError.said`: a peer at AGENT_SECRETS_URL can put the subject
  * token it was sent in its text); a trade the token client's retry loop is still trading again is
- * broker-client's own line for its last failure, naming the session where its registration is
+ * cipher-client's own line for its last failure, naming the session where its registration is
  * pending (`RegistrationPendingError`, `TradeRetryingError`); a trade that got no answer, or an
- * answer that is not the grant's, is broker-client's own text, which names the broker as
+ * answer that is not the grant's, is cipher-client's own text, which names the broker as
  * `urlForText` does and the failure by its class (`BrokerTradeFailedError`); a closed client is
  * its own words (`TokenClientClosedError`); an ended sign-in is its remedy; and any other failure
  * goes by `natsFailureReason`'s allowlist, which prints this package's own reasons
