@@ -314,10 +314,10 @@ func unguardedReplacementSample(t *testing.T, registry *metrics.Registry) string
 	return ""
 }
 
-// uploadFromClient posts one upload to the issue as alice, its User-Agent the one a client's
-// runtime sends: the inline body `dispatch artifact --content-file` sends when form is nil, else
-// the multipart form `--path` sends, with form as its fields and content as its file.
-func uploadFromClient(t *testing.T, handler http.Handler, issueKey, userAgent string, body map[string]any, form map[string]string, content string) *httptest.ResponseRecorder {
+// uploadFromClient posts one upload to the issue as alice: the inline body `dispatch artifact
+// --content-file` sends when form is nil, else the multipart form `--path` sends, with form as
+// its fields and content as its file.
+func uploadFromClient(t *testing.T, handler http.Handler, issueKey string, body map[string]any, form map[string]string, content string) *httptest.ResponseRecorder {
 	t.Helper()
 	var request *http.Request
 	if form == nil {
@@ -336,7 +336,6 @@ func uploadFromClient(t *testing.T, handler http.Handler, issueKey, userAgent st
 		request.Header.Set("Content-Type", bodyType)
 	}
 	request.Header.Set("X-Dispatch-User", "alice")
-	request.Header.Set("User-Agent", userAgent)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response
@@ -346,8 +345,8 @@ func uploadFromClient(t *testing.T, handler http.Handler, issueKey, userAgent st
 // because no deployed `dispatch` client can name a token on `dispatch artifact`; #3000 refused it
 // 400 PRECONDITION_REQUIRED and wrote nothing, which refused every agent's replacement of a
 // document. Both shapes a client uploads in are driven, the inline body and the multipart form.
-// Each one stored is counted on /metrics and logged with its caller and the User-Agent its client
-// sent, so the refusal can come back once no client sends one without a token. A replacement
+// Each one stored is counted on /metrics and logged with its caller, so the refusal can come back
+// once no client sends one without a token. A replacement
 // naming the live token is checked and taken and is not counted, and a first upload replaces
 // nothing and is not counted either.
 func TestUploadReplacingADocumentWithNoTokenIsTakenCountedAndLogged(t *testing.T) {
@@ -362,14 +361,14 @@ func TestUploadReplacingADocumentWithNoTokenIsTakenCountedAndLogged(t *testing.T
 	}
 
 	for _, upload := range []struct {
-		shape, userAgent, markdown string
-		form                       map[string]string
+		shape, markdown string
+		form            map[string]string
 	}{
-		{shape: "inline", userAgent: "Bun/1.2.19", markdown: "# Notes\n\ninline\n"},
-		{shape: "multipart", userAgent: "Bun/1.2.20", markdown: "# Notes\n\nform\n", form: map[string]string{"name": "notes.md"}},
+		{shape: "inline", markdown: "# Notes\n\ninline\n"},
+		{shape: "multipart", markdown: "# Notes\n\nform\n", form: map[string]string{"name": "notes.md"}},
 	} {
 		versionsBefore := uploadedVersionCount(t, database, artifactID)
-		answer := uploadFromClient(t, handler, issue.Key, upload.userAgent,
+		answer := uploadFromClient(t, handler, issue.Key,
 			map[string]any{"name": "notes.md", "content": upload.markdown}, upload.form, upload.markdown)
 		if answer.Code != http.StatusCreated {
 			t.Fatalf("the %s replacement naming no token = %d (want 201), body=%s", upload.shape, answer.Code, answer.Body.String())
@@ -401,11 +400,14 @@ func TestUploadReplacingADocumentWithNoTokenIsTakenCountedAndLogged(t *testing.T
 	if len(lines) != 2 {
 		t.Fatalf("%d lines logged the replacements naming no token, want 2: %s", len(lines), logs.String())
 	}
-	for index, userAgent := range []string{"Bun/1.2.19", "Bun/1.2.20"} {
-		for _, want := range []string{"artifact=" + artifactID, "caller_kind=user", "caller=alice", "user_agent=" + userAgent} {
-			if !strings.Contains(lines[index], want) {
-				t.Fatalf("the log line of replacement %d = %q, want it to hold %q", index+1, lines[index], want)
+	for index, line := range lines {
+		for _, want := range []string{"artifact=" + artifactID, "caller_kind=user", "caller=alice"} {
+			if !strings.Contains(line, want) {
+				t.Fatalf("the log line of replacement %d = %q, want it to hold %q", index+1, line, want)
 			}
+		}
+		if strings.Contains(line, "user_agent") {
+			t.Fatalf("the log line of replacement %d = %q, want no request header in it", index+1, line)
 		}
 	}
 }

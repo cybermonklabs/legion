@@ -216,7 +216,7 @@ func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration,
 		"caller", Clip(id),
 		"address", Clip(auth.ForwardedAddress(r)),
 		"peer", peerAddress(r),
-		"user_agent", UserAgent(r),
+		"user_agent", Clip(r.UserAgent()),
 		"status", status,
 		"elapsed_ms", elapsed.Milliseconds(),
 		"bytes", rec.written,
@@ -238,10 +238,6 @@ func peerAddress(r *http.Request) string {
 	}
 	return Clip(r.RemoteAddr)
 }
-
-// UserAgent is the request's User-Agent as the access log records it, cut to fieldBytes: a line
-// another package logs about the same request names its client the way this one does.
-func UserAgent(r *http.Request) string { return Clip(r.UserAgent()) }
 
 // Clip cuts caller-written text to fieldBytes, dropping a rune the cut splits: a line another
 // package logs about a request cuts the caller's own fields as this one does.

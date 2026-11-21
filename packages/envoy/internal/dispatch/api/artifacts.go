@@ -914,7 +914,7 @@ func (s *server) storeArtifact(
 		return
 	}
 	if kind == "doc" && !created && input.precondition == nil {
-		s.noteUnguardedReplacement(r, artifact, actor)
+		s.noteUnguardedReplacement(artifact, actor)
 	}
 	if kind == "doc" {
 		// The seeded or replaced text was written inside this transaction, which suppresses
