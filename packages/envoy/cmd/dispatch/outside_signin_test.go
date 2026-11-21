@@ -202,9 +202,10 @@ func requirePlainNoIdentity(t *testing.T, what string, recorder *httptest.Respon
 // as a path no route serves does. At the canonical origin the Google sign-in of outsiderEmail, whom
 // PRIV's access list names directly, gets the 403 page saying it is not in the domain, no session
 // cookie and no people row, and alice, an account of example.com, signs in.
-// TestTheOutsideOriginServesNoGoogleSignIn is the same row with passkey sign-in on, and
-// TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff with it turned off on a database that had
-// it on.
+// With passkey sign-in on, TestTheOutsideOriginServesNoGoogleSignIn holds the outside origin's 404s
+// and the canonical start, and TestAGoogleSignInOfAListedOutsiderIsRefusedWithPasskeysOn the
+// refusal; TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff holds the 404s with the setting
+// turned off on a database that had it on.
 //
 // Control: serve the Google sign-in at the outside origin while passkey sign-in is off
 // (googleSignInHere refusing it only beside Passkeys), and the outside origin's /auth/start answers
