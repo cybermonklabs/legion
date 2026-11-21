@@ -367,10 +367,18 @@ runtime:
     #   user: legion-sessions@example-project.iam   # required. The IAM database login that each pod signs in as.
     #   impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com   # optional.
     #                                  # The proxy in each pod acts as (impersonates) this Google service
-    #                                  # account. It uses the pod's own credentials to do this. It signs in
-    #                                  # to Cloud SQL as this account. Then user must be the login of this
-    #                                  # account: its email without .gserviceaccount.com. Without this
-    #                                  # member, each pod signs in with its own identity.
+    #                                  # account. Without writer_audience, it uses the pod's own
+    #                                  # credentials to do this. It signs in to Cloud SQL as this account.
+    #                                  # Then user must be the login of this account: its email without
+    #                                  # .gserviceaccount.com. Without this member, each pod signs in with
+    #                                  # its own identity.
+    #   writer_audience: //iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster   # optional.
+    #                                  # The full resource name of a workload identity provider. It is
+    #                                  # the audience of a token that only the launcher in each pod
+    #                                  # reads. The proxy exchanges this token at Google's security
+    #                                  # token service, and impersonates impersonate_service_account
+    #                                  # with the result. It does not use the pod's own credentials.
+    #                                  # This member requires impersonate_service_account.
     # resources:                       # two keys, each a pod's reservation: issue, every issue pod's (its one
     #   issue: { memory: 32Gi, memory_request: 19Gi }   # roles container and both init containers), and
     #   controller: { cpu: 2, memory: 8Gi }  # controller, the daemon-launched controller's pod's (controller:

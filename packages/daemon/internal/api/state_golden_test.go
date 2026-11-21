@@ -1119,17 +1119,18 @@ func TestStateGolden(t *testing.T) {
 }
 
 // The state route's body for a caller whose plugin is at the contract before
-// repositoriesLiveContract, 199, asking from a pod whose claims record it and stating it in
+// repositoriesLiveContract, 201, asking from a pod whose claims record it and stating it in
 // `Legion-Plugin-Contract`, as every plugin from shapedAnswersContract on does: the state golden's
-// own state, asked through the route itself. 199 is no contract SupportedContracts records, so the
-// caller is served at 193, the recorded contract below it (recordedContractAtOrBelow), which the
+// own state, asked through the route itself. 201 is no contract SupportedContracts records, so the
+// caller is served at 199, the recorded contract below it (recordedContractAtOrBelow), which the
 // mark names: its `repositories` block in the shape contract 152 gave it, written from the same
-// entries (withoutRepositoriesLive), and every other key as a caller at 193 is served it, since no
-// other row of stateNarrowings stands above 193. shapedAnswersContract's row and pauseContract's
-// stand at or below it, which is why the golden carries `lowestPluginContract`, each claim view's
-// `updateState` and `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a copy of
-// contract 152's schema of the block, so the narrowing is held to the reader it is written for,
-// and its drift gate holds every key of the file to that copy.
+// entries (withoutRepositoriesLive), and every other key as a caller at 199 is served it, since no
+// other row of stateNarrowings stands above 199. 199 moved no answer's shape, so those are the
+// keys a caller at 193 is served too. shapedAnswersContract's row and pauseContract's stand below
+// it, which is why the golden carries `lowestPluginContract`, each claim view's `updateState` and
+// `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's
+// schema of the block, so the narrowing is held to the reader it is written for, and its drift
+// gate holds every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
 	body := stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1)

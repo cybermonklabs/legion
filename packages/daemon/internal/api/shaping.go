@@ -954,7 +954,7 @@ const repositoryAppsContract = 152
 const pauseContract = 178
 
 // repositoriesLiveContract is the daemon contract that made the state's `repositories` block the
-// repositories the project's live records name (version.go's 200, dispatch://INFRA-4401): `live`,
+// repositories the project's live records name (version.go's 202, dispatch://INFRA-4401): `live`,
 // one entry per repository with what GitHub and Dispatch answered of it, beside `caches` and
 // `withoutWebhookApp`, which it keeps in contract 152's shape for every caller, in place of
 // `owners`, `mapped` and `refused`. A plugin before it reads the block with the schema of contract
@@ -963,16 +963,17 @@ const pauseContract = 178
 // contract 152's shape, written from the same entries (withoutRepositoriesLive), and every other
 // caller the block this contract writes. shapedAnswersContract stands below it with no row of
 // stateNarrowings between the two, so a caller at or above shapedAnswersContract and below this
-// contract, 193 to 199, is served 193's keys and the block in contract 152's shape. The block's
-// one enumerated field, the cache's `state` at `repositories.live.*.cache.state`, arrived with it
-// (answers.go's liveCacheStates), so the band takes every value of it off with the key and no
-// value strip is owed.
+// contract, 193 to 201, is served the block in contract 152's shape: one from 193 to 198 is served
+// 193's keys, and one from 199 to 201 is served those of 199, the recorded contract at or below
+// it, which are the same keys on this route. The block's one enumerated field, the cache's
+// `state` at `repositories.live.*.cache.state`, arrived with it (answers.go's liveCacheStates), so
+// the band takes every value of it off with the key and no value strip is owed.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
 // with this change's own number, and it is the last number of answers.go's SupportedContracts,
 // which names the constant rather than its number for that reason.
-const repositoriesLiveContract = 200
+const repositoriesLiveContract = 202
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a

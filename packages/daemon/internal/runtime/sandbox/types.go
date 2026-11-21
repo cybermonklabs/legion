@@ -262,7 +262,11 @@ type Options struct {
 	// impersonate where the store names one (sessionProxyFlags), proxies a socket of each
 	// generation's own to Cloud SQL as the pod itself or, impersonating it with the pod's own
 	// credentials, as that account, and writes the URL file in that generation's private
-	// directory.
+	// directory. Where the store names a writer audience too, the launcher is told it, the pod
+	// carries the projected token of that audience under RolesDir (sessionWriterVolumes), and the
+	// launcher impersonates the account with that token in place of the pod's own credentials; the
+	// controller's pod then runs the launcher's roles-dir form, so no role's process reads the
+	// token (controllerPod.launcherContainer).
 	SessionStore ompsessions.Store
 	// Agent is the command the shim wraps, before the Oh My Pi arguments the runtime appends
 	// (`--extension <envoy plugin> --extension <legion plugin> --model @default`, `--resume`,
