@@ -7414,7 +7414,8 @@ function commentCreated(
   body: string,
   editedAt: string | null
 ): Extract<DispatchEvent, { type: "comment.created" }> {
-  const alice: Actor = { id: "alice", kind: "user" };
+  // A person, typed as the event's actor union reads one (its kind a literal).
+  const alice = { id: "alice", kind: "user" } as const;
   return {
     actor: alice,
     created_at: "2026-09-09T00:00:00Z",
