@@ -1285,7 +1285,7 @@ filter (dispatch://INFRA-1413).
 
 The session message-wait suite, in a job of its own: it is the one test of the test job
 that needs a database, and a Postgres service there would start one for every change
-that selects any of that job's thirty-two harness steps.
+that selects any of that job's harness steps.
 
 ## One output per test.sh step of the test job
 
@@ -1630,7 +1630,7 @@ needs are declared here. `contents: read` is its checkout's; `actions: read` and
 The session message-wait suite, which creates a session-store database of its own and
 refuses without one. It was a step of the test job until dispatch://INFRA-1413: the one step
 of that job that needs a database, which is why it has one here instead of a Postgres
-service on a job whose other thirty-odd steps would start it for nothing.
+service on a job whose other steps would start it for nothing.
 
 ## The dashboard's and the proof editor's lint, typecheck, unit tests, build and
 

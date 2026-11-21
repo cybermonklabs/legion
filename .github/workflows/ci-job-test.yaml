@@ -216,6 +216,12 @@ on:
           dispatch-browser-latest-blobs.test.sh and what it tests.
         type: string
         required: true
+      dispatch_browser_reading_rows_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.dispatch_browser_reading_rows_test:
+          dispatch-browser-reading-rows.test.sh and what it tests.
+        type: string
+        required: true
       dispatch_browser_run_reads_test:
         description: >-
           ci.yaml's needs.changes.outputs.dispatch_browser_run_reads_test:
@@ -271,7 +277,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # No step here carries a -timeout of its own any more: the two go test steps that did, and
     # the Stage 1 proof beside them, are .github/workflows/ci-job-daemon-go.yaml's now. What is
-    # left is the Bun install, the Claude Code plugin build, the thirty-two shell-script harnesses
+    # left is the Bun install, the Claude Code plugin build, the shell-script harnesses
     # and a handful of Bun suites — the 325 s of setup dispatch://INFRA-1052 measured before the
     # plain Go step started, less the tool installs that went with those steps. Thirty minutes is
     # about six times that, which leaves a slow runner room and still fails a hung harness inside
@@ -495,6 +501,14 @@ jobs:
       - name: Test the browser lane's blob attempt selection
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_latest_blobs_test == 'true'
         run: .github/scripts/dispatch-browser-latest-blobs.test.sh
+
+      # Reading one of dispatch-browser.yaml's merge job, run through that job's own call over
+      # fixture blob directories and a stand-in for its jobs read: what it says of the legs for
+      # each way its download and selection steps can end, a download that never ran among them,
+      # which it once reported as legs that sent no blob (run 44754426131, attempt 1).
+      - name: Test the browser lane's reading of its rows
+        if: inputs.changes-result != 'success' || inputs.dispatch_browser_reading_rows_test == 'true'
+        run: .github/scripts/dispatch-browser-reading-rows.test.sh
 
       # The merge job's two reads of its own run, driven under a stand-in gh: the attempt route
       # the jobs read takes, the retry ladder's attempts and the waits between them, and the two

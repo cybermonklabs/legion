@@ -2526,6 +2526,13 @@ SCRIPT_TEST_GATES = [
             f"{SCRIPTS}/dispatch-browser-latest-blobs.test.sh", [
         (f"{SCRIPTS}/dispatch-browser-latest-blobs.sh", "the script under test"),
     ]),
+    harness("dispatch_browser_reading_rows_test", "Test the browser lane's reading of its rows",
+            f"{SCRIPTS}/dispatch-browser-reading-rows.test.sh", [
+        (f"{SCRIPTS}/dispatch-browser-reading-rows.sh", "the script under test"),
+        (".github/workflows/dispatch-browser.yaml",
+         "the harness runs the script through the merge job's own call, the run: line of the step "
+         "\"Reading one, the rows\", and reads that the selection step carries the id it passes"),
+    ]),
     harness("dispatch_browser_run_reads_test", "Test the browser lane's run reads",
             f"{SCRIPTS}/dispatch-browser-run-reads.test.sh", [
         (f"{SCRIPTS}/dispatch-browser-run-reads.sh", "the script under test"),
@@ -2733,7 +2740,7 @@ GATES = [
     ) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod")),
 
     # What is left of the test job once the daemon's Go suite and the private-name port harness
-    # have jobs of their own: the Claude Code plugin build, the changelog fold, about thirty
+    # have jobs of their own: the Claude Code plugin build, the changelog fold, the
     # script harnesses - each behind a gate of its own below (SCRIPT_TEST_GATES), whose reads
     # this gate carries too, since the job must be selected for the step to run in it - and the
     # Bun suites of scripts/. Two go commands are left, the builds Bun tests start: the listener's,
@@ -2799,7 +2806,7 @@ GATES = [
     # job that needs a database (scripts/sessions/__tests__/message-wait.test.ts:20-28 refuses
     # without LEGION_TEST_PG_DSN, since a store it cannot measure is a measurement of nothing),
     # and a Postgres service on the test job would start one for every change that selects any
-    # of its thirty-two harness steps. The test reads the script it spawns and nothing else: both
+    # of its harness steps. The test reads the script it spawns and nothing else: both
     # are under scripts/sessions, and both import node: builtins and bun alone, so the job
     # installs no dependencies and this filter names no lockfile.
     gate("sessions_script", SESSIONS_JOB, reads=reads(
