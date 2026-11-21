@@ -18,10 +18,11 @@ import (
 )
 
 // A root architect whose human decided no change at the design gate ends its tree while the root
-// is admitted: the daemon writes done to Dispatch with the architect's reason, which the write
-// posts first, and the tree lingers as any close does. The journal follows the tree: the close with
-// its status, the linger armed, and, once it expires, the linger's close. The Dispatch event the
-// daemon's own write brings back changes nothing and logs nothing more.
+// is admitted: the daemon queues its own close, done with the architect's reason, whose row posts
+// the reason on the issue (after the close_root route's own done write in Dispatch), and the tree
+// lingers as any close does. The journal follows the tree: the close with its status, the linger
+// armed, and, once it expires, the linger's close. The Dispatch event the daemon's own write
+// brings back changes nothing and logs nothing more.
 func TestAnArchitectClosesItsAdmittedRootBeforeItsFirstPhase(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
@@ -150,6 +151,55 @@ func TestCloseRootIsRefusedOnceATreeHasStartedOrForAChild(t *testing.T) {
 			assertOutboxCount(t, pool, "dispatch_status", 0)
 			assertOutboxCount(t, pool, "linger_close", 0)
 		})
+	}
+}
+
+// The close_root route writes done in Dispatch before it applies its fact, so the event of that
+// write can reach the record first and leave the tree, as any close Dispatch shows does. The fact
+// then finds the close made: it posts the architect's reason, which that leave did not post, and is
+// taken, queueing no second close. The same fact naming no write of its own, a close no route
+// wrote first, is refused as a close of a tree already leaving.
+func TestACloseRootWhoseOwnDoneWriteReachedTheRecordFirstPostsItsReason(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION",
+		Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", DispatchStatus: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	apply := func(id string, fact intake.Fact) intake.Result {
+		t.Helper()
+		result, err := intake.ApplyFact(context.Background(), pool, "api", id, fact, engine, admissionStub{})
+		if err != nil {
+			t.Fatalf("apply %s: %v", id, err)
+		}
+		return result
+	}
+
+	apply("done-event", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed", Status: "done", Title: "Root",
+		Rank: "U", DaemonActor: true})
+	// Admission records the event's observation behind the engine's leave (admit's
+	// recordObservation); this test's admission is a stub, so the observation is written as
+	// admission writes it.
+	if _, err := pool.Exec(context.Background(), "update issues set last_dispatch_seq = 2, dispatch_status = 'done' where key = 'LEGION-1'"); err != nil {
+		t.Fatalf("record the done event's observation: %v", err)
+	}
+	if result := apply("close-unwritten", intake.CloseRoot{Issue: "LEGION-1", Reason: "moot"}); result.Refusal == nil || result.Refusal.Code != "CLOSE_AFTER_PHASE_STARTED" {
+		t.Fatalf("a close naming no write of its own over the tree that left = %+v, want refused CLOSE_AFTER_PHASE_STARTED", result.Refusal)
+	}
+	assertOutboxCount(t, pool, "dispatch_message", 0)
+
+	if result := apply("close", intake.CloseRoot{Issue: "LEGION-1", Reason: "the human decided no change is needed", Written: 2}); result.Refusal != nil {
+		t.Fatalf("the close whose own done write the record took first = %+v, want it taken", result.Refusal)
+	}
+	rows, err := pool.Query(context.Background(), "select payload->>'body' from outbox where kind = 'dispatch_message' and issue = 'LEGION-1'")
+	if err != nil {
+		t.Fatalf("read the messages: %v", err)
+	}
+	bodies, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if want := "Closed by its architect before its first phase: the human decided no change is needed"; err != nil || len(bodies) != 1 || bodies[0] != want {
+		t.Fatalf("messages queued on LEGION-1 = %q, %v; want the one reason %q", bodies, err, want)
+	}
+	var closes int
+	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = 'dispatch_status' and payload->>'kind' = $1", string(record.CloseStatusRow)).Scan(&closes); err != nil || closes != 0 {
+		t.Fatalf("close rows queued = %d, %v; want none: Dispatch shows done already, and the record left on its event", closes, err)
 	}
 }
 

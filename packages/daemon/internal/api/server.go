@@ -287,6 +287,17 @@ type Options struct {
 	// and goroutine, so the registration waits for it to return. It is a test's seam alone, to act
 	// on Dispatch between a registration's reads and its commit; nil, the daemon's, tells no one.
 	GateRegistrationRead func(ctx context.Context, issue string)
+	// AfterSignOffStatusWrite is told of each sign_off once its status write in Dispatch has
+	// landed and before its fact is applied: the issue it signs off, on the route's own context and
+	// goroutine, so the sign-off waits for it to return. It is a test's seam alone, to act on
+	// Dispatch and on another daemon while Dispatch shows the issue accepted and this daemon does
+	// not record it so yet; nil, the daemon's, tells no one.
+	AfterSignOffStatusWrite func(ctx context.Context, issue string)
+	// Acceptance judges sign_off and close_root as the workflow records the issue (workflow.Engine),
+	// in a read-only transaction before either route writes its status in Dispatch, so a sign-off
+	// or a close the workflow refuses writes nothing there. Nil, a server built with no workflow,
+	// judges nothing before the write, and the fact's own handlers decide.
+	Acceptance AcceptanceJudge
 	// Pause is the project's pause service (internal/pause's Service), which the four pause and
 	// resume routes act through and whose flag the claim routes read to refuse a turn while the
 	// project is paused (refusedWhilePaused). Nil is a daemon with no workflow, which has no pause:
@@ -319,6 +330,15 @@ type ReleaseRecordStore interface {
 // a report older than the one recorded is dropped and still answers true.
 type ClaimActivityStore interface {
 	PutClaimActivity(ctx context.Context, token claim.Token, generation uint64, activity claim.SessionActivity) (bool, error)
+}
+
+// AcceptanceJudge is the workflow's judgement of the two acts that accept or close an issue
+// (workflow.Engine's SignOffRefusal and CloseRootRefusal), each read in the transaction it is
+// handed and never written: the refusal the act meets as the daemon records the issue now, nil
+// where it is taken.
+type AcceptanceJudge interface {
+	SignOffRefusal(ctx context.Context, tx pgx.Tx, issue string) (*intake.Refusal, error)
+	CloseRootRefusal(ctx context.Context, tx pgx.Tx, issue string) (*intake.Refusal, error)
 }
 
 type server struct {
@@ -394,8 +414,11 @@ type server struct {
 	roleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
-	// gateRead is Options.GateRegistrationRead.
-	gateRead func(ctx context.Context, issue string)
+	// gateRead is Options.GateRegistrationRead, and signOffWritten Options.AfterSignOffStatusWrite.
+	gateRead       func(ctx context.Context, issue string)
+	signOffWritten func(ctx context.Context, issue string)
+	// acceptance is Options.Acceptance, nil for a server built with no workflow.
+	acceptance AcceptanceJudge
 	// pause is Options.Pause, nil for a daemon with no workflow.
 	pause PauseService
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
@@ -472,6 +495,8 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
 		gateRead:           opts.GateRegistrationRead,
+		signOffWritten:     opts.AfterSignOffStatusWrite,
+		acceptance:         opts.Acceptance,
 		pause:              opts.Pause,
 		readiness:          opts.Ready,
 		log:                opts.Log,

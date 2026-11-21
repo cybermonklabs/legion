@@ -95,6 +95,9 @@ func (d *gatePublishDispatch) SetStatus(context.Context, string, string) (dispat
 func (d *gatePublishDispatch) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
 }
+func (d *gatePublishDispatch) SetAcceptanceStatus(context.Context, string, string) (dispatch.Issue, error) {
+	return dispatch.Issue{}, nil
+}
 func (d *gatePublishDispatch) ReleaseClaim(context.Context, string) error { return nil }
 func (d *gatePublishDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("gatePublishDispatch takes no hand-over")

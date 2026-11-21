@@ -298,6 +298,9 @@ func (d *tickDispatch) SetStatus(context.Context, string, string) (dispatch.Issu
 func (d *tickDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
 }
+func (d *tickDispatch) SetAcceptanceStatus(ctx context.Context, key, status string) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, key, status)
+}
 func (d *tickDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *tickDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return nil
