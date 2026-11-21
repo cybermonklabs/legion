@@ -678,9 +678,12 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 // read a send to a missing entry makes. Over warm caches 100 of them send no JetStream API request
 // on the consumer or stream-info subjects, and the probe of the API shows it is watching by seeing
 // the one call the test makes itself (watchJetStreamAPI, which
-// TestAHundredPublishesSendNoJetStreamAPIRequest uses too).
+// TestAHundredPublishesSendNoJetStreamAPIRequest uses too). The cache watchers' own reads of their
+// buckets' streams are held off for the window (holdWatcherReads), so what it counts is the send
+// route's alone, however long the sends take.
 func TestAHundredSendsToAStoppedSessionSendNoJetStreamAPIRequest(t *testing.T) {
 	rig := newKnownSessionRig(t)
+	rig.holdWatcherReads(t)
 	const gone = "ses_stopped_api_free"
 	rig.register(t, gone, nil)
 	rig.stop(t, gone)
