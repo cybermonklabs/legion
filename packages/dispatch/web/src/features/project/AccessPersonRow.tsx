@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, api, apiErrorMessage } from "../../api/client";
 import { projectAccessQuery } from "../../api/queries";
@@ -98,6 +98,7 @@ export function AccessPersonRow({
   refusal,
   refusalShownBy,
   removing,
+  resetsLanded,
   resetting,
 }: {
   readonly email: string;
@@ -115,6 +116,9 @@ export function AccessPersonRow({
   readonly refusal: string | null;
   readonly refusalShownBy: string | undefined;
   readonly removing: boolean;
+  /** How many Resets of this person landed while the panel was open: each one deleted the
+   *  person's unused links, so the row lets go of the link it shows. */
+  readonly resetsLanded: number;
   readonly resetting: boolean;
 }): ReactNode {
   const linkId = useId();
@@ -136,13 +140,20 @@ export function AccessPersonRow({
     if (!confirmReset(email)) {
       return;
     }
-    // Reset deletes the person's unused links with their passkeys, so the link an earlier Invite
-    // showed here, or made with its answer lost, enrolls nobody now: the row stops offering it.
-    setInvitation(undefined);
-    setCopied(false);
-    invite.forgetUnanswered();
     onReset();
   };
+  // A Reset that landed deleted the person's unused links with their passkeys, so the link an
+  // earlier Invite showed here, or made with its answer lost, enrolls nobody now: the row stops
+  // offering it. A Reset Dispatch refused, or one still out, deletes nothing, and the link stays.
+  const resetsSeen = useRef(resetsLanded);
+  const forgetUnansweredLink = invite.forgetUnanswered;
+  useEffect(() => {
+    if (resetsSeen.current === resetsLanded) return;
+    resetsSeen.current = resetsLanded;
+    setInvitation(undefined);
+    setCopied(false);
+    forgetUnansweredLink();
+  }, [resetsLanded, forgetUnansweredLink]);
   // A link stops working at its expires_at: the row stops offering it then, which also ends its
   // poll, rather than show a dead link as one that "works once".
   useEffect(() => {
@@ -163,14 +174,17 @@ export function AccessPersonRow({
   // A passkey enrolled through this project's link after this link was made used this link: a
   // newer link of the project ends this one, so no other link of this project enrolled it. The row
   // stops offering it. A passkey of another project's link, or one enrolled before this link (the
-  // person's first device, when the link is for a second one), leaves it shown.
+  // person's first device, when the link is for a second one), leaves it shown. While a project of
+  // another owner names the person, the enrollment refuses the link (LISTED_BY_ANOTHER_OWNER), so
+  // the row does not offer it then either, and says why beside it.
   const link =
     invitation !== undefined &&
-    enrolled.some(
-      (passkey) =>
-        passkey.project === project &&
-        Date.parse(passkey.enrolled_at) > Date.parse(invitation.made_at)
-    )
+    (listedByAnotherOwner ||
+      enrolled.some(
+        (passkey) =>
+          passkey.project === project &&
+          Date.parse(passkey.enrolled_at) > Date.parse(invitation.made_at)
+      ))
       ? undefined
       : invitation;
   // While the row shows a link, the access list is read again now and then, so the passkey the

@@ -324,8 +324,8 @@ test("Retry of a refused Reset asks first, and sends nothing until the owner con
 });
 
 // Reset deletes the person's unused links in its own transaction, so the link an earlier Invite
-// showed in the row no longer enrolls anyone: the row stops showing it, and its Copy, the moment
-// the owner confirms, rather than offer a dead link to send.
+// showed in the row no longer enrolls anyone: the row stops showing it, and its Copy, once the
+// Reset lands, rather than offer a dead link to send.
 test("Reset takes away the link an earlier Invite showed, since Dispatch deletes it", async () => {
   const user = userEvent.setup();
   const panel = renderPanel({ answer: withPasskeys() });
@@ -367,6 +367,85 @@ test("Reset takes away the link an earlier Invite showed, since Dispatch deletes
     invite.mockRestore();
     confirm.mockRestore();
     reset.mockRestore();
+  }
+});
+
+// A Reset Dispatch refuses deletes nothing. The refusal that reaches the page while the link is
+// still live is the keyed write's: Dispatch answers the Reset 401 twice in a row while the page's
+// sign-in check still names the owner (`writeUnderKey`), which ends the write as refused. Every
+// refusal the Reset route itself documents leaves no live link (a delisting deletes it, a full
+// member or passkey sign-in turned off refuses it), and a 5xx is retried until it lands. A link's
+// use reads nothing of its maker's session, so after those two 401s the link still enrolls the
+// person: the row keeps showing it beside the refusal, as it showed it before the press. The mock
+// stands in for that refusal with an answer the keyed write does not retry.
+test("a Reset refused by two 401s in a row, the sign-in check still naming the owner, leaves the link an earlier Invite showed", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: withPasskeys() });
+  const url = `https://dispatch.example/enroll#${"a".repeat(43)}`;
+  const invite = spyOn(api, "createProjectInvitation").mockResolvedValue({
+    expires_at: "2099-11-21T10:00:00Z",
+    made_at: "2099-11-20T10:00:00Z",
+    url,
+  });
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const reset = spyOn(api, "resetProjectAccessPerson").mockRejectedValue(
+    new ApiError(409, { code: "REFUSED", error: "Dispatch refused the Reset" })
+  );
+  try {
+    await user.click(await screen.findByRole("button", { name: `Invite ${ana}` }));
+    const link = { name: `Enrollment link for ${ana}` };
+    expect(await within(personRow(ana)).findByRole("textbox", link)).toHaveValue(url);
+
+    await user.click(screen.getByRole("button", { name: `Reset ${ana}` }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(reset).toHaveBeenCalledTimes(1);
+    expect(within(personRow(ana)).getByRole("textbox", link)).toHaveValue(url);
+    expect(within(personRow(ana)).getByTestId("access-invitation-expiry")).toBeInTheDocument();
+  } finally {
+    panel.restore();
+    invite.mockRestore();
+    confirm.mockRestore();
+    reset.mockRestore();
+  }
+});
+
+// Once a project of another owner names the person, the link this row showed enrolls nobody
+// (the enrollment refuses it, LISTED_BY_ANOTHER_OWNER): the row stops offering it as one that
+// works once, and says why no link can be made here.
+test("a link the row showed is taken away while another owner's project names the person", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: withPasskeys({ passkeys: [] }) });
+  const invite = spyOn(api, "createProjectInvitation").mockResolvedValue({
+    expires_at: "2099-11-21T10:00:00Z",
+    made_at: "2099-11-20T10:00:00Z",
+    url: `https://dispatch.example/enroll#${"a".repeat(43)}`,
+  });
+  try {
+    await user.click(await screen.findByRole("button", { name: `Invite ${ana}` }));
+    const link = { name: `Enrollment link for ${ana}` };
+    expect(await within(personRow(ana)).findByRole("textbox", link)).toBeInTheDocument();
+
+    await panel.lands(
+      withPasskeys({ invitable: [], listed_by_another_owner: [ana], passkeys: [] })
+    )();
+    await act(() => panel.queryClient.invalidateQueries());
+    await waitFor(() =>
+      expect(
+        within(personRow(ana)).getByText(
+          "Another project's owner also names this person, so no link can be made here: a passkey would read that project too."
+        )
+      ).toBeInTheDocument()
+    );
+    expect(within(personRow(ana)).queryByRole("textbox", link)).not.toBeInTheDocument();
+    expect(
+      within(personRow(ana)).queryByTestId("access-invitation-expiry")
+    ).not.toBeInTheDocument();
+    expect(within(personRow(ana)).getByTestId("access-invitation-announcement")).toHaveTextContent(
+      /^$/
+    );
+  } finally {
+    panel.restore();
+    invite.mockRestore();
   }
 });
 
