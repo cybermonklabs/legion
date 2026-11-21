@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,10 +30,16 @@ func scrape(t *testing.T, registry *metrics.Registry) string {
 // second - the sender logs one WARN naming the owner, the event it waits behind and that event's
 // last publish error. The cause is logged too: the outbox's own ERROR for the earlier event's
 // failed topic send names that event and its topic. While it waits, each try of the parked lane
-// reads the rule alone: no claim, resolution or settle of the attempt is written (a traced pool
-// counts the server's statements). Once the topic family is captured again the send lands, the
-// gauges read none and no second WARN comes. The controls are the scrape before the comment and
-// the one after the send landed.
+// reads the rule at most once and sends nothing else: the test steps the lane one try at a time,
+// holding each park's timer and running it itself, and a traced pool sees every statement the
+// server sends between one park and the next. Each must be, byte for byte, the rule's own
+// statement (model.MentionCopyRuleSQL), at most one a try; any other statement fails the test,
+// whatever it reads, so a second read of the rule spelled another way fails as a second read
+// spelled the same way does. The send was decided held on a read of the rule: at least one is sent
+// between the comment and the first WARN. Once the topic family is captured again the send lands,
+// the gauges read none and no second WARN comes. The controls are the scrape before the comment and
+// the one after the send landed. The test's waits for the lane are its liveness alone
+// (heldLiveness), never the bound under test.
 func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
@@ -44,8 +51,20 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second, outboxPublishes: true, metrics: registry,
 		store: storetest.TracedStore(t, database, recorder),
 	})
+	// The sender's park timer: until the test steps the lane, each park's timer starts as the
+	// sender starts it; from then each park hands its timer's run to the test instead.
+	parked := make(chan func(), 4)
+	var stepping atomic.Bool
 	served.mentions.mu.Lock()
 	served.mentions.heldWarnAfter = time.Second
+	own := served.mentions.after
+	served.mentions.after = func(delay time.Duration, f func()) {
+		if stepping.Load() {
+			parked <- f
+			return
+		}
+		own(delay, f)
+	}
 	served.mentions.mu.Unlock()
 	issue := createInteractionIssue(t, handler, "TEST", "A held mention", "before")
 	view := &sessionView{issue: issue.Key}
@@ -73,36 +92,60 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 		attempts, _ := eventAttempts(t, database, first)
 		return attempts > 0
 	})
+	posted := len(recorder.Statements())
 	mention := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "the comment that mentions s1", "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
 	const warning = `level=WARN msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
-	waitUntil(t, 10*time.Second, "the held send counted and reported", func() bool {
+	waitUntil(t, heldLiveness(), "the held send counted and reported", func() bool {
 		return strings.Contains(scrape(t, registry), "envoy_dispatch_mention_sends_held 1\n") &&
 			strings.Contains(logs.String(), warning)
 	})
-
-	// Three seconds parked: count what the server sends the database meanwhile.
-	before := len(recorder.Statements())
-	time.Sleep(3 * time.Second)
-	window := recorder.Statements()[before:]
-	var reads, attemptWrites int
-	for _, statement := range window {
-		switch {
-		case strings.Contains(statement, "k.owed_keys &&"):
-			reads++
-		case strings.Contains(statement, "comment_deliveries"):
-			attemptWrites++
+	decidedOn := 0
+	for _, statement := range recorder.Statements()[posted:] {
+		if statement == model.MentionCopyRuleSQL {
+			decidedOn++
 		}
 	}
-	body := scrape(t, registry)
-	t.Logf("over 3 s parked: %d reads of the rule, %d statements on comment_deliveries, %d statements in all; gauges:\n%s",
-		reads, attemptWrites, len(window), heldLines(body))
-	if reads == 0 || reads > 4 {
-		t.Errorf("the parked lane read the rule %d times over 3 s, want one each try at mentionOrderRetryMax (%v) once it ramps up", reads, mentionOrderRetryMax)
+	if decidedOn == 0 {
+		t.Errorf("the send was counted held with no read of the rule since the comment, want at least one")
 	}
-	if attemptWrites != 0 {
-		t.Errorf("the parked lane made %d statements on comment_deliveries over 3 s, want none: a try of a held send reads the rule alone", attemptWrites)
+
+	// The parked lane stepped one try at a time: each park's timer is held and the test runs it,
+	// so the statements between one park and the next are one try's, with nothing else of the
+	// lane in flight.
+	stepping.Store(true)
+	unpark := nextPark(t, parked)
+	var readsPerTry []int
+	var unrecognised []string
+	for range 3 {
+		before := len(recorder.Statements())
+		unpark()
+		unpark = nextPark(t, parked)
+		reads := 0
+		for _, statement := range recorder.Statements()[before:] {
+			if statement == model.MentionCopyRuleSQL {
+				reads++
+				continue
+			}
+			unrecognised = append(unrecognised, statement)
+		}
+		readsPerTry = append(readsPerTry, reads)
+	}
+	// Scraped while the lane is parked: the gauges leave out a held lane's head while a try of it
+	// is in flight, which the run of the last timer would start.
+	body := scrape(t, registry)
+	stepping.Store(false)
+	unpark()
+	t.Logf("%d reads of the rule from the comment to its first WARN; three tries of the parked send: reads of the rule %v, %d other statements; gauges:\n%s",
+		decidedOn, readsPerTry, len(unrecognised), heldLines(body))
+	for try, reads := range readsPerTry {
+		if reads > 1 {
+			t.Errorf("try %d of the parked send read the rule %d times, want at most once", try+1, reads)
+		}
+	}
+	for _, statement := range unrecognised {
+		t.Errorf("a try of the parked send sent a statement that is not the rule's own: %q", firstChars(statement, 160))
 	}
 	if !strings.Contains(body, "envoy_dispatch_mention_send_held_oldest_seconds ") ||
 		strings.Contains(body, "envoy_dispatch_mention_send_held_oldest_seconds 0\n") {
@@ -128,7 +171,7 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	}
 
 	view.refuseTopics(false)
-	waitUntil(t, 30*time.Second, "the held send landed", func() bool {
+	waitUntil(t, heldLiveness(), "the held send landed", func() bool {
 		attempts := waitForCommentDeliveries(t, database, mention.ID, "the mention's attempts", func([]model.CommentDelivery) bool { return true })
 		return len(attempts) == 1 && attempts[0].State == "sent"
 	})
@@ -159,4 +202,36 @@ func warningLine(logged, marker string) string {
 		}
 	}
 	return ""
+}
+
+// heldLiveness is how long the held-send test waits for the next thing its parked lane does: a
+// park, the first held WARN, the send landing. It is liveness alone, never the bound under test,
+// so it grows with the sender's own waits (mentionOrderRetryFirst, mentionOrderRetryMax): a
+// schedule of longer waits reads the rule less, which the cost requirement allows, and must not
+// time the test out.
+func heldLiveness() time.Duration {
+	return 30*time.Second + 2*(mentionOrderRetryFirst+mentionOrderRetryMax)
+}
+
+// nextPark waits for the sender's next park and answers its timer's run, which the test makes.
+// Its bound is the test's liveness alone (heldLiveness): a try takes milliseconds, and a park the
+// sender started before the test held the timers waits at most its own delay.
+func nextPark(t *testing.T, parked <-chan func()) func() {
+	t.Helper()
+	select {
+	case unpark := <-parked:
+		return unpark
+	case <-time.After(heldLiveness()):
+		t.Fatalf("the held send did not park again within %v", heldLiveness())
+		return nil
+	}
+}
+
+// firstChars is statement's first n characters, its runs of white space each one space.
+func firstChars(statement string, n int) string {
+	text := strings.Join(strings.Fields(statement), " ")
+	if len(text) > n {
+		return text[:n] + "..."
+	}
+	return text
 }
