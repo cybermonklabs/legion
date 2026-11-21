@@ -253,7 +253,9 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 // message. Two durables, so a reset that deleted only one consumer fails too. The stream's name is
 // the invocation's own, which also makes the first subtest's look at its directory proof that the
 // path is the server's store, and under -count keeps a second invocation's plant out of the
-// .<name> the first one's last delete is still removing, which would remove the plant with it.
+// .<name> the first one's last delete is still removing, which would remove the plant with it. The
+// second subtest run alone (-run naming it) lays what the first leaves in a subtest of its own
+// before it takes the server, so it still finds an earlier test's durables.
 func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 	config := jetstream.StreamConfig{Name: "LEFT_DURABLE_" + rand.Text(), Subjects: []string{"left.>"}, Storage: jetstream.FileStorage}
 	var durables []jetstream.ConsumerConfig
@@ -266,7 +268,7 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 			onTheServersHost(t, "rm", "-rf", plant)
 		}
 	})
-	if !t.Run("creates durables while an earlier delete of their stream is still being removed", func(t *testing.T) {
+	leave := func(t *testing.T) {
 		js := JetStream(t)
 		stream := CreateStream(t, js, config)
 		for _, durable := range durables {
@@ -278,10 +280,17 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 		onTheServersHost(t, "test", "-d", filepath.Join(streams, config.Name))
 		plant = filepath.Join(streams, "."+config.Name)
 		onTheServersHost(t, "mkdir", "-p", filepath.Join(plant, "still-being-removed"))
-	}) {
+	}
+	if !t.Run("creates durables while an earlier delete of their stream is still being removed", leave) {
 		return
 	}
 	t.Run("creates the durables again and finds them at the next message", func(t *testing.T) {
+		if plant == "" && !t.Run("an earlier test leaves durables while their stream's removal is held", leave) {
+			t.Fatal("the earlier test's durables and the held removal of their stream could not be laid, so this subtest would prove nothing")
+		}
+		if plant == "" {
+			t.Fatal("no earlier test left durables and a held removal of their stream (-run filtered out both subtests that lay them), so this subtest would prove nothing")
+		}
 		js := JetStream(t)
 		onTheServersHost(t, "test", "-d", filepath.Join(streams, config.Name))
 		stream := CreateStream(t, js, config)
@@ -308,7 +317,10 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 
 // streamsDirectory is the directory the shared server keeps its streams in: its JetStream store,
 // as its monitoring endpoint reports it, and in that the global account's directory, $G, which
-// holds every stream of a server with no accounts configured.
+// holds every stream of a server with no accounts configured. The row that reads it acts on that
+// path where the server runs, so an external server's store must be on this host, writable by the
+// tests' user, and named by an absolute path (README.md says so); a relative one, which the
+// server resolves from its own working directory, fails t by name.
 func streamsDirectory(t *testing.T) string {
 	t.Helper()
 	response, err := monitorClient.Get(monitorURL + "/jsz")
@@ -329,6 +341,9 @@ func streamsDirectory(t *testing.T) string {
 	}
 	if jsz.Config.StoreDir == "" {
 		t.Fatalf("%s/jsz names no store directory", monitorURL)
+	}
+	if !filepath.IsAbs(jsz.Config.StoreDir) {
+		t.Fatalf("%s/jsz names the store directory %q, a relative path this test cannot resolve: start the server with an absolute -sd", monitorURL, jsz.Config.StoreDir)
 	}
 	return filepath.Join(jsz.Config.StoreDir, "$G", "streams")
 }
