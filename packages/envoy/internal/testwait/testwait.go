@@ -124,17 +124,23 @@ func UntilPolling[T any](t *testing.T, poll time.Duration, what string, read fun
 }
 
 // Receive waits for one receive from ch (a value, or the close of ch, which gives the zero value).
-// Its one bound is the test binary's deadline less margin.
+// Its one bound is the test binary's deadline less margin. A Receive begun once that moment has
+// passed asks ch once and does not wait: it reads the clock rather than race an expired timer
+// against ch, so a value already sent is taken every time, not on the half of the runs where the
+// select happens to pick ch.
 func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	t.Helper()
-	expired, stop := expiry(t)
-	defer stop()
-	select {
-	case value := <-ch:
-		return value
-	case <-expired:
+	if end, bounded := giveUpAt(t); !bounded || time.Now().Before(end) {
+		expired, stop := expiry(t)
+		defer stop()
+		select {
+		case value := <-ch:
+			return value
+		case <-expired:
+		}
 	}
-	// The margin has passed: ask once more, so a value that came beside the timer is taken.
+	// The margin has passed, before the wait began or during it: ask once more, so a value already
+	// sent, or one that came beside the timer, is taken.
 	select {
 	case value := <-ch:
 		return value
