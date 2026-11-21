@@ -1,5 +1,5 @@
 {
-  "source": "example-org/deployment fe26eb31 envoy-cluster/hub.go hubMeasurePublish, hubMeasureSubscribe",
+  "source": "example-org/deployment envoy-cluster/hub.go hubMeasurePublish, hubMeasureSubscribe, once the measurement job's inbox moved under the reply root",
   "publish": [
     "$JS.API.INFO",
     "$JS.API.STREAM.NAMES",
@@ -14,5 +14,5 @@
     "$JS.API.STREAM.DELETE.ENVOY_MEASURE",
     "envoy-measure.>"
   ],
-  "subscribe": ["_INBOX_envoy_measure.>"]
+  "subscribe": ["_INBOX_envoy._measure.>"]
 }

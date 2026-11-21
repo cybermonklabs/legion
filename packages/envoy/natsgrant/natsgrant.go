@@ -349,16 +349,15 @@ func Host(machineID string) Permissions {
 }
 
 // Measure is the grant of Envoy's measurement job, which the deployment repository deploys as a
-// static user of both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It
-// reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and owns one
-// test stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefixes,
-// never _INBOX.>, where the listener's and Dispatch's push consumer deliveries and request replies
-// arrive, so no subscription of its own receives another client's replies or deliveries. That alone
-// does not keep every other client's message from it: it still holds ENVOY_MEASURE's stream create
-// and update, whose configuration can source another stream and republish what it holds onto the
-// job's own inbox, until #4679 removes those calls. Its inbox prefixes are two while the job moves
-// under ReplyRoot: legacyMeasureInbox, which the deployed job sets today, and MeasureInbox, which
-// it sets once it moves. The legacy one goes when no measurement job sets it.
+// static user of its clustered hub (envoy-cluster/hub.go, hubMeasurePublish and
+// hubMeasureSubscribe). It reads the account's JetStream state, the listener's lease keys in
+// KV_envoy_listener, and owns one test stream, ENVOY_MEASURE, on subjects of its own. It
+// subscribes only its own inbox prefix, MeasureInbox, under ReplyRoot, never _INBOX.>, where the
+// listener's and Dispatch's push consumer deliveries and request replies arrive, so no
+// subscription of its own receives another client's replies or deliveries. That alone does not
+// keep every other client's message from it: it still holds ENVOY_MEASURE's stream create and
+// update, whose configuration can source another stream and republish what it holds onto the
+// job's own inbox, until #4679 removes those calls.
 func Measure() Permissions {
 	return Permissions{
 		Publish: []string{
@@ -375,7 +374,7 @@ func Measure() Permissions {
 			jsAPI + "STREAM.DELETE.ENVOY_MEASURE",
 			"envoy-measure.>",
 		},
-		Subscribe: []string{legacyMeasureInbox + ".>", MeasureInbox + ".>"},
+		Subscribe: []string{MeasureInbox + ".>"},
 	}
 }
 
@@ -390,11 +389,6 @@ const ReplyRoot = "_INBOX_envoy"
 
 // MeasureInbox is the measurement job's inbox prefix (nats.js's inboxPrefix) under ReplyRoot.
 const MeasureInbox = ReplyRoot + "._measure"
-
-// legacyMeasureInbox is the measurement job's inbox prefix before it moved under ReplyRoot, which
-// the deployed job still sets. It shares the root's characters but not its token, so ReplyRoot's
-// export does not reach it.
-const legacyMeasureInbox = "_INBOX_envoy_measure"
 
 // systemAccountPrefix is the first token of every subject of nats-server's own, the auth
 // service's authorization requests ($SYS.REQ.USER.AUTH) among them.

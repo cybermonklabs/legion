@@ -1,0 +1,8 @@
+kind: Removed
+body: |-
+  The NATS auth service's grant for the measurement job (`measure` in `BROKER_NATS_SERVICES`) no
+  longer subscribes `_INBOX_envoy_measure.>`, the inbox prefix the job used before it moved under
+  `natsgrant.ReplyRoot`. It subscribes `_INBOX_envoy._measure.>` alone, which the job sets.
+time: 2026-11-21T17:05:51Z
+custom:
+    Issue: measure-reply-root-drop
