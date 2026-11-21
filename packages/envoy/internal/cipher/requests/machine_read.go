@@ -1174,7 +1174,7 @@ func (m *Machine) signedForAnotherBroker(p pendingRequestRow) bool {
 	if p.RecordBody == nil || p.RecordCreatedAt == nil {
 		return false
 	}
-	_, _, err := m.requestedIdentifiers(*p.RecordBody, *p.RecordCreatedAt)
+	_, _, _, err := m.requestedIdentifiers(*p.RecordBody, *p.RecordCreatedAt)
 	return errors.Is(err, record.ErrAudienceMismatch)
 }
 
@@ -1611,9 +1611,10 @@ const pendingOrExpiredForApproverQuery = pendingListFrom + `(
 // rows on their list, whichever of those arms names them; their own machine logins stay on it. Who
 // may decide is not this list's to say: anyone signed in decides a shared secret's request from its
 // page whether or not it is listed for them (record.MayDecide), within the person rule. A service's
-// login a broker from before that rule opened names a person
-// instead and is listed for that person alone, though anyone who types its code may decide it
-// (record.MayDecide). Whether an agent_secret record is still pending is read from its request
+// login a broker from before that rule opened names a person instead and is listed for that person
+// alone, though anyone who types its code may decide it (record.MayDecide); it is a service's login
+// still, which no person holds as their own, so a restricted member it names has it on no list.
+// Whether an agent_secret record is still pending is read from its request
 // row: every writer moves the request out of 'pending' together with the record's terminal event
 // (store.EndPendingRequests, ApplyDecision), but a request an ended enrollment cancelled before
 // endEnrollment wrote that event carries none, so the request row is the truth. A machine login
@@ -1659,7 +1660,7 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 		reason          string
 		notify          string
 		// approverRow is a row that waits on the reader only as one of its approvers
-		// (approverRow): every agent-secret row, and a service's legacy machine login.
+		// (approverRow): every agent-secret row, and every service's machine login.
 		approverRow bool
 	}
 	var reads []seen
@@ -1672,7 +1673,7 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 			&current.Kind, &current.Operator, &current.Subject, &current.Projects); err != nil {
 			return nil, err
 		}
-		identifiers, reason, err := m.requestedIdentifiers(canonical, createdAt)
+		identifiers, reason, service, err := m.requestedIdentifiers(canonical, createdAt)
 		if err != nil {
 			if !byState || state != "expired" {
 				m.leaveOut(id, kind, expiresAt, err)
@@ -1684,19 +1685,20 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 			Session: Session{Request: requestSession, Enrollment: enrollmentSession},
 			State:   state, ExpiresAt: expiresAt,
 		})
-		reads = append(reads, seen{sessionProjects: m.credentialsProjects(asked, current), reason: reason, notify: notify, approverRow: approverRow(kind, approverOf, login)})
+		reads = append(reads, seen{sessionProjects: m.credentialsProjects(asked, current), reason: reason, notify: notify, approverRow: approverRow(kind, approverOf, login, service == "")})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	rows.Close()
 	// Every agent-secret row here waits on the reader as one of its approvers: by their own login,
-	// record.AnyoneApprover or a group; and so does a service's machine login an older broker
-	// opened, which waits on record.AnyoneApprover. A person Dispatch calls a restricted member is
-	// no approver of either, so their list holds none of those rows; and while Dispatch cannot say,
-	// it holds none either, failing closed for this read alone (listApprovesSecrets). The member
-	// kind is asked once the rows are closed, and only when the list holds such a row, so a list of
-	// the reader's own machine logins asks Dispatch nothing.
+	// record.AnyoneApprover or a group; and so does every service's machine login an older broker
+	// opened, which waits on record.AnyoneApprover or on a person it named, and is no person's own.
+	// A person Dispatch calls a restricted member is no approver of either, so their list holds none
+	// of those rows; and while Dispatch cannot say, it holds none either, failing closed for this
+	// read alone (listApprovesSecrets). The member kind is asked once the rows are closed, and only
+	// when the list holds such a row, so a list of the reader's own machine logins asks Dispatch
+	// nothing.
 	approves := true
 	if slices.ContainsFunc(reads, func(s seen) bool { return s.approverRow }) {
 		approves = m.listApprovesSecrets(ctx, login, "pending")
@@ -1798,25 +1800,27 @@ func (m *Machine) listedInStead(fallback context.Context, p PendingSummary, read
 	return !theirs, nil
 }
 
-// requestedIdentifiers is what the record whose canonical body is canonical asks for, and the
-// signed reason it asks with, read from the request object it embeds once that object verifies
-// for this broker: its audience, its signature and its time against when the record was written.
-// The reason is what the person rule reads of the row (maySeeRecord), so it comes only from an
-// object that verified.
-func (m *Machine) requestedIdentifiers(canonical string, createdAt time.Time) (identifiers []string, reason string, _ error) {
+// requestedIdentifiers is what the record whose canonical body is canonical asks for, the signed
+// reason it asks with, and the service a machine login's request names ("" for a person's machine
+// and for a request for agent secrets, record.RequestObject.Service), read from the request object
+// it embeds once that object verifies for this broker: its audience, its signature and its time
+// against when the record was written. The reason is what the person rule reads of the row
+// (maySeeRecord), and the service whether a machine login is a person's own (approverRow), so each
+// comes only from an object that verified.
+func (m *Machine) requestedIdentifiers(canonical string, createdAt time.Time) (identifiers []string, reason, service string, _ error) {
 	body, err := record.ParseBody(canonical)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	obj, err := record.VerifyRequestObject(body.Request, m.Audience, m.Skew, createdAt)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	identifiers = make([]string, len(obj.Details))
 	for i, d := range obj.Details {
 		identifiers[i] = d.Identifier
 	}
-	return identifiers, obj.Reason, nil
+	return identifiers, obj.Reason, obj.Service(), nil
 }
 
 // leftOutRetention is how long past the last list that left a record out, and past the record's

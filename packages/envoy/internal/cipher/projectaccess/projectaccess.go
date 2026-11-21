@@ -114,7 +114,45 @@ var (
 	// could not be asked for: the list is allowed, as it is today, but unchecked, so the caller
 	// that goes on to mint or enroll logs that it did so. It wraps the failure it stands for.
 	ErrUnchecked = errors.New("projectaccess: dispatch could not be asked, so the empty list is allowed unchecked")
+	// errUnavailable is Dispatch, or a gateway in front of it, answering 502, 503 or 504: an
+	// answer that says Dispatch is not answering now (Unanswered).
+	errUnavailable = errors.New("projectaccess: dispatch is unavailable")
 )
+
+// Unanswered reports whether err, a failed read of Dispatch, is Dispatch not answering: a failure
+// that clears by itself once Dispatch answers again. That is the read's deadline passing, its
+// caller's own bound (RelayedReadBound) included; the transport failing before Dispatch's whole
+// answer arrived (dispatchread.ErrNoAnswer); and Dispatch, or a gateway in front of it, answering
+// 502, 503 or 504. Every other failure is an answer, one that lasts until somebody fixes it:
+// Dispatch refusing the broker's own account (dispatchread.ErrBrokerRefused), answering a member
+// kind this broker does not know (ErrUnknownMemberKind), a 404 that answers nothing of the person
+// or the project, any other status, or a body that does not decode; and so is a read its caller
+// gave up on, which says nothing of Dispatch. A caller that lets something through only while
+// Dispatch does not answer goes ahead on Unanswered alone (requests.Machine.RevokeByApprover).
+func Unanswered(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, dispatchread.ErrNoAnswer) || errors.Is(err, errUnavailable)
+}
+
+// NoApprover is refusal, a caller's own refusal of a person who may not act as an approver there
+// (record.ErrNotApprover, say), for a person Dispatch calls a restricted member (MemberRestricted),
+// in words that say so first: "a person Dispatch calls a restricted member is no approver of " and
+// then of, which names what and says what such a person does instead, in the verb of what they did.
+// It is refusal, so whatever answers refusal answers it alike, while its words are these alone:
+// refusal's own would speak of whose the row is, and contradict a reader the row does name.
+func NoApprover(refusal error, of string) error {
+	return &restrictedRefusal{why: "a person Dispatch calls a restricted member is no approver of " + of, refusal: refusal}
+}
+
+// restrictedRefusal is NoApprover's refusal.
+type restrictedRefusal struct {
+	why     string
+	refusal error
+}
+
+func (e *restrictedRefusal) Error() string { return e.why }
+
+// Unwrap is the caller's own refusal.
+func (e *restrictedRefusal) Unwrap() error { return e.refusal }
 
 // NotVisibleError is Visible's refusal: the first project of a list its person may not see, or
 // that Dispatch does not hold. It is ErrNotVisible (errors.Is), and its Project is what a caller
@@ -158,7 +196,7 @@ func (e *MemberKindUncheckable) CallerEnded() bool { return errors.Is(e.Err, con
 // uncheckableReason is why a person's member kind could not be read (err, a MemberKind failure),
 // in words a refused caller may read: Dispatch refusing the broker's own account, which the
 // deployment fixes; Dispatch answering a kind this broker does not know, which a newer broker
-// fixes; and otherwise Dispatch not answering, which clears by itself.
+// fixes; and otherwise Dispatch not answering, or answering what the broker cannot read.
 func uncheckableReason(err error) string {
 	switch {
 	case errors.Is(err, dispatchread.ErrBrokerRefused):
@@ -654,9 +692,9 @@ func (c *Client) sweepLocked() {
 // (dispatchread.Reader.Get), which a caller never mints through. A 404 is an answer, returned as
 // its status with no error, only when its body's code is PROJECT_NOT_FOUND, the code Dispatch's
 // project route answers a project it does not hold with; any other 404 (a Dispatch that does not
-// serve the route, a wrong path behind an ingress) is a failure naming its code. Every other
-// status, a transport failure and a body it could not read or decode are errors naming what
-// failed and never the token.
+// serve the route, a wrong path behind an ingress) is a failure naming its code. A 502, 503 or 504
+// is errUnavailable, Dispatch not answering now (Unanswered). Every other status, a transport
+// failure and a body it could not read or decode are errors naming what failed and never the token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
 	answer, err := c.read.Get(ctx, path, query)
 	if err != nil {
@@ -670,6 +708,8 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 			return http.StatusNotFound, nil
 		}
 		return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, dispatchread.RefusalCode(answer.Body))
 	default:
 		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, answer.Status, dispatchread.RefusalCode(answer.Body))
 	}

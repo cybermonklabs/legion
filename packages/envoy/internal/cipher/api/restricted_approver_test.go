@@ -15,10 +15,14 @@ package api_test
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // restrictedGuest is on PRIV's list from outside the sign-in domain, so Dispatch calls them a
@@ -109,14 +114,15 @@ func TestTheApproverRoutesGiveARestrictedMemberNothing(t *testing.T) {
 		if listsGrant(t, restrictedGuest, grant) {
 			t.Errorf("GET /v1/grants?approver=%s lists the judged grant %s; want it left out", restrictedGuest, grant)
 		}
-		for what, got := range map[string]answerRead{
-			restrictedGuest + "'s revoke-by-approver of the judged grant": revoke(t, restrictedGuest, grant),
-			restrictedGuest + "'s dismissal of the expired request":       dismiss(t, restrictedGuest),
+		for what, got := range map[string]struct {
+			answer answerRead
+			verb   string
+		}{
+			restrictedGuest + "'s revoke-by-approver of the judged grant": {revoke(t, restrictedGuest, grant), "end a grant"},
+			restrictedGuest + "'s dismissal of the expired request":       {dismiss(t, restrictedGuest), "dismiss"},
 		} {
-			requireAnswered(t, what, got, http.StatusForbidden, "NOT_APPROVER")
-			if refusal := decode[wireError](t, []byte(got.body)).Error; !strings.Contains(refusal, "restricted member") {
-				t.Errorf("%s says %q; want it to say the person is a restricted member", what, refusal)
-			}
+			requireAnswered(t, what, got.answer, http.StatusForbidden, "NOT_APPROVER")
+			requireRestrictedWords(t, what, got.answer, got.verb)
 		}
 		if after := ts.writtenRows(t); !slices.Equal(after, before) {
 			t.Fatalf("rows written = %v after the refused revoke and dismissal, want %v as before", after, before)
@@ -173,7 +179,9 @@ func TestARestrictedMemberDeniesNoServicesLoginOnTheRoute(t *testing.T) {
 		return ts.column(t, `select count(*)::text from credential_request_events where record_id=$1`, recordID)
 	}
 
-	requireAnswered(t, restrictedGuest+"'s deny of a service's login", deny(t, restrictedGuest), http.StatusForbidden, "NOT_APPROVER")
+	got := deny(t, restrictedGuest)
+	requireAnswered(t, restrictedGuest+"'s deny of a service's login", got, http.StatusForbidden, "NOT_APPROVER")
+	requireRestrictedWords(t, restrictedGuest+"'s deny of a service's login", got, "deny")
 	stand.SetMemberKind(hiddenInsider, "guest-of-honour")
 	access.Serve(stand)
 	requireAnswered(t, hiddenInsider+"'s deny while her kind cannot be read", deny(t, hiddenInsider), http.StatusServiceUnavailable, "MEMBER_KIND_UNCHECKABLE")
@@ -182,6 +190,17 @@ func TestARestrictedMemberDeniesNoServicesLoginOnTheRoute(t *testing.T) {
 	}
 	if got := deny(t, "bob@example.com"); got.status != http.StatusOK || decode[stateBody](t, []byte(got.body)).State != "denied" {
 		t.Fatalf("bob's deny of the service's login = %d %s; want 200 denied", got.status, got.body)
+	}
+}
+
+// requireRestrictedWords fails t unless got, what answered, refuses in words that open by saying
+// the person is a restricted member, and say they may not verb: the person refused reads why first,
+// in the verb of what they did, and never the words of a refusal about whose the row is.
+func requireRestrictedWords(t *testing.T, what string, got answerRead, verb string) {
+	t.Helper()
+	refusal := decode[wireError](t, []byte(got.body)).Error
+	if !strings.HasPrefix(refusal, "a person Dispatch calls a restricted member is no approver of") || !strings.Contains(refusal, verb) {
+		t.Errorf("%s says %q; want it to open by saying the person is a restricted member, and to say what they %s", what, refusal, verb)
 	}
 }
 
@@ -261,9 +280,7 @@ func TestAServicesLegacyLoginIsOnNoRestrictedMembersList(t *testing.T) {
 		}
 		got := dismiss(t, restrictedGuest)
 		requireAnswered(t, restrictedGuest+"'s dismissal of the expired service login", got, http.StatusForbidden, "NOT_APPROVER")
-		if refusal := decode[wireError](t, []byte(got.body)).Error; !strings.Contains(refusal, "restricted member") {
-			t.Errorf("the refused dismissal says %q; want it to say the person is a restricted member", refusal)
-		}
+		requireRestrictedWords(t, restrictedGuest+"'s dismissal of the expired service login", got, "dismiss")
 		if n := ts.column(t, `select count(*)::text from credential_request_dismissals where record_id=$1`, expired); !slices.Equal(n, []string{"0"}) {
 			t.Fatalf("dismissals of the expired service login after the refused one = %v; want none", n)
 		}
@@ -279,6 +296,30 @@ func TestAServicesLegacyLoginIsOnNoRestrictedMembersList(t *testing.T) {
 	})
 }
 
+// machineLoginIDs is the ids of the machine logins GET /v1/launcher-credentials lists to person.
+func (ts *testServer) machineLoginIDs(t *testing.T, person string) []string {
+	t.Helper()
+	var ids []string
+	for _, login := range ts.machineLogins(t, person) {
+		ids = append(ids, login.CredentialID)
+	}
+	return ids
+}
+
+// revokeMachineLoginAs is POST /v1/launcher-credentials/{id}/revoke-by-approver relayed for
+// person.
+func (ts *testServer) revokeMachineLoginAs(t *testing.T, person, id string) answerRead {
+	t.Helper()
+	status, body := ts.ui(t, http.MethodPost, "/v1/launcher-credentials/"+id+"/revoke-by-approver", map[string]any{"approver": person})
+	return answerOf(t, status, body)
+}
+
+// machineLoginLive reports whether machine login id has not been revoked.
+func (ts *testServer) machineLoginLive(t *testing.T, id string) bool {
+	t.Helper()
+	return slices.Equal(ts.column(t, `select (revoked_at is null)::text from launcher_credentials where id=$1`, id), []string{"true"})
+}
+
 // TestARestrictedMemberListsAndEndsNoServicesMachineLogin: every service's machine login is listed
 // to every signed-in person, and anyone signed in may end one, which ends every pod it enrolled.
 // A person Dispatch calls a restricted member is no approver of a secret and sees nothing beyond
@@ -286,67 +327,186 @@ func TestAServicesLegacyLoginIsOnNoRestrictedMembersList(t *testing.T) {
 // the Legion daemon's token login nor a service's legacy login, and POST
 // /v1/launcher-credentials/{id}/revoke-by-approver answers them 404 NOT_FOUND for either, as for
 // an id no login has, ending nothing; their own machine login they still end. While Dispatch
-// answers a person a member kind this broker does not know, both routes answer that person 503
-// MEMBER_KIND_UNCHECKABLE, and the revoke ends nothing: unlike a grant's named approver, the person
-// would end the sessions of a service. The control: bob, a full member, lists both service logins
-// and ends the daemon's.
+// answers a person a member kind this broker does not know, both routes hold that person to their
+// own logins as they hold a restricted member: the list holds neither service login, and the
+// revoke of the daemon's login answers 404 NOT_FOUND and ends nothing. The control: bob, a full
+// member, lists both service logins and ends the daemon's.
 func TestARestrictedMemberListsAndEndsNoServicesMachineLogin(t *testing.T) {
 	ts, access, stand := restrictedStand(t)
 	tokenLogin, _ := ts.mintServiceLauncherCredential(t)
 	legacyLogin, _ := ts.mintOutstandingServiceCredential(t, testApprover)
 	ownLogin, _ := ts.mintLauncherCredential(t, restrictedGuest, "guest-laptop")
-	listed := func(t *testing.T, person string) []string {
-		t.Helper()
-		var ids []string
-		for _, login := range ts.machineLogins(t, person) {
-			ids = append(ids, login.CredentialID)
-		}
-		return ids
-	}
-	revoke := func(t *testing.T, person, id string) answerRead {
-		t.Helper()
-		status, body := ts.ui(t, http.MethodPost, "/v1/launcher-credentials/"+id+"/revoke-by-approver", map[string]any{"approver": person})
-		return answerOf(t, status, body)
-	}
-	live := func(t *testing.T, id string) bool {
-		t.Helper()
-		return slices.Equal(ts.column(t, `select (revoked_at is null)::text from launcher_credentials where id=$1`, id), []string{"true"})
-	}
 
 	t.Run("a restricted member lists and ends their own machine login alone", func(t *testing.T) {
-		if got := listed(t, restrictedGuest); !slices.Contains(got, ownLogin) || slices.Contains(got, tokenLogin) || slices.Contains(got, legacyLogin) {
+		if got := ts.machineLoginIDs(t, restrictedGuest); !slices.Contains(got, ownLogin) || slices.Contains(got, tokenLogin) || slices.Contains(got, legacyLogin) {
 			t.Fatalf("GET /v1/launcher-credentials?approver=%s = %v; want their own login %s and neither service login (%s, %s)", restrictedGuest, got, ownLogin, tokenLogin, legacyLogin)
 		}
 		for _, id := range []string{tokenLogin, legacyLogin} {
-			requireAnswered(t, restrictedGuest+"'s revoke of the service login "+id, revoke(t, restrictedGuest, id), http.StatusNotFound, "NOT_FOUND")
-			if !live(t, id) {
+			requireAnswered(t, restrictedGuest+"'s revoke of the service login "+id, ts.revokeMachineLoginAs(t, restrictedGuest, id), http.StatusNotFound, "NOT_FOUND")
+			if !ts.machineLoginLive(t, id) {
 				t.Fatalf("the service login %s ended on %s's refused revoke", id, restrictedGuest)
 			}
 		}
-		if got := revoke(t, restrictedGuest, ownLogin); got.status != http.StatusOK || live(t, ownLogin) {
-			t.Fatalf("%s's revoke of their own machine login = %d %s, live afterwards %v; want 200 and it ended", restrictedGuest, got.status, got.body, live(t, ownLogin))
+		if got := ts.revokeMachineLoginAs(t, restrictedGuest, ownLogin); got.status != http.StatusOK || ts.machineLoginLive(t, ownLogin) {
+			t.Fatalf("%s's revoke of their own machine login = %d %s, live afterwards %v; want 200 and it ended", restrictedGuest, got.status, got.body, ts.machineLoginLive(t, ownLogin))
 		}
 	})
 
 	stand.SetMemberKind(hiddenInsider, "guest-of-honour")
 	access.Serve(stand)
-	t.Run("while Dispatch answers a member kind the broker does not know, both routes are refused", func(t *testing.T) {
-		status, body := ts.ui(t, http.MethodGet, "/v1/launcher-credentials?approver="+url.QueryEscape(hiddenInsider), nil)
-		requireAnswered(t, hiddenInsider+"'s machine-login list while her kind cannot be read", answerOf(t, status, body), http.StatusServiceUnavailable, "MEMBER_KIND_UNCHECKABLE")
-		requireAnswered(t, hiddenInsider+"'s revoke of the daemon's login while her kind cannot be read", revoke(t, hiddenInsider, tokenLogin), http.StatusServiceUnavailable, "MEMBER_KIND_UNCHECKABLE")
-		if !live(t, tokenLogin) {
+	t.Run("while Dispatch answers a member kind the broker does not know, both routes hold the person to their own logins", func(t *testing.T) {
+		if got := ts.machineLoginIDs(t, hiddenInsider); slices.Contains(got, tokenLogin) || slices.Contains(got, legacyLogin) {
+			t.Fatalf("GET /v1/launcher-credentials?approver=%s while her kind cannot be read = %v; want neither service login (%s, %s)", hiddenInsider, got, tokenLogin, legacyLogin)
+		}
+		requireAnswered(t, hiddenInsider+"'s revoke of the daemon's login while her kind cannot be read", ts.revokeMachineLoginAs(t, hiddenInsider, tokenLogin), http.StatusNotFound, "NOT_FOUND")
+		if !ts.machineLoginLive(t, tokenLogin) {
 			t.Fatalf("the daemon's login %s ended on %s's refused revoke", tokenLogin, hiddenInsider)
 		}
 	})
 
 	t.Run("a full member lists both service logins and ends the daemon's", func(t *testing.T) {
-		if got := listed(t, "bob@example.com"); !slices.Contains(got, tokenLogin) || !slices.Contains(got, legacyLogin) {
+		if got := ts.machineLoginIDs(t, "bob@example.com"); !slices.Contains(got, tokenLogin) || !slices.Contains(got, legacyLogin) {
 			t.Fatalf("GET /v1/launcher-credentials?approver=bob@example.com = %v; want both service logins (%s, %s)", got, tokenLogin, legacyLogin)
 		}
-		if got := revoke(t, "bob@example.com", tokenLogin); got.status != http.StatusOK || decode[stateBody](t, []byte(got.body)).State != "revoked" || live(t, tokenLogin) {
+		if got := ts.revokeMachineLoginAs(t, "bob@example.com", tokenLogin); got.status != http.StatusOK || decode[stateBody](t, []byte(got.body)).State != "revoked" || ts.machineLoginLive(t, tokenLogin) {
 			t.Fatalf("bob's revoke of the daemon's login = %d %s; want 200 revoked, and it ended", got.status, got.body)
 		}
 	})
+}
+
+// TestAFullMemberEndsTheirOwnMachineLoginWhileTheirKindCannotBeRead: a person ends a lost
+// machine's login on Dispatch's machine-login page whatever Dispatch answers of them. While the
+// broker cannot read bob's member kind — Dispatch answers a kind this broker does not know, is
+// down, or refuses the broker's own account — the machine-login routes hold him to his own logins,
+// as they hold a restricted member: GET /v1/launcher-credentials lists his own login and not the
+// Legion daemon's, his revoke of his own login ends it, and his revoke of the daemon's answers 404
+// NOT_FOUND, ending nothing. The control: once Dispatch answers him a full member, his list holds
+// the daemon's login again.
+func TestAFullMemberEndsTheirOwnMachineLoginWhileTheirKindCannotBeRead(t *testing.T) {
+	const bob = "bob@example.com"
+	ts, access, stand := restrictedStand(t)
+	tokenLogin, _ := ts.mintServiceLauncherCredential(t)
+	for _, fault := range []struct {
+		name, host string
+		set        func(*projectaccesstest.Server)
+	}{
+		{"Dispatch answers a member kind this broker does not know", "bob-laptop-1", func(s *projectaccesstest.Server) { s.SetMemberKind(bob, "guest-of-honour") }},
+		{"Dispatch is down", "bob-laptop-2", func(s *projectaccesstest.Server) { s.SetDown(true) }},
+		{"Dispatch refuses the broker's own account", "bob-laptop-3", func(s *projectaccesstest.Server) {
+			s.SetAnswer(http.StatusForbidden, `{"code":"ACCOUNT_NOT_LISTED","error":"this account may not ask"}`)
+		}},
+	} {
+		t.Run(fault.name, func(t *testing.T) {
+			access.Serve(stand)
+			own, _ := ts.mintLauncherCredential(t, bob, fault.host)
+			faulty := projectaccesstest.NewServer(t, nil, map[string]string{bob: projectaccess.MemberFull})
+			fault.set(faulty)
+			access.Serve(faulty)
+			capture := &logtest.Recorder{}
+			logtest.SetDefault(t, capture)
+			if got := ts.machineLoginIDs(t, bob); !slices.Contains(got, own) || slices.Contains(got, tokenLogin) {
+				t.Fatalf("GET /v1/launcher-credentials?approver=%s = %v; want his own login %s and not the daemon's %s", bob, got, own, tokenLogin)
+			}
+			requireAnswered(t, bob+"'s revoke of the daemon's login", ts.revokeMachineLoginAs(t, bob, tokenLogin), http.StatusNotFound, "NOT_FOUND")
+			if !ts.machineLoginLive(t, tokenLogin) {
+				t.Fatalf("the daemon's login %s ended on %s's refused revoke", tokenLogin, bob)
+			}
+			if got := ts.revokeMachineLoginAs(t, bob, own); got.status != http.StatusOK || decode[stateBody](t, []byte(got.body)).State != "revoked" || ts.machineLoginLive(t, own) {
+				t.Fatalf("%s's revoke of his own machine login = %d %s; want 200 revoked, and it ended", bob, got.status, got.body)
+			}
+			if faulty.Calls() == 0 {
+				t.Fatal("the faulty Dispatch was never asked: the row is blind")
+			}
+			var held int
+			for _, rec := range capture.Records() {
+				if rec.Message == api.MachineLoginsOwnOnlyMessage && rec.Level == slog.LevelWarn {
+					held++
+				}
+			}
+			if held != 3 {
+				t.Fatalf("the log holds %d WARN lines of %q; want one for each of his three calls", held, api.MachineLoginsOwnOnlyMessage)
+			}
+		})
+	}
+
+	access.Serve(stand)
+	t.Run("once Dispatch answers, his list holds the daemon's login", func(t *testing.T) {
+		if got := ts.machineLoginIDs(t, bob); !slices.Contains(got, tokenLogin) {
+			t.Fatalf("GET /v1/launcher-credentials?approver=%s once Dispatch answers = %v; want the daemon's login %s", bob, got, tokenLogin)
+		}
+	})
+}
+
+// stalledKinds is a projectaccess.Access whose member-kind reads, once stall is set, Dispatch never
+// answers: each waits until its caller's context ends, and records how long that context had left.
+// A read whose context has no deadline would wait as long as its caller, so it is answered at once
+// with an error and counted as unbounded, which the row reads as the fault. Until stall is set,
+// and for every other question, it answers as answers does.
+type stalledKinds struct {
+	answers   projectaccess.Access
+	stall     atomic.Bool
+	mu        sync.Mutex
+	unbounded int
+	bounds    []time.Duration
+}
+
+func (s *stalledKinds) Access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+	return s.answers.Access(ctx, project, person)
+}
+
+func (s *stalledKinds) States(ctx context.Context, projects []string) (map[string]projectaccess.Answer, error) {
+	return s.answers.States(ctx, projects)
+}
+
+func (s *stalledKinds) MemberKind(ctx context.Context, person string) (string, error) {
+	if !s.stall.Load() {
+		return s.answers.MemberKind(ctx, person)
+	}
+	deadline, bounded := ctx.Deadline()
+	s.mu.Lock()
+	if !bounded {
+		s.unbounded++
+		s.mu.Unlock()
+		return "", errors.New("stalledKinds: a member-kind read with no deadline")
+	}
+	s.bounds = append(s.bounds, time.Until(deadline))
+	s.mu.Unlock()
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+// TestTheMachineLoginRoutesReadTheMemberKindWithinTheRelaysWait: Dispatch waits 5 seconds for the
+// broker's answer to a route it relays, and one read of Dispatch may take longer
+// (projectaccess.RelayedReadBound's reason), so the member-kind read of each machine-login route
+// has a bound of its own below that wait. A read Dispatch does not answer within it is one
+// Dispatch did not answer: bob, a full member, is listed his own login and not the Legion daemon's,
+// and ends his own login.
+func TestTheMachineLoginRoutesReadTheMemberKindWithinTheRelaysWait(t *testing.T) {
+	const bob = "bob@example.com"
+	const dispatchRelayWait = 5 * time.Second
+	stand := projectaccesstest.NewServer(t, nil, map[string]string{bob: projectaccess.MemberFull})
+	stalled := &stalledKinds{answers: projectaccess.New(stand.URL, stand.Account, nil)}
+	ts := newTestServerWith(t, func(d *api.Deps) { d.Enroll.Projects = stalled })
+	tokenLogin, _ := ts.mintServiceLauncherCredential(t)
+	own, _ := ts.mintLauncherCredential(t, bob, "bob-laptop")
+	stalled.stall.Store(true)
+
+	if got := ts.machineLoginIDs(t, bob); !slices.Contains(got, own) || slices.Contains(got, tokenLogin) {
+		t.Fatalf("GET /v1/launcher-credentials?approver=%s while Dispatch does not answer = %v; want his own login %s and not the daemon's %s", bob, got, own, tokenLogin)
+	}
+	if got := ts.revokeMachineLoginAs(t, bob, own); got.status != http.StatusOK || ts.machineLoginLive(t, own) {
+		t.Fatalf("%s's revoke of his own machine login while Dispatch does not answer = %d %s; want 200, and it ended", bob, got.status, got.body)
+	}
+	stalled.mu.Lock()
+	defer stalled.mu.Unlock()
+	if stalled.unbounded != 0 || len(stalled.bounds) != 2 {
+		t.Fatalf("the two routes asked %d member-kind reads with no deadline and %d with one; want two, each bounded", stalled.unbounded, len(stalled.bounds))
+	}
+	for _, bound := range stalled.bounds {
+		if bound >= dispatchRelayWait {
+			t.Fatalf("a machine-login route read a member kind with %s to run; want less than the %s Dispatch waits for the route", bound, dispatchRelayWait)
+		}
+	}
 }
 
 // TestAServicePodsGrantIsOnNoRestrictedMembersList: the grant a service pod took without asking

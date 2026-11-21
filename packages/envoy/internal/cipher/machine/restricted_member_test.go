@@ -3,6 +3,7 @@ package machine
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -44,8 +45,9 @@ func TestARestrictedMemberDeniesNoServicesLogin(t *testing.T) {
 		svc := newFixture(t)
 		recordID, code, _ := insertServiceRecord(t, svc, record.AnyoneApprover)
 		asking(svc, projectaccesstest.NewServer(t, nil, kinds))
-		if state, _, err := svc.ApplyDecision(ctx, recordID, false, guest, code); !errors.Is(err, record.ErrNotApprover) {
-			t.Fatalf("ApplyDecision(deny) by %s = %q, %v; want record.ErrNotApprover", guest, state, err)
+		state, _, err := svc.ApplyDecision(ctx, recordID, false, guest, code)
+		if !errors.Is(err, record.ErrNotApprover) || !strings.HasPrefix(err.Error(), "a person Dispatch calls a restricted member is no approver of") || !strings.Contains(err.Error(), "deny") {
+			t.Fatalf("ApplyDecision(deny) by %s = %q, %v; want record.ErrNotApprover, opening by saying they are a restricted member and saying they deny none", guest, state, err)
 		}
 		if n := decisions(t, svc, recordID); n != 0 {
 			t.Fatalf("the refused deny wrote %d decisions; want none, the login still pending", n)

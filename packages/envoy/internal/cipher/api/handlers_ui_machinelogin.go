@@ -64,45 +64,53 @@ type launcherCredentialsResponse = wire.LauncherCredentialsResponse
 // listLauncherCredentials lists the machine logins the person ?approver= names may revoke
 // (enroll.Service.LiveCredentials, through writeLauncherCredentials): for a person Dispatch calls a
 // restricted member, who is no approver of a secret and sees nothing beyond their own projects,
-// their own machine logins alone (enroll.Service.OwnLiveCredentials), as their own machine lists
-// them; and 503 MEMBER_KIND_UNCHECKABLE while Dispatch cannot say what kind of member the person is
+// and for anyone while Dispatch cannot say what kind of member the person is, their own machine
+// logins alone (enroll.Service.OwnLiveCredentials), as their own machine lists them
 // (machineLoginsOwnOnly).
 func (s *server) listLauncherCredentials(w http.ResponseWriter, r *http.Request, _ string) {
 	approver := r.URL.Query().Get("approver")
 	if !requireApprover(w, approver) {
 		return
 	}
-	ownOnly, ok := s.machineLoginsOwnOnly(w, r, approver, "the machine-login list")
-	if !ok {
-		return
-	}
 	list := s.deps.Enroll.LiveCredentials
-	if ownOnly {
+	if s.machineLoginsOwnOnly(r, approver, "list") {
 		list = s.deps.Enroll.OwnLiveCredentials
 	}
 	s.writeLauncherCredentials(w, r, list, approver)
 }
 
 // machineLoginsOwnOnly reports whether the machine-login routes Dispatch relays for person hold
-// person to their own machine logins: true for a person Dispatch calls a restricted member
-// (projectaccess.Restricted), since a service's login is every signed-in person's only as an
-// approver of it, and ending one ends every session it enrolled. It asks Dispatch through the enroll
-// service's client within projectaccess.RelayedReadBound, and asks nothing on a broker with no
-// client of Dispatch. When Dispatch could not be asked it answers 503 MEMBER_KIND_UNCHECKABLE
-// (writeMemberKindUncheckable), refusing what, and ok false: a revoke fails closed here, unlike an
-// approver's revoke of a grant, since it would end other people's sessions.
-func (s *server) machineLoginsOwnOnly(w http.ResponseWriter, r *http.Request, person, what string) (ownOnly, ok bool) {
+// person to their own machine logins (enroll.Service.OwnLiveCredentials, RevokeOwnCredential): for
+// a person Dispatch calls a restricted member (projectaccess.Restricted), since a service's login is
+// every signed-in person's only as an approver of it, and ending one ends every session it
+// enrolled; and for anyone while Dispatch cannot say what kind of member they are, which it logs
+// (MachineLoginsOwnOnlyMessage) unless the caller went away. A person's own logins stay theirs to
+// list and end whatever Dispatch answers, as a lost machine's login must, and a service's login is
+// out of reach of a person the broker cannot read, as it is of a restricted member. route names
+// the route for the log line. It asks Dispatch through the enroll service's client within
+// projectaccess.RelayedReadBound, and asks nothing on a broker with no client of Dispatch.
+func (s *server) machineLoginsOwnOnly(r *http.Request, person, route string) bool {
 	if s.deps.Enroll.Projects == nil {
-		return false, true
+		return false
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), projectaccess.RelayedReadBound)
 	defer cancel()
-	restricted, err := projectaccess.Restricted(ctx, s.deps.Enroll.Projects, record.CanonicalLogin(person))
-	if writeMemberKindUncheckable(w, what, err) {
-		return false, false
+	login := record.CanonicalLogin(person)
+	restricted, err := projectaccess.Restricted(ctx, s.deps.Enroll.Projects, login)
+	if err != nil {
+		if r.Context().Err() == nil {
+			slog.Warn(MachineLoginsOwnOnlyMessage, "route", route, "person", login, "error", err)
+		}
+		return true
 	}
-	return restricted, true
+	return restricted
 }
+
+// MachineLoginsOwnOnlyMessage is logged, at WARN, for each machine-login list or revoke that held
+// the person to their own logins because Dispatch could not say whether they are a restricted
+// member (machineLoginsOwnOnly), followed by route=<list or revoke>, person=<the canonical login>
+// and error=<why it could not ask>.
+const MachineLoginsOwnOnlyMessage = "broker: a machine-login route holds the person to their own logins, since Dispatch could not say whether the person is a restricted member"
 
 // writeLauncherCredentials answers the machine logins list names for person, each one that can
 // still reach a secret: not revoked, and either unexpired or expired with a session it enrolled
@@ -131,10 +139,10 @@ func (s *server) writeLauncherCredentials(w http.ResponseWriter, r *http.Request
 // BROKER_POD_OPERATORS maps the pod's account to, and as nobody else, although such a login
 // carries a service and a subject. A person Dispatch calls a restricted member ends their own
 // logins alone (enroll.Service.RevokeOwnCredential), and a service's is 404 to them, as an id no
-// login has; while Dispatch cannot say what kind of member the person is, the revoke is 503
-// MEMBER_KIND_UNCHECKABLE and ends nothing (machineLoginsOwnOnly). The caller that relayed it is
-// logged beside that person, whose name the broker still takes on the caller's word: a revoke only
-// takes power away.
+// login has; so does anyone while Dispatch cannot say what kind of member the person is
+// (machineLoginsOwnOnly), so a lost machine's login is ended whatever Dispatch answers. The caller
+// that relayed it is logged beside that person, whose name the broker still takes on the caller's
+// word: a revoke only takes power away.
 func (s *server) revokeLauncherCredential(w http.ResponseWriter, r *http.Request, callerName string) {
 	id, ok := pathUUID(w, r, "id", "CREDENTIAL_ID_INPUT", "launcher credential")
 	if !ok {
@@ -150,12 +158,8 @@ func (s *server) revokeLauncherCredential(w http.ResponseWriter, r *http.Request
 	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
 	// (answer.ClipFields).
 	slog.Info("machine login revocation relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "credential", id})...)
-	ownOnly, ok := s.machineLoginsOwnOnly(w, r, body.Approver, "the machine login's revoke")
-	if !ok {
-		return
-	}
 	revoke := s.deps.Enroll.RevokeCredential
-	if ownOnly {
+	if s.machineLoginsOwnOnly(r, body.Approver, "revoke") {
 		revoke = s.deps.Enroll.RevokeOwnCredential
 	}
 	s.revokeCredentialAs(w, r, revoke, id, body.Approver, record.HumanActor(body.Approver))

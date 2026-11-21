@@ -340,8 +340,8 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 
 // errRestrictedDenier is ApplyDecision's refusal of a deny of a service's login by a person
 // Dispatch calls a restricted member: record.ErrNotApprover, which the API answers 403
-// NOT_APPROVER with these words.
-var errRestrictedDenier = fmt.Errorf("%w: a person Dispatch calls a restricted member is no approver of a secret, and denies no service's machine login", record.ErrNotApprover)
+// NOT_APPROVER with these words (projectaccess.NoApprover).
+var errRestrictedDenier = projectaccess.NoApprover(record.ErrNotApprover, "a secret or of a service's machine login, so they deny no service's machine login")
 
 // serviceDenier is what a deny reads of its deciding person before ApplyDecision's transaction,
 // for a service's login (readServiceDenier): whether Dispatch calls the person a restricted member,

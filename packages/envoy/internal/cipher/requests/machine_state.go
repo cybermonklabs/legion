@@ -1532,17 +1532,19 @@ type Dismissal struct {
 // (dismissAdmits), for an empty login, one that is record.AnyoneApprover itself, or one spelled as
 // a group, which name nobody; ErrRestrictedDismissal, which is record.ErrNotApprover, when Dispatch
 // calls login a restricted member and the record waits on login only as one of its approvers
-// (approverRow: a secret request, or a service's legacy machine login), none of which their list
-// holds (restricted_approver.go); the *projectaccess.MemberKindUncheckable that member-kind read
-// returns when Dispatch could not be asked; ErrNotExpired for a record nobody has decided whose
-// deadline has not passed; and ErrTerminal for every other record, one approved, denied or
-// revoked, and a secret request cancelled before its deadline. A secret request cancelled after
-// its deadline is expired, and is dismissed like any other. A person's own machine login is
-// dismissed as before, asking Dispatch nothing of login.
+// (approverRow: a secret request, or a service's machine login, even one an older broker opened
+// naming login), none of which their list holds (restricted_approver.go); the
+// *projectaccess.MemberKindUncheckable that member-kind read returns when Dispatch could not be
+// asked; ErrNotExpired for a record nobody has decided whose deadline has not passed; and
+// ErrTerminal for every other record, one approved, denied or revoked, and a secret request
+// cancelled before its deadline. A secret request cancelled after its deadline is expired, and is
+// dismissed like any other. A person's own machine login is dismissed as before, asking Dispatch
+// nothing of login.
 //
 // The person rule is read on the pool before the transaction (hideUnseenRecord), since it may ask
-// Dispatch, and no call to Dispatch runs in a transaction that holds locks; so is login's member
-// kind, after the rule and only for a record whose list holds login as one of its approvers
+// Dispatch, and no call to Dispatch runs in a transaction that holds locks; so is whether a machine
+// login is a person's machine's (personalLogin), from its signed request, and login's member kind,
+// after the rule and only for a record whose list holds login as one of its approvers
 // (dismissApproves).
 // The rule reads the record's rows rather than its signed request, so a record signed for another
 // broker address is refused an outsider as an unknown id too, not with the error of a request
@@ -1569,7 +1571,13 @@ func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissa
 		return Dismissal{}, err
 	}
 	login = record.CanonicalLogin(login)
-	standing, err := m.dismissApproves(ctx, login, facts)
+	var personal bool
+	if facts.kind == record.KindLauncherCredential {
+		if personal, err = m.personalLogin(ctx, recordID); err != nil {
+			return Dismissal{}, err
+		}
+	}
+	standing, err := m.dismissApproves(ctx, login, facts, personal)
 	if err != nil {
 		return Dismissal{}, err
 	}
@@ -1585,7 +1593,7 @@ func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissa
 	switch {
 	case !dismissAdmits(m.Groups, approver, login):
 		return Dismissal{}, record.ErrNotApprover
-	case approverRow(kind, approver, login) && !standing.approves:
+	case approverRow(kind, approver, login, personal) && !standing.approves:
 		if standing.restricted {
 			return Dismissal{}, ErrRestrictedDismissal
 		}
@@ -1641,17 +1649,18 @@ func dismissAdmits(groups record.Groups, approver, login string) bool {
 
 // dismissApproves answers whether login, canonical, may dismiss the record facts describe as one
 // of its approvers, read before Dismiss's transaction: approving, and asking nothing, for a
-// record that waits on login as a person, their own machine login; for a record whose list holds
-// login only as one of its approvers (approverRow: a secret request, or a service's legacy machine
-// login) and whose approver admits login (dismissAdmits), whether Dispatch calls login no restricted
-// member (approvesSecrets), who is no approver of either (restricted_approver.go); and approving
-// nothing, asking nothing, for such a record no arm admits login to, which the transaction refuses
-// whatever it is, so a group read that comes to admit login between the two reads admits nothing
-// unasked. A machine with no client of Dispatch asks nothing, and every approver stands as before.
-func (m *Machine) dismissApproves(ctx context.Context, login string, facts rowFacts) (approverStanding, error) {
+// record that waits on login as a person, their own machine login (personal: a person's machine's,
+// approverRow); for a record whose list holds login only as one of its approvers (approverRow: a
+// secret request, or a service's machine login) and whose approver admits login (dismissAdmits),
+// whether Dispatch calls login no restricted member (approvesSecrets), who is no approver of either
+// (restricted_approver.go); and approving nothing, asking nothing, for such a record no arm admits
+// login to, which the transaction refuses whatever it is, so a group read that comes to admit login
+// between the two reads admits nothing unasked. A machine with no client of Dispatch asks nothing,
+// and every approver stands as before.
+func (m *Machine) dismissApproves(ctx context.Context, login string, facts rowFacts, personal bool) (approverStanding, error) {
 	approver := deref(facts.approver)
 	switch {
-	case m.Projects == nil || !approverRow(facts.kind, approver, login):
+	case m.Projects == nil || !approverRow(facts.kind, approver, login, personal):
 		return approverStanding{approves: true}, nil
 	case !dismissAdmits(m.Groups, approver, login):
 		return approverStanding{}, nil
@@ -1719,7 +1728,7 @@ func (m *Machine) denyUndecidable(ctx context.Context, now time.Time) ([]store.E
 	var id, canonical string
 	var createdAt time.Time
 	if _, err := pgx.ForEachRow(rows, []any{&id, &canonical, &createdAt}, func() error {
-		if _, _, err := m.requestedIdentifiers(canonical, createdAt); err == nil {
+		if _, _, _, err := m.requestedIdentifiers(canonical, createdAt); err == nil {
 			undecidable = append(undecidable, id)
 		}
 		return nil

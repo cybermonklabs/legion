@@ -2,15 +2,16 @@
 // (projectaccess.MemberRestricted) is no approver of a secret. Such a person was admitted by a
 // project's access list from outside the deployment's sign-in domain and sees only the projects
 // that name them. They decide no secret request on the broker's approval page, which signs in only
-// its own domain and asks the deciding person's member kind too (ApplyDecision); and the routes
-// Dispatch relays for its signed-in people show them no secret request or grant as its approver,
-// and let them end or dismiss none, whichever arm would make them its approver: the record's or the
-// grant's own login (a secret they own, or a grant the model judge approved in their stead),
-// record.AnyoneApprover (a shared secret), or a Google group the group reader lists them in. Those
-// routes are the pending list (PendingForApprover), the grant list (GrantsForApprover), the revoke
-// (RevokeByApprover) and the dismissal (Dismiss). Nor are they an approver of a service's machine
-// login, which waits on record.AnyoneApprover: a legacy one is on no list of theirs and theirs to
-// dismiss nowhere, and the machine package holds its deny to the same rule
+// its own domain, shows them no request (DecidesSecrets) and asks the deciding person's member kind
+// too (ApplyDecision); and the routes Dispatch relays for its signed-in people show them no secret
+// request or grant as its approver, and let them end or dismiss none, whichever arm would make them
+// its approver: the record's or the grant's own login (a secret they own, or a grant the model
+// judge approved in their stead), record.AnyoneApprover (a shared secret), or a Google group the
+// group reader lists them in. Those routes are the pending list (PendingForApprover), the grant
+// list (GrantsForApprover), the revoke (RevokeByApprover) and the dismissal (Dismiss). Nor are they
+// an approver of a service's machine login, which is no person's own, whoever it waits on: a
+// legacy one, waiting on record.AnyoneApprover or on a person an older broker named, is on no list
+// of theirs and theirs to dismiss nowhere, and the machine package holds its deny to the same rule
 // (machine.Service.ApplyDecision). What is theirs as a person stays theirs, and asks Dispatch
 // nothing here: their own machine logins, which a person decides alone, and the grants of the
 // sessions that act for them now, which they end as the session's operator. Nothing else a list
@@ -22,19 +23,20 @@
 // other grounds asks nothing. A route Dispatch relays bounds that read below Dispatch's own wait
 // (projectaccess.RelayedReadBound, approvesSecrets), so a Dispatch that does not answer leaves the
 // route its answer. A failure to ask fails closed, as every other read of a person's member kind
-// does, everywhere but the revoke: the dismissal and the decision return the
+// does, everywhere but one revoke: the dismissal and the decision return the
 // *projectaccess.MemberKindUncheckable, which the API answers 503 MEMBER_KIND_UNCHECKABLE, and the
 // two lists leave the approver rows of that read off and log it (approverKindUnreadMessage), as
-// they leave off a row whose project Dispatch could not be asked about. The revoke goes ahead while
-// Dispatch does not answer, and logs it (revokeApproves): a revoke only takes access away; a
-// failure that lasts until somebody fixes it refuses it as it refuses the rest. A machine with no
-// client of Dispatch asks nothing, and every approver stands as before.
+// they leave off a row whose project Dispatch could not be asked about. A grant's named approver's
+// revoke goes ahead while Dispatch does not answer (projectaccess.Unanswered), and logs it
+// (revokeApproves): a revoke only takes access away, and nobody else ends that grant as its
+// approver; every other failure, and every other approver's revoke, refuses it as it refuses the
+// rest. A machine with no client of Dispatch asks nothing, and every approver stands as before.
 package requests
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -80,27 +82,54 @@ func approvesAsReadBy(approves bool) approverStanding {
 
 // approverRow reports whether a record of kind, waiting on approver, waits on login, canonical,
 // only as one of its approvers, which no restricted member is: every secret request, whichever arm
-// names login, and a machine login that waits on someone other than login, a service's legacy one
-// waiting on record.AnyoneApprover. A person's own machine login waits on that person, and is theirs
-// to decide as a person.
-func approverRow(kind, approver, login string) bool {
-	return kind == record.KindAgentSecret || record.CanonicalLogin(approver) != login
+// names login; and every machine login but login's own, whose signed request, verified for this
+// broker, names no service (personal) and which waits on login. A service's login is no person's
+// own, whoever it waits on: record.AnyoneApprover, or a person an older broker named its approver.
+// A person's own machine login is theirs to decide as a person.
+func approverRow(kind, approver, login string, personal bool) bool {
+	return kind == record.KindAgentSecret || !personal || record.CanonicalLogin(approver) != login
+}
+
+// personalLogin reports whether machine login recordID is a person's machine's: its signed request,
+// verified for this broker as the pending list verifies it (requestedIdentifiers), names no
+// service. A record whose request does not verify here is on no list of this broker and proves no
+// login a person's own, so it is no one's (approverRow). A failed read is that read's error.
+func (m *Machine) personalLogin(ctx context.Context, recordID string) (bool, error) {
+	var canonical string
+	var createdAt time.Time
+	if err := m.Store.Pool.QueryRow(ctx, `select body, created_at from credential_requests where id=$1`, recordID).Scan(&canonical, &createdAt); err != nil {
+		return false, err
+	}
+	_, _, service, err := m.requestedIdentifiers(canonical, createdAt)
+	return err == nil && service == "", nil
 }
 
 // ErrRestrictedDismissal is Dismiss's refusal of a person Dispatch calls a restricted member, of a
 // record whose list holds them only as one of its approvers (approverRow): record.ErrNotApprover,
-// which the API answers 403 NOT_APPROVER with these words.
-var ErrRestrictedDismissal = fmt.Errorf("%w: a person Dispatch calls a restricted member is no approver of a secret or of a service's machine login, and dismisses only their own machine logins", record.ErrNotApprover)
+// which the API answers 403 NOT_APPROVER with these words (projectaccess.NoApprover).
+var ErrRestrictedDismissal = projectaccess.NoApprover(record.ErrNotApprover, "a secret or of a service's machine login, so they dismiss only their own machine logins")
 
 // ErrRestrictedDecider is ApplyDecision's refusal of a person Dispatch calls a restricted member,
 // who decides no secret request, approving or denying, even one for a secret they own:
-// record.ErrNotApprover, in these words.
-var ErrRestrictedDecider = fmt.Errorf("%w: a person Dispatch calls a restricted member is no approver of a secret, and decides no secret request", record.ErrNotApprover)
+// record.ErrNotApprover, in these words (projectaccess.NoApprover).
+var ErrRestrictedDecider = projectaccess.NoApprover(record.ErrNotApprover, "a secret, so they decide no secret request")
 
 // errRestrictedRevoker is RevokeByApprover's refusal of a person Dispatch calls a restricted member,
 // of a grant that admits them only as an approver: ErrNotApprover, which the API answers 403
-// NOT_APPROVER with these words.
-var errRestrictedRevoker = fmt.Errorf("%w: a person Dispatch calls a restricted member is no approver of a secret, and ends a grant only as the person its session acts for", ErrNotApprover)
+// NOT_APPROVER with these words (projectaccess.NoApprover).
+var errRestrictedRevoker = projectaccess.NoApprover(ErrNotApprover, "a secret, so they end a grant only as the person its session acts for")
+
+// DecidesSecrets reports whether login, a person signed in to the broker's approval page, may be
+// shown and decide secret requests there: false for a person Dispatch calls a restricted member,
+// who is no approver of a secret, and the *projectaccess.MemberKindUncheckable restrictedPerson
+// returns when that cannot be asked. It reads as the page's decision does (ApplyDecision): on the
+// page's own context, from the client's cache while its answer is young, so the page and the
+// decision it offers read one answer. A machine with no client of Dispatch asks nothing, and
+// everyone decides as before.
+func (m *Machine) DecidesSecrets(ctx context.Context, login string) (bool, error) {
+	restricted, err := m.restrictedPerson(ctx, record.CanonicalLogin(login))
+	return err == nil && !restricted, err
+}
 
 // approverKindUnreadMessage is the log line for an approver's list that leaves out every row it
 // would hold the person as an approver of, because the broker could not ask Dispatch whether that

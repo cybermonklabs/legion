@@ -101,9 +101,10 @@ func (s *server) revokeByApprover(w http.ResponseWriter, r *http.Request, caller
 // is 409 GRANT_MOVING; each revokes nothing. A person Dispatch calls a restricted member is no
 // approver of a secret, and ends a grant only as the person its enrollment acts for: one the grant
 // admits only as an approver is 403 NOT_APPROVER, saying why, revoking nothing. While Dispatch does
-// not answer what kind of member the person is, the revoke goes ahead, since a revoke only takes
-// access away; while Dispatch refuses the broker's own account or answers a kind this broker does
-// not know, it is 503 MEMBER_KIND_UNCHECKABLE, revoking nothing. When the operator
+// not answer what kind of member the person is, the revoke of the person the grant names as its
+// approver goes ahead, since a revoke only takes access away; every other revoke as an approver
+// then, and every revoke while Dispatch answers anything else the broker cannot read, is 503
+// MEMBER_KIND_UNCHECKABLE, revoking nothing. When the operator
 // revokes a grant the session got without asking, its secrets are withheld from that session, even
 // when the grant had already ended: its other grants that got them without asking end too, and its
 // later requests for them ask their owner.
@@ -130,8 +131,9 @@ func writeRevokeRefusal(w http.ResponseWriter, err error) {
 	case errors.Is(err, requests.ErrNotApprover):
 		writeError(w, http.StatusForbidden, "NOT_APPROVER", err.Error())
 	case writeMemberKindUncheckable(w, "the revoke", err):
-		// The grant admits the person only as an approver, and Dispatch's answer of what kind of
-		// member they are is one that lasts until somebody fixes it: nothing was revoked.
+		// The grant admits the person only as an approver, and the broker could not read what kind
+		// of member they are: Dispatch answered what the broker cannot read, or did not answer at
+		// all and the grant does not name the person as its approver. Nothing was revoked.
 	case errors.Is(err, requests.ErrGrantMoving):
 		// Adoptions kept moving the grant between the person rule and the transaction, so the
 		// revoke decided nothing; it succeeds once the grant stays on one session.

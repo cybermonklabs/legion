@@ -97,15 +97,15 @@ func TestTheApprovalPageShowsAPrivateSecretsProject(t *testing.T) {
 	}
 }
 
-// TestTheApprovalPageOfAnUntaggedRequestIsUnchanged: a request for a secret of no project, from a
-// session naming none, prints no project row, and its page asks Dispatch one thing, though the
-// broker holds a client of it: what kind of member the signed-in person is. The page lists the
-// other secret requests waiting on that person through the approver's list, and a person Dispatch
-// calls a restricted member is no approver of a secret whatever the request's tags, so the list
-// asks that once (requests.Machine.PendingForApprover). It asks nothing of a project, a tag or a
-// session. The enrollment itself asks Dispatch the person's member kind
-// (enroll.Service.checkProjects), so the count is read once the request exists.
-func TestTheApprovalPageOfAnUntaggedRequestIsUnchanged(t *testing.T) {
+// TestTheApprovalPageOfAnUntaggedRequestAsksOnlyThePersonsMemberKind: a request for a secret of no
+// project, from a session naming none, prints no project row, and its page asks Dispatch one thing,
+// though the broker holds a client of it: what kind of member the signed-in person is. The page
+// shows a person Dispatch calls a restricted member no secret request at all (Page.ServeRecord),
+// and the list of the other secret requests waiting on the person asks the same
+// (requests.Machine.PendingForApprover), which the client answers from that one read. It asks
+// nothing of a project, a tag or a session. The enrollment itself asks Dispatch the person's member
+// kind (enroll.Service.checkProjects), so the count is read once the request exists.
+func TestTheApprovalPageOfAnUntaggedRequestAsksOnlyThePersonsMemberKind(t *testing.T) {
 	r, dispatch := projectRig(t)
 	enrollmentID, key := r.benSession(t, "ben-plain-box")
 	p := r.request(t, enrollmentID, key, "deploy the billing service", nil, "", "TEST_SECRET")
@@ -307,8 +307,9 @@ func TestADispatchOutageShowsOnlyItsRequestAsUnavailable(t *testing.T) {
 // TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable: ben's page prints his request, and
 // then Dispatch stops answering altogether, its person route included. His approval is refused,
 // since the broker cannot learn whether ben is a restricted member, and the request stays
-// pending. The page he lands on says it could not be decided, try again shortly, and the broker
-// writes no ERROR line: Dispatch not answering is no fault of the page's.
+// pending. The page he lands on answers 503: it cannot learn whether he may decide secret requests
+// either, so it shows him none and says to try again shortly. The broker writes no ERROR line:
+// Dispatch not answering is no fault of the page's.
 func TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable(t *testing.T) {
 	access := &projectaccesstest.Swappable{}
 	access.Serve(projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil))
@@ -333,9 +334,8 @@ func TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable(t *testing.T) {
 	}
 	r.requirePending(t, req.recordID)
 	landed := b.Get(t, res.Header.Get("Location"))
-	const couldNotDecide = "still pending; it was not decided: the secrets broker could not decide it. Try again shortly."
-	if text := pageText(t, landed.Body); landed.Status != http.StatusOK || !strings.Contains(text, couldNotDecide) {
-		t.Fatalf("the page the approval lands on = %d; want 200 saying %q:\n%s", landed.Status, couldNotDecide, text)
+	if text := pageText(t, landed.Body); landed.Status != http.StatusServiceUnavailable || !strings.Contains(text, kindUnreadNote) || strings.Contains(text, "SHARED_SECRET") {
+		t.Fatalf("the page the approval lands on = %d; want 503 saying %q, and nothing of the request:\n%s", landed.Status, kindUnreadNote, text)
 	}
 	for _, rec := range records.Records() {
 		if rec.Level >= slog.LevelError {
@@ -344,5 +344,71 @@ func TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable(t *testing.T) {
 	}
 	if down.Calls() == 0 {
 		t.Fatal("the down Dispatch was never asked: the test is blind")
+	}
+}
+
+// The page's own words for a person it shows no secret request: one Dispatch calls a restricted
+// member, and one whose member kind it cannot learn.
+const (
+	restrictedNote = "Dispatch calls you a restricted member, who decides no secret request, so this page shows you none."
+	kindUnreadNote = "The secrets broker could not ask Dispatch whether you may decide secret requests, so it shows you none and decides none. Try again shortly."
+)
+
+// TestTheApprovalPageShowsARestrictedMemberNothing: the page signs in only the deployment's
+// domain, and does not rest on that alone: a person Dispatch calls a restricted member decides no
+// secret request (requests.ErrRestrictedDecider), so the page shows them none, and refuses their
+// decision saying why. Here Dispatch held no row for ada when her page printed the request for
+// TEST_SECRET, her own secret, and calls her a restricted member before she approves it. Her
+// approval is refused, the request stays pending, and the address it lands on carries the
+// refusal's code, restricted. That page then answers her 403 NOT_APPROVER saying Dispatch calls her
+// a restricted member, and prints nothing of the request, nor offers a decision; the page of an id
+// no record has answers her the same, since it reads no record before it refuses. While Dispatch
+// answers a kind this broker does not know, the page answers 503, saying so, and prints nothing of
+// the request either. The control: once Dispatch holds no row for her again, the same address
+// prints the request, its outcome line saying why it is still pending, and its decision.
+func TestTheApprovalPageShowsARestrictedMemberNothing(t *testing.T) {
+	access := &projectaccesstest.Swappable{}
+	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
+	access.Serve(dispatch)
+	r := newRig(t, func(s *rigSetup) { s.projects = access })
+	session, key := r.benSession(t, "ben-restricted-box")
+	p := r.request(t, session, key, "deploy the billing service", nil, "", "TEST_SECRET")
+	b := r.browser(t)
+	b.SignIn(t, p.recordID, person(ada))
+	form := decisionForm(t, b.Page(t, p.recordID).Body, p.recordID)
+	if form == nil {
+		t.Fatalf("%s's page for %s offers no decision while Dispatch holds no row for her", ada, p.recordID)
+	}
+	dispatch.SetMemberKind(ada, projectaccess.MemberRestricted)
+	access.Serve(dispatch)
+
+	res := b.FromPage(t, "/approve", decision(form, "approve"))
+	to := res.Header.Get("Location")
+	if want := "&refused=" + p.recordID + ":restricted"; res.Status != http.StatusSeeOther || !strings.Contains(to, want) {
+		t.Fatalf("%s's Approve as a restricted member = %d to %q; want 303 carrying %q", ada, res.Status, to, want)
+	}
+	r.requirePending(t, p.recordID)
+	shows := func(t *testing.T, what, path string, status int, note string) {
+		t.Helper()
+		got := b.Get(t, path)
+		text := pageText(t, got.Body)
+		if got.Status != status || !strings.Contains(text, note) || strings.Contains(text, "TEST_SECRET") || decisionForm(t, got.Body, p.recordID) != nil {
+			t.Fatalf("%s = %d; want %d saying %q, and nothing of the request:\n%s", what, got.Status, status, note, text)
+		}
+	}
+	shows(t, "the page her approval lands on", to, http.StatusForbidden, restrictedNote)
+	shows(t, "the request's page", "/approve/"+p.recordID, http.StatusForbidden, restrictedNote)
+	shows(t, "the page of an id no record has", "/approve/"+strings.Repeat("a", 64), http.StatusForbidden, restrictedNote)
+
+	dispatch.SetMemberKind(ada, "guest-of-honour")
+	access.Serve(dispatch)
+	shows(t, "the request's page while her kind cannot be read", "/approve/"+p.recordID, http.StatusServiceUnavailable, kindUnreadNote)
+
+	dispatch.SetMemberKind(ada, projectaccess.MemberNone)
+	access.Serve(dispatch)
+	landed := b.Get(t, to)
+	const why = "TEST_SECRET: still pending; it was not decided: Dispatch called you a restricted member, who decides no secret request."
+	if text := pageText(t, landed.Body); landed.Status != http.StatusOK || !strings.Contains(text, why) || decisionForm(t, landed.Body, p.recordID) == nil {
+		t.Fatalf("the address her approval landed on, once Dispatch holds no row for her = %d; want 200 saying %q, and the decision:\n%s", landed.Status, why, text)
 	}
 }

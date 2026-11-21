@@ -259,9 +259,10 @@ type dismissResponse = wire.DismissResponse
 // word. That person must be one whose list holds the record: its approver, a member the group
 // reader admits to the group that is its approver, or, for a record whose approver is anyone,
 // anybody signed in; and, for a record whose list holds them only as one of its approvers, a
-// secret request or a service's machine login, no person Dispatch calls a restricted member, who is
-// no approver of either: 403 NOT_APPROVER saying so, and 503 MEMBER_KIND_UNCHECKABLE while Dispatch
-// cannot say. A second dismissal answers the first one's values and writes nothing, so a
+// secret request or a service's machine login, even one an older broker opened naming them, no
+// person Dispatch calls a restricted member, who is no approver of either: 403 NOT_APPROVER saying
+// so, and 503 MEMBER_KIND_UNCHECKABLE while Dispatch cannot say. A second dismissal answers the
+// first one's values and writes nothing, so a
 // person who clicks twice, or two people who dismiss one shared request, read one answer. It is
 // logged with the caller that relayed it and the approver it named, as a
 // machine login's decision is.

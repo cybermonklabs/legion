@@ -14,6 +14,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -76,6 +78,13 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 		{"a record the broker does not have", func(t *testing.T) ciphertest.Response {
 			return b.Get(t, "/approve/"+strings.Repeat("a", 64))
 		}, http.StatusNotFound, "NOT_FOUND"},
+		{"a page a person Dispatch calls a restricted member opens", func(t *testing.T) ciphertest.Response {
+			dispatch := projectaccesstest.NewServer(t, nil, map[string]string{ada: projectaccess.MemberRestricted})
+			restricted := newRig(t, func(s *rigSetup) { s.projects = projectaccess.New(dispatch.URL, dispatch.Account, nil) })
+			viewer := restricted.browser(t)
+			viewer.SignIn(t, a.recordID, person(ada))
+			return viewer.Get(t, page)
+		}, http.StatusForbidden, "NOT_APPROVER"},
 		{"a decision form it cannot read", func(t *testing.T) ciphertest.Response {
 			return b.FromPage(t, "/approve", unreadable)
 		}, http.StatusBadRequest, "FORM_UNREADABLE"},
@@ -169,8 +178,8 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			}
 		})
 	}
-	if driven != 17 {
-		t.Fatalf("the table drove %d of the page's 17 refusals", driven)
+	if driven != 18 {
+		t.Fatalf("the table drove %d of the page's 18 refusals", driven)
 	}
 
 	// The page that answers a sign-out refuses nothing, and prints no answer id.
