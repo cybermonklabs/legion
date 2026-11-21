@@ -5737,22 +5737,6 @@ read_port_file "$work/dispatch.port" "$server_pid" port || waited=$?
 It prints nothing, so each caller words its own failure:
 it returns 0 once VAR is set, 1 when PID exits before FILE is written, and 2 after `port_file_seconds` (30).
 
-## lib/subreaper.sh and lib/subreaper.py
-
-A stage proof's shell, made a child subreaper, so every process its run starts stays below it for its whole life and the run's walk can tell another session's process from one of its own when it cannot read its environment (`run_descendant`, [`lib/process-tree.sh`](#libprocess-treesh)).
-Each proof that walks sources `lib/subreaper.sh` as its first command after its `set` line, with no arguments:
-
-```sh
-set -Eeuo pipefail
-. "$(dirname "$0")/lib/subreaper.sh"
-```
-
-`lib/subreaper.sh` runs the proof again in its own process through `lib/subreaper.py CMD [ARG]...`, with the same pid, the same arguments and its xtrace, and `lib/subreaper.py` marks the process a child subreaper (`prctl PR_SET_CHILD_SUBREAPER`, which an exec keeps), sets `LEGION_E2E_SUBREAPER` to its pid and executes CMD.
-A process the run starts whose parent ends then goes to the proof's shell, or to a subreaper below it, never to pid 1 or a reaper above the shell, and bash reaps it when it exits.
-Where the kernel refuses the mark, `lib/subreaper.py` says so on stderr, sets `LEGION_E2E_SUBREAPER` to `PID refused` and runs CMD all the same; where `python3` does not answer (none on the box, or a test's stand-in), `lib/subreaper.sh` runs the proof on as it is.
-Either way the walk judges by `unread_may_carry`, as from any shell that is no subreaper.
-The proofs that source it are the eleven `scripts/e2e/*.sh` that call `run_processes` or `stop_marked_processes` (`claude-backend-sandbox.sh`, `claude-backend-tmux.sh`, `clean-session-stop-tmux.sh`, `controller-start-tmux.sh`, `dispatch-user-turns.sh`, `envoy-session-states.sh`, `parked-decision-devbox.sh`, `stage2-tmux-supervision.sh`, `stage3-4b13b-acceptance.sh`, `stage3-devbox-workflow.sh`, `stage4b-sandbox-tree.sh`) and `packages/pi-legion/scripts/skill-scenarios/rig.sh`, whose every `rig.sh run` and `rig.sh batch` is a shell of its own.
-
 ## lib/built-from.sh
 
 Prints what a stage proof ran, so a run can be tied to a commit after its scratch directory, and the binary in it, are gone.
@@ -6410,12 +6394,6 @@ It names a marked process double-forked to pid 1, which no tree the run started 
 Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it ([`lib/arg-max-force.sh`](#libarg-max-forcesh)), where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process, and `listening_holders` still names the test process holding a listening socket; the forms they replaced name none.
 Where the kernel does not hold an exec to ARG_MAX, as gVisor does not, those two rows are skipped by that name (`argMaxForceHolds`, [`lib/arg-max-force.sh`](#libarg-max-forcesh)).
 A `find` or a `grep` that a signal ends after part of its output makes `listening_holders` and `run_processes` exit 2, a run that has not marked itself has no processes to read, and an empty run directory names none (`marked_processes`, `procs_naming` and `names_dir` exit 2).
-A `grep` that could not read an environment, saying why or saying nothing, alone or beside batches that report only ended entries, makes `run_processes` and `stop_marked_processes` exit 2 with the marked process left running, and one whose only complaints are entries of another user's process or of one that ended during the walk still answers.
-A process of this user whose environment it cannot read (one not dumpable, as `ssh-agent` makes itself) and that started after the walking shell, the shell's child or one double-forked away to a reaper, and one whose environment `grep` could not read after this user's test passed it, make `run_processes` and `stop_marked_processes` exit 2 naming it, with it left running; one that started before that shell, one another session starts below a process older than that shell, and a zombie do not.
-So do such an orphan of the run when the walking shell's parent ends during the read of the shell's line of parents, and one that the init of a pid namespace adopted when the shell entered that namespace from outside, as a shell `docker exec` starts does.
-A marked process that re-execs itself without end, 10 ms apart, a 100,000-byte variable before its mark, is named by every one of 30 walks; an unmarked one that started before the walking shell and re-execs back to back holds no walk even when the walk's bound is 0 s.
-A read of an environment that an exec cut short (the bounds moved between the two stat reads around it, as a scripted `exec_state` and `names_dir` answer over a proc root entry) is read again and the process named; and a process held inside one exec (a scripted `exec_state` that answers `exec` 20 times) is waited for and named with the walk's bound at 0 s, whether it started outside the walking shell or the shell started it.
-From a shell that `lib/subreaper.py` made a child subreaper, a not-dumpable process that another session starts during the run and that leaves for pid 1 does not fail the walk, and the run's own such orphan, which the shell adopted, still makes it exit 2 naming it.
 A marked process whose name holds a newline and a `) ` is still named and ended.
 `stop_marked_processes` ends the marked processes, an escaped one too, and leaves a shell and a `tail -f` under the run's directory running, not stopped;
 with a grace it gives each SIGTERM and the grace, then SIGKILLs only a survivor;
@@ -6464,18 +6442,8 @@ On a devbox at load 469 one such walk of 29,613 entries took 504 s; every other 
 and an entry read through `tr | grep -q` under `pipefail` reads as absent whenever grep stops before tr has written the rest, which missed 2 to 4 reads in 100 of a devbox's own environment and every read of one with a mebibyte after the variable.
 [`lib/rig.sh`](#librigsh) sources it, [`lib/leftovers.sh`](#libleftoverssh) sources it when no script has, and `stage2-tmux-supervision.sh`, which sources no rig, and `packages/dispatch/e2e/acceptance/replace-blocks.sh` source it on their own.
 It needs nothing of its caller's.
-Its walks of every process (`procs_naming`) read `${proc_root:-/proc}` ([`lib/proc-root.ts`](#libproc-rootts)) and hand the environments this user may read to `grep` through `xargs` in calls that fit ARG_MAX, each call's `grep` under a `sh` of its own that turns its no match (exit 1) into 0 and says so itself when `grep` failed and printed nothing, so xargs's 123 always means a `grep` error and every failed call leaves a line of its own, and [`lib/rig.sh`](#librigsh)'s `listening_holders` and [`lib/leftovers.sh`](#libleftoverssh)'s `refuse_leftovers` hand them to `find` on stdin (`-files0-from -`), which needs GNU findutils 4.9 or later: on an older `find` (4.8, Ubuntu 22.04's) both always exit 2.
-All three read their reader's stderr with `proc_walk_complaint ERRFILE PROC`, which prints its first line that is neither an entry of PROC this user may not read nor one whose process ended during the walk (for an environment, `No such file or directory` before its open or `No such process` during it), and fails when there is none.
-An environment of this user's that the kernel keeps from this user (a process not dumpable, or a zombie: `/proc/<pid>` is this user's and its `environ` root's), or that `grep` could not read after the shell's test passed it, is judged by `unread_may_carry PID SHELL_START ANCESTOR…`: `procs_naming` names it and fails with 2, since it may carry the run's mark, unless it runs nothing (a zombie), started before the walking shell (`$$`, the run's own), or has, as the first of its parents older than that shell, a process that is none of that shell's own parents and no init of a pid namespace (another session's process, such as a login session that tailscaled or sshd started).
-The shell's line of parents is read to its top, each parent held to its pid and start; one it cannot read to the top, as when a parent ends during the read, makes `procs_naming` say so and fail with 2.
-Every stage proof that walks (the eleven `scripts/e2e/*.sh` that call `run_processes` or `stop_marked_processes`, and `packages/pi-legion/scripts/skill-scenarios/rig.sh`) sources `lib/subreaper.sh` as its first command, which runs it again in its own process under `lib/subreaper.py`: its shell is then a child subreaper, named in `LEGION_E2E_SUBREAPER`, and every process the run starts stays below it for its whole life, its orphans included.
-From such a shell `procs_naming` judges this user's unreadable environments by `run_descendant PID SHELL_START` in place of `unread_may_carry`: one may carry the run's mark only when its line of parents reaches the shell itself before a process older than the shell, so a process another session leaves under pid 1 or a reaper above the shell during the run, which `unread_may_carry` cannot tell from one of the run's, does not fail the walk.
-A box whose `python3` does not answer runs the proof as it is, and the walk judges by `unread_may_carry`.
-A process `grep` matched, and one whose read by `grep` may have fallen inside an exec (the bound where its environment starts, `env_start` of `/proc/<pid>/stat`, read 0, moved, or read while `start_code` still read 0, between a read before and one after `grep`), is read whole between two reads of its bounds (`exec_state`), and the read decides only when both show the same bounds, set, and the exec done: a read of `/proc/<pid>/environ` reads the memory the process had at the open, and one across an exec comes back empty or cut short; and an exec sets the bounds equal for a moment, before it counts the variables, and sets `start_code` only after that.
-While it is inside one exec (its bounds 0 or its `start_code` not yet set) it is waited for, whatever the walk's bound and its lineage, since every exec ends; only one held inside one exec for `procs_naming_hold_seconds` (300 s) makes `procs_naming` say so and fail with 2, never pass.
-A process whose execs come faster than a read (its bounds moved during each) is read again every 10 ms up to the walk's bound, `procs_naming_exec_seconds` (10 s), for every such process together.
-Past that bound, one `grep` did not match is judged as this user's unreadable environments are (`naming_may_carry`), and one that cannot carry the run's mark is passed; for any other `procs_naming` says so and fails with 2.
-Where the kernel shows none of these fields, as gVisor shows them all as 0 (`bounds_shown`, from the walking shell's own), the walk takes each read of a `grep` match as it comes and flags no other entry.
+Its walks of every process (`procs_naming`) read `${proc_root:-/proc}` ([`lib/proc-root.ts`](#libproc-rootts)) and hand the entries to `grep` through `xargs` in calls that fit ARG_MAX, and [`lib/rig.sh`](#librigsh)'s `listening_holders` and [`lib/leftovers.sh`](#libleftoverssh)'s `refuse_leftovers` hand them to `find` on stdin (`-files0-from -`), which needs GNU findutils 4.9 or later: on an older `find` (4.8, Ubuntu 22.04's) both always exit 2.
+Both read their `find`'s stderr with `proc_walk_complaint ERRFILE PROC`, which prints its first line that is neither an entry of PROC this user may not read nor one whose process ended during the walk, and fails when there is none.
 A walk or a read that cannot see the processes it reads says why and fails with 2, never reads as none: a proc root that lists no process, an `xargs` or a `find` a signal ended, an unreadable `/proc/net/tcp`, and a Linux `/proc` with no `self` (an empty tmpfs mounted there, `proc_unreadable`), where `proc_children`, `proc_descendants`, `stop_tree`, `kill_frozen`, `kill_held` and the sweep fail with 2.
 
 ```sh
@@ -6540,7 +6508,7 @@ A walk or a read that cannot see the processes it reads says why and fails with 
 
 - `names_dir DIR NAME… PID`, `procs_naming DIR NAME…`
 
-  are whether PID's environment gives one of the NAMEs the value DIR or a path under it, and `PID START` for every process whose environment does, read from every process of the machine (one `grep` per `xargs` batch over the environments this user may read, then each match read whole), failing with 2 when the walk could not read the machine: a `grep` complaint other than an unreadable or ended entry, a `grep` that failed and said nothing, no environment this user may read, or an environment of this user's it could not read of a process that may carry the run's mark (`unread_may_carry`, or `run_descendant` from a shell that is a child subreaper).
+  are whether PID's environment gives one of the NAMEs the value DIR or a path under it, and `PID START` for every process whose environment does, read from every process of the machine (one `grep` per `xargs` batch, then each match read whole), failing with 2 when the walk could not read the machine.
   Both refuse an empty DIR with 2: `NAME=` followed by any absolute path would match it
 
 - `marked_processes DIR`, `stop_marked_processes DIR [GRACE]`
