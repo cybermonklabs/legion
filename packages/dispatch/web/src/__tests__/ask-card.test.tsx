@@ -951,6 +951,40 @@ test("AskCard offers to ask back for a question-shaped answer without closing th
   }
 });
 
+// INFRA-3135's review round 1, R10: Ask back instead takes the focus once, as it appears. The
+// reader who moves on to Answer with it anyway keeps the focus there through any later render of
+// the card - a refetch, a parent's own render - rather than being pulled back to Ask back
+// instead at each one.
+test("AskCard gives Ask back instead the focus once, and a later render leaves the focus where the reader moved it", async () => {
+  const user = userEvent.setup();
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const getAskThread = emptyThread(input);
+  // A new element each time, so the second render is a render of the card itself.
+  const card = () => <AskCard ask={input} getAskThread={getAskThread} />;
+  const { queryClient, view } = renderCard(card());
+
+  try {
+    await user.click(view.getByLabelText("Your answer"));
+    await user.paste("Why wait?");
+    await user.click(view.getByRole("button", { name: "Answer" }));
+    const instead = await view.findByRole("button", { name: "Ask back instead" });
+    expect(instead).toHaveFocus();
+    await user.tab();
+    const anyway = view.getByRole("button", { name: "Answer with it anyway" });
+    expect(anyway).toHaveFocus();
+
+    view.rerender(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>{card()}</QueryClientProvider>
+      </MemoryRouter>
+    );
+    expect(view.getByRole("button", { name: "Ask back instead" })).toBe(instead);
+    expect(anyway).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
 test("AskCard lets a human explicitly answer with a question-shaped response", async () => {
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];

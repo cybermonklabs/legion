@@ -1,4 +1,13 @@
-import { agentRow, openAgents, plannerSession, seedAgents, shownAgentRows } from "./agents";
+import {
+  agentRow,
+  issueListOf,
+  issueOption,
+  issueSearchIn,
+  openAgents,
+  plannerSession,
+  seedAgents,
+  shownAgentRows,
+} from "./agents";
 import { createAgentMessage, createMessage, listComments, patchIssue } from "./api";
 import { openFromSidebar } from "./editor";
 import { keyedWrite } from "./keyed-writes";
@@ -6,18 +15,20 @@ import { holdPosts, MESSAGE_REFUSED, refusePosts } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
-// The issue picker's keyboard-step rule (`markKeyStep` in `AgentMessageComposer.tsx`) holds only
-// because every engine dispatches a closed select's `change` inside the key's own task, where the
-// HTML spec queues it as a task of its own. These rows notice an engine that moves to the spec's
-// queued task: its first arrow or letter would commit at once. So the six rows below that step a
-// select from the keyboard, or step one and leave it without Enter, carry `@webkit @firefox`, the
-// tags those two projects select by (`playwright.config.ts`), and they drive keys through
-// `page.keyboard`, which every engine has. Each of the three ways of leaving a select is a row of
-// its own, since each engine takes focus out of a select its own way. One row more carries
-// `@webkit` alone, for a reason of its own the comment above it gives: the send held across two
-// in-app navigations, whose every measured failure was in WebKit. Every other row of this file
-// is untagged: what the picker and Reply do with a message on its way to the server, and what a
-// pick dispatched from a script does, are the same in every engine, and Chromium asserts them.
+// The composer's Issue list is the shared single-pick list (`MultiSelect`, `mode: "single"`): a
+// text box that narrows the open issues, arrows that move the active issue, Enter that picks
+// it, and Tab, Shift+Tab, Escape and a press outside that pick nothing. The five rows below that
+// drive that rule from the keyboard - the arrows and Enter, an arrow left by Tab and by
+// Shift+Tab, an arrow from No issue left by Tab, and a typed word - carry `@webkit @firefox`, the
+// tags those two projects select by (`playwright.config.ts`), and drive keys through
+// `page.keyboard`, which every engine has: each engine delivers keys to a text box, and takes the
+// focus out of one on Tab, its own way. One row more carries `@webkit` alone, for a reason of its
+// own the comment above it gives: the send held across two in-app navigations, whose every
+// measured failure was in WebKit. Every other row of this file is untagged: what the list and
+// Reply do with a message on its way to the server, what a press outside the list does, and what
+// a pick dispatched from a script does, are the same in every engine, and Chromium asserts them.
+// The list is portalled out of the row, so every row reaches it through the panel the row's own
+// trigger names (`issueListOf`, `issueOption`).
 
 /** What a row's composer says once Dispatch refuses its message. A server that is down is tried
  *  again under the send's key, so the rows that need a refusal refuse with Dispatch's verdict. */
@@ -35,11 +46,22 @@ async function sendAndCapturePath(page: Page, field: Locator): Promise<string> {
   return new URL((await sent).url()).pathname;
 }
 
+/** The id of the option of a row's open Issue list that picks `key`, which the list's text box
+ *  names in `aria-activedescendant` while that option is the active one. */
+async function optionIdOf(row: Locator, key: string): Promise<string> {
+  // `getAttribute` waits for the option to attach, and `MultiSelect` writes its id on that same
+  // element in the render that draws it, so the first answer is the option's id.
+  const id = await issueOption(row, key).getAttribute("id");
+  if (id === null) throw new Error(`the Issue list's option for "${key}" has no id`);
+  return id;
+}
+
 test.describe("agents page", () => {
-  // The arrows choose and Enter commits, so a reader can pass the first option to reach the
-  // second - and the Enter that picks is the picker's, not a newline at the top of the message.
-  // @webkit @firefox: a closed select's `change` dispatched inside the key's own task.
-  test("the arrows move the issue selection and Enter commits it @webkit @firefox", async ({
+  // The arrows move the active issue and Enter picks it, so a reader can pass the first issue to
+  // reach the second - and the Enter that picks is the list's, not a newline at the top of the
+  // message. Escape after an arrow picks nothing.
+  // @webkit @firefox: the list's keys, as each engine delivers them to its text box.
+  test("the arrows move the active issue and Enter picks it, and Escape after an arrow picks nothing @webkit @firefox", async ({
     browser,
   }) => {
     await seedAgents();
@@ -53,7 +75,7 @@ test.describe("agents page", () => {
 
       await page.keyboard.press("j");
       await page.keyboard.press("i");
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       await expect(picker).toBeFocused();
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("ArrowDown");
@@ -65,8 +87,8 @@ test.describe("agents page", () => {
       await expect(field).toBeFocused();
       await expect(field).toHaveValue("@Planner");
 
-      // Escape after an arrow takes nothing: the selection was never committed. (The field is
-      // emptied first, since Escape over a written composer is its own discard prompt.)
+      // Escape after an arrow picks nothing: the issue picked stays. (The field is emptied first,
+      // since Escape over a written composer is its own discard prompt.)
       await field.fill("");
       await page.keyboard.press("Escape");
       await expect(row).toBeFocused();
@@ -82,17 +104,17 @@ test.describe("agents page", () => {
     }
   });
 
-  // A step is not a pick until Enter, so a reader who steps and then leaves the select any other
-  // way has picked nothing: the open select goes back to the issue the message is addressed to,
-  // and the toggle, the select and the send all name that one issue.
-  for (const [way, leave] of [
-    ["Tab", (page: Page) => page.keyboard.press("Tab")],
-    ["Shift+Tab", (page: Page) => page.keyboard.press("Shift+Tab")],
-    ["a click into the message", (_page: Page, field: Locator) => field.click()],
+  // An arrow is not a pick, so a reader who moves the active issue and then leaves the list any
+  // other way has picked nothing: the list closes, and the toggle and the send name the issue the
+  // message was addressed to.
+  for (const [way, tags, leave] of [
+    ["Tab", " @webkit @firefox", (page: Page) => page.keyboard.press("Tab")],
+    ["Shift+Tab", " @webkit @firefox", (page: Page) => page.keyboard.press("Shift+Tab")],
+    ["a click into the message", "", (_page: Page, field: Locator) => field.click()],
   ] as const) {
-    // @webkit @firefox: a closed select's `change` dispatched inside the key's own task, left
-    // without Enter the way this engine takes focus out of a select.
-    test(`a step left by ${way} is dropped, so the select, the toggle and the send name one issue @webkit @firefox`, async ({
+    // @webkit @firefox for the two keys: the list's Tab and Shift+Tab, as each engine delivers
+    // them to its text box. A click into the message is the same press in every engine.
+    test(`an arrow left by ${way} picks nothing, so the toggle and the send name one issue${tags}`, async ({
       browser,
     }) => {
       const issueKey = await seedAgents();
@@ -102,7 +124,7 @@ test.describe("agents page", () => {
         await openAgents(page);
         const row = shownAgentRows(page).nth(0);
         const toggle = row.getByRole("button", { name: "Choose issue" });
-        const picker = row.getByRole("combobox", { name: "Issue" });
+        const picker = issueSearchIn(row);
         const field = row.getByRole("textbox", { name: "Comment" });
 
         await page.keyboard.press("j");
@@ -117,11 +139,13 @@ test.describe("agents page", () => {
 
         await page.keyboard.press("i");
         await expect(picker).toBeFocused();
+        const picked = await optionIdOf(row, issueKey);
+        await expect(picker).toHaveAttribute("aria-activedescendant", picked);
         await page.keyboard.press("ArrowDown");
-        await expect(picker).not.toHaveValue(issueKey);
+        await expect(picker).not.toHaveAttribute("aria-activedescendant", picked);
         await leave(page, field);
-        await expect(picker).not.toBeFocused();
-        await expect(picker).toHaveValue(issueKey);
+        await expect(picker).toHaveCount(0);
+        await expect(toggle).toHaveAttribute("aria-expanded", "false");
         await expect(toggle).toContainText(issueKey);
 
         expect(await sendAndCapturePath(page, field)).toBe(`/api/v1/issues/${issueKey}/comments`);
@@ -131,9 +155,10 @@ test.describe("agents page", () => {
     });
   }
 
-  // From `No issue` the message is a direct one, so a step left by Tab must not show an issue.
-  // @webkit @firefox: a closed select's `change` dispatched inside the key's own task.
-  test("a step from No issue left by Tab is dropped, and the message goes to the agent directly @webkit @firefox", async ({
+  // From `No issue` the message is a direct one, so an arrow left by Tab must not address it to
+  // an issue.
+  // @webkit @firefox: the list's arrow and Tab, as each engine delivers them to its text box.
+  test("an arrow from No issue left by Tab picks nothing, and the message goes to the agent directly @webkit @firefox", async ({
     browser,
   }) => {
     await seedAgents();
@@ -143,17 +168,19 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");
       await page.keyboard.press("i");
       await expect(picker).toBeFocused();
       await page.keyboard.press("ArrowDown");
-      await expect(picker).not.toHaveValue("");
+      await expect(picker).toHaveAttribute(
+        "aria-activedescendant",
+        await optionIdOf(row, "CORE-1")
+      );
       await page.keyboard.press("Tab");
-      await expect(picker).not.toBeFocused();
-      await expect(picker).toHaveValue("");
+      await expect(picker).toHaveCount(0);
       await expect(toggle).toContainText("No issue");
 
       expect(await sendAndCapturePath(page, field)).toBe(
@@ -164,9 +191,9 @@ test.describe("agents page", () => {
     }
   });
 
-  // Type-ahead is a step as the arrows are: the letter moves the selection and Enter commits it.
-  // @webkit @firefox: a closed select's `change` dispatched inside the key's own task.
-  test("type-ahead from the keyboard moves the issue selection and Enter commits it @webkit @firefox", async ({
+  // A word typed into the list leaves only the issues it matches, and Enter picks the one left.
+  // @webkit @firefox: the typed keys, as each engine delivers them to the list's text box.
+  test("a word typed into the list leaves the issues it matches, and Enter picks the one left @webkit @firefox", async ({
     browser,
   }) => {
     await seedAgents();
@@ -176,19 +203,20 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");
       await page.keyboard.press("i");
       await expect(picker).toBeFocused();
-      await page.keyboard.press("c");
-      await expect(picker).toHaveValue("CORE-1");
+      await page.keyboard.type("rollout");
+      await expect(issueListOf(row).getByRole("option")).toHaveCount(1);
+      await expect(issueOption(row, "CORE-2")).toBeVisible();
       await expect(toggle).toHaveAttribute("aria-expanded", "true");
       await expect(picker).toBeFocused();
 
       await page.keyboard.press("Enter");
-      await expect(toggle).toContainText("CORE-1");
+      await expect(toggle).toContainText("CORE-2");
       await expect(field).toBeFocused();
       await expect(field).toHaveValue("@Planner");
     } finally {
@@ -210,7 +238,7 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
       const send = await holdPosts(page, "**/api/v1/agents/*/messages");
 
@@ -219,12 +247,14 @@ test.describe("agents page", () => {
       await expect(field).toBeFocused();
       await toggle.click();
       await expect(picker).toBeFocused();
+      // The click into the message is a press outside the list, which closes it; what holds the
+      // picker mid-send is its trigger, the toggle.
       await field.click();
+      await expect(picker).toHaveCount(0);
       await page.keyboard.type("Status please");
       await page.keyboard.press("Control+Enter");
 
       await expect(field).toBeDisabled();
-      await expect(picker).toBeDisabled();
       await expect(toggle).toBeDisabled();
       // `?` says so as well: from the row, `i` is greyed while the picker it would open is held.
       await row.focus();
@@ -238,10 +268,11 @@ test.describe("agents page", () => {
       send.release();
       await expect(field).toBeEnabled();
       await expect(field).toHaveValue("");
-      await expect(picker).toBeEnabled();
+      await expect(toggle).toBeEnabled();
 
       // The pick the reader could not make mid-send takes nothing from the message already sent.
-      await picker.selectOption("CORE-1");
+      await toggle.click();
+      await issueOption(row, "CORE-1").click();
       await expect(toggle).toContainText("CORE-1");
       await expect(field).toHaveValue("@Planner");
       expect(send.posts()).toBe(1);
@@ -349,12 +380,12 @@ test.describe("agents page", () => {
       const row = agentRow(page, plannerSession.session_id);
       const field = row.getByRole("textbox", { name: "Comment" });
       const cancelReply = row.getByRole("button", { name: "Cancel reply" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const refuse = await refusePosts(page, "**/api/v1/agents/*/messages", MESSAGE_REFUSED);
 
       await page.keyboard.press("j");
       await page.keyboard.press("i");
-      // The picker takes focus once its list lands; the arrows are for it, not the row.
+      // The list takes focus once its issues land; the arrows are for it, not the row.
       await expect(picker).toBeFocused();
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Enter");
@@ -495,8 +526,8 @@ test.describe("agents page", () => {
     }
   });
 
-  // An already-open picker can commit an issue in the same task as Send. Its commit must not
-  // turn the direct send into an issue message before the request takes its owner.
+  // An already-open list can pick an issue in the same task as Send. Its pick must not turn the
+  // direct send into an issue message before the request takes its owner.
   test("a same-task issue pick cannot re-address a direct send", async ({ browser }) => {
     await seedAgents();
     const context = await asUser(browser, "alice");
@@ -506,7 +537,7 @@ test.describe("agents page", () => {
       const row = shownAgentRows(page).nth(0);
       const field = row.getByRole("textbox", { name: "Comment" });
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const refuse = await refusePosts(page, "**/api/v1/agents/*/messages", MESSAGE_REFUSED);
       const sent = page.waitForRequest(
         (request) =>
@@ -521,15 +552,14 @@ test.describe("agents page", () => {
       await toggle.click();
       await expect(picker).toBeVisible();
       await field.fill("Status please");
-      await row.evaluate((node) => {
+      const option = await issueOption(row, "CORE-1").elementHandle();
+      await row.evaluate((node, pick) => {
         const send = node.querySelector<HTMLButtonElement>('button[type="submit"]');
-        const picker = node.querySelector<HTMLSelectElement>('select[aria-label="Issue"]');
-        if (send === null || picker === null)
-          throw new Error("expected send and issue picker controls");
+        if (send === null || !(pick instanceof HTMLElement))
+          throw new Error("expected send and the issue's option");
         send.click();
-        picker.value = "CORE-1";
-        picker.dispatchEvent(new Event("change", { bubbles: true }));
-      });
+        pick.click();
+      }, option);
 
       expect(new URL((await sent).url()).pathname).toBe(
         `/api/v1/agents/${plannerSession.session_id}/messages`
@@ -555,7 +585,6 @@ test.describe("agents page", () => {
       const row = agentRow(page, plannerSession.session_id);
       const field = row.getByRole("textbox", { name: "Comment" });
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
       const uploaded = page.waitForRequest(
         (request) =>
           request.method() === "POST" &&
@@ -566,23 +595,21 @@ test.describe("agents page", () => {
       await page.keyboard.press("Enter");
       await expect(field).toBeFocused();
       await toggle.click();
-      await picker.selectOption("CORE-1");
+      await issueOption(row, "CORE-1").click();
       await expect(field).toHaveValue("@Planner");
       await toggle.click();
-      await expect(picker).toBeVisible();
-      await row.evaluate((node) => {
+      const option = await issueOption(row, "CORE-2").elementHandle();
+      await row.evaluate((node, pick) => {
         const textarea = node.querySelector<HTMLTextAreaElement>('textarea[aria-label="Comment"]');
-        const select = node.querySelector<HTMLSelectElement>('select[aria-label="Issue"]');
-        if (textarea === null || select === null)
-          throw new Error("expected the composer and the issue picker");
+        if (textarea === null || !(pick instanceof HTMLElement))
+          throw new Error("expected the composer and the issue's option");
         const data = new DataTransfer();
         data.items.add(new File(["# Notes\n"], "notes.md", { type: "text/markdown" }));
         const paste = new Event("paste", { bubbles: true, cancelable: true });
         Object.defineProperty(paste, "clipboardData", { value: data });
         textarea.dispatchEvent(paste);
-        select.value = "CORE-2";
-        select.dispatchEvent(new Event("change", { bubbles: true }));
-      });
+        pick.click();
+      }, option);
 
       expect(new URL((await uploaded).url()).pathname).toBe("/api/v1/issues/CORE-1/artifacts");
       await expect(field).toHaveValue("@Planner dispatch://CORE-1/artifact/notes-md");
@@ -726,11 +753,11 @@ test.describe("agents page", () => {
   });
 
   // The list is every open issue, so an issue closed after it was picked drops out of it on the
-  // next read. The select keeps showing the committed issue, marked closed - as the issue header's
-  // Status select keeps a closed issue's own status among its options - so what the picker shows,
-  // what the toggle names and where the message goes stay one issue until the reader picks
-  // another; a closed issue takes comments, so the message posts there.
-  test("an issue closed after the pick stays named in the select and the toggle, marked closed, and takes the message", async ({
+  // next read. The Issue list keeps offering the committed issue, marked closed and picked - as
+  // the issue header's Status select keeps a closed issue's own status among its options - so
+  // what the list shows, what the toggle names and where the message goes stay one issue until
+  // the reader picks another; a closed issue takes comments, so the message posts there.
+  test("an issue closed after the pick stays named in the list and the toggle, marked closed, and takes the message", async ({
     browser,
   }) => {
     const issueKey = await seedAgents();
@@ -742,7 +769,8 @@ test.describe("agents page", () => {
       // Reviewer's.
       const row = agentRow(page, plannerSession.session_id);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const list = issueListOf(row);
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");
@@ -763,10 +791,11 @@ test.describe("agents page", () => {
         window.dispatchEvent(new Event("visibilitychange"));
         window.dispatchEvent(new Event("focus"));
       });
-      await expect(picker.locator("option", { hasText: "Rollout plan" })).toHaveCount(1);
-      await expect(picker.locator("option", { hasText: "Keyboard issue" })).toHaveCount(0);
-      await expect(picker).toHaveValue(issueKey);
-      await expect(picker.locator("option:checked")).toHaveText(`${issueKey} (closed)`);
+      await expect(list.getByRole("option", { name: /Rollout plan/ })).toHaveCount(1);
+      await expect(list.getByRole("option", { name: /Keyboard issue/ })).toHaveCount(0);
+      await expect(list.getByRole("option", { selected: true })).toHaveAccessibleName(
+        `${issueKey} (closed)`
+      );
       await expect(toggle).toContainText(`${issueKey} (closed)`);
 
       const posted = page.waitForResponse(
@@ -782,10 +811,10 @@ test.describe("agents page", () => {
       ).toBe(true);
 
       // Picking another issue ends it: the closed one is no longer offered at all.
-      await picker.selectOption("CORE-2");
+      await issueOption(row, "CORE-2").click();
       await expect(toggle).toContainText("CORE-2");
       await toggle.click();
-      await expect(picker.locator("option", { hasText: issueKey })).toHaveCount(0);
+      await expect(issueOption(row, issueKey)).toHaveCount(0);
     } finally {
       await context.close();
     }
@@ -804,7 +833,7 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = agentRow(page, plannerSession.session_id);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
       const sends: { input: unknown; key: string | undefined; ok: boolean; path: string }[] = [];
       page.on("response", (response) => {
@@ -840,7 +869,7 @@ test.describe("agents page", () => {
       await expect(field).toHaveValue("@Planner");
 
       await toggle.click();
-      await picker.selectOption("");
+      await issueOption(row, "").click();
       await expect(field).toHaveValue("");
       await send("third");
       await expect(field).toHaveValue("");
@@ -874,32 +903,36 @@ test.describe("agents page", () => {
     }
   });
 
-  // `i` opens the picker; it never shuts one. A row keeps its picker open when it collapses, so on
-  // that row `i` goes back into the select rather than clicking the toggle closed.
-  test("i on a collapsed row goes back into the picker it left open", async ({ browser }) => {
+  // `i` opens the Issue list; it never shuts one. A list opened before its issues came takes no
+  // focus and stays open while the reader is on the row, so `i` pressed there again goes into its
+  // text box rather than clicking the toggle closed, and the issues landing leave the reader there.
+  test("i on a row whose Issue list is open goes into it rather than shutting it", async ({
+    browser,
+  }) => {
     await seedAgents();
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
+      const held = Promise.withResolvers<void>();
+      await page.route("**/api/v1/issues?*", async (route) => {
+        await held.promise;
+        return route.fallback();
+      });
       await openAgents(page);
       const row = agentRow(page, plannerSession.session_id);
-      const opener = row.getByRole("button", { exact: true, name: "Planner" });
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
 
       await page.keyboard.press("j");
       await page.keyboard.press("i");
-      await expect(picker).toBeFocused();
-      await opener.click();
-      await expect(opener).toHaveAttribute("aria-expanded", "false");
-      // Back on the row itself - a click beside its controls, on the directory, which is not
-      // one of them - for the key.
-      await row.locator("[data-agent-dir]").click();
+      await expect(toggle).toHaveAttribute("aria-expanded", "true");
       await expect(row).toBeFocused();
       await page.keyboard.press("i");
-
-      await expect(opener).toHaveAttribute("aria-expanded", "true");
       await expect(toggle).toHaveAttribute("aria-expanded", "true");
+      await expect(picker).toBeFocused();
+
+      held.resolve();
+      await expect(issueOption(row, "CORE-1")).toBeVisible();
       await expect(picker).toBeFocused();
     } finally {
       await context.close();

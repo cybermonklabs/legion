@@ -77,7 +77,7 @@ test.describe("inbox selection", () => {
         /^Select CORE-\d: \w+ decision$/
       );
 
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await expect(bar).toContainText("2 selected");
       const selectionShot = testInfo.outputPath("inbox-selection.png");
       await page.screenshot({ fullPage: true, path: selectionShot });
@@ -143,7 +143,7 @@ test.describe("inbox selection", () => {
       );
 
       await markFromKeyboard(page, 2);
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
 
       // The reason is the server's own, as the per-row control shows it - a refusal a reader
@@ -191,7 +191,7 @@ test.describe("inbox selection", () => {
       });
 
       await markFromKeyboard(page, 2);
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
       await requested.promise;
       await expect(bar).toContainText("Snoozing 2…");
@@ -214,9 +214,9 @@ test.describe("inbox selection", () => {
   });
 
   // Escape with no row focused is the keyboard's Clear, and it is offered whenever the bar's Clear
-  // is - including while a pick is in flight, when the optimistic move has folded the marked rows
-  // into Later and the bar counts nothing on the page. It clears every mark, one made under a
-  // wider filter included; the late refusal then re-marks only the id it refused.
+  // is - including while a pick is in flight, when the marked rows stay in their band only until
+  // the pick lands and are no row to return to. It clears every mark, one made under a wider
+  // filter included; the late refusal then re-marks only the id it refused.
   test("Escape during a pending bulk snooze clears every mark, and a late refusal re-marks only its own", async ({
     browser,
   }) => {
@@ -261,7 +261,7 @@ test.describe("inbox selection", () => {
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
       await markFromKeyboard(page, 2);
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await expect(bar).toContainText("2 selected");
       await page.keyboard.press("h");
       const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
@@ -270,7 +270,7 @@ test.describe("inbox selection", () => {
       await requested.promise;
       await expect(bar).toContainText("Snoozing 2…");
 
-      // Both marked rows have folded into Later, so Escape leaves the picker for the bar, and
+      // Both marked rows are leaving for the snooze, so Escape leaves the picker for the bar, and
       // Escape from the bar clears the selection while the pick is still in the air.
       await page.keyboard.press("Escape");
       await expect(bar).toBeFocused();
@@ -358,7 +358,7 @@ test.describe("inbox selection", () => {
         await page.keyboard.press("Escape");
       }
       await page.mouse.move(0, 0);
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await expect(bar).toContainText("2 selected");
       inboxReads.length = 0;
       await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
@@ -414,7 +414,7 @@ test.describe("inbox selection", () => {
       const page = await context.newPage();
       await openInbox(page, 1);
       const rows = page.locator("[data-inbox-row]");
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       const later = page.getByRole("button", { name: /^Later \(1\)/ });
 
       // Mark it, then snooze it from its own control: it folds into Later.
@@ -479,7 +479,7 @@ test.describe("inbox selection", () => {
       const page = await context.newPage();
       await openInbox(page, 2);
       const rows = page.locator("[data-inbox-row]");
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       const writes: string[] = [];
       await page.route("**/api/v1/me/asks/*/snooze", (route) => {
         writes.push(new URL(route.request().url()).pathname);
@@ -530,7 +530,7 @@ test.describe("inbox selection", () => {
       });
 
       await markFromKeyboard(page, 2);
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
       await page.keyboard.press("h");
       await expect(picker).toBeFocused();
@@ -679,7 +679,7 @@ test("j, k and the arrows step through thread rows, o opens them, y copies only 
     await selectRow(page, replyRowId(thread));
     await page.locator("body").focus();
     await page.keyboard.press("x");
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
     await expect(bar.getByRole("button", { name: "Dismiss selected threads" })).toBeVisible();
     await page.keyboard.press("h");

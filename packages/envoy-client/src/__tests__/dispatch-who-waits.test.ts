@@ -601,6 +601,13 @@ const OLD_RULE_ALLOWED: readonly (readonly [string, string, string])[] = [
     "an answered, a resolved or a withdrawn question waits on nobody",
     "a closed question has nobody to wait on; the rule decides whom an open question waits on",
   ],
+  // The hand-on list's trigger is named by its label and then the card's badge, which reads
+  // `Asked of nobody` only where an older Dispatch names no person.
+  [
+    "packages/dispatch/web/src/features/inbox/AskCard.test.tsx",
+    "Hand this question to Asked of nobody",
+    "the hand-on list's trigger, named for the card's badge where the server names no person",
+  ],
   // Not a question: a block copied from another ask, a bus message, a notification.
   [
     "packages/envoy/internal/dispatch/docs/ask_blocks.go",

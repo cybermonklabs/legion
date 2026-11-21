@@ -1,9 +1,9 @@
-// The delivery timeline's facets, as the page's URL and FacetPanel name them. Every facet, and the
-// search, is applied server-side (`GET /api/v1/delivery/timeline`, `api/delivery.go`), which also
-// answers each facet's counts, so this module holds only the shapes and labels the page shares:
-// the `Filters` the URL carries, the query parameter each facet is sent as, the placeholder values
-// a PR with no issue, priority, component or session reads as, and the display-only repository
-// shortening. No React, no fetch.
+// The delivery timeline's facets, as the page's address and its filters name them. Every facet,
+// and the search, is applied server-side (`GET /api/v1/delivery/timeline`, `api/delivery.go`),
+// which also answers each facet's counts, so this module holds only the shapes and labels the page
+// shares: the `Filters` the address carries, the query parameter each facet is sent as, the
+// placeholder values a PR with no issue, priority, component or session reads as, and the
+// display-only repository shortening. No React, no fetch.
 import type { DeliveryFacet, DeliveryPR } from "../../../api/types";
 
 export type ReworkFacet = "value" | "rework";
@@ -12,8 +12,8 @@ export type DeployedFacet = DeliveryPR["deployed_status"];
 // Placeholder facet values, split by cause instead of one catch-all "(none)": a PR that links no
 // Dispatch issue reads "No issue", distinct from one whose issue has no priority or no component;
 // a PR whose commits name no session reads "No session". The server counts and selects by the same
-// four values. Same wording everywhere these show: Timeline lanes, FacetPanel's lists, PRList and
-// DrillDown.
+// four values. Same wording everywhere these show: Timeline lanes, the filters' lists (the page's
+// Filter panel and the list's column headers), PRList and DrillDown.
 export const NO_ISSUE = "__no_issue__";
 export const NO_PRIORITY = "__no_priority__";
 export const NO_COMPONENT = "__no_component__";

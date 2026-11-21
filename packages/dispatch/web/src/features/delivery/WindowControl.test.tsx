@@ -72,3 +72,42 @@ test("a custom window from the URL shows its own dates", () => {
     cleanup();
   }
 });
+
+// The page gives the control no key, so a new window keeps the Window select mounted, and the
+// focus a keyboard pick left on it. A new window - the control's own pick, or the address
+// changing under it - starts the draft again from that window instead.
+test("a new window starts the fields and the refusal again from it, on the same select", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <WindowControl onChange={() => {}} value={{ kind: "preset", preset: "28d" }} />
+  );
+  try {
+    const select = screen.getByLabelText("Window") as HTMLSelectElement;
+    await user.selectOptions(select, "custom");
+    await user.click(screen.getByLabelText("From"));
+    await user.paste("2026-01-01");
+    await user.click(screen.getByLabelText("To"));
+    await user.paste("2026-04-30");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    expect(screen.getByRole("alert")).toBeDefined();
+
+    view.rerender(
+      <WindowControl
+        onChange={() => {}}
+        value={{ kind: "custom", from: "2026-02-01T00:00:00.000Z", to: "2026-02-03T00:00:00.000Z" }}
+      />
+    );
+    expect(screen.getByLabelText("Window")).toBe(select);
+    expect(select.value).toBe("custom");
+    expect((screen.getByLabelText("From") as HTMLInputElement).value).toBe("2026-02-01");
+    expect((screen.getByLabelText("To") as HTMLInputElement).value).toBe("2026-02-02");
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    view.rerender(<WindowControl onChange={() => {}} value={{ kind: "preset", preset: "7d" }} />);
+    expect(screen.getByLabelText("Window")).toBe(select);
+    expect(select.value).toBe("7d");
+    expect(screen.queryByLabelText("From")).toBeNull();
+  } finally {
+    cleanup();
+  }
+});

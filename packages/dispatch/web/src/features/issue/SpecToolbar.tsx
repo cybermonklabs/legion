@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 
+import { MultiSelect } from "../../components/MultiSelect";
 import {
   dangerText,
   inputClasses,
@@ -37,27 +38,42 @@ export function SpecToolbar({
   version: number | undefined;
 }): ReactNode {
   const [copyFeedback, setCopyFeedback] = useState<"copied" | "failed" | undefined>(undefined);
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  // The list's value for the version shown: `""` is the current document, as the route says.
+  const shown = version === undefined ? "" : String(version);
+  const versionLabels = new Map(
+    toolbar.versions.map((item) => [
+      String(item.number),
+      `Version ${item.number}${item.named && item.summary !== null ? ` — ${item.summary}` : ""}`,
+    ])
+  );
   return (
     <div className="flex w-full min-w-0 flex-wrap items-center gap-2 md:ml-auto md:w-auto">
       {/* The control names itself rather than carrying a separate label element: every option
-          says "version", so the closed select reads as a version picker and the strip still
-          shares the tab row instead of taking a chrome row above the document. */}
-      <select
-        aria-label="Version"
-        className={`min-h-11 min-w-0 max-w-48 truncate rounded border px-2 py-2 text-sm md:min-h-8 md:py-1 ${inputClasses(false)}`}
-        onChange={(event) =>
-          onVersionChange(event.target.value === "" ? null : Number(event.target.value))
+          says "version", so the closed list reads as a version picker and the strip still
+          shares the tab row instead of taking a chrome row above the document. Its text box
+          narrows the versions as the reader types. */}
+      <MultiSelect
+        emptyMessage="No version matches that."
+        label="Version"
+        mode="single"
+        onOpenChange={setVersionsOpen}
+        onPick={(value) => {
+          // The version shown already is no move, as a `<select>` set to the value it holds
+          // fires nothing. The list put the focus on its trigger before this pick, and the
+          // strip the new route draws is the same one, so the focus is on the trigger at the
+          // version picked.
+          if (value !== shown) onVersionChange(value === "" ? null : Number(value));
+        }}
+        open={versionsOpen}
+        optionLabel={(value) =>
+          value === "" ? "Current version" : (versionLabels.get(value) ?? `Version ${value}`)
         }
-        value={version ?? ""}
-      >
-        <option value="">Current version</option>
-        {toolbar.versions.map((item) => (
-          <option key={item.number} value={item.number}>
-            Version {item.number}
-            {item.named && item.summary !== null ? ` — ${item.summary}` : ""}
-          </option>
-        ))}
-      </select>
+        options={["", ...toolbar.versions.map((item) => String(item.number))]}
+        searchLabel="Search versions"
+        triggerClassName={`min-h-11 min-w-0 max-w-48 rounded border px-2 py-2 text-left text-sm md:min-h-8 md:py-1 ${inputClasses(false)}`}
+        value={shown}
+      />
       <button
         aria-label="Name version"
         className={`${toolbarButton} ${secondaryButtonDisabledText}`}

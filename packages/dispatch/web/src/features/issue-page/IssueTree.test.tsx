@@ -765,11 +765,12 @@ function readDecisionsText() {
   });
 }
 
-// A control that disables itself while its write is out drops the focus to the document body
-// if it holds it: a keyboard reader loses their place, and the tree closes the body the focus
-// held, taking Change with it (measured in Chromium: a `focusout` from Keep with no related
-// target 45 ms after its write went out, then the kept decision's body removed). So Keep moves
-// the focus onto its decision's own row first, and the row's body stays open throughout.
+// A control that goes while it holds the focus drops the focus to the document body: a keyboard
+// reader loses their place, and the tree closes the body the focus held, taking Change with it
+// (measured in Chromium: a `focusout` from Keep with no related target 45 ms after its write
+// went out, then the kept decision's body removed). Keep is held while its write is out
+// (`heldPress`, `aria-disabled`) and goes once it lands, so Keep moves the focus onto its
+// decision's own row first, and the row's body stays open throughout.
 test("Keep keeps the focus on its decision's row while its write is out, and after", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -786,8 +787,11 @@ test("Keep keeps the focus on its decision's row while its write is out, and aft
     const keep = await view.findByRole("button", { name: "Keep" });
     await user.click(keep);
     await waitFor(() => expect(kept).toHaveBeenCalled());
-    await waitFor(() => expect(keep).toHaveProperty("disabled", true));
-    expect(document.activeElement, "the focus stayed on Keep, which its write disables").toBe(row);
+    await waitFor(() => expect(keep).toHaveAttribute("aria-disabled", "true"));
+    expect(keep).toBeEnabled();
+    expect(document.activeElement, "the focus stayed on Keep, which its write takes away").toBe(
+      row
+    );
     expect(row.querySelector("[data-node-body]"), "the decision's body closed").not.toBeNull();
 
     await act(async () => answer.resolve({ ...decision, waiting_review: false } as never));
@@ -799,8 +803,8 @@ test("Keep keeps the focus on its decision's row while its write is out, and aft
   }
 });
 
-// The same for Change's own Send, which is disabled while the comment is out and goes with the
-// form once it lands.
+// The same for Change's own Send, which is held while the comment is out and goes with the form
+// once it lands.
 test("Send change keeps the focus on its decision's row while the comment is out, and after", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -820,10 +824,11 @@ test("Send change keeps the focus on its decision's row while the comment is out
     const send = view.getByRole("button", { name: "Send change" });
     await user.click(send);
     await waitFor(() => expect(sent).toHaveBeenCalled());
-    await waitFor(() => expect(send).toHaveProperty("disabled", true));
+    await waitFor(() => expect(send).toHaveAttribute("aria-disabled", "true"));
+    expect(send).toBeEnabled();
     expect(
       document.activeElement,
-      "the focus stayed on Send change, which its write disables"
+      "the focus stayed on Send change, which its write takes away"
     ).toBe(row);
     expect(row.querySelector("[data-node-body]"), "the decision's body closed").not.toBeNull();
 

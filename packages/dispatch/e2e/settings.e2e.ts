@@ -12,8 +12,37 @@ import {
   userHeaders,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { expect, test } from "./test";
+import { listTrigger } from "./filters";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
+
+/** The open list named `label`. It is portalled out of the page's sections, so it is found by
+ *  its own name, `<label> options`. */
+function listOf(page: Page, label: string): Locator {
+  return page.getByRole("listbox", { exact: true, name: `${label} options` });
+}
+
+/** Picks `option` from the list named `label`, as a reader does: presses its trigger, then the
+ *  option in the list it opens, once the list holds it. */
+async function pick(page: Page, label: string, option: string): Promise<void> {
+  await listTrigger(page, label).click();
+  await listOf(page, label).getByRole("option", { exact: true, name: option }).click();
+}
+
+/** The names of the options the open list named `label` offers: each row's words without the
+ *  tick the picked one carries, which is hidden from its name. */
+function offered(page: Page, label: string): Promise<string[]> {
+  return listOf(page, label)
+    .getByRole("option")
+    .evaluateAll((options) =>
+      options.map((option) =>
+        [...option.children]
+          .filter((part) => part.getAttribute("aria-hidden") !== "true")
+          .map((part) => part.textContent ?? "")
+          .join("")
+      )
+    );
+}
 
 test("a repository mapping added in Settings assigns a new external issue to its selected project", async ({
   browser,
@@ -33,7 +62,7 @@ test("a repository mapping added in Settings assigns a new external issue to its
       await repository.evaluate((input: HTMLInputElement) => input.validity.patternMismatch)
     ).toBe(true);
     await repository.fill("Owner/Repo.git");
-    await page.getByRole("combobox", { exact: true, name: "Project" }).selectOption("CORE");
+    await pick(page, "Project", "CORE · Core");
     const mappingSaved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
@@ -202,19 +231,19 @@ test("a human creates a project from Settings and immediately creates an issue u
     await page.getByLabel("Key", { exact: true }).fill("qa");
     await page.getByLabel("Name", { exact: true }).fill("Quality");
     // The form asks for the person the new project names, and starts on the one the server would
-    // take anyway: the person creating it. The control is read by its role, as every other
-    // select of this page is: the label wraps the select, so its text carries the options too.
-    const defaultAssignee = page.getByRole("combobox", { exact: true, name: "Default assignee" });
-    await expect(defaultAssignee).toHaveValue("alice");
+    // take anyway: the person creating it. Its list's name begins with its label, as each
+    // project's own list's in the table above does, which goes on with " of <KEY>".
+    const defaultAssignee = page.getByRole("button", { name: /^Default assignee(?! of )/ });
+    await expect(defaultAssignee).toHaveText("alice");
     await page.getByRole("button", { name: "New project" }).click();
     await expect(page.getByRole("cell", { exact: true, name: "QA" })).toBeVisible();
+    await listTrigger(page, "Project").click();
     await expect(
-      page.getByRole("combobox", { exact: true, name: "Project" }).locator('option[value="QA"]')
+      listOf(page, "Project").getByRole("option", { exact: true, name: "QA · Quality" })
     ).toHaveCount(1);
+    await page.keyboard.press("Escape");
     // The project names her from the moment it exists, and the row says so.
-    await expect(
-      page.getByRole("combobox", { exact: true, name: "Default assignee of QA" })
-    ).toHaveValue("alice");
+    await expect(listTrigger(page, "Default assignee of QA")).toHaveText("alice");
     await page.screenshot({
       path: testInfo.outputPath("project-create-settings.png"),
       fullPage: true,
@@ -241,7 +270,7 @@ test("an architecture source saves after the GitHub App access check, fails inli
   try {
     await page.goto("/settings");
     await expect(page.getByRole("heading", { name: "Architecture sources" })).toBeVisible();
-    await page.getByLabel("Source project").selectOption("CORE");
+    await pick(page, "Source project", "CORE · Core");
     await page.getByLabel("Source repository").fill("Legion/Arch");
     const sourceSaved = page.waitForResponse(
       (response) =>
@@ -257,7 +286,7 @@ test("an architecture source saves after the GitHub App access check, fails inli
 
     // A branch the repository does not have is refused inline with the server's 409, and the
     // stored source keeps its branch.
-    await page.getByLabel("Source project").selectOption("CORE");
+    await pick(page, "Source project", "CORE · Core");
     await page.getByLabel("Source repository").fill("legion/arch");
     await page.getByLabel("Branch", { exact: true }).fill("no-such-branch");
     await page.getByRole("button", { name: "Add source" }).click();
@@ -273,7 +302,7 @@ test("an architecture source saves after the GitHub App access check, fails inli
     // The App gets uninstalled; re-saving fails its access check inline and the
     // stored source survives.
     await seedFakeGithub({});
-    await page.getByLabel("Source project").selectOption("CORE");
+    await pick(page, "Source project", "CORE · Core");
     await page.getByLabel("Source repository").fill("legion/arch");
     await page.getByRole("button", { name: "Add source" }).click();
     await expect(
@@ -312,7 +341,7 @@ test("Refresh imports the architecture model and a rejected model keeps the prev
 
   try {
     await page.goto("/settings");
-    await page.getByLabel("Source project").selectOption("CORE");
+    await pick(page, "Source project", "CORE · Core");
     await page.getByLabel("Source repository").fill("legion/arch");
     const sourceSaved = page.waitForResponse(
       (response) =>
@@ -411,32 +440,35 @@ test("a person sets and changes a project's default assignee, and no write clear
 
   try {
     await page.goto("/settings");
-    const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
-    const ops = page.getByRole("combobox", { exact: true, name: "Default assignee of OPS" });
+    const core = listTrigger(page, "Default assignee of CORE");
+    const ops = listTrigger(page, "Default assignee of OPS");
     await expect(core).toBeVisible();
     // The sentence beside the control: an issue from an unmapped repository lands in the default
     // project, so that project's default assignee catches all of them.
     await expect(page.getByText("no project mapping")).toBeVisible();
     // Each project names the person who created it until somebody moves it.
-    await expect(core).toHaveValue("alice");
+    await expect(core).toHaveText("alice");
     await expect(ops).toBeEnabled();
-    await expect(ops).toHaveValue("bob");
+    await expect(ops).toHaveText("bob");
 
     // Who has signed in is read only once the reader reaches for the control, and the control
     // offers people and nothing else: there is no way to name nobody.
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["alice", "bob"]);
+    await core.click();
+    await expect.poll(() => offered(page, "Default assignee of CORE")).toEqual(["alice", "bob"]);
 
     const saved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
         new URL(response.url()).pathname === "/api/v1/projects/CORE/default-assignee"
     );
-    await core.selectOption("bob");
+    await listOf(page, "Default assignee of CORE")
+      .getByRole("option", { exact: true, name: "bob" })
+      .click();
     expect((await saved).ok()).toBe(true);
 
     await page.reload();
-    await expect(core).toHaveValue("bob");
+    await expect(core).toHaveText("bob");
     await page.screenshot({
       path: testInfo.outputPath("project-default-assignee-settings.png"),
       fullPage: true,
@@ -448,12 +480,12 @@ test("a person sets and changes a project's default assignee, and no write clear
         new URL(response.url()).pathname === "/api/v1/projects/CORE/default-assignee"
     );
     await core.focus();
-    await core.selectOption("alice");
+    await pick(page, "Default assignee of CORE", "alice");
     expect((await changed).ok()).toBe(true);
     await page.reload();
-    await expect(core).toHaveValue("alice");
+    await expect(core).toHaveText("alice");
     await expect(ops).toBeEnabled();
-    await expect(ops).toHaveValue("bob");
+    await expect(ops).toHaveText("bob");
 
     // The clearing the page no longer offers is refused at the route as well: the body the old
     // Unassigned option sent is a 400, and the project still names its person. The call is made
@@ -467,7 +499,7 @@ test("a person sets and changes a project's default assignee, and no write clear
     expect(refused.status).toBe(400);
     expect(await refused.json()).toMatchObject({ code: "INVALID_PROJECT" });
     await page.reload();
-    await expect(core).toHaveValue("alice");
+    await expect(core).toHaveText("alice");
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
     expect(defaults.map((row) => [row.project, row.assignee]).sort()).toEqual([
       ["CORE", "alice"],
@@ -504,19 +536,22 @@ test("a default assignee picked while the last pick is saving waits its turn, an
       return route.fulfill({ response });
     });
     await page.goto("/settings");
-    const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
+    const core = listTrigger(page, "Default assignee of CORE");
     await expect(core).toBeEnabled();
-    await expect(core).toHaveValue("alice");
+    await expect(core).toHaveText("alice");
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["alice", "bob"]);
+    await core.click();
+    await expect.poll(() => offered(page, "Default assignee of CORE")).toEqual(["alice", "bob"]);
 
     // The pick shows at once, while its save is still held.
-    await core.selectOption("bob");
-    await expect(core).toHaveValue("bob");
+    await listOf(page, "Default assignee of CORE")
+      .getByRole("option", { exact: true, name: "bob" })
+      .click();
+    await expect(core).toHaveText("bob");
     await expect.poll(() => wire).toEqual(["sent bob"]);
 
-    await core.selectOption("alice");
-    await expect(core).toHaveValue("alice");
+    await pick(page, "Default assignee of CORE", "alice");
+    await expect(core).toHaveText("alice");
     // One at a time: the second pick has not left the browser while the first is unanswered.
     expect(wire).toEqual(["sent bob"]);
 
@@ -529,10 +564,10 @@ test("a default assignee picked while the last pick is saving waits its turn, an
     held.resolve();
     expect((await second).ok()).toBe(true);
     expect(wire).toEqual(["sent bob", "answered bob", "sent alice"]);
-    await expect(core).toHaveValue("alice");
+    await expect(core).toHaveText("alice");
 
     await page.reload();
-    await expect(core).toHaveValue("alice");
+    await expect(core).toHaveText("alice");
     // Every project is listed now, so CORE's own row is the one this reads.
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
     expect(defaults.filter((row) => row.project === "CORE")).toEqual([
@@ -573,17 +608,22 @@ test("default assignee picks made when Settings is left and reopened supersede t
       return route.fulfill({ response });
     });
     await page.goto("/settings");
-    const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
+    const core = listTrigger(page, "Default assignee of CORE");
     await expect(core).toBeEnabled();
-    await expect(core).toHaveValue("alice");
+    await expect(core).toHaveText("alice");
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["alice", "bob", "carol"]);
+    await core.click();
+    await expect
+      .poll(() => offered(page, "Default assignee of CORE"))
+      .toEqual(["alice", "bob", "carol"]);
 
-    await core.selectOption("bob");
-    await expect(core).toHaveValue("bob");
+    await listOf(page, "Default assignee of CORE")
+      .getByRole("option", { exact: true, name: "bob" })
+      .click();
+    await expect(core).toHaveText("bob");
     await expect.poll(() => wire).toEqual(["sent bob"]);
-    await core.selectOption("carol");
-    await expect(core).toHaveValue("carol");
+    await pick(page, "Default assignee of CORE", "carol");
+    await expect(core).toHaveText("carol");
 
     // Away and back inside the app: Settings unmounts and mounts again, the app stays loaded.
     const navigation = page.getByRole("navigation", { name: "Navigation" });
@@ -592,16 +632,21 @@ test("default assignee picks made when Settings is left and reopened supersede t
     await navigation.getByRole("link", { name: "Settings" }).click();
     await expect(core).toBeEnabled();
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["alice", "bob", "carol"]);
-    await core.selectOption("alice");
-    await expect(core).toHaveValue("alice");
+    await core.click();
+    await expect
+      .poll(() => offered(page, "Default assignee of CORE"))
+      .toEqual(["alice", "bob", "carol"]);
+    await listOf(page, "Default assignee of CORE")
+      .getByRole("option", { exact: true, name: "alice" })
+      .click();
+    await expect(core).toHaveText("alice");
 
     held.resolve();
     await expect.poll(() => wire.includes("answered alice")).toBe(true);
-    await expect(core).toHaveValue("alice");
+    await expect(core).toHaveText("alice");
 
     await page.reload();
-    await expect(core).toHaveValue("alice");
+    await expect(core).toHaveText("alice");
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
     expect(defaults.filter((row) => row.project === "CORE")).toEqual([
       { assignee: "alice", project: "CORE" },
@@ -641,22 +686,27 @@ test("default assignee picks made while a save is out are superseded by the newe
       return route.fulfill({ response });
     });
     await page.goto("/settings");
-    const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
+    const core = listTrigger(page, "Default assignee of CORE");
     await expect(core).toBeEnabled();
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["alice", "bob", "carol", "dave"]);
+    await core.click();
+    await expect
+      .poll(() => offered(page, "Default assignee of CORE"))
+      .toEqual(["alice", "bob", "carol", "dave"]);
 
-    await core.selectOption("bob");
+    await listOf(page, "Default assignee of CORE")
+      .getByRole("option", { exact: true, name: "bob" })
+      .click();
     await expect.poll(() => wire).toEqual(["sent bob"]);
-    for (const pick of ["carol", "dave", "alice"]) {
-      await core.selectOption(pick);
-      await expect(core).toHaveValue(pick);
+    for (const login of ["carol", "dave", "alice"]) {
+      await pick(page, "Default assignee of CORE", login);
+      await expect(core).toHaveText(login);
     }
 
     held.resolve();
     // Wait for the newest pick's answer, then read every PUT that left the browser before it.
     await expect.poll(() => wire.includes("answered alice")).toBe(true);
-    await expect(core).toHaveValue("alice");
+    await expect(core).toHaveText("alice");
     expect(wire).toEqual(["sent bob", "answered bob", "sent alice", "answered alice"]);
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
     expect(defaults.filter((row) => row.project === "CORE")).toEqual([
@@ -693,11 +743,14 @@ test("a default assignee save refused while Settings is left says so when Settin
       });
     });
     await page.goto("/settings");
-    const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
+    const core = listTrigger(page, "Default assignee of CORE");
     await expect(core).toBeEnabled();
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["alice", "bob"]);
-    await core.selectOption("bob");
+    await core.click();
+    await expect.poll(() => offered(page, "Default assignee of CORE")).toEqual(["alice", "bob"]);
+    await listOf(page, "Default assignee of CORE")
+      .getByRole("option", { exact: true, name: "bob" })
+      .click();
 
     const navigation = page.getByRole("navigation", { name: "Navigation" });
     await navigation.getByRole("link", { name: "Inbox" }).click();
@@ -707,7 +760,7 @@ test("a default assignee save refused while Settings is left says so when Settin
 
     await navigation.getByRole("link", { name: "Settings" }).click();
     await expect(core).toBeEnabled();
-    await expect(core).toHaveValue("alice");
+    await expect(core).toHaveText("alice");
     await expect(
       page.getByRole("alert").filter({ hasText: "the default assignee save was refused" })
     ).toBeVisible();
@@ -744,11 +797,10 @@ test("a default assignee the page has not read yet is never shown as Unassigned"
     // calls it failed: page timers, which the page's own clock fires.
     await page.clock.install();
     await page.goto("/settings");
-    const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
+    const core = listTrigger(page, "Default assignee of CORE");
     await expect(core).toBeVisible();
     // Not read yet: the control says so and takes no pick.
     await expect(core).toBeDisabled();
-    await expect(core).not.toHaveValue("");
     await expect(core).not.toHaveText(/Unassigned/);
     await expect(core).toHaveText("Loading…");
 
@@ -769,13 +821,12 @@ test("a default assignee the page has not read yet is never shown as Unassigned"
       )
       .toBe(1);
     await expect(core).toBeDisabled();
-    await expect(core).not.toHaveValue("");
     await expect(core).toHaveText("Unavailable");
 
     read = "pass";
     await loadError.getByRole("button", { name: "Retry" }).click();
     await expect(core).toBeEnabled();
-    await expect(core).toHaveValue("alice");
+    await expect(core).toHaveText("alice");
     await expect(loadError).toHaveCount(0);
   } finally {
     await context.close();

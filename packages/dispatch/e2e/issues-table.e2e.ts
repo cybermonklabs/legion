@@ -11,7 +11,14 @@ import {
   listIssues,
   patchIssue,
 } from "./api";
-import { filterPicker } from "./filters";
+import {
+  chooseDisplay,
+  controlRow,
+  displayChoice,
+  filterPicker,
+  listOf,
+  openDisplayMenu,
+} from "./filters";
 import { nextFrames } from "./frames";
 import { dropFirstAnswer, watchWrites } from "./keyed-writes";
 import {
@@ -85,7 +92,8 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await search.fill("searchble impossible");
     await expect(page.getByText("No issues match these filters.")).toBeVisible();
     await search.fill("searchble work");
-    await page.getByRole("combobox", { name: "Group by" }).selectOption("epic");
+    await chooseDisplay(page, "Group by", "epic");
+    await page.keyboard.press("Escape");
     await expect(page.getByText(new RegExp(`${epic.key} · Table epic`)).first()).toBeVisible();
     await expect(page.getByText(/next in queue #1/)).toBeVisible();
     await page.getByRole("combobox", { name: "Rows per page" }).selectOption("25");
@@ -95,7 +103,8 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await page.reload();
     await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();
     await expect(search).toHaveValue("searchble work");
-    await expect(page.getByRole("combobox", { name: "Group by" })).toHaveValue("epic");
+    await expect(displayChoice(await openDisplayMenu(page), "Group by", "epic")).toBeChecked();
+    await page.keyboard.press("Escape");
 
     // A different browser page makes an ordinary issue edit. The first page is never navigated
     // or reloaded after the edit; its existing live subscription must update the visible row.
@@ -139,7 +148,8 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await page.screenshot({ path: testInfo.outputPath("issues-table-live.png"), fullPage: true });
     await page.getByRole("button", { name: "Clear selection", exact: true }).click();
 
-    await page.getByRole("combobox", { name: "Group by" }).selectOption("");
+    await chooseDisplay(page, "Group by", "");
+    await page.keyboard.press("Escape");
     await page.getByRole("combobox", { name: "Rows per page" }).selectOption("50");
     const selected = rows[25];
     if (!selected) throw new Error("The queue seed did not create 26 issues");
@@ -209,7 +219,8 @@ test("merging an epic moves open descendants through closed intermediates and pr
       .getByRole("row")
       .filter({ has: page.getByRole("button", { name: /Source epic/ }) });
     await group.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
+    await page.getByRole("button", { name: "Merge into another epic" }).click();
+    await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     await page
       .getByRole("dialog", { name: "Merge this epic?" })
@@ -246,9 +257,8 @@ test("selection actions move, remove and create an epic, whose name can then cha
       page.getByRole("checkbox", { name: `Select ${key}`, exact: true }).check();
     await select(first.key);
     await select(second.key);
-    await page
-      .getByRole("combobox", { name: "Move to epic", exact: true })
-      .selectOption(target.key);
+    await page.getByRole("button", { name: "Move to epic" }).click();
+    await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Move", exact: true }).click();
     await expect
       .poll(async () => [(await getIssue(first.key)).parent, (await getIssue(second.key)).parent])
@@ -271,7 +281,8 @@ test("selection actions move, remove and create an epic, whose name can then cha
     if (!epicKey) throw new Error("The new epic was not assigned");
     await expect.poll(() => getIssue(second.key).then((issue) => issue.parent)).toBe(epicKey);
     expect((await getIssue(epicKey)).labels).toContain("epic");
-    await page.getByRole("combobox", { name: "Group by" }).selectOption("epic");
+    await chooseDisplay(page, "Group by", "epic");
+    await page.keyboard.press("Escape");
     const group = page
       .getByRole("row")
       .filter({ has: page.getByRole("button", { name: /Coordinate onboarding release/ }) });
@@ -458,9 +469,21 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
       .getByRole("checkbox", { name: "Updated", exact: true })
       .check();
     await page.keyboard.press("Escape");
+    // Below `sm` the row wraps, so the search box takes a line of its own: at 390 px it is as
+    // wide as the row itself, which is the box a reader had before the controls moved into one
+    // row. The three controls beside it sit on the line under it.
     await expect(page.getByRole("searchbox", { name: "Search issues" })).toBeVisible();
+    // The search box was waited for on the line above, and a drawn element has a box.
     const search = await page.getByRole("searchbox", { name: "Search issues" }).boundingBox();
-    expect(search?.width).toBeGreaterThan(300);
+    // The row holds the search box waited for above, so it is drawn and has a box too.
+    const row = await controlRow(page).boundingBox();
+    // `ControlRow` draws the trigger in the one commit that draws the search box waited for.
+    const trigger = await page.getByRole("button", { name: /^Filters/ }).boundingBox();
+    if (!search || !row || !trigger) throw new Error("The control row could not be measured");
+    expect(search.width).toBeGreaterThan(300);
+    expect(search.x).toBeCloseTo(row.x, 0);
+    expect(search.width).toBeGreaterThan(row.width - 1);
+    expect(trigger.y).toBeGreaterThanOrEqual(search.y + search.height);
     const keyHeader = page
       .getByRole("columnheader")
       .filter({ has: page.getByRole("button", { name: "Key", exact: true }) });
@@ -536,7 +559,8 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     // An epic is an ordinary row of the table, searchable and selectable like any other, and
     // becomes a heading only in the grouping that makes it one.
     await expect(page.locator(`[data-issue-row="${epic.key}"]`)).toHaveCount(1);
-    await page.getByRole("combobox", { name: "Group by" }).selectOption("epic");
+    await chooseDisplay(page, "Group by", "epic");
+    await page.keyboard.press("Escape");
     await expect(page.locator(`[data-issue-row="${epic.key}"]`)).toHaveCount(0);
     await expect(
       page.getByRole("link", { name: `${epic.key} · Phone epic`, exact: true }).first()
@@ -893,7 +917,8 @@ test("a refused merge move leaves the source open without a close reason", async
     // source's rather than at whichever heading comes first.
     const heading = page.locator("tr", { has: page.getByRole("link", { name: /Merge source/ }) });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
+    await page.getByRole("button", { name: "Merge into another epic" }).click();
+    await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     await page
       .getByRole("dialog", { name: "Merge this epic?" })
@@ -1075,7 +1100,8 @@ test("reload mid merge moves current open descendants then records one reason an
       has: page.getByRole("link", { name: /Source workflow/ }),
     });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
+    await page.getByRole("button", { name: "Merge into another epic" }).click();
+    await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     await page
       .getByRole("dialog", { name: "Merge this epic?" })
@@ -1138,9 +1164,10 @@ test("a status the bundle does not know leaves the whole page standing", async (
   }
 });
 
-// B2: a closed `<select>` commits on an arrow key in Chrome on Linux and Windows. The merge
-// select stages a target instead, and the confirmation is what sends anything.
-test("an arrow key on the merge select closes no epic, and the confirmed merge does", async ({
+// A closed `<select>` commits on an arrow key in Chrome on Linux and Windows. The merge
+// list stages a target instead, and the confirmation is what sends anything. An arrow key on the
+// closed trigger opens the list, and picks nothing.
+test("an arrow key on the merge list's trigger closes no epic, and the confirmed merge does", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -1155,9 +1182,10 @@ test("an arrow key on the merge select closes no epic, and the confirmed merge d
     await page.goto("/projects/CORE/issues?group=epic");
     const heading = page.locator("tr", { has: page.getByRole("link", { name: /Arrow source/ }) });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    const select = page.getByRole("combobox", { name: "Merge into another epic" });
-    await select.focus();
+    const trigger = page.getByRole("button", { name: "Merge into another epic" });
+    await trigger.focus();
     await page.keyboard.press("ArrowDown");
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
     // Nothing must follow the keystroke: a merge the arrow key had started would leave the page
     // in that keypress's own task, so this window is where its write and its dialog would show.
     await page.waitForTimeout(500);
@@ -1165,8 +1193,9 @@ test("an arrow key on the merge select closes no epic, and the confirmed merge d
     expect((await getIssue(child.key)).parent).toBe(source.key);
     await expect(page.getByRole("dialog", { name: "Merge this epic?" })).toHaveCount(0);
 
-    // The confirmed path still merges, and says what it is about to do first.
-    await select.selectOption(target.key);
+    // The confirmed path still merges, and says what it is about to do first. The list the arrow
+    // opened is the one the target is picked from.
+    await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     const asked = page.getByRole("dialog", { name: "Merge this epic?" });
     await expect(asked).toContainText(source.key);
@@ -1375,12 +1404,13 @@ test("picker keeps a pick on screen: the assignee in the table of an item of the
     const reads = logReads(page, listRead("advances", item.id));
     await page.goto(`/issues/${issue.key}`);
     const picker = pagePicker(page, `Assignee of ${issue.key}`);
-    await expect(picker).toHaveValue("bob");
+    await expect(picker).toHaveAccessibleName(`Assignee of ${issue.key} bob`);
 
     // Its people are read once the reader reaches for the control.
     await picker.focus();
-    await picker.selectOption("alice");
-    await expect(picker).toHaveValue("alice");
+    await picker.click();
+    await listOf(picker).getByRole("option", { exact: true, name: "alice" }).click();
+    await expect(picker).toHaveAccessibleName(`Assignee of ${issue.key} alice`);
     await expect.poll(() => held.sent.length).toBe(1);
     // The picker leaves the screen with its save still out, and the work under the item is read
     // from the server, which still holds bob.

@@ -9,7 +9,7 @@ import {
   putIssueState,
   putRepoProject,
 } from "./api";
-import { filterPicker, pickFilterOption } from "./filters";
+import { filterPicker, listOf, openFilterPanel, pickFilterOption } from "./filters";
 import { nextFrames } from "./frames";
 import { pendingWrites } from "./keyed-writes";
 import {
@@ -141,7 +141,10 @@ test("project table filters narrow issues; documents stay scoped to the project"
     await expect(page.getByText("Backlog work", { exact: true })).toBeVisible();
     await expect(page.getByText("Child work", { exact: true })).toHaveCount(0);
     await search.clear();
-    await page.getByRole("button", { name: "Needs you", exact: true }).click();
+    // Needs you is one of the chips in the panel the row's one Filters trigger opens.
+    const flags = await openFilterPanel(page);
+    await flags.getByRole("button", { name: "Needs you", exact: true }).click();
+    await page.keyboard.press("Escape");
     await expect(page.getByText("Needs attention", { exact: true })).toBeVisible();
     await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
 
@@ -374,11 +377,11 @@ test("picker keeps a pick on screen: the repository on the issue page, over a re
     // The repository is in `main` on the issue page with the sidebar, and in Details on that of
     // dispatch://INFRA-1196, which the reader opens to reach it.
     await revealPagePicker(page, `Repository of ${issue.key}`);
-    await expect(picker).toHaveValue("acme/widgets");
+    await expect(picker).toHaveAccessibleName(`Repository of ${issue.key} acme/widgets`);
 
-    // The reader types the repository into the box and presses Enter, which writes it.
-    await picker.fill("acme/gadgets");
-    await picker.press("Enter");
+    // The reader picks the repository's row in the list, which writes it.
+    await picker.click();
+    await listOf(picker).getByRole("option", { exact: true, name: "acme/gadgets" }).click();
     await expect.poll(() => shown.values.at(-1)).toBe("acme/gadgets");
     const fromPick = shown.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
@@ -396,7 +399,7 @@ test("picker keeps a pick on screen: the repository on the issue page, over a re
       "acme/gadgets",
     ]);
     expect(await getIssue(issue.key)).toMatchObject({ repo: "acme/gadgets", title: renamed });
-    await expect(picker).toHaveValue("acme/gadgets");
+    await expect(picker).toHaveAccessibleName(`Repository of ${issue.key} acme/gadgets`);
   } finally {
     await context.close();
   }

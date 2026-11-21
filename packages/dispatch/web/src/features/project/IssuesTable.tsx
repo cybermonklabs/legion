@@ -1,10 +1,26 @@
 import { useQuery } from "@tanstack/react-query";
 import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { userStateQuery } from "../../api/queries";
-import { Chip } from "../../components/Chip";
-import { DataTable, useDataTable } from "../../components/DataTable";
+import {
+  DataTable,
+  type DataTableNames,
+  type RowNoun,
+  useDataTable,
+} from "../../components/DataTable";
+import type { FilterChip } from "../../components/filter-chips";
+import { useFocusPlace } from "../../components/focus-place";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import type { PagerOptions } from "../../components/Pager";
+import { focusListStop, useLastMarkedPlace } from "../../components/SelectionBar";
+import { TABLE_FRAME_MARK } from "../../components/table-keys";
+import { useTableLayout } from "../../components/table-layout";
+import {
+  addressPath,
+  copyAddress,
+  useAddressNavigate,
+  usePageAddress,
+} from "../../lib/page-address";
 import {
   borderDefault,
   dangerText,
@@ -18,27 +34,32 @@ import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EpicNameDialog } from "./EpicNameDialog";
 import { useIssueFilters } from "./issue-filters";
-import { useIssueTableActions } from "./issues-table-actions";
+import { ISSUES_NOT_LOADED, useIssueTableActions } from "./issues-table-actions";
 import {
   issueTableLayout,
   listingColumns,
   type ShownColumnId,
   useIssueTableColumns,
 } from "./issues-table-columns";
-import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-controls";
 import { answeredWhole, type IssueListing, useIssueTableItems } from "./issues-table-data";
-import { useTableLayout } from "./issues-table-layout";
 import {
+  ALL_ROWS,
   clearPicked,
   compareGroups,
   facetCounts,
   groupValue,
+  ISSUE_GROUP_ATTRIBUTE,
+  ISSUE_LINK_ATTRIBUTE,
+  ISSUE_ROW_ATTRIBUTE,
   type Item,
   isEpic,
   matchesFilters,
   matchesSearch,
+  PAGE_SIZES,
+  tableStorageKey,
   UNCLAIMED_FACET,
 } from "./issues-table-model";
+import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-page";
 import { GroupRow, IssueRow } from "./issues-table-rows";
 import { useTableView } from "./issues-table-view";
 import { issueIsUnread } from "./UnreadDot";
@@ -55,10 +76,57 @@ const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.ori
 
 const ACTION_WIDTH = 104;
 
+/** The checkbox a row draws for its selection (`issues-table-columns.tsx`'s select column), the
+ *  one checkbox every row has. */
+const ROW_CHECKBOX = 'input[type="checkbox"]';
+
+/** The List's own words, which the table core reads and never invents: the attributes its rows
+ *  and groups carry, the link opening a row follows, and the keys that walk it, under the ids
+ *  and labels the palette and the shortcut help have always shown. */
+const ISSUE_TABLE_NAMES: DataTableNames = {
+  groupAttribute: ISSUE_GROUP_ATTRIBUTE,
+  keymap: {
+    next: { id: "list-next", keys: "j", label: "Next issue" },
+    open: { id: "list-open", keys: "o", label: "Open issue" },
+    openOnEnter: { id: "list-open-enter", keys: "Enter", label: "Open the focused issue" },
+    previous: { id: "list-previous", keys: "k", label: "Previous issue" },
+    scope: "project",
+    select: { id: "list-select", keys: "x", label: "Select or deselect the focused issue" },
+  },
+  linkAttribute: ISSUE_LINK_ATTRIBUTE,
+  rowAttribute: ISSUE_ROW_ATTRIBUTE,
+};
+
+/** The same words for an issue table a page draws beside its main table over the same keys - the
+ *  priorities page's fault lists, and the work under an opened priority - whose `j` and `k` walk
+ *  it only from one of its own rows (`moveFrom: "row"`), so they never take those keys from the
+ *  main table. */
+const ISSUE_TABLE_BESIDE_NAMES: DataTableNames = {
+  ...ISSUE_TABLE_NAMES,
+  keymap: { ...ISSUE_TABLE_NAMES.keymap, moveFrom: "row" },
+};
+
+/** What the List's rows are, which its header filters count in and its pager counts: issues, in
+ *  groups, over rows. */
+const ISSUE_TABLE_NOUN: RowNoun = {
+  group: { one: "group", many: "groups" },
+  line: { one: "row", many: "rows" },
+  many: "issues",
+  one: "issue",
+};
+
+/** The line under the List: its page sizes, the one that means every row, and its test id. */
+const ISSUE_TABLE_PAGER: PagerOptions = {
+  allRows: ALL_ROWS,
+  pageSizes: PAGE_SIZES,
+  testId: "issues-table-pager",
+};
+
 export function IssuesTable({
   label,
   layout: ownLayout,
   listing,
+  moveFrom = "page",
   priorityTitles,
   stateKey,
 }: {
@@ -72,6 +140,10 @@ export function IssuesTable({
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
   listing: IssueListing;
+  /** Where its `j` and `k` walk its rows from (`RowKeymap.moveFrom`): anywhere on the page the
+   *  focus is in no other table, for the page's one table or its main one (the default); or only
+   *  from one of its own rows, for a table drawn beside the page's main one. */
+  moveFrom?: "page" | "row";
   /** Each priority's title by its id. Given, the table has the Advances column, which names each
    *  priority a row advances by its title; unset, it has none (`listingColumns`). */
   priorityTitles?: ReadonlyMap<string, string>;
@@ -85,8 +157,10 @@ export function IssuesTable({
   // Whether the listing's one open read is every row it holds, so the table reads no closed
   // issue beside it (`answeredWhole`).
   const whole = answeredWhole(listing);
-  const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
+  const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableView(stateKey);
+  const address = usePageAddress();
+  const navigate = useAddressNavigate();
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
   // The listing columns this table has: the ones its listing gives a use (`listingColumns`).
@@ -98,13 +172,22 @@ export function IssuesTable({
   // priority is one table drawn in two places, so a reader who drags a column there drags it
   // for the priorities page and the priority's own page alike, and not once per priority.
   const layout = useTableLayout(
-    ownLayout?.key ?? ("project" in listing ? listing.project : SCOPED_LAYOUT_KEY),
+    tableStorageKey(ownLayout?.key ?? ("project" in listing ? listing.project : SCOPED_LAYOUT_KEY)),
     columnsLayout
   );
   const { attachAbove, boxWidth } = layout;
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
+  // The issue the reader marked last - by its own checkbox, or `x` on its row: where the focus
+  // goes when the bar goes with it (`returnFocus`, below). A select-all marks no row of the
+  // reader's own, so it records none. The List's search box is the last place `noteFocus`,
+  // below, hands the focus to.
+  const lastMarked = useRef<string | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const recordMark = useCallback((key: string) => {
+    lastMarked.current = key;
+  }, []);
   const [openFilter, setOpenFilter] = useState<string>();
 
   const statusPicked = (filters.find((filter) => filter.id === "status")?.value ?? []) as string[];
@@ -125,6 +208,9 @@ export function IssuesTable({
     listingError,
     missingParents,
   } = useIssueTableItems(listing, { wantsDone, registry });
+  const loading = issues.isPending || userState.isPending;
+  const failed = !loading && ((issues.isError && issues.data === undefined) || userState.isError);
+  const loaded = !loading && !failed;
   // The issues an address names with `only=`, which the table shows alone until its chip is
   // removed. The narrowing is the reader's, so it outranks nothing: every other filter still
   // applies to what is left.
@@ -151,10 +237,36 @@ export function IssuesTable({
     );
     return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
   }, [allItems, filters, flags.needsYou, flags.unread, grouping, picked, search, userState.data]);
+  // What the table is narrowed to, and the way back to every row: removing the chip clears
+  // `only=` and leaves every other control where the reader set it. It is a chip of the control
+  // row, beside the flags' and the columns', drawn by the same `filterChips` and named as they
+  // are, `Remove Showing: <title> filter`, and its removal leaves a history entry, so Back gives
+  // the narrowing back (`useAddressNavigate`'s `replace: false`). The toolbar is drawn in every
+  // state, so the chip counts what it shows only once the rows the table waits on are in: not
+  // beside the loading skeleton, not after a failed read, and not while the closed issues it
+  // asked for are still out, where it would count rows the table has not read. Until then it
+  // names its narrowing alone.
+  const counted = loaded && listingError === undefined && (!wantsDone || doneLoaded);
+  const pickedChip: FilterChip | undefined =
+    picked === null
+      ? undefined
+      : {
+          key: "only",
+          label: `Showing: ${picked.label}`,
+          text: counted
+            ? `Showing: ${picked.label} · ${items.length} of ${picked.keys.size} ${picked.keys.size === 1 ? "issue" : "issues"}`
+            : undefined,
+          remove: () =>
+            navigate(
+              addressPath(address.pathname, clearPicked(copyAddress(address.search)), address.hash),
+              { replace: false }
+            ),
+        };
 
   const columns = useIssueTableColumns(
     userState.data,
     boxWidth < 640,
+    recordMark,
     columnsLayout,
     priorityTitles
   );
@@ -164,6 +276,7 @@ export function IssuesTable({
     columns,
     getRowId: (item) => item.issue.key,
     layout,
+    names: moveFrom === "row" ? ISSUE_TABLE_BESIDE_NAMES : ISSUE_TABLE_NAMES,
     state: { sorting, grouping, columnFilters: filters, globalFilter: search, pagination },
     onSortingChange: setSorting,
     onGroupingChange: setGrouping,
@@ -171,11 +284,63 @@ export function IssuesTable({
     onGlobalFilterChange: setSearch,
     onPaginationChange: setPagination,
     viewKey: params.toString(),
-    selection: { state: selection, onChange: setSelection },
+    selection: { state: selection, onChange: setSelection, onMark: recordMark },
     search: { column: "title", filterFn: fuzzy },
     groupOrder: { compare: compareGroups, heading: groupValue },
   });
   const { table } = model;
+  // The issues this page of the table lists, in its order: its rows, not its group headings.
+  const leaves = () => model.displayRows.flatMap(({ row }) => (row.getIsGrouped() ? [] : [row.id]));
+  // The List's own stop: its named table, which is drawn with no row as well.
+  const tableStop = () => model.layout.scrollRef.current?.querySelector("table") ?? null;
+  // The bar's hand-off where the issue marked last cannot take the focus, with no scroll. After a
+  // press that took that issue off the list: a row the reader can see at its place, else before
+  // it. With no issue marked, as after a select-all from the table's head: the first row the
+  // reader can see below the table's sticky head. Else the table's own stop. A row the window has
+  // not drawn is out of their sight, so it is never where the focus lands.
+  const landAtPlace = useLastMarkedPlace({
+    control: (key) =>
+      model.layout.scrollRef.current
+        ?.querySelector(`[${ISSUE_ROW_ATTRIBUTE}="${CSS.escape(key)}"]`)
+        ?.querySelector<HTMLElement>(ROW_CHECKBOX) ?? null,
+    lastMarked: () => lastMarked.current,
+    list: tableStop,
+    order: leaves,
+    shown: Object.keys(selection).length !== 0,
+  });
+  // The bar gone with the focus (`SelectionBar`): the checkbox of the issue the reader marked
+  // last while the table lists it. A row the window has not drawn is scrolled to and takes the
+  // focus as it lands (`focusRow`). Else the hand-off above (`landAtPlace`) has put the focus
+  // itself, with no scroll, after a press that took that issue off the list or with no issue
+  // marked.
+  const returnFocus = () => {
+    if (landAtPlace()) return null;
+    // `landAtPlace` moved nothing, so the issue marked last is listed.
+    const key = lastMarked.current;
+    return key === null ? focusListStop(tableStop()) : model.focusRow(key, ROW_CHECKBOX);
+  };
+  // A control of the table's head - a column filter, or the list it opened in a portal of its
+  // own - goes with the table when a press in it sends the List back to its skeleton, and the
+  // focus it held goes to the search box rather than the page's body. A notice's button under
+  // the toolbar goes with the notice it answers - the interrupted action's Finish and Dismiss, the
+  // possible duplicate's Create anyway and Cancel new epic, the unanswered epic's Dismiss - and its
+  // focus goes to the control now at its place among the notices, else the one before it, else
+  // the search box. Only the head and the notices are counted: the selection bar, the rows and
+  // the dialogs each hand the focus on themselves. The handler sits on the List's section, which
+  // stays in every branch.
+  const sectionRef = useRef<HTMLElement>(null);
+  const noticesRef = useRef<HTMLDivElement>(null);
+  const noteFocus = useFocusPlace(
+    (element) => {
+      const section = sectionRef.current;
+      if (section === null) return null;
+      // A portal's element is counted only where a control of the head was before it.
+      if (!section.contains(element)) return section.querySelector("thead");
+      const notices = noticesRef.current;
+      return notices?.contains(element) ? notices : element.closest("thead");
+    },
+    () => searchRef.current
+  );
 
   // The keys the table lists under the filters and the search it is showing, in row order. A key
   // it no longer lists drops out of the selection - another filter, another project - so a row
@@ -265,74 +430,68 @@ export function IssuesTable({
     [items, openFilter, filters, search]
   );
 
-  if (issues.isPending || userState.isPending) return <LoadingSkeleton label="Loading issues" />;
-  if ((issues.isError && issues.data === undefined) || userState.isError)
-    return (
-      <p className={dangerText} role="alert">
-        Could not load issues.{" "}
-        <button
-          type="button"
-          onClick={() => {
-            void issues.refetch();
-            void userState.refetch();
-            if (missingParents.length) void ancestry.refetch();
-          }}
-        >
-          Retry loading issues
-        </button>
-      </p>
-    );
-
   const visibleColumns = table.getVisibleLeafColumns().length + 1;
+  // A column filter's panel hangs off its header and goes with the table: it is closed then, as
+  // a panel whose anchor has left the page closes (`AnchoredPanel`), so the table coming back
+  // does not open it again and take the focus from wherever it went meanwhile.
+  useEffect(() => {
+    if (!loaded) setOpenFilter(undefined);
+  }, [loaded]);
 
+  // The toolbar is drawn in every branch, at the one place in the tree, as the Board draws its
+  // `controls`: a filter press that sends the List off to read issues it has not loaded - Clear
+  // filters back to the open issues, which a List opened on the closed ones has never read -
+  // puts the skeleton in place of the table alone, and the control pressed, with the keyboard
+  // focus on it, stays where it was. Everything else here needs the listing and waits for it.
+  // The section is the table's frame: its toolbar, box and pager, which another table's
+  // page-wide keys leave to it (`TABLE_FRAME_ATTRIBUTE`).
   return (
-    <section aria-label={name} className="space-y-3 sm:pb-24">
+    <section
+      aria-label={name}
+      className="space-y-3 sm:pb-24"
+      {...TABLE_FRAME_MARK}
+      onFocus={noteFocus}
+      ref={sectionRef}
+    >
       <div className="space-y-3" ref={attachAbove}>
-        {listingError ? (
-          <p className={dangerText} role="alert">
-            Could not load {wantsDone ? "closed " : ""}issues.{" "}
-            <button
-              type="button"
-              aria-label={wantsDone ? "Retry loading closed issues" : "Retry loading issues"}
-              onClick={() => void listingError.refetch()}
-            >
-              Retry
-            </button>
-          </p>
+        {loaded ? (
+          <>
+            {listingError ? (
+              <p className={dangerText} role="alert">
+                Could not load {wantsDone ? "closed " : ""}issues.{" "}
+                <button
+                  type="button"
+                  aria-label={wantsDone ? "Retry loading closed issues" : "Retry loading issues"}
+                  onClick={() => void listingError.refetch()}
+                >
+                  Retry
+                </button>
+              </p>
+            ) : null}
+            {unreadableAncestors > 0 ? (
+              <p className={dangerText} role="alert">
+                Could not load {unreadableAncestors}{" "}
+                {unreadableAncestors === 1 ? "ancestor" : "ancestors"}; affected rows show Unknown
+                epic.{" "}
+                <button type="button" onClick={() => void ancestry.refetch()}>
+                  Retry loading ancestors
+                </button>
+              </p>
+            ) : null}
+            {wantsDone && everyIssue.isPending ? (
+              <p aria-live="polite" className={textMutedOnCanvas}>
+                Loading closed issues…
+              </p>
+            ) : null}
+            {/* Issues by status: a click shows only that status, a second click every status. */}
+            <IssueTableStatus table={table} items={allItems} epics={epics} />
+          </>
         ) : null}
-        {unreadableAncestors > 0 ? (
-          <p className={dangerText} role="alert">
-            Could not load {unreadableAncestors}{" "}
-            {unreadableAncestors === 1 ? "ancestor" : "ancestors"}; affected rows show Unknown epic.{" "}
-            <button type="button" onClick={() => void ancestry.refetch()}>
-              Retry loading ancestors
-            </button>
-          </p>
-        ) : null}
-        {wantsDone && everyIssue.isPending ? (
-          <p aria-live="polite" className={textMutedOnCanvas}>
-            Loading closed issues…
-          </p>
-        ) : null}
-        {/* Issues by status: a click shows only that status, a second click every status. */}
-        <IssueTableStatus table={table} items={allItems} epics={epics} />
-        {picked === null ? null : (
-          /* What the table is narrowed to, and the way back to every row: removing the chip
-             clears `only=` and leaves every other control where the reader set it. */
-          <p className={`flex flex-wrap items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
-            <Chip
-              aria-label={`Stop showing only ${picked.label}`}
-              onClick={() => setParams((current) => clearPicked(current), { replace: false })}
-              removable
-              title={picked.label}
-            >
-              Showing: {picked.label} · {items.length} of {picked.keys.size}{" "}
-              {picked.keys.size === 1 ? "issue" : "issues"}
-            </Chip>
-          </p>
-        )}
 
         <IssueTableToolbar
+          searchRef={searchRef}
+          selection={pickedChip}
+          stateKey={stateKey}
           table={table}
           unclaimedUnchecked={
             wantsFree && registry.isError
@@ -343,140 +502,168 @@ export function IssuesTable({
           }
         />
 
-        <p
-          aria-live="polite"
-          role={notice ? (notice.kind === "error" ? "alert" : "status") : undefined}
-          className={`min-h-5 text-sm ${notice?.kind === "error" ? dangerText : textSecondaryOnCanvas}`}
-        >
-          {notice?.text}
-        </p>
-        {interrupted ? (
-          <section aria-label="Interrupted table action" className={textSecondaryOnCanvas}>
-            <p>{interruptedDescription}</p>
-            <button
-              type="button"
-              onClick={finish}
-              className={`min-h-11 rounded-lg border px-3 text-sm ${borderDefault} ${focusVisibleRing}`}
+        {loaded ? (
+          <div className="space-y-3" ref={noticesRef}>
+            <p
+              aria-live="polite"
+              role={notice ? (notice.kind === "error" ? "alert" : "status") : undefined}
+              className={`min-h-5 text-sm ${notice?.kind === "error" ? dangerText : textSecondaryOnCanvas}`}
             >
-              Finish
-            </button>{" "}
-            <button
-              type="button"
-              onClick={dismiss}
-              className={`min-h-11 rounded-lg border px-3 text-sm ${borderDefault} ${focusVisibleRing}`}
-            >
-              Dismiss
-            </button>
-          </section>
-        ) : null}
-        {unansweredEpic ? (
-          <LandedWithoutAnswer what={`The epic “${unansweredEpic}”`}>
-            The selected issues have not been moved. Find the epic in the project before moving
-            them.{" "}
-            <button type="button" onClick={dismissUnansweredEpic}>
-              Dismiss
-            </button>
-          </LandedWithoutAnswer>
-        ) : null}
-        {duplicateEpic && newEpic ? (
-          <div role="alert" className={textSecondaryOnCanvas}>
-            <p>{duplicateEpic.message}</p>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void newEpic(duplicateEpic.keys, duplicateEpic.title, true)}
-            >
-              Create anyway
-            </button>
-            <button type="button" onClick={() => setDuplicateEpic(undefined)}>
-              Cancel new epic
-            </button>
+              {notice?.text}
+            </p>
+            {interrupted ? (
+              <section aria-label="Interrupted table action" className={textSecondaryOnCanvas}>
+                <p>{interruptedDescription}</p>
+                <button
+                  type="button"
+                  onClick={finish}
+                  className={`min-h-11 rounded-lg border px-3 text-sm ${borderDefault} ${focusVisibleRing}`}
+                >
+                  Finish
+                </button>{" "}
+                <button
+                  type="button"
+                  onClick={dismiss}
+                  className={`min-h-11 rounded-lg border px-3 text-sm ${borderDefault} ${focusVisibleRing}`}
+                >
+                  Dismiss
+                </button>
+              </section>
+            ) : null}
+            {unansweredEpic ? (
+              <LandedWithoutAnswer what={`The epic “${unansweredEpic}”`}>
+                The selected issues have not been moved. Find the epic in the project before moving
+                them.{" "}
+                <button type="button" onClick={dismissUnansweredEpic}>
+                  Dismiss
+                </button>
+              </LandedWithoutAnswer>
+            ) : null}
+            {duplicateEpic && newEpic ? (
+              <div role="alert" className={textSecondaryOnCanvas}>
+                <p>{duplicateEpic.message}</p>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void newEpic(duplicateEpic.keys, duplicateEpic.title, true)}
+                >
+                  Create anyway
+                </button>
+                <button type="button" onClick={() => setDuplicateEpic(undefined)}>
+                  Cancel new epic
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
 
-      <DataTable
-        empty="No issues match these filters."
-        filterCounts={openFacets}
-        filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
-        label={`${name} table`}
-        model={model}
-        noun={{ many: "issues", one: "issue" }}
-        onOpenFilterChange={setOpenFilter}
-        openFilter={openFilter}
-        renderGroup={({ entry, index, measure }) => (
-          <GroupRow
-            columns={visibleColumns}
-            viewportWidth={boxWidth}
-            continued={entry.continued}
-            epics={epics}
-            grouping={grouping[0] ?? ""}
-            index={index}
-            measure={measure}
-            onMerge={mergeEpic}
-            shown={entry.shown}
-            onRename={renameEpic}
-            onStartAll={(key) =>
-              startNext(
-                allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
-              )
-            }
-            row={entry.row}
+      {loading ? <LoadingSkeleton label="Loading issues" /> : null}
+      {failed ? (
+        <p className={dangerText} role="alert">
+          {ISSUES_NOT_LOADED}{" "}
+          <button
+            type="button"
+            onClick={() => {
+              void issues.refetch();
+              void userState.refetch();
+              if (missingParents.length) void ancestry.refetch();
+            }}
+          >
+            Retry loading issues
+          </button>
+        </p>
+      ) : null}
+      {loaded ? (
+        <>
+          <DataTable
+            empty="No issues match these filters."
+            filterCounts={openFacets}
+            filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
+            label={`${name} table`}
+            model={model}
+            noun={ISSUE_TABLE_NOUN}
+            onOpenFilterChange={setOpenFilter}
+            openFilter={openFilter}
+            pager={ISSUE_TABLE_PAGER}
+            renderGroup={({ entry, index, measure }) => (
+              <GroupRow
+                busy={busy}
+                columns={visibleColumns}
+                viewportWidth={boxWidth}
+                continued={entry.continued}
+                epics={epics}
+                grouping={grouping[0] ?? ""}
+                index={index}
+                measure={measure}
+                onMerge={mergeEpic}
+                shown={entry.shown}
+                onRename={renameEpic}
+                onStartAll={(key) =>
+                  startNext(
+                    allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
+                  )
+                }
+                row={entry.row}
+              />
+            )}
+            renderRow={({ row, index, measure }) => (
+              <IssueRow
+                busy={busy}
+                index={index}
+                measure={measure}
+                moved={moved}
+                onStartNext={(key) => startNext([key])}
+                row={row}
+              />
+            )}
+            scrollTestId="issues-table-scroll"
+            stackColumn="title"
+            trailingWidth={ACTION_WIDTH}
           />
-        )}
-        renderRow={({ row, index, measure }) => (
-          <IssueRow
-            busy={busy}
-            index={index}
-            measure={measure}
-            moved={moved}
-            onStartNext={(key) => startNext([key])}
-            row={row}
-          />
-        )}
-        scrollTestId="issues-table-scroll"
-        trailingWidth={ACTION_WIDTH}
-      />
 
-      <IssueTableSelection
-        table={table}
-        epics={epics}
-        busy={busy}
-        unansweredEpic={unansweredEpic}
-        startNext={startNext}
-        moveTo={moveTo}
-        newEpic={newEpic}
-      />
-      {confirming === undefined ? null : (
-        <ConfirmDialog
-          body={confirming.body}
-          confirmLabel={confirming.confirmLabel}
-          key={confirming.title}
-          onCancel={cancelConfirming}
-          onConfirm={confirmed}
-          title={confirming.title}
-        />
-      )}
-      {naming === undefined ? null : naming.kind === "new" ? (
-        newEpic === undefined ? null : (
-          <EpicNameDialog
-            key="new-epic"
-            onCancel={cancelNaming}
-            onSubmit={(name) => void newEpic(naming.keys, name)}
-            submitLabel="Create epic"
-            title="Name the new epic"
+          <IssueTableSelection
+            returnFocus={returnFocus}
+            table={table}
+            epics={epics}
+            busy={busy}
+            unansweredEpic={unansweredEpic}
+            startNext={startNext}
+            moveTo={moveTo}
+            newEpic={newEpic}
           />
-        )
-      ) : (
-        <EpicNameDialog
-          initial={naming.title}
-          key={`rename-${naming.key}`}
-          onCancel={cancelNaming}
-          onSubmit={(name) => renameEpic(naming.key, name)}
-          submitLabel="Rename epic"
-          title="Rename the epic"
-        />
-      )}
+          {confirming === undefined ? null : (
+            <ConfirmDialog
+              body={confirming.body}
+              confirmLabel={confirming.confirmLabel}
+              key={confirming.title}
+              onCancel={cancelConfirming}
+              onConfirm={confirmed}
+              title={confirming.title}
+            />
+          )}
+          {naming === undefined ? null : naming.kind === "new" ? (
+            newEpic === undefined ? null : (
+              <EpicNameDialog
+                key="new-epic"
+                onCancel={cancelNaming}
+                onSubmit={(name) => void newEpic(naming.keys, name)}
+                submitLabel="Create epic"
+                title="Name the new epic"
+              />
+            )
+          ) : (
+            <EpicNameDialog
+              initial={naming.title}
+              key={`rename-${naming.key}`}
+              onCancel={cancelNaming}
+              onSubmit={(name) => renameEpic(naming.key, name)}
+              submitLabel="Rename epic"
+              title="Rename the epic"
+            />
+          )}
+        </>
+      ) : null}
     </section>
   );
 }

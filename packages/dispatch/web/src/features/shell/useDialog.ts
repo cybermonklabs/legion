@@ -1,6 +1,7 @@
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { NavigationType, useLocation, useNavigationType } from "react-router-dom";
 
+import { focusableIn } from "../../components/focus-place";
 import { DIALOG_SCOPE, useKeymap, useKeymapScope } from "./keymap";
 
 /** Below Tailwind's `xl`: the margin is a sheet and the sidebar a drawer. */
@@ -20,24 +21,6 @@ export const MD_VIEWPORT_QUERY = "(min-width: 48rem)";
  *  for `MD_VIEWPORT_QUERY`'s reason: it is paired with `xl:` classes, which Tailwind declares at
  *  `80rem`, so only a `rem` query switches with them at any default font size. */
 export const READING_PANE_QUERY = "(min-width: 80rem)";
-
-const focusableSelector = [
-  "a[href]",
-  "button:not(:disabled)",
-  "textarea:not(:disabled)",
-  "input:not(:disabled)",
-  "select:not(:disabled)",
-  '[tabindex]:not([tabindex="-1"])',
-].join(", ");
-
-/** The controls focus can reach inside `container`, in order. One under a `hidden` ancestor - a
- *  composer kept mounted, out of sight, for a send it has out - takes no focus, so it is neither
- *  where the trap starts nor where it wraps. */
-function focusableIn(container: HTMLElement): HTMLElement[] {
-  return [...container.querySelectorAll<HTMLElement>(focusableSelector)].filter(
-    (element) => element.closest("[hidden]") === null
-  );
-}
 
 // Depth-counted so a picker opening inside an already-locked sheet does not unlock scroll
 // when the picker (not the sheet) closes first; only the outermost acquire/release touches

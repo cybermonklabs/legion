@@ -1,11 +1,12 @@
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
+import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import {
   dangerText,
@@ -53,6 +54,11 @@ export function addPriorityControlName(issueKey: string): string {
   return `Add a priority to ${issueKey}`;
 }
 
+/** The mark the add form's Priority to advance list writes on its trigger, which the form finds
+ *  it by to hand it the focus as it opens. */
+const PICKER_ATTRIBUTE = "data-priority-picker";
+const PICKER_MARKS: ListMarks = { trigger: { [PICKER_ATTRIBUTE]: "" } };
+
 /** The cross a priority's Remove draws inside `NoTooltips`, one em square so it takes its
  *  button's text size, in its button's text colour. It is a shape and not text because the page's
  *  typeface holds only the characters its subset lists, and ✕ is not among them: as text, ✕ is
@@ -98,6 +104,14 @@ function RemoveCross(): ReactNode {
  * priorities to choose from is read only once the line has an entry to name or the control is
  * open, as the components line reads the architecture tree only while its picker is open.
  *
+ * The control adds in two steps. `+` opens a small form in its own place: its Priority to
+ * advance is the shared list's single pick (`MultiSelect`), whose text box narrows the priorities
+ * as the reader types, and a pick stages the priority there; Add writes it, and Cancel drops it.
+ * The press takes the focus away with the `+`, and the form lands it on its first control, the
+ * list's trigger, with no scroll, since the form stands where the `+` stood, where the page's
+ * focus rescue would land it too (`components/focus-place.ts`). The list says the priorities are
+ * loading while their read is out, and that they could not be loaded where it failed.
+ *
  * Inside `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words with their
  * marks and carries no `title`; there `inRow` draws it as the value of a row of Details, which
  * draws the label: no `Advances` of its own, a line that wraps and cuts no word, and "Add a
@@ -121,7 +135,7 @@ export function IssuePriorityLine({
   const own = advances.filter((entry) => !entry.inherited).map((entry) => entry.id);
   const [adding, setAdding] = useState(false);
   const [picked, setPicked] = useState("");
-  const selectId = useId();
+  const [listOpen, setListOpen] = useState(false);
   const queryClient = useQueryClient();
   const priorities = useQuery({
     ...prioritiesQuery(),
@@ -168,12 +182,16 @@ export function IssuePriorityLine({
   const refusedWhileOut = (holdsFocus && write.isPending) || undefined;
   const controlDisabled = busy && !holdsFocus;
   const addControl = useRef<HTMLButtonElement>(null);
-  const picker = useRef<HTMLSelectElement>(null);
-  // Opening the form puts the focus in its first field: the add control the form replaces leaves
-  // the page, and without this the focus would drop to the body with it and a keyboard user
-  // would have to find the form again.
+  const form = useRef<HTMLFormElement>(null);
+  // Opening the form puts the focus in its first field, the list's trigger: the add control the
+  // form replaces leaves the page, and without this the focus would drop to the body with it and
+  // a keyboard user would have to find the form again. It scrolls nothing, since the form stands
+  // where the add control stood.
   useEffect(() => {
-    if (adding) picker.current?.focus();
+    if (!adding) return;
+    form.current
+      ?.querySelector<HTMLElement>(`[${PICKER_ATTRIBUTE}]`)
+      ?.focus({ preventScroll: true });
   }, [adding]);
   // Closing it - Add, Cancel or Escape - owes the add control, drawn again in its place, the
   // focus the form held, for the same reason. The control takes it once it can hold it: outside
@@ -341,34 +359,59 @@ export function IssuePriorityLine({
             // it would close the form and the panel together and leave the focus on nothing. The
             // registry passes over a press already `defaultPrevented` (`keymap.ts`), and a press
             // stopped here reaches no listener above the form either. A second Escape, pressed on
-            // the add control the focus returns to, is the panel's.
+            // the add control the focus returns to, is the panel's. An Escape in the open list is
+            // the list's own: its panel takes it before it reaches the form (`AnchoredPanel`).
             event.preventDefault();
             event.stopPropagation();
             closeForm();
           }}
           onSubmit={add}
+          ref={form}
+          // Inside `NoTooltips` the form's words are the page's - the list's name, what its
+          // trigger says while nothing is picked, Add and Cancel - and carry its mark; a picked
+          // priority's title carries the author's.
+          {...page?.pageChrome}
         >
-          <label className="sr-only" htmlFor={selectId} {...page?.pageChrome}>
-            {page?.CONTROL_LABELS.priority_to_advance ?? "Priority to advance"}
-          </label>
-          <select
-            className={`min-h-11 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-sm md:min-h-8 ${page === null ? inputClasses(true) : `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`}`}
-            id={selectId}
-            onChange={(event) => setPicked(event.target.value)}
-            ref={picker}
-            value={picked}
-          >
-            <option value="">
-              {priorities.data === undefined
+          <MultiSelect
+            emptyMessage={
+              priorities.isPending
                 ? (page?.ANSWER_LINES.loading_priorities ?? "Loading priorities…")
-                : (page?.CONTROL_LABELS.choose_priority ?? "Choose a priority")}
-            </option>
-            {choices.map((row) => (
-              <option key={row.id} value={row.id}>
-                {labels.get(row.id) ?? row.id}
-              </option>
-            ))}
-          </select>
+                : priorities.isError || choices.length > 0
+                  ? "No priority matches that."
+                  : "No priority left to add."
+            }
+            error={
+              priorities.isError
+                ? (page?.ANSWER_LINES.priorities_unreadable ?? "Could not load the priorities.")
+                : null
+            }
+            label={page?.CONTROL_LABELS.priority_to_advance ?? "Priority to advance"}
+            marks={PICKER_MARKS}
+            mode="single"
+            onOpenChange={setListOpen}
+            onPick={setPicked}
+            open={listOpen}
+            optionLabel={(id) => labels.get(id)}
+            options={choices.map((row) => row.id)}
+            searchLabel="Search priorities"
+            // A fixed width, the 224 px the native select this list replaced was capped at: as
+            // wide as that select was once any option reached the cap, so the form beside it
+            // never moves as the reader picks, nor once the priorities have loaded, and a title
+            // longer than that ends in an ellipsis, as it did in the select. Inside `NoTooltips`
+            // it is the page's field, and a long title wraps (`MultiSelect`).
+            triggerClassName={`min-h-11 w-56 shrink-0 rounded-lg px-2 py-1 text-left text-sm md:min-h-8 ${page === null ? inputClasses(true) : `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`}`}
+            value={picked === "" ? undefined : picked}
+          >
+            {picked === "" ? (
+              priorities.data === undefined ? (
+                (page?.ANSWER_LINES.loading_priorities ?? "Loading priorities…")
+              ) : (
+                (page?.CONTROL_LABELS.choose_priority ?? "Choose a priority")
+              )
+            ) : page === null ? undefined : (
+              <span {...page.authorText}>{labels.get(picked) ?? picked}</span>
+            )}
+          </MultiSelect>
           <button
             // While no priority is picked it is `disabled` alone, on both sides of `NoTooltips`.
             aria-disabled={picked === "" ? undefined : refusedWhileOut}

@@ -10,10 +10,11 @@ import { usePriorityWrites } from "./priority-writes";
 
 /**
  * The way a priority is added: a button that opens a one-line form for its title. It stands in
- * the priorities table's toolbar, and on the page alone where no priority is written yet, which
- * is the one place a fresh deployment can write its first. Drawn only for a reader who may write
- * a priority (`usePriorityWrites`); every other reader is shown nothing here. The form takes a
- * line of its own in the flex row it is drawn in.
+ * the priorities table's control row as the page's own control (`TableToolbar`), and on the page
+ * alone where no priority is written yet, which is the one place a fresh deployment can write
+ * its first. Drawn only for a reader who may write a priority (`usePriorityWrites`); every other
+ * reader is shown nothing here. The form opens beside the button in the control row, whose slot
+ * keeps one line from `sm` up, and takes a line of its own in a row that wraps.
  */
 export function NewPriority(): ReactNode {
   const { add, canWrite } = usePriorityWrites();

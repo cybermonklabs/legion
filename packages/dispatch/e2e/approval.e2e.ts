@@ -50,7 +50,10 @@ async function approvalCard(page: Page, askId: string): Promise<Locator> {
     await page.goto("/");
     return page.getByTestId(`ask-${askId}`);
   }
+  // The key waits for the page's heading: pressed as the page loads, before the shell has
+  // registered its keys, it can open nothing.
   await page.goto("/agents");
+  await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
   await page.locator("body").focus();
   await page.keyboard.press("i");
   await expect(drawer(page)).toBeVisible();
@@ -532,7 +535,7 @@ test("an unchanged hand-back after a human comment and a progress note returns t
       await requestApproval(issue.primary_artifact_id, { summary }, session)
     );
     expect(handedBack.ask.id).toBe(requested.ask.id);
-    await expect(page.getByText(/^Blocked on you: 1 item/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
     await page.reload();
     await expect(row).toHaveAttribute("data-inbox-section", "human");
     await expect(row).toContainText(`Approve spec.md (version 1)? ${summary}`);

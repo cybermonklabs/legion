@@ -19,9 +19,16 @@ import { Link } from "react-router-dom";
 import { projectIssuesQuery, userStateQuery } from "../../api/queries";
 import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
+import { Chip } from "../../components/Chip";
+import { ControlRow } from "../../components/ControlRow";
 import { EmptyState } from "../../components/EmptyState";
+import { filterChips } from "../../components/filter-chips";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { MultiSelect } from "../../components/MultiSelect";
+import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
+import { SearchBox } from "../../components/SearchBox";
+import { useNestedPanels } from "../../components/useNestedPanels";
 import { copyText } from "../../lib/clipboard";
 import {
   borderDefault,
@@ -46,6 +53,7 @@ import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching } from "../shell/roving";
+import { useUserPreference } from "../shell/userPreference";
 import {
   announceMove,
   type BoardFocus,
@@ -71,6 +79,7 @@ import {
 } from "./board-model";
 import { useBoardMoves } from "./board-moves";
 import { CollapsedColumn } from "./CollapsedColumn";
+import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
@@ -315,7 +324,8 @@ export function IssueBoard({
   lanes?: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const { labels, matches } = useIssueFilters();
+  const filters = useIssueFilters();
+  const { activeFilterCount, activeFilters, labels, matches, setLabels } = filters;
   // The same query-key pair the List keeps: the plain project list, or the server-filtered
   // list while labels are active - shared keys, shared caches.
   const queryKey = projectIssuesQueryKey(project, labels);
@@ -326,7 +336,48 @@ export function IssueBoard({
   });
   const issues = labels.length === 0 ? allIssues : labelledIssues;
   const userState = useQuery(userStateQuery());
-  /** The strip's client-side filters against this viewer's read state: what the board renders,
+  const availableLabels = useMemo(
+    () =>
+      [...new Set((allIssues.data ?? []).flatMap((issue) => issue.labels ?? []))].sort(
+        (left, right) => left.localeCompare(right)
+      ),
+    [allIssues.data]
+  );
+  const noIdentityFiltersExpanded = labels.length > 0;
+  // The saved preference is the only owner of the panel's open state: the Board reads it when it
+  // mounts and when the signed-in identity resolves, never because the filter count moved.
+  // Arriving from another page, tab or project mounts a new board, so that read covers the
+  // filters the route brings. On a board that is up the count moves when the reader filters in
+  // it, and when Back or Forward crosses entries of the Issues tab. A re-read would close the
+  // panel the moment the last filter goes (clearing the search box), taking the control being
+  // typed in with it, or open or close it against the reader's choice on the others, while its
+  // trigger and chips already show every filter. So it stays as they left it until they close it
+  // or leave the project or its Issues tab.
+  const [filtersExpanded, setFiltersExpanded] = useUserPreference(
+    "project.issue-filters",
+    (stored) => activeFilterCount > 0 && stored !== "collapsed",
+    (open) => (open ? "expanded" : "collapsed"),
+    { failed: noIdentityFiltersExpanded, pending: noIdentityFiltersExpanded }
+  );
+  const filterPanel = useNestedPanels<"labels">(filtersExpanded);
+  // Whether the panel stands open because the reader pressed it open. A panel the stored choice
+  // opens - as the Board mounts, or as the signed-in identity resolves - moves no focus into
+  // itself, so the focus starts where the page starts and the reader is not put in a panel they
+  // did not open.
+  const [pressedOpen, setPressedOpen] = useState(false);
+  /** The reader's own open or close of the panel - the trigger's press either way, Escape, Tab
+   *  past either end, a press outside it that closes it - which is the one thing that writes the
+   *  stored choice, and only when it changes what the panel shows. A press while the panel is
+   *  shut, a chip's removal while it is shut or from the keyboard beside a panel the stored
+   *  choice opened, and the choice read again on a new identity write nothing. A pointer press on
+   *  a chip while the panel is open is a press outside it - the chips sit in the control row, and
+   *  the panel is portalled over the page - so it closes the panel and writes that close, as any
+   *  press outside it does. */
+  const openFilterPanel = (open: boolean) => {
+    setPressedOpen(open);
+    if (open !== filtersExpanded) setFiltersExpanded(open);
+  };
+  /** The control row's client-side filters against this viewer's read state: what the board renders,
    *  what drop indices count, and what the PATCH names as neighbours. */
   const isVisible = useCallback(
     (issue: IssueSummary) => matches(issue, userState.data?.[issue.key]?.last_read_seq ?? 0),
@@ -669,83 +720,153 @@ export function IssueBoard({
         columnAround(document.activeElement) === document.activeElement,
     },
   ]);
+  // One row holds the Board's search and filtering, above whatever the board itself is showing
+  // - its cards, the skeleton or a refusal - so a reader who has narrowed the list keeps the
+  // controls that did it (INFRA-3135, R1). Nothing they can press here makes the header taller:
+  // the filter panel is portalled over the page (`AnchoredPanel`), and the chips are the one
+  // part of the row that may take a second line.
+  const controls = (
+    <>
+      <ControlRow
+        chips={filterChips(activeFilters)}
+        className="mb-4"
+        search={
+          <SearchBox
+            className="w-full"
+            label="Search issues"
+            onChange={filters.setSearch}
+            placeholder="Issue key or title"
+            value={filters.search}
+          />
+        }
+        trigger={
+          <PanelTrigger
+            count={activeFilterCount}
+            focusOnOpen={pressedOpen}
+            label="Filters"
+            onOpenChange={openFilterPanel}
+            open={filtersExpanded}
+            stacked
+          >
+            {() => (
+              <>
+                <MultiSelect
+                  {...filterPanel("labels")}
+                  emptyMessage="No labels yet."
+                  label="Labels"
+                  onChange={setLabels}
+                  options={availableLabels}
+                  searchLabel="Search labels"
+                  selected={labels}
+                />
+                <IssueFlagChips />
+                <Chip
+                  onClick={() => filters.setUnclaimed(!filters.unclaimed)}
+                  selected={filters.unclaimed}
+                >
+                  Unclaimed
+                </Chip>
+              </>
+            )}
+          </PanelTrigger>
+        }
+      />
+      <UnclaimedUnchecked reason={filters.unclaimedUnchecked} />
+    </>
+  );
   if (issues.isPending) {
-    return <LoadingSkeleton label="Loading board" />;
+    return (
+      <>
+        {controls}
+        <LoadingSkeleton label="Loading board" />
+      </>
+    );
   }
   if (issues.isError) {
-    return <p className={textSecondaryOnSurface}>Could not load board.</p>;
+    return (
+      <>
+        {controls}
+        <p className={textSecondaryOnSurface}>Could not load board.</p>
+      </>
+    );
   }
 
   return (
-    <section aria-label="Project board" className="min-w-0" ref={boardRef}>
-      {error === undefined ? null : (
-        <div
-          aria-live="assertive"
-          className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
-          role="alert"
-        >
-          {error}
-        </div>
-      )}
-      <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
-        {announcement}
-      </p>
-      {issues.data.length === 0 ? (
-        // The active query is the label-filtered list, so an empty answer under a label filter
-        // means "nothing matches", not "empty project" - the same copy the List shows.
-        labels.length === 0 ? (
-          <EmptyState label="Empty project board" message="No issues in this project." />
-        ) : (
-          <EmptyState label="No matching project issues" message="No issues match these filters." />
-        )
-      ) : (
-        <DndContext
-          accessibility={{
-            screenReaderInstructions: {
-              draggable:
-                "Focus a card and press Shift with J, K, H or L to move it; press ? for every shortcut.",
-            },
-          }}
-          collisionDetection={boardCollisionDetection}
-          onDragCancel={landCard}
-          onDragEnd={onDragEnd}
-          onDragStart={liftCard}
-          sensors={sensors}
-        >
-          {lanes ? (
-            <div className="flex flex-col gap-6" data-testid="board-lanes-container">
-              {boardLanes.map((boardLane) => (
-                <BoardLaneRow
-                  boardLane={boardLane}
-                  dragging={dragging}
-                  isCollapsed={isCollapsed}
-                  key={laneKey(boardLane.lane)}
-                  userState={userState.data}
-                />
-              ))}
-            </div>
+    <>
+      {controls}
+      <section aria-label="Project board" className="min-w-0" ref={boardRef}>
+        {error === undefined ? null : (
+          <div
+            aria-live="assertive"
+            className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
+            role="alert"
+          >
+            {error}
+          </div>
+        )}
+        <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
+          {announcement}
+        </p>
+        {issues.data.length === 0 ? (
+          // The active query is the label-filtered list, so an empty answer under a label filter
+          // means "nothing matches", not "empty project" - the same copy the List shows.
+          labels.length === 0 ? (
+            <EmptyState label="Empty project board" message="No issues in this project." />
           ) : (
-            <div
-              className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
-              data-testid="board-scroll-container"
-            >
-              <div className="flex w-max items-stretch gap-4">
-                {columns.map((column) =>
-                  isCollapsed(column.status) ? (
-                    <CollapsedColumn column={column} key={column.status} />
-                  ) : (
-                    <BoardColumnView
-                      column={column}
-                      key={column.status}
-                      userState={userState.data}
-                    />
-                  )
-                )}
+            <EmptyState
+              label="No matching project issues"
+              message="No issues match these filters."
+            />
+          )
+        ) : (
+          <DndContext
+            accessibility={{
+              screenReaderInstructions: {
+                draggable:
+                  "Focus a card and press Shift with J, K, H or L to move it; press ? for every shortcut.",
+              },
+            }}
+            collisionDetection={boardCollisionDetection}
+            onDragCancel={landCard}
+            onDragEnd={onDragEnd}
+            onDragStart={liftCard}
+            sensors={sensors}
+          >
+            {lanes ? (
+              <div className="flex flex-col gap-6" data-testid="board-lanes-container">
+                {boardLanes.map((boardLane) => (
+                  <BoardLaneRow
+                    boardLane={boardLane}
+                    dragging={dragging}
+                    isCollapsed={isCollapsed}
+                    key={laneKey(boardLane.lane)}
+                    userState={userState.data}
+                  />
+                ))}
               </div>
-            </div>
-          )}
-        </DndContext>
-      )}
-    </section>
+            ) : (
+              <div
+                className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
+                data-testid="board-scroll-container"
+              >
+                <div className="flex w-max items-stretch gap-4">
+                  {columns.map((column) =>
+                    isCollapsed(column.status) ? (
+                      <CollapsedColumn column={column} key={column.status} />
+                    ) : (
+                      <BoardColumnView
+                        column={column}
+                        key={column.status}
+                        userState={userState.data}
+                      />
+                    )
+                  )}
+                </div>
+              </div>
+            )}
+          </DndContext>
+        )}
+      </section>
+    </>
   );
 }

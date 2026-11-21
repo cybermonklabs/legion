@@ -24,6 +24,7 @@ import {
   approvalChip,
   approvalEntry,
   asAgent,
+  assigneeTrigger,
   badgeValue,
   DESKTOP,
   details,
@@ -195,8 +196,9 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     // An approval request that waits on the reader.
     await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
     // The header's list, each part of the header by what it is: nothing else may be drawn there.
-    // Its one link is the parent's, named exactly. The words it draws outside a control are in it:
-    // the project, the crumbs' separators, the key, the priority and the assignee each drawn under
+    // Its one link is the parent's, named exactly. The assignee is the shared list's single pick,
+    // a button named for its list and then the person it draws. The words it draws outside a
+    // control are in it: the project, the crumbs' separators, the key, the priority drawn under
     // its select, and the one chip's "Not requested". The status's shape is an svg with no words.
     const named = [
       new RegExp(`^a ${seeded.parentKey}$`),
@@ -207,7 +209,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       /^h1 /,
       /^select Status$/,
       new RegExp(`^select Priority of ${seeded.key}$`),
-      new RegExp(`^select Assignee of ${seeded.key}$`),
+      new RegExp(`^button Assignee of ${seeded.key} alice$`),
       /^issue-header$/,
       /^issue-details-control$/,
       /^issue-state-actions$/,
@@ -223,7 +225,6 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       exactly("text ›"),
       exactly(`text ${seeded.key}`),
       exactly("text P1"),
-      exactly("text alice"),
       exactly(`text ${CONTROL_LABELS.not_requested}`),
     ];
 
@@ -250,7 +251,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
         ["Details", header.getByTestId("issue-details-control"), CONTROL_LABELS.details],
         ["the status", header.getByRole("combobox", { name: "Status" })],
         ["the priority", badgeValue(page, `Priority of ${seeded.key}`), "P1"],
-        ["the assignee", badgeValue(page, `Assignee of ${seeded.key}`), "alice"],
+        ["the assignee", assigneeTrigger(page, seeded.key), "alice"],
         [
           "the children's progress",
           header.getByTestId("issue-progress-children"),
@@ -350,7 +351,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       const order = [
         "select Status",
         `select Priority of ${seeded.key}`,
-        `select Assignee of ${seeded.key}`,
+        `button Assignee of ${seeded.key} alice`,
         "issue-progress-children",
         "issue-whose-turn",
         "issue-header-labels",
@@ -1071,7 +1072,7 @@ test("the count of what waits holds only what waits on the reader", async ({ bro
       await expect(waitingCount(alice)).toHaveText("Waiting on you (1)");
       await gotoIssue(bob, `/issues/${issue.key}`);
       await expectHeaderDrawn(bob);
-      await expect(badgeValue(bob, `Assignee of ${issue.key}`)).toHaveText("alice");
+      await expect(assigneeTrigger(bob, issue.key)).toHaveText("alice");
       await expect(waitingCount(bob), "a question waiting on alice counts for bob").toHaveCount(0);
 
       // Bob's own question waits on alice too: it raises her count and not his.
@@ -1083,7 +1084,7 @@ test("the count of what waits holds only what waits on the reader", async ({ bro
       expect(await waitingOnPersonOf(bobsQuestion.id)).toBe("alice");
       await gotoIssue(bob, `/issues/${issue.key}`);
       await expectHeaderDrawn(bob);
-      await expect(badgeValue(bob, `Assignee of ${issue.key}`)).toHaveText("alice");
+      await expect(assigneeTrigger(bob, issue.key)).toHaveText("alice");
       await expect(waitingCount(bob), "bob's own question raised bob's count").toHaveCount(0);
       await gotoIssue(alice, `/issues/${issue.key}`);
       await expect(waitingCount(alice)).toHaveText("Waiting on you (2)");
@@ -1095,7 +1096,7 @@ test("the count of what waits holds only what waits on the reader", async ({ bro
       await expect(waitingCount(bob)).toHaveText("Waiting on you (2)");
       await gotoIssue(alice, `/issues/${issue.key}`);
       await expectHeaderDrawn(alice);
-      await expect(badgeValue(alice, `Assignee of ${issue.key}`)).toHaveText("bob");
+      await expect(assigneeTrigger(alice, issue.key)).toHaveText("bob");
       await expect(
         waitingCount(alice),
         "the count stayed with alice after the issue went to bob"
@@ -3063,7 +3064,7 @@ test("the palette's Close issue, run from a header control, leaves the focus in 
     for (const [name, control] of [
       ["the status", header.getByRole("combobox", { name: "Status" })],
       ["the priority", header.getByRole("combobox", { name: `Priority of ${key}` })],
-      ["the assignee", header.getByRole("combobox", { name: `Assignee of ${key}` })],
+      ["the assignee", assigneeTrigger(page, key)],
     ] as const) {
       await patchIssue(key, { status: "in_progress" });
       await gotoIssue(page, `/issues/${key}`);

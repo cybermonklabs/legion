@@ -269,6 +269,11 @@ export function filterCounts(
   return counts;
 }
 
+/** The chosen values of every field the address carries as a comma list: the Inbox's whole
+ *  field narrowing, as its filter panel writes it and as every press that names the list's own
+ *  narrowing rather than ids sends it (`mark-all.ts`, `useInboxDismiss.ts`). */
+export type InboxFilters = Partial<Record<InboxFilterField, readonly string[]>>;
+
 /** Whether a row survives one filter field's chosen values; nothing chosen keeps every row. */
 export function inFieldFilter(
   row: InboxListRow,

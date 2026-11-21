@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { apiErrorMessage } from "../../api/client";
+import { apiErrorMessage, NETWORK_ERROR_MESSAGE } from "../../api/client";
 import {
   borderDefault,
   calloutWarningBorder,
@@ -19,7 +19,7 @@ import { useWriteSelection, useWrites, type Write } from "./write-store";
  *  a `PUT` or a `DELETE` sends none, so no Retry of one asks under a key. */
 function refusalReason(keyed: boolean, refusal: Error): string {
   if (!(refusal instanceof SendStoppedError)) {
-    return apiErrorMessage(refusal, "Dispatch could not be reached");
+    return apiErrorMessage(refusal, NETWORK_ERROR_MESSAGE);
   }
   const retry = retryNote(keyed, refusal, "saved");
   return refusal instanceof SendInterruptedError

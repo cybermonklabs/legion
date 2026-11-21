@@ -24,10 +24,11 @@ import { mergeIssue } from "../../api/issue-cache";
 import { projectsQuery, userStateQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
+import { focusOnMount } from "../../components/focus-place";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
-import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
+import { useScrollEnds } from "../../components/useScrollEnds";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   badgePrimary,
@@ -142,7 +143,7 @@ export function IssueHeader({
     }
   }, [parentEditing]);
   // The details rail's trailing fade, worn while the rail has anywhere left to scroll.
-  const railFade = useScrollFadeTrailing();
+  const railFade = useScrollEnds({ ends: "trailing" });
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();
@@ -381,6 +382,8 @@ export function IssueHeader({
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   const referencesPanelId = useId();
+  const titleId = useId();
+  const externalLinks = issue.external_links ?? [];
   // The title slot has one flex-basis whether it shows the heading or the editor: below 2xl the
   // title always takes its own row (basis-full) and the state controls and details line share
   // the row beneath it; from 2xl the slot is content-sized (basis-auto) so they join the title's
@@ -442,6 +445,9 @@ export function IssueHeader({
                 }}
                 onChange={(event) => drafts.writeTitle(event.target.value)}
                 onKeyDown={(event) => {
+                  // An Enter or an Escape that ends or moves an input method's composition is the
+                  // composition's: it saves nothing, discards nothing and keeps the editor open.
+                  if (event.nativeEvent.isComposing) return;
                   if (event.key === "Escape") {
                     drafts.discardTitle();
                     setEditingTitle(false);
@@ -449,34 +455,38 @@ export function IssueHeader({
                   }
                   saveTitleOnEnter(event);
                 }}
-                ref={(node) => node?.focus()}
+                ref={focusOnMount}
                 value={drafts.title}
               />
             ) : (
-              <h1
-                className={`min-w-0 flex-1 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
-                  isClosed ? "" : `cursor-text ${borderStrongHover}`
-                }`}
-                onClick={() => {
-                  if (!isClosed) {
-                    setEditingTitle(true);
-                  }
-                }}
-                onFocus={() => {
-                  if (!isClosed) {
-                    setEditingTitle(true);
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (!isClosed && (event.key === "Enter" || event.key === " ")) {
-                    event.preventDefault();
-                    setEditingTitle(true);
-                  }
-                }}
-                tabIndex={isClosed ? -1 : 0}
-              >
-                {drafts.title}
-              </h1>
+              // The heading holds the title and takes no Tab stop and no press. The Edit title
+              // button laid over the heading's box is the control: a screen reader reads it as
+              // "Edit title, button", with the title as its description. The button shows no text
+              // of its own, since a button that showed the title under the name "Edit title" would
+              // leave its visible words out of its name (WCAG 2.5.3, Label in Name). It stands
+              // beside the heading and not inside it, since a heading's name is computed from
+              // what it holds, a button's `aria-label` included. It opens the editor when the
+              // reader activates it - a click, Enter or Space - and never as it takes the focus:
+              // an editor that opens on focus changes the page on focus (WCAG 2.2, 3.2.1 On
+              // Focus), and the page's focus rescue can give the button the focus with no act of
+              // the reader's. A closed issue's title edits nothing, so it is the heading alone.
+              <div className="relative min-w-0 flex-1">
+                <h1
+                  className={`break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface}`}
+                  id={titleId}
+                >
+                  {drafts.title}
+                </h1>
+                {isClosed ? null : (
+                  <button
+                    aria-describedby={titleId}
+                    aria-label="Edit title"
+                    className={`absolute inset-0 cursor-text rounded-lg border outline-none focus-visible:ring-2 ${borderTransparent} ${borderStrongHover} ${focusVisibleRing}`}
+                    onClick={() => setEditingTitle(true)}
+                    type="button"
+                  />
+                )}
+              </div>
             )}
             <PinButton
               disabled={updateState.isPending}
@@ -711,11 +721,18 @@ export function IssueHeader({
             resolvedRepo={issue.resolved_repo}
           />
           <IssueComponentsLine issue={issue} />
-          {(issue.external_links ?? []).map((link) => (
-            <div className="flex shrink-0 items-center" key={link.url}>
-              <GitHubLink link={link} />
-            </div>
-          ))}
+          {externalLinks.length === 0 ? null : (
+            // The issue's external links as a list, a link to an item. The list keeps the rail's
+            // gap between its items, so each link stands where it would as an item of the rail,
+            // and it is drawn only while there is a link, so it adds no gap at the rail's end.
+            <ul aria-label="External links" className="flex shrink-0 items-center gap-2">
+              {externalLinks.map((link) => (
+                <li className="flex shrink-0 items-center" key={link.url}>
+                  <GitHubLink link={link} />
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         {referencesOpen ? (
           <ReferencedBy
@@ -746,7 +763,8 @@ export function IssueHeader({
             id="issue-route"
             onChange={(event) => drafts.writeRoute(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              // An Escape that ends an input method's composition is the composition's.
+              if (event.key === "Escape" && !event.nativeEvent.isComposing) {
                 drafts.discardRoute();
                 setRouteEditing(false);
               }
@@ -795,7 +813,8 @@ export function IssueHeader({
             id="issue-parent"
             onChange={(event) => drafts.writeParent(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              // An Escape that ends an input method's composition is the composition's.
+              if (event.key === "Escape" && !event.nativeEvent.isComposing) {
                 drafts.discardParent();
                 setParentEditing(false);
               }

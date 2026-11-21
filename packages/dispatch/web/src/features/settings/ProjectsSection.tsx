@@ -1,5 +1,5 @@
 import { PROJECT_NAME_MAX } from "@legion/contracts";
-import type { Mutation } from "@tanstack/react-query";
+import type { Mutation, QueryStatus } from "@tanstack/react-query";
 import { useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
@@ -12,17 +12,25 @@ import {
 } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { CreateProjectInput, ProjectDefaultAssignee } from "../../api/types";
+import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
+import {
+  TableBody,
+  TableCell,
+  TableEmpty,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   borderDefault,
   inputClasses,
   textMutedOnCanvas,
-  textMutedOnSurface,
   textPrimaryOnCanvas,
   textPrimaryOnSurface,
   textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -30,11 +38,10 @@ import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { type KeyedPress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   settingsFieldLabel,
+  settingsListText,
+  settingsListTrigger,
   settingsMonoInput,
   settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
 } from "./classes";
 
 /** Lists native projects, lets a human create one, and carries each project's default assignee -
@@ -85,7 +92,8 @@ export function ProjectsSection(): ReactNode {
   const submitProject = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     // An emptied form - a create that landed - sends nothing, whatever submits it, and so does
-    // one whose default assignee is nobody, which is a page whose viewer has not resolved.
+    // one whose default assignee is nobody, which is a page whose viewer has not resolved: the
+    // people list is a button, which no `required` holds.
     if (projectKey === "" || projectName.trim() === "" || newProjectAssignee === "") return;
     projectSubmitGuard.guard(() =>
       createProject.mutate({
@@ -117,59 +125,44 @@ export function ProjectsSection(): ReactNode {
       ) : null}
       {projects.isSuccess ? (
         <>
-          <div className={settingsTableWrapper}>
-            <table className="w-full text-left text-sm">
-              <thead className={settingsTableHead}>
-                <tr>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Key
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Name
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Default assignee
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Created
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {projects.data.length === 0 ? (
-                  <tr>
-                    <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={4}>
-                      No projects yet.
-                    </td>
-                  </tr>
-                ) : (
-                  projects.data.map((candidate) => (
-                    <tr className={settingsTableRow} key={candidate.key}>
-                      <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
-                        {candidate.key}
-                      </td>
-                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>{candidate.name}</td>
-                      <td className="px-4 py-3">
-                        <DefaultAssigneeCell
-                          logins={logins}
-                          onReach={() => setWantUsers(true)}
-                          project={candidate.key}
-                          readFailed={defaults.isError}
-                          // A project the defaults read has not answered for - one created since
-                          // that read - reads as not read yet rather than as nobody: every project
-                          // names a person, and the read behind this cell is the one place it is.
-                          stored={defaultAssignees.get(candidate.key)}
-                        />
-                      </td>
-                      <td className={`px-4 py-3 ${textMutedOnSurface}`}>
-                        <Timestamp at={candidate.created_at} />
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          <TableShell className="mt-6" label="Projects">
+            <TableHead>
+              <TableHeadCell>Key</TableHeadCell>
+              <TableHeadCell>Name</TableHeadCell>
+              <TableHeadCell>Default assignee</TableHeadCell>
+              <TableHeadCell>Created</TableHeadCell>
+            </TableHead>
+            <TableBody>
+              {projects.data.length === 0 ? (
+                <TableEmpty colSpan={4}>No projects yet.</TableEmpty>
+              ) : (
+                projects.data.map((candidate) => (
+                  <TableRow key={candidate.key}>
+                    <TableCell mono tone="primary">
+                      {candidate.key}
+                    </TableCell>
+                    <TableCell tone="secondary">{candidate.name}</TableCell>
+                    <TableCell>
+                      <DefaultAssigneeCell
+                        logins={logins}
+                        onReach={() => setWantUsers(true)}
+                        people={users.status}
+                        project={candidate.key}
+                        readFailed={defaults.isError}
+                        // A project the defaults read has not answered for - one created since
+                        // that read - reads as not read yet rather than as nobody: every project
+                        // names a person, and the read behind this cell is the one place it is.
+                        stored={defaultAssignees.get(candidate.key)}
+                      />
+                    </TableCell>
+                    <TableCell tone="muted">
+                      <Timestamp at={candidate.created_at} />
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </TableShell>
           <p className={`mt-2 text-sm ${textSecondaryOnCanvas}`}>
             Every project names a default assignee, and it cannot be cleared: an issue created with
             nobody named, and with no person, token owner or assigned parent to take it, goes to
@@ -219,32 +212,27 @@ export function ProjectsSection(): ReactNode {
                 value={projectName}
               />
             </label>
-            <label className={settingsFieldLabel} htmlFor="project-default-assignee">
-              Default assignee
-              <select
-                className={`w-full min-w-0 rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+            <div className={settingsFieldLabel}>
+              {/* The list is named for the field itself, so its words here are for the eye
+                  alone. */}
+              <span aria-hidden="true">Default assignee</span>
+              {/* The viewer is a person who has signed in, so they are in the list once it is
+                  read; until it is, they are the only option. An empty value is nobody picked
+                  yet, which is the page before the viewer resolves. */}
+              <PersonSelect
+                className={`w-full min-w-0 ${settingsListTrigger}`}
                 disabled={createProject.isPending || newProjectAssignee === ""}
-                id="project-default-assignee"
-                onChange={(event) => setProjectAssignee(event.target.value)}
-                onFocus={() => setWantUsers(true)}
-                onPointerEnter={() => setWantUsers(true)}
-                onTouchStart={() => setWantUsers(true)}
-                required
-                value={newProjectAssignee}
-              >
-                {/* The viewer is a person who has signed in, so they are in the list once it is
-                    read; until it is, they are the only option. An empty value is nobody picked
-                    yet, which is the page before the viewer resolves. */}
-                {assigneeOptions(
+                label="Default assignee"
+                onPick={setProjectAssignee}
+                onReach={() => setWantUsers(true)}
+                options={assigneeOptions(
                   newProjectAssignee === "" ? undefined : newProjectAssignee,
                   logins
-                ).map((login) => (
-                  <option key={login} value={login}>
-                    {login}
-                  </option>
-                ))}
-              </select>
-            </label>
+                )}
+                people={users.status}
+                value={newProjectAssignee === "" ? undefined : newProjectAssignee}
+              />
+            </div>
             <button
               className={settingsSubmitButton}
               disabled={createProject.isPending}
@@ -292,16 +280,19 @@ function assigneeOptions(
 /** One project's default-assignee cell: the picker and, under it, the error of this project's
  *  newest save when the server refused it. `stored` is the person the page has read, and
  *  `undefined` while the defaults read has not answered for this project: the control then takes
- *  no pick and names nobody, since who holds the project is not known yet. */
+ *  no pick and names nobody, since who holds the project is not known yet. `people` is the
+ *  status of the people list's read. */
 function DefaultAssigneeCell({
   logins,
   onReach,
+  people,
   project,
   readFailed,
   stored,
 }: {
   logins: readonly string[];
   onReach: () => void;
+  people: QueryStatus;
   project: string;
   readFailed: boolean;
   stored: string | undefined;
@@ -315,6 +306,7 @@ function DefaultAssigneeCell({
         logins={logins}
         onPick={write.submit}
         onReach={onReach}
+        people={people}
         project={project}
         unread={unread}
       />
@@ -504,6 +496,7 @@ function DefaultAssigneeSelect({
   logins,
   onPick,
   onReach,
+  people,
   project,
   unread,
 }: {
@@ -512,30 +505,71 @@ function DefaultAssigneeSelect({
   logins: readonly string[];
   onPick: (assignee: string) => void;
   onReach: () => void;
+  people: QueryStatus;
   project: string;
   unread: string | null;
 }): ReactNode {
-  const options = assigneeOptions(assignee, logins);
   return (
-    <select
-      aria-label={`Default assignee of ${project}`}
-      className={`rounded-md px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+    <PersonSelect
+      className={settingsListTrigger}
       disabled={unread !== null}
-      onChange={(event) => onPick(event.target.value)}
-      onFocus={onReach}
-      onPointerEnter={onReach}
-      onTouchStart={onReach}
-      value={unread ?? assignee ?? ""}
-    >
-      {unread === null ? (
-        options.map((login) => (
-          <option key={login} value={login}>
-            {login}
-          </option>
-        ))
-      ) : (
-        <option value={unread}>{unread}</option>
-      )}
-    </select>
+      label={`Default assignee of ${project}`}
+      onPick={onPick}
+      onReach={onReach}
+      options={unread === null ? assigneeOptions(assignee, logins) : [unread]}
+      people={people}
+      value={unread ?? assignee}
+    />
+  );
+}
+
+/** A pick of one person, the shared list's single pick (`MultiSelect`), whose text box narrows
+ *  the people as the reader types; both pickers of this section are one. `onReach` fires the
+ *  moment a reader points at, touches or focuses it, and `people` is the status of the people
+ *  list's read, so the list says the people are loading while it is out and that they could not
+ *  be loaded where it failed. A pick of the person it shows hands nothing on, as a `<select>`
+ *  fires nothing for the value it holds. */
+function PersonSelect({
+  className,
+  disabled,
+  label,
+  onPick,
+  onReach,
+  options,
+  people,
+  value,
+}: {
+  className: string;
+  disabled: boolean;
+  label: string;
+  onPick: (login: string) => void;
+  onReach: () => void;
+  options: readonly string[];
+  people: QueryStatus;
+  /** The person shown, or `undefined` while nobody is. */
+  value: string | undefined;
+}): ReactNode {
+  const [open, setOpen] = useState(false);
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only start the people list's read when a reader reaches for the list's trigger, which is the button inside, so the wrapper needs no role of its own.
+    <span onFocus={onReach} onPointerEnter={onReach} onTouchStart={onReach}>
+      <MultiSelect
+        disabled={disabled}
+        emptyMessage={people === "pending" ? "Loading people…" : "Nobody matches that."}
+        error={people === "error" ? "Could not load the people list." : null}
+        label={label}
+        mode="single"
+        onOpenChange={setOpen}
+        onPick={(picked) => {
+          if (picked !== value) onPick(picked);
+        }}
+        open={open}
+        options={options}
+        searchLabel="Search people"
+        triggerClassName={className}
+        triggerTextClassName={settingsListText}
+        value={value}
+      />
+    </span>
   );
 }

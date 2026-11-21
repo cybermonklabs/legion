@@ -3,6 +3,7 @@ import { useState } from "react";
 import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { advancesIssuesParams } from "../../api/queries";
+import { useReadBound } from "../../api/read-bound";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
@@ -46,6 +47,10 @@ export type EpicNaming =
   | { kind: "new"; keys: readonly string[] }
   | { kind: "rename"; key: string; title: string };
 
+/** What the list says when its read failed, and what an action's notice says before why the list
+ *  read after it has not settled. */
+export const ISSUES_NOT_LOADED = "Could not load issues.";
+
 /** The one sentence a merge records on the source issue, written and recognised in one place.
  *  A resume compares the whole sentence against the source's own messages, because the server
  *  is what knows whether it was posted: a recorded key only says a write was made. */
@@ -75,6 +80,8 @@ export function useIssueTableActions({
   const writes = useWrites();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>();
+  // Why the list read after an action has not settled, once its hold ran out (`useReadBound`).
+  const [unsettled, holdThrough] = useReadBound();
   const [moved, setMoved] = useState<ReadonlySet<string>>(new Set());
   const [duplicateEpic, setDuplicateEpic] = useState<DuplicateEpic>();
   const [unansweredEpic, setUnansweredEpic] = useState<string>();
@@ -184,9 +191,21 @@ export function useIssueTableActions({
     setBusy(true);
     setNotice(undefined);
     setMoved(new Set());
+    // Whether the action may have changed what the list draws: it answered what it changed, or a
+    // write landed while it ran, or ended without Dispatch's verdict (the reader stopped it) and
+    // so may have landed. A write Dispatch refused (`ApiError`) changed nothing.
+    let mayHaveChanged = false;
+    const unwatch = writes.onOutcome((outcome) => {
+      if (
+        outcome.kind === "landed" ||
+        (outcome.kind === "refused" && !(outcome.refusal instanceof ApiError))
+      )
+        mayHaveChanged = true;
+    });
     try {
       const changed = await action();
       if (changed !== undefined) {
+        mayHaveChanged = true;
         setNotice({ kind: "success", text: said });
         setMoved(new Set(changed));
         clearSelection();
@@ -197,10 +216,21 @@ export function useIssueTableActions({
       else
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
-      setBusy(false);
-      void client.invalidateQueries({ queryKey: ["issues"] });
+      unwatch();
+      // An action that may have changed the list keeps its controls held (`busy`) through the read
+      // of the list that draws what it changed - a row's Start next gone once its issue starts
+      // next - so that going is still the press's doing (`causedByReader`); a batch that saved
+      // some of its changes before a refusal changed the list too. The read settles either way,
+      // and a failed one lets them go. A read that has not settled by the request deadline
+      // (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets them go then,
+      // and the notice says why the list is not read yet (`useReadBound`). An action that changed
+      // nothing - every write refused, or none made - lets them go at once, while the list is
+      // still read again behind them.
+      const listed = client.invalidateQueries({ queryKey: ["issues"] });
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: ["inbox"] });
+      if (mayHaveChanged) await holdThrough(listed);
+      setBusy(false);
     }
   };
   const titleOf = (key: string) => issues.find((issue) => issue.key === key)?.title ?? key;
@@ -330,6 +360,9 @@ export function useIssueTableActions({
     const title = chosenTitle.trim();
     if (!title) return;
     setNaming(undefined);
+    // The duplicate's notice goes in the commit that marks the List busy (`perform`), so Create
+    // anyway's own press never disables it under the focus: its going hands the focus on among
+    // the notices (`IssuesTable`).
     setDuplicateEpic(undefined);
     const record = recovery.begin({ kind: "newEpic", keys: open });
     const key = newSendKey();
@@ -549,7 +582,15 @@ export function useIssueTableActions({
   const interrupted = busy ? undefined : recovery.action;
   return {
     busy,
-    notice,
+    // A list read that has not settled is said after what the action did, in the words the List
+    // says for a list read that failed.
+    notice:
+      unsettled === undefined
+        ? notice
+        : {
+            kind: "error" as const,
+            text: `${notice === undefined ? "" : `${notice.text} `}${ISSUES_NOT_LOADED} ${unsettled}.`,
+          },
     moved,
     duplicateEpic,
     setDuplicateEpic,

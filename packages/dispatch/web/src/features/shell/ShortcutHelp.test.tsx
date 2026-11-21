@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import type { KeyBindingDescription } from "./keymap";
-import { ShortcutHelp } from "./ShortcutHelp";
+import { SCOPE_LABELS, SCOPE_ORDER, ShortcutHelp } from "./ShortcutHelp";
 
 const snapshot: KeyBindingDescription[] = [
   { enabled: true, id: "next", keys: ["j"], label: "Next component", scope: "architecture" },
@@ -31,4 +31,11 @@ test("? lists the Architecture section between Project and Board, with its bindi
   } finally {
     view.unmount();
   }
+});
+
+test("every scope has a section: `?` draws only the scopes `SCOPE_ORDER` lists", () => {
+  // `SCOPE_LABELS` is the record the compiler holds to `KeymapScope`; `SCOPE_ORDER` is a plain
+  // array nothing holds to it, and a scope left out of it is drawn in no section at all.
+  const ordered: string[] = [...SCOPE_ORDER];
+  expect(ordered.sort()).toEqual(Object.keys(SCOPE_LABELS).sort());
 });

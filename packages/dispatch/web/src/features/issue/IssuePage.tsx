@@ -107,19 +107,21 @@ const LABELS_TRIGGER = 'button[aria-label="Edit labels"]';
 const PIN_TOGGLE = 'button[aria-label="Pin issue"], button[aria-label="Unpin issue"]';
 const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
 const STATUS_SELECT = 'select[aria-label="Status"]';
-const TITLE_HEADING = 'h1[tabindex="0"]';
+const TITLE_BUTTON = 'button[aria-label="Edit title"]';
 
-/** The header control `selector` names, or `null` when it is absent or refuses input (a closed
- *  issue, a save in flight): the one fact both the key's `run` and the `when` that offers it read,
- *  so a shortcut is listed exactly while its control would take a click. */
+/** The header control `selector` names, or `null` when it is absent or refuses input: disabled
+ *  (a closed issue, a save in flight), or held with `aria-disabled` (the labels' trigger while
+ *  their save is out, `IssueLabels`). It is the one fact both the key's `run` and the `when` that
+ *  offers it read, so a shortcut is listed exactly while its control would take a click. */
 function usableControl(selector: string): HTMLElement | null {
   const node = document.querySelector(HEADER)?.querySelector<HTMLElement>(selector);
   if (node == null) {
     return null;
   }
-  const disabled =
-    (node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled;
-  return disabled ? null : node;
+  const refused =
+    node.getAttribute("aria-disabled") === "true" ||
+    ((node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled);
+  return refused ? null : node;
 }
 
 /**
@@ -295,13 +297,14 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => usableControl(LABELS_TRIGGER) !== null,
     },
     {
-      // The heading takes focus only while the issue is open: closed, its `tabIndex` is -1 and
-      // `onFocus` does not open the editor, so the key is offered exactly while it edits.
+      // The header draws its Edit title button only while the issue is open, so the key is
+      // offered exactly while the title can be edited. The key presses that button, which opens
+      // the editor when it is activated and not when it takes the focus.
       id: "title",
       keys: "e",
       label: "Edit the title",
-      run: () => usableControl(TITLE_HEADING)?.focus(),
-      when: () => usableControl(TITLE_HEADING) !== null,
+      run: () => usableControl(TITLE_BUTTON)?.click(),
+      when: () => usableControl(TITLE_BUTTON) !== null,
     },
     {
       id: "pin",

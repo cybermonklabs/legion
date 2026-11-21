@@ -217,22 +217,10 @@ export function useRefusalOfSubject<TVariables>(
   return write.isError && !gone;
 }
 
-/** The variables of `write`'s newest press while that press is out or refused: the press the
- *  surface still shows, with its `…ing` or its refusal and Retry; `undefined` once Dispatch has
- *  decided it, or before any press. A host may draw one control for one subject after another,
- *  so what a live write asks the list around it to hold is this press's subject, never the one
- *  the control is drawn for by then (`useLiveRegistration`). */
-export function livePress<TVariables>(write: {
-  readonly isError: boolean;
-  readonly isPending: boolean;
-  readonly variables: TVariables | undefined;
-}): TVariables | undefined {
-  return write.isPending || write.isError ? write.variables : undefined;
-}
-
 /** Registers `subject` with `register` while a write of it is live: `true` once it is, and
  *  `false` once the write is decided, the subject changes, or the surface goes. `subject` is the
- *  live press's own (`livePress`), and `undefined` registers nothing. */
+ *  live press's own, never the one the control is drawn for by then, and `undefined` registers
+ *  nothing. */
 export function useLiveRegistration(
   subject: string | undefined,
   register: (subject: string, live: boolean) => void

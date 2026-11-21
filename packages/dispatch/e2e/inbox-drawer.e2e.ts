@@ -1,4 +1,5 @@
 import { getAsk, getIssue, patchIssue, setAgentStreamResponder } from "./api";
+import { listOf } from "./filters";
 import { attachShot, drawer, seedAsk } from "./inbox-drawer";
 import {
   detailRead,
@@ -153,11 +154,12 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
     const inboxReads = logReads(page, inboxRead);
     const picker = pagePicker(page, `Assignee of ${key}`);
     await page.goto(`/issues/${key}`);
-    await expect(picker).toHaveValue("bob");
+    await expect(picker).toHaveAccessibleName(`Assignee of ${key} bob`);
 
     // Its people are read once the reader reaches for the control.
     await picker.focus();
-    await picker.selectOption("alice");
+    await picker.click();
+    await listOf(picker).getByRole("option", { exact: true, name: "alice" }).click();
     await expect.poll(() => shownOnPage.values.at(-1)).toBe("alice");
     const fromPick = shownOnPage.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
@@ -190,12 +192,13 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
       `the drawer's row of the issue, from its first paint: ${JSON.stringify(listedInDrawer.values)}`
     ).toEqual(["3"]);
     const fromDrawn = waitingInDrawer.values.findIndex((value) => value !== "(none)");
+    // The hand-on is the shared list, whose trigger shows `Asked of <login>`, not the login alone.
     expect(
       waitingInDrawer.values.slice(fromDrawn),
       `the person the drawer's row waits on, from its first paint: ${JSON.stringify(waitingInDrawer.values)}`
-    ).toEqual(["alice"]);
+    ).toEqual(["Asked of alice"]);
     expect(await getIssue(key)).toMatchObject({ assignee: "alice", title: renamed });
-    await expect(picker).toHaveValue("alice");
+    await expect(picker).toHaveAccessibleName(`Assignee of ${key} alice`);
     await expect(drawer(page).getByRole("combobox", { name: `Priority of ${key}` })).toBeVisible();
   } finally {
     await context.close();

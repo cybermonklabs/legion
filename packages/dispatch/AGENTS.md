@@ -21,6 +21,36 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 
 - Truncate inside a flex control with `components/TruncatedText.tsx`.
 
+- Search, sort and filter controls: a page draws these.
+  `components/one-definition.test.ts` refuses a page's own search box, `<table>`, panel, hand-written control mark and value import of the table library, but not a `<select>`.
+  In the seven features it names in `ADDRESS_FEATURES`, it also refuses every read or write of the address that goes round `lib/page-address.ts`.
+
+  - `components/ControlRow.tsx`: the one row a page's controls sit in.
+
+  - `components/SearchBox.tsx`: the search box of a list narrowed by typed words.
+
+  - `components/PanelTrigger.tsx`: the button that opens a menu, a filter panel or a column filter.
+
+  - `components/DisplayMenu.tsx`: the display choices at the row's end.
+
+  - `components/ColumnFilter.tsx`: the filter on a table column's header.
+
+  - `components/ColumnsMenu.tsx`: which of a table's columns are shown.
+
+  - `components/SelectionBar.tsx`: the bar shown while rows are marked.
+
+  - `components/TableShell.tsx`: a table with no search, sort or filter; `DataTable` is the one with them.
+
+  - `components/DataTable.tsx`: the table core, over TanStack Table.
+
+  - `components/Pager.tsx`: a table's pager.
+
+  - `components/Chip.tsx`: the one interactive chip, a toggle or a removable value.
+
+- `lib/page-address.ts`: the module that reads and writes a page's narrowing in the address, for the seven features in `ADDRESS_FEATURES`; `features/architecture/` still reads the router itself.
+
+- `components/focus-place.ts`: the shell's one focus rescue; `components/row-marker.ts` says what it treats as a row.
+
 - One primary per screen, chrome after it; type 22px, 15px, `text-sm`, `text-xs`; spacing in 4px steps; colour means state.
 
 - Show an agent only through `features/refs/AgentName.tsx`, or `useAgentText()` for a string; lint misses a namespace import (`import * as`), so review for it.

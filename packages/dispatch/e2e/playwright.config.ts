@@ -312,10 +312,13 @@ const parallelProjects = [
   // `@webkit` tag, so each row it runs carries that tag and a comment naming the clause below it
   // exercises. Every clause here names one engine behaviour and the rows that exercise it.
   // Where a caret lands beside a collaborator's own caret: `collab-cursor`'s three rows.
-  // A closed select's `change` dispatched inside the key's own task, which the Agents issue
-  // picker's and the live header pickers' keyboard-step rule rests on: the six rows of
-  // `keyboard-agents-picker` that step a select from the keyboard or leave one without Enter,
-  // and all five of `keyboard-session-pickers`.
+  // A closed select's `change` dispatched inside the key's own task, which the live header
+  // pickers' keyboard-step rule rests on: all five rows of `keyboard-session-pickers`.
+  // The keys a text box takes, and how the engine takes the focus out of one on Tab, which the
+  // Agents composer's Issue list is driven by: the five rows of `keyboard-agents-picker` that
+  // drive that list from the keyboard, and `table-controls`'s row that Tab and Escape never leave
+  // a panel for the page behind it, which leaves a list's text box by Tab on a page and by
+  // Shift+Tab in a dialog and reads the focus on the list's trigger.
   // A send held open across two in-app navigations, with the row's draft, its picker and its
   // Reply held until the server answers: `keyboard-agents-picker`'s row back after the reader
   // left mid-send, which carries `@webkit` alone because each of its six measured failures was
@@ -343,6 +346,46 @@ const parallelProjects = [
   // its measured failures were in WebKit.
   // The reload line a read-only admission names: `doc-reload-line`'s one row, which reads the
   // socket the engine reconnects and the paint after it.
+  // A focused control taken away, itself or with a parent, which the HTML spec's focus fixup
+  // does with no `focusout`, so the page's focus rescue sees it only by watching the page:
+  // `table-controls`'s page-own focus row, its row whose focused row a live update takes
+  // away, its row that Add a priority opens its form in view with the focus on Priority to
+  // advance, whose `+` takes itself away, its row that Change answer opens the answer form
+  // with the focus in it, whose button takes itself away, its row that an ask withdrawn
+  // while the reader types its answer in the Inbox's list takes none of their next keys as text,
+  // whose answer box the record takes away, its row that a Conversation turn resolved
+  // elsewhere while its Reply holds the focus hands the focus into no other turn, whose turn the
+  // Open filter takes away, its row that a pinned card unpinned on another device while its
+  // Unpin holds the focus hands the focus into no other card, whose card the Pinned tab takes
+  // away, its row that a date the reader gives the search bar's Updated since is their press,
+  // whose box the date takes away, its row that a Snooze pick in the reading column's head
+  // takes none of the reader's next keys as text, whose Snooze the snoozed row takes away, its
+  // row that a group card deleted on another device while it holds the focus leaves the focus on
+  // the Session groups dialog, whose card the live update takes away, its row that clear brush
+  // window pressed with the Window select scrolled out of sight scrolls the Delivery page
+  // nothing, whose button the cleared brush takes away and whose landing each engine scrolls into
+  // view its own way, its row that a bulk Dismiss deep in the Inbox's list hands the focus to
+  // the row now at the marked row's place in sight, whose bar and rows the Dismiss takes away,
+  // and its row that a bulk action that takes the marked rows out of the project List's view
+  // hands the focus to the row now at their place, whose bar and rows the action takes away.
+  // Measured in WebKit as well as Firefox:
+  // neither fires a `focusout` for it. And a table scrolled while one of its rows holds the
+  // focus, whose row the virtual list takes away out of sight: `table-controls`'s
+  // scrolling-table row.
+  // The order in which the engine fires a text box's blur, runs the microtask the page's focus
+  // rescue queues from its `focusout`, and lets React commit the save the blur made, which takes
+  // the box away: the rescue reads the loss as the reader leaving the box only where the box
+  // still stands in that microtask. `issue`'s row that Enter in the title's editor, and a click
+  // outside it, close it and leave the next key to the page: Enter blurs the box
+  // (`saveTitleOnEnter` in `IssueHeader.tsx`) and a click on the page's text blurs it too, so the
+  // box no longer holds the focus when the save takes it away.
+  // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
+  // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
+  // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind
+  // it.
+  // How the engine lays out a scroll box, lands a wheel step's scroll and clamps a scroll, which
+  // a panel cut to a short window is scrolled by: `table-controls`'s row that such a panel
+  // scrolls to its last control, by the wheel and by Tab.
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
@@ -390,10 +433,13 @@ const parallelProjects = [
   // `code-line-replace`'s two rows.
   // The engine's focus rule for a click on a link inside the editor, where Firefox focuses the
   // editing host rather than the link: `picture-link-click`'s one row.
-  // A closed select's `change` dispatched inside the key's own task, which the Agents issue
-  // picker's and the live header pickers' keyboard-step rule rests on: the six rows of
-  // `keyboard-agents-picker` that step a select from the keyboard or leave one without Enter,
-  // and all five of `keyboard-session-pickers`.
+  // A closed select's `change` dispatched inside the key's own task, which the live header
+  // pickers' keyboard-step rule rests on: all five rows of `keyboard-session-pickers`.
+  // The keys a text box takes, and how the engine takes the focus out of one on Tab, which the
+  // Agents composer's Issue list is driven by: the five rows of `keyboard-agents-picker` that
+  // drive that list from the keyboard, and `table-controls`'s row that Tab and Escape never leave
+  // a panel for the page behind it, which leaves a list's text box by Tab on a page and by
+  // Shift+Tab in a dialog and reads the focus on the list's trigger.
   // The engine's cancellation of a chunk the navigation away from it left downloading, and the
   // margin hold's frame and scroll order: seven `deep-links` rows - the held chunk's, the press
   // raced against the landing's own frames, the two hidden-editor rows that run with the page's
@@ -417,6 +463,23 @@ const parallelProjects = [
   // ask before a tab unloads: eight `keyed-writes` rows and two `keyed-send` rows, whose upload
   // row carries the kept-file question with it.
   // The reload line a read-only admission names: `doc-reload-line`'s one row.
+  // A focused control taken away, itself or with a parent, for which this engine fires no
+  // `focusout`, so the page's focus rescue sees it only by watching the page: `table-controls`'s
+  // page-own focus row, its row whose focused row a live update takes away, its row that Add a
+  // priority opens its form in view with the focus on Priority to advance, its row that Change
+  // answer opens the answer form with the focus in it, and its scrolling-table row, whose focused
+  // row a scroll takes away.
+  // The order in which the engine fires a text box's blur, runs the microtask the page's focus
+  // rescue queues from its `focusout`, and lets React commit the save the blur made, which takes
+  // the box away: `issue`'s row that Enter in the title's editor, and a click outside it, close it
+  // and leave the next key to the page, as above `webkit`.
+  // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
+  // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
+  // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind
+  // it.
+  // How the engine lays out a scroll box, lands a wheel step's scroll and clamps a scroll, which
+  // a panel cut to a short window is scrolled by: `table-controls`'s row that such a panel
+  // scrolls to its last control, by the wheel and by Tab.
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
@@ -588,7 +651,22 @@ const aloneProjects = [
  * screenshot comparison that fails and then passes is a tolerance that is too tight or a page
  * that is not settled, and either one is the thing this layer exists to find, so it is reported
  * as a failure rather than as a flake.
+ *
+ * `--disable-partial-raster` (`VISUAL_CAPTURE`), on both projects: Chromium then draws every
+ * tile it redraws whole, rather than only the part of it a later paint invalidated. A tile drawn
+ * once and then partly redrawn differs at the edges of what was redrawn from the same tile drawn
+ * whole, so with partial raster on, one page at one layout came out in more than one rendering,
+ * depending on the order its paints came in. The Inbox, shot 20 times in the visual image with
+ * its own fonts, came out in two renderings in light, 7 and 13 times, and with the DevTools
+ * LayerTree domain on in the one the committed baseline refused, 20 times of 20. Every
+ * difference was at x 832 or right of it, which is the main column's left edge plus one 512 px
+ * tile, and main's build of that page varied the same way on the other side of that edge. With
+ * the flag the same 20 shots gave one rendering in light and one in dark, and the same two with
+ * LayerTree on (dispatch://INFRA-3135). The flag changes what is captured, not what is
+ * compared: the spec's comparison and its tolerance are as before.
  */
+const VISUAL_CAPTURE = { args: ["--disable-partial-raster"] };
+
 const visualProjects = [
   {
     name: "visual",
@@ -602,7 +680,11 @@ const visualProjects = [
     // would say the same thing on every file and in the name of each the route and the scheme
     // are what a reader is looking for.
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["Desktop Chrome"], viewport: { height: 800, width: 1280 } },
+    use: {
+      ...devices["Desktop Chrome"],
+      launchOptions: VISUAL_CAPTURE,
+      viewport: { height: 800, width: 1280 },
+    },
     workers: 1,
     retries: 0,
   },
@@ -611,7 +693,11 @@ const visualProjects = [
     testMatch: visualSpecs,
     grep: phoneRowTagged,
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    use: {
+      ...devices["iPhone 13"],
+      browserName: "chromium" as const,
+      launchOptions: VISUAL_CAPTURE,
+    },
     workers: 1,
     retries: 0,
   },

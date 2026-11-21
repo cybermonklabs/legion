@@ -200,7 +200,7 @@ ci_filter_coverage.py's ENV_ALLOWED and stay in the browser step's `env:`; the
 multiprocess job's pinned build step, "Build the Dispatch server", is read under dispatch-browser.yaml's own `env:` and
 defaults, so neither may grow a name outside that set.
 
-The browser step's budget, its `timeout-minutes: 9`, is measured, on the two runs of the head that sharded this
+The browser step's first budget, 9 minutes, was measured on the two runs of the head that sharded this
 suite: 42334424798, the pull-request lane, and 42316487530, the full lane. Four legs each,
 in shard order, in seconds:
 
@@ -208,10 +208,10 @@ in shard order, in seconds:
   Browser-test dispatch dashboard         413, 293, 307, 292  419, 297, 334, 295
   every other step summed                  76, 67, 72, 85      79, 76, 80, 77
 
-The rule is in this file's head. The browser step's maximum is the full lane's 419 s, so
-419 x 1.15 = 482 s -> 9 min, which is the bound this issue's R1 asks of the longest
+The rule is in this file's head. The browser step's maximum was the full lane's 419 s, so
+419 x 1.15 = 482 s -> 9 min, which is the bound this issue's R1 asked of the longest
 shard's browser step, and which the container does not move: it is the same rows in the
-same browsers.
+same browsers. The maximum has since moved, and the budget with it (below).
 
 The job budget, the shard job's `timeout-minutes`, is the rule's arithmetic, read on sha256:ba003193, the build of commit
 47a222cd (run 42480325123, job 128730667606), and not on the digest this file pins, which
@@ -270,17 +270,20 @@ reached over those 24 legs, in seconds:
 The three uploads are three steps of this job and not one, so the sum below counts each
 of them: 3 + 2 + 4, not 4.
 
-The browser step's own 9 minutes above still holds at the merged head, where #2958's
-accessibility rows joined the shards: its maxima here are 381 s (run 42521581875, job
-128856388199), 355 s (job 128851420516) and 283 s (nightly run 42522550380), all under the
-419 s that budget was derived from, so the pooled maximum the rule reads is still that
-419 s and the budget the rule gives is still 9 minutes. The 474 s main measured for this
-step, which raised it to 10 minutes there, is not in that sample: it was taken on the bare
-runner with the Playwright install this change removes still in the job.
+The browser step's maximum is now 593 s: shard 4 of full-lane run 44740043506, at
+dispatch://INFRA-3135's head 29f08cab with main 1c7c8253 merged, took 593 s and its shards
+353, 386, 534 and 593 s; full-lane run 44742684670 at 7d71bf0c took 430, 322, 521 and
+581 s. main's merge-group run 44735067614 at 5570d0ac took 475, 292, 414 and 450 s, so the
+shared search, sort and filter controls' rows (e2e/table-controls.e2e.ts) add 131 to 143 s
+to shard 4 and 107 to 120 s to shard 3. 593 x 1.15 = 682 s -> 12 min, the budget the step
+carries. It carried 10 minutes while its maximum was 486 s (full-lane runs 44176775681 and
+44230393182, shard 3), and 9 while it was 419 s; the 474 s main measured once was taken on
+the bare runner with the Playwright install still in the job.
 
 The browser step was the one step of this job that carried a budget, so the job's budget was
 that budget plus the maxima above of every step without one, which summed to 219 s:
-540 + 219 = 759 s, 12 min 39 s, rounded up to 13 minutes.
+540 + 219 = 759 s, 12 min 39 s, rounded up to 13 minutes, and 600 + 219 = 819 s, 14 minutes,
+once the browser step carried 10.
 
 THE TWO NETWORK READS, AT A BUSY HOUR. That sum read the binaries download at 5 s and the
 image pull, `Initialize containers`, at 45 s, from quiet runs, and on 2026-11-18 a leg of
@@ -297,9 +300,9 @@ it is built again. So the download now carries a budget of its own and a second 
 and the pull is counted at that 355 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 540 s, the two download attempts' 120 s each, and the steps without a
-budget at 219 - 5 - 45 + 355 = 524 s: 1,304 s, 21 min 44 s, rounded up to the 22 minutes
-of the shard job's `timeout-minutes`. The browser step's own budget is unchanged, and it still fires before the job's.
+browser step's 720 s, the two download attempts' 120 s each, and the steps without a
+budget at 219 - 5 - 45 + 355 = 524 s: 1,484 s, 24 min 44 s, rounded up to the 25 minutes
+of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
 again at this change's head, the suite holds 1,427 rows in 194 files, which is two
@@ -346,7 +349,7 @@ run-broker.sh serves from.
 
 The step budget note above does not count this step, which is new here. It copies one
 106 MB artifact on the runner's disk (141 ms for those bytes on a pod), and the 16 s
-that rounding up to 22 minutes leaves hold it.
+that rounding up to 25 minutes leaves hold it.
 
 ## Why the shard job makes the downloaded binaries executable
 
@@ -463,11 +466,9 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 9`, is the 9 minutes the job's head derives from the sharded head's own
-runs, and neither the container nor #2958's added rows move it: at the merged head this
-step's maxima are 381 s, 355 s and 283 s, which the job's head lists with their runs,
-all under the sharded head's 419 s, so the pooled maximum the rule reads is still
-419 s.
+The step's budget, `timeout-minutes: 12`, is the 12 minutes the job's head derives by the rule from this
+step's maximum, 593 s, which the shared controls' rows of dispatch://INFRA-3135 set with the
+rows main has added since, and which the job's head lists with its runs: 593 x 1.15 = 682 s.
 
 ## Why the file store's address is set on the step and not in the environment
 

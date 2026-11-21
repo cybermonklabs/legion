@@ -24,9 +24,10 @@ export function hasReadingPane(page: Page): boolean {
   return (page.viewportSize()?.width ?? 0) >= READING_PANE_WIDTH;
 }
 
-/** The list column, which is the whole Inbox where there is no reading column. */
-export function inboxList(page: Page): Locator {
-  return page.getByTestId("inbox-list");
+/** The list column, which is the whole Inbox where there is no reading column, inside `within`:
+ *  the page, or a drawer. */
+export function inboxList(within: Page | Locator): Locator {
+  return within.getByTestId("inbox-list");
 }
 
 /** The reading column; absent below `READING_PANE_WIDTH` and in the drawer. */

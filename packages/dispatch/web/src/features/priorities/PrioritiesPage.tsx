@@ -8,6 +8,7 @@ import { IssuesTable } from "../project/IssuesTable";
 import type { ShownColumnId } from "../project/issues-table-columns";
 import type { IssueListing } from "../project/issues-table-data";
 import { runningIssueStatuses } from "../project/issues-table-model";
+import { useKeymapScope } from "../shell/keymap";
 import { NewPriority } from "./NewPriority";
 import { PrioritiesTable } from "./PrioritiesTable";
 import { PARKED_STATUSES } from "./priorities-model";
@@ -52,9 +53,19 @@ function countsLine(by: Readonly<Record<string, number>> | null): string {
  * `/priorities`: the priorities themselves, in their one order, and under them the two faults.
  * A priority belongs to no project, so this page names none: every count, every row and both
  * fault lists are the whole deployment's. Each fault list is the one Issues table, over the
- * issue listing the server narrows for it, under its own prefix in the address.
+ * issue listing the server narrows for it, under its own prefix in the address. The List's
+ * `needs-you` and `unread` flags stay bare, so they narrow every issue table of the page at once,
+ * while each table's Unclaimed is its own Claimed by pick (`<prefix>.unclaimed`).
+ *
+ * Every table of the page registers its keys in the `project` scope, which the page pushes. The
+ * priorities table is the page's main one, whose `j` and `k` walk it from anywhere the focus is
+ * in no other table; each issue table beside it - both fault lists, and the work under an opened
+ * row - walks its own rows from one of them (`moveFrom="row"`). The keymap answers a key with the
+ * first registration whose `when` holds, so the tables would otherwise all take `j` and `k` from
+ * the page, and the first to register would answer for every one.
  */
 export function PrioritiesPage(): ReactNode {
+  useKeymapScope("project");
   const priorities = useQuery(prioritiesQuery());
   // What the page draws of one read, built once that read answers rather than once a render:
   // the titles are what the parked list's columns are declared over, so a map built afresh
@@ -128,6 +139,7 @@ export function PrioritiesPage(): ReactNode {
           label="Issues in flight under no priority"
           layout={NO_PRIORITY_LAYOUT}
           listing={NO_PRIORITY}
+          moveFrom="row"
           stateKey="n"
         />
       </section>
@@ -145,6 +157,7 @@ export function PrioritiesPage(): ReactNode {
           label="Priority issues in backlog or icebox"
           layout={PARKED_LAYOUT}
           listing={PARKED}
+          moveFrom="row"
           priorityTitles={titles}
           stateKey="k"
         />

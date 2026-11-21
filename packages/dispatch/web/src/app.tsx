@@ -18,6 +18,7 @@ import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
 import { askSignInAgain } from "./api/query-client";
 import type { AuthenticatedUser } from "./api/types";
+import { useFocusRescue } from "./components/focus-place";
 import { useLiveViews } from "./features/agent-view/live-views";
 import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
 import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
@@ -28,6 +29,7 @@ import { TextAskBlockCard } from "./features/doc/AskBlockCard";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
+import { buildInboxPath } from "./features/inbox/inbox-route";
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
@@ -55,7 +57,6 @@ import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
-  buildInboxPath,
   buildProjectPath,
   liveViewSessionOf,
   parseIssuePath,
@@ -665,6 +666,9 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
+  // The page's one focus rescue, mounted once here: what it answers and where it sends the focus
+  // is `useFocusRescue`'s own description (`components/focus-place.ts`).
+  useFocusRescue(mainRef);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   // The status corner floats over the foot of the screen as the composers it sits above do, so
   // it publishes its own reach the same way: a control floating at that foot - the
@@ -899,10 +903,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // One count on one control: the work waiting on the reader and the threads they have not
   // read, which the Inbox lists together now. On the Inbox page it stays plain text - the page
   // is the Inbox already, so there is nowhere for it to go. The peek that opened the drawer
-  // from this bar stays beside it, without the count it used to carry.
-  const inboxLabel = inboxCount === 0 ? "Inbox" : `Inbox ${inboxCount}`;
+  // from this bar stays beside it, without the count it used to carry. Until every read the
+  // count adds up has answered (`useInboxCount`) the control is drawn without a number.
+  const counted = inboxCount !== undefined && inboxCount !== 0;
+  const inboxLabel = counted ? `Inbox ${inboxCount}` : "Inbox";
   const inboxBadgeClass = `whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${
-    inboxCount === 0 ? railHoverBg : `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`
+    counted ? `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}` : railHoverBg
   }`;
 
   return (

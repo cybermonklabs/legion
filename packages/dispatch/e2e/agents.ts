@@ -2,8 +2,10 @@ import { DELIVERY_CAPABILITIES, type LegionRole, roleToken } from "@legion/contr
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { BroadcastCreated, CreateBroadcastInput, TmuxPlace } from "../web/src/api/types";
+import { CONTROL } from "../web/src/components/control-names";
 import type { AgentGroup } from "../web/src/features/agents/agent-groups";
 import { createAsk, createComment, createIssue, createProject } from "./api";
+import { control, controlRow, openFilterPanel } from "./filters";
 import { harnessPorts } from "./harness-ports";
 import { type KeyedWrite, keyedWrite, watchWrites } from "./keyed-writes";
 import { sessionIds } from "./session-ids";
@@ -410,6 +412,29 @@ export function agentRow(page: Page, sessionID: string): Locator {
   return page.locator(`[data-agent-row="${sessionID}"]`);
 }
 
+/** The Issue list a row's own trigger - its `Choose issue` toggle - opened. The list is portalled
+ *  out of the row, so it is found through the panel that trigger names in `aria-controls`: this
+ *  row's list and no other list of the page. While the list is shut the trigger names nothing,
+ *  and this finds nothing. */
+export function issueListOf(row: Locator): Locator {
+  return row.locator("xpath=id(.//*[@data-agent-issue-picker]/@aria-controls)");
+}
+
+/** The text box of a row's open Issue list, which narrows its issues and takes the arrows and
+ *  Enter: found through `issueListOf`, so while the list is shut this finds nothing. */
+export function issueSearchIn(row: Locator): Locator {
+  return issueListOf(row).getByRole("combobox", { name: "Issue" });
+}
+
+/** The option of a row's open Issue list that picks `key`: an issue's key (its row reads
+ *  `CORE-1 · <title>`, or `CORE-1 (closed)`), or `""` for `No issue`. */
+export function issueOption(row: Locator, key: string): Locator {
+  return issueListOf(row).getByRole(
+    "option",
+    key === "" ? { exact: true, name: "No issue" } : { name: new RegExp(`^${key} `) }
+  );
+}
+
 /** One of the page's four group headings (INFRA-812, R7), whose accessible name is the group's
  *  name and its count: `Idle (3)`, or `Idle (3, 1 selected)` once a row of it is selected. */
 export function agentGroupToggle(page: Page, group: AgentGroup): Locator {
@@ -426,24 +451,33 @@ export async function toggleAgentGroup(page: Page, group: AgentGroup): Promise<v
   await expect(toggle).toHaveAttribute("aria-expanded", fold === "open" ? "false" : "true");
 }
 
-/** The group, machine or role filter's trigger. Each of the three is a `MultiSelect` (R7), named
- *  by what it filters rather than by what is ticked in it. */
+/** The three filters live in the panel the row's one **Filter** trigger opens: opens it unless
+ *  it is open already, and hands the panel back. */
+export async function openAgentFilters(page: Page): Promise<Locator> {
+  return openFilterPanel(page);
+}
+
+/** The group, machine or role filter's trigger, inside that panel. Each of the three is a
+ *  `MultiSelect` (R7), named by what it filters rather than by what is ticked in it; absent
+ *  until the panel is open. */
 export function agentFilter(page: Page, filter: "group" | "machine" | "role"): Locator {
   return page.getByRole("button", { name: `Filter by ${filter}` });
 }
 
-/** Opens a filter's panel if it is shut. Its trigger's `aria-expanded` says which it is, and is
- *  read once the page has drawn the trigger rather than at the instant it attaches. */
+/** Opens a filter's panel if it is shut, once the panel the three stand in is open. Its trigger's
+ *  `aria-expanded` says which it is, and is read once the page has drawn the trigger rather than
+ *  at the instant it attaches. */
 export async function openAgentFilter(
   page: Page,
   filter: "group" | "machine" | "role"
 ): Promise<void> {
+  await openAgentFilters(page);
   const trigger = agentFilter(page, filter);
   if ((await expandedState(`the ${filter} filter`, trigger)) === "shut") await trigger.click();
 }
 
-/** Ticks or unticks one option of a filter and closes its popover, so the portalled panel never
- *  covers the control the row drives next. */
+/** Ticks or unticks one option of a filter and closes its popover, and the panel the three
+ *  stand in with it, so neither portalled layer covers the control the row drives next. */
 export async function pickAgentFilter(
   page: Page,
   filter: "group" | "machine" | "role",
@@ -453,4 +487,10 @@ export async function pickAgentFilter(
   await page.getByRole("option", { exact: true, name: option }).click();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("listbox")).toHaveCount(0);
+  const panel = page.getByRole("dialog", { name: "Filter" });
+  const panelTrigger = control(controlRow(page), CONTROL.panelTrigger);
+  if ((await expandedState("the row's filter trigger", panelTrigger)) === "open") {
+    await page.keyboard.press("Escape");
+    await expect(panel).toHaveCount(0);
+  }
 }

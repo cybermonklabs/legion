@@ -73,6 +73,24 @@ export function readWindow(params: URLSearchParams): WindowChoice {
   return { kind: "preset", preset: isPreset(preset) ? preset : DEFAULT_WINDOW_PRESET };
 }
 
+/** The brush window a drag on the chart set, as the address names its two ends (`ws`, `we`), or
+ *  none. Both ends are times and the end is no earlier than the start; any other pair - one end
+ *  alone, a word that is no time, an end before its start - would leave no merge inside it and
+ *  filter every pull request out of the chart, the list and the count, so it is no brush and the
+ *  page shows its whole window. Takes the two texts rather than the parameters so a caller can
+ *  memoize on them. */
+export function readBrush(
+  start: string | null,
+  end: string | null
+): { start: string; end: string } | null {
+  if (start === null || end === null) return null;
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  return Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs
+    ? { start, end }
+    : null;
+}
+
 /** The live socket's window for a choice: a preset by its days, whose end Dispatch keeps at the
  *  present, or a custom range by its exact ends. */
 export function liveWindow(choice: WindowChoice): DeliveryLiveWindow {

@@ -67,7 +67,10 @@ function preferenceValue<T>(
  * Reads a browser preference for a resolved signed-in identity. Pending and failed identity use
  * the caller's explicit fallback when one differs from `read(null)`; neither state persists.
  * `read` runs when the hook mounts and when the signed-in identity or `preference` changes, and
- * at no other time: a `read` that consults other state sees that state as it was then.
+ * at no other time: a `read` that consults other state sees that state as it was then. A write
+ * whose value is the one already stored is not made, so a caller whose `read` folds several
+ * stored values into one (the Board's panel, shut while no filter is on whatever is stored)
+ * never writes a value over itself.
  */
 export function useUserPreference<T>(
   preference: UserPreference,
@@ -92,9 +95,10 @@ export function useUserPreference<T>(
   const setAndPersist = useCallback(
     (next: T) => {
       setValue(next);
-      if (login !== undefined) {
-        window.localStorage.setItem(userPreferenceStorageKey(login, preference), write(next));
-      }
+      if (login === undefined) return;
+      const key = userPreferenceStorageKey(login, preference);
+      const stored = write(next);
+      if (window.localStorage.getItem(key) !== stored) window.localStorage.setItem(key, stored);
     },
     [login, preference, write]
   );

@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { realClock, settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { panelOf, pickFromLabelled } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError } from "../../api/client";
@@ -255,6 +256,68 @@ test("a grant with no expiry says it ends when its session ends", async () => {
   }
 });
 
+// The mapping form's Project list is a button, which no `required` holds as the select it
+// replaced held the form: with no project picked, Add mapping files nothing and the form says to
+// choose one, as the browser said for the select; a pick takes that away, and the next press maps
+// the repository there.
+test("with no project picked, Add mapping files nothing and says to choose a project", async () => {
+  const user = userEvent.setup();
+  const unrelated = stubUnrelatedQueries();
+  unrelated.listProjects.mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+    },
+  ]);
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const putRepoProject = spyOn(api, "putRepoProject").mockImplementation(async (repo, input) => ({
+    created_at: "2026-09-10T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    default: false,
+    project: input.project,
+    renamed_to: null,
+    repo,
+  }));
+
+  try {
+    renderPage();
+    const section = within(await screen.findByRole("region", { name: "Repositories → Projects" }));
+    const trigger = await section.findByLabelText("Project");
+    expect(trigger).toHaveTextContent("Choose a project");
+    await user.click(section.getByLabelText("Repository"));
+    await user.paste("owner/repo");
+    await user.click(section.getByRole("button", { name: "Add mapping" }));
+    await act(async () => {});
+    expect(putRepoProject, "a repository was mapped to no project").not.toHaveBeenCalled();
+    expect(section.getByRole("alert")).toHaveTextContent("Choose a project.");
+
+    await user.click(trigger);
+    await user.click(within(panelOf(trigger)).getByRole("option", { name: "CORE · Core" }));
+    expect(section.queryByRole("alert")).toBeNull();
+    await user.click(section.getByRole("button", { name: "Add mapping" }));
+    await waitFor(() =>
+      expect(putRepoProject).toHaveBeenCalledWith("owner/repo", { project: "CORE" }, keyedAttempt)
+    );
+    expect(putRepoProject).toHaveBeenCalledTimes(1);
+  } finally {
+    cleanup();
+    getCredentialPending.mockRestore();
+    whoAmI.mockRestore();
+    putRepoProject.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
 const mapping: RepoProject = {
   created_at: "2026-09-10T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
@@ -411,11 +474,12 @@ function listedMappings(): string[] {
     });
 }
 
-/** Maps `owner/repo` to `project` through the page's form. */
+/** Maps `owner/repo` to `project` through the page's form: its Project list's row reads
+ *  `KEY · name`, and `renderMappings` names each project by its key. */
 async function mapThrough(user: UserEvent, project: string) {
   await user.click(screen.getByLabelText("Repository"));
   await user.paste("owner/repo");
-  await user.selectOptions(screen.getByLabelText("Project"), project);
+  await pickFromLabelled(user, "Project", `${project} · ${project}`);
   await user.click(screen.getByRole("button", { name: "Add mapping" }));
 }
 
@@ -535,7 +599,7 @@ test("a mapping's save is in the mappings' query in the step of the press", asyn
   try {
     await user.click(screen.getByLabelText("Repository"));
     await user.paste("owner/repo");
-    await user.selectOptions(screen.getByLabelText("Project"), "OPS");
+    await pickFromLabelled(user, "Project", "OPS · OPS");
     // The form's own submit, and the check in the same step: user-event has no form for it.
     fireEvent.submit(screen.getByLabelText("Repository").closest("form") as HTMLFormElement);
     expect(

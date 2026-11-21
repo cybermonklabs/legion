@@ -1,10 +1,10 @@
 import { rankItem, rankings } from "@tanstack/match-sorter-utils";
-import type { ColumnFiltersState, GroupingState, SortingState } from "@tanstack/react-table";
+import type { ColumnFiltersState } from "@tanstack/react-table";
 import type { Actor, IssueSummary, UpdateIssueInput } from "../../api/types";
-import { capSearchQuery } from "../../lib/query-param";
+import type { LayoutColumns } from "../../components/table-layout";
+import { copyAddress, type TableAddressView } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
-import type { LayoutColumns } from "./issues-table-layout";
 
 export interface Item {
   readonly issue: IssueSummary;
@@ -18,6 +18,18 @@ export interface Item {
   readonly claimFree: boolean;
   readonly search: string;
 }
+
+/** The attributes the List's own rows carry, which the table core is told to read: its keys
+ *  walk `data-issue-row`, its anchor holds a row's place by it and its groups by
+ *  `data-issue-group`, and opening a row follows the link marked `data-issue-link`. */
+export const ISSUE_ROW_ATTRIBUTE = "data-issue-row";
+export const ISSUE_GROUP_ATTRIBUTE = "data-issue-group";
+export const ISSUE_LINK_ATTRIBUTE = "data-issue-link";
+
+/** The one key the List keeps a project's table under in the browser: the reader's layout, and
+ *  the record of an action a reload interrupted. */
+export const tableStorageKey = (project: string) => `dispatch.project-table.${project}`;
+
 export const AGES = ["Today", "This week", "This month", "Older"] as const;
 export const ALL_ROWS = Number.MAX_SAFE_INTEGER;
 export const PAGE_SIZES = [25, 50, 100, 250, ALL_ROWS];
@@ -304,6 +316,7 @@ const phoneMin = (id: ColumnId): number => COMPACT_COLUMN_MIN[id] ?? COLUMN_MIN[
  */
 export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
   ids: COLUMNS.map((column) => column.id),
+  rowAttribute: ISSUE_ROW_ATTRIBUTE,
   hiddenByDefault: { updated: false } satisfies Partial<Record<ColumnId, boolean>>,
   sizes: Object.fromEntries(COLUMNS.map((column) => [column.id, column.size])),
   minimums: COLUMN_MIN,
@@ -319,13 +332,10 @@ export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
   },
 };
 
-export interface View {
-  sorting: SortingState;
-  grouping: GroupingState;
-  filters: ColumnFiltersState;
-  search: string;
-  page: number;
-  pageSize: number;
+/** What this table holds in the address, in the shape every table holds it
+ *  (`lib/page-address.ts`), and the narrowing a link names beside it; `readUrl` and `writeUrl`
+ *  below are this table's own spelling of it. */
+export interface View extends TableAddressView {
   /** The issues the reader picked elsewhere, which the table shows alone; `null` is every row.
    *  It is the address's own narrowing (`readSelection`), not one of the table's controls, so
    *  it takes no `stateKey` prefix: one page shows one selection however many tables it draws. */
@@ -559,7 +569,7 @@ export function selectIssues(
   keys: readonly string[],
   label: string
 ): URLSearchParams {
-  const next = new URLSearchParams(params);
+  const next = copyAddress(params);
   next.set("only", keys.join(","));
   next.set("onlyLabel", label);
   next.delete("status");
@@ -569,7 +579,7 @@ export function selectIssues(
 }
 /** Drops that narrowing, leaving every other control as it is. */
 export function clearPicked(params: URLSearchParams): URLSearchParams {
-  const next = new URLSearchParams(params);
+  const next = copyAddress(params);
   next.delete("only");
   next.delete("onlyLabel");
   next.delete("page");
@@ -616,7 +626,7 @@ export function readUrl(params: URLSearchParams, stateKey?: string): View {
         ]
       : [];
   });
-  // `?unclaimed=1` is the Board strip's own parameter and what shared List links carry: it picks
+  // `?unclaimed=1` is the Board control row's own parameter and what shared List links carry: it picks
   // the Claimed by filter's "Nobody or lapsed", so both views read one URL.
   if (params.get(key("unclaimed")) === "1") {
     const claim = filters.find((filter) => filter.id === "claim");
@@ -639,21 +649,25 @@ export function readUrl(params: URLSearchParams, stateKey?: string): View {
           : defaultView.sorting,
     grouping: canGroupBy(grouping) ? [grouping] : [],
     filters,
-    search: capSearchQuery(params.get(key("q")) ?? ""),
+    // Read whole: the search box cuts what the reader types (`useTableAddress`'s `setSearch`),
+    // and every write below rewrites `q` from this, so a cut here would shorten a longer `?q=`
+    // a link carried as soon as the reader sorted or paged.
+    search: params.get(key("q")) ?? "",
     page: Number.isSafeInteger(page) && page > 0 ? page - 1 : 0,
     pageSize: PAGE_SIZES.includes(size) ? size : defaultView.pageSize,
     selection: readSelection(params),
   };
 }
-/** Whether a status pick is exactly the set the table opens with. */
-function isDefaultStatus(value: unknown): boolean {
+/** Whether a status pick is exactly the set the table opens with: no narrowing of the reader's,
+ *  which a link leaves out and **Clear filters** goes back to. */
+export function isDefaultStatus(value: unknown): boolean {
   const picked = Array.isArray(value) ? value.map(String) : [];
   const fallback = (defaultView.filters[0]?.value ?? []) as string[];
   return picked.length === fallback.length && fallback.every((status) => picked.includes(status));
 }
 export function writeUrl(params: URLSearchParams, state: View, stateKey?: string): URLSearchParams {
   const key = (name: string) => viewKey(name, stateKey);
-  const next = new URLSearchParams(params);
+  const next = copyAddress(params);
   for (const param of [...next.keys()]) {
     const name = viewName(param, stateKey);
     if (
@@ -692,17 +706,6 @@ export function writeUrl(params: URLSearchParams, state: View, stateKey?: string
     if (state.selection.label !== DEFAULT_SELECTION_LABEL)
       next.set("onlyLabel", state.selection.label);
   }
-  return next;
-}
-
-/** The column order a drag leaves behind: `dragged` taken out of `current` and put back
- *  immediately before `before`. A drop on itself, or on an id the order does not hold, leaves
- *  the order as it was. */
-export function reorder(current: readonly string[], dragged: string, before: string): string[] {
-  if (dragged === before || !current.includes(dragged) || !current.includes(before))
-    return [...current];
-  const next = current.filter((id) => id !== dragged);
-  next.splice(next.indexOf(before), 0, dragged);
   return next;
 }
 

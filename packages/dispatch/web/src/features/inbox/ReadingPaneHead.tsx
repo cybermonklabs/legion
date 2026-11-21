@@ -58,11 +58,6 @@ export interface ReadingPaneHeadProps {
   onNextChange: (() => void) | undefined;
   /** Moves the column to the decision block; undefined when the question is not one. */
   onSkipToAnswer: (() => void) | undefined;
-  /** Registers the question while this head's Snooze write is in flight or failed, exactly as
-   *  a row's own control registers its own: the Inbox keeps a live row listed, so the control
-   *  holding `Snoozing…`, a refusal and its Retry is not unmounted by the fold the optimistic
-   *  snooze causes - the column follows that row, so the fold would take this head with it. */
-  onSnoozeLive: (askId: string, live: boolean) => void;
   /** The heading of the section the column is opened at, once the block has drawn. */
   sectionBlockId: string | undefined;
   viewer: string | undefined;
@@ -77,10 +72,11 @@ export interface ReadingPaneHeadProps {
  * — a project document has no assignee and no priority, so neither control applies to it.
  *
  * With the column on, `h`, `o` and `y` look inside the column rather than inside the selected
- * row (`hand()` returns the column in `Inbox.tsx`), and the short row beside it draws no Snooze
- * and no copy-ref control at all. So this head draws the same three controls the card row draws
- * — `[data-inbox-snooze]`, `[data-inbox-owner]` and the copy-ref control — and the keys find
- * them here.
+ * row (`hand()` returns the column in `Inbox.tsx`), and the selected short row beside it draws no
+ * Snooze and no copy-ref control at all. So this head draws the same three controls the card row
+ * draws — `[data-inbox-snooze]`, `[data-inbox-owner]` and the copy-ref control — and the keys
+ * find them here. Another short row draws its own Snooze only while a snooze of its ask is out or
+ * refused (`AskShortRow`).
  */
 export function ReadingPaneHead({
   artifact,
@@ -88,7 +84,6 @@ export function ReadingPaneHead({
   onAnswered,
   onNextChange,
   onSkipToAnswer,
-  onSnoozeLive,
   sectionBlockId,
   viewer,
 }: ReadingPaneHeadProps): ReactNode {
@@ -123,10 +118,11 @@ export function ReadingPaneHead({
       (isUnassigned({ ask, kind: "ask" }) || assignLive) ? (
         <AssignToMe askId={ask.id} issueKey={ask.issue_key} onLive={onAssignLive} viewer={viewer} />
       ) : null}
+      {/* The Inbox holds the write this Snooze makes, by ask, so it outlives this head, which
+          goes when the reader moves the selection (`useAskSnoozeWrites`). */}
       <SnoozeControl
         askId={ask.id}
         label={name}
-        onLive={onSnoozeLive}
         snoozedUntil={isSnoozed(ask) ? ask.snoozed_until : null}
       />
       {reference === undefined ? null : <CopyRefButton route={reference} />}

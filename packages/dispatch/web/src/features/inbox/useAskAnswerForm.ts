@@ -36,7 +36,8 @@ import {
   clearPendingAskThreadInvalidation,
   hasPendingAskThreadInvalidation,
 } from "./ask-thread-freshness";
-import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
+import type { AskPress } from "./ask-writes";
+import { useOutstandingAnswerWrite } from "./outstanding-answers";
 import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
@@ -88,9 +89,10 @@ interface ClarificationPress extends AskPress {
  * it, so the next answer is to the new wording), or writing even its server state would leave the
  * document's live state past what the server can decode. An answer the reader stopped may have
  * been saved, and the card's Retry makes that very press again (`retryLast`). Any other failure
- * may pass on a retry.
+ * may pass on a retry. The Inbox's short row says the same words of a refused answer
+ * (`AskShortRow`).
  */
-function answerFailure(answer: {
+export function answerFailure(answer: {
   readonly error: Error;
   readonly method: WriteMethod | undefined;
 }): AskAnswerFailure {
@@ -241,13 +243,13 @@ export function useAskAnswerForm({
   };
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
   // the shell's indicator shows the answer only while it is out. The row's removal from the
-  // Inbox, its restore on a refusal and the hold that keeps the question where the reader
-  // pressed it are the decline's too, and are written once beside the hold itself. Each press
+  // Inbox and its restore on a refusal are the decline's too, and are written once, beside the
+  // Inbox's own hold on the row while the write is out (`outstanding-answers.ts`). Each press
   // carries the ask it answers: `retry()` runs the newest render's `write` and callbacks with the
   // press's own values (`useKeyedWrite`), and a host may draw this card for one ask after
   // another, so a Retry sends the stopped answer to its own ask under its key, and its landing
   // reads that ask again.
-  const mutation = useOutstandingAnswerWrite({
+  const mutation = useOutstandingAnswerWrite(ask.id, {
     label: (press: AnswerPress) => `Answer to “${press.ask.question}”`,
     method: "POST",
     write: (press: AnswerPress, bounds) => answer(press.ask.id, press.input, bounds),
@@ -492,7 +494,10 @@ export function useAskAnswerForm({
   const unsentAnswer = completed !== null && justAnswered === null ? answerText : "";
 
   return {
-    answerFailure: mutation.error === null ? null : answerFailure(mutation),
+    answerFailure:
+      mutation.error === null
+        ? null
+        : answerFailure({ error: mutation.error, method: mutation.method }),
     answerFieldId,
     answerPlaceholder,
     answers,

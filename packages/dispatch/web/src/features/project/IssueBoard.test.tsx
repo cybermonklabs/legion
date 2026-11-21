@@ -1,4 +1,5 @@
 import { expect, jest, spyOn, test } from "bun:test";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -14,7 +15,9 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { installCountingStorage } from "../../__tests__/counting-storage";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -22,6 +25,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, IssueSummary, UserState } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { userPreferenceStorageKey } from "../shell/userPreference";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { issueStatuses } from "./board-model";
 import { staleBoardMessage, useBoardMoves } from "./board-moves";
@@ -631,6 +635,48 @@ test("a board refetch asked for while a move is unanswered waits for the answer,
   }
 });
 
+// A Board card is a row of its column's list. A refetch that takes the card holding the focus off
+// the board - another reader moved its issue on - is a loss the reader did not cause, so the app
+// shell's focus rescue, mounted here on the board's main content as the shell mounts it, hands
+// the focus into no other card: the reader's next key acts on no card they did not pick.
+test("a card a refetch takes away from under the focus hands it to no other card", async () => {
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue(keyboardIssues);
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={["/projects/CORE"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <RescuedMain>
+            <IssueBoard project="CORE" />
+          </RescuedMain>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const board = await screen.findByRole("region", { name: "Project board" });
+    const bravo = within(board).getByRole("article", { name: "CORE-2 Bravo" });
+    const title = bravo.querySelector<HTMLElement>("[data-issue-link]");
+    if (title === null) throw new Error("CORE-2's card draws no title link");
+    act(() => title.focus());
+
+    listIssues.mockResolvedValue(keyboardIssues.filter((entry) => entry.key !== "CORE-2"));
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: boardListKey });
+    });
+    await waitFor(() => expect(bravo).not.toBeInTheDocument());
+    await afterRescue();
+
+    expect(document.activeElement?.closest("[data-board-card]") ?? null).toBeNull();
+    expect(within(board).getByRole("article", { name: "CORE-3 Charlie" })).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listIssues.mockRestore();
+    getMyState.mockRestore();
+  }
+});
+
 test("j/k/h/l rove real focus over cards, columns and rails", async () => {
   const user = userEvent.setup();
   const { cleanup } = renderBoard({}, undefined, keyboardIssues);
@@ -913,9 +959,9 @@ test("a drop's mark never cancels a click outside the board", async () => {
   }
 });
 
-// The strip's filters on the board: Todo holds Alpha, Bravo, Charlie; only Alpha and Charlie
+// The control row's filters on the board: Todo holds Alpha, Bravo, Charlie; only Alpha and Charlie
 // contain an "h", so `?q=h` hides Bravo (and In progress's Delta).
-test("the strip's search hides board cards, counts the visible column, and drags name visible neighbours", async () => {
+test("the control row's search hides board cards, counts the visible column, and drags name visible neighbours", async () => {
   const user = userEvent.setup();
   const patchIssue = patchInFlight();
   const { cleanup } = renderBoard({}, undefined, keyboardIssues, "/projects/CORE?q=h");
@@ -1022,6 +1068,482 @@ test("a labelled move writes the rendered list, names its neighbours, and refetc
   } finally {
     hook.unmount();
     patchIssue.mockRestore();
+  }
+});
+
+// What `IssueFilters.test.tsx` proved about the Board's filter strip, now that the Board draws
+// that strip itself as the one shared control row (INFRA-3135): the trigger over the filter
+// panel, the chips of the narrowings that are on, and the open-or-closed state the reader's
+// browser keeps under `project.issue-filters`.
+function LocationSearch(): ReactNode {
+  return <output data-testid="location-search">{useLocation().search}</output>;
+}
+
+/** Opens the row's filter panel if it is closed. */
+async function openFilters(): Promise<void> {
+  const user = userEvent.setup();
+  const disclosure = await screen.findByRole("button", { name: /^Filters · \d+$/ });
+  if (disclosure.getAttribute("aria-expanded") === "false") {
+    await user.click(disclosure);
+  }
+}
+
+/** Opens the `Labels` picker inside the filter panel if it is closed and toggles one option. */
+async function pickOption(picker: "Labels", option: string): Promise<void> {
+  const user = userEvent.setup();
+  const trigger = screen.getByRole("button", { name: new RegExp(`^${picker}( · \\d+)?$`) });
+  if (trigger.getAttribute("aria-expanded") === "false") {
+    await user.click(trigger);
+  }
+  await user.click(screen.getByRole("option", { name: option }));
+}
+
+function renderControlRow(
+  list: IssueSummary[],
+  state: UserState = {},
+  initialEntry = "/projects/CORE",
+  login = "alice"
+) {
+  const listIssues = spyOn(api, "listIssues").mockImplementation(async (options = {}) => {
+    const labels = options.label ?? [];
+    return labels.length === 0
+      ? list
+      : list.filter((entry) => labels.every((label) => (entry.labels ?? []).includes(label)));
+  });
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue(state);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["whoami"], { kind: "user", login });
+  const view = render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <IssueBoard project="CORE" showEdges />
+          <LocationSearch />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return { getMyState, listIssues, view };
+}
+
+test("Needs you keeps only issues with open asks and lives in the URL", async () => {
+  const user = userEvent.setup();
+  const { getMyState, listIssues, view } = renderControlRow([
+    issue({ key: "CORE-1", open_asks: 1, title: "Answer me" }),
+    issue({ key: "CORE-2", title: "Quiet" }),
+  ]);
+
+  try {
+    await screen.findByText("Answer me");
+    await openFilters();
+    await user.click(screen.getByRole("button", { name: "Needs you" }));
+    expect(screen.getByText("Answer me")).toBeTruthy();
+    expect(screen.queryByText("Quiet")).not.toBeInTheDocument();
+    expect(screen.getByTestId("location-search").textContent).toBe("?needs-you=1");
+    await user.click(screen.getByRole("button", { name: "Remove Needs you filter" }));
+    expect(screen.getByTestId("location-search").textContent).toBe("");
+    expect(await screen.findByText("Quiet")).toBeTruthy();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+  }
+});
+
+test("Unread keeps only issues with events past last_read_seq and lives in the URL", async () => {
+  const user = userEvent.setup();
+  const { getMyState, listIssues, view } = renderControlRow(
+    [
+      issue({ key: "CORE-1", last_seq: 4, title: "Unread" }),
+      issue({ key: "CORE-2", last_seq: 3, title: "Read" }),
+    ],
+    {
+      "CORE-1": { dismissed: [], last_read_seq: 3, pinned: false, seq: 0 },
+      "CORE-2": { dismissed: [], last_read_seq: 3, pinned: false, seq: 0 },
+    }
+  );
+
+  try {
+    await screen.findByRole("link", { name: /CORE-1.*Unread/ });
+    await openFilters();
+    await user.click(screen.getByRole("button", { name: "Unread" }));
+    expect(screen.getByRole("link", { name: /CORE-1.*Unread/ })).toBeTruthy();
+    expect(screen.queryByText("Read")).not.toBeInTheDocument();
+    expect(screen.getByTestId("location-search").textContent).toBe("?unread=1");
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+  }
+});
+
+test("label chips send every selection to the API and retain only AND matches", async () => {
+  const { getMyState, listIssues, view } = renderControlRow([
+    issue({ key: "CORE-1", labels: ["frontend", "api"], title: "Navigation" }),
+    issue({ key: "CORE-2", labels: ["frontend", "docs"], title: "Guidance" }),
+    issue({ key: "CORE-3", labels: ["backend", "docs"], title: "Endpoint" }),
+  ]);
+
+  try {
+    await screen.findByText("Navigation");
+    await openFilters();
+    await pickOption("Labels", "frontend");
+    await waitFor(() =>
+      expect(listIssues).toHaveBeenCalledWith({ label: ["frontend"], project: "CORE" })
+    );
+    await pickOption("Labels", "docs");
+    await waitFor(() =>
+      expect(listIssues).toHaveBeenCalledWith({ label: ["frontend", "docs"], project: "CORE" })
+    );
+    // The board draws the labelled list once that request has answered, not when it is made.
+    expect(await screen.findByText("Guidance")).toBeTruthy();
+    expect(screen.queryByText("Navigation")).not.toBeInTheDocument();
+    expect(screen.queryByText("Endpoint")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+  }
+});
+
+test("restores every filter from the URL and writes changes back to it", async () => {
+  const user = userEvent.setup();
+  const { getMyState, listIssues, view } = renderControlRow(
+    [
+      issue({ key: "CORE-1", labels: ["docs"], title: "Guidance" }),
+      issue({ key: "CORE-2", labels: ["frontend"], title: "Navigation" }),
+    ],
+    {},
+    "/projects/CORE?label=docs"
+  );
+
+  try {
+    await screen.findByText("Guidance");
+    await openFilters();
+    await waitFor(() =>
+      expect(listIssues).toHaveBeenCalledWith({ label: ["docs"], project: "CORE" })
+    );
+    await user.click(screen.getByRole("button", { name: "Labels · 1" }));
+    expect(screen.getByRole("option", { name: "docs" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("location-search").textContent).toBe("?label=docs");
+
+    await pickOption("Labels", "frontend");
+    await waitFor(() =>
+      expect(listIssues).toHaveBeenCalledWith({ label: ["docs", "frontend"], project: "CORE" })
+    );
+    expect(screen.getByTestId("location-search").textContent).toBe("?label=docs&label=frontend");
+
+    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
+    await user.paste("guid");
+    expect(screen.getByTestId("location-search").textContent).toBe(
+      "?label=docs&label=frontend&q=guid"
+    );
+    await user.click(screen.getByRole("button", { name: "Remove Search: guid filter" }));
+
+    // Clicking into the search box closed the label picker, as it does in a browser, and the
+    // press on the chip beside it closed the filter panel the picker was in; Clear labels is
+    // inside that panel, so the reader opens it again.
+    await openFilters();
+    await user.click(screen.getByRole("button", { name: "Labels · 2" }));
+    await user.click(screen.getByRole("button", { name: "Clear labels" }));
+    expect(screen.getByTestId("location-search").textContent).toBe("");
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("a search restored from ?q= narrows the list before anyone types", async () => {
+  const { getMyState, listIssues, view } = renderControlRow(
+    [issue({ key: "CORE-1", title: "Guidance" }), issue({ key: "CORE-2", title: "Navigation" })],
+    {},
+    "/projects/CORE?q=guid"
+  );
+
+  try {
+    await screen.findByText("Guidance");
+    expect(screen.queryByText("Navigation")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove Search: guid filter" })).toBeTruthy();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+  }
+});
+
+test("the search filter writes at most SEARCH_QUERY_MAX characters into the page URL", async () => {
+  const user = userEvent.setup();
+  const { getMyState, listIssues, view } = renderControlRow([
+    issue({ key: "CORE-1", title: "Guidance" }),
+  ]);
+
+  try {
+    await screen.findByText("Guidance");
+    await openFilters();
+    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
+    await user.paste("x".repeat(SEARCH_QUERY_MAX + 500));
+    const written = new URLSearchParams(screen.getByTestId("location-search").textContent ?? "");
+    expect(written.get("q")).toBe("x".repeat(SEARCH_QUERY_MAX));
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("a ?q= over the cap from a link is cut on a code point, never leaving half an emoji", async () => {
+  const user = userEvent.setup();
+  const long = `${"x".repeat(SEARCH_QUERY_MAX - 1)}😀`;
+  const { getMyState, listIssues, view } = renderControlRow(
+    [issue({ key: "CORE-1", title: "Guidance" })],
+    {},
+    `/projects/CORE?q=${encodeURIComponent(long)}`
+  );
+
+  try {
+    await openFilters();
+    const search = screen.getByRole("searchbox", { name: "Search issues" });
+    await user.clear(search);
+    await user.click(search);
+    await user.paste(`${long}y`);
+    const written = new URLSearchParams(screen.getByTestId("location-search").textContent ?? "");
+    expect(written.get("q")).toBe("x".repeat(SEARCH_QUERY_MAX - 1));
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("collapses filter controls by default and retains the disclosure preference per login", async () => {
+  const user = userEvent.setup();
+  window.localStorage.clear();
+  const { getMyState, listIssues, view } = renderControlRow([issue({ title: "Core work" })]);
+
+  try {
+    await screen.findByText("Core work");
+    const disclosure = screen.getByRole("button", { name: "Filters · 0" });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "Labels" })).not.toBeInTheDocument();
+
+    await user.click(disclosure);
+    await user.click(screen.getByRole("button", { name: "Needs you" }));
+    expect(screen.getByRole("button", { name: "Filters · 1" })).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+
+    await user.click(screen.getByRole("button", { name: "Filters · 1" }));
+    await user.click(screen.getByRole("button", { name: "Remove Needs you filter" }));
+    expect(screen.getByRole("button", { name: "Filters · 0" })).toBeTruthy();
+    expect(
+      window.localStorage.getItem(userPreferenceStorageKey("alice", "project.issue-filters"))
+    ).toBe("collapsed");
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("collapses a saved filter disclosure when no filters are active", async () => {
+  window.localStorage.setItem(
+    userPreferenceStorageKey("alice", "project.issue-filters"),
+    "expanded"
+  );
+  const { getMyState, listIssues, view } = renderControlRow([issue({ title: "Core work" })]);
+
+  try {
+    await screen.findByText("Core work");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Filters · 0" })).toHaveAttribute(
+        "aria-expanded",
+        "false"
+      )
+    );
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("a pending viewer keeps a URL-only filter disclosure collapsed without persisting", async () => {
+  const pendingKey = "dispatch.project.issue-filters:undefined";
+  window.localStorage.removeItem(pendingKey);
+  const whoAmI = spyOn(api, "whoAmI").mockImplementation(
+    () => Promise.withResolvers<never>().promise
+  );
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
+    issue({ key: "CORE-1", title: "Guidance" }),
+  ]);
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={["/projects/CORE?q=guid"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <IssueBoard project="CORE" showEdges />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const disclosure = await screen.findByRole("button", { name: "Filters · 1" });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(window.localStorage.getItem(pendingKey)).toBeNull();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    whoAmI.mockRestore();
+    window.localStorage.removeItem(pendingKey);
+  }
+});
+
+test("a ?status= in the URL is neither counted nor chipped by the control row", async () => {
+  const { getMyState, listIssues, view } = renderControlRow(
+    [issue({ title: "Core work" })],
+    {},
+    "/projects/CORE?label=x&status=done"
+  );
+
+  try {
+    await screen.findByRole("button", { name: "Filters · 1" });
+    expect(screen.queryByRole("button", { name: "Status" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Remove Status: Done filter" })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove Label: x filter" })).toBeTruthy();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+// INFRA-3135, review round 1 (the architect's rule of 2026-11-15): the stored choice opens or
+// shuts the panel as the Board loads and takes no focus, and only the reader's own open or close
+// writes it.
+const PANEL_CHOICE = userPreferenceStorageKey("alice", "project.issue-filters");
+
+test("a panel the stored choice opens as the Board loads takes no focus, and a press opens it into the focus", async () => {
+  const user = userEvent.setup();
+  window.localStorage.clear();
+  const { getMyState, listIssues, view } = renderControlRow(
+    [issue({ labels: ["bug"], title: "Core work" })],
+    {},
+    "/projects/CORE?label=bug"
+  );
+
+  try {
+    await screen.findByText("Core work");
+    const trigger = screen.getByRole("button", { name: "Filters · 1" });
+    // Nothing is stored and a filter is on: the panel stands open, as the stored choice says.
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    const panel = screen.getByRole("dialog", { name: "Filters" });
+    // The focus starts where the page starts, not on the panel's first control.
+    expect(within(panel).getByRole("button", { name: "Labels · 1" })).not.toHaveFocus();
+    expect(document.activeElement).toBe(document.body);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBeNull();
+
+    // The reader's own press closes it, and their next one opens it with the focus in it.
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
+    expect(
+      within(screen.getByRole("dialog", { name: "Filters" })).getByRole("button", {
+        name: "Labels · 1",
+      })
+    ).toHaveFocus();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("the trigger's press either way, Escape and a press outside that closes the panel each write the stored choice", async () => {
+  const user = userEvent.setup();
+  window.localStorage.clear();
+  const { getMyState, listIssues, view } = renderControlRow([issue({ title: "Core work" })]);
+
+  try {
+    await screen.findByText("Core work");
+    const trigger = screen.getByRole("button", { name: "Filters · 0" });
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
+
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
+
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
+    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("nothing but the reader's open and close writes the stored choice: not a press while the panel is shut, a chip's removal or a press in the Labels list", async () => {
+  const user = userEvent.setup();
+  // Every write of the stored choice, in order, kept by a storage that counts them.
+  const storage = installCountingStorage({ [PANEL_CHOICE]: "collapsed" });
+  const { getMyState, listIssues, view } = renderControlRow(
+    [issue({ labels: ["bug"], title: "Core work" })],
+    {},
+    "/projects/CORE?label=bug&needs-you=1"
+  );
+
+  try {
+    await screen.findByRole("button", { name: "Filters · 2" });
+    const trigger = screen.getByRole("button", { name: "Filters · 2" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    // A press while the panel is shut.
+    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
+    // A chip's removal.
+    await user.click(screen.getByRole("button", { name: "Remove Needs you filter" }));
+    expect(screen.getByRole("button", { name: "Filters · 1" })).toBe(trigger);
+    expect(storage.writes.filter(([key]) => key === PANEL_CHOICE)).toEqual([]);
+
+    // One open, one close, and between them a pick in the Labels list and the Escape that
+    // closes that list alone.
+    await user.click(trigger);
+    await pickOption("Labels", "bug");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(storage.writes.filter(([key]) => key === PANEL_CHOICE)).toEqual([
+      [PANEL_CHOICE, "expanded"],
+      [PANEL_CHOICE, "collapsed"],
+    ]);
+  } finally {
+    view.unmount();
+    storage.restore();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
   }
 });
 

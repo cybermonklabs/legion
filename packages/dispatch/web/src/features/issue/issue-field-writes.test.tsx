@@ -18,11 +18,14 @@ import {
   bodies,
   details,
   issue,
+  pickIn,
+  pickRepo,
   repoSuggestions,
+  shownBy,
   signedInHolding,
-  typeRepo,
 } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { panelOf, pickNamed, rows } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, issuePatchRequest } from "../../api/client";
@@ -476,16 +479,18 @@ test("a refused pick shows Dispatch's reason with Retry and puts back the assign
   }
   const view = renderIn(client, <CachedAssignee />);
   const user = userEvent.setup();
-  const select = () =>
-    screen.getByRole("combobox", { name: "Assignee of CORE-1" }) as HTMLSelectElement;
+  const trigger = () => screen.getByRole("button", { name: pickNamed("Assignee of CORE-1") });
   try {
-    await user.hover(select());
-    await waitFor(() => expect(select().options.length).toBe(4));
-    await user.selectOptions(select(), "bob");
+    // The people are read once the reader reaches for the control, and its list, opened, holds
+    // them.
+    await user.hover(trigger());
+    await user.click(trigger());
+    await waitFor(() => expect(rows(panelOf(trigger())).length).toBe(4));
+    await pickIn(user, trigger, "bob");
     await waitFor(() => expect(client.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2));
     // The landing has the issue read again, as Dispatch now holds it.
     await waitFor(() => expect(detailRead).toHaveBeenCalledTimes(1));
-    await user.selectOptions(select(), "carol");
+    await pickIn(user, trigger, "carol");
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent('"carol" has not signed in to Dispatch');
     expect(within(alert).getByRole("button", { name: "Retry" })).toBeTruthy();
@@ -493,7 +498,7 @@ test("a refused pick shows Dispatch's reason with Retry and puts back the assign
     await waitFor(() => expect(detailRead).toHaveBeenCalledTimes(2));
     // Back on the assignee Dispatch stored last, which the landing answered: not the one the
     // issue had before the first pick.
-    expect(select().value).toBe("bob");
+    expect(shownBy(trigger())).toBe("bob");
     expect(client.getQueryData<IssueSummary[]>(listKey)?.[0]?.assignee).toBe("bob");
     const [row] = client.getQueryData<InboxRow[]>(inboxKey) ?? [];
     expect([row?.issue?.assignee, row?.waiting_on_person]).toEqual(["bob", "bob"]);
@@ -502,7 +507,7 @@ test("a refused pick shows Dispatch's reason with Retry and puts back the assign
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(3));
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { assignee: "carol" }, keyedAttempt);
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
-    expect(select().value).toBe("carol");
+    expect(shownBy(trigger())).toBe("carol");
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -2487,9 +2492,9 @@ const mappings: RepoProject[] = ["acme/widgets", "acme/gadgets"].map((repo) => (
 }));
 
 /** A repository picker on CORE-1, whose own repository is `repo` and which resolves to
- *  `resolved`, with the project's mappings read once the reader reaches for it. The picker is a
- *  box: what is typed into it is written as Enter is pressed, and an emptied box is an Inherit
- *  pick: the issue inherits a repository again. */
+ *  `resolved`, with the project's mappings read once the reader reaches for it. The picker is the
+ *  shared list's single pick: its list suggests the mappings after Inherit, a pick of a row writes
+ *  it, and the Inherit row is an Inherit pick: the issue inherits a repository again. */
 function renderRepo(repo: string | null, resolved: string | null) {
   const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(mappings);
   // The issue's read, which the test seeds: the one asked of it is the issue read again.
@@ -2516,19 +2521,18 @@ function renderRepo(repo: string | null, resolved: string | null) {
     );
   }
   const view = renderIn(client, <CachedRepo />);
-  const box = () =>
-    screen.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLInputElement;
-  /** The repositories the box suggests, its datalist's. */
-  const suggestions = () => repoSuggestions(box());
-  /** What the box says it stands for, which names a repository that is not the issue's own. */
-  const described = () =>
-    document.getElementById(box().getAttribute("aria-describedby") ?? "")?.textContent;
+  const trigger = () => screen.getByRole("button", { name: pickNamed("Repository of CORE-1") });
+  /** The repositories the open list suggests, its options after Inherit. */
+  const suggestions = () => repoSuggestions(panelOf(trigger()));
+  /** What the trigger's name reads after its label, which names a repository that is not the
+   *  issue's own. */
+  const described = () => shownBy(trigger());
   return {
-    box,
     client,
     described,
     detailRead,
     suggestions,
+    trigger,
     unmount: () => {
       view.unmount();
       listRepoProjects.mockRestore();
@@ -2543,19 +2547,25 @@ test("a refused repository pick puts back the repository Dispatch last confirmed
       error: "acme/gadgets cannot be the repository of CORE-1",
     })
   );
-  const { box, client, described, detailRead, suggestions, unmount } = renderRepo(
+  const { client, described, detailRead, suggestions, trigger, unmount } = renderRepo(
     null,
     "acme/widgets"
   );
   const user = userEvent.setup();
   try {
-    await user.hover(box());
+    await user.hover(trigger());
+    await user.click(trigger());
     await waitFor(() => expect(suggestions()).toEqual(["acme/gadgets", "acme/widgets"]));
-    await typeRepo(user, box, "acme/gadgets");
+    await pickRepo(user, trigger, "acme/gadgets");
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("acme/gadgets cannot be the repository of CORE-1");
     expect(within(alert).getByRole("button", { name: "Retry" })).toBeTruthy();
-    expect(box().value).toBe("");
+    // The issue's own repository is the row its list marks picked: none, so Inherit.
+    await user.click(trigger());
+    expect(within(panelOf(trigger())).getByRole("option", { name: "Inherit" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
     expect(described()).toBe("acme/widgets, inherited or the project's default");
     const [row] = client.getQueryData<IssueSummary[]>(listKey) ?? [];
     expect([row?.repo, row?.resolved_repo]).toEqual([null, "acme/widgets"]);
@@ -2570,13 +2580,14 @@ test("a refused repository pick puts back the repository Dispatch last confirmed
 test("an Inherit pick of the repository shows the repository the issue showed before, not as its own, until the answer names the inherited one", async () => {
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
-  const { box, described, suggestions, unmount } = renderRepo("acme/gadgets", "acme/gadgets");
+  const { described, suggestions, trigger, unmount } = renderRepo("acme/gadgets", "acme/gadgets");
   const user = userEvent.setup();
   try {
     expect(described()).toBe("acme/gadgets");
-    await user.hover(box());
+    await user.hover(trigger());
+    await user.click(trigger());
     await waitFor(() => expect(suggestions()).toEqual(["acme/gadgets", "acme/widgets"]));
-    await typeRepo(user, box, "");
+    await pickRepo(user, trigger, "");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ repo: null }]));
     expect(described()).toBe("acme/gadgets, inherited or the project's default");
 

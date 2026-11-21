@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, which user-event has no form for
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import {
@@ -11,6 +11,7 @@ import {
   recordCommits,
 } from "../../__tests__/commits";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { listOf, openList, pick, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary, RepoProject } from "../../api/types";
@@ -161,11 +162,13 @@ function renderControl(
     { ...summary, repo: own.repo, resolved_repo: own.resolvedRepo },
   ]);
   const user = userEvent.setup();
-  // What the box holds, the repository its placeholder names, and its description.
+  // What the trigger's tooltip names - the issue's own repository, where it holds one - the
+  // repository its badge names, and the words that read the badge.
   const commits = recordCommits<string | null>(() => {
-    const drawn = box();
-    const description = document.getElementById(drawn.getAttribute("aria-describedby") ?? "");
-    return `${drawn.value} | ${drawn.placeholder} | ${description?.textContent}`;
+    const drawn = trigger();
+    const title = drawn.querySelector(".truncate")?.getAttribute("title");
+    const spoken = drawn.querySelector(".sr-only")?.textContent;
+    return `${title} | ${drawn.querySelector(badge)?.textContent} | ${spoken}`;
   });
   const view = render(
     <QueryClientProvider client={queryClient}>
@@ -184,27 +187,41 @@ function renderControl(
   };
 }
 
-function box(): HTMLInputElement {
-  return screen.getByLabelText("Repository of CORE-1") as HTMLInputElement;
+/** The control's label: what its trigger's name starts with, before the words that read the
+ *  badge, and its listbox's name with ` options` after it. */
+const REPOSITORY = "Repository of CORE-1";
+
+function trigger(): HTMLButtonElement {
+  return screen.getByRole("button", { name: pickNamed(REPOSITORY) }) as HTMLButtonElement;
 }
 
-/** What the box suggests: its `<datalist>`, which no role query reaches. */
-function suggestions(): string[] {
-  const list = document.getElementById(box().getAttribute("list") ?? "");
-  return Array.from(list?.querySelectorAll("option") ?? []).map((option) => option.value);
+/** The visible badge; the trigger's name repeats its text from a span of its own. */
+const badge = 'span[aria-hidden="true"]';
+
+/** What the list says under its options about a typed value that is not `owner/name`. */
+const NOT_OWNER_NAME = "Write the repository as owner/name.";
+
+/** The open list's text box. */
+function searchBox(): HTMLInputElement {
+  return screen.getByRole("combobox", { name: "Search repositories" }) as HTMLInputElement;
 }
 
-/** Puts `repo` in the box and leaves it, which is what writes it; `""` empties the box. */
-async function write(user: UserEvent, repo: string): Promise<void> {
-  await user.clear(box());
-  if (repo !== "") {
-    await user.click(box());
-    await user.paste(repo);
-  }
-  await user.tab();
+/** Types `repo` into the open list's text box, in place of what it held, and chooses the row
+ *  that takes the typed text as the repository. */
+async function chooseTyped(user: UserEvent, repo: string): Promise<void> {
+  await user.clear(searchBox());
+  await user.click(searchBox());
+  await user.paste(repo);
+  await user.click(screen.getByRole("option", { name: `Use "${repo}"` }));
 }
 
-test("RepoControl suggests the project's mapped repositories, shows the resolved one, and patches repo", async () => {
+/** Opens the list and gives it `repo` as typed text, through the row that takes it. */
+async function giveTyped(user: UserEvent, repo: string): Promise<void> {
+  await openList(user, REPOSITORY);
+  await chooseTyped(user, repo);
+}
+
+test("RepoControl lists the project's mapped repositories, shows the resolved one, and patches repo", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
     repo: "acme/gadgets",
@@ -216,24 +233,25 @@ test("RepoControl suggests the project's mapped repositories, shows the resolved
     resolvedRepo: "acme/widgets",
   });
   try {
-    // The box holds the issue's own repository, which it has none of, so the one it resolves to
-    // is its placeholder; no mapping is read until the reader reaches for the control.
-    expect(box().value).toBe("");
-    expect(box().placeholder).toBe("acme/widgets");
+    // The badge names the repository the issue resolves to; no mapping is read until the reader
+    // reaches for the control.
+    expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
     expect(listRepoProjects).not.toHaveBeenCalled();
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(box());
+    fireEvent.focus(trigger());
     await waitFor(() => expect(listRepoProjects).toHaveBeenCalled());
-    // CORE's mappings sorted; OTHER's absent.
-    await waitFor(() => expect(suggestions()).toEqual(["acme/gadgets", "acme/widgets"]));
-    await write(user, "acme/gadgets");
+    // Inherit first, then CORE's mappings sorted; OTHER's absent.
+    const list = await openList(user, REPOSITORY);
+    await waitFor(() => expect(rows(list)).toEqual(["✓Inherit", "acme/gadgets", "acme/widgets"]));
+    await user.click(within(list).getByRole("option", { name: "acme/gadgets" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
     );
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
     );
-    expect(box().value).toBe("acme/gadgets");
+    expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/gadgets`);
+    expect(screen.getByText("acme/gadgets", { selector: badge })).toBeTruthy();
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.repo).toBe("acme/gadgets");
   } finally {
     unmount();
@@ -241,34 +259,50 @@ test("RepoControl suggests the project's mapped repositories, shows the resolved
   }
 });
 
-// Any `owner/name` is a repository the server takes, so the box is not held to the project's
-// mappings: what the reader types is what is written.
+// Any `owner/name` is a repository the server takes, so the list is not held to the project's
+// mappings: one another project maps, or one no project maps, is typed and given by the row that
+// takes it, and what the reader typed is what is written.
 test("RepoControl writes an owner/name the project does not map", async () => {
-  const patchIssue = answerIssuePatches().mockResolvedValue({
-    ...issue,
-    repo: "zed/unmapped",
-    resolved_repo: "zed/unmapped",
-  });
+  const patchIssue = answerIssuePatches()
+    .mockResolvedValueOnce({ ...issue, repo: "other/thing", resolved_repo: "other/thing" })
+    .mockResolvedValueOnce({ ...issue, repo: "zed/unmapped", resolved_repo: "zed/unmapped" });
   const { queryClient, unmount, user } = renderControl({
     repo: null,
     resolvedRepo: "acme/widgets",
   });
   try {
-    await write(user, "zed/unmapped");
+    // OTHER maps other/thing, so CORE's list offers it only as typed text.
+    const list = await openList(user, REPOSITORY);
+    await waitFor(() => expect(rows(list)).toEqual(["✓Inherit", "acme/gadgets", "acme/widgets"]));
+    await chooseTyped(user, "other/thing");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "other/thing" }, keyedAttempt)
+    );
+    await waitFor(() => expect(trigger()).toHaveAccessibleName(`${REPOSITORY} other/thing`));
+    await giveTyped(user, "zed/unmapped");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/unmapped" }, keyedAttempt)
     );
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.repo).toBe("zed/unmapped")
     );
-    expect(box().value).toBe("zed/unmapped");
+    expect(screen.getByText("zed/unmapped", { selector: badge })).toBeTruthy();
+    // The issue's own repository is in its list, though no project maps it.
+    expect(rows(await openList(user, REPOSITORY))).toEqual([
+      "Inherit",
+      "✓zed/unmapped",
+      "acme/gadgets",
+      "acme/widgets",
+    ]);
   } finally {
     unmount();
     patchIssue.mockRestore();
   }
 });
 
-test("RepoControl sends null for the clear control", async () => {
+// Inherit clears the issue's own repository, and the issue inherits again: the badge and the
+// trigger's name say what it resolves to now.
+test("RepoControl sends null for Inherit", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
     repo: null,
@@ -276,37 +310,15 @@ test("RepoControl sends null for the clear control", async () => {
   });
   const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
   try {
-    // The issue's own repository is in the box before the mapping list has loaded.
-    expect(box().value).toBe("acme/gadgets");
-    await user.click(screen.getByRole("button", { name: "Clear the repository of CORE-1" }));
+    // The issue's own repository is selectable before the mapping list has loaded.
+    expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/gadgets`);
+    await pick(user, REPOSITORY, "Inherit");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
     );
-    // Cleared, the issue inherits again: the box is empty, its placeholder names what it
-    // resolves to, and there is nothing left to clear.
-    await waitFor(() => expect(box().placeholder).toBe("acme/widgets"));
-    expect(box().value).toBe("");
-    expect(
-      screen.queryByRole("button", { name: "Clear the repository of CORE-1" })
-    ).not.toBeInTheDocument();
-  } finally {
-    unmount();
-    patchIssue.mockRestore();
-  }
-});
-
-// An emptied box is the same clearing: there is no repository in a blank box to write.
-test("RepoControl sends null for an emptied box", async () => {
-  const patchIssue = answerIssuePatches().mockResolvedValue({
-    ...issue,
-    repo: null,
-    resolved_repo: "acme/widgets",
-  });
-  const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
-  try {
-    await write(user, "");
-    await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
+    await waitFor(() => expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy());
+    expect(trigger()).toHaveAccessibleName(
+      `${REPOSITORY} acme/widgets, inherited or the project's default`
     );
   } finally {
     unmount();
@@ -314,9 +326,9 @@ test("RepoControl sends null for an emptied box", async () => {
   }
 });
 
-// The box writes what was typed when it is left, so a press on the clear control must not take
-// focus from it: the press would write the typed repository, which the reader is throwing away,
-// and the click after it would write the clear. One action is one write.
+// A typed text is written only by its row or Enter, and an emptied box offers nothing to write,
+// so a reader who types a repository, empties the box and picks Inherit sends the clear alone:
+// one action is one write.
 test("RepoControl sends the clear alone when a repository was typed first", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
@@ -325,17 +337,17 @@ test("RepoControl sends the clear alone when a repository was typed first", asyn
   });
   const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
   try {
-    await user.clear(box());
-    await user.click(box());
+    const list = await openList(user, REPOSITORY);
+    await user.click(searchBox());
     await user.paste("zed/other");
-    expect(box().value).toBe("zed/other");
-    await user.click(screen.getByRole("button", { name: "Clear the repository of CORE-1" }));
+    expect(within(list).getByRole("option", { name: 'Use "zed/other"' })).toBeTruthy();
+    await user.clear(searchBox());
+    expect(within(list).queryByRole("option", { name: /^Use / })).not.toBeInTheDocument();
+    await user.click(within(list).getByRole("option", { name: "Inherit" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
     );
-    // Cleared, the box is empty and inherits, with what was typed gone from it.
-    await waitFor(() => expect(box().placeholder).toBe("acme/widgets"));
-    expect(box().value).toBe("");
+    await waitFor(() => expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy());
     expect(patchIssue.mock.calls.map(([, patch]) => patch)).toEqual([{ repo: null }]);
   } finally {
     unmount();
@@ -343,77 +355,49 @@ test("RepoControl sends the clear alone when a repository was typed first", asyn
   }
 });
 
-// A browser compiles the box's `pattern` as `^(?:…)$` with the `v` flag, and under that flag a
-// bare hyphen in a character class is a syntax error, which makes the browser ignore the
-// attribute and log the error. So the attribute is compiled here as a browser compiles it, and
-// held to the names the box's own check takes and refuses.
-test("RepoControl's pattern compiles as a browser compiles it", () => {
-  const { unmount } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
-  try {
-    const compiled = new RegExp(`^(?:${box().getAttribute("pattern") ?? ""})$`, "v");
-    // Names GitHub holds, which the pattern must take, and names it could hold no repository at,
-    // which the pattern must refuse: each list keeps the names the pattern got wrong.
-    const held = [
-      "acme/widgets",
-      "Sjawhar/.knives-ledger",
-      "mona-cat_octo/hello--world",
-      "artofcode-/x",
-    ];
-    const notHeld = [
-      "acme gadgets",
-      "x/..",
-      "x/.",
-      "-bad/x",
-      "own%er/x",
-      `owner/${"a".repeat(101)}`,
-    ];
-    expect(held.filter((name) => !compiled.test(name))).toEqual([]);
-    expect(notHeld.filter((name) => compiled.test(name))).toEqual([]);
-  } finally {
-    unmount();
-  }
-});
-
-// A typo belongs at the box, not in a 400 a round trip later: the control reads `owner/name`
-// itself, writes nothing, and keeps what was typed for the reader to correct.
+// A typo belongs in the list, not in a 400 a round trip later: the control reads `owner/name`
+// itself, writes nothing, and keeps the list open with what was typed for the reader to correct.
 test("RepoControl refuses a value that is not owner/name without writing it", async () => {
   const patchIssue = answerIssuePatches();
   const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
   try {
-    await write(user, "acme gadgets");
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Write the repository as owner/name."
-    );
+    const list = await openList(user, REPOSITORY);
+    const panel = list.parentElement as HTMLElement;
+    await chooseTyped(user, "acme gadgets");
+    expect(within(panel).getByText(NOT_OWNER_NAME)).toBeTruthy();
     expect(patchIssue).not.toHaveBeenCalled();
-    expect(box().value).toBe("acme gadgets");
-    expect(box()).toHaveAttribute("aria-invalid", "true");
-    // Corrected, it takes the refusal off and writes.
-    patchIssue.mockResolvedValue({ ...issue, repo: "acme/gadgets", resolved_repo: "acme/gadgets" });
-    await write(user, "acme/gadgets");
+    expect(searchBox().value).toBe("acme gadgets");
+    expect(searchBox()).toHaveFocus();
+    // Changing the text takes the refusal off; corrected, it writes.
+    await user.clear(searchBox());
+    expect(within(panel).queryByText(NOT_OWNER_NAME)).not.toBeInTheDocument();
+    patchIssue.mockResolvedValue({ ...issue, repo: "zed/gadgets", resolved_repo: "zed/gadgets" });
+    await chooseTyped(user, "zed/gadgets");
     await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/gadgets" }, keyedAttempt)
     );
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("listbox", { name: `${REPOSITORY} options` })).toBeNull();
+    expect(screen.queryByText(NOT_OWNER_NAME)).not.toBeInTheDocument();
   } finally {
     unmount();
     patchIssue.mockRestore();
   }
 });
 
-// The box holds what is typed to GitHub's own grammar, which is what the server holds it to:
-// a name GitHub could hold no repository at reaches the box's refusal rather than a round trip,
-// and a name GitHub does hold is written whatever its case, its leading dot or its `.git`.
+// The list holds what is typed to GitHub's own grammar, which is what the server holds it to:
+// a name GitHub could hold no repository at reaches the list's refusal rather than a round trip,
+// and a name GitHub does hold is written as typed, whatever its case, its leading dot or its
+// `.git`.
 test("RepoControl refuses a name GitHub could hold no repository at", async () => {
   const patchIssue = answerIssuePatches();
   const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
   try {
+    const list = await openList(user, REPOSITORY);
+    const panel = list.parentElement as HTMLElement;
     for (const typed of ["x/..", "x/.", "-bad/x", "own%er/x", `owner/${"a".repeat(101)}`]) {
-      await write(user, typed);
-      expect(await screen.findByRole("alert")).toHaveTextContent(
-        "Write the repository as owner/name."
-      );
-      expect(box().value).toBe(typed);
-      expect(box()).toHaveAttribute("aria-invalid", "true");
+      await chooseTyped(user, typed);
+      expect(within(panel).getByText(NOT_OWNER_NAME)).toBeTruthy();
+      expect(searchBox().value).toBe(typed);
     }
     expect(patchIssue).not.toHaveBeenCalled();
     patchIssue.mockResolvedValue({
@@ -421,7 +405,7 @@ test("RepoControl refuses a name GitHub could hold no repository at", async () =
       repo: "sjawhar/.knives-ledger",
       resolved_repo: "sjawhar/.knives-ledger",
     });
-    await write(user, "Sjawhar/.knives-ledger.git");
+    await chooseTyped(user, "Sjawhar/.knives-ledger.git");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith(
         "CORE-1",
@@ -429,40 +413,42 @@ test("RepoControl refuses a name GitHub could hold no repository at", async () =
         keyedAttempt
       )
     );
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(NOT_OWNER_NAME)).not.toBeInTheDocument();
     // An owner GitHub serves that its sign-up form would refuse a new account - a doubled
     // hyphen, a hyphen at the end, a managed user's `_<shortcode>` - names a repository the
-    // server takes, so the box takes it too.
-    patchIssue.mockResolvedValue({
-      ...issue,
-      repo: "mona-cat_octo/hello--world",
-      resolved_repo: "mona-cat_octo/hello--world",
-    });
-    await write(user, "mona-cat_octo/hello--world");
-    await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith(
-        "CORE-1",
-        { repo: "mona-cat_octo/hello--world" },
-        keyedAttempt
-      )
-    );
+    // server takes, so the list takes it too.
+    for (const typed of ["mona-cat_octo/hello--world", "artofcode-/x"]) {
+      patchIssue.mockResolvedValue({ ...issue, repo: typed, resolved_repo: typed });
+      await giveTyped(user, typed);
+      await waitFor(() =>
+        expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: typed }, keyedAttempt)
+      );
+    }
   } finally {
     unmount();
     patchIssue.mockRestore();
   }
 });
 
-test("RepoControl restores the issue's repository on Escape", async () => {
+// Leaving a list picks nothing, in this list as in every other: a typed repository is given by
+// its row or Enter, so Escape or Tab with one typed writes nothing and keeps what the issue holds.
+test("RepoControl writes nothing when the list is left by Escape or Tab with a repository typed", async () => {
   const patchIssue = answerIssuePatches();
   const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
   try {
-    await user.click(box());
-    await user.paste("-typo");
-    expect(box().value).toBe("acme/gadgets-typo");
-    await user.keyboard("{Escape}");
-    expect(box().value).toBe("acme/gadgets");
-    // Escape restored it, so leaving the box writes nothing.
-    await user.tab();
+    for (const leave of [() => user.keyboard("{Escape}"), () => user.tab()]) {
+      await openList(user, REPOSITORY);
+      await user.click(searchBox());
+      await user.paste("acme/gadgets-typo");
+      await leave();
+      expect(screen.queryByRole("listbox", { name: `${REPOSITORY} options` })).toBeNull();
+      expect(trigger()).toHaveFocus();
+      expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/gadgets`);
+    }
+    // Opened again, the box starts empty: what was typed went with the list that held it.
+    await openList(user, REPOSITORY);
+    expect(searchBox().value).toBe("");
+    await act(async () => {});
     expect(patchIssue).not.toHaveBeenCalled();
   } finally {
     unmount();
@@ -470,11 +456,29 @@ test("RepoControl restores the issue's repository on Escape", async () => {
   }
 });
 
-// The placeholder is for sighted readers; the box's description says the same in words, so a
-// screen reader hears the target and whether it is the issue's own.
-test("RepoControl describes the repository the issue resolves to", async () => {
-  const description = () =>
-    document.getElementById(box().getAttribute("aria-describedby") ?? "")?.textContent ?? null;
+// A typed text the issue already holds names an option, so the list offers no row to use it,
+// and Enter takes that option, which writes nothing.
+test("RepoControl writes nothing for a typed repository the issue already holds", async () => {
+  const patchIssue = answerIssuePatches();
+  const { unmount, user } = renderControl({ repo: "zed/own", resolvedRepo: "zed/own" });
+  try {
+    const list = await openList(user, REPOSITORY);
+    await user.click(searchBox());
+    await user.paste("zed/own");
+    expect(rows(list)).toEqual(["✓zed/own"]);
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox", { name: `${REPOSITORY} options` })).toBeNull();
+    await act(async () => {});
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// The badge is decoration for sighted readers (aria-hidden); the trigger's name goes on to the
+// repository the issue resolves to, so a screen reader hears the target as well as Inherit.
+test("RepoControl's name goes on to the repository the issue resolves to", async () => {
   for (const [own, want] of [
     [
       { repo: null, resolvedRepo: "acme/widgets" },
@@ -485,30 +489,31 @@ test("RepoControl describes the repository the issue resolves to", async () => {
   ] as const) {
     const { unmount } = renderControl({ ...own });
     try {
-      await screen.findByLabelText("Repository of CORE-1");
-      expect(description()).toBe(want);
+      expect(
+        await screen.findByRole("button", { name: pickNamed("Repository of CORE-1") })
+      ).toHaveAccessibleName(`Repository of CORE-1 ${want}`);
     } finally {
       unmount();
     }
   }
 });
 
-// With nothing resolved there is no repository for the placeholder, so it says what the box
-// takes, and the description says there is none.
+// With nothing resolved the badge says there is no repository, and the mappings are read at once:
+// the issue with no repository is the one most likely to be given one.
 test("RepoControl says No repository when nothing resolves in a project that maps one", async () => {
   const { listRepoProjects, unmount } = renderControl({ repo: null, resolvedRepo: null });
   try {
-    expect(await screen.findByText("Repository:")).toBeTruthy();
-    expect(box().placeholder).toBe("owner/name");
-    expect(box()).toHaveAccessibleDescription("No repository");
-    expect(listRepoProjects).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("No repository", { selector: badge })).toBeTruthy();
+    expect(screen.getByText("Repository:")).toBeTruthy();
+    expect(trigger()).toHaveAccessibleName(`${REPOSITORY} No repository`);
+    await waitFor(() => expect(listRepoProjects).toHaveBeenCalledTimes(1));
   } finally {
     unmount();
   }
 });
 
 // A project that maps no repository has nothing to suggest, and its issues take a repository all
-// the same, so the rail carries the item with an empty suggestion list.
+// the same, so the rail carries the item, and its list offers Inherit and a typed repository.
 test("RepoControl shows the item for an issue whose project maps no repository", async () => {
   const others = mappings.filter((mapping) => mapping.project !== "CORE");
   const patchIssue = answerIssuePatches().mockResolvedValue({
@@ -518,15 +523,16 @@ test("RepoControl shows the item for an issue whose project maps no repository",
   });
   const { queryClient, unmount, user } = renderControl({ repo: null, resolvedRepo: null }, others);
   try {
-    // The mappings are read at once; once they are in and React has rendered them, the control
-    // has decided.
+    // The mappings are read at once; once they are in and React has rendered them, the list
+    // holds what they map.
     await waitFor(() =>
       expect(queryClient.getQueryData<RepoProject[]>(["repo-projects"])).toEqual(others)
     );
     await act(async () => {});
     expect(screen.getByText("Repository:")).toBeTruthy();
-    expect(suggestions()).toEqual([]);
-    await write(user, "zed/unmapped");
+    expect(screen.getByText("No repository", { selector: badge })).toBeTruthy();
+    expect(rows(await openList(user, REPOSITORY))).toEqual(["✓Inherit"]);
+    await chooseTyped(user, "zed/unmapped");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/unmapped" }, keyedAttempt)
     );
@@ -536,8 +542,8 @@ test("RepoControl shows the item for an issue whose project maps no repository",
   }
 });
 
-// A failed mappings read costs the reader the suggestions and nothing else: the box still takes
-// a repository, and the read is offered again.
+// A failed mappings read costs the reader the suggestions and nothing else: the item shows, with
+// the failure and a Retry beside its trigger, and the read is offered again.
 test("RepoControl shows a failed mappings read with a retry instead of hiding the item", async () => {
   const { listRepoProjects, unmount, user } = renderControl(
     { repo: null, resolvedRepo: null },
@@ -547,59 +553,230 @@ test("RepoControl shows a failed mappings read with a retry instead of hiding th
   try {
     expect(await screen.findByText("Could not load the repositories mapped to CORE.")).toBeTruthy();
     expect(screen.getByText("Repository:")).toBeTruthy();
+    expect(screen.getByText("No repository", { selector: badge })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(listRepoProjects).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(suggestions()).toEqual(["acme/gadgets", "acme/widgets"]));
-    expect(
-      screen.queryByText("Could not load the repositories mapped to CORE.")
-    ).not.toBeInTheDocument();
-    expect(box().placeholder).toBe("owner/name");
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Could not load the repositories mapped to CORE.")
+      ).not.toBeInTheDocument()
+    );
+    expect(rows(await openList(user, REPOSITORY))).toHaveLength(3);
+    expect(screen.getByText("No repository", { selector: badge })).toBeTruthy();
   } finally {
     unmount();
   }
 });
 
-// With a repository resolved the box still names it, and a failed read says so beside it.
+// With a repository resolved the picker still shows it, and a failed read says so beside it.
 test("RepoControl shows a failed mappings read beside a resolved repository", async () => {
   const { unmount } = renderControl({ repo: null, resolvedRepo: "acme/widgets" }, mappings, {
     failFirstRead: true,
   });
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(box());
+    fireEvent.focus(trigger());
     expect(await screen.findByText("Could not load the repositories mapped to CORE.")).toBeTruthy();
-    expect(box().placeholder).toBe("acme/widgets");
+    expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   } finally {
     unmount();
   }
 });
 
-// What the box lets through, the server decides on: its refusal shows beside the box, and the
-// optimistic write is rolled back.
+// What the list lets through, the server decides on: its refusal shows beside the trigger, and
+// the optimistic write is rolled back.
 test("RepoControl rolls back and shows the server's refusal", async () => {
   const patchIssue = answerIssuePatches().mockRejectedValue(
     new ApiError(400, {
       code: "INVALID_ISSUE",
-      error: 'repo must be "owner/name" (got "acme/gadgets.git/extra")',
+      error: 'repo must be "owner/name" (got "zed/gadgets.git/extra")',
     })
   );
   const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
   try {
-    await write(user, "acme/gadgets");
+    await giveTyped(user, "zed/gadgets");
     expect(
-      await screen.findByText('repo must be "owner/name" (got "acme/gadgets.git/extra")')
+      await screen.findByText('repo must be "owner/name" (got "zed/gadgets.git/extra")')
     ).toBeTruthy();
-    expect(box().value).toBe("");
-    expect(box().placeholder).toBe("acme/widgets");
+    expect(trigger()).toHaveAccessibleName(
+      `${REPOSITORY} acme/widgets, inherited or the project's default`
+    );
+    expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
   } finally {
     unmount();
     patchIssue.mockRestore();
   }
 });
 
-// Enter writes what the box holds, and from that press on the control draws it in every commit,
-// with the repository the issue then resolves to: the box, its placeholder and its description.
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The issue header's Repository is such a list: its options are the repositories
+// mapped to the issue's project, which grow with the project. Opened, it holds a text box of its
+// own, a word typed into it leaves only the repositories that match, and a pick writes the
+// issue's own repository and puts the focus back on the control. Opened again it stands on the
+// value it holds, and Enter there writes nothing.
+test("the issue header's Repository list holds a text box that narrows the repositories, and a pick writes the issue's own", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: "acme/gadgets",
+    resolved_repo: "acme/gadgets",
+  });
+  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
+  try {
+    const before = new Set(textBoxes());
+    await user.click(screen.getByRole("button", { name: pickNamed("Repository of CORE-1") }));
+    // The mappings are read once the reader reaches for the control.
+    await waitFor(() =>
+      expect(screen.queryAllByRole("option", { name: "acme/gadgets" }).length).toBeGreaterThan(0)
+    );
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(own, "the Repository list holds no text box of its own").toHaveLength(1);
+    const list = listOf(own[0] as HTMLElement);
+    expect(within(list).getByRole("option", { name: "Inherit" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await user.type(own[0] as HTMLElement, "gadg");
+    await waitFor(() =>
+      expect(
+        within(list).queryAllByRole("option", { name: "acme/widgets" }),
+        `"gadg" leaves acme/widgets in the Repository list`
+      ).toHaveLength(0)
+    );
+    expect(
+      within(list).queryAllByRole("option", { name: "Inherit" }),
+      `"gadg" leaves Inherit in the Repository list`
+    ).toHaveLength(0);
+    await user.click(within(list).getByRole("option", { name: "acme/gadgets" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
+    );
+    expect(screen.queryByRole("listbox", { name: "Repository of CORE-1 options" })).toBeNull();
+    expect(trigger()).toHaveFocus();
+    await waitFor(() => expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/gadgets`));
+
+    await user.keyboard("{Enter}");
+    await screen.findByRole("listbox", { name: "Repository of CORE-1 options" });
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox", { name: "Repository of CORE-1 options" })).toBeNull();
+    await act(async () => {});
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// Until the mappings answer, the list says they are loading where a typed word matches no
+// option, and it takes the typed repository all the same.
+test("the issue header's Repository list says the repositories are loading where a typed word matches none", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: "zed/unmapped",
+    resolved_repo: "zed/unmapped",
+  });
+  const { listRepoProjects, unmount, user } = renderControl({
+    repo: null,
+    resolvedRepo: "acme/widgets",
+  });
+  listRepoProjects.mockReturnValue(new Promise(() => {}));
+  try {
+    const list = await openList(user, REPOSITORY);
+    await user.click(searchBox());
+    await user.paste("zed/unmapped");
+    expect(within(list).getByText("Loading repositories…")).toBeTruthy();
+    await user.click(within(list).getByRole("option", { name: 'Use "zed/unmapped"' }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/unmapped" }, keyedAttempt)
+    );
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// INFRA-3135, round 12: a list whose read failed says so. Beside a resolved repository the rail
+// shows the failure with a Retry, and the list the reader opens says it too, over the Inherit it
+// still offers. It still takes a typed repository, and the refusal of a typed text stands in the
+// failure's place until the text changes.
+test("the issue header's Repository list says the repositories could not be loaded when their read fails", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: "zed/unmapped",
+    resolved_repo: "zed/unmapped",
+  });
+  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" }, mappings, {
+    failFirstRead: true,
+  });
+  try {
+    const failure = "Could not load the repositories mapped to CORE.";
+    const list = await openList(user, REPOSITORY);
+    const panel = list.parentElement as HTMLElement;
+    expect(await within(panel).findByText(failure)).toBeTruthy();
+    expect(rows(list)).toEqual(["✓Inherit"]);
+    await chooseTyped(user, "zed unmapped");
+    expect(within(panel).getByText(NOT_OWNER_NAME)).toBeTruthy();
+    expect(within(panel).queryByText(failure)).not.toBeInTheDocument();
+    await user.clear(searchBox());
+    expect(within(panel).getByText(failure)).toBeTruthy();
+    await chooseTyped(user, "zed/unmapped");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/unmapped" }, keyedAttempt)
+    );
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// INFRA-3135, round 13, the architect's ruling of 2026-11-18T10:54Z: a trigger that replaces a
+// visible control shows the shared chevron, the sign a sighted reader reads that it opens a list.
+// At the merge base (main's #3730) the Repository is a visible text box, so its trigger ends in
+// the chevron every other single pick draws (`ChevronIcon`, `components/DisclosureToggle.tsx`),
+// whether the issue holds a repository of its own or inherits one.
+test("the issue header's Repository trigger ends in the shared chevron, as every list replacing a visible control does", async () => {
+  for (const own of [
+    { repo: "acme/gadgets", resolvedRepo: "acme/gadgets" },
+    { repo: null, resolvedRepo: "acme/widgets" },
+  ]) {
+    const { unmount } = renderControl(own);
+    try {
+      const chevron = trigger().querySelector("svg");
+      expect(chevron, `${own.repo ?? "inherited"}: the trigger draws no chevron`).not.toBeNull();
+      expect(chevron?.querySelector("path")?.getAttribute("d")).toBe("M4 6l4 4 4-4");
+      expect(chevron).toHaveAttribute("aria-hidden", "true");
+    } finally {
+      unmount();
+    }
+  }
+});
+
+// The badge's tooltip says what the badge means rather than the picked row's text, which is
+// Inherit for every issue with no repository of its own: an inherited repository is inherited or
+// the project's default, an issue's own repository is itself, and "No repository" says all there
+// is, so it shows none.
+test("the issue header's Repository badge's tooltip says what the badge means, never the Inherit row's text", async () => {
+  for (const [own, want] of [
+    [{ repo: null, resolvedRepo: "acme/widgets" }, "Inherited or the project's default"],
+    [{ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" }, "acme/gadgets"],
+    [{ repo: null, resolvedRepo: null }, ""],
+  ] as const) {
+    const { unmount } = renderControl({ ...own });
+    try {
+      const shown = await screen.findByRole("button", { name: pickNamed(REPOSITORY) });
+      expect(
+        shown.querySelector(".truncate"),
+        `${own.repo ?? (own.resolvedRepo === null ? "no repository" : "inherited")}: the trigger's text`
+      ).toHaveAttribute("title", want);
+    } finally {
+      unmount();
+    }
+  }
+});
+
+// Enter picks the repository typed into the list's text box, and from that press on the control
+// draws it in every commit, with the repository the issue then resolves to: the trigger's
+// tooltip, its badge and the words that read the badge.
 // The pick reaches the issue's cache in a microtask of the press, and the control's host only
 // when TanStack Query tells the cache's observers, in a browser a timer later, which the row
 // holds back: a commit before that timer that drew the repository the pick replaces is a frame
@@ -613,9 +790,10 @@ test("RepoControl draws the pick, and the repository it resolves to, in every co
   });
   let notifications: HeldNotifications | undefined;
   try {
-    await user.click(box());
+    await openList(user, REPOSITORY);
+    await user.click(searchBox());
     await user.paste("acme/gadgets");
-    const fromPress = commits.markAt(box(), "keydown");
+    const fromPress = commits.markAt(searchBox(), "keydown");
     notifications = holdNotifications();
     await user.keyboard("{Enter}");
     await waitFor(() =>
@@ -643,11 +821,12 @@ test("RepoControl draws the pick, and the repository it resolves to, in every co
   }
 });
 
-// A pick can land before TanStack Query has told the box's host of it: a background tab holds
+// A pick can land before TanStack Query has told the control's host of it: a background tab holds
 // that timer back while a request's answer still lands. Dispatch drops a `.git` suffix before it
 // stores a repository (canonicalRepo), so a pick of `acme/widgets.git` on an issue that holds
-// `acme/widgets` lands as the repository the host passed at the press, and passes still. The box
-// draws what Dispatch stored once the host is told, and keeps no pick Dispatch did not store.
+// `acme/widgets` lands as the repository the host passed at the press, and passes still. The
+// control draws what Dispatch stored once the host is told, and keeps no pick Dispatch did not
+// store.
 test("RepoControl draws what Dispatch stored once its host is told, when the pick landed first as the repository its host passed at the press", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
@@ -661,8 +840,9 @@ test("RepoControl draws what Dispatch stored once its host is told, when the pic
   });
   let notifications: HeldNotifications | undefined;
   try {
-    await user.clear(box());
-    await user.click(box());
+    await openList(user, REPOSITORY);
+    await user.clear(searchBox());
+    await user.click(searchBox());
     await user.paste("acme/widgets.git");
     notifications = holdNotifications();
     await user.keyboard("{Enter}");
@@ -673,7 +853,7 @@ test("RepoControl draws what Dispatch stored once its host is told, when the pic
     // The pick landed, and its host has been told of nothing.
     expect(notifications.held()).toBeGreaterThan(0);
     notifications.tell();
-    expect(box().value).toBe("acme/widgets");
+    expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/widgets`);
   } finally {
     notifications?.tell();
     unmount();

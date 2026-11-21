@@ -1224,6 +1224,20 @@ export const scrollFadeTrailing =
   "[mask-image:linear-gradient(to_right,#000_calc(100%-32px),#0000)]";
 
 /**
+ * The 48 px fades at the ends of a control row's chips strip (`components/ControlRow.tsx`), one at
+ * each end that has a chip out of view beyond it: `leading` while the strip is scrolled away from
+ * its start, `trailing` while there is more to the right, `both` while both are true. The row's
+ * round scroll button laid over that end then sits over faded chips rather than over the opaque
+ * end of one. 48 px is the width the strip's scroll padding keeps clear, so a chip brought into
+ * view is never under a fade. Masks, not colours, like `scrollFadeTrailing`.
+ */
+export const chipStripFade: Record<"both" | "leading" | "trailing", string> = {
+  both: "[mask-image:linear-gradient(to_right,#0000,#000_48px,#000_calc(100%-48px),#0000)]",
+  leading: "[mask-image:linear-gradient(to_right,#0000,#000_48px)]",
+  trailing: "[mask-image:linear-gradient(to_right,#000_calc(100%-48px),#0000)]",
+};
+
+/**
  * The width of `scrollFadeTrailing`, for code that keeps an item clear of the fade. Tailwind needs
  * the class as literal text, so the class spells the same number; `classes.test.ts` holds the two
  * equal.

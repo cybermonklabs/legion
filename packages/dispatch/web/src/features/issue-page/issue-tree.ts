@@ -102,7 +102,7 @@ export interface NodeChip {
    *  with no text of its own (`name` empty, or `gone`) is told apart from one whose answer is
    *  still out by this and by nothing else, and the two are drawn differently: the first is
    *  named by its address's short form, the second by the address itself (`NodeRow.tsx`'s
-   *  `Chip`). */
+   *  `NodeReference`). */
   readonly answered: boolean;
   /** Whether nothing answers to this reference now. */
   readonly gone: boolean;

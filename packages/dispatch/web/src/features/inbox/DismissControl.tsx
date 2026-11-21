@@ -1,6 +1,7 @@
 import { createContext, type ReactNode, useContext } from "react";
 
 import type { MyReplyRow } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { linkHoverText, linkText } from "../../theme/classes";
 import type { InboxShow } from "../refs/routes";
 import { questionLine } from "./question-line";
@@ -35,7 +36,8 @@ export const RowDismissContext = createContext<RowDismiss | undefined>(undefined
  *
  * On the short row it shows while the pointer is on the row or something in it holds the focus,
  * and always on the row the reading column is showing (`shown`); the column's own head and the
- * card draw it beside their other controls, where there is room for it.
+ * card draw it beside their other controls, where there is room for it. It is held while its
+ * write is out (`heldPress`).
  */
 export function DismissControl({
   shown = false,
@@ -59,8 +61,7 @@ export function DismissControl({
         shown ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
       }`}
       data-inbox-dismiss={named.id}
-      disabled={live}
-      onClick={() => dismiss.dismiss(named)}
+      {...heldPress(live, () => dismiss.dismiss(named))}
       type="button"
     >
       {live ? (restoring ? "Moving…" : "Dismissing…") : label}

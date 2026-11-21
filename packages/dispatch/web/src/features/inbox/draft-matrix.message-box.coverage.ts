@@ -69,7 +69,7 @@ export const coverage: readonly CoverageEntry[] = [
     "MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | early return | if (messages.isError) return …",
     { reason: REASONS[7] }
   ),
-  ...answers("Inbox | ReadingPane | conditional | (paneShown) ? …", { reason: REASONS[9] }),
+  ...answers("InboxBody | ReadingPane | conditional | (paneShown) ? …", { reason: REASONS[9] }),
   ...answers("InboxDrawer | Inbox | early return | if (!open) return …", { reason: REASONS[9] }),
   ...answers('AppShell | InboxPage | route | <Route path="/">', { reason: REASONS[9] }),
   ...answers('AppShell | InboxPage | route | <Route path="/credentials/*">', {
@@ -99,7 +99,7 @@ export const coverage: readonly CoverageEntry[] = [
     "ThreadBody | MessageThreadBody | address prop | thread={row}",
     cells(`${HOST} · the column moves to another row, then back`)
   ),
-  ...answers("Inbox | ThreadCardRow | form | if (paneShown) return …", { reason: REASONS[11] }),
+  ...answers("InboxBody | ThreadCardRow | form | if (paneShown) return …", { reason: REASONS[11] }),
   ...answers("AppShell | InboxDrawer | form | open={inboxDrawerOpen}", { reason: REASONS[11] }),
   ...answers(
     "MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | lifetime | <MentionComposer mutationKey={threadSendKey(thread.thread_id)}>",

@@ -33,7 +33,7 @@ import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
-import type { AskPress } from "./outstanding-answers";
+import type { AskPress } from "./ask-writes";
 import { askArtifactId } from "./owner-reads";
 import { clearReplyDraft, setReplyDraft, useReplyDraft } from "./reply-drafts";
 import { UnsentText } from "./UnsentText";

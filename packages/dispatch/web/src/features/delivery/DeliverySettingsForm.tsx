@@ -4,6 +4,7 @@ import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { api, apiErrorMessage } from "../../api/client";
 import { deliverySettingsQuery } from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
+import { useReadBound } from "../../api/read-bound";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -15,7 +16,8 @@ import {
   settingsSubmitButton,
 } from "../settings/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
+import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
 /** The characters that separate the entries of a list field, as a character class's body: line
  *  breaks, and commas or spaces too, since neither a GitHub login nor an `owner/repo` can hold
@@ -74,6 +76,23 @@ interface Draft {
   excluded_repos: string;
 }
 
+/** The fields as `record` fills them: each list one entry per line, and every field empty where
+ *  no record is stored. */
+function draftOf(record: DeliverySettings | null): Draft {
+  return {
+    deploy_repo: record?.deploy_repo ?? "",
+    deploy_workflow_path: record?.deploy_workflow_path ?? "",
+    excluded_repos: record?.excluded_repos?.join("\n") ?? "",
+    population_authors: record?.population_authors?.join("\n") ?? "",
+    pr_checks_workflow_path: record?.pr_checks_workflow_path ?? "",
+    production_job_names: record?.production_job_names?.join("\n") ?? "",
+    production_apply_step_name: record?.production_apply_step_name ?? "",
+    pr_checks_rollup_job_name: record?.pr_checks_rollup_job_name ?? "",
+    staging_apply_job_name: record?.staging_apply_job_name ?? "",
+    staging_e2e_job_name: record?.staging_e2e_job_name ?? "",
+  };
+}
+
 /** The three optional job names the Pipeline page follows, in the order the form lists them. */
 const PIPELINE_JOB_FIELDS = [
   {
@@ -99,6 +118,10 @@ interface DeliverySettingsFormProps {
    *  record is stored. Left out, the form reads `GET /api/v1/settings/delivery`. */
   readonly initial?: DeliverySettings | null;
 }
+
+/** What the form says when its record's read failed, and before why a read of the record after
+ *  a save has not settled. */
+const DELIVERY_SETTINGS_NOT_LOADED = "Couldn't load the delivery settings.";
 
 /**
  * The delivery timeline's configuration record as a form: the deploy repository, its deploy and
@@ -126,7 +149,7 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
       return (
         <div className="mt-6">
           <QueryError
-            message="Couldn't load the delivery settings."
+            message={DELIVERY_SETTINGS_NOT_LOADED}
             onRetry={() => void settings.refetch()}
             retrying={settings.isFetching}
           />
@@ -135,27 +158,47 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
     }
     record = settings.data;
   }
-  // Keyed by the record's write time, so a save (anyone's) starts the fields over from the record
-  // as the server stored it, and so does a caller handing over another record.
-  return <DeliverySettingsFields key={record?.updated_at ?? "unset"} record={record} />;
+  // A caller that holds the record reads it itself, so its own read is what moves once a save
+  // lands.
+  return <DeliverySettingsFields record={record} replacedByCaller={initial !== undefined} />;
 }
 
-function DeliverySettingsFields({ record }: { record: DeliverySettings | null }): ReactNode {
+/** The form's fields and its Save. Save is disabled, and the fields with it, while the save is
+ *  out and until what it changes is drawn: through the record's own read, which fills these
+ *  fields again from the stored record, or - where the caller holds the record
+ *  (`replacedByCaller`), as the Delivery page's live view does, drawing the timeline in the
+ *  form's place once its snapshot comes - until the caller replaces the form
+ *  (`useHoldUntilDrawn`). The form and its Save stay the same elements through the read, so the
+ *  page's rescue gives the focus back to Save once it is enabled again; a form the caller replaces
+ *  goes while Save is held, so its going is still the press's doing (`causedByReader`). A record
+ *  read that has not settled by the request deadline (`REQUEST_DEADLINE_MS`) lets them go then,
+ *  with the reason under the form (`useReadBound`). A refusal lets them go at once, with its
+ *  reason under the form. */
+function DeliverySettingsFields({
+  record,
+  replacedByCaller,
+}: {
+  record: DeliverySettings | null;
+  replacedByCaller: boolean;
+}): ReactNode {
   const queryClient = useQueryClient();
   const id = useId();
   const submitGuard = useSubmitGuard();
-  const [draft, setDraft] = useState<Draft>(() => ({
-    deploy_repo: record?.deploy_repo ?? "",
-    deploy_workflow_path: record?.deploy_workflow_path ?? "",
-    excluded_repos: record?.excluded_repos?.join("\n") ?? "",
-    population_authors: record?.population_authors?.join("\n") ?? "",
-    pr_checks_workflow_path: record?.pr_checks_workflow_path ?? "",
-    production_job_names: record?.production_job_names?.join("\n") ?? "",
-    production_apply_step_name: record?.production_apply_step_name ?? "",
-    pr_checks_rollup_job_name: record?.pr_checks_rollup_job_name ?? "",
-    staging_apply_job_name: record?.staging_apply_job_name ?? "",
-    staging_e2e_job_name: record?.staging_e2e_job_name ?? "",
-  }));
+  const version = record?.updated_at ?? null;
+  const [draft, setDraft] = useState<Draft>(() => draftOf(record));
+  // A new stored record - this tab's save, another tab's that the read brings, or another record
+  // a caller hands over - fills the fields again. It is set during render (React's pattern for
+  // state derived from props) and not by a key on the form, so the form and the Save the reader
+  // pressed stay the same elements.
+  const [filledFrom, setFilledFrom] = useState(version);
+  if (version !== filledFrom) {
+    setFilledFrom(version);
+    setDraft(draftOf(record));
+  }
+  // The write time of the record the newest press was made over.
+  const [pressedOver, setPressedOver] = useState(version);
+  const [drawing, holdUntilDrawn] = useHoldUntilDrawn(version);
+  const [unsettled, holdThrough] = useReadBound();
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
     method: "PUT",
@@ -164,18 +207,29 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
     label: () => "Delivery settings saved",
     onSettled: () => submitGuard.release(),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey });
+      if (replacedByCaller) holdUntilDrawn();
+      // Pending through the record's own read, which a caller holding the record has none of. A
+      // read that has not settled by the request deadline (`REQUEST_DEADLINE_MS`) - one paused
+      // while the browser is offline - lets Save go then, and the form says why the record is not
+      // read yet (`useReadBound`).
+      const read = queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey });
       // A live view learns of the save from Dispatch, as a delta, or as the snapshot a page that
       // had none (DELIVERY_NOT_CONFIGURED) is answered once a configuration exists.
       void queryClient.invalidateQueries({
         queryKey: ["delivery"],
         predicate: (query) => !isLiveQuery(query),
       });
+      return holdThrough(read);
     },
   });
+  const held = save.isPending || drawing;
+  // A refusal speaks of the fields as the reader had them, so it goes once a new stored record
+  // fills them again.
+  const refused = useRefusalOfSubject(save, () => pressedOver === version);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    submitGuard.guard(() =>
+    submitGuard.guard(() => {
+      setPressedOver(version);
       save.mutate({
         deploy_repo: draft.deploy_repo,
         deploy_workflow_path: draft.deploy_workflow_path.trim(),
@@ -187,14 +241,14 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
         pr_checks_rollup_job_name: textOrNull(draft.pr_checks_rollup_job_name),
         staging_apply_job_name: textOrNull(draft.staging_apply_job_name),
         staging_e2e_job_name: textOrNull(draft.staging_e2e_job_name),
-      })
-    );
+      });
+    });
   };
 
   return (
     <>
       <form className={`mt-6 grid gap-4 rounded-xl border p-4 ${borderDefault}`} onSubmit={submit}>
-        <fieldset className="grid min-w-0 gap-4 sm:grid-cols-2" disabled={save.isPending}>
+        <fieldset className="grid min-w-0 gap-4 sm:grid-cols-2" disabled={held}>
           <label className={settingsFieldLabel} htmlFor={`${id}-deploy-repo`}>
             Deploy repository
             <input
@@ -332,13 +386,13 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
         </fieldset>
         <button
           className={`justify-self-start ${settingsSubmitButton}`}
-          disabled={save.isPending}
+          disabled={held}
           type="submit"
         >
           Save delivery settings
         </button>
       </form>
-      {save.isError ? (
+      {refused ? (
         <div className="mt-4">
           {/* A save the reader stopped may have been made, and the form's button is a press of
               its own: it sends what the fields hold then. */}
@@ -352,7 +406,13 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
             }
           />
         </div>
-      ) : null}
+      ) : unsettled === undefined ? null : (
+        <div className="mt-4">
+          {/* A read of the record that has not settled is said in the words the form says for a
+              read of it that failed. */}
+          <QueryError message={`${DELIVERY_SETTINGS_NOT_LOADED} ${unsettled}.`} />
+        </div>
+      )}
     </>
   );
 }

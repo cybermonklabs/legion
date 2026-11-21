@@ -117,6 +117,36 @@ test("a finger drives the board", async ({ page }) => {
   expect(other.stale).toEqual([...markers]);
 });
 
+// TypeScript says what a comment is, not the start of a line. A spec that quotes a spec in a
+// template literal, as this file's own fixtures do, holds lines that begin `// SLOW(>=2s):` and
+// mark no row; a block comment between a real marker and its call is a comment like a `//` line.
+test("a marker line inside a template literal is the template's text, not a marker", () => {
+  const source = `import { expect, test } from "@playwright/test";
+
+const quoted = \`
+// SLOW(>=2s): a marker this file only quotes.
+test("a quoted row", async () => {});
+\`;
+
+// SLOW(>=2s): a real finger, step by step.
+/* The board is seeded once for the row below. */
+test("a finger drives the board", async ({ page }) => {
+  await page.goto(quoted);
+});
+`;
+  expect(markersIn("board.e2e.ts", source)).toEqual([
+    {
+      file: "board.e2e.ts",
+      kind: "test",
+      line: 8,
+      reason: "a real finger, step by step.",
+      target: 10,
+      targetEnd: 10,
+      title: "a finger drives the board",
+    },
+  ]);
+});
+
 // A5's first half: a row that takes the threshold or more and names no reason fails the check,
 // whichever project ran it.
 test("a slow row with no marker is a failure, and a fast one is not", () => {

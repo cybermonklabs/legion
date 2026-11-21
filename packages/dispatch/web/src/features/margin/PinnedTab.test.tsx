@@ -1,12 +1,15 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { api } from "../../api/client";
 import type { DispatchEvent } from "../../api/types";
 import { PinnedTab } from "./PinnedTab";
+import type { PinnedConversationCard } from "./useMarginItems";
 
 const messageEvent: DispatchEvent = {
   actor: { id: "alice", kind: "user" },
@@ -150,6 +153,77 @@ test("a pinned card's agent byline links to its live conversation", () => {
       "/agents/session-one/live",
       "/agents/session-one/live",
     ]);
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+  }
+});
+
+// A pinned card is an `<article>`, a row of the Pinned tab by its element alone (`row-marker.ts`'s
+// `ROW_SELECTOR`). The reader's own Unpin takes its card off the tab in the render its press makes,
+// as the margin applies an unpin to the page's pins at once (`writePin`): a loss the reader caused.
+// So the app shell's focus rescue, mounted here on the page's main content as the shell mounts it,
+// hands the focus to the same control in the card that moved up into the place - the next card's
+// Unpin - and the reader goes on unpinning. Counted by place alone, it would land on that card's
+// first control, the link its byline draws.
+test("the reader's Unpin hands the focus to the Unpin of the card that moves up into its place", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const author = {
+    id: "session-one",
+    kind: "session" as const,
+    origin: { session_title: "Implementer" },
+  };
+  const pinned: PinnedConversationCard[] = ["first", "second", "third"].map((name) => ({
+    at: "2026-09-10T00:00:00Z",
+    author,
+    body: `The ${name} pinned question`,
+    id: `ask:${name}`,
+    kind: "ask",
+  }));
+  /** The tab on the page's pins, which Unpin takes a card out of. */
+  function Pins(): ReactNode {
+    const [cards, setCards] = useState(pinned);
+    return (
+      <PinnedTab
+        conversations={cards}
+        events={[]}
+        onUnpin={() => {}}
+        onUnpinConversation={(id) =>
+          setCards((current) => current.filter((card) => card.id !== id))
+        }
+        pinnedIds={cards.map((card) => card.id)}
+      />
+    );
+  }
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <RescuedMain>
+          <Pins />
+        </RescuedMain>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const [, second, third] = screen.getAllByRole("button", { name: "Unpin" });
+    if (second === undefined || third === undefined) throw new Error("three Unpins missing");
+    await user.click(second);
+    await waitFor(() => expect(second).not.toBeInTheDocument());
+    await afterRescue();
+
+    expect(screen.getAllByRole("article")).toHaveLength(2);
+    // Named rather than compared as nodes, so a focus elsewhere reports what holds it, not the
+    // whole tree a failed comparison of two elements prints.
+    const focused = document.activeElement;
+    expect([focused?.tagName, focused?.getAttribute("aria-label") ?? focused?.textContent]).toEqual(
+      ["BUTTON", "Unpin"]
+    );
+    expect(focused === third).toBe(true);
   } finally {
     view.unmount();
     listAgents.mockRestore();

@@ -1,5 +1,4 @@
 import { DELIVERY_CAPABILITIES } from "@legion/contracts";
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -21,6 +20,7 @@ import {
   userAgentStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
+import { useReadBound } from "../../api/read-bound";
 import type {
   Agent,
   MessageDeliveryMode,
@@ -28,15 +28,22 @@ import type {
   MessageWithTrees,
   UserAgentStates,
 } from "../../api/types";
+import { ControlRow } from "../../components/ControlRow";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
 import { EmptyState } from "../../components/EmptyState";
+import { filterChips } from "../../components/filter-chips";
+import { useFocusPlace } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
+import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
+import { SearchBox } from "../../components/SearchBox";
+import { useNestedPanels } from "../../components/useNestedPanels";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -66,6 +73,7 @@ import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/Targ
 import { useAgents } from "../conversation/useAgents";
 import { type MeasuredHeights, rowWindow, withMeasuredHeights } from "../delivery/lib/rowWindow";
 import { waitingOnYou } from "../inbox/BlockedOnYou";
+import { buildInboxPath } from "../inbox/inbox-route";
 import {
   AgentName,
   type AgentPart,
@@ -74,7 +82,7 @@ import {
   useAgentText,
 } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildInboxPath, buildIssuePath, buildMachinePath } from "../refs/routes";
+import { buildIssuePath, buildMachinePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { closestMatching, focusOnDocument } from "../shell/roving";
 import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
@@ -88,8 +96,7 @@ import {
   matchesFilters,
   searchWords,
   sessionIssueKeys,
-  useAgentMachines,
-  useAgentSearch,
+  useAgentFilters,
 } from "./agent-search";
 import { type NeedsYouBySession, tallyBySession } from "./ask-tally";
 import { deliveryAttempts } from "./attempts";
@@ -187,6 +194,7 @@ function rowTarget(agent: Agent): AgentPart {
 
 function AgentExchangeReply({
   agent,
+  holdThroughRead,
   liveAgents,
   onReply,
   read,
@@ -194,22 +202,26 @@ function AgentExchangeReply({
   replyDisabled,
 }: {
   agent: Agent;
+  /** Holds through the conversation's re-read (`useReadBound`). */
+  holdThroughRead: () => Promise<void>;
   liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
   reply: MessageWithTrees;
   replyDisabled: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
   const text = useAgentText();
   const label = text.sessionText(agent.session_id, agent.title);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
-    onSuccess: () =>
-      void queryClient.invalidateQueries({
-        queryKey: agentMessagesQuery(agent.session_id).queryKey,
-      }),
+    // Pending through the read that draws the new attempt: Retry and the mode changes stay
+    // disabled until that read takes them away, so the press is still the cause of their going
+    // (`causedByReader`). The read settles either way, and a failed one lets them go. A read that
+    // has not settled by the request deadline (`REQUEST_DEADLINE_MS`) - one paused while the
+    // browser is offline - lets them go then, and the conversation says why it is not read yet
+    // (`useReadBound`).
+    onSuccess: holdThroughRead,
     method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
@@ -267,27 +279,28 @@ function AgentExchangeReply({
 
 function AgentTargetedMessage({
   agent,
+  holdThroughRead,
   liveAgents,
   onReply,
   read,
   replyDisabled,
 }: {
   agent: Agent;
+  /** Holds through the conversation's re-read (`useReadBound`). */
+  holdThroughRead: () => Promise<void>;
   liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
   replyDisabled: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
   const text = useAgentText();
   const label = text.sessionText(agent.session_id, agent.title);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
-    onSuccess: () =>
-      void queryClient.invalidateQueries({
-        queryKey: agentMessagesQuery(agent.session_id).queryKey,
-      }),
+    // Pending through the read that draws the new attempt, as a reply's retry is, and bounded
+    // the same way.
+    onSuccess: holdThroughRead,
     method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(read.message.id, delivery, bounds),
   });
@@ -323,6 +336,7 @@ function AgentTargetedMessage({
             {replies.map((reply) => (
               <AgentExchangeReply
                 agent={agent}
+                holdThroughRead={holdThroughRead}
                 key={reply.id}
                 liveAgents={liveAgents}
                 onReply={onReply}
@@ -357,6 +371,9 @@ function exchangesAfter(
   return exchanges.filter((read) => compareTimestamps(exchangeActivityAt(read), clearedBefore) > 0);
 }
 
+/** What a conversation says when its read failed, and before why its read has not settled. */
+const CONVERSATION_NOT_LOADED = "Could not load this conversation.";
+
 function AgentMessageList({
   agent,
   liveAgents,
@@ -378,6 +395,13 @@ function AgentMessageList({
   const agentState = useQuery(userAgentStateQuery());
   const [showOlder, setShowOlder] = useState(false);
   const [showCleared, setShowCleared] = useState(false);
+  // A retry's hold through this conversation's read, and why that read has not settled once the
+  // hold ran out (`useReadBound`).
+  const [unsettled, holdThrough] = useReadBound();
+  const holdThroughRead = () =>
+    holdThrough(
+      queryClient.invalidateQueries({ queryKey: agentMessagesQuery(agent.session_id).queryKey })
+    );
   const clearedBefore = agentState.data?.[agent.session_id]?.cleared_before;
   const all = messages.data ?? [];
   const unread = exchangesAfter(all, clearedBefore);
@@ -414,12 +438,13 @@ function AgentMessageList({
   });
   if (messages.isPending || agentState.isPending) return null;
   if (messages.isError || agentState.isError) {
-    return <p className={`mt-3 text-sm ${dangerText}`}>Could not load this conversation.</p>;
+    return <p className={`mt-3 text-sm ${dangerText}`}>{CONVERSATION_NOT_LOADED}</p>;
   }
   if (all.length === 0) return null;
   const row = (read: MessageRead) => (
     <AgentTargetedMessage
       agent={agent}
+      holdThroughRead={holdThroughRead}
       key={read.message.id}
       liveAgents={liveAgents}
       onReply={onReply}
@@ -429,6 +454,13 @@ function AgentMessageList({
   );
   return (
     <div className={`mt-3 border-t pt-3 ${borderDefault}`}>
+      {/* A read of the conversation that has not settled is said as this list says one that
+          failed, in the same line. */}
+      {unsettled === undefined ? null : (
+        <p className={`mt-3 text-sm ${dangerText}`}>
+          {CONVERSATION_NOT_LOADED} {unsettled}.
+        </p>
+      )}
       {newest === undefined ? null : (
         <ol aria-label={`Conversation with ${label}`} className="space-y-2">
           {row(newest)}
@@ -723,14 +755,17 @@ function AgentRow({
             )}
           </span>
           {unreadReplies === 0 ? null : (
-            // Opening the conversation is what reads it, so the badge opens it.
+            // Opening the conversation is what reads it, so the badge opens it. It is held while
+            // the row is open, where its press, which only opens the row, does nothing: held, it
+            // keeps the press live until the conversation has read the replies and the pill goes,
+            // so the page's rescue hands the focus on from it (`causedByReader`).
             <button
               // The pill's own words first, so the name contains the visible text and a voice
               // user can press what they read (WCAG 2.5.3, axe's
               // `label-content-name-mismatch`); the session's name says whose replies they are.
               aria-label={`${unreadRepliesLabel(unreadReplies)} from ${label}`}
               className="inline-flex min-h-11 items-center rounded-full md:min-h-8"
-              onClick={() => onExpand(true)}
+              {...heldPress(expanded, () => onExpand(true))}
               title={`Replies from ${label} you have not read`}
               type="button"
             >
@@ -871,10 +906,12 @@ function AgentRowDetails({
  * empty or not, so the four states are always on the page and the browser check can read each
  * one's count. A block item rather than a bare button, so the heading keeps its own width, and
  * `keyboard.ts` has a handle on it (`data-agent-fold`): the pin's focus hand-off lands on it,
- * and `j`/`k` step on from it.
+ * and `j`/`k` step on from it. The count is drawn only once the reads that place a row in its
+ * group have answered (`counted`); until then the heading names its group alone.
  */
 function GroupHeading({
   agents,
+  counted,
   expanded,
   group,
   onToggle,
@@ -882,6 +919,9 @@ function GroupHeading({
 }: {
   /** The group's rows the filters match: what the count counts, and what the heading hides. */
   agents: readonly Agent[];
+  /** Whether the grouping is the answered one: the inbox, the sign-in and the reader's agent
+   *  state have each answered, so Needs you holds every session it should. */
+  counted: boolean;
   expanded: boolean;
   group: AgentGroup;
   onToggle: () => void;
@@ -897,9 +937,11 @@ function GroupHeading({
         type="button"
       >
         <span data-testid={`agents-group-name-${group}`}>{AGENT_GROUP_LABELS[group]}</span>
-        <span className="tabular-nums" data-testid={`agents-group-count-${group}`}>
-          {groupCountLabel(agents, selected)}
-        </span>
+        {counted ? (
+          <span className="tabular-nums" data-testid={`agents-group-count-${group}`}>
+            {groupCountLabel(agents, selected)}
+          </span>
+        ) : null}
         <span className={disclosureButtonText}>
           <ChevronIcon expanded={expanded} />
         </span>
@@ -908,8 +950,9 @@ function GroupHeading({
   );
 }
 
-/** Which filter panel is open; one at a time, since each is a popover over the page. */
-type OpenFilter = "group" | "machine" | "role" | null;
+/** Which of the three narrowings has its popover open, so the panel keeps one at a time rather
+ *  than a row of them; each is portalled over the page, and two would cover each other. */
+type OpenFilter = "group" | "machine" | "role";
 
 /** The role control's options, with anything picked that is no longer among them: a role whose
  *  last session left is still a row, so the reader sees what they are filtering by and can
@@ -919,6 +962,20 @@ function withPicked(options: readonly string[], picked: readonly string[]): stri
   return [...options, ...picked.filter((value) => !options.includes(value))];
 }
 
+/** The group filter's option labels: the control hands its values over as strings, and a string
+ *  that names no group has no label. */
+const GROUP_FILTER_LABELS: ReadonlyMap<string, string> = new Map(
+  Object.entries(AGENT_GROUP_LABELS)
+);
+
+/**
+ * The one row the page's controls sit in: the search box, the one trigger over the three
+ * narrowings that are no column of a table here - group, machine and role - and the chips of
+ * the values that are on (INFRA-3135, R1 and R3). Each narrowing is still a multi-select whose
+ * panel holds a text box that narrows its own options (R7: never a dropdown), because forty
+ * machines cannot be read in a list that does not search; all three now sit behind one trigger
+ * rather than three of their own.
+ */
 function AgentFilterBar({
   agents,
   filters,
@@ -927,112 +984,151 @@ function AgentFilterBar({
 }: {
   agents: readonly Agent[];
   filters: AgentFilters;
-  onFilters: (filters: AgentFilters) => void;
+  /** Writes the fields it is handed and no other (`useAgentFilters`). */
+  onFilters: (changed: Partial<AgentFilters>) => void;
   searchInputRef: RefObject<HTMLInputElement | null>;
 }): ReactNode {
   // The options carry every machine the filter names even when no live session reports it, so
   // the control shows the filter in force and its row can be unticked (`filterOptions`).
   const { machines, roles } = filterOptions(agents, filters.machines);
-  // One panel open at a time: each is a portalled popover, and two of them over one row would
-  // cover each other.
-  const [open, setOpen] = useState<OpenFilter>(null);
-  const field = `min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`;
+  /** Whether the one **Filter** panel stands open. */
+  const [filterOpen, setFilterOpen] = useState(false);
+  /** Which of its three controls has its popover open: one at a time, and none once it shuts. */
+  const filterPanel = useNestedPanels<OpenFilter>(filterOpen);
+  // One chip per value the reader has ticked, in the order the panel lists the three controls;
+  // a press takes that one value off and leaves the rest of the narrowing alone.
+  const chosen = [
+    ...filters.groups.map((value) => ({
+      key: `group:${value}`,
+      label: `Group: ${AGENT_GROUP_LABELS[value]}`,
+      remove: () => onFilters({ groups: filters.groups.filter((one) => one !== value) }),
+    })),
+    ...filters.machines.map((value) => ({
+      key: `machine:${value}`,
+      label: `Machine: ${value}`,
+      remove: () => onFilters({ machines: filters.machines.filter((one) => one !== value) }),
+    })),
+    ...filters.roles.map((value) => ({
+      key: `role:${value}`,
+      label: `Role: ${value}`,
+      remove: () => onFilters({ roles: filters.roles.filter((one) => one !== value) }),
+    })),
+  ];
   return (
-    <fieldset className="mb-3 flex flex-wrap items-center gap-2" data-testid="agents-filters">
-      <legend className="sr-only">Agent filters</legend>
-      {/* No dropdown on this page (R7): each filter is a multi-select whose panel holds a text
-          box that narrows its own options, because forty machines cannot be read in a list that
-          does not search. */}
-      <span className="contents" data-testid="agents-filter-group">
-        <MultiSelect
-          emptyMessage="No group matches that."
-          label="Group"
-          // The control picks strings; these are the four group keys, read back in the one
-          // order the page draws them in, whatever order they were ticked in.
-          onChange={(next) =>
-            onFilters({ ...filters, groups: AGENT_GROUPS.filter((group) => next.includes(group)) })
-          }
-          onOpenChange={(next) => setOpen(next ? "group" : null)}
-          open={open === "group"}
-          optionLabel={(value) => AGENT_GROUP_LABELS[value as AgentGroup]}
-          options={AGENT_GROUPS}
-          searchLabel="Search groups"
-          selected={filters.groups}
-          triggerAriaLabel="Filter by group"
+    <ControlRow
+      className="mb-3"
+      chips={filterChips(chosen)}
+      search={
+        <SearchBox
+          className="w-full"
+          data-testid="agents-filter-search"
+          label="Search agents"
+          onChange={(value) => onFilters({ search: value })}
+          placeholder="Title, directory, machine, session or open issue"
+          ref={searchInputRef}
+          value={filters.search}
         />
-      </span>
-      <span className="contents" data-testid="agents-filter-machine">
-        <MultiSelect
-          emptyMessage="No machine matches that."
-          label="Machine"
-          onChange={(next) => onFilters({ ...filters, machines: next })}
-          onOpenChange={(next) => setOpen(next ? "machine" : null)}
-          open={open === "machine"}
-          options={machines}
-          searchLabel="Search machines"
-          selected={filters.machines}
-          triggerAriaLabel="Filter by machine"
-        />
-      </span>
-      <span className="contents" data-testid="agents-filter-role">
-        <MultiSelect
-          emptyMessage="No role matches that."
-          label="Role"
-          onChange={(next) => onFilters({ ...filters, roles: next })}
-          onOpenChange={(next) => setOpen(next ? "role" : null)}
-          open={open === "role"}
-          options={withPicked(roles, filters.roles)}
-          searchLabel="Search roles"
-          selected={filters.roles}
-          triggerAriaLabel="Filter by role"
-        />
-      </span>
-      {/* It takes the rest of the row, and a row of its own on a phone, so the fields it searches
-          stay readable in the placeholder. */}
-      <input
-        aria-label="Search agents"
-        className={`${field} min-w-0 flex-1 basis-64`}
-        data-testid="agents-filter-search"
-        maxLength={SEARCH_QUERY_MAX}
-        onChange={(event) => onFilters({ ...filters, search: event.target.value })}
-        placeholder="Title, directory, machine, session or open issue"
-        ref={searchInputRef}
-        title={`At most ${SEARCH_QUERY_MAX} characters`}
-        type="search"
-        value={filters.search}
-      />
-    </fieldset>
+      }
+      trigger={
+        <PanelTrigger
+          count={chosen.length}
+          label="Filter"
+          onOpenChange={setFilterOpen}
+          open={filterOpen}
+          stacked
+        >
+          {() => (
+            <>
+              <MultiSelect
+                {...filterPanel("group")}
+                emptyMessage="No group matches that."
+                label="Group"
+                // The control picks strings; these are the four group keys, read back in the one
+                // order the page draws them in, whatever order they were ticked in.
+                onChange={(next) =>
+                  onFilters({ groups: AGENT_GROUPS.filter((group) => next.includes(group)) })
+                }
+                optionLabel={(value) => GROUP_FILTER_LABELS.get(value)}
+                options={AGENT_GROUPS}
+                searchLabel="Search groups"
+                selected={filters.groups}
+                triggerAriaLabel="Filter by group"
+              />
+              <MultiSelect
+                {...filterPanel("machine")}
+                emptyMessage="No machine matches that."
+                label="Machine"
+                onChange={(next) => onFilters({ machines: next })}
+                options={machines}
+                searchLabel="Search machines"
+                selected={filters.machines}
+                triggerAriaLabel="Filter by machine"
+              />
+              <MultiSelect
+                {...filterPanel("role")}
+                emptyMessage="No role matches that."
+                label="Role"
+                onChange={(next) => onFilters({ roles: next })}
+                options={withPicked(roles, filters.roles)}
+                searchLabel="Search roles"
+                selected={filters.roles}
+                triggerAriaLabel="Filter by role"
+              />
+            </>
+          )}
+        </PanelTrigger>
+      }
+    />
   );
 }
 
 /**
  * The list's select-all checkbox. Its 13 px inset lines it up with the rows' checkboxes (their
  * 1 px border plus 12 px padding). Matching means every row the filters match, folded sections
- * included, and `Clear selection` also empties the selected rows the filters hide.
+ * included, and `Clear selection` also empties the selected rows the filters hide. A selected
+ * session missing from a list that is not `current` is counted as of unknown state, not as gone,
+ * as the composer's chip names it. Clear selection goes with the selection it empties, and the
+ * focus it held goes to the select-all checkbox before it, else, while no row matches and that
+ * checkbox is disabled, to the search box (`useFocusPlace`).
  */
 function SelectionHeader({
+  current,
   listed,
   matching,
   onClear,
   onToggle,
+  searchInputRef,
   selected,
 }: {
+  /** Whether the latest read of `listed` succeeded, so that it says who is absent (`useAgents`). */
+  current: boolean;
   listed: readonly Agent[];
   matching: readonly Agent[];
   onClear: () => void;
   onToggle: () => void;
+  searchInputRef: RefObject<HTMLInputElement | null>;
   selected: ReadonlySet<string>;
 }): ReactNode {
-  const selection = matchingSelection(listed, matching, selected);
+  const selection = matchingSelection(listed, matching, selected, current);
   const { state } = selection;
   const checkbox = useRef<HTMLInputElement>(null);
+  const header = useRef<HTMLDivElement>(null);
   const countId = useId();
   // `indeterminate` is a DOM property with no attribute, so React cannot render it.
   useLayoutEffect(() => {
     if (checkbox.current !== null) checkbox.current.indeterminate = state === "some";
   }, [state]);
+  const noteFocus = useFocusPlace(
+    () => header.current,
+    () => searchInputRef.current
+  );
   return (
-    <div className="mb-2 flex min-h-11 items-center gap-x-2 px-[13px] md:min-h-8">
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the header needs no role of its own.
+    <div
+      className="mb-2 flex min-h-11 items-center gap-x-2 px-[13px] md:min-h-8"
+      onFocus={noteFocus}
+      ref={header}
+    >
       <input
         aria-describedby={countId}
         aria-label="Select all matching agents"
@@ -1256,7 +1352,7 @@ function rowNode(list: HTMLElement | null, sessionID: string): HTMLElement | nul
 
 /** What the page draws its list from: which items, where each sits, and how tall the list is. */
 interface ListWindow {
-  containerRef: RefObject<HTMLDivElement | null>;
+  containerRef: RefObject<HTMLUListElement | null>;
   /** Every item the list draws, as indices into the keys it was given, ascending. */
   drawn: readonly number[];
   /** Where each item starts, in pixels from the list's own top. */
@@ -1277,7 +1373,7 @@ interface ListWindow {
  * arriving inside an open row - with a height that has not changed costing no render.
  */
 function useListWindow(keys: readonly string[], kept: ReadonlySet<string>): ListWindow {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLUListElement>(null);
   const [view, setView] = useState(() => ({ scrollTop: 0, viewportHeight: window.innerHeight }));
   const [measured, setMeasured] = useState<MeasuredHeights>(() => new Map());
   /** Every item the list has drawn, each carrying the key its height is cached under. Queried
@@ -1361,6 +1457,11 @@ function useListWindow(keys: readonly string[], kept: ReadonlySet<string>): List
  * sorts and filters every listed session on each of its own renders; here a scroll re-renders
  * this box alone, and what the page worked out - `items`, `kept`, `keptAside` and `renderItem` -
  * is untouched by it.
+ *
+ * The box is a list, and each drawn item - a group's heading or a session's card - is one of its
+ * items that says how many the whole list holds (`aria-setsize`) and its own place among them
+ * (`aria-posinset`), so a screen reader hears the whole list and where it is in it rather than
+ * the drawn items alone. A kept row it no longer holds is a hidden item, which it does not count.
  */
 function WindowedList({
   items,
@@ -1384,7 +1485,7 @@ function WindowedList({
     kept
   );
   return (
-    <div
+    <ul
       className="relative"
       data-agents-list=""
       ref={list.containerRef}
@@ -1395,19 +1496,21 @@ function WindowedList({
           const item = items[index];
           if (item === undefined) return [];
           return [
-            <div
+            <li
+              aria-posinset={index + 1}
+              aria-setsize={items.length}
               className="absolute inset-x-0 pb-3"
               data-row-key={item.key}
               key={item.key}
               style={{ top: `${list.tops[index] ?? 0}px` }}
             >
               {renderItem(item)}
-            </div>,
+            </li>,
           ];
         }),
         ...keptAside,
       ]}
-    </div>
+    </ul>
   );
 }
 
@@ -1429,7 +1532,15 @@ export function AgentsPage(): ReactNode {
   // The viewer's own state for each session, which the rows already read for their unread
   // badges: one query, one answer, and the replies they have not read are what put a session in
   // Needs you beside the asks that wait on them.
-  const agentStates = useQuery(userAgentStateQuery()).data ?? {};
+  const agentStateRead = useQuery(userAgentStateQuery());
+  const agentStates = agentStateRead.data ?? {};
+  // Whether the grouping is the answered one. Until the inbox, the sign-in and the agent state
+  // have each answered, no session can be put in Needs you, so each group heading is drawn
+  // without its count rather than with one taken from a read that has not come in (or whose
+  // first read failed). Every row pill is absent at zero, so none of them draws a number from
+  // such a read either.
+  const groupingAnswered =
+    inbox.data !== undefined && viewer !== undefined && agentStateRead.data !== undefined;
   // The first card number: the reader's own work with this session - a question whose next move
   // is a person's and which waits on them. One meaning for every count of what waits on
   // the reader, wherever it is shown.
@@ -1450,23 +1561,13 @@ export function AgentsPage(): ReactNode {
   // Every issue key an OPEN ask by each session names (`sessionIssueKeys`), for the search box's
   // "issue key" field.
   const issueKeysBySession = useMemo(() => sessionIssueKeys(inbox.data ?? []), [inbox.data]);
-  // The free-text query and the machines are the page's own `?q=` and `?machine=`, both owned
-  // by `agent-search.ts`; the group and role selections stay plain component state, as the
-  // machine and role did before this box. A link in from the machines page of
+  // The whole narrowing is the page's address, owned by `agent-search.ts`: the free-text query
+  // (`?q=`), the groups (`?group=`), the machines (`?machine=`) and the roles (`?role=`), each
+  // absent until the reader picks something. A link in from the machines page of
   // dispatch://INFRA-883 names one machine in `?machine=`, which is this filter with that one
   // host ticked.
-  const [search, setSearch] = useAgentSearch();
-  const [machines, setMachines] = useAgentMachines();
-  const [fieldFilters, setFieldFilters] = useState<Omit<AgentFilters, "machines" | "search">>({
-    groups: [],
-    roles: [],
-  });
-  const filters: AgentFilters = { ...fieldFilters, machines, search };
-  const setFilters = (next: AgentFilters) => {
-    setFieldFilters({ groups: next.groups, roles: next.roles });
-    if (next.machines !== machines) setMachines(next.machines);
-    if (next.search !== search) setSearch(next.search);
-  };
+  const [filters, setFilters] = useAgentFilters();
+  const search = filters.search;
   const searchInputRef = useRef<HTMLInputElement>(null);
   // Selection is what the human ticked, not what the filters currently show: narrowing the
   // list after ticking a row must not quietly drop that row from the send. Every selected
@@ -1575,8 +1676,11 @@ export function AgentsPage(): ReactNode {
    *  row unmounted under the reader drops focus to the document body, which silently turns off
    *  every binding that acts on the row in hand (`keyboard.ts`). */
   const [focusedRow, setFocusedRow] = useState<string | null>(null);
-  /** A row `j` or `k` has asked for, until the render that draws it puts focus there. */
-  const focusWhenDrawn = useRef<string | null>(null);
+  /** The row `j` or `k` last asked for, until the render that draws it puts focus there: a fresh
+   *  object each ask, so the ask renders and the focus lands even when the row it names is the
+   *  one `focusedRow` already holds - a focus inside that row named it, and a focus outside the
+   *  list since left the name standing. */
+  const [focusAsked, setFocusAsked] = useState<{ readonly sessionID: string } | null>(null);
   // One list, keyed by session, with each group's heading as an item between the rows - the
   // Inbox's pattern (`Inbox.tsx`) - of which the window draws a part. A row that moves from one
   // group to another moves within the one parent, so React moves its node instead of remounting
@@ -1597,8 +1701,8 @@ export function AgentsPage(): ReactNode {
   useAgentsKeymap(
     {
       focusRow: (sessionID) => {
-        focusWhenDrawn.current = sessionID;
         setFocusedRow(sessionID);
+        setFocusAsked({ sessionID });
       },
       items: items.map((item) =>
         item.kind === "group"
@@ -1610,15 +1714,12 @@ export function AgentsPage(): ReactNode {
   );
   // A layout effect, so the frame that paints the row the keys moved to already has focus on it.
   // The row is drawn because `kept` holds it, and it stays drawn because `focusedRow` does.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `focusedRow` is the trigger, not a read
   useLayoutEffect(() => {
-    const sessionID = focusWhenDrawn.current;
-    if (sessionID === null) return;
-    focusWhenDrawn.current = null;
-    const row = rowNode(listRef.current, sessionID);
+    if (focusAsked === null) return;
+    const row = rowNode(listRef.current, focusAsked.sessionID);
     row?.scrollIntoView({ block: "nearest" });
     row?.focus();
-  }, [focusedRow]);
+  }, [focusAsked]);
   // A layout effect, so the frame the move paints already has focus where the row went.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `pinned` is the trigger, not a read
   useLayoutEffect(() => {
@@ -1658,14 +1759,16 @@ export function AgentsPage(): ReactNode {
   );
   // A row the reader has opened that the list no longer holds - its group is closed, or the
   // filters exclude it - stays mounted and hidden among the drawn items, in the same parent and
-  // under the same key, so a fold and a filter discard no draft, as a scroll discards none.
+  // under the same key, so a fold and a filter discard no draft, as a scroll discards none. Its
+  // item is the same element a drawn one is, so a row moving between the two is moved rather
+  // than remounted, and hidden with its row, so it is no item a screen reader counts.
   const keptAside = AGENT_GROUPS.flatMap((group) =>
     grouped[group]
       .filter((agent) => kept.has(agent.session_id) && !(shown[group] && matches(agent, group)))
       .map((agent) => (
-        <div className="absolute inset-x-0" key={agent.session_id}>
+        <li className="absolute inset-x-0" hidden key={agent.session_id}>
           {agentRow(agent, group, true)}
-        </div>
+        </li>
       ))
   );
   // A heading or a row, which the windowed box draws at the place it measured for it.
@@ -1673,6 +1776,7 @@ export function AgentsPage(): ReactNode {
     item.kind === "group" ? (
       <GroupHeading
         agents={matchingIn[item.group]}
+        counted={groupingAnswered}
         expanded={shown[item.group]}
         group={item.group}
         onToggle={() => toggleGroup(item.group)}
@@ -1736,10 +1840,12 @@ export function AgentsPage(): ReactNode {
             searchInputRef={searchInputRef}
           />
           <SelectionHeader
+            current={current}
             listed={agents}
             matching={matching}
             onClear={() => setSelected(() => new Set())}
             onToggle={() => setSelected((current) => toggleMatching(matching, current))}
+            searchInputRef={searchInputRef}
             selected={selected}
           />
           {matching.length === 0 && current ? (

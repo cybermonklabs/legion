@@ -42,10 +42,6 @@ function subjectOf(ask: InboxRow): PaneSubject {
 export interface ReadingPaneProps {
   /** The reader's own answer landed; the list selects the next row. */
   onAnswered: (askId: string) => void;
-  /** The head's Snooze write is in flight or refused, or has stopped being either: the Inbox
-   *  keeps a live row listed, which is what keeps this column on it long enough for a refusal
-   *  to be read. */
-  onSnoozeLive: (askId: string, live: boolean) => void;
   /** The selected row: an open ask, or a thread of the reader's own. */
   row: InboxListRow;
   viewer: string | undefined;
@@ -55,14 +51,14 @@ export interface ReadingPaneProps {
 interface PaneFlowProps {
   ask: InboxRow;
   onAnswered: (askId: string) => void;
-  onSnoozeLive: (askId: string, live: boolean) => void;
   viewer: string | undefined;
 }
 
 /** The question's own card, which the column draws for a question in no document and for one
  *  whose document it could not open. One card per question: the card holds the answer the
  *  reader gave in it, so the next question selected is a card of its own rather than this one
- *  showing that answer. */
+ *  showing that answer. Its hand-on, and the answer or decline it sent, are the Inbox's writes,
+ *  by ask, so the card drawn for the question again shows any of them still out or refused. */
 function QuestionCard({ ask, onAnswered }: Pick<PaneFlowProps, "ask" | "onAnswered">): ReactNode {
   return (
     <AskCard
@@ -77,7 +73,7 @@ function QuestionCard({ ask, onAnswered }: Pick<PaneFlowProps, "ask" | "onAnswer
 
 /** An anchored question, and a question in no document: the card the Inbox has always drawn,
  *  under the head's own controls. */
-function CardBody({ ask, onAnswered, onSnoozeLive, viewer }: PaneFlowProps): ReactNode {
+function CardBody({ ask, onAnswered, viewer }: PaneFlowProps): ReactNode {
   return (
     <PaneFrame
       head={
@@ -88,7 +84,6 @@ function CardBody({ ask, onAnswered, onSnoozeLive, viewer }: PaneFlowProps): Rea
           onAnswered={onAnswered}
           onNextChange={undefined}
           onSkipToAnswer={undefined}
-          onSnoozeLive={onSnoozeLive}
           sectionBlockId={undefined}
           viewer={viewer}
         />
@@ -135,7 +130,6 @@ function ApprovalBody({
   artifactId,
   ask,
   onAnswered,
-  onSnoozeLive,
   viewer,
 }: PaneFlowProps & { approval: AskApproval; artifactId: string }): ReactNode {
   const scroller = useRef<HTMLElement>(null);
@@ -329,7 +323,6 @@ function ApprovalBody({
           onAnswered={onAnswered}
           onNextChange={marked ? nextChange : undefined}
           onSkipToAnswer={undefined}
-          onSnoozeLive={onSnoozeLive}
           sectionBlockId={undefined}
           viewer={viewer}
         />
@@ -349,7 +342,6 @@ function DecisionBody({
   ask,
   blockId,
   onAnswered,
-  onSnoozeLive,
   viewer,
 }: PaneFlowProps & { artifactId: string; blockId: string }): ReactNode {
   return (
@@ -366,7 +358,6 @@ function DecisionBody({
           onAnswered={onAnswered}
           onNextChange={undefined}
           onSkipToAnswer={document.showsDocument ? document.skipToBlock : undefined}
-          onSnoozeLive={onSnoozeLive}
           sectionBlockId={document.sectionBlockId}
           viewer={viewer}
         />
@@ -389,22 +380,19 @@ function DecisionBody({
  * page's rebuild or repair prompts. A Reply or an Agent row is one of four thread bodies
  * (`ThreadPane.tsx`), which fall back the same way.
  *
- * Each flow keys its head by the ask: the head's controls hold the writes they made -
- * `Snoozing…`, a refusal and its Retry - so the next question selected is drawn under a head of
- * its own, never under this one still showing the last question's.
+ * Each flow keys its head by the ask, so the next question selected is drawn under a head of its
+ * own. The head's Assign to me holds the write it made - `Assigning…`, a refusal and its Retry -
+ * and a head still showing the last question's would show that write under this question. The
+ * head's Snooze holds no write: the Inbox holds each snooze, by ask, and the head shows its own
+ * ask's (`useAskSnoozeWrites`).
  */
-export function ReadingPane({
-  onAnswered,
-  onSnoozeLive,
-  row,
-  viewer,
-}: ReadingPaneProps): ReactNode {
+export function ReadingPane({ onAnswered, row, viewer }: ReadingPaneProps): ReactNode {
   if (row.kind === "thread") {
     return <ThreadPane thread={row.thread} />;
   }
   const ask = row.ask;
   const subject = subjectOf(ask);
-  const flow = { ask, onAnswered, onSnoozeLive, viewer };
+  const flow = { ask, onAnswered, viewer };
   if (subject.kind === "approval") {
     return <ApprovalBody {...flow} approval={subject.approval} artifactId={subject.artifactId} />;
   }

@@ -13,6 +13,7 @@ import {
   file,
   finish,
   linkPullRequest,
+  markRequirements,
   PHASE_STATUSES,
   requestSpecApproval,
   SAVED_CART,
@@ -32,12 +33,15 @@ interface Seeded {
   readonly next: Tracked;
 }
 
-/** A finished issue for the video to open on, and the next one, filed and not yet handed over. */
+/** A finished issue for the video to open on, and the next one, filed and not yet handed over.
+ *  Each spec marks its requirements, as the human who files it states them. */
 async function seed(): Promise<Seeded> {
   await seedProject(["SHOP-1", "SHOP-2"]);
   const done = await file(SAVED_CART);
+  await markRequirements(done, SAVED_CART);
   await finish(done, SAVED_CART);
   const next = await file(DELIVERY_DATE);
+  await markRequirements(next, DELIVERY_DATE);
   if (done.key !== "SHOP-1" || next.key !== "SHOP-2") {
     throw new Error(`legion-issue-journey: the seed made ${done.key} and ${next.key}`);
   }

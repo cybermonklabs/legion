@@ -4,17 +4,14 @@ import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "re
 import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Agent } from "../../api/types";
+import { MultiSelect } from "../../components/MultiSelect";
 import type { Sending } from "../../hooks/useSending";
 import {
   borderDefault,
-  dangerText,
-  inputClasses,
   secondaryButtonBorder,
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
   secondaryButtonText,
-  textMutedOnCanvas,
-  textSecondaryOnCanvas,
 } from "../../theme/classes";
 import type { ListedReplies, ReplyTarget } from "../conversation/composer-model";
 import { useHeldSends } from "../conversation/held-sends";
@@ -22,7 +19,12 @@ import { MentionComposer } from "../conversation/MentionComposer";
 import { PendingSendTurn } from "../conversation/PendingSendTurn";
 import { useSessionSends } from "../conversation/useSessionSends";
 import { focusOnDocument } from "../shell/roving";
-import { AGENT_ROW_SELECTOR, ISSUE_PICKER_SELECTOR } from "./keyboard";
+import {
+  AGENT_ROW_SELECTOR,
+  ISSUE_LIST_MARKS,
+  ISSUE_PICKER_SELECTOR,
+  issueSearchOf,
+} from "./keyboard";
 
 /** A reply the agent composer answers: the quoted message and the conversation it belongs to
  *  (an issue, or none), which decides the route the reply is created through. */
@@ -143,95 +145,74 @@ export function AgentMessageComposer({
     watcher.observe(field.closest("fieldset") ?? field, { attributeFilter: ["disabled"] });
     refocusWatcher.current = watcher;
   };
-  /** What the picker's selection reads while it is open, which is the reader's until they commit
-   *  it: the select's own keys move it, `Enter`, or a pick made with the pointer or in the native
-   *  popup, takes it, and leaving the select without committing puts it back on `issueKey`. */
-  const [pendingIssue, setPendingIssue] = useState(issueKey);
-  /** Whether the change arriving now is a key on the select stepping its selection, which only
-   *  moves it: `Enter` is the pick. The test is the task the change arrives in, not the key.
-   *  Chromium, Firefox and WebKit all step a closed select from the key event's own default
-   *  action - the arrows, `Home`/`End` and the page keys from `keydown`, type-ahead from
-   *  `keypress` - and dispatch `change` in that same task. A key that opens the native popup
-   *  instead (the arrows on macOS; `Alt+ArrowDown` in Chromium and Firefox on Linux) steps
-   *  nothing, and the pick then made in the popup arrives in a later task, as a pointer's does:
-   *  that is a pick made, and it commits at once. So each key on the select marks the flag and
-   *  the next task clears it. */
-  const movedByKeyboard = useRef(false);
-  const markKeyStep = () => {
-    movedByKeyboard.current = true;
-    setTimeout(() => {
-      movedByKeyboard.current = false;
-    }, 0);
-  };
-  /** Bumped by every commit, the issue changed or not, since every commit unmounts the select the
-   *  reader is in. The hand-off keys on it rather than on `issueKey`, which re-confirming the
-   *  issue already held leaves alone. The composer counts it among the reader's own moves of its
-   *  address (`ownMoves`): a pick is the reader's, so the draft goes with it, and a refusal and the
-   *  files pasted into the draft with it. */
+  /** Where the focus goes once the Issue list has closed, set by the close that moves it on: a
+   *  pick - the issue changed or not - hands the reader to the message it addresses, and Escape
+   *  is one level out, to the row. The list has put the focus on its trigger by then, and leaves
+   *  a focus moved on from there where it is. */
+  const [handOff, setHandOff] = useState<{ readonly to: "field" | "row" } | null>(null);
+  /** Bumped by every pick, the issue changed or not. The composer counts it among the reader's
+   *  own moves of its address (`ownMoves`): a pick is the reader's, so the draft goes with it, and
+   *  a refusal and the files pasted into the draft with it. */
   const [commits, setCommits] = useState(0);
   const commitIssue = (value: string) => {
     if (sendingNow()) return;
     setIssueKey(value);
-    setIssuePickerOpen(false);
     setCommits((count) => count + 1);
+    setHandOff({ to: "field" });
   };
-  // A layout effect, so the frame the commit paints already has the field focused rather than
-  // the document: the reader's next keystroke is the message, whichever hand made the pick.
+  // A layout effect, so the frame the close paints already has the focus where it goes rather
+  // than on the trigger: the reader's next keystroke is the message, or the row's.
   useLayoutEffect(() => {
-    if (commits === 0) return;
-    box.current?.querySelector("textarea")?.focus();
-  }, [commits]);
+    if (handOff === null) return;
+    if (handOff.to === "field") box.current?.querySelector("textarea")?.focus();
+    else box.current?.closest<HTMLElement>(AGENT_ROW_SELECTOR)?.focus();
+  }, [handOff]);
   const issues = useQuery({
     enabled: issuePickerOpen,
     queryFn: () => api.listIssues({ open: true }),
     queryKey: ["agents", "issue-picker"],
   });
+  const titles = new Map((issues.data ?? []).map((issue) => [issue.key, issue.title]));
   /** The committed issue, once the open list has come back without it: closed since it was
-   *  picked. The select and the toggle keep naming it, marked, until the reader picks another -
+   *  picked. The list and the toggle keep naming it, marked, until the reader picks another -
    *  the issue header's Status select keeps a closed issue's own status among its options the same
    *  way - so what the picker shows, what the toggle says and where the message goes stay one
    *  issue; a send to it posts, since a closed issue takes comments. */
-  const committedClosed =
-    issueKey !== "" &&
-    issues.data !== undefined &&
-    !issues.data.some((issue) => issue.key === issueKey);
+  const committedClosed = issueKey !== "" && issues.data !== undefined && !titles.has(issueKey);
   const committedLabel = committedClosed ? `${issueKey} (closed)` : issueKey;
-  // The picker exists to be used, so opening it hands over the control inside it - the same
-  // move `MultiSelect` makes with its search box. It is what `i` needs (a key that opened
-  // something no keystroke could then reach would be a dead end) and what a pointer wants too,
-  // and it waits for the list rather than a frame, since the select renders only once the read
-  // lands.
+  // "No issue" is a pick no read stands behind, so only a list still on its way offers nothing;
+  // a shut list draws no options, so it is handed none.
+  const issueOptions =
+    !issuePickerOpen || issues.isPending
+      ? []
+      : ["", ...(committedClosed ? [issueKey] : []), ...titles.keys()];
+  // The list opens at once and draws its issues once the read lands, and only then takes the
+  // focus, into its text box: it is what `i` needs (a key that opened something no keystroke
+  // could then reach would be a dead end) and what a pointer wants too.
   //
   // That wait is the whole latency of `GET /issues`, and a reader who has roved on in the
   // meantime keeps where they went - `takeBack`'s rule above, widened to the row this composer
-  // belongs to: focus is the picker's to take only while it is still where the open left it.
+  // belongs to: focus is the list's to take only while it is still where the open left it.
   // Once per open, so a refetch behind the reader never pulls them back either.
-  const issueSelect = useRef<HTMLSelectElement>(null);
   const pickerTookFocus = useRef(false);
-  useEffect(() => {
-    if (!issuePickerOpen) return;
-    setPendingIssue(issueKey);
-  }, [issueKey, issuePickerOpen]);
   useEffect(() => {
     if (!issuePickerOpen) {
       pickerTookFocus.current = false;
       return;
     }
-    // The list is the dependency that matters: the select renders only once it lands.
-    if (issues.data === undefined || pickerTookFocus.current || issueSelect.current === null) {
-      return;
-    }
+    if (issues.data === undefined || pickerTookFocus.current) return;
+    const toggle = box.current?.querySelector(ISSUE_PICKER_SELECTOR) ?? null;
+    const search = toggle === null ? null : issueSearchOf(toggle);
+    if (search === null) return;
     // Where the open can have left focus, named: the row `i` was pressed on, the toggle a
     // pointer clicked, or nothing at all. A reader who has gone on - to another row, or into
     // this composer's own field - keeps where they went.
     const active = document.activeElement;
     const openedOn =
-      focusOnDocument() ||
-      active === box.current?.closest(AGENT_ROW_SELECTOR) ||
-      (active instanceof Element && active.matches(ISSUE_PICKER_SELECTOR));
+      focusOnDocument() || active === box.current?.closest(AGENT_ROW_SELECTOR) || active === toggle;
     if (!openedOn) return;
     pickerTookFocus.current = true;
-    issueSelect.current.focus();
+    search.focus();
   }, [issuePickerOpen, issues.data]);
   // Replies retain their parent owner: issue-attached legacy messages stay on that issue's
   // message route, while issue-less roots keep the S3-deferred direct session channel.
@@ -245,85 +226,39 @@ export function AgentMessageComposer({
   return (
     <div className={`mt-3 border-t pt-3 ${borderDefault}`} ref={box}>
       {replyTo === null ? (
-        <button
-          aria-expanded={issuePickerOpen}
-          aria-label="Choose issue"
-          className={`min-h-11 rounded-lg border px-3 text-sm font-medium disabled:cursor-not-allowed ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-          data-agent-issue-picker=""
+        <MultiSelect
           disabled={sending}
-          onClick={() => {
-            if (!sendingNow()) setIssuePickerOpen((open) => !open);
+          emptyMessage={issues.isPending ? "Loading issues…" : "No issue matches that."}
+          error={issues.isError ? "Could not load issues." : null}
+          focusOnOpen={false}
+          label="Issue"
+          marks={ISSUE_LIST_MARKS}
+          mode="single"
+          onOpenChange={(open, closedBy) => {
+            if (open) {
+              if (!sendingNow()) setIssuePickerOpen(true);
+              return;
+            }
+            setIssuePickerOpen(false);
+            if (closedBy === "escape") setHandOff({ to: "row" });
           }}
-          type="button"
+          onPick={commitIssue}
+          open={issuePickerOpen}
+          optionLabel={(key) =>
+            key === ""
+              ? "No issue"
+              : key === issueKey && committedClosed
+                ? committedLabel
+                : `${key} · ${titles.get(key)}`
+          }
+          options={issueOptions}
+          searchLabel="Issue"
+          triggerAriaLabel="Choose issue"
+          triggerClassName={`min-h-11 rounded-lg border px-3 text-sm font-medium disabled:cursor-not-allowed ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+          value={issueKey}
         >
           Issue: {issueKey === "" ? "No issue" : committedLabel}
-        </button>
-      ) : null}
-      {issuePickerOpen && replyTo === null ? (
-        <div className="mt-2">
-          {issues.isPending ? (
-            <p className={`text-sm ${textMutedOnCanvas}`}>Loading issues…</p>
-          ) : null}
-          {issues.isError ? (
-            <p className={`text-sm ${dangerText}`}>Could not load issues.</p>
-          ) : null}
-          {issues.data === undefined ? null : (
-            <label className={`block text-sm font-medium ${textSecondaryOnCanvas}`}>
-              Issue (optional)
-              <select
-                aria-label="Issue"
-                className={`mt-1 block min-h-11 w-full rounded-lg px-3 py-2 text-sm font-normal disabled:cursor-not-allowed disabled:opacity-50 ${inputClasses(true)}`}
-                data-agent-issue-select=""
-                disabled={sending}
-                onBlur={() => {
-                  // A step is not a pick until `Enter`, so leaving the select any other way -
-                  // Tab, Shift+Tab, a click elsewhere - drops it, as Escape does: the open select
-                  // never shows an issue the message is not addressed to.
-                  setPendingIssue(issueKey);
-                }}
-                onChange={(event) => {
-                  if (sendingNow()) return;
-                  setPendingIssue(event.target.value);
-                  // A step from the select's own keys only moves the selection, so a keyboard
-                  // reader can pass the first option to reach the second; `Enter` below is the
-                  // pick. Any other change - a pointer's, or one made in the native popup - is a
-                  // pick already made.
-                  if (movedByKeyboard.current) return;
-                  commitIssue(event.target.value);
-                }}
-                onKeyDown={(event) => {
-                  if (sendingNow()) {
-                    event.preventDefault();
-                    return;
-                  }
-                  if (event.key === "Enter") {
-                    // The commit is this key's, and it stops here: left to bubble it would land
-                    // in the message the pick just addressed, as a newline at its top.
-                    event.preventDefault();
-                    commitIssue(event.currentTarget.value);
-                    return;
-                  }
-                  markKeyStep();
-                }}
-                onKeyPress={markKeyStep}
-                ref={issueSelect}
-                value={pendingIssue}
-              >
-                <option value="">No issue</option>
-                {committedClosed ? (
-                  <option disabled value={issueKey}>
-                    {committedLabel}
-                  </option>
-                ) : null}
-                {issues.data.map((issue) => (
-                  <option key={issue.key} value={issue.key}>
-                    {issue.key} · {issue.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-        </div>
+        </MultiSelect>
       ) : null}
       {others.map((held) => (
         <PendingSendTurn held={held} key={held.id} sends={sends} />

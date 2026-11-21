@@ -20,6 +20,7 @@ import {
   documentTransport,
   holdFirstRequest,
   markSpan,
+  pickVersion,
   selectEditorText,
 } from "./editor";
 import { navigateInApp } from "./sends";
@@ -677,7 +678,7 @@ const hiddenEditorJourneys = [
     name: "a hidden live editor withdraws its report before returning from a historical version",
     namedVersion: true,
     async hide(page: Page, issueKey: string, link: string): Promise<() => Promise<void>> {
-      await page.getByRole("combobox", { name: "Version" }).selectOption("1");
+      await pickVersion(page, 1);
       await expect(page.getByTestId("version-view")).toBeVisible();
       await expect(page).toHaveURL(`/issues/${issueKey}/artifacts/spec?v=1`);
       const hit = await searchHit(page, "must show its quote");

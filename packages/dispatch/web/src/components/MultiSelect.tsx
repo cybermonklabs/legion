@@ -25,12 +25,27 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../theme/classes";
-import { AnchoredPanel } from "./AnchoredPanel";
+import { AnchoredPanel, type PanelDismissal } from "./AnchoredPanel";
+import { type ControlName, type ControlSize, controlPadding } from "./control-names";
+import { ChevronIcon } from "./DisclosureToggle";
+import { focusLost } from "./focus-place";
 import { TruncatedText } from "./TruncatedText";
 import { useTooltips } from "./tooltips";
 
 function fold(value: string | undefined): string {
   return (value ?? "").trim().toLocaleLowerCase();
+}
+
+/** What closed the list, which `onOpenChange` hands its host with the close: a single pick's
+ *  pick, its trigger pressed again, or what dismisses the panel it stands in - Escape, Tab or
+ *  Shift+Tab, a press outside it, its trigger gone (`PanelDismissal`). */
+export type ListClosing = PanelDismissal | "pick" | "trigger";
+
+/** `data-*` attributes a host writes on the list's own elements, for its own code to find
+ *  them by: the trigger, and the text box, which the list portals out of the host's tree. */
+export interface ListMarks {
+  readonly search?: Readonly<Record<`data-${string}`, string>>;
+  readonly trigger?: Readonly<Record<`data-${string}`, string>>;
 }
 
 /**
@@ -61,32 +76,56 @@ const ON_PAGE = {
   trigger: `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${pageLineBorder} ${pagePaperBg} ${pageMutedText}`,
 } as const;
 
-export interface MultiSelectProps {
-  /** Trigger content; defaults to the label with the selection count (`Labels · 2`). */
+interface SharedProps {
+  /** Trigger content. A multi-select's defaults to the label with the selection count
+   *  (`Labels · 2`), a single pick's to the picked value's row text, else to the label. */
   readonly children?: ReactNode;
+  /** Whether the trigger ends in a chevron, as it does by default: the sign a sighted reader
+   *  reads that the trigger opens a list (`aria-haspopup` tells a screen reader alone), with
+   *  the trigger's text in front of it ending in an ellipsis where the trigger is too narrow for
+   *  it. A trigger whose children are a look of their own passes `false` and draws them as they
+   *  are: the tinted badge an ask card's hand-on and the issue header's Assignee show
+   *  (`badge-select.ts`), each of which replaced a badge over an invisible select, and a table
+   *  header's funnel, whose text-filter twin is a `PanelTrigger` that draws none either. */
+  readonly chevron?: boolean;
+  /** The text of the row `onCreate` adds for a search that matches no option, drawn from the
+   *  typed value. Defaults to `Create "<value>"`. */
+  readonly createLabel?: (value: string) => string;
   readonly disabled?: boolean;
+  /** Which control of the vocabulary this is, written into the trigger's `data-control`: a
+   *  column filter is a multi-select under its own name, while a multi-select a page draws for
+   *  itself is a part of the vocabulary rather than one of its controls, and carries nothing. */
+  readonly control?: ControlName;
   /** The trigger is busy with what the last close committed: it stays focusable, and says so
    *  rather than looking actionable and doing nothing. */
   readonly ariaDisabled?: boolean;
   /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`. */
   readonly error?: string | null;
-  /** Shown in place of the list when nothing is left to choose or nothing matches the search. */
+  /** Shown in place of the list when nothing is left to choose or nothing matches the search. A
+   *  single pick shows it over its `onCreate` row too: that row takes the typed value as it is,
+   *  and the message says no option holds it. */
   readonly emptyMessage: string;
-  /** The concept the control picks from: the default trigger text, `Clear <label>`, and the
-   *  listbox's accessible name. */
+  /** Whether opening moves the focus into the text box, as it does by default. A host that
+   *  opens the list before its options have come passes `false`, and hands the focus in itself
+   *  once they have. Read as the list opens. */
+  readonly focusOnOpen?: boolean;
+  /** The concept the control picks from: the default trigger text, `Clear <label>`, the
+   *  listbox's accessible name, and the start of a single pick's trigger's accessible name. */
   readonly label: string;
-  readonly onChange: (selected: string[]) => void;
-  /** Enables the `Create "<query>"` row for a search that matches no option. */
-  readonly onCreate?: (value: string) => void;
-  readonly onOpenChange: (open: boolean) => void;
+  /** Marks the host's own code finds the trigger and the text box by. */
+  readonly marks?: ListMarks;
+  /** The trigger pressed, a pick or a dismissal: `true` to open, `false` with what closed it. */
+  readonly onOpenChange: (open: boolean, closedBy?: ListClosing) => void;
   /** Every keystroke in the search input, so a host can drop a message it showed for the
    *  previous query (a rejected create). */
   readonly onQueryChange?: (query: string) => void;
   readonly open: boolean;
   /** The values the host stores (URL keys, label strings) in list order. */
   readonly options: readonly string[];
-  /** Row text for a value; the search matches this text. Defaults to the value itself. */
-  readonly optionLabel?: (value: string) => string;
+  /** Row text for a value, or `undefined` for a value the host has no text for, which then
+   *  reads as itself; the search matches this text, and a single pick's trigger shows it for the
+   *  picked value. Defaults to the value itself. */
+  readonly optionLabel?: (value: string) => string | undefined;
   /** Muted text at the end of a value's row, such as how many items carry it, or `undefined`
    *  for a row with no detail at all. The row's accessible name reads it after the label and a
    *  comma ("api, 3"), never run together. */
@@ -95,101 +134,237 @@ export interface MultiSelectProps {
    *  a bare count. Defaults to that text. */
   readonly optionDetailLabel?: (value: string) => string;
   readonly searchLabel: string;
-  readonly selected: readonly string[];
+  /** How much room the default trigger takes outside `NoTooltips`; a `triggerClassName` decides
+   *  for itself. */
+  readonly size?: ControlSize;
+  /** A multi-select trigger's accessible name in place of its text; a single pick's trigger's
+   *  name starts with it in place of `label`, before what the trigger shows. */
   readonly triggerAriaLabel?: string;
   readonly triggerClassName?: string;
+  /** Classes for the element that holds the trigger's text, beside the chevron: where a trigger
+   *  stands in a `<select>`'s place and has to take its box, the text's line is the place to
+   *  say so (`features/settings/classes.ts`, `settingsListText`). */
+  readonly triggerTextClassName?: string;
+  /** The `title` of the element that holds the trigger's text, beside the chevron, in place of
+   *  a single pick's picked row text: for a host whose children mean more than that row says, as
+   *  the issue header's Repository badge names the repository an issue inherits where its picked
+   *  row reads Inherit. An empty string shows no tooltip. */
+  readonly triggerTitle?: string;
 }
 
+/** Any number of values: a row ticks or unticks its value, and a `Clear` foot empties them. */
+interface MultipleProps extends SharedProps {
+  readonly mode?: "multiple";
+  readonly onChange: (selected: string[]) => void;
+  /** Enables the `createLabel` row for a search that matches no option, which adds the typed
+   *  value. */
+  readonly onCreate?: (value: string) => void;
+  readonly selected: readonly string[];
+}
+
+/** One value: a pick hands it to `onPick`, closes the list and puts the focus on the trigger. */
+interface SingleProps extends SharedProps {
+  readonly mode: "single";
+  /** Enables the `createLabel` row for a search that matches no option, which hands the typed
+   *  value, trimmed, to the host: `true` takes it, and the list closes as a pick does; `false`
+   *  refuses it, and the list stays open with the text in its box. */
+  readonly onCreate?: (value: string) => boolean;
+  readonly onPick: (value: string) => void;
+  /** The value picked now, which the list marks selected and the trigger shows; absent while
+   *  the host holds none. */
+  readonly value?: string;
+}
+
+export type MultiSelectProps = MultipleProps | SingleProps;
+
 /**
- * The one searchable multi-select: a trigger button and a portalled popover holding a
- * `combobox` search input over an `aria-multiselectable` listbox of checkbox rows. Arrow keys
- * move the active option, Enter toggles it (or creates the typed value), Escape and Tab close;
- * an outside pointer press closes too, and closing returns focus to the trigger. The host owns
- * `open`, so it can stage a draft on open and commit on close.
+ * The one searchable list a reader picks from: a trigger button and a portalled popover holding
+ * a `combobox` search input that narrows the listbox under it. Arrow keys move the active option
+ * and Enter takes it; Escape and Tab close with nothing taken, an outside pointer press closes
+ * too, and closing returns the focus to the trigger from the list it closed (a focus the reader
+ * or the host has put somewhere else stays there). The host owns `open`, so it can stage a draft
+ * on open and commit on close, and every close tells it what closed the list (`ListClosing`).
+ *
+ * By default it picks many: the listbox is `aria-multiselectable`, a row (or Enter) ticks or
+ * unticks its value in the checkbox drawn beside it, `onCreate` adds a row for a search that
+ * matches no option, and a `Clear` foot empties the selection. `mode="single"` picks one: the
+ * rows are plain options, the picked one `aria-selected` and marked, and a pick hands its one
+ * value to `onPick`, closes the list and returns the focus to the trigger. Its `onCreate` row
+ * hands a typed value no option holds to the host, which takes it, and the list closes as a pick
+ * does, or refuses it, and the list stays open with the text in its box. It opens with its
+ * picked value active, as a `<select>` and the WAI-ARIA select-only combobox do, so Enter there
+ * keeps the value and the arrows move on from it; Escape picks nothing, changes no value and
+ * returns the focus to the trigger. Its trigger is named for the list (`label`) and then for what
+ * it shows, so the words a reader sees on it are in its name and a screen reader hears the list
+ * and the value staged in it, as a `<select>` reads. While the list is open the trigger
+ * names the panel holding it (`aria-controls`), the text box and the listbox both. The trigger
+ * ends in a chevron, as a `<select>` ends in its arrow, unless its host draws a look of its own
+ * (`chevron`).
+ *
+ * The closed trigger opens the list on the keys the WAI-ARIA select-only combobox opens it on:
+ * Enter and Space, which press it, ArrowDown and ArrowUp, with Alt or without, and a typed
+ * character, which goes into the text box and narrows the list by it.
  */
-export function MultiSelect({
-  ariaDisabled = false,
-  children,
-  disabled = false,
-  emptyMessage,
-  error = null,
-  label,
-  onChange,
-  onCreate,
-  onOpenChange,
-  onQueryChange,
-  open,
-  options,
-  optionDetail,
-  optionDetailLabel,
-  optionLabel = (value) => value,
-  searchLabel,
-  selected,
-  triggerAriaLabel,
-  triggerClassName,
-}: MultiSelectProps): ReactNode {
+export function MultiSelect(props: MultiSelectProps): ReactNode {
+  const {
+    ariaDisabled = false,
+    children,
+    chevron = true,
+    control,
+    createLabel = (value: string) => `Create "${value}"`,
+    disabled = false,
+    emptyMessage,
+    error = null,
+    focusOnOpen = true,
+    label,
+    marks,
+    onOpenChange,
+    onQueryChange,
+    open,
+    options,
+    optionDetail,
+    optionDetailLabel,
+    optionLabel = (value: string) => value,
+    searchLabel,
+    size = "comfortable",
+    triggerAriaLabel,
+    triggerClassName,
+    triggerTextClassName = "",
+    triggerTitle,
+  } = props;
+  const single = props.mode === "single";
+  // What is picked now, a single pick's value as a list of one, so both modes read it alike.
+  const selected =
+    props.mode !== "single" ? props.selected : props.value === undefined ? [] : [props.value];
   const id = useId();
+  const panelId = `${id}-panel`;
   const tooltips = useTooltips();
   const trigger =
     triggerClassName ??
     (tooltips
-      ? `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`
+      ? `rounded-lg border text-sm font-semibold ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`
       : ON_PAGE.trigger);
   const listboxId = `${id}-options`;
+  const nameId = `${id}-name`;
+  const shownId = `${id}-shown`;
   const optionId = (value: string) => `${id}-option-${encodeURIComponent(value)}`;
   const [query, setQuery] = useState("");
   const [activeValue, setActiveValue] = useState<string | undefined>(undefined);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
   const wasOpen = useRef(false);
+  // What an open reads of this render: the value it starts on.
+  const opensOn = useRef<string | undefined>(undefined);
+  // What the next open puts in the text box: the character typed on the closed trigger, if any.
+  const opensWith = useRef("");
 
   const searchText = query.trim();
   const needle = fold(searchText);
   // A host's label function can answer nothing for a value it does not know — a `?status=` of
   // another deploy, say — and a value with no label is still an option, read as itself.
   const labelOf = (option: string) => optionLabel(option) ?? option;
-  const visibleOptions = options.filter((option) => fold(labelOf(option)).includes(needle));
+  // The rows exist only in the open panel, so a closed list narrows nothing.
+  const visibleOptions = open
+    ? options.filter((option) => fold(labelOf(option)).includes(needle))
+    : [];
+  // A search that names an option, by its value or by the text its row shows, creates nothing.
   const createValue =
-    onCreate !== undefined &&
+    open &&
+    props.onCreate !== undefined &&
     searchText !== "" &&
-    !options.some((option) => fold(option) === fold(searchText))
+    !options.some((option) => fold(option) === needle || fold(labelOf(option)) === needle)
       ? searchText
       : undefined;
   const rows = createValue === undefined ? visibleOptions : [...visibleOptions, createValue];
   const activeRow = activeValue !== undefined && rows.includes(activeValue) ? activeValue : rows[0];
+  // The empty message stands where no option is left. A multi-select's create row stands in its
+  // place, since it adds an option; a single pick's row takes the typed value as it is, so the
+  // message stays over it.
+  const showsEmpty = visibleOptions.length === 0 && (single || createValue === undefined);
 
   // What the reader picked, compared as the server compares a label: a URL that lower-cased
   // `Epic` still ticks the option the project spells `Epic`, and ticking it again removes it
   // rather than adding a second spelling.
   const isPicked = (value: string) => selected.some((current) => fold(current) === fold(value));
-  const toggle = (value: string) => {
+  // A single pick opens on the option its value picks - in the option's own spelling, which is
+  // the one the arrows find in the list - or on the value itself while no option has come yet.
+  // Only the render that opens the list reads it.
+  opensOn.current =
+    open && props.mode === "single" ? (options.find(isPicked) ?? props.value) : undefined;
+  // A single pick puts the focus on the trigger before it hands the value over, so a pick that
+  // takes the trigger away - the search bar's Project list, gone once its narrowing is on - takes
+  // it from the trigger's own place, from which the panel around it hands the focus on
+  // (`useFocusPlace`), rather than from a list portalled outside that panel.
+  const choose = (value: string) => {
     setActiveValue(value);
-    onChange(
+    if (props.mode === "single") {
+      onOpenChange(false, "pick");
+      triggerRef.current?.focus();
+      props.onPick(value);
+      return;
+    }
+    props.onChange(
       isPicked(value)
         ? selected.filter((current) => fold(current) !== fold(value))
         : [...selected, value]
     );
   };
+  // A multi-select's row adds the typed value and starts a fresh search. A single pick's row
+  // hands it to the host, which answers whether it took it: taken, the list closes as a pick
+  // does; refused, the list stays open with the text in its box for the reader to correct.
   const create = (value: string) => {
-    if (onCreate === undefined) return;
-    onCreate(value);
-    setQuery("");
     setActiveValue(value);
-  };
-
-  // Opening starts a fresh search and focuses it; closing returns focus to the trigger.
-  useEffect(() => {
-    if (open) {
+    if (props.mode !== "single") {
+      props.onCreate?.(value);
       setQuery("");
-      setActiveValue(undefined);
-      inputRef.current?.focus();
-    } else if (wasOpen.current) {
+    } else if (props.onCreate?.(value) === true) {
+      onOpenChange(false, "pick");
       triggerRef.current?.focus();
     }
+  };
+
+  // Opening starts a fresh search on the value a single pick holds, with the character typed on
+  // the closed trigger in the text box, if one opened it; the panel hands the focus to the search
+  // unless the host hands it in itself (`focusOnOpen`). Closing returns the focus to the trigger
+  // when the close left it nowhere - the list that held it is gone - and leaves a focus that is
+  // somewhere. A focus still on the text box the close took away is nowhere (`focusLost`): an
+  // engine that moves the focus off a removed element only at its next rendering update still
+  // names the box focused when this effect runs, before that update, and a Tab out of the box
+  // would otherwise leave the focus there to the page's rescue rather than on the trigger. A
+  // press outside moves the focus after this runs, so the focus ends where that press put it.
+  useEffect(() => {
+    if (open) {
+      setQuery(opensWith.current);
+      setActiveValue(opensOn.current);
+    } else if (wasOpen.current && focusLost()) {
+      triggerRef.current?.focus();
+    }
+    opensWith.current = "";
     wasOpen.current = open;
   }, [open]);
 
+  // ArrowDown and ArrowUp, with Alt or without, open the closed list as a click does. A typed
+  // character opens it with that character in the text box, and the caret after it. The key's
+  // own typing is cancelled, so the character is not typed a second time into the text box the
+  // focus moves to. Space is left to the button, which opens the list with an empty search. A
+  // disabled or busy trigger opens on none of these keys, and a key held with Ctrl or Meta is
+  // the browser's.
+  const handleTriggerKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (open || disabled || ariaDisabled || event.ctrlKey || event.metaKey) return;
+    const arrow = event.key === "ArrowDown" || event.key === "ArrowUp";
+    const typed = !event.altKey && event.key.length === 1 && event.key !== " ";
+    if (!arrow && !typed) return;
+    event.preventDefault();
+    if (typed) {
+      opensWith.current = event.key;
+      onQueryChange?.(event.key);
+    }
+    onOpenChange(true);
+  };
+
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    // A key that ends or moves an IME composition is the input method's: Enter commits the
+    // composed text into the box and picks nothing, and Tab leaves the list open.
+    if (event.nativeEvent.isComposing) return;
     if (event.key === "ArrowDown" && rows.length > 0) {
       event.preventDefault();
       const index = activeRow === undefined ? -1 : rows.indexOf(activeRow);
@@ -207,12 +382,17 @@ export function MultiSelect({
       if (activeRow === createValue) {
         create(activeRow);
       } else {
-        toggle(activeRow);
+        choose(activeRow);
       }
       return;
     }
+    // Tab and Shift+Tab close the list and leave the reader on its trigger, as Escape does. The
+    // close puts the focus back on the trigger before the browser's own Tab would run, which
+    // would carry it on past the trigger: out of a filter panel altogether from its first
+    // control, where a list inside the panel is to be left for its trigger (`useNestedPanels`).
     if (event.key === "Tab") {
-      onOpenChange(false);
+      event.preventDefault();
+      onOpenChange(false, "tab");
     }
   };
 
@@ -224,27 +404,90 @@ export function MultiSelect({
       : `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${pageLineBorder} ${pageInkText} ${pageRowHoverBg} ${
           active ? pageMarkBg : ""
         }`;
+  // The picked value's row text, which a single pick's trigger shows unless its host passes
+  // words of its own.
+  const pickedLabel = single && selected[0] !== undefined ? labelOf(selected[0]) : undefined;
+  const triggerText = single
+    ? (children ?? pickedLabel ?? label)
+    : (children ?? (selected.length === 0 ? label : `${label} · ${selected.length}`));
+  // A single pick's trigger is named for its list and then for what it shows - "Assignee of
+  // CORE-1 alice", "Merge into another epic Choose an epic…" - so the words on it, the ones a
+  // sighted reader reads and a speech-input reader says to press it, are in its name (WCAG 2.5.3,
+  // Label in Name), and a screen reader hears the list and the value staged in it. The list's
+  // name is a hidden element beside the trigger, outside it so the trigger's text stays the words
+  // it shows, and what it shows is the element that holds that text, so words a host hides from
+  // assistive technology there - a badge beside the `sr-only` words that read it - stay out of the
+  // name. A trigger that shows the list's own name is named by that name once.
+  const triggerName = triggerAriaLabel ?? label;
+  const namedBy = !single
+    ? undefined
+    : triggerText === triggerName
+      ? nameId
+      : `${nameId} ${shownId}`;
 
   return (
     <>
+      {single ? (
+        <span hidden id={nameId}>
+          {triggerName}
+        </span>
+      ) : null}
       <button
+        aria-controls={open ? panelId : undefined}
         aria-disabled={ariaDisabled || undefined}
         aria-expanded={open}
         aria-haspopup="listbox"
-        aria-label={triggerAriaLabel}
+        aria-label={single ? undefined : triggerAriaLabel}
+        aria-labelledby={namedBy}
         className={trigger}
+        data-control={control}
+        {...marks?.trigger}
         disabled={disabled}
-        onClick={() => onOpenChange(!open)}
+        onClick={() => {
+          if (open) onOpenChange(false, "trigger");
+          else onOpenChange(true);
+        }}
+        onKeyDown={handleTriggerKeyDown}
         ref={triggerRef}
         type="button"
       >
-        {children ?? (selected.length === 0 ? label : `${label} · ${selected.length}`)}
+        {chevron ? (
+          // The text and the chevron in a flex box of their own, whatever display the trigger
+          // gets: a block from its host's classes, or the flex box `styles.css` makes every
+          // button below 1280 px, whose own text ends in no ellipsis (`TruncatedText`). The text
+          // takes the room the chevron leaves and ends in an ellipsis where that is too little
+          // (a single pick's whole value is its `title`, unless its host passes its own), and the
+          // chevron stays whole at the trigger's end, at the right edge of a trigger as wide as
+          // its box. Inside `NoTooltips` (the new issue page) no `title` can give back what an
+          // ellipsis cut, so the text wraps there instead and is read whole.
+          <span className="flex min-w-0 grow items-center gap-1" id={single ? shownId : undefined}>
+            {tooltips ? (
+              <TruncatedText
+                className={`min-w-0 grow ${triggerTextClassName}`}
+                title={triggerTitle ?? pickedLabel}
+              >
+                {triggerText}
+              </TruncatedText>
+            ) : (
+              <span className={`min-w-0 grow [overflow-wrap:anywhere] ${triggerTextClassName}`}>
+                {triggerText}
+              </span>
+            )}
+            <ChevronIcon expanded={open} />
+          </span>
+        ) : single ? (
+          <span id={shownId}>{triggerText}</span>
+        ) : (
+          triggerText
+        )}
       </button>
       {open ? (
         <AnchoredPanel
           anchorRef={triggerRef}
-          className={`z-50 max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
-          onDismiss={() => onOpenChange(false)}
+          className={`max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
+          focusOnOpen={focusOnOpen}
+          id={panelId}
+          onDismiss={(how) => onOpenChange(false, how)}
         >
           <div className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}>
             <input
@@ -253,6 +496,7 @@ export function MultiSelect({
               aria-controls={listboxId}
               aria-expanded="true"
               aria-label={searchLabel}
+              {...marks?.search}
               className={`block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${tooltips ? inputClasses(true) : ON_PAGE.search}`}
               disabled={disabled}
               onChange={(event) => {
@@ -262,7 +506,6 @@ export function MultiSelect({
               }}
               onKeyDown={handleKeyDown}
               placeholder={searchLabel}
-              ref={inputRef}
               role="combobox"
               type="search"
               value={query}
@@ -270,7 +513,7 @@ export function MultiSelect({
           </div>
           <div
             aria-label={`${label} options`}
-            aria-multiselectable="true"
+            aria-multiselectable={single ? undefined : "true"}
             id={listboxId}
             role="listbox"
           >
@@ -287,14 +530,18 @@ export function MultiSelect({
                   disabled={disabled}
                   id={optionId(option)}
                   key={option}
-                  onClick={() => toggle(option)}
+                  onClick={() => choose(option)}
                   onMouseDown={(event) => event.preventDefault()}
                   role="option"
                   type="button"
                 >
                   <span
                     aria-hidden="true"
-                    className={`grid size-4 shrink-0 place-items-center rounded border text-xs leading-none ${tooltips ? borderStrong : ON_PAGE.checkbox}`}
+                    className={
+                      single
+                        ? "w-4 shrink-0 text-center"
+                        : `grid size-4 shrink-0 place-items-center rounded border text-xs leading-none ${tooltips ? borderStrong : ON_PAGE.checkbox}`
+                    }
                   >
                     {isSelected ? "✓" : ""}
                   </span>
@@ -317,6 +564,11 @@ export function MultiSelect({
                 </button>
               );
             })}
+            {showsEmpty ? (
+              <p className={`px-3 py-2 text-sm ${tooltips ? textMutedOnSurface : ON_PAGE.empty}`}>
+                {emptyMessage}
+              </p>
+            ) : null}
             {createValue === undefined ? null : (
               <button
                 aria-selected="false"
@@ -331,14 +583,9 @@ export function MultiSelect({
                 <span aria-hidden="true" className="w-4 shrink-0 text-center">
                   +
                 </span>
-                Create &quot;{createValue}&quot;
+                {createLabel(createValue)}
               </button>
             )}
-            {rows.length === 0 ? (
-              <p className={`px-3 py-2 text-sm ${tooltips ? textMutedOnSurface : ON_PAGE.empty}`}>
-                {emptyMessage}
-              </p>
-            ) : null}
           </div>
           {error === null ? null : (
             <p
@@ -347,12 +594,12 @@ export function MultiSelect({
               {error}
             </p>
           )}
-          {selected.length === 0 ? null : (
+          {props.mode === "single" || selected.length === 0 ? null : (
             <div className={`sticky bottom-0 border-t p-2 ${tooltips ? card : ON_PAGE.panel}`}>
               <button
                 className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
                 disabled={disabled}
-                onClick={() => onChange([])}
+                onClick={() => props.onChange([])}
                 onMouseDown={(event) => event.preventDefault()}
                 type="button"
               >
