@@ -502,43 +502,51 @@ func TestAMarkThatRacesAnotherProcessMarksNothing(t *testing.T) {
 // hand-back has ever released - and marking it would take back a role the holder has just been
 // given, through a mark its own registration can no longer clear.
 //
-// The claim's own ClaimedAt tells the two apart, because a grant moves it and a renewal leaves
-// it exactly as the claim that took the role left it (Registry.renewRoleClaim). A claim whose
-// ClaimedAt moved is another claim, so it is left alone and is no error, exactly as a claim
-// another process won is.
+// The grant's own id tells the two apart (RoleClaim.GrantID), because every grant writes a new
+// one and a renewal leaves it exactly as the claim that took the role left it
+// (Registry.renewRoleClaim). The grant's moment cannot: a grant stamped in the very millisecond
+// of the claim the release read carries that claim's ClaimedAt. A claim whose grant id is not
+// the one read is another claim, so it is left alone and is no error, exactly as a claim another
+// process won is.
 func TestAMarkThatRacesAFreshGrantByItsOwnProcessMarksNothing(t *testing.T) {
 	const (
 		role   = "legion-controller"
 		holder = "ses_marked_under_its_own_grant"
 	)
-	reg := releasableRoleClaim(t, role, holder, roleClaimInstance)
-	seeded := storedRoleClaim(t, reg, role)
-	// The grant that wins the race is stamped an hour on, so the moment it was claimed at is one
-	// the seeded claim cannot share: a grant inside the same millisecond as the claim the
-	// release read would read as that very claim, and this row is about telling them apart.
-	reg.now = func() time.Time { return time.Now().Add(time.Hour) }
-	var granted RoleClaim
-	racing := &racingUpdateKeyValue{KeyValue: reg.roleKV.Legacy()}
-	racing.beforeFirstUpdate = func() {
-		claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
-		granted = storedRoleClaim(t, reg, role)
-	}
-	reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	for name, later := range map[string]time.Duration{
+		// An hour on, so the moment the grant was claimed at is one the seeded claim cannot share.
+		"a grant in a later millisecond": time.Hour,
+		// No time on: the grant carries the seeded claim's ClaimedAt, its process and its session.
+		"a grant in the same millisecond": 0,
+	} {
+		t.Run(name, func(t *testing.T) {
+			reg := releasableRoleClaim(t, role, holder, roleClaimInstance)
+			seeded := storedRoleClaim(t, reg, role)
+			reg.now = func() time.Time { return time.UnixMilli(seeded.ClaimedAt).Add(later) }
+			var granted RoleClaim
+			racing := &racingUpdateKeyValue{KeyValue: reg.roleKV.Legacy()}
+			racing.beforeFirstUpdate = func() {
+				claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
+				granted = storedRoleClaim(t, reg, role)
+			}
+			reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
 
-	if _, err := reg.Remove(context.Background(), holder, []string{contracts.RoleTopicPrefix + role}, RoleReleaseAuthority{}); err != nil {
-		t.Fatalf("hand %s's role back under its own process's fresh grant: %v", role, err)
-	}
+			if _, err := reg.Remove(context.Background(), holder, []string{contracts.RoleTopicPrefix + role}, RoleReleaseAuthority{}); err != nil {
+				t.Fatalf("hand %s's role back under its own process's fresh grant: %v", role, err)
+			}
 
-	if racing.updates != 1 {
-		t.Fatalf("the release sent %d conditional writes, want one: a claim granted since the read is never marked", racing.updates)
+			if racing.updates != 1 {
+				t.Fatalf("the release sent %d conditional writes, want one: a claim granted since the read is never marked", racing.updates)
+			}
+			if want := seeded.ClaimedAt + later.Milliseconds(); granted.ClaimedAt != want {
+				t.Fatalf("the grant was claimed at %d and the claim the release read at %d, want the grant at %d", granted.ClaimedAt, seeded.ClaimedAt, want)
+			}
+			if stood := storedRoleClaim(t, reg, role); stood != granted {
+				t.Fatalf("the claim after the hand-back is %+v, want the grant %+v untouched: the hand-back released no claim this grant made", stood, granted)
+			}
+			assertRoleHolder(t, reg, role, holder)
+		})
 	}
-	if granted.ClaimedAt <= seeded.ClaimedAt {
-		t.Fatalf("the grant was claimed at %d and the claim the release read at %d, want the grant's moment past it", granted.ClaimedAt, seeded.ClaimedAt)
-	}
-	if stood := storedRoleClaim(t, reg, role); stood != granted {
-		t.Fatalf("the claim after the hand-back is %+v, want the grant %+v untouched: the hand-back released no claim this grant made", stood, granted)
-	}
-	assertRoleHolder(t, reg, role, holder)
 }
 
 // racingEachUpdateKeyValue runs a hook before each of the first racedUpdates conditional updates

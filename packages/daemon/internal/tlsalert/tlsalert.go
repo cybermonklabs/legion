@@ -2,6 +2,10 @@
 // at any point of the connection: an answer that ends the connection and that no wait fixes, as
 // against a network that is not there yet, which the next attempt can find.
 // Its twin is packages/envoy/internal/tlsalert: a change to the reading here is a change there.
+//
+// The two are copies, not one package imported twice, for the reason
+// packages/daemon/internal/testtmp gives. Only this package comment and the paragraph of In's
+// comment that names its callers are each module's own.
 package tlsalert
 
 import (

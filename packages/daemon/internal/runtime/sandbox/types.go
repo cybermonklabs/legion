@@ -368,16 +368,16 @@ type Options struct {
 	// .repository_cache, whose defaults the daemon's configuration supplies): required for
 	// supervision, which sweeps and refreshes caches.
 	RepositoryCache RepositoryCache
-	// Mapped is, despite its name, more than the mapping: the repositories the project works
-	// now, read at every orphan sweep, which are those Dispatch's mapping names and those of the
-	// project's live issue records, a set the daemon holds and answers without I/O
-	// (daemon's cacheRepositories). An issue of any project may name any repository both role
-	// Apps are installed on, so a repository no mapping names gets its cache — one volume and one
-	// pod — from the moment a record names it. The sweep makes or repairs each member's cache
+	// CacheRepositories is the cache set: the repositories the project works now, read at every
+	// orphan sweep, which are those of the project's live issue records and those a launch
+	// worked since the daemon last read the records, a set the daemon holds and answers without
+	// I/O (daemon's cacheRepositories). An issue may name any repository both role Apps are
+	// installed on, so a repository gets its cache — one volume and one pod — from the moment a
+	// record or a launch names it. The sweep makes or repairs each member's cache
 	// (EnsureRepositoryCache), and retires the cache of a repository the set no longer holds,
-	// which is one no live record and no mapping names, once that cache's retention passes.
-	// Required for supervision.
-	Mapped func() []ghrepo.Repository
+	// which is one no live record and no launch since the last read names, once that cache's
+	// retention passes. Required for supervision.
+	CacheRepositories func() []ghrepo.Repository
 	// SavedWorkspaceBundle is the bundle an issue's last release saved, and WorkspaceBundleRestored
 	// the confirmation that drops it once the issue's new pod holds it. The pair carries the work a
 	// release took off the released pod's disk back into the pod that replaces it: the runtime
@@ -414,6 +414,19 @@ type Options struct {
 	// connection on it, since the launcher would redial the one connection that carries its
 	// reports once a second (ServeLauncher's switch).
 	VolumeReported runtime.VolumeReported
+	// RoundPodEnds is the daemon's reading of the update round over a pod a launch would keep
+	// (runtime.RoundPodEnds): whether the round open over podUID, the live pod of token's issue
+	// that the launch replaces for no other reason, has ended by the daemon's rule for a round with
+	// no process in its pod (dispatch://INFRA-4109 R7). relaunch asks it under the pod's launch
+	// turn, only of a live pod a round covers (roundCovers) and only where the launch would keep
+	// that pod. A yes is the round's own replacement of the pod, made by the launch: the Sandbox is
+	// suspended under the round's mark (displacing, roundReplacement), and the role starts
+	// in a new pod, so it is launched once rather than into a pod the round is about to replace. An
+	// error fails the launch as any of its steps does. The daemon builds the runtime before its
+	// supervision opens, so it binds this through a holder it fills once the supervision is open
+	// (internal/daemon's launchRounds). nil keeps every such pod, as every launch kept it before
+	// the hook existed.
+	RoundPodEnds runtime.RoundPodEnds
 	// LeakCheck reads the shared public leak check at the tag a pod's launcher names in its hello
 	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
 	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for

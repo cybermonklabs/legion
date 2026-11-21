@@ -421,7 +421,8 @@ func (bearerOf) RequireTransportSecurity() bool { return false }
 // broker reread treats a scheduled deletion as absent the moment it is scheduled, as AWS's
 // DeletedDate does), pending-value for one with no version that carries the create label (a
 // create waiting for its value: the fake makes every secret now, so it is always young enough),
-// no-current-value for any other with no version, served otherwise.
+// no-current-value for any other with no version, and otherwise what its annotations answer
+// (servedAs): refused for a type without the GitHub owners it needs, served as its type if not.
 func gcpServedBy(f *fakeSecretManager, settings Settings) func(name string) Reread {
 	return func(name string) Reread {
 		slug, err := policy.NameToSlug(name)
@@ -441,7 +442,7 @@ func gcpServedBy(f *fakeSecretManager, settings Settings) func(name string) Rere
 		case len(entry.versions) == 0:
 			return Reread{Name: name, Reason: policy.ReasonNoCurrentValue}
 		}
-		return Reread{Name: name, Served: true, Type: policy.TypeFromTags(entry.secret.GetAnnotations())}
+		return servedAs(name, entry.secret.GetAnnotations())
 	}
 }
 

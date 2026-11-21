@@ -1,6 +1,7 @@
 package testnats
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -31,7 +32,7 @@ func TestMain(m *testing.M) { os.Exit(Main(m)) }
 // races CreateKeyValue. The helper must retry the JetStream operation itself.
 func TestWaitForJetStreamRetriesTheOperationUntilItIsReady(t *testing.T) {
 	attempts := 0
-	waitForJetStream(t, func() error {
+	waitForJetStream(t, func(context.Context) error {
 		attempts++
 		if attempts < 3 {
 			return errors.New("JetStream is starting")
@@ -153,7 +154,8 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	})
 }
 
-// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does.
+// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does, and with its
+// test's deadline, which a wait bounded by it reads (waitBound).
 type fatalRecorder struct {
 	testing.TB
 	message string
@@ -163,6 +165,13 @@ func (f *fatalRecorder) Fatal(args ...any) { f.message = fmt.Sprint(args...); ru
 func (f *fatalRecorder) Fatalf(format string, args ...any) {
 	f.message = fmt.Sprintf(format, args...)
 	runtime.Goexit()
+}
+
+func (f *fatalRecorder) Deadline() (time.Time, bool) {
+	if timed, ok := f.TB.(interface{ Deadline() (time.Time, bool) }); ok {
+		return timed.Deadline()
+	}
+	return time.Time{}, false
 }
 
 // A test gets one account however often it asks, so every connection it makes reaches the streams
