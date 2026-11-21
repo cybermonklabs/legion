@@ -4,9 +4,9 @@ import { createConsumerDelivery, deliverSubject, RelayHeader } from "../consumer
 import { natsAuthOptions } from "../nats-auth";
 import {
   NATS_START_HOOK_MS,
-  type NatsServer,
-  natsStopHookMs,
-  startNatsServerWithConfig,
+  NATS_STOP_HOOK_MS,
+  natsHookDeadline,
+  natsServerWithConfig,
   useNatsServerDirectory,
 } from "./nats-server";
 
@@ -61,13 +61,9 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("a session's replies under its o
   /** The listener's stand-in: an nkey user the server grants everything. */
   const requesterUser = testKeys.createUser();
   const requesterSeed = new TextDecoder().decode(requesterUser.getSeed());
-  let server: NatsServer;
-  const open: NatsConnection[] = [];
-
-  beforeAll(async () => {
-    server = await startNatsServerWithConfig(
-      serverDirectory,
-      `jetstream {}
+  const server = natsServerWithConfig(
+    serverDirectory,
+    `jetstream {}
 authorization {
   users = [
     { nkey: ${JSON.stringify(requesterUser.getPublicKey())} }
@@ -75,13 +71,18 @@ authorization {
   ]
 }
 `
-    );
-  }, NATS_START_HOOK_MS);
-  // The connections' closes, in the 60 s this hook had before, and then the container's removal.
+  );
+  const open: NatsConnection[] = [];
+  /** The teardown's bound: the connections' closes, in the 60 s this hook had before, and then
+   *  the container's removal. */
+  const STOP_HOOK_MS = 60_000 + NATS_STOP_HOOK_MS;
+
+  beforeAll(() => server.start(natsHookDeadline(NATS_START_HOOK_MS)), NATS_START_HOOK_MS);
   afterAll(async () => {
+    const deadline = natsHookDeadline(STOP_HOOK_MS);
     for (const connection of open) await connection.close();
-    server?.stop();
-  }, 60_000 + natsStopHookMs(1));
+    await server.stop(deadline);
+  }, STOP_HOOK_MS);
 
   test(
     "answers a frame and a probe asked on its own reply prefix, and nothing else gets out",

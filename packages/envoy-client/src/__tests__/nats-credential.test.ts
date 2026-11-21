@@ -26,6 +26,7 @@ import {
   awaitReady,
   buildGoBinaries,
   envoyStackEnabled,
+  STOP_GRACE_MS,
   stopProcess,
   useEnvoyStackDirectory,
 } from "../../test/envoy-stack";
@@ -403,14 +404,20 @@ async function natsdHealthy(log: string): Promise<boolean> {
 }
 
 /** Starts a {@link CalloutHub} in its own directory under the stack directory, from the binaries
- *  the describe's `beforeAll` built. */
-async function startCalloutHub(name: string, brokerUrl: string): Promise<CalloutHub> {
+ *  the describe's `beforeAll` built. Its waits for natsd and then calloutd to come up end at
+ *  `deadline` (a `Date.now()` reading), the row's own: a slow start spends the row's bound, and
+ *  one that runs out fails naming the process that was not up. */
+async function startCalloutHub(
+  name: string,
+  brokerUrl: string,
+  deadline: number
+): Promise<CalloutHub> {
   const work = path.join(stackDirectory, name);
   const bin = path.join(stackDirectory, "bin");
   const keys = path.join(work, "callout-keys");
   mkdirSync(keys, { recursive: true });
   const { PATH = "" } = process.env;
-  const budget = { timeoutMs: 60_000, tailLines: 10 };
+  const budget = () => ({ timeoutMs: deadline - Date.now(), tailLines: 10 });
   const processes: Subprocess[] = [];
   const stop = async () => {
     for (const child of processes.reverse()) await stopProcess(child, "SIGTERM");
@@ -428,7 +435,7 @@ async function startCalloutHub(name: string, brokerUrl: string): Promise<Callout
     );
     closeSync(natsOut);
     processes.push(natsd);
-    await awaitReady("natsd", natsd, natsLog, budget, () => natsdHealthy(natsLog));
+    await awaitReady("natsd", natsd, natsLog, budget(), () => natsdHealthy(natsLog));
     const ports = natsdPorts(natsLog);
     if (ports === undefined) throw new Error(`natsd named no port in ${natsLog}`);
     const natsUrl = `nats://127.0.0.1:${ports.natsPort}`;
@@ -444,7 +451,7 @@ async function startCalloutHub(name: string, brokerUrl: string): Promise<Callout
     );
     closeSync(calloutOut);
     processes.push(calloutd);
-    await awaitReady("calloutd", calloutd, calloutLog, budget, async () =>
+    await awaitReady("calloutd", calloutd, calloutLog, budget(), async () =>
       readFileSync(calloutLog, "utf8").includes("calloutd: ready")
     );
     const count = (file: string, text: string) =>
@@ -462,6 +469,13 @@ async function startCalloutHub(name: string, brokerUrl: string): Promise<Callout
     throw error;
   }
 }
+
+/** The room each row below keeps at the end of its bound. Every wait of the row, its hub's start
+ *  included, ends this long before the row's timeout, measured from the row's own start, so one
+ *  that gives up fails naming what it waited for, after the row's teardown, rather than as the
+ *  timeout, however long the row's setup took. The teardown stops calloutd and then natsd, each
+ *  given `STOP_GRACE_MS` before it is killed, and 5 s more. */
+const ROW_ROOM_MS = 2 * STOP_GRACE_MS + 5_000;
 
 describe.skipIf(!envoyStackEnabled)(
   "a session's connection to a hub behind the auth service",
@@ -481,21 +495,25 @@ describe.skipIf(!envoyStackEnabled)(
     test(
       "reconnects after two refusals once a token is live again",
       async () => {
-        // Tokens live three seconds, so the user the service admits a connection as lapses inside
-        // the test, as a 15-minute one does inside a session; the server expires it on its own
-        // clock, so this runs on the wall clock.
-        const broker = stubBroker(3);
-        const hub = await startCalloutHub("reconnect", broker.url);
-        let connection: NatsConnection | undefined;
-        let stopKeeping = () => {};
+        // The row's clock starts before its setup, so the hub's start spends the row's bound and
+        // leaves the waits below the rest of it, never more.
+        const started = Date.now();
+        const rowDeadline = started + RECONNECT_ROW_MS - ROW_ROOM_MS;
         // What the client did, for a failure's dump: every status nats.js reports (a redial's start
         // is its `reconnecting`, its end a `reconnect`, an `error` or the next `reconnecting`), and
         // each CONNECT the authenticator answered, with what it presented. A dial that hangs shows
         // as a `reconnecting` with nothing after it; a connection admitted and kept, as a
         // `reconnect` with no `disconnect` after it.
-        const started = Date.now();
         const trace: string[] = [];
         const note = (what: string) => trace.push(`${Date.now() - started} ms: ${what}`);
+        // Tokens live three seconds, so the user the service admits a connection as lapses inside
+        // the test, as a 15-minute one does inside a session; the server expires it on its own
+        // clock, so this runs on the wall clock.
+        const broker = stubBroker(3);
+        const hub = await startCalloutHub("reconnect", broker.url, rowDeadline);
+        note("the hub is up");
+        let connection: NatsConnection | undefined;
+        let stopKeeping = () => {};
         try {
           const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_e2e");
           await credential.ready();
@@ -537,36 +555,39 @@ describe.skipIf(!envoyStackEnabled)(
           // drops the user it admitted, and each reconnect is refused.
           note("the broker goes away");
           broker.state.down = true;
-          // Each phase below waits for its fact, bounded only by the row: its bound less 5 s. An
-          // earlier phase keeps back the time the later ones take on the product's own schedule,
-          // so a slow phase cannot leave the next none: the keeper's warning, at most
-          // TRADE_DEADLINE_MS after its renewal starts, and the reconnect once the broker is back,
-          // at most RETRY_FIRST_WAIT_MS after a failed trade, the next dial at most
-          // BROKER_REDIAL_CAP_MS on, and the redial loop's BROKER_REDIAL_POLL_MS. The schedules
-          // themselves are held to the millisecond by the keeper's and the redial handler's rows
-          // on the fake clock (nats-credential-keeper, nats-redial); on the wall clock and a real
-          // natsd, this row holds the facts.
-          const rowDeadline = started + RECONNECT_ROW_MS - 5_000;
+          // Each phase below waits for its fact, bounded only by the row's deadline. An earlier
+          // phase keeps back the time the later ones take on the product's own schedule, so a slow
+          // phase cannot leave the next none: the keeper's warning, at most TRADE_DEADLINE_MS after
+          // its renewal starts, and the reconnect once the broker is back, at most
+          // RETRY_FIRST_WAIT_MS after a failed trade, the next dial at most BROKER_REDIAL_CAP_MS
+          // on, and the redial loop's BROKER_REDIAL_POLL_MS. The schedules themselves are held to
+          // the millisecond by the keeper's and the redial handler's rows on the fake clock
+          // (nats-credential-keeper, nats-redial); on the wall clock and a real natsd, this row
+          // holds the facts.
           const reconnectMs = RETRY_FIRST_WAIT_MS + BROKER_REDIAL_CAP_MS + BROKER_REDIAL_POLL_MS;
           const until = async (holds: () => boolean, by: number) => {
             while (!holds() && Date.now() < by) await Bun.sleep(100);
             return holds();
           };
-          const refusedBy = rowDeadline - reconnectMs - TRADE_DEADLINE_MS;
-          if (!(await until(() => hub.refusals() >= 2, refusedBy)))
-            throw new Error(
+          const into = (at: number) => `${Math.round((at - started) / 1000)} s into the row`;
+          const failed = (what: string) =>
+            new Error(
               [
-                `natsd refused ${hub.refusals()} connection(s) by ${Math.round((refusedBy - started) / 1000)} s into the row, not 2 or more (the auth service logged ${hub.serviceRefusals()} refusal(s)); the connection is ${opened.isClosed() ? "closed" : "open"}`,
+                `${what}; natsd refused ${hub.refusals()} connection(s) (the auth service logged ${hub.serviceRefusals()} refusal(s)), and the connection is ${opened.isClosed() ? "closed" : "open"}`,
                 "the client, by milliseconds since the row began:",
                 ...trace,
                 hub.logs(),
               ].join("\n")
             );
+          const refusedBy = rowDeadline - reconnectMs - TRADE_DEADLINE_MS;
+          if (!(await until(() => hub.refusals() >= 2, refusedBy)))
+            throw failed(`natsd had not refused 2 connections by ${into(refusedBy)}`);
           expect(opened.isClosed()).toBe(false);
           // The keeper warns once its renewal fails, and natsd refuses once the token lapses on the
           // server's clock: two clocks, so no order between the two is promised.
-          await until(() => warnings.length > 0, rowDeadline - reconnectMs);
-          expect(warnings.length).toBeGreaterThan(0);
+          const warnedBy = rowDeadline - reconnectMs;
+          if (!(await until(() => warnings.length > 0, warnedBy)))
+            throw failed(`the keeper had not warned by ${into(warnedBy)}`);
           for (const one of broker.state.minted) {
             expect(warnings.join("\n")).not.toContain(one.value);
           }
@@ -575,11 +596,12 @@ describe.skipIf(!envoyStackEnabled)(
           // tokens of a session's usual life again, so the keeper does not renew within the row:
           // with 3-second tokens it renews about every 1.5 s and reconnects to present each new
           // token, and the round trip below raced that reconnect (NatsError DISCONNECT).
+          note("the broker is back");
           const back = Date.now();
           broker.state.seconds = 900;
           broker.state.down = false;
-          await until(() => reconnected.some((at) => at > back), rowDeadline);
-          expect(reconnected.some((at) => at > back)).toBe(true);
+          if (!(await until(() => reconnected.some((at) => at > back), rowDeadline)))
+            throw failed(`the connection had not come back by ${into(rowDeadline)}`);
           expect(opened.isClosed()).toBe(false);
           expect(await opened.rtt()).toBeGreaterThanOrEqual(0);
         } finally {
@@ -600,14 +622,17 @@ describe.skipIf(!envoyStackEnabled)(
         // The broker revokes the session's token: the auth service, which asks it about each
         // token, refuses every CONNECT that presents it, and nats.js redials on its backoff
         // (`brokerRedialDelays`). Tokens live ten minutes, so only the keeper's drop gets the
-        // connection a token it admits.
-        const broker = stubBroker(600);
-        const hub = await startCalloutHub("revoked", broker.url);
-        let connection: NatsConnection | undefined;
-        let stopKeeping = () => {};
+        // connection a token it admits. The row's clock starts before its setup, as the row
+        // above's does.
         const started = Date.now();
+        const rowDeadline = started + REVOKED_ROW_MS - ROW_ROOM_MS;
         const trace: string[] = [];
         const note = (what: string) => trace.push(`${Date.now() - started} ms: ${what}`);
+        const broker = stubBroker(600);
+        const hub = await startCalloutHub("revoked", broker.url, rowDeadline);
+        note("the hub is up");
+        let connection: NatsConnection | undefined;
+        let stopKeeping = () => {};
         try {
           const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_revoked");
           await credential.ready();
@@ -641,14 +666,13 @@ describe.skipIf(!envoyStackEnabled)(
           // Two refusals on the backoff, then the token traded at the second, which goes out the
           // next time the redial loop asks. When each redial goes out is the redial handler's
           // schedule, held to the millisecond by its rows on the fake clock (nats-redial); here the
-          // wait is for the fact, bounded only by the row's bound less 5 s.
-          const backBy = started + REVOKED_ROW_MS - 5_000;
-          while (!reconnected.some((when) => when > at) && Date.now() < backBy)
+          // wait is for the fact, bounded only by the row's deadline.
+          while (!reconnected.some((when) => when > at) && Date.now() < rowDeadline)
             await Bun.sleep(100);
           if (!reconnected.some((when) => when > at))
             throw new Error(
               [
-                `the connection did not come back by ${Math.round((backBy - started) / 1000)} s into the row; natsd refused ${hub.refusals()} connection(s), and the broker minted ${broker.state.minted.length} token(s)`,
+                `the connection had not come back by ${Math.round((rowDeadline - started) / 1000)} s into the row; natsd refused ${hub.refusals()} connection(s), and the broker minted ${broker.state.minted.length} token(s)`,
                 "the client, by milliseconds since the row began:",
                 ...trace,
                 hub.logs(),
@@ -672,87 +696,110 @@ describe.skipIf(!envoyStackEnabled)(
       REVOKED_ROW_MS
     );
 
-    test("a session switch subscribes the new session only once the connection is admitted as it", async () => {
-      const broker = stubBroker(600);
-      const hub = await startCalloutHub("switch", broker.url);
-      let connection: NatsConnection | undefined;
-      try {
-        // The session name a plugin hands its credential: read at each trade, so a switch moves
-        // the credential to the new session's token.
-        let session = "ses_before";
-        const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
-        await credential.ready();
-        const opened = await connect(
-          natsConnectionOptions({
-            servers: [hub.natsUrl],
-            name: "nats-credential-switch",
-            credential: { kind: "broker", broker: credential },
-          })
-        );
-        connection = opened;
-        const before = opened.subscribe("notifications.envoy.deliver.ses_before");
-        await opened.flush();
-        expect(before.isClosed()).toBe(false);
+    /** The bound of the row below, passed to it; its hub's start is bounded by it. */
+    const SWITCH_ROW_MS = 120_000;
 
-        // The host switches: the old session's subject goes, and the new one's opens once the
-        // connection presents the new session's token.
-        before.unsubscribe();
-        session = "ses_after";
-        await followNatsCredential(opened, credential);
-        // A subscribe the server refuses closes the subscription (nats.js's permission error).
-        const after = opened.subscribe("notifications.envoy.deliver.ses_after");
-        await opened.flush();
-        expect(after.isClosed()).toBe(false);
-        expect(broker.state.minted.map((one) => one.session)).toEqual(["ses_before", "ses_after"]);
-        // Nothing to move when the session has not changed.
-        await followNatsCredential(opened, credential);
-        expect(broker.state.minted.length).toBe(2);
-      } finally {
-        await connection?.close().catch(() => {});
-        await hub.stop();
-      }
-    }, 120_000);
+    test(
+      "a session switch subscribes the new session only once the connection is admitted as it",
+      async () => {
+        const rowDeadline = Date.now() + SWITCH_ROW_MS - ROW_ROOM_MS;
+        const broker = stubBroker(600);
+        const hub = await startCalloutHub("switch", broker.url, rowDeadline);
+        let connection: NatsConnection | undefined;
+        try {
+          // The session name a plugin hands its credential: read at each trade, so a switch moves
+          // the credential to the new session's token.
+          let session = "ses_before";
+          const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
+          await credential.ready();
+          const opened = await connect(
+            natsConnectionOptions({
+              servers: [hub.natsUrl],
+              name: "nats-credential-switch",
+              credential: { kind: "broker", broker: credential },
+            })
+          );
+          connection = opened;
+          const before = opened.subscribe("notifications.envoy.deliver.ses_before");
+          await opened.flush();
+          expect(before.isClosed()).toBe(false);
 
-    test("NATS_AUTH=broker against a hub with no auth service fails naming it", async () => {
-      // natsd with no callout and no users admits any client and sends no nonce, so a broker
-      // token has nothing to be checked by: the dial fails, naming that and the remedy, rather
-      // than connecting with no credential while the session believes it presents its token.
-      const broker = stubBroker(600);
-      const work = path.join(stackDirectory, "no-auth");
-      mkdirSync(work, { recursive: true });
-      const natsLog = path.join(work, "natsd.log");
-      const natsOut = openSync(natsLog, "a");
-      const { PATH = "" } = process.env;
-      const natsd = Bun.spawn(
-        [
-          path.join(stackDirectory, "bin", "natsd"),
-          ...["-p", "-1", "-m", "-1"],
-          ...["-store_dir", path.join(work, "nats-store")],
-        ],
-        { env: { PATH, HOME: work }, stdout: natsOut, stderr: natsOut }
-      );
-      closeSync(natsOut);
-      try {
-        await awaitReady("natsd", natsd, natsLog, { timeoutMs: 60_000, tailLines: 10 }, () =>
-          natsdHealthy(natsLog)
+          // The host switches: the old session's subject goes, and the new one's opens once the
+          // connection presents the new session's token.
+          before.unsubscribe();
+          session = "ses_after";
+          await followNatsCredential(opened, credential);
+          // A subscribe the server refuses closes the subscription (nats.js's permission error).
+          const after = opened.subscribe("notifications.envoy.deliver.ses_after");
+          await opened.flush();
+          expect(after.isClosed()).toBe(false);
+          expect(broker.state.minted.map((one) => one.session)).toEqual([
+            "ses_before",
+            "ses_after",
+          ]);
+          // Nothing to move when the session has not changed.
+          await followNatsCredential(opened, credential);
+          expect(broker.state.minted.length).toBe(2);
+        } finally {
+          await connection?.close().catch(() => {});
+          await hub.stop();
+        }
+      },
+      SWITCH_ROW_MS
+    );
+
+    /** The bound of the row below, passed to it; its natsd's start is bounded by it. */
+    const NO_AUTH_ROW_MS = 120_000;
+
+    test(
+      "NATS_AUTH=broker against a hub with no auth service fails naming it",
+      async () => {
+        // natsd with no callout and no users admits any client and sends no nonce, so a broker
+        // token has nothing to be checked by: the dial fails, naming that and the remedy, rather
+        // than connecting with no credential while the session believes it presents its token.
+        const rowDeadline = Date.now() + NO_AUTH_ROW_MS - ROW_ROOM_MS;
+        const broker = stubBroker(600);
+        const work = path.join(stackDirectory, "no-auth");
+        mkdirSync(work, { recursive: true });
+        const natsLog = path.join(work, "natsd.log");
+        const natsOut = openSync(natsLog, "a");
+        const { PATH = "" } = process.env;
+        const natsd = Bun.spawn(
+          [
+            path.join(stackDirectory, "bin", "natsd"),
+            ...["-p", "-1", "-m", "-1"],
+            ...["-store_dir", path.join(work, "nats-store")],
+          ],
+          { env: { PATH, HOME: work }, stdout: natsOut, stderr: natsOut }
         );
-        const ports = natsdPorts(natsLog);
-        if (ports === undefined) throw new Error(`natsd named no port in ${natsLog}`);
-        const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_no_auth");
-        await credential.ready();
-        const dialled = connect(
-          natsConnectionOptions({
-            servers: [`nats://127.0.0.1:${ports.natsPort}`],
-            name: "nats-credential-no-auth",
-            credential: { kind: "broker", broker: credential },
-          })
-        );
-        await expect(dialled).rejects.toThrow(
-          "NATS_AUTH is broker, but the NATS server sent no nonce to sign: it runs no auth service, so unset NATS_AUTH for this hub"
-        );
-      } finally {
-        await stopProcess(natsd, "SIGTERM");
-      }
-    }, 120_000);
+        closeSync(natsOut);
+        try {
+          await awaitReady(
+            "natsd",
+            natsd,
+            natsLog,
+            { timeoutMs: rowDeadline - Date.now(), tailLines: 10 },
+            () => natsdHealthy(natsLog)
+          );
+          const ports = natsdPorts(natsLog);
+          if (ports === undefined) throw new Error(`natsd named no port in ${natsLog}`);
+          const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_no_auth");
+          await credential.ready();
+          const dialled = connect(
+            natsConnectionOptions({
+              servers: [`nats://127.0.0.1:${ports.natsPort}`],
+              name: "nats-credential-no-auth",
+              credential: { kind: "broker", broker: credential },
+            })
+          );
+          await expect(dialled).rejects.toThrow(
+            "NATS_AUTH is broker, but the NATS server sent no nonce to sign: it runs no auth service, so unset NATS_AUTH for this hub"
+          );
+        } finally {
+          await stopProcess(natsd, "SIGTERM");
+        }
+      },
+      NO_AUTH_ROW_MS
+    );
   }
 );
