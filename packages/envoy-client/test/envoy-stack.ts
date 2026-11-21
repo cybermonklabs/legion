@@ -86,7 +86,8 @@ export interface EnvoyStackOptions {
 export const ENVOY_MODULE = path.resolve(import.meta.dir, "../../envoy");
 const READY_TIMEOUT_MS = 60_000;
 const TAIL_LINES = 10;
-const STOP_GRACE_MS = 10_000;
+/** How long `stopProcess` gives a process to stop on its signal before it kills it. */
+export const STOP_GRACE_MS = 10_000;
 
 /** What a rig builds, and how it names itself when the build cannot run. */
 export interface GoBuild {
