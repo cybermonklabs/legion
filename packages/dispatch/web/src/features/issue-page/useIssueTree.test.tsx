@@ -80,7 +80,6 @@ const issue: IssueDetails = {
   components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
   created_at: "2026-11-05T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
-  decisions_artifact_id: "",
   design_gates: [],
   external_links: [],
   holder_state: null,
@@ -984,7 +983,7 @@ test("a failed one more read's kept answer stands over no name the first read no
 // read still names while it stands, has its blocks read no more than any other document.
 test("Only the spec and the plan and Verification documents have their blocks read", async () => {
   const notes = issueDocument("artifact-notes", "notes-md");
-  const decisions = issueDocument("artifact-decisions", "decisions-md", { role: "decisions" });
+  const decisions = issueDocument("artifact-decisions", "decisions-md");
   const read = [
     issueDocument("artifact-spec", "spec", { primary: true }),
     plan,
@@ -993,7 +992,6 @@ test("Only the spec and the plan and Verification documents have their blocks re
   const withDocuments: IssueDetails = {
     ...issue,
     artifacts: [...read, decisions, notes],
-    decisions_artifact_id: decisions.id,
     plan_artifact_id: plan.id,
     primary_artifact_id: "artifact-spec",
     verification_artifact_id: "artifact-verification",

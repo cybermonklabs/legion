@@ -24,12 +24,10 @@ export type LegionRole = (typeof LEGION_ROLES)[number];
  * take this list. The `decisions` step is gone: decisions are nodes of the spec. */
 export const DESIGN_GATE_STEPS = ["criteria", "spec"] as const;
 
-/** The steps a Dispatch project row's `gated_steps` may hold as this build reads it: the
- * design-gate steps and `decisions`, which a Dispatch server of the release before still
- * answers. This build writes `decisions` nowhere.
- */
-// kept for one release: contract-read-side
-export const GATED_STEPS = ["decisions", ...DESIGN_GATE_STEPS] as const;
+/** The steps a Dispatch project row's `gated_steps` holds: the design-gate steps, which its
+ *  deployment's daemon publishes. `decisions` is none of them: Dispatch refuses it on the write,
+ *  and its boot deletes the stored step once no build a rollback reaches still reads it. */
+export const GATED_STEPS = DESIGN_GATE_STEPS;
 
 /** The scale of a plan's rating, `planRating`: the whole numbers from 1 (the plan cost the work)
  * to 5 (the plan fit the work). This is its one definition. The plugin's `plan_rating`, the

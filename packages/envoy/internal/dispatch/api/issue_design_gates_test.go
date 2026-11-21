@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -572,13 +573,12 @@ func TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 	}
 }
 
-// The design_gates rows of the retired `decisions` step stay, and this build ignores them. A row
-// of that step, written beside a `spec` row as a
-// daemon of the release before stored it, is in neither the issue's gates nor the
-// superseded-approval advice, which name the `spec` step alone, and no read deletes it. The
-// project's stored list of that step alone reads as [spec], so the spec gate still names its
-// clause. A publish of a set holding the step, which a daemon of the release before still sends,
-// is taken: the step is dropped, and that publish's own rule takes the issue's row of it away.
+// A design_gates row of the retired `decisions` step, which a daemon of an earlier release wrote,
+// stands until the boot's retirement deletes it, and this build ignores it. A row of that step,
+// written beside a `spec` row, is in neither the issue's gates nor the superseded-approval
+// advice, which name the `spec` step alone, and no read deletes it. The project's stored list of
+// that step alone reads as [spec], so the spec gate still names its clause. A publish of a set
+// holding the step is refused 400 INVALID_ISSUE, naming the step, and changes nothing stored.
 func TestADesignGateRowOfTheDecisionsStepIsIgnored(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
@@ -622,12 +622,16 @@ func TestADesignGateRowOfTheDecisionsStepIsIgnored(t *testing.T) {
 		}
 	}
 
-	published := publishDesignGates(t, handler, issue.Key, []issueDesignGate{
+	refused := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue.Key+"/design-gates", map[string]any{"gates": []issueDesignGate{
 		{Step: "decisions", ArtifactID: issue.PrimaryArtifactID},
 		{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
-	})
-	if !slices.Equal(published.Gates, specOnly) || decisionsRows() != 0 {
-		t.Fatalf("a publish holding the decisions step answered %#v and left %d rows of it, want %#v and none",
-			published.Gates, decisionsRows(), specOnly)
+	}}, "alice")
+	if refused.Code != http.StatusBadRequest || !strings.Contains(refused.Body.String(), "INVALID_ISSUE") ||
+		!strings.Contains(refused.Body.String(), `\"decisions\"`) || decisionsRows() != 1 {
+		t.Fatalf("a publish holding the decisions step: status=%d body=%s, %d rows of it; want 400 INVALID_ISSUE naming the step and the stored row as it was",
+			refused.Code, refused.Body.String(), decisionsRows())
+	}
+	if got := recordedDesignGates(t, handler, issue.Key); !slices.Equal(got, specOnly) {
+		t.Fatalf("after the refused publish %s records %#v, want %#v", issue.Key, got, specOnly)
 	}
 }

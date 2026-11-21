@@ -39,7 +39,6 @@ const issue: Issue = {
   parent: null,
   blocked_by: [],
   plan_artifact_id: "",
-  decisions_artifact_id: "",
   primary_artifact_id: "artifact-1",
   verification_artifact_id: "",
   priority: null,

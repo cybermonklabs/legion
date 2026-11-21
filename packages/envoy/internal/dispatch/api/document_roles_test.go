@@ -15,13 +15,11 @@ import (
 )
 
 // issueRoleDocuments is what an issue read names by role: its spec, and its document of each
-// role, "" where it holds none. DecisionsArtifactID is the old member a page of the release
-// before reads.
+// role, "" where it holds none.
 type issueRoleDocuments struct {
 	PrimaryArtifactID      string `json:"primary_artifact_id"`
 	VerificationArtifactID string `json:"verification_artifact_id"`
 	PlanArtifactID         string `json:"plan_artifact_id"`
-	DecisionsArtifactID    string `json:"decisions_artifact_id"`
 }
 
 func readIssueRoleDocuments(t *testing.T, handler http.Handler, key string) issueRoleDocuments {
@@ -288,13 +286,12 @@ func TestBothRoleReadersGiveAFileNamedLikeARoleDocumentNoRole(t *testing.T) {
 
 	// The issue read finds each document by the predicate: it names none of the files, and it
 	// names the rolling deploy's rows by their slug.
-	if named := readIssueRoleDocuments(t, handler, uploads); named.PlanArtifactID != "" ||
-		named.VerificationArtifactID != "" || named.DecisionsArtifactID != "" {
+	if named := readIssueRoleDocuments(t, handler, uploads); named.PlanArtifactID != "" || named.VerificationArtifactID != "" {
 		t.Errorf("issue read of the issue holding files named like role documents = %#v, want no role document named", named)
 	}
 	if named := readIssueRoleDocuments(t, handler, rolling); named.PlanArtifactID != rollingPlan ||
-		named.VerificationArtifactID != rollingVerification || named.DecisionsArtifactID != rollingDecisions {
-		t.Errorf("issue read of the issue holding role-less docs = %#v, want plan %s, verification %s and decisions %s",
-			named, rollingPlan, rollingVerification, rollingDecisions)
+		named.VerificationArtifactID != rollingVerification {
+		t.Errorf("issue read of the issue holding role-less docs = %#v, want plan %s and verification %s",
+			named, rollingPlan, rollingVerification)
 	}
 }

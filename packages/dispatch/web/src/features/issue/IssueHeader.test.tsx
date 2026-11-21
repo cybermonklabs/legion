@@ -28,7 +28,6 @@ const issue: IssueDetails = {
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
   created_at: "2026-09-24T05:00:00Z",
   created_by: { id: "alice", kind: "user" },
-  decisions_artifact_id: "",
   design_gates: [],
   external_links: [],
   holder_state: null,

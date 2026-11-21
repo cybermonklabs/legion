@@ -605,12 +605,7 @@ type Issue struct {
 	// when the issue holds none. They are resolved on read, as PrimaryArtifactID is.
 	VerificationArtifactID string `json:"verification_artifact_id"`
 	PlanArtifactID         string `json:"plan_artifact_id"`
-	// DecisionsArtifactID is the id of the issue's decisions document while it stands
-	// (decisions_documents()), "" once it is retired or where the issue holds none. A page of the
-	// release before reads it.
-	// kept for one release: compat-objects
-	DecisionsArtifactID string `json:"decisions_artifact_id"`
-	LastSeq             int    `json:"last_seq"`
+	LastSeq                int    `json:"last_seq"`
 }
 
 // Route statuses: whether an issue's route reaches a running session right now.

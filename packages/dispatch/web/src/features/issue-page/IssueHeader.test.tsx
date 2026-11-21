@@ -91,7 +91,6 @@ const issue = {
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
   plan_artifact_id: "",
-  decisions_artifact_id: "",
   primary_artifact_id: "artifact-1",
   project: "CORE",
   referenced_by_count: 0,

@@ -112,7 +112,6 @@ function issueDetails(artifacts: readonly Artifact[]): IssueDetails {
     open_asks: [],
     parent: null,
     plan_artifact_id: "",
-    decisions_artifact_id: "",
     primary_artifact_id: artifacts.find((one) => one.primary)?.id ?? "",
     verification_artifact_id: "",
     priority: null,
@@ -1790,17 +1789,13 @@ test("a block whose text cites a document carries a chip that opens it", () => {
 // nothing, as the tree reads each part's blocks (`primarySpec`, `roleDocument`). An issue read
 // that names no spec (`""`) leaves a document's own `primary` flag no say, and a decisions
 // document plays no part at all: a decision is a `decision` block of the spec, and the tree reads
-// no decisions document's blocks, so a decisions document an earlier release stored - one the
-// issue read still names (`decisions_artifact_id`) and whose `role` says so - has no part's word
-// either. A chip naming such a document draws the page's word for any document, never
+// no decisions document's blocks, so a decisions document an earlier release stored has no
+// part's word either. A chip naming such a document draws the page's word for any document, never
 // "Decisions" or "Spec" for a document whose blocks the tree never reads. The document the issue
 // does name for a part is named by that part's word.
 test("a document chip names a part only where the issue read names that document for it", () => {
   const flagged = artifact("artifact-old-spec", "old-spec-md", "old-spec.md", true);
-  const made = {
-    ...artifact("artifact-decisions", "decisions-md", "decisions.md"),
-    role: "decisions",
-  };
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
   const cited = ["old-spec-md", "decisions-md", "plan-md"].map(
     (slug) => `dispatch://${KEY}/artifact/${slug}`
@@ -1811,7 +1806,6 @@ test("a document chip names a part only where the issue read names that document
     ],
     issue: {
       ...issueDetails([flagged, made, plan]),
-      decisions_artifact_id: made.id,
       plan_artifact_id: plan.id,
       primary_artifact_id: "",
     },

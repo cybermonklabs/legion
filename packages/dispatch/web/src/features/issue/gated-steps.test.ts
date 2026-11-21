@@ -94,12 +94,3 @@ test("a step word this build has no name for is left out and the rest keep their
     { step: "criteria", label: "Verification", document: verificationDoc },
   ]);
 });
-
-// A Dispatch of the release before may still answer the retired `decisions` step in a project's
-// list; the header draws no step for it and asks for no document by that role.
-test("the retired decisions step is left out and the rest keep their order", () => {
-  expect(gatedStepEntries(gating("decisions", "criteria", "spec"), root)).toEqual([
-    { step: "criteria", label: "Verification", document: verificationDoc },
-    { step: "spec", label: "Spec", document: specArtifact },
-  ]);
-});

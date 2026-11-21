@@ -943,9 +943,9 @@ func fleetServesIssueRoom(ctx context.Context, tx pgx.Tx) (bool, error) {
 }
 
 // issueDecisionsName is the name an issue's decisions query node is created under, from which its
-// slug is taken (nextArtifactSlug). It is no decisions document's: decisions_documents(), which
-// INFRA-1150's decisions step selects by, takes a role of `decisions` or the slug `decisions-md`,
-// and this row carries no role and never that slug.
+// slug is taken (nextArtifactSlug). It is no decisions document's: refs.DecisionsDocumentSQL takes
+// a role of `decisions` or the slug `decisions-md`, and this row carries no role and never that
+// slug.
 const issueDecisionsName = "decisions"
 
 // convertedIssueRoom is what an issue born converted holds beside its spec's row (T12b of

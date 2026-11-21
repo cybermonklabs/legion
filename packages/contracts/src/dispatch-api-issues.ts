@@ -160,10 +160,6 @@ export const issueFields = {
    *  Dispatch older than document roles. */
   verification_artifact_id: z.string().optional(),
   plan_artifact_id: z.string().optional(),
-  /** The id of the issue's decisions document while it stands, `""` once the decisions step
-   *  retires it. No reader of this build reads it; a page of the release before does. */
-  // kept for one release: compat-objects
-  decisions_artifact_id: z.string().optional(),
   last_seq: z.number().int(),
 };
 

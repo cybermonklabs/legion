@@ -1,0 +1,5 @@
+kind: Removed
+body: 'The daemon''s store keeps no design-gate step decisions: a migration deletes its rows and narrows the three checks to criteria and spec.'
+time: 2026-11-21T12:08:32.81305154Z
+custom:
+    Issue: pr3142

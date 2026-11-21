@@ -1036,8 +1036,8 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
 	// A pair a task of an earlier release kept of its `decisions` step names a document no step of
-	// this release records, so the rewrite names no approval, as the record's read of the pair
-	// leaves it (record.Store.UnclaimedKept).
+	// this release records, so the rewrite names no approval: the store holds no such pair
+	// (migration 20261121101500_decisions_step_gone), and a task's payload is no row it deleted.
 	if stays.Step != "" && !stays.Step.Valid() {
 		stays.KeptApproval = record.KeptApproval{} // kept for one release: design-gate-rows
 	}

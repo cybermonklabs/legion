@@ -241,3 +241,13 @@ func standingApproval(ctx context.Context, tx pgx.Tx, artifactID string) (*model
 	}
 	return approval, nil
 }
+
+// newestApproval is the document's newest review where it is an approval, of whatever version, or
+// nil (standingApproval reads whether it approves the latest).
+func newestApproval(ctx context.Context, tx pgx.Tx, artifactID string) (*model.SupersededApproval, error) {
+	review, err := NewestReview(ctx, tx, artifactID)
+	if err != nil || review == nil || review.State != "approved" {
+		return nil, err
+	}
+	return &model.SupersededApproval{ReviewID: review.ID, ApprovedVersion: review.Version, ApprovedBy: review.Actor, Kind: review.Kind}, nil
+}

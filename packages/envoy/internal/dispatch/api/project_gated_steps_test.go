@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -216,29 +217,27 @@ func TestGatedStepsOnTheProjectRow(t *testing.T) {
 	}
 }
 
-// The `decisions` step is gone, and a page of the release
-// before still publishes it, so the gated-steps write takes it and stores the list without it: a
-// list of that step and others stores the others, and a list of that step alone stores [spec],
-// never the empty list, which would gate nothing. A list this build reads back holds no
-// `decisions`: a stored list that holds it beside another step reads without it, and a stored list
-// of it alone reads as [spec].
-func TestTheGatedStepsWriteTakesTheDecisionsStepAndStoresTheListWithoutIt(t *testing.T) {
+// The `decisions` step is gone: a gated-steps write naming it is refused 400 INVALID_PROJECT,
+// naming the step, and stores nothing. A list this build reads back holds no `decisions`: a list
+// an earlier release stored, which the database's check admits until the boot's retirement
+// narrows it, reads without it beside another step, and as [spec] alone, never the empty list,
+// which would gate nothing.
+func TestTheGatedStepsWriteRefusesTheDecisionsStepAndReadsAStoredOneWithoutIt(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createInteractionIssue(t, handler, "OLDER", "The root", "A spec\n")
-	for _, write := range []struct{ published, stored []string }{
-		{[]string{"decisions", "criteria", "spec"}, []string{"criteria", "spec"}},
-		{[]string{"spec", "decisions"}, []string{"spec"}},
-		{[]string{"decisions"}, []string{"spec"}},
-	} {
-		if answer := publishGatedSteps(t, handler, "OLDER", write.published); !slices.Equal(answer.Steps, write.stored) {
-			t.Fatalf("publishing %v answered %v, want %v", write.published, answer.Steps, write.stored)
+	publishGatedSteps(t, handler, "OLDER", []string{"criteria", "spec"})
+	for _, published := range [][]string{{"decisions", "criteria", "spec"}, {"spec", "decisions"}, {"decisions"}} {
+		response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/OLDER/gated-steps", map[string]any{"steps": published}, "alice")
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "INVALID_PROJECT") ||
+			!strings.Contains(response.Body.String(), `\"decisions\"`) {
+			t.Fatalf("publishing %v: status=%d body=%s, want 400 INVALID_PROJECT naming the step decisions", published, response.Code, response.Body.String())
 		}
 		var stored []string
 		if err := database.Pool.QueryRow(context.Background(), `select gated_steps from projects where key = 'OLDER'`).Scan(&stored); err != nil {
 			t.Fatalf("read the stored list: %v", err)
 		}
-		if !slices.Equal(stored, write.stored) {
-			t.Fatalf("publishing %v stored %v, want %v", write.published, stored, write.stored)
+		if !slices.Equal(stored, []string{"criteria", "spec"}) {
+			t.Fatalf("a refused publish of %v stored %v, want the list published before it", published, stored)
 		}
 	}
 	for _, read := range []struct{ stored, listed []string }{

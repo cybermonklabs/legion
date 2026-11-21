@@ -1,0 +1,5 @@
+kind: Removed
+body: decisions_artifact_id, and decisions in the document roles and the gated steps.
+time: 2026-11-21T12:08:41.575447084Z
+custom:
+    Issue: pr3142

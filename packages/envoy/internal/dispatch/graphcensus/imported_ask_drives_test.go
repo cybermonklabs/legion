@@ -11,18 +11,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The blocks the ask drives write, each named so a drive's check can find it.
@@ -34,19 +31,16 @@ const (
 )
 
 // askDrives are the drives of the sites of the register of the store's writers that write an ask's
-// answer state, a Keep of an agent's decision, the decisions step's restore and conversion, its
-// catch-up, and the settlement's writes beyond the ask it opens, each the real site reached as its
-// own lock-step driver reaches it, over the rig the drives before them wrote (importedDrives). They
-// run in this order: alice's answer of the ask a session opened; the close of an issue of its own
-// holding an open ask, and its reopen; alice's Keep of a decision a session uploaded; an upload of a
-// decision in a document of more blocks than a write indexes in its own request, which writes the
-// decision through the typed-node pass on its own; the settlement of a copy of the notes' ask block
-// on a document of its own; the settlement of an ask block whose question a person's edit emptied;
-// the settlement that carries a person's approval onto an approval request a session opened; a
-// person's edit that takes the block of an answered ask out of its document; an upload that changes
-// nothing, whose version no index pass plans; the decisions step's conversion of an issue whose
-// decisions document holds one section a person kept; and the step's catch-up of an unfollow a
-// build before this one recorded.
+// answer state, a Keep of an agent's decision, and the settlement's writes beyond the ask it opens,
+// each the real site reached as its own lock-step driver reaches it, over the rig the drives before
+// them wrote (importedDrives). They run in this order: alice's answer of the ask a session opened;
+// the close of an issue of its own holding an open ask, and its reopen; alice's Keep of a decision
+// a session uploaded; an upload of a decision in a document of more blocks than a write indexes in
+// its own request, which writes the decision through the typed-node pass on its own; the
+// settlement of a copy of the notes' ask block on a document of its own; the settlement of an ask
+// block whose question a person's edit emptied; the settlement that carries a person's approval
+// onto an approval request a session opened; a person's edit that takes the block of an answered
+// ask out of its document; and an upload that changes nothing, whose version no index pass plans.
 func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	t.Helper()
 	ctx := context.Background()
@@ -55,11 +49,10 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	// reopen take, the document the Keep keeps a decision of and the decision's sum, the copy, the
 	// document whose ask block is emptied and that ask, the document the carry settles and its
 	// approval request, the document whose answered ask a person removes, the document an upload
-	// leaves as it was, and the project the decisions step converts.
-	var closing, choices, choiceSum, copied, invalid, invalidAsk, carried, request, removal, unchanged string
+	// leaves as it was, and the document the retirement retires.
+	var closing, choices, choiceSum, copied, invalid, invalidAsk, carried, request, removal, unchanged, retired string
 	// The token of the version same.md's replacement replaces, read before its drive.
 	var unchangedBase map[string]string
-	const decided = "DECIDE"
 	return []graphcensus.StoreDrive{{
 		// alice answers the ask ses_asker opened (closeAskTx), through the one writer of an ask's
 		// answer state (asks.Settled.Queue).
@@ -328,122 +321,34 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		},
 		Counts: versionCounted,
 	}, {
-		// The decisions step's catch-up (a tick of docs.DecisionStep) of an unfollow a build before
-		// this one recorded: that build deleted the follower row of the follower route's follow and
-		// appended its ask.follower_removed, and stated nothing on the store, so the catch-up
-		// retracts the followed_by the ask's node still asserts (asks.CatchUpFollower).
-		Name: "asks/followers.go#CatchUpFollower, an unfollow", Database: r.database,
-		Sites: []string{"asks/followers.go#CatchUpFollower"},
+		// The retirement of a document of the issue, as the pre-mortem conversion retires the
+		// document it converts (docs.RetireDocument, in a transaction of its own): the document's
+		// node stated gone, its row retired, and document.retired with the node's facts under it.
+		Name: "docs/retire.go#RetireDocument, retiring a document", Database: r.database,
+		Sites: []string{"docs/retire.go#RetireDocument", "docs/retire.go#writeRetiredNode"},
 		Ready: func(t *testing.T) {
+			retired = decoded[struct {
+				Artifact model.Artifact `json:"artifact"`
+			}](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
+				"name": "retired.md", "content": "# Retired\n\nA document the drive retires.\n",
+			}, "alice", http.StatusCreated)).Artifact.ID
+		},
+		Drive: func(t *testing.T) {
 			tx, err := r.database.Pool.Begin(ctx)
 			if err != nil {
-				t.Fatalf("begin the unfollow of the build before: %v", err)
+				t.Fatalf("begin the retirement: %v", err)
 			}
 			defer tx.Rollback(ctx)
-			if err := store.LockOwner(ctx, tx, store.IssueOwner(r.issue)); err != nil {
-				t.Fatalf("take %s's owner lock: %v", r.issue, err)
-			}
-			if _, err := tx.Exec(ctx, `delete from ask_followers where ask_id = $1::uuid and session_id = 'ses_follower'`, r.ask); err != nil {
-				t.Fatalf("delete the follower row as the build before: %v", err)
-			}
-			by := model.Actor{Kind: "session", ID: "ses_follower"}
-			if _, err := events.NewBroker().Append(ctx, tx, model.Event{
-				IssueKey: &r.issue, Type: "ask.follower_removed", Actor: by,
-				Payload: model.AskFollowerEventPayload{AskID: r.ask, SessionID: "ses_follower", By: by},
-			}); err != nil {
-				t.Fatalf("append the unfollow's ask.follower_removed: %v", err)
+			if _, err := docs.RetireDocument(ctx, tx, retired, alice, "The drive retires it."); err != nil {
+				t.Fatalf("retire %s: %v", retired, err)
 			}
 			if err := tx.Commit(ctx); err != nil {
-				t.Fatalf("commit the unfollow of the build before: %v", err)
+				t.Fatalf("commit the retirement: %v", err)
 			}
 		},
-		Drive: func(t *testing.T) {
-			if err := docs.NewDecisionStep(r.database, "", nil).Tick(ctx); err != nil {
-				t.Fatalf("tick the decisions step: %v", err)
-			}
-			r.awaitTrue(t, "the catch-up retracting ses_follower's followed_by", `
-				select not t.asserted from graph_tuples t
-				where t.from_kind = $1 and t.from_id = $2 and t.kind = $3 and t.to_id = 'ses_follower'
-				order by t.seq desc limit 1
-			`, graphstore.KindAsk, r.ask, graphstore.TupleFollowedBy)
+		Counts: map[graphcensus.StoredKind][]string{
+			{graphstore.KindArtifact, graphstore.AttributeState}: {"artifact_removed"},
 		},
-		Counts: followCounted,
-	}, {
-		// The decisions step's conversion of an issue of a project of its own, whose decisions
-		// document holds one section a person kept (docs.DecisionStep.RestoreAndConvert): the
-		// decisions document's version without the section, the spec's version holding it as a
-		// decision, the section's move and the Keep carried onto the decision's node, and the
-		// decisions document's retirement. This release's upload refuses a decisions document
-		// (DECISIONS_ARE_NODES), so the document is written as a release before wrote one: its
-		// row, its first text and version, and that version's block index.
-		Name: "docs/decision_restore.go#writeFacts, converting a decisions document", Database: r.database,
-		Sites: []string{"docs/decision_restore.go#writeFacts", "docs/decision_restore.go#writeVersion",
-			"docs/retire.go#RetireDocument", "docs/retire.go#writeRetiredNode", "refs/blocks.go#Queue"},
-		Ready: func(t *testing.T) {
-			r.request(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": decided, "name": "Decided"}, "alice", http.StatusCreated)
-			issue := decoded[model.Issue](t, r.request(t, http.MethodPost, "/api/v1/issues", map[string]any{
-				"project": decided, "title": "What the decisions step converts",
-				"spec": "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n",
-			}, "alice", http.StatusCreated)).Key
-			decisions := r.earlierDecisionsDocument(t, issue, decided,
-				"# Decisions\n\n## Files stay out of the corpus\n\nWe write no file beside the database.\n")
-			if err := r.documents.SettleIssueDocuments(ctx, issue); err != nil {
-				t.Fatalf("settle the documents of %s: %v", issue, err)
-			}
-			rows, err := r.database.Pool.Query(ctx, `select block_id from document_blocks where artifact_id = $1::uuid and type = 'heading'`, decisions)
-			if err != nil {
-				t.Fatalf("read the headings of decisions.md: %v", err)
-			}
-			headings, err := pgx.CollectRows(rows, pgx.RowTo[string])
-			if err != nil {
-				t.Fatalf("read the headings of decisions.md: %v", err)
-			}
-			kept := false
-			for _, heading := range headings {
-				section, found, err := r.documents.DecisionHeading(ctx, r.database.Pool, decisions, heading)
-				if err != nil {
-					t.Fatalf("read the section heading %s opens: %v", heading, err)
-				}
-				if !found {
-					continue
-				}
-				if _, err := r.database.Pool.Exec(ctx, `
-					insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by)
-					values ($1::uuid, $2, $3, 1, 'lee')
-				`, decisions, heading, section.TextSHA256); err != nil {
-					t.Fatalf("write lee's Keep of %s: %v", heading, err)
-				}
-				kept = true
-			}
-			if !kept {
-				t.Fatalf("decisions.md of %s holds no section among its headings %v", issue, headings)
-			}
-		},
-		Drive: func(t *testing.T) {
-			step := docs.NewDecisionStep(r.database, "", nil)
-			step.UseDocuments(r.documents)
-			done, failed, err := step.RestoreAndConvert(ctx, decided, true, false)
-			if err != nil || len(failed) > 0 {
-				t.Fatalf("the decisions step's conversion answered %v with failures %+v", err, failed)
-			}
-			if len(done) != 1 || done[0].Decisions != 1 || !done[0].Retired {
-				t.Fatalf("the decisions step did %+v, want one section a decision and its decisions document retired", done)
-			}
-		},
-		// The versions' blocks - the spec's new decision with its values, and the decisions
-		// document's section stated gone - the two versions' nodes, the spec's a query version with
-		// its definition_version, the decision's decided_by, the section's move, the Keep it
-		// carries with the keeper's node, and the retired document's node stated gone.
-		Counts: merged(newBlockCounted, blockValuesCounted, versionCounted, queryVersionCounted, map[graphcensus.StoredKind][]string{
-			{refs.BlockNodeKind, graphstore.AttributeState}:         {"block", "block_gone"},
-			{refs.BlockNodeKind, graphstore.TupleDecidedBy}:         {"decision"},
-			{refs.BlockNodeKind, graphstore.TupleMovedTo}:           {"block_move"},
-			{refs.BlockNodeKind, refs.TupleKeptBy}:                  {"keep"},
-			{refs.BlockNodeKind, refs.ValueKeptTextSum}:             {"keep"},
-			{graphstore.KindPerson, graphstore.AttributeVisibility}: {graphstore.KindPerson},
-			{graphstore.KindPerson, graphstore.AttributeState}:      {graphstore.KindPerson},
-			{graphstore.KindArtifact, graphstore.AttributeState}:    {"artifact_removed"},
-		}),
 	}}
 }
 
@@ -461,58 +366,6 @@ func (r *writersRig) settledAsk(t *testing.T, document, block string) string {
 		t.Fatalf("read the ask of block %s: %v", block, err)
 	}
 	return ask
-}
-
-// earlierDecisionsDocument writes issue's decisions document holding markdown as a release before
-// this one wrote one, which this release's upload refuses: its artifacts row, of the decisions
-// role, then in one transaction of the document service its first text, its version 1 written by
-// alice and that version's block index, caused at the sentinel as a version no event recorded is.
-// Its node is then written as the decisions step's first phase writes the node of a row an
-// earlier release wrote with none (graphcensus.BackfillAsks), which a server of this release runs
-// at boot before the conversion can. It answers the document's id.
-func (r *writersRig) earlierDecisionsDocument(t *testing.T, issue, project, markdown string) string {
-	t.Helper()
-	ctx := context.Background()
-	alice := model.Actor{Kind: "user", ID: "alice"}
-	var document string
-	if err := r.database.Pool.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, role, created_by)
-		values ($1, $2, 'decisions-md', 'decisions.md', 'doc', false, 'decisions', '{"kind":"user","id":"alice"}')
-		returning id::text
-	`, issue, project).Scan(&document); err != nil {
-		t.Fatalf("write the decisions document of %s: %v", issue, err)
-	}
-	tx, err := r.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the decisions document's first version: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	joined, ledger := r.documents.Join(ctx, tx)
-	defer ledger.Discard()
-	written, err := r.documents.SeedText(joined, document, markdown, alice)
-	if err != nil {
-		t.Fatalf("write the decisions document's first text: %v", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		insert into artifact_versions (artifact_id, number, markdown, authors)
-		values ($1, 1, $2, '[{"kind":"user","id":"alice"}]')
-	`, document, written); err != nil {
-		t.Fatalf("write the decisions document's version 1: %v", err)
-	}
-	_, indexed, err := r.documents.IndexDocumentReferences(joined, document, 1, written)
-	if err != nil {
-		t.Fatalf("index the decisions document's version 1: %v", err)
-	}
-	if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueCaused(b, indexed, graphstore.NoEvent) }); err != nil {
-		t.Fatalf("queue the cause of the decisions document's index: %v", err)
-	}
-	if err := ledger.Commit(ctx); err != nil {
-		t.Fatalf("commit the decisions document's first version: %v", err)
-	}
-	if _, err := graphcensus.BackfillAsks(ctx, r.database); err != nil {
-		t.Fatalf("write the node of the decisions document as the first phase does: %v", err)
-	}
-	return document
 }
 
 // emptyAskQuestion connects alice's browser to document's room, as the SPA's provider connects

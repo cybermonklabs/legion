@@ -67,7 +67,6 @@ function savedIssue(key: string): Issue {
     number: Number(key.split("-")[1]),
     closed_at: null,
     external_links: [],
-    decisions_artifact_id: "",
     plan_artifact_id: "",
     verification_artifact_id: "",
   };

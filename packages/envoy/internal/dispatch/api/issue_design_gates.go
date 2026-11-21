@@ -18,8 +18,9 @@ import (
 // deployment gates at all (PUT /api/v1/projects/{key}/gated-steps); this says which document each
 // of those steps named on one issue, so Dispatch's `superseded_approval` advice prints a
 // design-gate clause for a document a gate really records and stays quiet about every other
-// document. A row of the retired `decisions` step, which a daemon of the release before wrote,
-// stays until the root's pull request deletes it, and every read of the rows leaves it out.
+// document. A row of the retired `decisions` step, which a daemon of an earlier release wrote,
+// stands until the boot's retirement deletes it (startup.Retirements), and every read of the rows
+// leaves it out.
 //
 // The write belongs to the deployment's daemon and to no person, which is why the route declares
 // no personal scope — routeScopes names it nowhere (routes_table.go): the daemon presents the
@@ -32,12 +33,11 @@ import (
 // with facts it caused, and it would move the activity feed of every gated issue each time a
 // daemon republished what Dispatch already holds.
 
-// issueDesignGate is one step of an issue's gate: the step word and the document that step
-// records. The step is one of model.GatedStepsKnown, or the retired `decisions`, which the write
-// admits and drops. The route takes and answers the same shape, since what the daemon publishes is
-// what Dispatch stores.
+// issueDesignGate is one step of an issue's gate: the step word, one of model.GatedStepsKnown,
+// and the document that step records. The route takes and answers the same shape, since what the
+// daemon publishes is what Dispatch stores.
 type issueDesignGate struct {
-	Step       string `json:"step" enum:"decisions,criteria,spec"`
+	Step       string `json:"step" enum:"criteria,spec"`
 	ArtifactID string `json:"artifact_id"`
 }
 
@@ -62,11 +62,10 @@ type issueDesignGatesInput struct {
 // sends the issue's whole set, so the transaction deletes the rows the body does not name and
 // upserts the ones it does: the stored set is what was published and nothing older survives
 // beside it. A list naming anything but the known steps is refused before the database's own
-// check would raise, a step named twice is refused as the project's own publish refuses it (one
-// record per step is all the gate keeps), and a gate naming no document is refused because the
-// document is the whole of what the row says. A gate of the retired `decisions` step, which a
-// daemon of the release before still publishes, is admitted and dropped, so the delete takes
-// that issue's stored row of the step away.
+// check would raise, the retired `decisions` step among them, a step named twice is refused as the
+// project's own publish refuses it (one record per step is all the gate keeps), and a gate naming
+// no document is refused because the document is the whole of what the row says. Each refusal is
+// 400 INVALID_ISSUE naming the step.
 func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	var input issueDesignGatesInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -87,7 +86,7 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	}
 	gates := *input.Gates
 	for index, gate := range gates {
-		if gate.Step != retiredDecisionsStep && !slices.Contains(model.GatedStepsKnown, gate.Step) {
+		if !slices.Contains(model.GatedStepsKnown, gate.Step) {
 			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
 				"%q is not a design-gate step: gates names %s", gate.Step, strings.Join(model.GatedStepsKnown, ", ")))
 			return
@@ -103,8 +102,6 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// kept for one release: steps-write-admits
-	gates = slices.DeleteFunc(gates, func(gate issueDesignGate) bool { return gate.Step == retiredDecisionsStep })
 	// The order a reader gets the set back in is model.GatedStepsKnown's, whatever order the
 	// publish named the steps in: the rows are a set keyed by step, so the answer is sorted
 	// where a project's list is stored in the order it was published.

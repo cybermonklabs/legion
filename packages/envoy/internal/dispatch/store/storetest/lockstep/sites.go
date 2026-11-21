@@ -227,18 +227,12 @@ var storeWriteCallSites = map[string]string{
 	// changed_by_run of the node retracted, under the owner lock and the room, then deletes its
 	// rows, appends artifact.removed and the node's facts under it (api's
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps).
-	"docs/retire.go#RetireDocument":   "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
-	"docs/retire.go#writeRetiredNode": "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
+	"docs/retire.go#RetireDocument":   "docs#TestTheRetirementOfADocumentTakesTheStoreLockOrder",
+	"docs/retire.go#writeRetiredNode": "docs#TestTheRetirementOfADocumentTakesTheStoreLockOrder",
 	// A person's Keep of an agent's decision: under the issue's owner
 	// row, the person's node, then the decision_keeps row that projects the Keep, then
 	// decision.kept, and the kept_by tuple and the kept_text_sum value under it, through Caused.
 	"api/decisions.go#keepDecisionNode": "api#TestEveryAskTransitionAndKeepTakesTheStoreLockOrder",
-	// The decisions step's restore and conversion of an issue,
-	// under the issue's owner row and its asks' rows: each document's version and its event, the
-	// index pass's facts under that event through Caused, then the moves, the restored asks'
-	// relations and the carried Keeps, with the person node a Keep names, under the spec's event.
-	"docs/decision_restore.go#writeVersion": "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
-	"docs/decision_restore.go#writeFacts":   "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
 	// A person's own write that takes an answered ask's block out of its document: the person's
 	// node at the sentinel, after the version's block index and before the event that records the
 	// version, and the removed_by tuple appended with the index's facts under that event. A
@@ -399,15 +393,14 @@ var storeWriteCallSites = map[string]string{
 	// approval carry's answer, and a settlement's retractions and restorations (appendEvents,
 	// above). The settlement states the copies among a document's ask blocks as claims once its
 	// version is indexed, and beside them the readability of each ask whose block it read, as
-	// that ask node's `invalid` value (G1), and the backfill of the boot step's first phase states
-	// the asks and the followers written before this release, each batch under its owners' locks
-	// first. The decisions step's catch-up drives Settle, under the ask's owner lock and then its
-	// row.
+	// that ask node's `invalid` value (G1), and the backfill states the asks and the followers
+	// written before the store, each batch under its owners' locks first. An ask transition's
+	// answer state is written through Settled.Queue, which api's
+	// TestEveryAskTransitionAndKeepTakesTheStoreLockOrder drives under the ask's owner lock.
 	"api/ask_transitions.go#closeAskTx":                "api#TestEveryAskTransitionAndKeepTakesTheStoreLockOrder",
 	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx": "api#TestEveryAskTransitionAndKeepTakesTheStoreLockOrder",
 	"api/issue_ask_lifecycle.go#recordRestoredAsksTx":  "api#TestEveryAskTransitionAndKeepTakesTheStoreLockOrder",
-	"asks/followers.go#CatchUpFollower":                "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
-	"asks/settle.go#Queue":                             "docs#TestTheCatchUpTakesTheAsksOwnerRowBeforeItsRow",
+	"asks/settle.go#Queue":                             "api#TestEveryAskTransitionAndKeepTakesTheStoreLockOrder",
 	"docs/approval_carry.go#answerApprovalAsk":         "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
 	"docs/ask_blocks.go#claimCopies":                   "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
 	"docs/ask_blocks.go#stateInvalidReasons":           "docs#TestEverySettlementWriterTakesTheStoreLockOrder",

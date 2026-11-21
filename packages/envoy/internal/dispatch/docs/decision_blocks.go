@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -13,6 +14,12 @@ import (
 
 // decisionType is the block type whose server-owned attributes settlement holds to the store.
 const decisionType = "decision"
+
+// storeBlockAddress is the store's address of block id of the document whose ref_key is refKey,
+// as the block index keys it: a U+0000 reads as U+FFFD, as the rendering writes it.
+func storeBlockAddress(refKey, id string) string {
+	return refKey + "#" + strings.ReplaceAll(id, "\x00", "\uFFFD")
+}
 
 // reconcileDecisionBlocks holds the server-owned attributes of every decision block of tree, the
 // tree settlement read of document artifactID, to what the store holds of the block's node: an

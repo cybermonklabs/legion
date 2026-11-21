@@ -61,7 +61,6 @@ const issue: IssueDetails = {
   assignee: null,
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-  decisions_artifact_id: "",
   plan_artifact_id: "",
   primary_artifact_id: "artifact-1",
   verification_artifact_id: "",

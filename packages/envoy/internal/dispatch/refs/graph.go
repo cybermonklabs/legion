@@ -870,6 +870,18 @@ func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 // document that would take it.
 const RetiredDecisionsSlug = "decisions-md"
 
+// DecisionsDocumentSQL is true of the artifacts row a when it is an issue's decisions document an
+// earlier release stored, standing or retired: a document of an issue that plays the role
+// `decisions`, or, stored before the role existed, whose role is null and whose slug is
+// RetiredDecisionsSlug. It is the rule the function decisions_documents() of migration
+// 20261117093337 holds, written here for the reads that outlive that function, which the boot's
+// retirement drops (startup.Retirements): a retirement keeps the slug, so a retired document
+// still reads as one, and once artifacts_role_check is narrowed no row plays the role.
+func DecisionsDocumentSQL(a string) string {
+	return a + `.issue_key is not null and ` + a + `.kind = 'doc' and (` + a + `.role = 'decisions' or (` + a + `.role is null and ` +
+		a + `.slug = '` + RetiredDecisionsSlug + `'))`
+}
+
 // loadArtifactNodes resolves artifact nodes. An artifact is made by its creator; its last change
 // is its latest version, by that version's authors. It belongs to its issue, else to the session
 // whose conversation owns it, else (a project document) to no node.

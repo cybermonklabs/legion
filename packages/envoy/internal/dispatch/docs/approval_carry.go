@@ -236,10 +236,10 @@ var carryCases = [...]carryCase{readingCase, attributeRemovalCase, restoreCase, 
 // `shaped` pointers it gave an answered ask block the document held already, by that block's id
 // (shaped), and the markdown of each pointer line the write took out of the document's
 // `## Decisions` part (pointerLines, blockMarkdown), which is what those cases take out of the
-// approved version. Only the step sets it, through a mark on its write's context no route can put
-// there (withDecisionStepWrite), and SnapshotVersion carries it on the version's write
-// (versionWrite.steps); every other version write leaves it zero, and its carry weighs the reading
-// case and the attribute-removal case alone.
+// approved version. Only the decisions step of an earlier release set it, through a mark on its
+// write's context no route can put there, which SnapshotVersion carries on the version's write
+// (versionWrite.steps); this build sets no mark, so every version write leaves it zero, and its
+// carry weighs the reading case and the attribute-removal case alone.
 type decisionStepCases struct {
 	restore, conversion bool
 	restored, decisions map[string]bool
@@ -252,14 +252,9 @@ func (steps decisionStepCases) any() bool {
 	return steps.restore || steps.conversion
 }
 
-// decisionStepWriteKey marks a context as the decisions step's own write (withDecisionStepWrite).
+// decisionStepWriteKey marks a context as the decisions step's own write, which this build never
+// marks.
 type decisionStepWriteKey struct{}
-
-// withDecisionStepWrite marks ctx as the decisions step's own write, of the phases steps names and
-// with what it added.
-func withDecisionStepWrite(ctx context.Context, steps decisionStepCases) context.Context {
-	return context.WithValue(ctx, decisionStepWriteKey{}, steps)
-}
 
 // decisionStepCasesOf is the phases ctx's mark names, and what their write added, zero for a
 // context the step did not mark.

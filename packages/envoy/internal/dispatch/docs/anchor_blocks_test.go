@@ -435,3 +435,14 @@ func TestTheAnchorRefreshTakesTheOwnerRowTheRowTheEventThenTheTuple(t *testing.T
 			held, refKey, block, refreshed)
 	}
 }
+
+// backendOf is the backend process id of a one-connection store's connection (storetest.
+// SingleConnection), which every statement of a run on it goes through.
+func backendOf(t *testing.T, runner *store.Store) uint32 {
+	t.Helper()
+	var pid uint32
+	if err := runner.Pool.QueryRow(context.Background(), `select pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatalf("read the run's backend: %v", err)
+	}
+	return pid
+}

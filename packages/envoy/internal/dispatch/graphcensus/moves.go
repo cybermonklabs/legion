@@ -45,18 +45,19 @@ type RestoreWork struct {
 }
 
 // decisionsDocuments is each issue's decisions document that stands, as a FROM item of (id,
-// issue_key, ref_key): the catalog function decisions_documents()
-// (20261117093337_decisions_documents.up.sql), the one place a decisions document is spelled, by
-// its role or, for one stored before the role existed, by its slug. A retired document is none of
-// them (artifacts.retired_at): it holds nothing the restore owes. The dangling-citation counter
-// reads the retired ones too (decisionsDocumentsEver), since an address one of them held stays
-// cited after the retirement.
-// kept for one release: decisions-documents-fn
-const decisionsDocuments = `decisions_documents()`
+// issue_key, ref_key): by its role or, for one stored before the role existed, by its slug
+// (refs.DecisionsDocumentSQL). A retired document is none of them (artifacts.retired_at): it holds
+// nothing the restore owes. The dangling-citation counter reads the retired ones too
+// (decisionsDocumentsEver), since an address one of them held stays cited after the retirement.
+// The census reads the rule rather than the function decisions_documents() that holds it too
+// (20261117093337_decisions_documents.up.sql): the boot's retirement drops that function once it
+// answers no document, and the census reads on after.
+var decisionsDocuments = `(select a.id, a.issue_key, a.ref_key from artifacts a where a.retired_at is null and ` +
+	refs.DecisionsDocumentSQL("a") + `)`
 
-// decisionsDocumentsEver is decisionsDocuments with every retired decisions document among them
-// (decisions_documents(include_retired => true)), found by the slug the retirement leaves it.
-const decisionsDocumentsEver = `decisions_documents(include_retired => true)`
+// decisionsDocumentsEver is decisionsDocuments with every retired decisions document among them,
+// found by the slug the retirement leaves it.
+var decisionsDocumentsEver = `(select a.id, a.issue_key, a.ref_key from artifacts a where ` + refs.DecisionsDocumentSQL("a") + `)`
 
 // owesBlockIndex is true of the document whose uuid is the SQL expression artifact while it still
 // owes its block index (document_block_versions.version null, as typedNodeOwed reads it): its
@@ -327,8 +328,8 @@ func writeMoves(w io.Writer, dangling DanglingReport, collisions []Collision, ve
 	}
 }
 
-// DecisionsCensus is what the census prints of the decisions step's third phase: the decisions
-// documents that stand (decisions_documents()), the
+// DecisionsCensus is what the census prints of the decisions documents an earlier release stored:
+// the ones that stand (decisionsDocuments), the
 // sections they still hold, each one no rule has converted yet, and each spec the restore owes an
 // ask - an answered ask that left it, or an ask block of the decisions document, which moves into
 // it - with those asks. docs' ReadDecisionsCensus reads it, since only docs reads a decisions

@@ -1427,9 +1427,9 @@ func (step DesignStep) OrSpec() DesignStep {
 	return step
 }
 
-// Valid says whether step is one of DesignSteps. The stored columns admit `decisions` as well, a
-// step this refuses: the store keeps the rows an earlier release wrote of it and hands none of them
-// to a reader (Postgres.GatesOf).
+// Valid says whether step is one of DesignSteps. The store's columns admit those steps alone
+// (migration 20261121101500_decisions_step_gone); a payload an earlier release wrote can still name
+// the retired step `decisions`, which this refuses.
 func (step DesignStep) Valid() bool {
 	return slices.Contains(DesignSteps, step)
 }

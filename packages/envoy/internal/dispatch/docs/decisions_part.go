@@ -8,7 +8,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // decisionsPartTitle is the title of a spec's `## Decisions` part, the part its decisions and its
@@ -253,25 +252,4 @@ func sameAskWording(a, b *pmdoc.Node) bool {
 // paragraph.
 func blockMarkdown(node *pmdoc.Node) (string, error) {
 	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}})
-}
-
-// citesDocument reports whether node is a paragraph citing one of documents, by ref_key, as the
-// document itself (a reference to one of its blocks is not one), read from the paragraph's
-// markdown as every reader of a citation reads it (text.Extract): a pointer line of a spec's
-// `## Decisions` part to the issue's decisions document. A paragraph that cites a section of that
-// document is the person's prose, which the step keeps.
-func citesDocument(node *pmdoc.Node, documents map[string]bool, serverURL string) bool {
-	if node.Type != "paragraph" || len(documents) == 0 {
-		return false
-	}
-	markdown, err := blockMarkdown(node)
-	if err != nil {
-		return false
-	}
-	for _, ref := range text.Extract(markdown, serverURL) {
-		if ref.Kind == "artifact" && documents[text.TargetID(ref)] {
-			return true
-		}
-	}
-	return false
 }

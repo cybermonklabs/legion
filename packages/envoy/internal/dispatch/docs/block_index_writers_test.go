@@ -596,9 +596,6 @@ var indexPasses = map[string]string{
 	// the block reads again. It reads the value each node holds only to state what moved, never a
 	// side of a projection to mend the other.
 	"docs/ask_blocks.go#stateInvalidReasons": "the readability the settlement's reconciliation read of the document's ask blocks, and the invalid value each of their asks' nodes holds",
-	// The catch-up of a follow a process of the release before recorded: the follower rows that
-	// build wrote, stated on the ask's node where the node does not state them yet.
-	"asks/followers.go#CatchUpFollower": "the follower rows another build recorded and what the ask's node already states of them",
 	// The boot step's backfill of the asks and their followers written before this release.
 	"graphcensus/backfill.go#writeAskBatch":         "each pre-store asks row's own content",
 	"graphcensus/backfill.go#writeAskFollowerBatch": "each pre-store ask_followers row's own content",
@@ -693,12 +690,6 @@ var indexPasses = map[string]string{
 	// person read. It reads the kept_by the node holds only to retract one naming another person,
 	// so the node holds the one Keep the row projects: what moved, never a side mended.
 	"api/decisions.go#keepDecisionNode": "the Keep request, the decision the person read, and the kept_by its node holds",
-	// The decisions step's restore and conversion of an issue:
-	// each version it writes appends its index pass's facts under the version's event, and the
-	// moves, the ask nodes' relations and the Keeps it carries onto a decision's node are drawn
-	// from what it read of the issue's documents and asks under their locks, mending nothing.
-	"docs/decision_restore.go#writeVersion": "the facts the version's index pass stated and the event that recorded the version",
-	"docs/decision_restore.go#writeFacts":   "the restore's and the conversion's plan, read off the documents and the asks rows it locked",
 	// A person's own write that takes an answered ask's block out of its document states the
 	// person's node and the removed_by of each such ask, from the asks rows the write lost the
 	// blocks of and the person the write was made for, under the version's event: planned into the

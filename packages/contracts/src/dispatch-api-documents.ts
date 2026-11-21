@@ -27,11 +27,8 @@ export const versionFields = {
 export const VersionSchema = z.strictObject(versionFields).readonly();
 
 /** The part an issue's document plays beside its spec: `verification` for the document created
- *  as `verification.md`, `plan` for the one created as `plan.md`. `decisions` is the role of an
- *  issue's decisions document an earlier release stored, which a server answers until the
- *  decisions step retires that document; this build gives it to no document. */
-// kept for one release: contract-read-side
-export const DocumentRoleSchema = z.enum(["verification", "plan", "decisions"]);
+ *  as `verification.md`, `plan` for the one created as `plan.md`. */
+export const DocumentRoleSchema = z.enum(["verification", "plan"]);
 
 export type DocumentRole = z.output<typeof DocumentRoleSchema>;
 
@@ -118,9 +115,7 @@ export const artifactFields = {
   primary: z.boolean(),
   /** The part an issue's document plays beside its spec: `verification` for the document created
    *  as `verification.md`, `plan` for the one created as `plan.md`. It is set when the document is
-   *  created; absent for every other document and from a Dispatch older than document roles. An
-   *  issue's decisions document an earlier release stored answers `decisions` until the decisions
-   *  step retires it, which clears the role (DocumentRoleSchema). */
+   *  created; absent for every other document and from a Dispatch older than document roles. */
   role: DocumentRoleSchema.optional(),
   created_by: ActorSchema,
   created_at: z.string(),

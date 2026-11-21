@@ -2634,7 +2634,7 @@ func artifactSlug(name string) string {
 // documentRole, which writes the role on a new row, the SQL predicates that hold a row to a role
 // (documentRolePredicate), documentPlays, which asks the same of a row already read, and
 // documentRoleOf, which names the part one row plays. The `decisions` role is gone from every
-// write: a decisions document is found through decisions_documents(),
+// write: a decisions document an earlier release stored is found by refs.DecisionsDocumentSQL,
 // and a new one is refused (decisionsAreNodes).
 var roleSlugs = map[string]string{
 	model.ArtifactRoleVerification: model.ArtifactSlugVerification,

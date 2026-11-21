@@ -403,8 +403,7 @@ export function treeContext(
  * that part's `role` is named by the page's word for a document: a chip naming "Spec" or "Plan"
  * opens a document whose blocks the tree reads as that part. A decisions document plays no part:
  * a decision is a `decision` block of the spec or of another document, and a decisions document
- * an earlier release stored, which the issue read still names while it stands
- * (`decisions_artifact_id`), is named by the page's word for a document too.
+ * an earlier release stored is named by the page's word for a document too.
  */
 function documentWord(issue: IssueDetails, document: Pick<Artifact, "id"> | undefined): string {
   if (document === undefined) return NODE_TYPE_NAMES.document;

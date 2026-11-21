@@ -366,57 +366,6 @@ func Unfollow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model
 	return unfollowed, nil
 }
 
-// CatchUpFollower states on the ask node a follow or an unfollow a process of another build
-// recorded, under the event it appended (event, made by who at at), as the row stands now: the
-// boot step's catch-up reads that build's ask.follower_added and ask.follower_removed, which
-// changed the row and stated nothing (docs' decision step). A follow the row still holds unmarked
-// is marked and its followed_by asserted, dated by the row's since; an unfollow of a row that is
-// gone retracts the followed_by the node still asserts. It writes no follower row and deletes
-// none, so an event caught up after a later one never brings back a row the later one took away.
-// It reports whether it stated anything.
-func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, added bool, who model.Actor, at time.Time, event int64) (bool, error) {
-	if !graphstore.AddressFits(sessionID) {
-		return false, nil
-	}
-	if added {
-		var since time.Time
-		err := tx.QueryRow(ctx, `
-			update ask_followers f set node_kind = $3, node_address = $1::uuid::text
-			where f.ask_id = $1 and f.session_id = $2 and f.node_kind is null
-			  and exists (select 1 from graph_nodes node where node.kind = $3 and node.id = $1::uuid::text)
-			returning f.since
-		`, askID, sessionID, graphstore.KindAsk).Scan(&since)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
-		}
-		if err != nil {
-			return false, fmt.Errorf("mark the follow of ask %q by %q: %w", askID, sessionID, err)
-		}
-		nodes := []graphstore.Node{graphstore.SessionNode(sessionID, who, since, event)}
-		if err := graphstore.Write(ctx, tx, nodes, []graphstore.Tuple{followedBy(askID, sessionID, true, who, since, event)}); err != nil {
-			return false, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
-		}
-		return true, nil
-	}
-	var gone, asserted bool
-	if err := tx.QueryRow(ctx, `
-		select not exists (select 1 from ask_followers where ask_id = $1 and session_id = $2),
-		       coalesce((select t.asserted from graph_tuples t
-		                 where t.from_kind = $3 and t.from_id = $1::uuid::text and t.kind = $4
-		                   and t.to_kind = $5 and t.to_id = $2
-		                 order by t.seq desc limit 1), false)
-	`, askID, sessionID, graphstore.KindAsk, graphstore.TupleFollowedBy, graphstore.KindSession).Scan(&gone, &asserted); err != nil {
-		return false, fmt.Errorf("read the unfollow of ask %q by %q: %w", askID, sessionID, err)
-	}
-	if !gone || !asserted {
-		return false, nil
-	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{followedBy(askID, sessionID, false, who, at, event)}); err != nil {
-		return false, fmt.Errorf("state that %q no longer follows ask %q: %w", sessionID, askID, err)
-	}
-	return true, nil
-}
-
 // Followers lists askID's followers in the order they joined.
 func Followers(ctx context.Context, db Queryer, askID string) ([]model.AskFollower, error) {
 	rows, err := db.Query(ctx, `

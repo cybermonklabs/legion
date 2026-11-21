@@ -210,8 +210,6 @@ var settings = []setting{
 		Description: "Set to `1` so the server builds no embedder whatever `DISPATCH_EMBEDDER` and the AWS SDK's own variables would have built: meaning search answers keyword-only and says so, and the embedding queue does nothing, for an end-to-end test process whose AWS variables address a file store rather than a model service. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_RECONCILE_AT_START", Required: "no",
 		Description: "Set to `1` so a test process runs the delivery reconcile's first pass as it starts, rather than at a random moment within its first 5 minutes, for an end-to-end test that must see a pass inside its window. Set only with `DISPATCH_TEST_HOOKS=1`."},
-	{Name: "DISPATCH_TEST_HOLD_DECISIONS_STEP", Required: "no",
-		Description: "Set to `1` so a test process runs no phase of the decisions step - the backfill of the asks and ask followers the release before wrote, and the catch-up of what a process of another build writes - at boot or on its tick, so a test driver's own command (`envoy-dispatch backfill-graph-store`) makes the first move. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_HOLD_BLOCK_INDEX", Required: "no",
 		Description: "Set to `1` so a test process never starts the block-index reconciliation - its tick, which marks the documents the event log names, and its pass over the documents owed a block index - while it serves every request as before, so a test driver can let a build of an earlier rule of the block index reach a document this build's backfill marked first. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_HOLD_BOOT_BACKFILL", Required: "no",

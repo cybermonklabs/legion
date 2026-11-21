@@ -42,8 +42,7 @@ function stepDocument(issue: IssueDetails, step: DesignGateStep): Artifact | und
  * only a root issue stands in the gate.
  *
  * A step word this build does not draw is left out rather than drawn without a name: a Dispatch
- * newer than this build may gate another step, and a Dispatch of the release before may still
- * answer `decisions`, a step that is gone.
+ * newer than this build may gate another step.
  */
 export function gatedStepEntries(
   project: Project | undefined,

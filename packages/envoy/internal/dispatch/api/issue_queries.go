@@ -1022,7 +1022,6 @@ var issueRowStatement = `
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedVerificationRole + `), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedPlanRole + `), ''),
-		       coalesce((select min(d.id::text) from decisions_documents() d where d.issue_key = i.key), ''), -- kept for one release: compat-objects
 		       i.last_seq, ` + issueClaimColumns + `,
 		       ` + issueProgressColumns + `,
 		       ` + issueComponentsColumns + `,
@@ -1057,7 +1056,7 @@ func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
 	targets = append(targets, advances.targets()...)
 	targets = append(targets,
 		&issue.Assignee, &issue.Route, &createdBy, &issue.CreatedAt, &issue.UpdatedAt, &issue.ClosedAt,
-		&issue.PrimaryArtifactID, &issue.VerificationArtifactID, &issue.PlanArtifactID, &issue.DecisionsArtifactID, &issue.LastSeq,
+		&issue.PrimaryArtifactID, &issue.VerificationArtifactID, &issue.PlanArtifactID, &issue.LastSeq,
 	)
 	targets = append(targets, claim.targets()...)
 	targets = append(targets, progress.targets()...)

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The Decisions read reads the store alone. Its entries are held
@@ -58,15 +59,14 @@ const oldMembersSpec = ":::requirement{#r1}\nThe service answers over one transp
 	":::ask{#a1 urgency=\"med\" multiple=\"false\" shaped=\"dispatch://CORE-1/spec#b-r1\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n\n" +
 	":::ask{#a2 urgency=\"low\" multiple=\"false\"}\nWhich region first?\n\n- East: Near the team\n- West: Near the users\n:::\n"
 
-// The Decisions read's old members answer from the store for one release, for a page of the
-// release before. `decisions` answers each decision node
+// The Decisions read's old members answer from the store until their callers move to the tree
+// read, for a page of the release before. `decisions` answers each decision node
 // and each answered ask in model.Decision's shape: kind `agent` for a `decision` block and
 // `person` for an answered ask, links from their `shaped` tuples, waiting_review from the node, and
 // no entry for an open ask. `document` answers null while the issue holds no decisions document.
-// With one an earlier release stored standing, `document` answers its address and the issue's
-// `decisions_artifact_id` its id, found by its slug when its role is null, and none of its
-// sections reaches `decisions`. Once it is retired, `document` answers null and
-// `decisions_artifact_id` "".
+// With one an earlier release stored standing, `document` answers its address, found by its slug
+// when its role is null, and none of its sections reaches `decisions`. Once it is retired,
+// `document` answers null.
 func TestTheOldDecisionsMembersAnswerFromTheStore(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
@@ -140,10 +140,6 @@ func TestTheOldDecisionsMembersAnswerFromTheStore(t *testing.T) {
 	if want := "dispatch://CORE-1/artifact/decisions-md"; view.Document == nil || *view.Document != want {
 		t.Fatalf("the old document member = %v while the decisions document stands, want %s", view.Document, want)
 	}
-	if named := readIssueRoleDocuments(t, handler, issue.Key); named.DecisionsArtifactID != standing {
-		t.Fatalf("the issue read names decisions_artifact_id %q while the roleless decisions document stands, want %s, found by its slug",
-			named.DecisionsArtifactID, standing)
-	}
 
 	retireTestDocument(t, database, standing)
 	view = readIssueDecisions(t, handler, issue.Key)
@@ -151,77 +147,39 @@ func TestTheOldDecisionsMembersAnswerFromTheStore(t *testing.T) {
 	if view.Document != nil {
 		t.Fatalf("the old document member = %q once the decisions document is retired, want null", *view.Document)
 	}
-	if named := readIssueRoleDocuments(t, handler, issue.Key); named.DecisionsArtifactID != "" {
-		t.Fatalf("the issue read names decisions_artifact_id %q once the decisions document is retired, want \"\"", named.DecisionsArtifactID)
-	}
 }
 
-// Until the decisions step retires it, a heading of a decisions document an earlier release stored
-// is kept as the release before kept it: the Keep reads the
-// section through the step's section reader, whose text runs from the heading to its last block, so
-// its sum is the one that release served. A Keep of another sum is 409 DECISION_CHANGED and writes
-// nothing; the Keep of the sum answers 200 and writes the decision_keeps row the conversion carries
-// onto the node. A heading under `## Replaced`, a block that opens no section and a bearer's Keep are
-// refused. Once the document is retired, its heading is 404 TARGET_NOT_FOUND.
-func TestAHeadingOfAStandingDecisionsDocumentIsKeptUntilItIsRetired(t *testing.T) {
+// A heading of a decisions document an earlier release stored is no decision, standing or
+// retired: a Keep of it is 404 TARGET_NOT_FOUND and writes no decision_keeps row, as a Keep of any
+// block that holds no decision node is, whatever sum it names.
+func TestAHeadingOfADecisionsDocumentIsNeverKept(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
 	decisions := seedDecisionsDocument(t, database, deps.Docs.(*docs.Service), issue.Key,
-		"# Decisions\n\n## Transport\n\nHTTP it is.\n\n## Replaced\n\n### Files\n\nReplaced by HTTP.\n")
-	blocks := blockIDsByText(t, handler, decisions)
-	transport, files, paragraph := blocks["## Transport"], blocks["### Files"], blocks["HTTP it is."]
-	if transport == "" || files == "" || paragraph == "" {
-		t.Fatalf("the decisions document's blocks = %v, want the two headings and the paragraph", blocks)
-	}
-	keepPath := func(block string) string { return "/api/v1/artifacts/" + decisions + "/blocks/" + block + "/keep" }
-	keeps := func() int {
-		t.Helper()
-		var count int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from decision_keeps where artifact_id = $1`, decisions).Scan(&count); err != nil {
-			t.Fatalf("count the Keeps: %v", err)
-		}
-		return count
+		"# Decisions\n\n## Transport\n\nHTTP it is.\n")
+	transport := blockIDsByText(t, handler, decisions)["## Transport"]
+	if transport == "" {
+		t.Fatalf("the decisions document holds no heading `## Transport`")
 	}
 	sum := decisionread.TextSum("## Transport\n\nHTTP it is.")
-
-	changed := dispatchRequest(t, handler, http.MethodPost, keepPath(transport), map[string]any{"text_sha256": decisionread.TextSum("## Transport\n\nHTTP/2 it is.")}, "alice")
-	if changed.Code != http.StatusConflict || !strings.Contains(changed.Body.String(), "DECISION_CHANGED") || keeps() != 0 {
-		t.Fatalf("a Keep of words the section does not hold: status=%d body=%s, %d Keeps; want 409 DECISION_CHANGED and none written",
-			changed.Code, changed.Body.String(), keeps())
-	}
-	keep := keepBlock(t, handler, decisions, transport, sum)
-	// The sum is no part of the Keep's wire shape (model.DecisionKeep), so it is read off the row.
-	var keptSum string
-	if err := database.Pool.QueryRow(ctx, `select text_sha256 from decision_keeps where artifact_id = $1 and block_id = $2`,
-		decisions, transport).Scan(&keptSum); err != nil {
-		t.Fatalf("read the Keep's row: %v", err)
-	}
-	if keep.BlockID != transport || keptSum != sum || keep.KeptBy != "alice" || keeps() != 1 {
-		t.Fatalf("the Keep of the heading = %#v with the row's sum %q, %d Keeps; want %s kept by alice at %s, one decision_keeps row",
-			keep, keptSum, keeps(), transport, sum)
-	}
-	for _, refusal := range []struct{ what, block string }{
-		{"a heading under `## Replaced`", files},
-		{"a block that opens no section", paragraph},
-	} {
-		response := dispatchRequest(t, handler, http.MethodPost, keepPath(refusal.block), map[string]any{"text_sha256": sum}, "alice")
-		if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), "TARGET_NOT_FOUND") {
-			t.Fatalf("a Keep on %s: status=%d body=%s, want 404 TARGET_NOT_FOUND", refusal.what, response.Code, response.Body.String())
+	refused := func(when string) {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+decisions+"/blocks/"+transport+"/keep",
+			map[string]any{"text_sha256": sum}, "alice")
+		var keeps int
+		if err := database.Pool.QueryRow(ctx, `select count(*) from decision_keeps where artifact_id = $1`, decisions).Scan(&keeps); err != nil {
+			t.Fatalf("count the Keeps: %v", err)
+		}
+		if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), "TARGET_NOT_FOUND") || keeps != 0 {
+			t.Fatalf("a Keep on the heading of a %s decisions document: status=%d body=%s, %d Keeps; want 404 TARGET_NOT_FOUND and none written",
+				when, response.Code, response.Body.String(), keeps)
 		}
 	}
-	bearer := sessionRequest(t, handler, http.MethodPost, keepPath(transport), map[string]any{"text_sha256": sum, "actor": sessionActor()})
-	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), codeScopeRequired) {
-		t.Fatalf("a bearer's Keep: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
-	}
-
+	refused("standing")
 	retireTestDocument(t, database, decisions)
-	retired := dispatchRequest(t, handler, http.MethodPost, keepPath(transport), map[string]any{"text_sha256": sum}, "alice")
-	if retired.Code != http.StatusNotFound || !strings.Contains(retired.Body.String(), "TARGET_NOT_FOUND") {
-		t.Fatalf("a Keep on a heading of the retired document: status=%d body=%s, want 404 TARGET_NOT_FOUND",
-			retired.Code, retired.Body.String())
-	}
+	refused("retired")
 }
 
 // Each person's last read version of a document: null before they read it, the version they
@@ -479,4 +437,51 @@ func TestAConvertedIssuesDecisionAnswersAsAnUnconvertedIssuesDecisionDoes(t *tes
 		t.Fatalf("the old decisions member = %s, want the decision the entry answers", entryJSON(t, view.Decisions))
 	}
 	requireSpecLinks("the old decisions member", view.Decisions[0].Links)
+}
+
+// seedDecisionsDocument writes the issue's decisions.md below the routes, through the document
+// service, as an earlier release stored one (the routes of this release refuse a new one): the
+// document, role decisions, holding markdown as its version 1 written by the agent's session and
+// indexed as an upload of a new document is.
+func seedDecisionsDocument(t *testing.T, database *store.Store, service *docs.Service, issueKey, markdown string) string {
+	t.Helper()
+	ctx := context.Background()
+	var id string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, role, created_by)
+		select $1, project_key, 'decisions-md', 'decisions.md', 'doc', false, 'decisions', '{"kind":"session","id":"`+decidingSession+`"}'
+		from issues where key = $1
+		returning id::text
+	`, issueKey).Scan(&id); err != nil {
+		t.Fatalf("store the decisions document of %s: %v", issueKey, err)
+	}
+	session := model.Actor{Kind: "session", ID: decidingSession}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	joined, ledger := service.Join(ctx, tx)
+	defer ledger.Discard()
+	written, err := service.SeedText(joined, id, markdown, session)
+	if err != nil {
+		t.Fatalf("seed the decisions document: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		values ($1, 1, $2, '[{"kind":"session","id":"`+decidingSession+`"}]')
+	`, id, written); err != nil {
+		t.Fatalf("store the decisions document's version: %v", err)
+	}
+	_, indexed, err := service.IndexDocumentReferences(joined, id, 1, written)
+	if err != nil {
+		t.Fatalf("index the decisions document: %v", err)
+	}
+	if err := graphstore.Caused(ctx, tx, indexed, graphstore.NoEvent); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Commit(ctx); err != nil {
+		t.Fatalf("commit the decisions document: %v", err)
+	}
+	return id
 }

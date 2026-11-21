@@ -58,7 +58,6 @@ function issueDetails(
     components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
     created_at: "2026-11-07T05:00:00Z",
     created_by: { id: "alice", kind: "user" },
-    decisions_artifact_id: "",
     design_gates: [],
     external_links: [],
     holder_state: holderState,

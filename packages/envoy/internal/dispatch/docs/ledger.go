@@ -1041,20 +1041,6 @@ func (s *Service) Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger
 	return withLedger(ctx, ledger), ledger
 }
 
-// joinAtOnce joins the document operations run with the returned context to tx, as Join does,
-// and queues none of their writes: the ledger knows tx, so its operations run as inside a
-// transaction (inTransaction) and Commit commits it, and it sets no writer, so each write runs at
-// once, in the order the operations make it (write, store.RunWrite), and Commit's settlement
-// credit runs at once too. It is for the decisions step's restore (DecisionStep.restoreIssue),
-// whose transaction is one issue's restore and no more: a background pass under the step's own
-// advisory lock (takeRestoreLock) whose reads must see its own writes - an ask row it moved, a
-// version it wrote before the event that names it, a node it stated - and which no request waits
-// on, as the block-id backfill is (backfillBlockIDs). Every other caller joins with Join.
-func (s *Service) joinAtOnce(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger) {
-	ledger := &Ledger{service: s, tx: tx}
-	return withLedger(ctx, ledger), ledger
-}
-
 // inTransaction reports whether the operations recording into l run inside an open database
 // transaction that this ledger knows about: one a caller joined, or a writer's own, a
 // settlement's or the block-id backfill's. Such an operation fails on a failed room rather than

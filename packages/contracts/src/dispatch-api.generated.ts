@@ -373,7 +373,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Record that the caller agrees with a decision, as the text they read it at: {text_sha256}, the sum of the decision's own text as they read it. The block is an agent's decision, a decision block of any document of an issue, on whose node the Keep appends, in one write, a kept_by tuple to the caller and a kept_text_sum value holding the sum, with the decision_keeps row as their projection. Until the decisions step retires it, the block may also be a section heading of an issue's decisions document an earlier release stored, outside `## Replaced`, whose sum is that of the section's markdown from the heading to its last block; that Keep writes the decision_keeps row, which the conversion carries onto the section's decision node. A decision's text sum covers its own words and none of the readings it closes with. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. A decision marked replaced, a heading of a retired decisions document, and any other block are 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody. */
+    /** @description Record that the caller agrees with a decision, as the text they read it at: {text_sha256}, the sum of the decision's own text as they read it. The block is an agent's decision, a decision block of any document of an issue, on whose node the Keep appends, in one write, a kept_by tuple to the caller and a kept_text_sum value holding the sum, with the decision_keeps row as their projection. A decision's text sum covers its own words and none of the readings it closes with. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. A decision marked replaced, a heading of a decisions document an earlier release stored, and any other block are 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody. */
     post: operations["postApiV1ArtifactsByIdBlocksByBlockIdKeep"];
     delete?: never;
     options?: never;
@@ -1661,7 +1661,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. An entry of the retired step decisions, which a daemon of the release before still publishes, is taken and dropped, so the issue's stored row of that step goes with the set it replaces. A body without gates, a step that is none of these, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
+    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of these, the retired step decisions among them, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE naming the step; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
     put: operations["putApiV1IssuesByKeyDesignGates"];
     post?: never;
     delete?: never;
@@ -2948,7 +2948,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Publish the design-gate steps the Legion deployment that serves this project gates {steps}: a list of criteria and spec, in the order it gates them, or [] for a deployment that gates none. The deployment's daemon writes it at every boot; a publish of the list the row already holds changes nothing and appends no event. The retired step decisions, which a page of the release before still sends, is taken and stored nowhere: the list is stored without it, and a list of decisions alone is stored as [spec]. A body without steps, or one naming anything else, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. It declares no personal scope: the credential the deployment configured writes it, as it does the issue PATCH. */
+    /** @description Publish the design-gate steps the Legion deployment that serves this project gates {steps}: a list of criteria and spec, in the order it gates them, or [] for a deployment that gates none. The deployment's daemon writes it at every boot; a publish of the list the row already holds changes nothing and appends no event. A body without steps, or one naming anything else, the retired step decisions among them, is 400 INVALID_PROJECT naming the step, and an unknown project 404 PROJECT_NOT_FOUND. It declares no personal scope: the credential the deployment configured writes it, as it does the issue PATCH. */
     put: operations["putApiV1ProjectsByKeyGatedSteps"];
     post?: never;
     delete?: never;
@@ -4339,7 +4339,6 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
-      decisions_artifact_id: string;
       duplicate_of?: null | string;
       external_links: components["schemas"]["ExternalLink"][] | null;
       filed_from?: null | string;
@@ -5609,7 +5608,6 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
-      decisions_artifact_id: string;
       duplicate_of?: null | string;
       external_links: components["schemas"]["ExternalLink"][] | null;
       filed_from?: null | string;
@@ -5768,7 +5766,7 @@ export interface components {
     IssueDesignGate: {
       artifact_id: string;
       /** @enum {string} */
-      step: "decisions" | "criteria" | "spec";
+      step: "criteria" | "spec";
     };
     IssueDesignGates: {
       gates: components["schemas"]["IssueDesignGate"][] | null;
@@ -5793,7 +5791,6 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
-      decisions_artifact_id: string;
       design_gates: components["schemas"]["IssueDesignGate"][] | null;
       duplicate_of?: null | string;
       external_links: components["schemas"]["ExternalLink"][] | null;
@@ -6840,7 +6837,7 @@ export interface components {
     };
     ProjectGatedStepsInput: {
       actor?: components["schemas"]["Actor"] | null;
-      steps: null | ("decisions" | "criteria" | "spec")[];
+      steps: null | ("criteria" | "spec")[];
     };
     ProjectPlans: {
       issues: components["schemas"]["FinishedIssue"][] | null;
