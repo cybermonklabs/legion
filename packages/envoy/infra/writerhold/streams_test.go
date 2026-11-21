@@ -137,17 +137,6 @@ func readingOfStream(t *testing.T, readings []StreamReading, stream string) Stre
 	return StreamReading{}
 }
 
-// presentStreams are the names of the present streams of readings.
-func presentStreams(readings []StreamReading) []string {
-	var names []string
-	for _, reading := range readings {
-		if !reading.Absent {
-			names = append(names, reading.Name)
-		}
-	}
-	return names
-}
-
 // requireRefusal requires err to be a Refusal of step whose finding names each of names.
 func requireRefusal(t *testing.T, err error, step string, names ...string) {
 	t.Helper()
