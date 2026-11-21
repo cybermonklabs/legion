@@ -1,4 +1,8 @@
-import { awaitsDecision, type DismissResponse } from "@legion/contracts";
+import {
+  awaitsDecision,
+  type DismissResponse,
+  type LauncherCredentialsResponse,
+} from "@legion/contracts";
 import type {
   ApproverGrantResp,
   ApproverGrantsResponse,
@@ -21,10 +25,12 @@ import { harnessPorts } from "./harness-ports";
 // and `POST /v1/credential-requests/{id}/approve|deny` (that login's decision, carrying the code
 // again); `POST /v1/credential-requests/{id}/dismiss`, which the Inbox's Dismiss of an expired
 // request drives; `POST /v1/person-signins/{id}/revoke`, which the Settings page's Sign-ins
-// section drives; and the public `GET /.well-known/oauth-authorization-server`, the RFC 8414
-// document Dispatch reads to learn whether this broker still serves the device grant. The server
-// reaches this through
-// DISPATCH_AGENT_SECRETS_URL (run-server.sh) whenever the harness switch is left unset
+// section drives; `GET /v1/launcher-credentials?approver=`, the machine logins a person approved,
+// which Dispatch reads to revoke them after a Reset or the last removal from an access list, and
+// which this broker answers with none; and the public `GET /.well-known/oauth-authorization-server`,
+// the RFC 8414 document Dispatch reads to learn whether this broker still serves the device grant.
+// The server reaches this through DISPATCH_AGENT_SECRETS_URL (run-server.sh) whenever the harness
+// switch is left unset
 // (e2e/harness-broker.ts), and it lists nothing until a test seeds a request through
 // /__fixture/pending, a grant through /__fixture/grants, a machine login through
 // /__fixture/machine-logins or a sign-in through /__fixture/signins, relaying each row as
@@ -361,6 +367,17 @@ const server = Bun.serve({
     if (request.method === "PUT" && url.pathname === "/__fixture/reset") {
       state = emptyState();
       return Response.json({ ok: true });
+    }
+    // `GET /v1/launcher-credentials?approver=`, the machine logins a person approved, which
+    // Dispatch's revocation of a restricted member's machine logins reads after a Reset or the last
+    // removal from a list (internal/dispatch/api/machine_login_revocations.go). This broker holds no
+    // machine login a person approved, so the list is empty, which settles that revocation on its
+    // first pass with no revoke to make.
+    if (request.method === "GET" && url.pathname === "/v1/launcher-credentials") {
+      if ((url.searchParams.get("approver") ?? "") === "") {
+        return brokerError(400, "APPROVER_REQUIRED", "approver is required");
+      }
+      return Response.json({ credentials: [] } satisfies LauncherCredentialsResponse);
     }
     if (url.pathname === "/healthz") return Response.json({ ok: true });
     return brokerError(404, "NOT_FOUND", "not found");

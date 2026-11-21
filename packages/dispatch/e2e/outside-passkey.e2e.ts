@@ -1,9 +1,17 @@
 import { baseUrl } from "./api";
-import { harnessPorts } from "./harness-ports";
+import { repeatOnNetworkChange, signInWithGoogle } from "./google-sign-in";
 import { googleOutsideOrigin, googleSignIn } from "./harness-signin";
 import { sql } from "./psql";
 import { resetDatabase, sqlLiteral } from "./seed";
-import { type BrowserContext, expect, type Locator, type Page, type Response, test } from "./test";
+import {
+  type BrowserContext,
+  expect,
+  type Locator,
+  type Page,
+  type Response,
+  type Route,
+  test,
+} from "./test";
 import { addVirtualPasskey, type VirtualPasskey } from "./virtual-passkey";
 
 /**
@@ -35,27 +43,31 @@ const outsider = "outsider@other.example";
  *  controls. */
 const later = "later@other.example";
 
-/** Queues `email` as the person the issuer signs in at its next authorization, with the ID token
- *  claims Google gives that account: the address as its subject, a verified email, and `hd` for a
- *  Workspace account. */
-async function queueSignIn(email: string, hostedDomain: string): Promise<void> {
-  const issuer = `http://127.0.0.1:${harnessPorts().signinIssuer.port}`;
-  const queued = await fetch(`${issuer}/_dev/sign-in-as`, {
-    body: JSON.stringify({ email, email_verified: true, hd: hostedDomain, sub: email }),
-    method: "POST",
-  });
-  expect(queued.status, `the issuer queued ${email}: ${await queued.text()}`).toBe(204);
+/** Records a navigation the host's network change made the driver repeat (e2e/google-sign-in.ts)
+ *  on the row's report, so a repeat is seen rather than silent. */
+function noteRepeat(note: string): void {
+  test.info().annotations.push({ description: note, type: "network-change" });
+}
+
+/** Opens `url` in `page`, again if Chromium abandoned it because the host's network changed. */
+function open(page: Page, url: string): Promise<unknown> {
+  return repeatOnNetworkChange(`GET ${url}`, () => page.goto(url), noteRepeat);
+}
+
+/** Reloads `page`, again if Chromium abandoned it because the host's network changed. */
+function reload(page: Page): Promise<unknown> {
+  return repeatOnNetworkChange(`reload ${page.url()}`, () => page.reload(), noteRepeat);
 }
 
 /** Signs alice in at the canonical origin through the sign-in page's Google link. */
 async function aliceSignsIn(page: Page): Promise<void> {
-  await queueSignIn(alice, googleSignIn.domain);
-  await page.goto(`${canonical}/`);
-  const callback = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/auth/callback"
+  const answered: Response = await signInWithGoogle(
+    page,
+    canonical,
+    alice,
+    googleSignIn.domain,
+    noteRepeat
   );
-  await page.getByRole("link", { name: "Sign in with Google" }).click();
-  const answered: Response = await callback;
   const why = answered.status() === 302 ? "" : ` ${await answered.text()}`;
   expect(answered.status(), `/auth/callback for ${alice} answered ${answered.status()}${why}`).toBe(
     302
@@ -147,7 +159,7 @@ async function invite(page: Page, email: string): Promise<string> {
 /** Opens `link` in a new signed-out context and returns the alert its enrollment page shows. */
 async function refusedLink(context: BrowserContext, link: string): Promise<Locator> {
   const page = await context.newPage();
-  await page.goto(link);
+  await open(page, link);
   await expect(page.getByRole("heading", { name: "Enroll a passkey" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Create a passkey" })).toHaveCount(0);
   return page.getByRole("alert");
@@ -196,7 +208,7 @@ test.describe("outside passkey sign-in", () => {
 
       const link =
         await test.step("alice presses Invite for the outsider on PRIV's Access tab, and the row shows the link and when it stops", async () => {
-          await alicePage.goto(`${canonical}/projects/PRIV/access`);
+          await open(alicePage, `${canonical}/projects/PRIV/access`);
           return invite(alicePage, outsider);
         });
 
@@ -225,7 +237,7 @@ test.describe("outside passkey sign-in", () => {
       });
 
       await test.step("the outsider opens the link at the outside origin, enrolls a passkey, and is signed in, seeing PRIV alone", async () => {
-        await outsiderPage.goto(link);
+        await open(outsiderPage, link);
         await expect(outsiderPage.getByRole("heading", { name: "Enroll a passkey" })).toBeVisible();
         await expect(
           outsiderPage.getByText(`The passkey signs you in to Dispatch as ${outsider}.`)
@@ -248,7 +260,7 @@ test.describe("outside passkey sign-in", () => {
       });
 
       await test.step("alice's Access tab shows when the outsider's passkey was enrolled", async () => {
-        await alicePage.reload();
+        await reload(alicePage);
         await expect(personRow(alicePage, outsider).getByTestId("access-passkey")).toHaveCount(1);
         await expect(personRow(alicePage, outsider).getByTestId("access-passkey")).toContainText(
           "Passkey enrolled"
@@ -309,14 +321,14 @@ test.describe("outside passkey sign-in", () => {
       });
 
       await test.step("the owner's Reset ends the outsider's sign-in and deletes the passkey, so it signs in no more", async () => {
-        await alicePage.reload();
+        await reload(alicePage);
         const row = personRow(alicePage, outsider);
         alicePage.once("dialog", (dialog) => void dialog.accept());
         await row.getByRole("button", { name: `Reset ${outsider}` }).click();
         await expect(row.getByTestId("access-passkey")).toHaveCount(0);
         await expect(row.getByRole("button", { name: `Reset ${outsider}` })).toHaveCount(0);
 
-        await outsiderPage.reload();
+        await reload(outsiderPage);
         await outsiderPage.getByRole("button", { name: "Sign in with a passkey" }).click();
         await expect(outsiderPage.getByRole("alert")).toHaveText(
           "Dispatch does not know this passkey: it was removed, so it signs in no more. Ask a project's owner for a new link."
@@ -386,7 +398,7 @@ test.describe("outside passkey sign-in", () => {
           "POST",
           `/api/v1/projects/PRIV/access/people/${outsider}/invitations`
         )) as { url: string };
-        await outsiderPage.goto(url);
+        await open(outsiderPage, url);
         await outsiderPage.getByRole("button", { name: "Create a passkey" }).click();
         await expect(outsiderPage.getByText(`Signed in as ${outsider}`)).toBeVisible();
       });
@@ -413,7 +425,7 @@ test.describe("outside passkey sign-in", () => {
       });
 
       await test.step("the passkey enrolled before the reset signs in no more", async () => {
-        await outsiderPage.reload();
+        await reload(outsiderPage);
         await outsiderPage.getByRole("button", { name: "Sign in with a passkey" }).click();
         await expect(outsiderPage.getByRole("alert")).toHaveText(
           "Dispatch does not know this passkey: it was removed, so it signs in no more. Ask a project's owner for a new link."
@@ -422,5 +434,80 @@ test.describe("outside passkey sign-in", () => {
     } finally {
       await Promise.all([aliceContext.close(), outsiderContext.close()]);
     }
+  });
+
+  // Every row above starts with a Google sign-in through three redirect hops, which a loaded
+  // machine can slow or drop (e2e/google-sign-in.ts). This row forces both on the chain's first
+  // hop, Dispatch's /auth/start: Playwright routes the first request of a navigation and none of
+  // the redirects that follow it, and it cannot fail a request with the network-change error
+  // itself, so the row drops the hop with net::ERR_FAILED and names that error as one to repeat.
+  // The issuer's own hop held up is the control run outside the suite, by stopping its process.
+  test("a slow or dropped hop of the Google sign-in still signs alice in, or fails at once naming the hop", async ({
+    browser,
+  }) => {
+    const dropped = "net::ERR_FAILED";
+    /** A new signed-out page whose first /auth/start `first` answers, and every later one
+     *  reaches Dispatch. */
+    const pageWith = async (first: (route: Route) => Promise<void>): Promise<Page> => {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      let routed = false;
+      await page.route(`${canonical}/auth/start**`, async (route) => {
+        if (routed) return route.continue();
+        routed = true;
+        await first(route);
+      });
+      return page;
+    };
+    const signedIn = async (page: Page, answered: Response) => {
+      expect(answered.status(), `/auth/callback for ${alice}`).toBe(302);
+      await expect(page.getByText(`Signed in as ${alice}`)).toBeVisible();
+      await page.context().close();
+    };
+
+    await test.step("a hop held for 5 s signs alice in", async () => {
+      const page = await pageWith(async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+        await route.continue();
+      });
+      await signedIn(
+        page,
+        await signInWithGoogle(page, canonical, alice, googleSignIn.domain, noteRepeat)
+      );
+    });
+
+    await test.step("a hop dropped with an error the sign-in repeats is made again, says so, and signs alice in", async () => {
+      const page = await pageWith((route) => route.abort("failed"));
+      const repeats: string[] = [];
+      const answered = await signInWithGoogle(
+        page,
+        canonical,
+        alice,
+        googleSignIn.domain,
+        (note) => repeats.push(note),
+        [dropped]
+      );
+      expect(repeats).toEqual([`Dispatch's /auth/start: ${dropped}, made again`]);
+      await signedIn(page, answered);
+    });
+
+    await test.step("a hop dropped with any other error fails the sign-in at once, naming the hop; the unspent sign-in then completes by hand", async () => {
+      const page = await pageWith((route) => route.abort("failed"));
+      const began = Date.now();
+      await expect(
+        signInWithGoogle(page, canonical, alice, googleSignIn.domain, noteRepeat)
+      ).rejects.toThrow(
+        `the browser's request to Dispatch's /auth/start for ${alice} failed: ${dropped}`
+      );
+      // Named, not timed out: far inside the 45 s bound.
+      expect(Date.now() - began, "ms from the press to the failure").toBeLessThan(15_000);
+      // The dropped hop reached no server, so the person the issuer holds for alice is unspent;
+      // the hop made by hand spends it and signs her in.
+      const callback = page.waitForResponse(
+        (response) => new URL(response.url()).pathname === "/auth/callback"
+      );
+      await open(page, `${canonical}/auth/start`);
+      await signedIn(page, await callback);
+    });
   });
 });
