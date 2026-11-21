@@ -170,8 +170,10 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 	// clock - late, or replayed from a message the intake gave up on, however late - finds no row
 	// for the fence above and would bring it back open at the head it had then. It records nothing.
 	// A reopen newer than the clock is a person reopening it since, and applies. The clock is read
-	// under either name of a configured rename, as the record is (ghrepo.Under), and a clock missing
-	// on either side fences nothing, as LateLifecycle's does.
+	// under the name the fact carries and then under the other name of a configured rename
+	// (ghrepo.Under): its row keeps the name it was cleared under until the one-time rename pass
+	// writes the pair's `to` over it with the issue's other rows (record.RenameIssueRepository). A
+	// clock missing on either side fences nothing, as LateLifecycle's does.
 	if recorded == nil {
 		cleared, err := ghrepo.Under(e.cfg.RepositoryRenames, fact.Repo, func(name string) (time.Time, error) {
 			return e.store.ClearedPullRequestClock(ctx, tx, name, fact.Number)

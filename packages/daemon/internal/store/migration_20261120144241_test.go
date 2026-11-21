@@ -82,8 +82,9 @@ var intakeFailuresTables = []string{"intake_failures", "cleared_pull_requests", 
 // statement may write, each by its own constraint: a closed record that is not given up, a discard
 // with no reason, a close or a give-up that is no known word, either set without its time, and a
 // discard's three columns set apart. A second row of one message, and a second clear of one pull
-// request, are refused by their keys. A settled head is a row of a pull request the record holds,
-// of one of two kinds, once for each kind and head, and it goes with its pull request's row.
+// request, are refused by their keys, and a clear with no time or no issue is refused. A settled
+// head is a row of a pull request the record holds, of one of two kinds, once for each kind and
+// head, and it goes with its pull request's row.
 func TestMigration20261120144241KeepsEachIntakeFailureToItsRules(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -177,15 +178,18 @@ func TestMigration20261120144241KeepsEachIntakeFailureToItsRules(t *testing.T) {
 		t.Errorf("a second record of one message = %v, want its key to refuse it (23505)", err)
 	}
 
-	clear := `insert into cleared_pull_requests (repo, number, head_updated_at, cleared_at) values ('acme/widgets', 42, $1, $2)`
+	clear := `insert into cleared_pull_requests (repo, number, issue, head_updated_at, cleared_at) values ('acme/widgets', 42, 'LEGION-208', $1, $2)`
 	if _, err := store.Pool().Exec(ctx, clear, at, at.Add(time.Hour)); err != nil {
 		t.Fatalf("record the clear of acme/widgets#42: %v", err)
 	}
 	if _, err := store.Pool().Exec(ctx, clear, at, at.Add(time.Hour)); !errors.As(err, &pgErr) || pgErr.Code != "23505" {
 		t.Errorf("a second clear of acme/widgets#42 = %v, want its key to refuse it (23505)", err)
 	}
-	if _, err := store.Pool().Exec(ctx, `insert into cleared_pull_requests (repo, number) values ('acme/widgets', 43)`); !errors.As(err, &pgErr) || pgErr.Code != "23502" {
+	if _, err := store.Pool().Exec(ctx, `insert into cleared_pull_requests (repo, number, issue) values ('acme/widgets', 43, 'LEGION-208')`); !errors.As(err, &pgErr) || pgErr.Code != "23502" {
 		t.Errorf("a clear with no time = %v, want it refused (23502)", err)
+	}
+	if _, err := store.Pool().Exec(ctx, `insert into cleared_pull_requests (repo, number, cleared_at) values ('acme/widgets', 44, now())`); !errors.As(err, &pgErr) || pgErr.Code != "23502" {
+		t.Errorf("a clear with no issue = %v, want it refused (23502): the rename pass reads and writes a clear by its issue", err)
 	}
 
 	if _, err := store.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
@@ -386,8 +390,8 @@ func TestTheIntakeGiveUpWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		t.Fatalf("queue the tick: %v", err)
 	}
 	open, givenUp := intakeRecords(t, store, "LEGION", at)
-	if _, err := store.Pool().Exec(ctx, `insert into cleared_pull_requests (repo, number, head_updated_at, cleared_at)
-		values ('acme/widgets', 42, $1, $1)`, at); err != nil {
+	if _, err := store.Pool().Exec(ctx, `insert into cleared_pull_requests (repo, number, issue, head_updated_at, cleared_at)
+		values ('acme/widgets', 42, 'LEGION-208', $1, $1)`, at); err != nil {
 		t.Fatalf("record a cleared pull request: %v", err)
 	}
 	const recordsAsText = `select row(intake_failures.*)::text from intake_failures where given_up_at is not null order by id`

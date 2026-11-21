@@ -276,3 +276,31 @@ func TestALateOpenedOfAPullRequestAnEarlierGenerationClearedRecordsNothing(t *te
 		})
 	}
 }
+
+// The one-time rename pass writes a configured pair's `to` over its `from` on a cleared pull
+// request's row (cleared_pull_requests), as on the issue's other rows (record.RenameIssueRepository),
+// so once it has run no row names the `from` and the pair can leave `repository_renames`. A late
+// opened of a pull request a new generation cleared under the `from`, delivered under the `to` with
+// the pair no longer configured, then finds the clock under the name it carries and records
+// nothing. Control: with the pass leaving the cleared row on the `from`, the opened records the
+// pull request again, at the head it had.
+func TestALateOpenedUnderTheNewNameOfAPullRequestClearedUnderTheOldRecordsNothingOnceThePassRan(t *testing.T) {
+	const from, to = "sjawhar/legion", "cybermonklabs/legion"
+	pool := appliedEvents(t, record.PullRequestClosed)
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		if err := record.NewStore().ClearGeneration(t.Context(), tx, "LEGION-208", lateApplied.Add(2*time.Hour)); err != nil {
+			return err
+		}
+		if _, err := record.RenameIssueRepository(t.Context(), tx, "LEGION-208", from, to); err != nil {
+			return err
+		}
+		left, err := record.RenameCandidates(t.Context(), tx, "LEGION", from, nil)
+		if err != nil || len(left) != 0 {
+			return fmt.Errorf("the issues with rows on %s after the pass = %+v, %v; want none, so the pair can go", from, left, err)
+		}
+		return nil
+	})
+	apply := githubFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	lateChangesNothing(t, pool, apply, "late", intake.PullRequestOpened{Repo: to, Number: 42, Branch: "legion/LEGION-208",
+		HeadSHA: "head-a", UpdatedAt: lateApplied.Add(-time.Hour)})
+}
