@@ -102,14 +102,12 @@ test("a plain line is drawn once for each change of what it reads, and never for
   const queries = client();
   const view = render(page(queries, publication({ names }), line));
   try {
-    await waitFor(() =>
-      expect(view.getByTestId("line").textContent).toBe("Tied to CORE-1 Fix the thing here.")
-    );
+    await waitFor(() => expect(view.getByTestId("line").textContent).toBe("Tied to CORE-1 here."));
     expect(drawn, "the line was drawn again for nothing it reads").toEqual([
       undefined,
       `Tied to ${reference} here.`,
       `Tied to ${reference} here.`,
-      "Tied to CORE-1 Fix the thing here.",
+      "Tied to CORE-1 here.",
     ]);
     const settled = drawn.length;
     view.rerender(page(queries, publication({ names }), line));

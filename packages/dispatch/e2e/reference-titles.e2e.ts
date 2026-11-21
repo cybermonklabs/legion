@@ -11,6 +11,7 @@ import {
   ANCHOR,
   answeredQuestionPreview,
   collapsedMarginThread,
+  expectIssueReference,
   inboxReplyTurn,
   openInboxReplies,
   openMarginThread,
@@ -26,8 +27,9 @@ import { asUser } from "./users";
 
 /**
  * What a `dispatch://` reference reads as, everywhere a person meets one: the title of what it
- * names. A bare address and a link whose text is its own address — the form a document stores an
- * autolink in — both read as the target's title in the live editor, in a past version of the
+ * names, and for an issue its status mark and its key, its title in its accessible name
+ * (dispatch://INFRA-4009). A bare address and a link whose text is its own address — the form a
+ * document stores an autolink in — both read so in the live editor, in a past version of the
  * same document, in a rendered comment, in that comment's reply where the Inbox draws it, and
  * in a one-line preview; a link whose text its author wrote keeps those words; and an
  * address whose target does not exist reads as the address, since there is no title to read it
@@ -187,14 +189,38 @@ async function paragraph(scope: Locator, label: string): Promise<Locator> {
   return found;
 }
 
-/** Checks that a document view draws the bare and the self-addressed reference to `target` as
- *  its title: one title per paragraph, carrying the address, with the stored text hidden. */
-async function expectDrawnTitles(scope: Locator, kind: TargetKind, target: Target): Promise<void> {
+/** Checks that `references`, `count` of them, each read as the world's target of `kind`: an
+ *  issue as its status mark and its key, named by its key, its status's words and its title, and
+ *  any other kind as its title. */
+async function expectReadAs(
+  references: Locator,
+  count: number,
+  world: ReferenceWorld,
+  kind: TargetKind
+): Promise<void> {
+  await expect(references).toHaveCount(count);
+  for (const reference of await references.all()) {
+    if (kind === "Issue") {
+      await expectIssueReference(reference, world.target);
+    } else {
+      await expect(reference).toHaveText(world.targets[kind].title);
+    }
+  }
+}
+
+/** Checks that a document view draws the bare and the self-addressed reference to `kind`'s
+ *  target as the target reads (`expectReadAs`): one per paragraph, carrying the address, with the
+ *  stored text hidden. */
+async function expectDrawnTitles(
+  scope: Locator,
+  world: ReferenceWorld,
+  kind: TargetKind
+): Promise<void> {
   for (const form of ["bare", "linked"]) {
     const line = await paragraph(scope, `${kind} ${form}`);
     const title = line.locator("a.dispatch-reference");
-    await expect(title).toHaveText(target.title);
-    await expect(title).toHaveAttribute("data-dispatch-href", target.address);
+    await expectReadAs(title, 1, world, kind);
+    await expect(title).toHaveAttribute("data-dispatch-href", world.targets[kind].address);
     await expect(title).toBeVisible();
     await expect(line.locator(".dispatch-reference-text")).toHaveCount(1);
     await expect(line.locator(".dispatch-reference-text")).toBeHidden();
@@ -214,7 +240,10 @@ function missingAnswered(page: Page, seeded: Seeded): Promise<unknown> {
 }
 
 for (const kind of KINDS) {
-  test(`a bare address and a link whose text is its own address to the ${kind.toLowerCase()} read as its title in the live editor, a past version, a comment, its reply on the Inbox and a one-line preview`, async ({
+  const reads = kind === "Issue" ? "its status mark and its key" : "its title";
+  // SLOW(>=2s): the seeded world, a second version, an anchored comment, ten threads and ten
+  // answered asks, then six surfaces over four page loads.
+  test(`a bare address and a link whose text is its own address to the ${kind.toLowerCase()} read as ${reads} in the live editor, a past version, a comment, its reply on the Inbox and a one-line preview`, async ({
     browser,
   }, testInfo) => {
     const seeded = await seedTitles();
@@ -224,20 +253,19 @@ for (const kind of KINDS) {
     try {
       const page = await context.newPage();
       await openSpec(page, world.host.key, ANCHOR);
-      await expectDrawnTitles(documentEditor(page), kind, target);
+      await expectDrawnTitles(documentEditor(page), world, kind);
 
       // The comment's one-line preview, on its collapsed card, and the comment itself: both
-      // read each of the two forms as the title.
+      // read each of the two forms as the target reads.
       const collapsed = await collapsedMarginThread(page, testInfo.project.name, seeded.comment);
-      await expect(collapsed.locator(`[data-dispatch-ref="${target.address}"]`)).toHaveText([
-        target.title,
-        target.title,
-      ]);
+      await expectReadAs(
+        collapsed.locator(`[data-dispatch-ref="${target.address}"]`),
+        2,
+        world,
+        kind
+      );
       const card = await openMarginThread(page, testInfo.project.name, seeded.comment);
-      await expect(card.locator(`a[data-dispatch-ref="${target.address}"]`)).toHaveText([
-        target.title,
-        target.title,
-      ]);
+      await expectReadAs(card.locator(`a[data-dispatch-ref="${target.address}"]`), 2, world, kind);
 
       // The past version: the same document, read-only, before the second version was written.
       await page.goto(`/issues/${world.host.key}/artifacts/spec?v=2`);
@@ -247,18 +275,21 @@ for (const kind of KINDS) {
         "false"
       );
       await expect(past).not.toContainText("A second version.");
-      await expectDrawnTitles(past, kind, target);
+      await expectDrawnTitles(past, world, kind);
 
       // The reply itself, where a reader meets it on the Inbox: below the reading column's
       // width a Reply row is the card that draws its thread whole, with live links
       // (`refresh-freshness.e2e.ts` reads the same row), so each form is a link reading as the
-      // title.
+      // target reads.
       await openInboxReplies(page);
       for (const text of [target.address, `[${target.address}](${target.address})`]) {
         const where = seeded.written.get(text);
         const turn = inboxReplyTurn(page, where?.thread ?? "", where?.reply ?? "");
-        await expect(turn.locator(`a[data-dispatch-ref="${target.address}"]`)).toHaveText(
-          target.title
+        await expectReadAs(
+          turn.locator(`a[data-dispatch-ref="${target.address}"]`),
+          1,
+          world,
+          kind
         );
       }
 
@@ -270,7 +301,7 @@ for (const kind of KINDS) {
       for (const text of [target.address, `[${target.address}](${target.address})`]) {
         const preview = answeredQuestionPreview(page, seeded.written.get(text)?.ask ?? "");
         const link = preview.locator(`a[data-dispatch-ref="${target.address}"]`);
-        await expect(link).toHaveText(target.title);
+        await expectReadAs(link, 1, world, kind);
         await expect(link).toHaveAttribute("href", /^\//u);
       }
     } finally {
@@ -279,17 +310,21 @@ for (const kind of KINDS) {
   });
 }
 
-/** Checks, once every target the document names has drawn its title (so each read has
- *  answered), that a worded link shows its author's words and no title, and that an address
- *  whose target is missing shows as written. */
+/** Checks, once every target the document names has drawn (so each read has answered), that a
+ *  worded link shows its author's words alone, with no status mark, and that an address whose
+ *  target is missing shows as written. */
 async function expectWordsAndAddresses(scope: Locator, seeded: Seeded): Promise<void> {
   for (const kind of KINDS) {
     const bare = await paragraph(scope, `${kind} bare`);
-    await expect(bare.locator("a.dispatch-reference")).toHaveText(seeded.world.targets[kind].title);
+    await expectReadAs(bare.locator("a.dispatch-reference"), 1, seeded.world, kind);
     const worded = await paragraph(scope, `${kind} worded`);
-    await expect(
-      worded.getByRole("link", { exact: true, name: `the ${kind.toLowerCase()} in my words` })
-    ).toBeVisible();
+    const words = worded.getByRole("link", {
+      exact: true,
+      name: `the ${kind.toLowerCase()} in my words`,
+    });
+    await expect(words).toBeVisible();
+    // The document editor draws a worded link as its author's words alone (INFRA-4009).
+    await expect(words.locator("svg[data-status-glyph]")).toHaveCount(0);
     await expect(worded.locator("a.dispatch-reference")).toHaveCount(0);
   }
   for (const { address, label } of seeded.missing) {
@@ -299,6 +334,8 @@ async function expectWordsAndAddresses(scope: Locator, seeded: Seeded): Promise<
   }
 }
 
+// SLOW(>=2s): the seeded world, a second version, an anchored comment, ten threads and ten
+// answered asks, then six surfaces over four page loads.
 // @pr: The reference-title family's one row on the lane: an author's own wording is kept, and an address with no target reads as written.
 test("a link its author worded keeps its words in the document, and an address whose target is missing reads as written @pr", async ({
   browser,
@@ -315,21 +352,25 @@ test("a link its author worded keeps its words in the document, and an address w
 
     // The comment's one-line preview, on its collapsed card, and the comment itself: each missing
     // address is its words with no link (R8), beside a present target in the same comment that
-    // still reads as its title and, in the comment itself, links.
+    // still reads as its status mark and its key and, in the comment itself, links.
     const present = world.targets.Issue;
     const collapsed = await collapsedMarginThread(page, testInfo.project.name, seeded.comment);
-    await expect(collapsed.locator(`[data-dispatch-ref="${present.address}"]`)).toHaveText([
-      present.title,
-      present.title,
-    ]);
+    await expectReadAs(
+      collapsed.locator(`[data-dispatch-ref="${present.address}"]`),
+      2,
+      world,
+      "Issue"
+    );
     for (const { address } of seeded.missing) {
       await expectWordsWithNoLink(collapsed, address);
     }
     const card = await openMarginThread(page, testInfo.project.name, seeded.comment);
-    await expect(card.locator(`a[data-dispatch-ref="${present.address}"]`)).toHaveText([
-      present.title,
-      present.title,
-    ]);
+    await expectReadAs(
+      card.locator(`a[data-dispatch-ref="${present.address}"]`),
+      2,
+      world,
+      "Issue"
+    );
     for (const { address } of seeded.missing) {
       await expectWordsWithNoLink(card, address);
     }
@@ -338,11 +379,14 @@ test("a link its author worded keeps its words in the document, and an address w
     // words with no link, while a reply naming a present target links.
     await openInboxReplies(page);
     const presentReply = seeded.written.get(present.address);
-    await expect(
+    await expectReadAs(
       inboxReplyTurn(page, presentReply?.thread ?? "", presentReply?.reply ?? "").locator(
         `a[data-dispatch-ref="${present.address}"]`
-      )
-    ).toHaveText(present.title);
+      ),
+      1,
+      world,
+      "Issue"
+    );
     for (const { address } of seeded.missing) {
       const where = seeded.written.get(address);
       await expectWordsWithNoLink(

@@ -400,19 +400,28 @@ func Node(ctx context.Context, q Queryer, kind, id string, byRefKey bool) (model
 	return node.GraphNode, found, nil
 }
 
+// TargetName is what TargetNames answers for one target: Name, the words the target is named by,
+// and Status, the issue's status as its issues.status column stores it ("in_progress", "done"),
+// for a target of kind issue alone. Every other target carries no status.
+type TargetName struct {
+	Name   string
+	Status string
+}
+
 // TargetNames is the words each of targets is named by where a reader is shown a reference to it
 // rather than its own text: an issue's title, a document's name, an ask's question, a comment's
 // or a message's body, a component's title and a block's text, each cut as an edge's excerpt is
 // cut (resolvedNode.name), which is what GET /api/v1/references already shows beside an edge at
 // that node; serverURL is the deployment whose dashboard URLs are references, so no cut splits
-// one. The targets are addressed as the to side of an edge addresses them (TargetOf), so an
-// artifact's id is its ref_key.
+// one. Beside an issue's name it answers the issue's status (TargetName), read in the statement
+// that reads the issue's title (loadIssueNodes). The targets are addressed as the to side of an
+// edge addresses them (TargetOf), so an artifact's id is its ref_key.
 //
 // One entry per target that resolves: a target with no entry is one nothing addresses now — its
 // node was deleted, or its kind is one this build cannot address (resolveNodes) — which is what
 // a caller draws as a reference whose target is gone. Each kind is read in one statement
 // whatever the number of targets, so a batch costs a statement per kind, not per target.
-func TargetNames(ctx context.Context, q Queryer, targets []Target, serverURL string) (map[Target]string, error) {
+func TargetNames(ctx context.Context, q Queryer, targets []Target, serverURL string) (map[Target]TargetName, error) {
 	rows := make([]edgeRow, len(targets))
 	for index, target := range targets {
 		rows[index] = edgeRow{otherKind: target.Kind, otherID: target.ID}
@@ -421,19 +430,25 @@ func TargetNames(ctx context.Context, q Queryer, targets []Target, serverURL str
 	if err != nil {
 		return nil, err
 	}
-	names := make(map[Target]string, len(nodes))
+	names := make(map[Target]TargetName, len(nodes))
 	for key, node := range nodes {
-		names[Target{Kind: key[0], ID: key[1]}] = node.name(serverURL)
+		name := TargetName{Name: node.name(serverURL)}
+		if key[0] == "issue" {
+			name.Status = node.status
+		}
+		names[Target{Kind: key[0], ID: key[1]}] = name
 	}
 	return names, nil
 }
 
 // resolvedNode is a graph node with the text an excerpt is cut from: a block's is its stored
-// excerpt, already cut.
+// excerpt, already cut. An issue's carries its status too, as its issues.status column stores
+// it.
 type resolvedNode struct {
 	model.GraphNode
 	text   string
 	refKey string
+	status string
 }
 
 // name is the words shown for the node in place of its text: its own text's first excerptRunes
@@ -516,10 +531,10 @@ func loadSessionNodes(_ context.Context, _ Queryer, kind string, _ bool, ids []s
 // loadIssueNodes resolves issue nodes. An issue is made by its creator; its last change is the
 // latest event that wrote its own fields (issue.created, issue.updated, issue.closed: a claim, a
 // deploy notice or a comment is no change of it), by that event's actor. It belongs to its parent
-// issue, which has no versions.
+// issue, which has no versions. Its status is read in the same statement, for TargetNames.
 func loadIssueNodes(ctx context.Context, q Queryer, _ string, _ bool, keys []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
-		select i.key, i.project_key, i.title, i.created_by, i.created_at, i.parent_key, change.actor, change.created_at
+		select i.key, i.project_key, i.title, i.status, i.created_by, i.created_at, i.parent_key, change.actor, change.created_at
 		from issues i
 		left join lateral (
 			select e.actor, e.created_at from events e
@@ -532,19 +547,19 @@ func loadIssueNodes(ctx context.Context, q Queryer, _ string, _ bool, keys []str
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var key, project, title string
+		var key, project, title, status string
 		var createdBy, changedBy []byte
 		var createdAt time.Time
 		var changedAt *time.Time
 		var parentKey *string
-		if err := rows.Scan(&key, &project, &title, &createdBy, &createdAt, &parentKey, &changedBy, &changedAt); err != nil {
+		if err := rows.Scan(&key, &project, &title, &status, &createdBy, &createdAt, &parentKey, &changedBy, &changedAt); err != nil {
 			return fmt.Errorf("scan issue node: %w", err)
 		}
 		node := model.GraphNode{Kind: "issue", ID: key, IssueKey: new(key), Project: project, Ref: "dispatch://" + key, Parent: issueParent(parentKey)}
 		if err := setMadeAndChanged(&node, createdBy, createdAt, changedBy, changedAt, storedActor); err != nil {
 			return err
 		}
-		nodes[[2]string{"issue", key}] = resolvedNode{GraphNode: node, text: title}
+		nodes[[2]string{"issue", key}] = resolvedNode{GraphNode: node, text: title, status: status}
 	}
 	return rows.Err()
 }

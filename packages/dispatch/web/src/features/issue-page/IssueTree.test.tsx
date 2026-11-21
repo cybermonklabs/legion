@@ -1201,9 +1201,11 @@ test("a press outside the outline that leaves the focus on no control keeps the 
 // row's chips, then the links its words hold, then each control of the row that no key of the
 // keymap presses - Change answer, Copy reference, a command's Copy - in the row's order, and the
 // last stop comes back round to the first. Enter on the one it stopped on follows it or presses
-// it. The link to CORE-7 reads as that issue's key and title, which its own read gives, since
-// the tree is drawn here with no batched read beside it (INFRA-1196 decision 350: a reference
-// reads as its name, the short form gone).
+// it. The link to CORE-7 reads as that issue's status mark and key, named by its key, its
+// status's words and its title, which its own read gives, since the tree is drawn here with no
+// batched read beside it (INFRA-1196 decision 350: a reference reads as its name, the short form
+// gone; INFRA-4009 R1 and R3: an issue's name is its mark and key, its title in its accessible
+// name).
 test("f steps through a row's chips, links and then the controls no key presses", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -1257,9 +1259,17 @@ test("f steps through a row's chips, links and then the controls no key presses"
   try {
     const { container } = renderPageTree(root, "alice").view;
     await waitFor(() => expect(focusedRow(container)).toBe("ask-1"));
-    await waitFor(() => expect(container.textContent).toContain("CORE-7 Ship the flag"));
+    await waitFor(() =>
+      expect(
+        container.querySelector('a[aria-label="CORE-7, In progress, Ship the flag"]')
+      ).not.toBeNull()
+    );
     expect(await stop()).toBe("The spec block");
-    expect(await stop()).toBe("CORE-7 Ship the flag");
+    expect(await stop()).toBe(" CORE-7");
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(
+      "CORE-7, In progress, Ship the flag"
+    );
+    expect(document.activeElement?.querySelector("svg[data-status-glyph]")).not.toBeNull();
     expect(await stop()).toBe(CONTROL_LABELS.change_answer);
     expect(await stop()).toBe(CONTROL_LABELS.copy_reference);
     await user.keyboard("{Enter}");

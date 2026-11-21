@@ -1,5 +1,12 @@
+import { statusGlyphElement } from "../../components/status-glyph";
+import { issueReferenceName } from "../refs/issue-reference-name";
 import { isPartyRoute } from "../refs/party-references";
-import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
+import {
+  type DispatchReferenceRoute,
+  issueOfRoute,
+  parseNodeReference,
+  referenceHref,
+} from "../refs/routes";
 import { readTextReferences, type TextReading } from "../refs/text-references";
 import { chipName } from "./issue-tree";
 import { documentWord } from "./node-row-chip";
@@ -10,10 +17,11 @@ import { documentWord } from "./node-row-chip";
  * A row names every reference in its words by the one rule every plain line names one by
  * (`refs/plain-text.tsx`'s `useReferenceNames`): from the page's one batched read of what the
  * tree's references point at (`GET /api/v1/reference-targets`, `useIssueTree.ts`), which the
- * page publishes (`refs/reference-names.tsx`) - an issue by its key and its title, anything else
- * by its target's own words, as every other surface of Dispatch draws a reference - and a party,
- * which that read is never asked for, by its own read. It asks the server nothing for a
- * reference the page reads. The link pass every other body runs reads one issue summary for
+ * page publishes (`refs/reference-names.tsx`) - an issue by its status mark and its key, with its
+ * title in its accessible name, as a rendered body draws one (`RefLink.tsx`), anything else by
+ * its target's own words - and a party, which that read is never asked for, by its own read. It
+ * asks the server nothing for a reference the page reads. The link pass every other body runs
+ * reads one issue summary for
  * each key and one item for each comment or ask a text cites (`RefLink.tsx`,
  * `useTextReferences.ts`), which on an issue of 73 comments was 19 requests of a first load R21
  * holds to 40.
@@ -226,26 +234,44 @@ export function rowReferences(
   return read.linked.filter((one) => !ambiguous.has(one.reference));
 }
 
+/** What a row draws one reference as (`rowReferenceWords`): its words, or, for an issue whose
+ *  name and status the page read, its key, drawn after the status mark, apart from its words,
+ *  the title, which the row draws in the reference's accessible name alone. */
+export type RowReferenceWords =
+  | { readonly key: undefined; readonly words: string }
+  | { readonly key: string; readonly status: string; readonly words: string };
+
 /**
  * What a row draws a reference as, from `names`, the name each reference has as a link reads it
- * (`RowText.tsx`'s names, by `useReferenceNames`): a whole document by the page's word for it,
- * the one the page published (`tree-drafts.ts`'s `documentWord`) or, until it has, the word for
- * a document (`node-row-chip.ts`'s `documentWord`); an issue by its key, then its title; a party
- * by the name its own read gives it; anything else as a chip in place, by its target's own words
- * cut as a tie's chip cuts them (`chipName`). A reference with no name - its target has not
- * answered yet, or Dispatch answered it has none - reads as the words its author wrote, as a
+ * (`RowText.tsx`'s names, by `useReferenceNames`), and `statuses`, each issue's status the same
+ * names answer (`ReferenceName.status`): a whole document by the page's word for it, the one the
+ * page published (`tree-drafts.ts`'s `documentWord`) or, until it has, the word for a document
+ * (`node-row-chip.ts`'s `documentWord`); an issue - its own address or a tab of its page
+ * (`issueOfRoute`) - by its status mark and its key, with its key, its status's words and its
+ * title its accessible name (`issueReferenceName`, INFRA-4009 R1 and R3), since a row opens no
+ * peek; the key, the status and the title each held apart; a
+ * party by the name its own read gives it; anything else as a chip in place, by its target's
+ * own words cut as a tie's chip cuts them (`chipName`). A reference with no name - its target has
+ * not answered yet, or Dispatch answered it has none - reads as the words its author wrote, as a
  * link of any other body reads until its title resolves (R8, INFRA-1196 decision 350, which
- * replaces decision 95's short form).
+ * replaces decision 95's short form), and so does an issue whose status the read did not answer.
  */
 export function rowReferenceWords(
   one: Pick<RowReference, "reference" | "route" | "written">,
-  names: ReadonlyMap<string, string>
-): { readonly key: string | undefined; readonly words: string } {
+  names: ReadonlyMap<string, string>,
+  statuses: ReadonlyMap<string, string>
+): RowReferenceWords {
   const name = (names.get(one.reference) ?? "").replace(/\s+/gu, " ").trim();
   const word = documentWord(one.route);
   if (word !== undefined) return { key: undefined, words: name === "" ? word : name };
   if (name === "") return { key: undefined, words: one.written };
-  if (one.route.kind === "issue") return { key: one.route.key, words: name };
+  const key = issueOfRoute(one.route);
+  if (key !== undefined) {
+    const status = statuses.get(one.reference);
+    return status === undefined
+      ? { key: undefined, words: one.written }
+      : { key, status, words: name };
+  }
   return { key: undefined, words: isPartyRoute(one.route) ? name : chipName(one.route, name) };
 }
 
@@ -261,43 +287,51 @@ const ROW_WRITTEN = "data-row-written";
  *  grey, as `styles.css` draws one in a drawn text. */
 export const ROW_LINK = "underline decoration-page-bullet underline-offset-[3px]";
 
-/** Writes `element`'s words: an issue's key set apart from its title, as a link to an issue
- *  reads everywhere (`RefLink.tsx`). An element that already reads them is left as it is: only
- *  this writes a row's reference, so its words tell what it holds, and a pass whose names
- *  changed nothing writes nothing. */
+/** Writes `element`'s words, and for an issue its status mark before its key, on one line, with
+ *  its key, its status's words and its title as its accessible name, as a link to an issue reads
+ *  everywhere (`RefLink.tsx`). The mark is the one every surface draws (`statusGlyphElement`). An
+ *  element that already reads them is left as it is: only this writes a row's reference, so a
+ *  mark and a name built from the same key, status and title tell it holds them, and a pass
+ *  whose names changed nothing writes nothing. */
 function nameReference(
   element: HTMLElement,
   one: Pick<RowReference, "reference" | "route" | "written">,
-  names: ReadonlyMap<string, string>
+  names: ReadonlyMap<string, string>,
+  statuses: ReadonlyMap<string, string>
 ): void {
-  const { key, words } = rowReferenceWords(one, names);
-  if (key === undefined) {
-    if (element.textContent !== words) element.textContent = words;
+  const drawn = rowReferenceWords(one, names, statuses);
+  const marked = element.querySelector("svg[data-status-glyph]") !== null;
+  if (drawn.key === undefined) {
+    if (marked || element.textContent !== drawn.words) element.textContent = drawn.words;
+    element.removeAttribute("aria-label");
     return;
   }
-  const title = words === "" ? "" : ` ${words}`;
-  if (element.textContent === `${key}${title}`) return;
-  const strong = document.createElement("span");
-  strong.className = "font-semibold whitespace-nowrap";
-  strong.textContent = key;
-  element.replaceChildren(strong, title);
+  const label = issueReferenceName(drawn.key, drawn.status, drawn.words);
+  if (marked && element.getAttribute("aria-label") === label) return;
+  const line = document.createElement("span");
+  line.className = "whitespace-nowrap";
+  line.append(statusGlyphElement(document, drawn.status), " ", drawn.key);
+  element.replaceChildren(line);
+  element.setAttribute("aria-label", label);
 }
 
 /**
  * The row's own pass over words a reading painted into `root` (`RowText.tsx`): every reference
  * its text holds outside a link and outside code becomes a link to its target - a person, whom
- * no page shows, words with no link (R5) - named from `names` (`rowReferenceWords`), and a
- * reference an earlier pass made takes the name it has come to have since. A bare key is read
+ * no page shows, words with no link (R5) - named from `names` and `statuses`
+ * (`rowReferenceWords`), and a reference an earlier pass made takes the name and the status it
+ * has come to have since. A bare key is read
  * as one only where it is among `issues`, the keys the page's batched read named an issue for.
  * A reference in `ambiguous` links nothing (`rowReferences`), and one an earlier pass made for a
  * reference the read has answered ambiguous since is put back as the words it was made over, so
  * it is drawn as written. Out of the tab order, as everything inside a row is (R9). Run again
- * after every paint and whenever `names`, `issues` or `ambiguous` changes; it finds nothing to
- * do twice.
+ * after every paint and whenever `names`, `statuses`, `issues` or `ambiguous` changes; it finds
+ * nothing to do twice.
  */
 export function linkRowReferences(
   root: HTMLElement,
   names: ReadonlyMap<string, string>,
+  statuses: ReadonlyMap<string, string>,
   issues: readonly string[],
   ambiguous: ReadonlySet<string> = NO_AMBIGUOUS
 ): void {
@@ -309,7 +343,9 @@ export function linkRowReferences(
       continue;
     }
     const route = parseNodeReference(reference);
-    if (route !== undefined) nameReference(element, { reference, route, written }, names);
+    if (route !== undefined) {
+      nameReference(element, { reference, route, written }, names, statuses);
+    }
   }
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const texts: Text[] = [];
@@ -336,7 +372,7 @@ export function linkRowReferences(
       }
       element.setAttribute(ROW_REFERENCE, one.reference);
       element.setAttribute(ROW_WRITTEN, one.written);
-      nameReference(element, one, names);
+      nameReference(element, one, names, statuses);
       pieces.push(element);
       at = one.end;
     }

@@ -1937,7 +1937,8 @@ test("an option's press keeps the focus, and only a waiting question's are in th
 });
 
 // R9, and a reference's host: an option's words are the ask's stored text, drawn by the renderer,
-// so a reference in them reads as its target. In an option the reader presses the press is the
+// so a reference in them reads as its target: an issue as its status mark and its key, its title
+// in its accessible name (INFRA-4009 R1 and R3). In an option the reader presses the press is the
 // option's, so the reference sits in a `control` host and draws no link inside the button. In
 // an option nobody presses it is a link, out of the tab order as every control inside a row is,
 // and in it at the default order in a view whose rows take tab stops (`tabStops`).
@@ -1971,13 +1972,20 @@ test("a reference in an option draws no link inside its press, and elsewhere a l
       </QueryClientProvider>
     );
   };
+  const name = "CORE-7, In progress, Draw the header";
   const pressable = drawOptions(writer, false);
   try {
     const option = pressable.container.querySelector(`[data-pick-option="${label}"]`);
     if (option === null) throw new Error("the open question draws no option to press");
-    await waitFor(() => expect(option.textContent).toContain("CORE-7 Draw the header"));
+    const reference = await waitFor(() => {
+      const found = option.querySelector('[data-dispatch-ref="dispatch://CORE-7"]');
+      expect(found?.getAttribute("aria-label")).toBe(name);
+      return found;
+    });
+    expect(reference?.querySelector('svg[data-status-glyph="◐"]')).not.toBeNull();
+    expect(reference?.textContent).toBe(" CORE-7");
+    expect(option.textContent).not.toContain("Draw the header");
     expect(option.querySelector("a"), "a reference inside the option's press is a link").toBeNull();
-    expect(option.querySelector('[data-dispatch-ref="dispatch://CORE-7"]')).not.toBeNull();
   } finally {
     pressable.unmount();
   }
@@ -1986,7 +1994,8 @@ test("a reference in an option draws no link inside its press, and elsewhere a l
     try {
       const link = await waitFor(() => {
         const found = view.container.querySelector('[data-node-option] a[href="/issues/CORE-7"]');
-        expect(found?.textContent).toBe("CORE-7 Draw the header");
+        expect(found?.getAttribute("aria-label")).toBe(name);
+        expect(found?.textContent).toBe(" CORE-7");
         return found;
       });
       await waitFor(() =>
@@ -1998,6 +2007,55 @@ test("a reference in an option draws no link inside its press, and elsewhere a l
     } finally {
       view.unmount();
     }
+  }
+});
+
+// INFRA-4009 R4 holds in a rendered body only: a row's words keep a link whose words its author
+// wrote exactly as written, with no status mark, even once the issue's summary is read, while the
+// bare address beside it, which the row's own pass links, draws the mark and the key, its title
+// in its accessible name.
+test("a worded link to an issue in a row's words keeps its words with no status mark, beside a bare address that draws one", async () => {
+  const summary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-1",
+    project: "CORE",
+    status: "in_progress",
+    title: "Fix the thing",
+  });
+  const text = "It follows [the warm one](dispatch://CORE-1) and dispatch://CORE-1.";
+  const view = renderRow(
+    node({ id: "comment-1", text, tree: displayTree(text), type: "comment" }),
+    {
+      published: {
+        ...publishedNames(new Map([["dispatch://CORE-1", "Fix the thing"]])),
+        statuses: new Map([["dispatch://CORE-1", "in_progress"]]),
+      },
+    }
+  );
+  try {
+    const words = () => view.container.querySelector("[data-node-words]");
+    const bare = await waitFor(() => {
+      const found = words()?.querySelector('a[data-row-reference="dispatch://CORE-1"]');
+      expect(found?.getAttribute("aria-label")).toBe("CORE-1, In progress, Fix the thing");
+      return found;
+    });
+    expect(bare?.querySelector('svg[data-status-glyph="◐"]')).not.toBeNull();
+    expect(bare?.textContent).toBe(" CORE-1");
+    // The worded link's own read of the issue has answered, so a mark it drew would be there.
+    await waitFor(() =>
+      expect(view.queryClient.getQueryData(["issue-summary", "CORE-1"])).toBeDefined()
+    );
+    await act(async () => {});
+    const worded = Array.from(words()?.querySelectorAll("a") ?? []).find(
+      (link) => link.textContent === "the warm one"
+    );
+    expect(worded, "the row's words draw the worded link as written").toBeDefined();
+    expect(worded?.querySelector("svg[data-status-glyph]")).toBeNull();
+    expect(worded?.hasAttribute("aria-label")).toBe(false);
+    expect(words()?.querySelectorAll("svg[data-status-glyph]")).toHaveLength(1);
+  } finally {
+    view.unmount();
+    summary.mockRestore();
   }
 });
 

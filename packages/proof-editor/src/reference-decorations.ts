@@ -40,16 +40,20 @@ export interface OfferedReference {
 /** What a candidate resolves to: `href` is the `dispatch://` reference the drawn title carries as
  *  `data-dispatch-href` (the host's click handler and hover card read it), absent for a target
  *  that opens no page - a person, whom no page shows - whose title is drawn as words and no link;
- *  `title` the words the editor draws in place of the stored text, `titleKey` an issue key
- *  `title` starts with, drawn in semibold, and `length` how many of the candidate's characters,
- *  from its start, the title stands for, when that is fewer than all of them: the rest stay
- *  drawn as stored text (a `#q2-` whose question is q2 draws its title for `#q2` and keeps the
- *  `-`, so no character the reference does not name is ever hidden from the author who typed
- *  it). */
+ *  `title` the words the editor draws in place of the stored text; `status` an issue's status,
+ *  whose mark (`EditorReferences.statusMark`) the editor draws before the title; `label` the
+ *  drawn title's accessible name where the words drawn are not all it names - an issue drawn as
+ *  its mark and its key, whose title the host gives here and the editor draws nowhere; and
+ *  `length` how many
+ *  of the candidate's characters, from its start, the title stands for, when that is fewer than
+ *  all of them: the rest stay drawn as stored text (a `#q2-` whose question is q2 draws its
+ *  title for `#q2` and keeps the `-`, so no character the reference does not name is ever hidden
+ *  from the author who typed it). */
 export interface ReferenceTarget {
   readonly href?: string;
   readonly title: string;
-  readonly titleKey?: string;
+  readonly status?: string;
+  readonly label?: string;
   readonly length?: number;
 }
 
@@ -74,6 +78,10 @@ export interface EditorReferences {
    *  key's plain candidate before its mention, whenever that set changes, so the host resolves
    *  exactly what the document holds. */
   onKeys(keys: readonly OfferedReference[]): void;
+  /** The mark of `status`, as an element of `document`, which the editor draws before the title
+   *  or the words of a target that names a status (`ReferenceTarget.status`): the host's, so the
+   *  editor draws the mark every other surface of the host draws. */
+  statusMark(document: Document, status: string): Element;
 }
 
 /** One candidate in the document. Kept as an undrawn inline decoration so mapping carries its
@@ -401,24 +409,28 @@ function revealedRanges(
 }
 
 /** The title drawn over a resolved candidate: a link carrying its target's address, or, for a
- *  target that opens no page, the same words as no link. */
-function titleWidget(target: ReferenceTarget): (view: EditorView) => HTMLElement {
+ *  target that opens no page, the same words as no link; after the mark of the status the target
+ *  names (`statusMark`), on the title's one line, and named by its `label` where it has one. */
+function titleWidget(
+  target: ReferenceTarget,
+  statusMark: EditorReferences["statusMark"]
+): (view: EditorView) => HTMLElement {
   return (view) => {
     const document = view.dom.ownerDocument;
-    const { href, title, titleKey } = target;
+    const { href, label, status, title } = target;
     const drawn = document.createElement(href === undefined ? "span" : "a");
     drawn.className = TITLE_CLASS;
     if (href !== undefined) {
       drawn.setAttribute("role", "link");
       drawn.dataset.dispatchHref = href;
     }
-    if (titleKey !== undefined && titleKey !== "" && title.startsWith(titleKey)) {
-      const key = document.createElement("strong");
-      key.textContent = titleKey;
-      drawn.append(key, title.slice(titleKey.length));
-    } else {
-      drawn.textContent = title;
+    if (label !== undefined) {
+      drawn.setAttribute("aria-label", label);
     }
+    if (status !== undefined) {
+      drawn.append(statusMark(document, status), " ");
+    }
+    drawn.append(title);
     // A press on the title neither moves the caret nor focuses the editor, so the title stays
     // drawn until the click lands and the host follows it.
     drawn.addEventListener("mousedown", (event) => event.preventDefault());
@@ -429,21 +441,23 @@ function titleWidget(target: ReferenceTarget): (view: EditorView) => HTMLElement
 function drawnDecorations(
   doc: ProseMirrorNode,
   candidates: DecorationSet,
-  answers: ReferenceAnswers,
+  references: EditorReferences | null,
   revealed: string
 ): DecorationSet {
-  if (answers.targets.size === 0 && answers.mentions.size === 0) return DecorationSet.empty;
+  if (references === null || (references.targets.size === 0 && references.mentions.size === 0)) {
+    return DecorationSet.empty;
+  }
   const shown = new Set(revealed === "" ? [] : revealed.split(" "));
   const decorations: Decoration[] = [];
   for (const candidate of candidates.find()) {
     const spec = candidate.spec as CandidateSpec;
-    const target = answerFor(answers, spec);
+    const target = answerFor(references, spec);
     if (!target) continue;
     const to = drawnEnd(candidate, target);
     if (to <= candidate.from || shown.has(`${candidate.from}:${to}`)) continue;
     decorations.push(
       Decoration.inline(candidate.from, to, { class: HIDDEN_TEXT_CLASS }),
-      Decoration.widget(candidate.from, titleWidget(target), {
+      Decoration.widget(candidate.from, titleWidget(target, references.statusMark), {
         ignoreSelection: true,
         // Widgets with the same key are interchangeable, so ProseMirror keeps the drawn one.
         key: JSON.stringify([target, spec.marks]),
@@ -469,7 +483,8 @@ function sameTargets(
     } else if (
       target.href !== other.href ||
       target.title !== other.title ||
-      target.titleKey !== other.titleKey ||
+      target.status !== other.status ||
+      target.label !== other.label ||
       target.length !== other.length
     ) {
       return false;
@@ -484,6 +499,7 @@ function sameReferences(left: EditorReferences, right: EditorReferences): boolea
   return (
     left.scan === right.scan &&
     left.onKeys === right.onKeys &&
+    left.statusMark === right.statusMark &&
     sameTargets(left.targets, right.targets) &&
     sameTargets(left.mentions, right.mentions)
   );
@@ -500,8 +516,9 @@ function dispatchReferenceChange(view: EditorView, change: ReferenceChange): voi
  * each candidate's key resolves to, and what each mention draws; both reach the plugin through
  * `setReferences`, as a host's change marks reach `./editor-change-decorations.ts`, because a
  * host class written on editor DOM is read back as an edit. A resolved candidate is drawn as its
- * target's title, a link carrying `data-dispatch-href` (words and no link for a target that
- * opens no page), with its stored text hidden; while the focused editor's selection touches it,
+ * target's title, after the host's mark of the status the target names, a link carrying
+ * `data-dispatch-href` (words and no link for a target that opens no page), with its stored text
+ * hidden; while the focused editor's selection touches it,
  * the stored text shows instead, so an author edits what is stored. An edit re-reads only the
  * text blocks it touched; mapping carries the other candidates.
  */
@@ -541,7 +558,7 @@ export const referenceDecorationsPlugin = $prose(
           }
           return {
             candidates,
-            decorations: drawnDecorations(state.doc, candidates, answers, revealed),
+            decorations: drawnDecorations(state.doc, candidates, references, revealed),
             focused,
             keys:
               candidates === value.candidates ? value.keys : candidateKeys(candidates, value.keys),

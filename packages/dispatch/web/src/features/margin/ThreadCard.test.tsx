@@ -856,16 +856,22 @@ for (const order of ["oldest", "newest"] as const) {
   });
 }
 
-// INFRA-869: the margin keeps a card per reference for a body of several, now that the one
-// predicate decides which bodies show cards.
-test("a comment of several references shows a card for each of them", async () => {
-  const getIssueSummary = spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({
+/** Each issue's summary as these rows read it: CORE-2 and CORE-3, both in progress. */
+function answerIssueSummaries() {
+  return spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({
     documents: [],
     key,
     project: "CORE",
     status: "in_progress",
     title: key === "CORE-2" ? "The other issue" : "The third issue",
   }));
+}
+
+// INFRA-4009 R5: the margin follows the one predicate that decides which bodies show cards. A
+// comment of two or more references draws each inline, as its status mark and its key, and
+// draws no card.
+test("a comment of several references shows no card, and draws each as its status mark and its key", async () => {
+  const getIssueSummary = answerIssueSummaries();
   const references = comment(
     "root-1",
     "dispatch://CORE-2 dispatch://CORE-3",
@@ -874,19 +880,41 @@ test("a comment of several references shows a card for each of them", async () =
   const view = renderCard(thread({ replies: [], root: { comment: references, kind: "comment" } }));
 
   try {
-    const card = screen.getByTestId(`margin-comment-${references.id}`);
-    const cards = await within(card).findByRole("region", { name: "References" });
-    const links = await waitFor(() => {
-      const found = within(cards).getAllByRole("link");
-      if (found.length < 2) throw new Error("the second card has not rendered");
-      return found;
-    });
+    const card = within(screen.getByTestId(`margin-comment-${references.id}`));
+    const links = [
+      await card.findByRole("link", { name: "CORE-2, In progress, The other issue" }),
+      await card.findByRole("link", { name: "CORE-3, In progress, The third issue" }),
+    ];
     expect(links.map((link) => link.getAttribute("href"))).toEqual([
       "/issues/CORE-2",
       "/issues/CORE-3",
     ]);
+    expect(links.map((link) => link.textContent?.trim())).toEqual(["CORE-2", "CORE-3"]);
+    for (const link of links) {
+      expect(link.querySelector("svg[data-status-glyph]")).toHaveAttribute(
+        "aria-label",
+        "In progress"
+      );
+    }
+    expect(card.queryByRole("region", { name: "References" })).toBeNull();
+    expect(card.queryByText("The other issue")).toBeNull();
+  } finally {
+    getIssueSummary.mockRestore();
+    view.unmount();
+  }
+});
+
+// A comment of exactly one reference keeps its one card, which shows the issue's title.
+test("a comment of one reference shows its card", async () => {
+  const getIssueSummary = answerIssueSummaries();
+  const reference = comment("root-1", "dispatch://CORE-2", "2026-09-10T00:00:00Z");
+  const view = renderCard(thread({ replies: [], root: { comment: reference, kind: "comment" } }));
+
+  try {
+    const card = screen.getByTestId(`margin-comment-${reference.id}`);
+    const cards = await within(card).findByRole("region", { name: "References" });
     await within(cards).findByText("The other issue");
-    await within(cards).findByText("The third issue");
+    expect(within(cards).getByRole("link")).toHaveAttribute("href", "/issues/CORE-2");
   } finally {
     getIssueSummary.mockRestore();
     view.unmount();

@@ -344,6 +344,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/reference-kinds.e2e.ts` | each pick is read back from the stored record, whose text and resolved name the server writes, and the party rows drive the fake registry and the fake Envoy listener |
 | `e2e/reference-naming.e2e.ts` | a bare address reads as its target's current name, which is the server's own resolution of the reference, re-read after the write that names it |
 | `e2e/reference-picker.e2e.ts` | the picker's rows come from the server's search and its registry read, and the row that reaches another project's node is that search answering across projects |
+| `e2e/reference-status.e2e.ts` | a reference's mark is the status the server's issue summary and batched names read answer, and a status or title written after load must reach the open comment, the live editor and the new issue page's rows through the server's event feed |
 | `e2e/reference-titles.e2e.ts` | asserts drawn titles inside the live editor |
 | `e2e/references.e2e.ts` | the backlink index the server rebuilds after each write |
 | `e2e/refetch-budget.e2e.ts` | writes after load, counted reads and the server's event feed |

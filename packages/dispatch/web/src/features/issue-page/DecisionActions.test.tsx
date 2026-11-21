@@ -635,8 +635,9 @@ function Named({ children }: { children: ReactNode }): ReactNode {
 
 // R6, R8 and the reading list's `decision-change-quote`: the Change quotes the words it is
 // anchored to as the reader reads the decision - the plain-text projection of its first block,
-// a reference in it read as its target's name - while the change it sends is still anchored to
-// the decisions document's own words, which the server matches (`pmdoc.FindQuote`).
+// an issue reference in it read, once named, as its key alone (INFRA-4009 R6) - while the change
+// it sends is still anchored to the decisions document's own words, which the server matches
+// (`pmdoc.FindQuote`).
 test("the Change quotes its block's plain-text projection and anchors to the document's own words", async () => {
   const written = "The presets read dispatch://CORE-7 first.";
   const text = `## One tree, five presets\n\n${written}`;
@@ -663,7 +664,7 @@ test("the Change quotes its block's plain-text projection and anchors to the doc
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
     await waitFor(() =>
       expect(screen.getByTestId("decision-quote").textContent).toBe(
-        "The presets read CORE-7 Draw the rows first."
+        "The presets read CORE-7 first."
       )
     );
     await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");

@@ -11,6 +11,8 @@ import {
 } from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
+import { StatusGlyph } from "../../components/StatusGlyph";
+import { statusTone } from "../../components/status-glyph";
 import {
   bgTransparent,
   focusVisibleRing,
@@ -38,10 +40,8 @@ import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-
 import { APPROVAL_CHIP } from "./approval-chip-box";
 import { decisionsDocumentId } from "./decision-review";
 import { presetPath } from "./issue-address";
-import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
-import { StatusGlyph } from "./StatusGlyph";
 import { nodeIdOf as issueNodeIdOf } from "./tree-drafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { EVENT_FRESH } from "./useIssueTree";
@@ -193,7 +193,7 @@ export function IssuePropertiesRow({
         className={`inline-flex min-h-6 shrink-0 items-stretch gap-1 rounded-full px-2 text-xs leading-[18px] font-semibold shadow-[inset_0_0_0_1px_currentColor] ${statusTone(status)}`}
       >
         <span className="self-center">
-          <StatusGlyph glyph={statusGlyph(status)} />
+          <StatusGlyph decorative status={status} />
         </span>
         {/* Sized to the status it shows, as the prototype's pill is; a browser with no
             `field-sizing` draws the select at its longest option, which is its own width. */}

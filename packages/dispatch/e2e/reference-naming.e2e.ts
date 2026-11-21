@@ -1,3 +1,4 @@
+import { statusText } from "../web/src/features/project/board-model";
 import { plannerSession, reviewerSession, setLiveSessions } from "./agents";
 import {
   baseUrl,
@@ -16,6 +17,8 @@ import {
 import { documentEditor } from "./editor";
 import { commentField, pickReference } from "./ref-picker";
 import {
+  expandedComment,
+  issueReferenceName,
   PERSON_LOGIN,
   RENDERED_BODY,
   ROLE_TOKEN,
@@ -23,16 +26,18 @@ import {
   UNKNOWN_PERSON_LOGIN,
   UNKNOWN_PERSON_REFERENCE,
 } from "./reference-surfaces";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 /**
  * The naming rule: one text, read the same way wherever it is shown.
  *
  * An address standing on its own, and a link whose words are that same address, read as the
- * target's current name; a link whose words its author wrote keeps those words, because the
- * author has already said what the reference is there to say. Renaming the target moves the
- * first and leaves the second, with no reload.
+ * target's current name - an issue as its status mark and its key, with its key, its status's
+ * words and its title as its accessible name (dispatch://INFRA-4009); a link whose words its
+ * author wrote keeps those words, because the author has already said what the reference is
+ * there to say, after the issue's status mark in a rendered body and alone in the document
+ * editor. Renaming the target moves the first and leaves the second, with no reload.
  *
  * The text is seeded through the API before the page loads, which is the point: a row that
  * types it would pass against a renderer that applied the rule only to text written in front of
@@ -42,20 +47,9 @@ import { asUser } from "./users";
 
 const WORDS = "the warm one";
 
-/** The comment's Conversation card, expanded. A collapsed card draws the inert one-line
- *  preview, whose references are spans rather than links (`reference-titles.e2e.ts` reads the
- *  margin's collapsed card the same way); the comment itself, with live links, is what the
- *  expanded card holds. */
-async function expandedComment(page: Page, id: string): Promise<Locator> {
-  const card = page.locator(`[data-turn="comment:${id}"]`);
-  await card.getByRole("button", { name: "Expand thread" }).click();
-  await expect(card.getByRole("button", { name: "Collapse thread" })).toBeVisible();
-  return card;
-}
-
 // SLOW(>=2s): two page loads - the Conversation and the document - and a rename that has to
 // reach the open page through the event stream rather than a reload.
-test("a bare address reads as the target's name, a worded link as its author's words, and a rename moves only the first", async ({
+test("a bare address is named by the target's current name, a worded link reads as its author's words, and a rename moves only the first", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -72,7 +66,10 @@ test("a bare address reads as the target's name, a worded link as its author's w
   );
   const comment = await createComment(host.key, { body }, referenceAgent);
 
-  const named = (title: string) => `${target.key} ${title}`;
+  const named = (title: string) => issueReferenceName({ ...target, title });
+  // In a rendered body a worded link draws the issue's status mark before its words, and the
+  // mark's name, the status's words, is the start of the link's.
+  const worded = `${statusText(target.status)} ${WORDS}`;
   const alice = await asUser(browser, "alice");
 
   try {
@@ -80,10 +77,13 @@ test("a bare address reads as the target's name, a worded link as its author's w
     await page.goto(`/issues/${host.key}/conversation`);
     const card = await expandedComment(page, comment.id);
 
-    // The address on its own and the link whose words are that address read as the node's
-    // current name; the link whose words the author wrote keeps them.
-    await expect(card.getByRole("link", { exact: true, name: named(target.title) })).toHaveCount(2);
-    await expect(card.getByRole("link", { exact: true, name: WORDS })).toHaveCount(1);
+    // The address on its own and the link whose words are that address draw the node's status
+    // mark and its key, named by its current name; the link whose words the author wrote keeps
+    // them.
+    const addressed = card.getByRole("link", { exact: true, name: named(target.title) });
+    await expect(addressed).toHaveCount(2);
+    await expect(addressed).toHaveText([target.key, target.key]);
+    await expect(card.getByRole("link", { exact: true, name: worded })).toHaveCount(1);
     // A login Dispatch does not hold names nobody, so it is the words it was written with and
     // no link at all.
     await expect(card).toContainText(UNKNOWN_PERSON_LOGIN);
@@ -95,14 +95,15 @@ test("a bare address reads as the target's name, a worded link as its author's w
     await expect(
       card.getByRole("link", { exact: true, name: named("Warm the cache first") })
     ).toHaveCount(2, { timeout: 30_000 });
-    await expect(card.getByRole("link", { exact: true, name: WORDS })).toHaveCount(1);
+    await expect(card.getByRole("link", { exact: true, name: worded })).toHaveCount(1);
     // Exactly the old name, which the new one holds as a prefix: the old reading is gone.
     await expect(
       card.getByRole("link", { exact: true, name: named("Warm the cache") })
     ).toHaveCount(0);
 
     // The same text in the host's own document reads the same way: the editor draws the two
-    // addressed references as the node's name and leaves the author's words standing.
+    // addressed references as the node's mark and key, named by its name, and leaves the
+    // author's words standing, with no mark.
     await page.goto(`/issues/${host.key}/spec`);
     const editor = documentEditor(page);
     await expect(
@@ -139,7 +140,7 @@ test("an address whose target does not exist reads as its writer's words with no
     referenceAgent
   );
   const comment = await createComment(host.key, { body }, referenceAgent);
-  const named = `${target.key} ${target.title}`;
+  const named = issueReferenceName(target);
   const alice = await asUser(browser, "alice");
 
   try {
@@ -189,7 +190,7 @@ test("a document its issue does not hold, a component of a project with no archi
     referenceAgent
   );
   const comment = await createComment(host.key, { body }, referenceAgent);
-  const named = `${target.key} ${target.title}`;
+  const named = issueReferenceName(target);
   const alice = await asUser(browser, "alice");
 
   try {

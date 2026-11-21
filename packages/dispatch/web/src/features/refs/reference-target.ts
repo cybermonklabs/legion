@@ -45,6 +45,7 @@ import {
   buildDispatchReference,
   type DispatchReferenceRoute,
   type IssueRoute,
+  issueOfRoute,
   type ReferencedArtifact,
   referencedArtifact,
   referenceHref,
@@ -81,6 +82,12 @@ export { refetchFailedOnFocus };
 
 export interface ReferenceTarget {
   readonly title: string | undefined;
+  /** An issue's status, for a reference to the issue itself - its own address or a tab of its
+   *  page (`issueOfRoute`) - from the same summary read its title comes from
+   *  (`issueSummaryQuery`), which an event moving the title or the status reads again: what its
+   *  status mark draws. Undefined while loading and for every other target, a document of the
+   *  issue among them. */
+  readonly status: string | undefined;
   /** What the target says, as its author wrote it (Markdown): a message's body, a document's
    *  text. `undefined` while loading or for a target with nothing to say. */
   readonly description: string | undefined;
@@ -100,9 +107,9 @@ export interface ReferenceTarget {
   readonly known: boolean;
 }
 
-/** What a target shows of itself, which each kind reads its own way; `missing` and `known` are
- *  answered once for every kind (`useReferenceTarget`). */
-type ShownTarget = Omit<ReferenceTarget, "missing" | "known">;
+/** What a target shows of itself, which each kind reads its own way; `missing`, `known` and
+ *  `status` are answered once for every kind (`useReferenceTarget`). */
+type ShownTarget = Omit<ReferenceTarget, "missing" | "known" | "status">;
 
 /** How much of a target's own text becomes a reference link's title: an ask's question, a
  *  comment's body. Long enough to recognise, short enough for a link inside a sentence. */
@@ -950,10 +957,12 @@ export function useReferenceTarget(
     };
   }
   // Only a session can exist with no title of its own: every other target's title says it does.
+  // Only the issue itself, by its own address or a tab of its page, has a status of its own.
   return {
     ...shown,
     missing,
     known: kind === "session" && sessionKnown && sessionTitle === undefined,
+    status: route !== undefined && issueOfRoute(route) !== undefined ? issue?.status : undefined,
   };
 }
 

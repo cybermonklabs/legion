@@ -548,9 +548,10 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // Beside the readings go the references the read answered ambiguous and those it answered
   // gone, read by that same rule, each of which a surface draws as its author wrote it rather
   // than reading it itself; those it answered with nothing to name them by, which a surface reads
-  // itself, as a link to one does; and every reference the page asks the read for, which a
-  // surface waits on the page's answer for rather than reading it itself, from before the first
-  // answer on. A chip's reading is read from the issue, the documents' blocks and the names alone
+  // itself, as a link to one does; each named issue's status, which the mark beside a reference
+  // to it draws; and every reference the page asks the read for, which a surface waits on the
+  // page's answer for rather than reading it itself, from before the first answer on. A chip's
+  // reading is read from the issue, the documents' blocks and the names alone
   // (`treeContext`), so it is built from those and nothing else: an answer of any other read - an
   // ask, a comment, the coverage, the reader's login - names nothing new.
   const naming = useMemo(

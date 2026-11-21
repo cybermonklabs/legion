@@ -32,6 +32,10 @@ const issue: IssueReferenceSummary = {
   title: "Design decision",
 };
 
+/** The element a reference to CORE-1 renders into, once CORE-1's summary is read: it names the
+ *  issue by its key, its status's words and its title, and draws the status mark and the key. */
+const CORE_1_DRAWN = '[aria-label="CORE-1, In progress, Design decision"]';
+
 /** One reading of the display-tree fixture, by name: the trees these rows draw are Go's own,
  *  from the file `pmdoc`'s `TestWebDisplayFixture` writes and CI checks. */
 function tree(name: string): DisplayTree {
@@ -151,10 +155,13 @@ test("right-to-left text keeps its characters in order, its marks on the words m
     );
     if (body === null) throw new Error("no MarkdownBody rendered");
     for (const element of [clamped, body]) {
-      await waitFor(() => expect(element).toHaveTextContent("Design decision"));
-      // An issue reference reads as its key then its title, as the issue list writes one.
-      expect(element.textContent).toBe(
-        "שלום עולם, ראה kubectl get pods ו-CORE-1 Design decision. مرحبا بالعالم"
+      await waitFor(() => expect(element.querySelector(CORE_1_DRAWN)).not.toBeNull());
+      // An issue reference reads as its status mark, which holds no text, then a space and its
+      // key.
+      expect(element.textContent).toBe("שלום עולם, ראה kubectl get pods ו- CORE-1. مرحبا بالعالم");
+      expect(element.querySelector(`${CORE_1_DRAWN} svg[data-status-glyph]`)).toHaveAttribute(
+        "aria-label",
+        "In progress"
       );
       expect(element.querySelector("strong")?.textContent).toBe("עולם");
       expect(element.querySelector("em")?.textContent).toBe("بالعالم");
@@ -195,7 +202,7 @@ test("a preview inside a link holds no link of its own, and a click on its refer
   );
   try {
     const element = preview(view.container);
-    await waitFor(() => expect(element).toHaveTextContent("Design decision"));
+    await waitFor(() => expect(element.querySelector(CORE_1_DRAWN)).not.toBeNull());
     // One link on the row: the host. A nested `<a>` is a second tab stop inside the host and
     // a second target for the same click.
     expect(element.querySelector("a")).toBeNull();
@@ -203,7 +210,8 @@ test("a preview inside a link holds no link of its own, and a click on its refer
     const reference = element.querySelector<HTMLElement>("[data-dispatch-ref]");
     expect(reference?.getAttribute("data-dispatch-ref")).toBe("dispatch://CORE-1");
     expect(reference?.hasAttribute("href")).toBe(false);
-    expect(reference?.textContent).toBe("CORE-1 Design decision");
+    expect(reference?.textContent?.trim()).toBe("CORE-1");
+    expect(reference?.querySelector("svg[data-status-glyph]")).not.toBeNull();
     const docs = Array.from(element.querySelectorAll("[data-markdown-link]")).find(
       (link) => link.textContent === "the docs"
     );
@@ -238,9 +246,9 @@ test("search hits mark the runs the server matched, and a reference it matched i
   );
   try {
     const element = preview(view.container);
-    await waitFor(() => expect(element).toHaveTextContent("Design decision"));
+    await waitFor(() => expect(element.querySelector(CORE_1_DRAWN)).not.toBeNull());
     const marks = Array.from(element.querySelectorAll("mark"), (mark) => mark.textContent);
-    expect(marks).toEqual(["port", "CORE-1 Design decision"]);
+    expect(marks).toEqual(["port", "CORE-1"]);
     const marked = element
       .querySelector("[data-dispatch-ref] mark")
       ?.closest("[data-dispatch-ref]");

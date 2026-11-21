@@ -3613,7 +3613,10 @@ type GraphReferences struct {
 // reference as the request named it, Kind, the kind of node it names (a GraphNode kind), Name,
 // the words a reader is shown for the target in place of its text (refs.TargetNames), and Gone,
 // whether nothing answers to that reference now. A gone target carries no name: its node was
-// deleted, so there is nothing left to name it by. Ambiguous says why a member is gone when its
+// deleted, so there is nothing left to name it by. Status is the issue's status as its
+// issues.status column stores it ("in_progress", "done"), read beside its name
+// (refs.TargetNames): only a member whose Kind is issue and which is not gone carries one, and
+// the key is left out of every other member. Ambiguous says why a member is gone when its
 // reference writes a short id that two or more items carry: the read answers that member gone
 // and answers every other member, where GET /api/v1/references refuses such an id with a 409.
 // TextTree is a block's whole text as the tree a reader is shown, every link and dispatch://
@@ -3633,10 +3636,11 @@ type GraphReferences struct {
 // text. Only a member whose Kind is block carries one, and only for a caller that sent
 // `Dispatch-Trees: 1`.
 type ReferenceTarget struct {
-	Ref  string `json:"ref"`
-	Kind string `json:"kind"`
-	Name string `json:"name"`
-	Gone bool   `json:"gone"`
+	Ref    string `json:"ref"`
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Gone   bool   `json:"gone"`
+	Status string `json:"status,omitempty" description:"the issue's status, for a member naming an issue that is not gone"`
 	// Ambiguous is true for a reference whose short id two or more items carry in the scope
 	// that the reference names. Such a member is gone, with the name "", and every other
 	// member of the read is answered. The key is left out otherwise.

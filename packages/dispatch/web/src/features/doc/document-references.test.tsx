@@ -19,6 +19,7 @@ import {
   renderProofDocument,
 } from "../../__tests__/proof-document";
 import type { Agent, Ask, AskRead, IssueReferenceSummary } from "../../api/types";
+import { statusGlyphElement } from "../../components/status-glyph";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { shortForm } from "../refs/routes";
 import { DocumentRuntime } from "./runtime";
@@ -119,7 +120,7 @@ const referenced: IssueReferenceSummary = {
   documents: [],
   key: "CORE-2",
   project: "CORE",
-  status: "open",
+  status: "in_progress",
   title: "Fix the thing",
 };
 
@@ -189,18 +190,73 @@ test("the live editor is told to draw a bare key's, a #id's and a bare reference
     await waitFor(() =>
       expect(drawnTitles(editors[0]?.references)).toEqual({
         "#q2": "Which way round?",
-        "CORE-2": "CORE-2 Fix the thing",
+        "CORE-2": "CORE-2",
         "dispatch://CORE-1/artifact/design": "design.md",
       })
     );
-    // A bare key reads as its key and its title, as a rendered body's link does, and clicking it
-    // opens the issue it names.
+    // A bare key reads as its status mark and its key, as a rendered body's link does, with its
+    // key, its status's words and its title as its accessible name (INFRA-4009 R1 and R3), and
+    // clicking it opens the issue it names. The mark is the one every surface of the host draws.
     expect(editors[0]?.references?.targets.get("CORE-2")).toEqual({
       href: "dispatch://CORE-2",
+      label: "CORE-2, In progress, Fix the thing",
       length: undefined,
-      title: "CORE-2 Fix the thing",
-      titleKey: "CORE-2",
+      status: "in_progress",
+      title: "CORE-2",
     });
+    expect(editors[0]?.references?.statusMark).toBe(statusGlyphElement);
+  } finally {
+    view.unmount();
+  }
+});
+
+// INFRA-4009 R1, R2 and R3 in the editor: an issue, by its own address or by a tab of its page
+// that reads as the issue (`dispatch://CORE-1/plan`), is drawn as its status mark and its key,
+// its title in its accessible name, once its summary is read; a document of the issue is drawn
+// by its own name with no mark. The mark follows the status as the summary is read again.
+test("an issue target carries its status and its name, its title the key, and follows a status change", async () => {
+  await warmMarkdownRenderer();
+  const queryClient = seededQueryClient();
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    await waitFor(() => expect(editors[0]?.references).toBeDefined());
+    act(() => {
+      editors[0]?.references?.onKeys(
+        plain(["CORE-2", "dispatch://CORE-1/plan", "dispatch://CORE-1/artifact/design"])
+      );
+    });
+
+    // The tab reads as the issue, so the title links to the issue's own address.
+    await waitFor(() =>
+      expect(editors[0]?.references?.targets.get("dispatch://CORE-1/plan")).toEqual({
+        href: "dispatch://CORE-1",
+        label: "CORE-1, Testing, Ship the release",
+        length: undefined,
+        status: "testing",
+        title: "CORE-1",
+      })
+    );
+    expect(editors[0]?.references?.targets.get("dispatch://CORE-1/artifact/design")).toEqual({
+      href: "dispatch://CORE-1/artifact/design",
+      length: undefined,
+      title: "design.md",
+    });
+
+    act(() => {
+      queryClient.setQueryData(["issue-summary", "CORE-2"], { ...referenced, status: "done" });
+    });
+    await waitFor(() =>
+      expect(editors[0]?.references?.targets.get("CORE-2")).toEqual({
+        href: "dispatch://CORE-2",
+        label: "CORE-2, Done, Fix the thing",
+        length: undefined,
+        status: "done",
+        title: "CORE-2",
+      })
+    );
   } finally {
     view.unmount();
   }
@@ -226,7 +282,6 @@ test("a #id the author left a hyphen on draws its title over the id alone", asyn
         href: "dispatch://CORE-1/ask/ask-1",
         length: 3,
         title: "Which way round?",
-        titleKey: undefined,
       })
     );
   } finally {
@@ -487,7 +542,7 @@ test("a past version is told to draw the same three titles over its own text", a
     await waitFor(() =>
       expect(drawnTitles(editors[0]?.references)).toEqual({
         "#q2": "Which way round?",
-        "CORE-2": "CORE-2 Fix the thing",
+        "CORE-2": "CORE-2",
         "dispatch://CORE-1/artifact/design": "design.md",
       })
     );
@@ -532,7 +587,7 @@ test("a click on a reference in a past version opens what it names", async () =>
     // also what its Markdown serializer leaves on a `dispatch://` link mark.
     act(() => {
       root.innerHTML =
-        '<p><a class="dispatch-reference" role="link" data-dispatch-href="dispatch://CORE-2">CORE-2 Fix the thing</a></p>';
+        '<p><a class="dispatch-reference" role="link" aria-label="CORE-2, In progress, Fix the thing" data-dispatch-href="dispatch://CORE-2">CORE-2</a></p>';
     });
     const anchor = root.querySelector("a");
     if (anchor === null) throw new Error("anchor missing");

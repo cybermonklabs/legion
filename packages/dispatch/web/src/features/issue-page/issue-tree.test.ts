@@ -633,7 +633,8 @@ test("a chip of an ambiguous short reference says so, and a gone target's chip d
 });
 
 // An ambiguous short reference has no name, as a gone target has none, so the page publishes
-// a reading for neither (`targetNaming`'s `readings`); it publishes the ambiguous one among the
+// a reading for neither (`targetNaming`'s `readings`) and no status (its `statuses`, which holds
+// the named issue's alone); it publishes the ambiguous one among the
 // references it read as ambiguous (its `ambiguous`) and the gone one among those it read as gone
 // (its `gone`), by the chip's own rule, so a surface draws each as written, links nothing for
 // the first, and reads no target of its own for either (INFRA-1196 decision 350).
@@ -655,7 +656,7 @@ test("the page publishes an ambiguous short reference as ambiguous, and a gone t
     targets: [
       { ambiguous: true, gone: true, kind: "block", name: "", ref: ambiguous },
       { gone: true, kind: "block", name: "", ref: gone },
-      { gone: false, kind: "issue", name: title, ref: named },
+      { gone: false, kind: "issue", name: title, ref: named, status: "in_progress" },
     ] satisfies ReferenceTarget[],
   };
 
@@ -663,6 +664,7 @@ test("the page publishes an ambiguous short reference as ambiguous, and a gone t
   expect([...naming.ambiguous]).toEqual([ambiguous]);
   expect([...naming.gone]).toEqual([gone]);
   expect([...namesOf(reads)]).toEqual([[named, title]]);
+  expect([...(naming.statuses ?? [])]).toEqual([[named, "in_progress"]]);
 });
 
 // R21: a typed block is a directive, and the reference read names a block by its stored excerpt,
@@ -1197,9 +1199,9 @@ test("a node's line from a stored heading leaves out its marker once", () => {
 // node's line keeps it there too, the projection naming none in code: in a reading, a text run
 // marked as inline code and a code block's text keep their address, and in a stored text a code
 // span keeps its address. A bare address outside code reads as the words its author wrote until
-// it is named, and as its target's name once it is (INFRA-1196 decision 350, which replaces
-// decision 95's short form). The reading the read sent is left as it was, and the node's words
-// keep every address.
+// it is named, and once it is an issue's address reads as its key alone, as plain text writes an
+// issue reference (INFRA-4009 R6; INFRA-1196 decision 350 replaces decision 95's short form).
+// The reading the read sent is left as it was, and the node's words keep every address.
 test("an address in code stays as written in a node's line, from a reading and from stored text", async () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
@@ -1258,8 +1260,8 @@ test("an address in code stays as written in a node's line, from a reading and f
   expect(line("d1")).toBe(written);
   expect(line("d2")).toBe("dispatch read dispatch://CORE-2");
   expect(line("d3")).toBe(written);
-  // Named, the bare address reads as its target's name, and the one in code stays as written,
-  // by the projection a row's line is drawn with, from the names the page published.
+  // Named, the bare address of an issue reads as its key alone, and the one in code stays as
+  // written, by the projection a row's line is drawn with, from the names the page published.
   const projected = renderHook(() => usePlainHeadline(inline, undefined), {
     wrapper: publishingNames(
       new Map([
@@ -1271,7 +1273,7 @@ test("an address in code stays as written in a node's line, from a reading and f
   try {
     await waitFor(() =>
       expect(projected.result.current.text?.text).toBe(
-        "Run dispatch read dispatch://CORE-2 before CORE-3 Drain the queue lands."
+        "Run dispatch read dispatch://CORE-2 before CORE-3 lands."
       )
     );
   } finally {
@@ -1462,12 +1464,14 @@ test("the issue's own line reads a label after its key, and names nothing in its
 });
 
 // R22: the batched read names an issue by its title cut to its first 240 characters, and a chip
-// naming the issue or a child of it, the name the page publishes for it and the link a row draws
-// for it by that name read the whole title the issue read holds, as a title over one record: its
-// white space collapses and a bare address in it reads as its target's short form, since a name
-// reads no other name (INFRA-1196 decision 350), so a comment citing `dispatch://CORE-2`, titled
-// `Follow dispatch://CORE-3 up`, links `CORE-2` and `Follow CORE-3 up`. A title longer than that
-// cut is named whole too, so an address the cut would end inside, and one past it, read short.
+// naming the issue or a child of it, the name the page publishes for it and the accessible name
+// of the link a row draws for it by that name read the whole title the issue read holds, as a
+// title over one record: its white space collapses and a bare address in it reads as its
+// target's short form, since a name reads no other name (INFRA-1196 decision 350), so a comment
+// citing `dispatch://CORE-2`, titled `Follow dispatch://CORE-3 up`, links `CORE-2` beside its
+// status mark, named `CORE-2, In progress, Follow CORE-3 up` (INFRA-4009 R3). A title longer
+// than that cut is named whole too, so an address the cut would end inside, and one past it,
+// read short.
 test("a chip, a published name and a row's link name a child issue by its whole title", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
@@ -1491,8 +1495,8 @@ test("a chip, a published name and a row's link name a child issue by its whole 
       ]),
       issue: { ...issueDetails([spec, made]), children: [childIssue("CORE-2", title)], title },
       targets: [
-        { gone: false, kind: "issue", name: head, ref: own },
-        { gone: false, kind: "issue", name: head, ref: cited },
+        { gone: false, kind: "issue", name: head, ref: own, status: "in_progress" },
+        { gone: false, kind: "issue", name: head, ref: cited, status: "in_progress" },
       ] satisfies ReferenceTarget[],
     };
     const root = buildIssueTree(reads);
@@ -1512,11 +1516,16 @@ test("a chip, a published name and a row's link name a child issue by its whole 
       [own, name],
       [cited, name],
     ]);
+    const statuses = targetNaming(reads).statuses ?? new Map<string, string>();
+    expect([...statuses], title).toEqual([
+      [own, "in_progress"],
+      [cited, "in_progress"],
+    ]);
     const links = rowReferences(nodeOf(root, citing.id)?.text ?? "", knownIssueKeys(names));
     expect(
-      links.map((link) => rowReferenceWords(link, names)),
+      links.map((link) => rowReferenceWords(link, names, statuses)),
       title
-    ).toEqual([{ key: "CORE-2", words: name }]);
+    ).toEqual([{ key: "CORE-2", status: "in_progress", words: name }]);
   }
 });
 
@@ -3135,10 +3144,11 @@ function planTasks(words: readonly string[], read: boolean): TreeNode {
 // R8 and INFRA-1196 decision 350, which replaces decision 95's short form: the server's reading
 // keeps a bare `dispatch://` address in a node's words as a plain text run, and a node's one
 // line reads it as the projection reads one: as the words its author wrote until it is named, and
-// as its target's name once it is, from the reading and, where the read sent none, from the
-// stored text; the punctuation that trails it stays where it stood. A chip naming the block is a
-// name, a title over one record, inside which an address reads as its short form, since a name
-// reads no other name; where the read sent no reading it draws the kind's word, as before.
+// once it is, an issue's address as its key alone (INFRA-4009 R6), from the reading and, where
+// the read sent none, from the stored text; the punctuation that trails it stays where it stood.
+// A chip naming the block is a name, a title over one record, inside which an address reads as
+// its short form, since a name reads no other name; where the read sent no reading it draws the
+// kind's word, as before.
 test("a bare address in a node's line reads as written until it is named, from a reading and from stored text", async () => {
   const lines = [
     ["Do it as dispatch://CORE-2 says. Then more.", "Do it as dispatch://CORE-2 says."],
@@ -3165,7 +3175,7 @@ test("a bare address in a node's line reads as written until it is named, from a
       read ? "Do it as CORE-2 says." : NODE_TYPE_NAMES.plan_task,
     ]);
   }
-  // Named, the address reads as its target's name, by the projection a row's line is drawn
+  // Named, the issue's address reads as its key alone, by the projection a row's line is drawn
   // with, from the name the page published.
   const task = nodeOf(planTasks([lines[0][0]], true), blockNodeId("plan-md", "t1"));
   const projected = renderHook(() => usePlainHeadline(task?.tree, undefined), {
@@ -3173,9 +3183,7 @@ test("a bare address in a node's line reads as written until it is named, from a
   });
   try {
     await waitFor(() =>
-      expect(projected.result.current.text?.text).toBe(
-        "Do it as CORE-2 Warm the cache says. Then more."
-      )
+      expect(projected.result.current.text?.text).toBe("Do it as CORE-2 says. Then more.")
     );
   } finally {
     projected.unmount();

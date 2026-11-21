@@ -32,17 +32,23 @@ const NO_ADDRESSES: readonly string[] = [];
 
 /** What a reference reads as in plain words once its target has answered (`ReferenceName`): the
  *  name the painted link reads for it (`RefLink`), which for an issue is its title, which the
- *  projection writes after the issue's key as a project's issue list writes a key beside one
- *  (`markdown-engine.ts`'s `standingName`), and for a party's mention what the painted mention
- *  draws (`@legion/contracts`'s `mentionDrawn`): the mention sign and that name, or the sign and
- *  the party's short form where it exists with no name. A target Dispatch answered does not
- *  exist, or exists with no name of its own, has no name, and reads as the words its author
- *  wrote (R8). Undefined while the target has not answered, and for one the reader may not see,
- *  where the projection keeps the words written, as the painted link does until its title
- *  resolves. */
+ *  projection never writes: an issue reads as its key alone, with no status mark and no title
+ *  (`markdown-engine.ts`'s `standingName`, INFRA-4009 R6), and for a party's mention what the
+ *  painted mention draws (`@legion/contracts`'s `mentionDrawn`): the mention sign and that name,
+ *  or the sign and the party's short form where it exists with no name. A target Dispatch
+ *  answered does not exist, or exists with no name of its own, has no name, and reads as the
+ *  words its author wrote (R8). Undefined while the target has not answered, and for one the
+ *  reader may not see, where the projection keeps the words written, as the painted link does
+ *  until its title resolves. An issue's answer carries its status beside its name, which a
+ *  surface that draws the status mark draws (`ReferenceName.status`). */
 function referenceAnswer(
   route: DispatchReferenceRoute,
-  { known, missing, title }: { known: boolean; missing: boolean; title: string | undefined }
+  {
+    known,
+    missing,
+    status,
+    title,
+  }: { known: boolean; missing: boolean; status: string | undefined; title: string | undefined }
 ): ReferenceName | undefined {
   if (missing) {
     return { mention: undefined, name: undefined };
@@ -53,6 +59,7 @@ function referenceAnswer(
   return {
     mention: isPartyRoute(route) ? mentionDrawn({ known, title }, shortForm(route)) : undefined,
     name: title,
+    ...(status === undefined ? {} : { status }),
   };
 }
 
@@ -71,14 +78,20 @@ function OwnNameRead({
   onName: NameReport;
   route: DispatchReferenceRoute;
 }): ReactNode {
-  const { known, missing, title } = useReferenceTarget(route, { text: false });
-  const answer = referenceAnswer(route, { known, missing, title });
+  const { known, missing, status, title } = useReferenceTarget(route, { text: false });
+  const answer = referenceAnswer(route, { known, missing, status, title });
   const name = answer?.name;
   const mention = answer?.mention;
+  const answeredStatus = answer?.status;
   const answered = answer !== undefined;
   useEffect(() => {
-    onName(address, answered ? { mention, name } : undefined);
-  }, [address, answered, mention, name, onName]);
+    onName(
+      address,
+      answered
+        ? { mention, name, ...(answeredStatus === undefined ? {} : { status: answeredStatus }) }
+        : undefined
+    );
+  }, [address, answered, answeredStatus, mention, name, onName]);
   return null;
 }
 
@@ -86,8 +99,9 @@ function OwnNameRead({
  * What the page published answers for one reference (`reference-names.tsx`), by the one rule R8
  * is everywhere:
  *
- * - **A name the page's batched read gave it**: that name, which an issue's key is written before
- *   as a link to an issue reads (`standingName`).
+ * - **A name the page's batched read gave it**: that name, which an issue reads by its key
+ *   alone, as a link to an issue reads in plain words (`standingName`), and an issue's status
+ *   where the read answered one.
  * - **Gone, or one the reader may not see, and ambiguous**: `null`, the words its author wrote,
  *   and no read of its own.
  * - **Asked for and not answered yet**, or answered with a reading the store has not projected
@@ -105,7 +119,10 @@ function publishedAnswer(
 ): ReferenceName | null | undefined {
   if (isPartyRoute(route)) return undefined;
   const name = known.names.get(address);
-  if (name !== undefined) return { mention: undefined, name };
+  if (name !== undefined) {
+    const status = known.statuses.get(address);
+    return { mention: undefined, name, ...(status === undefined ? {} : { status }) };
+  }
   if (known.unnamed.has(address)) return undefined;
   return known.ambiguous.has(address) || known.gone.has(address) || known.asked.has(address)
     ? null
@@ -134,6 +151,7 @@ function useNameLookup(): NameLookup {
       if (
         now?.name === name?.name &&
         now?.mention === name?.mention &&
+        now?.status === name?.status &&
         current.has(address) === (name !== undefined)
       ) {
         return current;
