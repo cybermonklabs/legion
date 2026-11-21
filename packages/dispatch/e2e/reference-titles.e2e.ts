@@ -241,6 +241,8 @@ function missingAnswered(page: Page, seeded: Seeded): Promise<unknown> {
 
 for (const kind of KINDS) {
   const reads = kind === "Issue" ? "its status mark and its key" : "its title";
+  // SLOW(>=2s): the seeded world, a second version, an anchored comment, ten threads and ten
+  // answered asks, then six surfaces over four page loads.
   test(`a bare address and a link whose text is its own address to the ${kind.toLowerCase()} read as ${reads} in the live editor, a past version, a comment, its reply on the Inbox and a one-line preview`, async ({
     browser,
   }, testInfo) => {
@@ -332,6 +334,8 @@ async function expectWordsAndAddresses(scope: Locator, seeded: Seeded): Promise<
   }
 }
 
+// SLOW(>=2s): the seeded world, a second version, an anchored comment, ten threads and ten
+// answered asks, then six surfaces over four page loads.
 // @pr: The reference-title family's one row on the lane: an author's own wording is kept, and an address with no target reads as written.
 test("a link its author worded keeps its words in the document, and an address whose target is missing reads as written @pr", async ({
   browser,

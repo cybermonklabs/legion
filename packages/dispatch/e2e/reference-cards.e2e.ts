@@ -249,9 +249,9 @@ for (const form of FORMS) {
   });
 }
 
-// @pr: The reference-card family's one row on the lane: a reply of several references draws them inline and no card, on all four surfaces, beside a reply of one reference that keeps its card.
 // SLOW(>=2s): seeds the shared world, writes five replies to each of four surfaces and reads
 // three pages.
+// @pr: The reference-card family's one row on the lane: a reply of several references draws them inline and no card, on all four surfaces, beside a reply of one reference that keeps its card.
 test("a reply made only of two issues and an ask draws each inline and no card, and a reply of one of them its card, in the margin, the Inbox thread, a Conversation comment and a Conversation message @pr", async ({
   browser,
 }, testInfo) => {

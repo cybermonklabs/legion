@@ -386,6 +386,8 @@ async function expectMadeTitles(
   }
 }
 
+// SLOW(>=2s): the reference world, one reply per row of the shared table, and every reply read
+// in the margin, each issue reference down to its status mark and its name.
 test("a margin thread's replies link each reference the shared table links and nothing else, and a link opens its target", async ({
   browser,
 }, testInfo) => {
@@ -462,6 +464,8 @@ test("a margin thread's replies link each reference the shared table links and n
   }
 });
 
+// SLOW(>=2s): the reference world, one answered ask per row of the shared table, and every row's
+// preview read on the Answers page.
 test("the one-line preview shows each reference the shared table links as its target's name, an issue as its status mark and its key", async ({
   browser,
 }) => {
@@ -574,6 +578,8 @@ function drawnTitlesByRow(page: Page): Promise<Record<string, string[]>> {
   });
 }
 
+// SLOW(>=2s): the reference world, a document of every row of the shared table, and every
+// reference the editor draws read, then followed twice.
 // @pr: The live document: every reference of the shared table drawn in the editor, followed, and the stored text left as written.
 test("the live editor draws each reference the shared table links whose target exists, follows it, and leaves the stored text as written @pr", async ({
   browser,
