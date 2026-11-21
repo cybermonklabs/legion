@@ -102,7 +102,7 @@ func serveHealthz(deps *listenerDeps) func() (int, map[string]any) {
 	state.Store(deps)
 	return func() (int, map[string]any) {
 		recorder := httptest.NewRecorder()
-		healthzHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		healthzHandler(state, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var body map[string]any
 		_ = json.Unmarshal(recorder.Body.Bytes(), &body)
 		return recorder.Code, body

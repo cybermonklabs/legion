@@ -153,6 +153,9 @@ const EnvoySectionSchema = z.strictObject({
   // `broker` or `none`, which `envoySettings` reads (`NATS_AUTH_VAR`); another value turns off
   // inbound messages alone, naming it, rather than the whole file.
   natsAuth: z.string().optional(),
+  // `nats` or `listener`, which `envoySettings` reads (`ENVOY_INBOUND`): how the session takes its
+  // inbound messages. Another value turns off inbound messages alone, naming it.
+  inbound: z.string().optional(),
 });
 
 // A top-level `natsUrls` is refused before this schema runs (`parseFile`): it belongs in
