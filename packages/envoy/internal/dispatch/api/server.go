@@ -592,6 +592,12 @@ type server struct {
 	// test sets it: it is how a case commits a write between the decision and the list, to read
 	// that the list answers the snapshot the decision read.
 	betweenPersonPageReads func()
+	// betweenOwnersPasskeyReads runs on the owner's access read once it has read the passkeys of
+	// the people the list names and before it reads the project's open links (withOwnersPasskeys);
+	// nil, which every server the deployment builds leaves it, runs nothing. Only a test sets it:
+	// it is how a case commits an enrollment between the two reads, to read that both answer one
+	// snapshot.
+	betweenOwnersPasskeyReads func()
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that

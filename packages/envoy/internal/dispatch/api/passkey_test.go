@@ -504,3 +504,61 @@ func TestARemovalWaitsForTheAddressBeforeAGoogleSignInLocksThePersonsSessions(t 
 		t.Fatalf("the removal of erin from ACC answered %d %s once her sign-in committed, want 200", removed.Code, removed.Body.String())
 	}
 }
+
+// TestTheOwnersAccessReadAnswersOneSnapshot (R5): the owner's access answer reads the passkeys of
+// the people the list names and the project's open links in one snapshot, so an enrollment that
+// commits between the two reads (server.betweenOwnersPasskeyReads) is either in both or in
+// neither: the answer lists erin's link open and no passkey of hers, as the list stood when the
+// read began, and never no passkey and no open link, which would make the Access tab drop a link
+// it shows with no passkey to show for it. The next read lists her passkey and no open link, which
+// proves the enrollment committed.
+//
+// Control: read the owner's fields on the pool, each query its own snapshot (getProjectAccess
+// passing the pool rather than its read-only transaction), and the first answer holds neither and
+// the row fails.
+func TestTheOwnersAccessReadAnswersOneSnapshot(t *testing.T) {
+	served, database, s := newRegisteredAccessServer(t, testServerOptions{passkeyIssuer: passkeyOutsideOrigin, signInIssuer: "https://accounts.google.com"})
+	ctx := t.Context()
+	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC: %d %s", listed.Code, listed.Body.String())
+	}
+	const subject = "c25hcHNob3QtZXJpbiE"
+	recordPasskeyAccount(t, database, accessErin, subject)
+	if _, err := database.Pool.Exec(ctx, `insert into outside_invitations (token_sha256, email, project_key, made_by, expires_at)
+		values (sha256('erin''s link of ACC'::bytea), $1, 'ACC', 'alice', now() + interval '1 hour')`, accessErin); err != nil {
+		t.Fatalf("store erin's unused link of ACC: %v", err)
+	}
+	enrolled := 0
+	s.betweenOwnersPasskeyReads = func() {
+		enrolled++
+		// The enrollment as store.PgPasskeys.Enroll commits it: the link used and the passkey
+		// stored in one transaction.
+		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `update outside_invitations set used_at = now() where email = $1 and used_at is null`, accessErin); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `insert into passkeys (credential_id, email, user_handle, public_key, aaguid, flags, project_key, made_by)
+				values ('\x03'::bytea, $1, convert_to($2, 'UTF8'), '\x04'::bytea, ''::bytea, 0, 'ACC', 'alice')`, accessErin, subject)
+			return err
+		}); err != nil {
+			t.Errorf("commit erin's enrollment between the owner's two reads: %v", err)
+		}
+	}
+	first := readAccess(t, served, "alice")
+	s.betweenOwnersPasskeyReads = nil
+	if enrolled != 1 {
+		t.Fatalf("the owner's read ran the seam between its two reads %d times, want once", enrolled)
+	}
+	if first.Passkeys == nil || first.OpenInvitations == nil {
+		t.Fatalf("alice's access answer carries no owner's passkey fields: %+v", first)
+	}
+	if len(*first.Passkeys) != 0 || len(*first.OpenInvitations) != 1 || (*first.OpenInvitations)[0].Email != accessErin {
+		t.Fatalf("with erin's enrollment committed between the owner's two reads, the answer lists passkeys %+v and open links %+v, want no passkey and her link open, as the list stood when the read began",
+			*first.Passkeys, *first.OpenInvitations)
+	}
+	after := readAccess(t, served, "alice")
+	if after.Passkeys == nil || len(*after.Passkeys) != 1 || after.OpenInvitations == nil || len(*after.OpenInvitations) != 0 {
+		t.Fatalf("after erin's enrollment committed, alice's access answer lists passkeys %+v and open links %+v, want her one passkey and no open link: the enrollment did not commit, so the read before it proved nothing",
+			after.Passkeys, after.OpenInvitations)
+	}
+}
