@@ -53,15 +53,23 @@ import (
 	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
-	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// The commands of `envoy-infra buckets`, each its workflow's one command in the hold's table.
+// The commands of `envoy-infra buckets`, each in the hold's table: create, recreate and restore
+// each their workflow's final command, and backup the first command of the recreate and restore
+// workflows.
 const (
 	CommandCreate   = "buckets create"
 	CommandRecreate = "buckets recreate"
 	CommandRestore  = "buckets restore"
+	CommandBackup   = "buckets backup"
 )
+
+// backupWorkflows are the holds a backup with no --hold prepares, by its --workflow.
+var backupWorkflows = map[string]holdrecord.Workflow{
+	"recreate": holdrecord.WorkflowBucketsRecreate,
+	"restore":  holdrecord.WorkflowBucketsRestore,
+}
 
 // env is what a run reaches outside the process. Command gives the real one; a test gives its own.
 type env struct {
@@ -102,7 +110,7 @@ func operatorEnvironment(name string) (string, bool) {
 }
 
 const usage = `usage: envoy-infra buckets create|recreate|restore [--hold ID] --reason R [options]
-       envoy-infra buckets backup --to DIR [options]
+       envoy-infra buckets backup (--workflow recreate|restore | --hold ID) --reason R --to DIR [options]
        envoy-infra buckets create --break-glass --operator NAME --bucket NAME --nats URL --connz URL
 
   create     create every copied bucket that is missing (or each --bucket), inside a
@@ -110,7 +118,8 @@ const usage = `usage: envoy-infra buckets create|recreate|restore [--hold ID] --
   recreate   delete each --bucket and create it again, inside a buckets-recreate hold
   restore    restore each --bucket from --from DIR, a backup's directory, inside a
              buckets-restore hold; the backup's manifest is validated first
-  backup     snapshot each --bucket (default: every one) into --to DIR, with the hold row released
+  backup     snapshot each --bucket (default: every one) into --to DIR, inside a buckets-recreate or
+             buckets-restore hold (--workflow recreate|restore, or --hold ID), as its first command
 
 With no --hold, create, recreate and restore prepare and set a hold of their workflow themselves
 (--minters-report, as envoy-infra hold set takes it); with --hold they run in that hold. The hold
@@ -144,10 +153,10 @@ func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
 // options are a run's flags.
 type options struct {
 	writerhold.HubFlags
-	action, holdID, reason, from, to, operator string
-	buckets, connz                             stringList
-	breakGlass                                 bool
-	replicas                                   int
+	action, holdID, reason, from, to, operator, workflow string
+	buckets, connz                                       stringList
+	breakGlass                                           bool
+	replicas                                             int
 }
 
 func command(ctx context.Context, args []string, stdout, stderr io.Writer, e env) int {
@@ -184,6 +193,7 @@ func parse(args []string, stderr io.Writer) (options, int) {
 	flags.IntVar(&o.replicas, "replicas", 0, "the copies a bucket is created with")
 	flags.StringVar(&o.from, "from", "", "restore's backup directory")
 	flags.StringVar(&o.to, "to", "", "backup's directory")
+	flags.StringVar(&o.workflow, "workflow", "", "backup's hold, with no --hold: recreate or restore")
 	flags.BoolVar(&o.breakGlass, "break-glass", false, "create each missing --bucket as the environment's NATS user")
 	flags.StringVar(&o.operator, "operator", "", "who runs a --break-glass create")
 	flags.Var(&o.connz, "connz", "the server's monitoring URL")
@@ -316,10 +326,21 @@ func (o options) usageProblem(given []string) string {
 	switch o.action {
 	case "backup":
 		need("to", o.to)
-		for _, name := range given {
-			if name == "hold" || name == "from" {
-				add("--%s is not backup's: a backup runs outside a hold", name)
+		if o.from != "" {
+			add("--from is restore's")
+		}
+		if o.holdID == "" {
+			if _, ok := backupWorkflows[o.workflow]; !ok {
+				add("--workflow recreate or restore is required with no --hold: a backup is the first command of a buckets-recreate or buckets-restore hold")
 			}
+		} else if o.workflow != "" {
+			add("--workflow is not taken with --hold: the hold's workflow is in its record")
+		}
+		need("signing-key-secret", o.KeySecret)
+		need("reason", o.reason)
+		if o.holdID == "" {
+			need("minters-report", o.MintersReport)
+			need("probe-token-file", o.ProbeTokenFile)
 		}
 		return strings.Join(problems, "; ")
 	case "recreate":
@@ -368,9 +389,6 @@ func report(stderr io.Writer, action string, err error) int {
 
 // run runs a held command, or a backup.
 func run(ctx context.Context, o options, stdout io.Writer, e env) error {
-	if o.action == "backup" {
-		return backup(ctx, o, stdout, e)
-	}
 	var manifest *Manifest
 	if o.action == "restore" {
 		// The archive is validated before the hold's preflight, so a hold is set only for a
@@ -423,6 +441,19 @@ func run(ctx context.Context, o options, stdout io.Writer, e env) error {
 		}
 		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]writerhold.Change, map[string]string, error) {
 			return restoreAll(ctx, nc, stdout, o.from, manifest, o.buckets, e.restoreRuns)
+		}
+	case "backup":
+		// The backup is the first command of the buckets-recreate and buckets-restore workflows: a
+		// snapshot names its deliver subject, which the server publishes to with no check of the
+		// requester's publish rights, so no snapshot runs outside a hold. It writes only the archive,
+		// and a failure leaves the hub unchanged. With --hold it runs in that hold's own workflow.
+		c.Command, c.Absent = CommandBackup, nil
+		if o.holdID == "" {
+			c.Workflow = backupWorkflows[o.workflow]
+		}
+		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]writerhold.Change, map[string]string, error) {
+			outputs, err := Backup(ctx, nc, o.to, o.buckets, stdout)
+			return nil, outputs, err
 		}
 	}
 	records, err := e.records(ctx, o.HubFlags, true)
@@ -530,31 +561,4 @@ func recreate(ctx context.Context, nc *nats.Conn, stdout io.Writer, buckets []st
 		outputs["bucket."+bucket] = "recreated"
 	}
 	return changes, outputs, nil
-}
-
-// backup is `buckets backup`: with the hold row released, it snapshots each bucket's stream into
-// its own directory under o.to, on the operator's connection under the released grant, and writes
-// the manifest (WriteManifest) of each archive's sha256 and stream state.
-func backup(ctx context.Context, o options, stdout io.Writer, e env) error {
-	records, err := e.records(ctx, o.HubFlags, false)
-	if err != nil {
-		return err
-	}
-	row, err := records.Row(ctx)
-	if err != nil {
-		return err
-	}
-	if row.Phase != natsgrant.OperatorPhaseReleased {
-		return fmt.Errorf("the hold row is %s under hold %s: a backup runs only with the row released", row.Phase, row.HoldID)
-	}
-	op, err := e.hub(ctx, o.HubFlags)
-	if err != nil {
-		return err
-	}
-	nc, err := op.Connect(ctx)
-	if err != nil {
-		return &writerhold.Unknown{Step: "backup", What: "connect to the hub as the operator", Err: err}
-	}
-	defer nc.Close()
-	return Backup(ctx, nc, o.to, o.buckets, stdout)
 }

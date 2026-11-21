@@ -50,44 +50,49 @@ type snapshotMeta struct {
 
 // Backup snapshots each of buckets' streams on nc into dir/<bucket> (jsm.go's
 // SnapshotToDirectory, which takes its replies under nc's inbox prefix), then writes dir's
-// manifest. A dir that already holds a manifest is refused, so a backup never overwrites one.
-func Backup(ctx context.Context, nc *nats.Conn, dir string, buckets []string, stdout io.Writer) error {
+// manifest, and returns the done entry's outputs: each bucket's archive sha256. It runs only
+// inside a hold, as `buckets backup`, the first command of the buckets-recreate and
+// buckets-restore workflows, since a snapshot names its own deliver subject. A dir that already
+// holds a manifest is refused, so a backup never overwrites one.
+func Backup(ctx context.Context, nc *nats.Conn, dir string, buckets []string, stdout io.Writer) (map[string]string, error) {
 	if _, err := os.Stat(filepath.Join(dir, ManifestFile)); err == nil {
-		return fmt.Errorf("%s already holds a backup's manifest: back up into a new directory", dir)
+		return nil, fmt.Errorf("%s already holds a backup's manifest: back up into a new directory", dir)
 	}
 	mgr, err := jsm.New(nc, jsm.WithTimeout(30*time.Second))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	manifest := Manifest{Buckets: map[string]Archive{}}
+	outputs := map[string]string{}
 	for _, bucket := range buckets {
 		stream, err := mgr.LoadStream("KV_" + bucket)
 		if err != nil {
-			return fmt.Errorf("read KV_%s: %w", bucket, err)
+			return nil, fmt.Errorf("read KV_%s: %w", bucket, err)
 		}
 		bucketDir := filepath.Join(dir, bucket)
 		if err := os.MkdirAll(bucketDir, 0o700); err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := stream.SnapshotToDirectory(ctx, bucketDir); err != nil {
-			return fmt.Errorf("snapshot KV_%s: %w", bucket, err)
+			return nil, fmt.Errorf("snapshot KV_%s: %w", bucket, err)
 		}
 		archive, err := readArchive(bucketDir)
 		if err != nil {
-			return fmt.Errorf("the snapshot of KV_%s: %w", bucket, err)
+			return nil, fmt.Errorf("the snapshot of KV_%s: %w", bucket, err)
 		}
 		manifest.Buckets[bucket] = archive
+		outputs["sha256."+bucket] = archive.SHA256
 		fmt.Fprintf(stdout, "backed up %s: %d messages to seq %d, sha256 %s\n", bucket, archive.Messages, archive.LastSeq, archive.SHA256)
 	}
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	tmp := filepath.Join(dir, ManifestFile+".tmp")
 	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
-		return err
+		return nil, err
 	}
-	return os.Rename(tmp, filepath.Join(dir, ManifestFile))
+	return outputs, os.Rename(tmp, filepath.Join(dir, ManifestFile))
 }
 
 // readArchive reads the archive in bucketDir: its files' sha256 and the state its meta file holds.

@@ -88,11 +88,13 @@ func tableFor(r rules) table {
 		WorkflowRollback:          rb,
 		WorkflowSelectionRecovery: sr,
 		WorkflowBucketsCreate:     buckets("buckets create"),
-		WorkflowBucketsRecreate:   buckets("buckets recreate"),
-		WorkflowBucketsRestore:    buckets("buckets restore"),
-		WorkflowStreamsUpdate:     {{name: "streams update", final: true}},
-		WorkflowStreamsCensus:     {{name: "streams census", final: true}},
-		WorkflowHubRestore:        hub,
+		// LOCAL ROW (t-10, until #4679's push adds it): `buckets backup`, the held backup, first in
+		// the buckets-recreate and buckets-restore workflows, Repeatable and Stoppable.
+		WorkflowBucketsRecreate: append([]entry{{name: "buckets backup", repeatable: true, stoppable: stop && r.WayOut}}, buckets("buckets recreate")...),
+		WorkflowBucketsRestore:  append([]entry{{name: "buckets backup", repeatable: true, stoppable: stop && r.WayOut}}, buckets("buckets restore")...),
+		WorkflowStreamsUpdate:   {{name: "streams update", final: true}},
+		WorkflowStreamsCensus:   {{name: "streams census", final: true}},
+		WorkflowHubRestore:      hub,
 	}
 	if r.WayOut { // hold abort, every workflow's way out; hub-restore names it already
 		for w := range rows {

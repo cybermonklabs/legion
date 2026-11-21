@@ -65,9 +65,10 @@ names already there changes nothing and needs no hold.
   brings the bucket back. To empty a bucket, or to replace one, run
   `envoy-infra buckets recreate --bucket <name>`, which runs in its own hold. Never delete one with
   `nats kv rm` or `nats stream rm`.
-- **A bucket from a backup:** `envoy-infra buckets backup --to <dir>`, with the row released, and
-  `envoy-infra buckets restore --from <dir> --bucket <name>`, in its own hold. Never restore one with
-  `nats stream restore`, which nothing holds.
+- **A bucket from a backup:** `envoy-infra buckets backup --workflow restore --to <dir>`, which
+  sets a buckets-restore hold and backs up as its first command, then
+  `envoy-infra buckets restore --hold <id> --from <dir> --bucket <name>` in the same hold. Never
+  restore one with `nats stream restore`, which nothing holds.
 - **A hub moving from a listener that created its buckets:** such a listener created
   `envoy_known_sessions` the first time it opened it once its NATS user held that bucket's grant,
   which `envoy-infra` 10.33.0 is the first release to render. So, while the hub still runs that
@@ -3283,7 +3284,7 @@ deleted and created again, so on the clustered hub it changes a bucket only insi
 envoy-infra buckets create   --reason R [--bucket B]... <the hold's flags>
 envoy-infra buckets recreate --reason R --bucket B... <the hold's flags>
 envoy-infra buckets restore  --reason R --bucket B... --from DIR <the hold's flags>
-envoy-infra buckets backup   --to DIR [--bucket B]... <the hold's flags>
+envoy-infra buckets backup   (--workflow recreate|restore | --hold ID) --reason R --to DIR [--bucket B]... <the hold's flags>
 ```
 
 With no `--hold`, `create`, `recreate` and `restore` prepare and set a hold of their workflow
@@ -3300,10 +3301,13 @@ else `ENVOY_NATS_REPLICAS`, each 1 to 5 and refused with exit 2 outside it, and 
 bucket's 5 minutes, the known sessions' 30 days and the CI state's 7 days of age), and leaves a
 bucket that exists as it is. `recreate` deletes each `--bucket` and creates it again.
 
-`backup` runs with the hold row released, under the operator's released grant, which holds the
-snapshot requests and nothing that writes: it snapshots each bucket's stream through jsm.go into
-`DIR/<bucket>` and writes `DIR/manifest.json`, each archive's sha256 and stream state. A directory
-that already holds a manifest is refused. `restore --from DIR` validates that manifest first,
+`backup` runs inside a hold, as the first command of a buckets-recreate or buckets-restore hold
+(`--workflow recreate|restore` sets one, or `--hold ID` runs in one): a snapshot names its own
+deliver subject, which the server publishes to without checking the requester's publish rights, so
+no snapshot runs under the released grant. It snapshots each bucket's stream through jsm.go into
+`DIR/<bucket>`, writes `DIR/manifest.json`, each archive's sha256 and stream state, and names each
+sha256 in its done entry. A directory that already holds a manifest is refused. A backup that
+fails leaves the hub unchanged. `restore --from DIR` validates that manifest first,
 before any hold is set, then, for each bucket, deletes its stream and restores it; a restore cut
 part way runs once more from its first chunk after the cut's leftover stream is deleted, and a
 second cut stops the command, naming the bucket and both errors, with no partial stream left.

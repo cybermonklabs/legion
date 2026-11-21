@@ -91,13 +91,19 @@ func newHeldBuckets(t *testing.T) *heldBuckets {
 }
 
 // run runs `envoy-infra buckets <args>` with the hold's flags, which the row's env stands in for.
+// A restore given no --hold while the row is held runs in that hold: the backup's (backupNow).
 func (h *heldBuckets) run(args ...string) (int, string, string) {
 	h.t.Helper()
 	full := append(append([]string{}, args...), "--broker-url", "https://broker.holdtest", "--token-file", "/dev/null",
 		"--verify-keys", "AAAA", "--signing-key-secret", "projects/holdtest/secrets/"+writerhold.SigningKeySecret,
-		"--minters-report", h.report, "--probe-token-file", "/dev/null", "--nats", h.s.Cluster.URL())
-	if args[0] != "backup" {
-		full = append(full, "--reason", "the row's "+args[0])
+		"--nats", h.s.Cluster.URL(), "--reason", "the row's "+args[0])
+	if args[0] == "restore" && !slices.Contains(args, "--hold") {
+		if row := h.row(); row.Phase == natsgrant.OperatorPhaseHeld {
+			full = append(full, "--hold", row.HoldID)
+		}
+	}
+	if !slices.Contains(full, "--hold") {
+		full = append(full, "--minters-report", h.report, "--probe-token-file", "/dev/null")
 	}
 	code, stdout, stderr := runCommand(h.t, h.e, full...)
 	h.t.Logf("envoy-infra buckets %s: exit %d\n%s%s", strings.Join(args, " "), code, stdout, stderr)
@@ -309,11 +315,13 @@ func TestHoldBypassWriterAfterTheProof(t *testing.T) {
 	w.end()
 }
 
-// backupNow backs up buckets under the released row and returns the backup's directory.
+// backupNow backs up buckets as `buckets backup --workflow restore`, which prepares and sets a
+// buckets-restore hold and backs up as its first command, and returns the backup's directory. The
+// hold stays set for the restore that follows (run's restore with no --hold runs in it).
 func (h *heldBuckets) backupNow(buckets ...string) string {
 	h.t.Helper()
 	dir := filepath.Join(h.t.TempDir(), "backup")
-	args := []string{"backup", "--to", dir}
+	args := []string{"backup", "--workflow", "restore", "--to", dir}
 	for _, bucket := range buckets {
 		args = append(args, "--bucket", bucket)
 	}
@@ -333,30 +341,26 @@ func TestHoldBypassUnheldRestore(t *testing.T) {
 	w.nc.Close()
 	dir := h.backupNow(bus.SessionBucket)
 
-	var during atomic.Bool
+	// The backup's hold is set already, so every operator connect from here is the restore's own;
+	// a listener connects beside each of them.
+	if row := h.row(); row.Phase != natsgrant.OperatorPhaseHeld {
+		t.Fatalf("the row is %s after the backup, not held", row.Phase)
+	}
 	refusedDuring := make(chan error, 1)
 	op := *h.op
 	h.e.hub = func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) {
 		o := op
 		connect := o.Connect
 		o.Connect = func(ctx context.Context) (*natsgo.Conn, error) {
-			if during.Load() {
-				_, err := natsgo.Connect(h.s.Cluster.URL(), h.s.ListenerCredential(holdtest.ListenerMachines[1]), natsgo.NoReconnect(), natsgo.Timeout(10*time.Second))
-				select {
-				case refusedDuring <- err:
-				default:
-				}
+			_, err := natsgo.Connect(h.s.Cluster.URL(), h.s.ListenerCredential(holdtest.ListenerMachines[1]), natsgo.NoReconnect(), natsgo.Timeout(10*time.Second))
+			select {
+			case refusedDuring <- err:
+			default:
 			}
 			return connect(ctx)
 		}
 		return &o, nil
 	}
-	// Once hold set has run, every further operator connect is the restore's own; a listener
-	// connects beside the first of them.
-	go func() {
-		testwait.Eventually(t, "the row held", func() bool { return h.row().Phase == natsgrant.OperatorPhaseHeld })
-		during.Store(true)
-	}()
 	code, stdout, _ := h.run("restore", "--bucket", bus.SessionBucket, "--from", dir)
 	if code != 0 || !strings.Contains(stdout, "restored "+bus.SessionBucket) {
 		t.Fatalf("buckets restore = %d\n%s", code, stdout)
@@ -375,11 +379,11 @@ func TestHoldBypassUnheldRestore(t *testing.T) {
 	w.end()
 }
 
-// Backup and restore through jsm.go: `buckets backup` runs under exactly
-// Operator(OperatorPhaseReleased) and `buckets restore --from` under exactly
-// Operator(OperatorPhaseHeld), each on one connection, and both succeed with the backup's every
-// message back. The control is a user holding the held grant without $JS.SNAPSHOT.RESTORE.KV_<B>.*:
-// its restore is refused, naming the bucket.
+// Backup and restore through jsm.go, inside one buckets-restore hold: `buckets backup` runs as its
+// first command under exactly Operator(OperatorPhaseHeld), its done entry naming the archive's
+// sha256, and `buckets restore --from` in the same hold, and the backup's every message comes back.
+// No snapshot runs under the released grant. The control is a user holding the held grant without
+// $JS.SNAPSHOT.RESTORE.KV_<B>.*: its restore is refused, naming the bucket.
 func TestHoldBackupAndRestoreThroughJsm(t *testing.T) {
 	h := newHeldBuckets(t)
 	w := h.startWriter(holdtest.ListenerMachines[0], "envoy-listener", bus.InterestBucket)
@@ -387,21 +391,19 @@ func TestHoldBackupAndRestoreThroughJsm(t *testing.T) {
 	w.nc.Close()
 	acked := w.acked.Load()
 
-	var connects atomic.Int64
-	op := *h.op
-	h.e.hub = func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) {
-		o := op
-		connect := o.Connect
-		o.Connect = func(ctx context.Context) (*natsgo.Conn, error) { connects.Add(1); return connect(ctx) }
-		return &o, nil
-	}
 	dir := h.backupNow(bus.InterestBucket)
-	if connects.Load() != 1 {
-		t.Fatalf("the backup made %d connections, want one", connects.Load())
-	}
 	m, err := ReadManifest(dir, []string{bus.InterestBucket})
 	if err != nil || m.Buckets[bus.InterestBucket].Messages != uint64(acked) {
 		t.Fatalf("the backup's manifest: %v %+v, want %d messages", err, m, acked)
+	}
+	backupHold := h.row().HoldID
+	d, _, err := h.s.Records.Journal(context.Background(), backupHold)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := d.Ops[len(d.Ops)-1]
+	if d.Workflow != holdrecord.WorkflowBucketsRestore || last.Command != CommandBackup || last.State != "done" || last.Outputs["sha256."+bus.InterestBucket] != m.Buckets[bus.InterestBucket].SHA256 {
+		t.Fatalf("the backup's hold %s ends with %+v, want buckets backup done naming the archive's sha256", d.Workflow, last)
 	}
 	code, stdout, _ := h.run("restore", "--bucket", bus.InterestBucket, "--from", dir)
 	if code != 0 {
@@ -662,52 +664,21 @@ func TestHoldPreflightAnInterruptedRestore(t *testing.T) {
 	}
 	stream := "KV_" + bus.SessionBucket
 
-	// The control: KV_envoy_sessions absent in a buckets-create hold for another bucket stops the
-	// hold, naming it.
-	id := h.s.Prepare(t, holdrecord.WorkflowBucketsRecreate)
-	h.s.HoldWithoutTheSteps(t, id)
+	// The restore, in the backup's buckets-restore hold, killed after it removed its target: its
+	// intent, the target gone, and no entry after.
+	id := h.row().HoldID
+	if _, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: CommandRestore}, map[string]string{"bucket." + bus.SessionBucket: bus.SessionBucket, "sha256." + bus.SessionBucket: m.Buckets[bus.SessionBucket].SHA256}); err != nil {
+		t.Fatal(err)
+	}
 	nc, err := h.s.ConnectOperator(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	js, _ := jetstream.New(nc)
-	for _, s := range []string{stream, "KV_" + bus.RoleClaimBucket} {
-		if err := js.DeleteStream(ctx, s); err != nil {
-			t.Fatalf("delete %s: %v", s, err)
-		}
+	if err := js.DeleteStream(ctx, stream); err != nil {
+		t.Fatalf("delete %s: %v", stream, err)
 	}
 	nc.Close()
-	h.s.Release(t, id)
-	code, _, stderr := h.run("create", "--bucket", bus.RoleClaimBucket)
-	if code == 0 || !strings.Contains(stderr, stream) {
-		t.Fatalf("control: a buckets-create hold beside an absent %s = %d, want it stopped naming it\n%s", stream, code, stderr)
-	}
-	row := h.row()
-	if _, err := h.s.Records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, row.HoldID, "the control's end"); err != nil {
-		t.Fatal(err)
-	}
-	// The control's other absence goes: KV_envoy_roles made again under a hold of no steps, so the
-	// restore's reading below finds only its own target absent.
-	id = h.s.Prepare(t, holdrecord.WorkflowBucketsCreate)
-	h.s.HoldWithoutTheSteps(t, id)
-	nc, err = h.s.ConnectOperator(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	js, _ = jetstream.New(nc)
-	if _, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: 3}); err != nil {
-		t.Fatalf("make %s again: %v", bus.RoleClaimBucket, err)
-	}
-	nc.Close()
-	h.s.Release(t, id)
-
-	// The restore, killed after it removed its target: its hold set, its intent, the target gone,
-	// and no entry after.
-	id = h.s.Prepare(t, holdrecord.WorkflowBucketsRestore)
-	h.s.HoldWithoutTheSteps(t, id)
-	if _, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: CommandRestore}, map[string]string{"bucket." + bus.SessionBucket: bus.SessionBucket, "sha256." + bus.SessionBucket: m.Buckets[bus.SessionBucket].SHA256}); err != nil {
-		t.Fatal(err)
-	}
 	// The rerun under the same hold, with the target absent: its reading records the absence as
 	// expected, and it restores.
 	code, stdout, stderr := h.run("restore", "--hold", id, "--bucket", bus.SessionBucket, "--from", dir)
@@ -718,7 +689,28 @@ func TestHoldPreflightAnInterruptedRestore(t *testing.T) {
 	if err != nil || !d.Complete {
 		t.Fatalf("the rerun did not complete the record: %v %+v", err, d)
 	}
+	h.release()
+
+	// The control: KV_envoy_sessions absent in a buckets-create hold for another bucket stops the
+	// create, naming it.
+	id = h.s.Prepare(t, holdrecord.WorkflowBucketsRecreate)
+	h.s.HoldWithoutTheSteps(t, id)
+	nc, err = h.s.ConnectOperator(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, _ = jetstream.New(nc)
+	for _, s := range []string{stream, "KV_" + bus.RoleClaimBucket} {
+		if err := js.DeleteStream(ctx, s); err != nil {
+			t.Fatalf("delete %s: %v", s, err)
+		}
+	}
+	nc.Close()
 	h.s.Release(t, id)
+	code, _, stderr = h.run("create", "--bucket", bus.RoleClaimBucket)
+	if code == 0 || !strings.Contains(stderr, stream) {
+		t.Fatalf("control: a buckets-create hold beside an absent %s = %d, want it stopped naming it\n%s", stream, code, stderr)
+	}
 }
 
 // A buckets command that stops having changed nothing lets `hold release` end its hold. In a set
