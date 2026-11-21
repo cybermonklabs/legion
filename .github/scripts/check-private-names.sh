@@ -48,14 +48,13 @@
 #      word and a lowercase slug pass, and a key beside a "_", which a GNU "\b" would pass, is
 #      refused). `LEGION` is never such a project, so Legion's own `LEGION-<n>` keys always pass.
 #      A run that reads this rule with terms in the list and no `key:` line fails with exit 2, since
-#      it would report a clean result over no project at all;
-#   7. a Dispatch link: the link scheme Dispatch's references are written in, in any case.
+#      it would report a clean result over no project at all. A Dispatch link is no private name
+#      (the operator decided so), so no rule refuses one, but a key it holds is still refused here.
 #
-# Rules 6 and 7 read new text only: the tree keeps the keys and links from before them, which the
-# operator's rule ("Stop new leaks only") leaves in place. PRIVATE_NAME_RULES picks the rules a run
-# reads: `names` (the default) reads rules 1 to 5, and `keys` reads rules 6 and 7 alone, which
-# check-pr-text.sh asks for over a pull request's new text (its header says which text, and from
-# when).
+# Rule 6 reads new text only: the tree keeps the keys from before it, which the operator's rule
+# ("Stop new leaks only") leaves in place. PRIVATE_NAME_RULES picks the rules a run reads: `names`
+# (the default) reads rules 1 to 5, and `keys` reads rule 6 alone, which check-pr-text.sh asks for
+# over a pull request's new text (its header says which text, and from when).
 #
 # One matching engine reads everything: GNU grep, in the run's locale. The repository's contents
 # and a named path's are read by the same grep over the same file list, a file's path by grep -z,
@@ -67,9 +66,11 @@
 # With the variable unset or empty (no term left after the dropping above) the fifth rule cannot
 # run, and GITHUB_EVENT_NAME decides what follows. On a pull_request event, which GitHub runs with
 # no secret for a fork's pull request, and with no event at all (a run outside Actions), the check
-# prints a warning that only the first four rules ran and keeps their exit. On any other event (a
-# merge_group, a push, a workflow_dispatch, and a pull_request_review, which no workflow runs this
-# check on), where a job can always map the secret, it fails with exit 2 before it scans anything.
+# prints a warning that only the first four rules ran and keeps their exit; a keys run with no
+# `key:` line left checks nothing, and its warning and its last line say so, with exit 0. On any
+# other event (a merge_group, a push, a workflow_dispatch, and a pull_request_review, which no
+# workflow runs this check on), where a job can always map the secret, it fails with exit 2 before
+# it scans anything.
 #
 # With no arguments it scans the repository: every file git tracks, a file under an ignored path
 # included, plus every untracked file git does not ignore (git ls-files -z), so a new file is
@@ -183,9 +184,6 @@ private_host_label='names a private internal host'
 tailnet_host_label='names a Tailscale MagicDNS host'
 term_label="names a term of the deployment's own list (PRIVATE_NAME_TERMS)"
 issue_key_label="names an issue key of the deployment's own projects (PRIVATE_NAME_TERMS key: lines)"
-link_label='holds a Dispatch link'
-# The seventh rule's link scheme, spelled in pieces so that this file holds no whole one.
-link_rule='dispatch'':''//'
 rules=${PRIVATE_NAME_RULES:-names}
 case $rules in
   names | keys) ;;
@@ -398,8 +396,15 @@ done
 if [ ${#terms[@]} -eq 0 ]; then
   case ${GITHUB_EVENT_NAME:-} in
     '' | pull_request)
-      echo "::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so only the" \
-        "rules this script spells ran, and no term of the deployment's own list was checked" >&2
+      # A keys run reads rule 6 alone, which this script does not spell: with no key: line in
+      # the list it checks nothing, and says so here and in its last line.
+      if [ "$rules" = names ]; then
+        echo "::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so only the" \
+          "rules this script spells ran, and no term of the deployment's own list was checked" >&2
+      elif [ ${#keys[@]} -eq 0 ]; then
+        echo "::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so no issue" \
+          "key of the deployment's own projects was checked" >&2
+      fi
       ;;
     *)
       echo "::error::check-private-names: PRIVATE_NAME_TERMS is unset or empty on a" \
@@ -535,14 +540,11 @@ if [ "$rules" = names ]; then
     search_paths "$term_label" -E -i -f "$patterns_file"
   fi
 fi
-# Rules 6 and 7: over everything a `keys` run reads. A key or a link has no allowed form, so each
-# is a `term` search, which drops nothing.
-if [ "$rules" = keys ]; then
-  if [ -n "$key_pattern" ]; then
-    search "$issue_key_label" term -E -f "$key_file"
-    search_paths "$issue_key_label" -E -f "$key_file"
-  fi
-  search "$link_label" term -F -i -e "$link_rule"
+# Rule 6: over everything a `keys` run reads. A key has no allowed form, so it is a `term` search,
+# which drops nothing.
+if [ "$rules" = keys ] && [ -n "$key_pattern" ]; then
+  search "$issue_key_label" term -E -f "$key_file"
+  search_paths "$issue_key_label" -E -f "$key_file"
 fi
 
 # escape_data <text>: text as a workflow command's message, its %, CR and LF escaped as GitHub
@@ -596,16 +598,21 @@ if [ -s "$hits" ]; then
   echo "  - for a term of PRIVATE_NAME_TERMS, the deployment's own list, write the neutral form above"
   echo "    that fits it (\"the deployment repository\", \"the company\", a placeholder id). The list"
   echo "    is an Actions secret, so this log never prints the term: read the reported line;"
-  echo "  - for an issue key of the deployment's own projects, or a Dispatch link, write neither: a"
+  echo "  - for an issue key of the deployment's own projects write none, in a Dispatch link too: a"
   echo "    pull request's title, body, commits, comments and reviews carry no key but Legion's own"
-  echo "    LEGION-<n> and no link; the Dispatch issue links the pull request instead;"
+  echo "    LEGION-<n>; the Dispatch issue links the pull request instead;"
   echo "  - for a file or directory whose path is reported with <name> in it, rename it."
   exit 1
 fi
 
 if [ "$rules" = keys ]; then
-  echo "check-private-names: no text names an issue key of the deployment's own projects" \
-    "(${#keys[@]} keys) or holds a Dispatch link ($scanned)"
+  if [ ${#keys[@]} -eq 0 ]; then
+    echo "check-private-names: no issue key was checked: PRIVATE_NAME_TERMS holds no key: line" \
+      "($scanned)"
+  else
+    echo "check-private-names: no text names an issue key of the deployment's own projects" \
+      "(${#keys[@]} keys; $scanned)"
+  fi
   exit 0
 fi
 named="the private deployment repository or the company"

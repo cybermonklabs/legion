@@ -12,9 +12,10 @@
 # `review:<id>:<line>` or `review-comment:<id>:<line>` (the id GitHub gives that issue comment,
 # review or review comment), never its text.
 #
-# Then it holds the pull request's new text to check-private-names.sh's rules 6 and 7 (an issue key
-# of the deployment's own projects, and a Dispatch link), from a cutoff it derives at each run: the
-# section "THE ISSUE-KEY RULE" below says how, and which text. A hit there is reported as
+# Then it holds the pull request's new text to check-private-names.sh's rule 6 (an issue key of the
+# deployment's own projects), from a cutoff it derives at each run: the section "THE ISSUE-KEY
+# RULE" below says how, and which text. A Dispatch link is no private name and passes; a key it
+# holds does not. A hit there is reported as
 # `title:<line>`, `body:<line>`, `<kind>:<id>:<line>`, `commit:<sha>:<line>` for a
 # commit's message, `commit:<sha>:<path>:<line>` for a line a commit adds, or
 # `files:<path>:<line>` for a line of the pull request's net diff, which is read in place of a
@@ -187,11 +188,11 @@ if [ "$status" -ne 0 ] && grep -q -E "(^|[:=])$kind_pattern:[0-9]+:" "$work/repo
   echo "    Never re-run an older run: it checks the commits of the head its own event named, and"
   echo "    its check lands on that head, not the current one."
 fi
-# THE ISSUE-KEY RULE (check-private-names.sh's rules 6 and 7: an issue key of the deployment's own
-# projects, and a Dispatch link), over new text only. Its cutoff is derived, never typed: the
-# commit that added .github/issue-key-cutoff to the base branch is the one that told every worker
-# to keep keys and links out of this repository's text (skills/legion-worker/references/
-# pr-body.md), and the cutoff is the publish time of the earliest legion-v* release whose commit
+# THE ISSUE-KEY RULE (check-private-names.sh's rule 6: an issue key of the deployment's own
+# projects), over new text only. Its cutoff is derived, never typed: the commit that added
+# .github/issue-key-cutoff to the base branch is the one that told every worker to keep keys out
+# of this repository's text (skills/legion-worker/references/pr-body.md), and the cutoff is the
+# publish time of the earliest legion-v* release whose commit
 # contains it, found at a cost that does not grow with the releases (below). No such commit, or no
 # such release yet, and the rule is inactive; a history or a release GitHub does not answer is
 # UNKNOWN, and refused. Once active, a
@@ -206,9 +207,9 @@ fi
 # pull request's, so it also holds the lines of its commits dated before the cutoff: a pull request
 # opened after the cutoff that holds a forward merge is read whole, those older lines included.
 # That exception errs toward reading more, and each of those lines lands on main as new text
-# anyway. A key or a link that the new commits also remove is carried over, not new: a line edited
-# around a link it already held (whatever punctuation now follows it), a file moved with its keys,
-# or a line one commit removes and a later one puts back, passes (THE DIFF READING below). A diff
+# anyway. A key that the new commits also remove is carried over, not new: a line edited around a
+# key it already held (whatever punctuation now follows it), a file moved with its keys, or a line
+# one commit removes and a later one puts back, passes (THE DIFF READING below). A diff
 # GitHub's REST answer does not hold whole (a file that adds lines with no patch, which GitHub
 # leaves out for a large file, or a list short of the diff's totals) is read from git instead, and
 # only a diff neither holds whole is UNKNOWN, and refused. The branch name is not read by this
@@ -310,42 +311,28 @@ elif [ -n "$cutoff" ]; then
   # <stage>/count. GitHub's REST answer is read first. Where it does not hold the whole diff, git
   # reads the same diff from the pull request's head, which it never truncates. Then carry.awk
   # (written below) writes each entry's added lines at their line numbers in the new file, every
-  # other line empty, with each issue-key-shaped word or Dispatch link that a removed line also
-  # holds blanked as <carried>: one removed occurrence carries one added one. The pool is every new
-  # commit's removed lines together, across their files and commits, so a key moved, a line
-  # re-worded around its link, or a line one commit removes and a later one puts back (as `jj split`
-  # divides a move) is not new text, and a second copy of it is; the net diff, read for a merge, is
-  # its own pool. A link's token ends before a sentence's trailing `.`, `,`, `;` or `:`, so changing
-  # the punctuation after it adds nothing. carry.awk runs under LC_ALL=C, so it reads bytes and
-  # folds the case of ASCII letters alone, as its words and its link scheme are defined: in a UTF-8
-  # locale gawk's tolower folds a dotted capital I to an i, where rule 7's grep -i does not.
-  link_scheme='dispatch'':''//'
+  # other line empty, with each issue-key-shaped word that a removed line also holds blanked as
+  # <carried>: one removed occurrence carries one added one. The pool is every new commit's removed
+  # lines together, across their files and commits, so a key moved, a line re-worded around its
+  # key, or a line one commit removes and a later one puts back (as `jj split` divides a move) is
+  # not new text, and a second copy of it is; the net diff, read for a merge, is its own pool.
+  # carry.awk runs under LC_ALL=C, so it reads bytes, as its words are defined.
   : > "$work/git-error"
   cat > "$work/carry.awk" <<'AWK'
-# scan <line> <collect>: in collect mode, counts each key-shaped word and link of the line as one
-# the diff removes; else the line with each one a removed occurrence carries blanked, and the
-# count of those none carries in `uncarried`. A key-shaped word is an upper-case run, a "-" and
-# digits, with an ASCII character that is no letter or digit (or the line's edge) on either side.
+# scan <line> <collect>: in collect mode, counts each key-shaped word of the line as one the diff
+# removes; else the line with each one a removed occurrence carries blanked, and the count of
+# those none carries in `uncarried`. A key-shaped word is an upper-case run, a "-" and digits, with
+# an ASCII character that is no letter or digit (or the line's edge) on either side, so a key in a
+# Dispatch link is one too.
 # Every other character, a non-ASCII letter or mark among them, counts as a letter, so this finds
 # a word only where the sixth rule's locale-aware [^[:alnum:]] boundary finds a key too: a removed
 # word that rule would not read as a key never carries an added one it would. The cost runs the
 # safe way: a key beside non-ASCII punctuation (a curly quote, a no-break space) is no word here,
-# so it is never carried and rule 6 reads it as new. A link is the scheme, in ASCII letters of any
-# case, and what follows it up to a blank, a quote or a bracket, less any `.`, `,`, `;` or `:` that
-# ends it, which stays in the line as written.
-function scan(line, collect,    out, i, n, c, prev, j, k, tok, sl) {
-  out = ""; n = length(line); i = 1; sl = length(scheme)
+# so it is never carried and rule 6 reads it as new.
+function scan(line, collect,    out, i, n, c, prev, j, k, tok) {
+  out = ""; n = length(line); i = 1
   while (i <= n) {
     c = substr(line, i, 1)
-    if (tolower(substr(line, i, sl)) == scheme) {
-      j = i + sl
-      while (j <= n && index(stops, substr(line, j, 1)) == 0) j++
-      while (j > i + sl && index(".,;:", substr(line, j - 1, 1)) > 0) j--
-      tok = scheme substr(line, i + sl, j - i - sl)
-      if (take(tok, collect)) out = out "<carried>"; else out = out substr(line, i, j - i)
-      i = j
-      continue
-    }
     prev = (i == 1) ? "" : substr(line, i - 1, 1)
     if (index(upper, c) > 0 && (prev == "" || index(apart, prev) > 0)) {
       j = i
@@ -373,7 +360,6 @@ function take(tok, collect) {
   return 0
 }
 BEGIN {
-  stops = " \t\r\"<>()[]`" sprintf("%c", 39)
   upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"; digits = "0123456789"
   # apart: the ASCII characters that are no letter or digit, the one set that bounds a word.
   apart = ""
@@ -543,7 +529,7 @@ AWK
   carry_stages() {
     local stage
     for stage in "$@"; do printf '%s\t%s\n' "$stage" "$(< "$stage/count")"; done > "$work/stages"
-    LC_ALL=C awk -v stages="$work/stages" -v scheme="$link_scheme" -f "$work/carry.awk"
+    LC_ALL=C awk -v stages="$work/stages" -f "$work/carry.awk"
   }
   # place_stage <stage> <part>: each staged entry's added lines under <part>/<path>: in $keyed when
   # the path is new text (an added file, or a renamed or copied one whose path holds a word its old
@@ -560,7 +546,7 @@ AWK
       case $file_status in
         added) dest="$keyed/$part/$name" ;;
         renamed | copied)
-          if [ "$(OLD_PATH=$old NEW_PATH=$name LC_ALL=C awk -v mode=path -v scheme="$link_scheme" -f "$work/carry.awk")" = carried ]; then
+          if [ "$(OLD_PATH=$old NEW_PATH=$name LC_ALL=C awk -v mode=path -f "$work/carry.awk")" = carried ]; then
             dest="$lines_only/$part/$name"
           else
             dest="$keyed/$part/$name"
@@ -670,7 +656,7 @@ AWK
       place_stage "$stage" net
     fi
   fi
-  # Two runs of rules 6 and 7: one over the title, body, items, commit messages and the files the
+  # Two runs of rule 6: one over the title, body, items, commit messages and the files the
   # new commits (or the net diff) add, or rename to a path with a word its old path lacks, whose
   # paths are new text too; one over the lines they add to files they only change, whose paths are
   # not.
