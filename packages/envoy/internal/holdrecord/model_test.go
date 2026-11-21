@@ -216,12 +216,13 @@ type modelState struct {
 	ProvenSet  int    // the targets the latest done prove names
 	Intent     string
 	Complete   bool
-	HoldGen    int  // the row's gen at completion
-	RowGen     int  // the row restores so far
-	Unresolved bool // rollback: a logical name with no start, which only restore --key resolves
-	NoStart    bool // cutover: a cohort member with no safe start, which only replay --key resolves
-	Doomed     bool // a buckets command failed for good after its intent: every run of it fails
-	Left       byte // under WayOut, the stops of other commands than hold set and release: 0 none, 'U' each left nothing changed, 'C' one changed or recorded nothing
+	HoldGen    int    // the row's gen at completion
+	RowGen     int    // the row restores so far
+	Unresolved bool   // rollback: a logical name with no start, which only restore --key resolves
+	NoStart    bool   // cutover: a cohort member with no safe start, which only replay --key resolves
+	Doomed     bool   // a buckets command failed for good after its intent: every run of it fails
+	StopLatest string // under WayOut, the commands whose latest entry is a stop, which hold abort's admission reads
+	Left       byte   // under WayOut, the stops of other commands than hold set and release: 0 none, 'U' each left nothing changed, 'C' one changed or recorded nothing
 	Cur        [2]modelDisk
 	Step1      [2]modelDisk
 	Restores   int
@@ -408,14 +409,17 @@ func scenarios(r rules, fail bool) []modelScenario {
 // package are the state's.
 func toDone(sc modelScenario, s modelState) Done {
 	d := Done{Workflow: sc.W, Complete: s.Complete}
-	// The stops of other commands than hold set and hold release, as one stop of a command no
-	// table names: what hold release's rule reads of them is whether every one left nothing
-	// changed. Left is set only under WayOut, so every other rule set's record is as before.
-	switch s.Left {
-	case 'U':
-		d.Ops = append(d.Ops, Operation{Command: "a stopped command", State: stateStop, Outputs: map[string]string{stopLeftKey: LeftUnchanged}})
-	case 'C':
-		d.Ops = append(d.Ops, Operation{Command: "a stopped command", State: stateStop})
+	// Under WayOut, each command whose latest entry is a stop, after its done entries and before the
+	// intents. What hold release's rule reads of the stops of other commands than hold set and hold
+	// release is whether every one left nothing changed (Left), and every such stop carries that
+	// answer. StopLatest is set only under WayOut, so every other rule set's record is as before.
+	var stops []Operation
+	for _, c := range list(s.StopLatest) {
+		o := Operation{Command: c, State: stateStop}
+		if s.Left == 'U' {
+			o.Outputs = map[string]string{stopLeftKey: LeftUnchanged}
+		}
+		stops = append(stops, o)
 	}
 	done := func(c string, out map[string]string) {
 		d.Ops = append(d.Ops, Operation{Command: c, State: stateDone, Outputs: out})
@@ -443,6 +447,7 @@ func toDone(sc modelScenario, s modelState) Done {
 	if s.Last != "" && !(s.Proved && s.Last == CommandProve) {
 		done(s.Last, nil)
 	}
+	d.Ops = append(d.Ops, stops...)
 	for _, c := range list(s.Intent) {
 		d.Ops = append(d.Ops, Operation{Command: c, State: stateIntent})
 	}
@@ -683,6 +688,7 @@ func admit(r rules, sc modelScenario, s modelState, k int, o modelOp) modelEdge 
 
 func writeIntent(s modelState, c string) modelState {
 	s.Intent = addSet(s.Intent, c)
+	s.StopLatest = delSet(s.StopLatest, c)
 	if c != CommandRelease {
 		s.Complete = false
 	}
@@ -710,6 +716,7 @@ func finish(t modelTable, sc modelScenario, s modelState, k int) modelState {
 		s.Since = addSet(s.Since, c)
 	}
 	s.Intent = delSet(s.Intent, c)
+	s.StopLatest = delSet(s.StopLatest, c)
 	if t.final(sc.W, c) {
 		s.Complete, s.HoldGen = true, s.RowGen
 	}
@@ -732,6 +739,9 @@ func refuseLeft(r rules, t modelTable, sc modelScenario, s modelState, k int, wh
 	ns := idle(s, k)
 	if t.stoppable(sc.W, c) && inSet(s.Intent, c) {
 		ns.Intent = delSet(ns.Intent, c)
+		if r.WayOut {
+			ns.StopLatest = addSet(ns.StopLatest, c)
+		}
 		label := c + ": " + why + ", stop entry"
 		if r.WayOut && c != cmdSet && c != CommandRelease {
 			if left == 'C' || ns.Left == 0 {
@@ -1604,17 +1614,17 @@ var (
 // buckets command that fails for good modeled: the current rules and their control. The control's
 // workflows but the three buckets ones are v62's, as the bundle counted them.
 var pinnedBound2 = map[string]modelCount{
-	"v63":        {59366, 0, nil},
+	"v63":        {144617, 0, nil},
 	"v63-WayOut": {32083, 135, map[string]int{classWayOut: 135}},
 }
 
 // The current rules' runs by workflow, pinned from this model at bounds 2 and 3.
 var (
-	pinnedCurrentBound2 = map[string]int{"cutover": 7880, "rollback": 2442, "selection-recovery": 2097, "buckets-create": 861,
-		"buckets-recreate": 861, "buckets-restore": 861, "streams-update": 614, "streams-census": 621, "hub-restore": 43129}
-	pinnedCurrentBound3 = map[string]int{"cutover": 10686, "rollback": 3336, "selection-recovery": 2863, "buckets-create": 1178,
-		"buckets-recreate": 1178, "buckets-restore": 1178, "streams-update": 840, "streams-census": 847, "hub-restore": 245635}
-	pinnedCurrentBound3Total = 267741
+	pinnedCurrentBound2 = map[string]int{"cutover": 7828, "rollback": 2469, "selection-recovery": 1926, "buckets-create": 864,
+		"buckets-recreate": 864, "buckets-restore": 864, "streams-update": 609, "streams-census": 616, "hub-restore": 128577}
+	pinnedCurrentBound3 = map[string]int{"cutover": 10617, "rollback": 3381, "selection-recovery": 2632, "buckets-create": 1186,
+		"buckets-recreate": 1186, "buckets-restore": 1186, "streams-update": 837, "streams-census": 844, "hub-restore": 765341}
+	pinnedCurrentBound3Total = 787210
 )
 
 // The model of the hold's workflows, run on this package's journal and table. The frozen bundle's

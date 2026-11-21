@@ -104,11 +104,14 @@ const CommandProve = "hold prove"
 
 // CommandAbort is `hold abort`, every workflow's way out of a held hold. It is final and Stoppable
 // in every workflow, it needs no `hold set` `done` entry, and like every command it is refused
-// ErrBusy while another command's `intent` is pending, so it is admitted once that command has
-// stopped. In `hub-restore` a `done` CommandProve entry excludes it. It moves the row to `released`
-// before its `done` entry, which completes the record; its `intent` carries each stop's record of
-// what its command left (Admit). It is refused after completion. From `prepare` it deletes the
-// cohort (DeleteCohort) and moves the row, and writes no entry.
+// ErrBusy while another command's `intent` is pending. Outside `hub-restore` it is admitted only
+// once a command's latest entry is a `stop`, a command that stopped and has not run again since,
+// and refused ErrOutOfOrder ("no command has stopped") otherwise, so it is the way out of a failed
+// command, not a way to end a workflow that is going well. In `hub-restore` it keeps its own
+// rules: a `done` CommandProve entry excludes it. It moves the row to `released` before its
+// `done` entry, which completes the record; its `intent` carries each stop's record of what its
+// command left (Admit). It is refused after completion. From `prepare` it deletes the cohort
+// (DeleteCohort) and moves the row, and writes no entry.
 const CommandAbort = "hold abort"
 
 // LeftUnchanged is what a stop records (AppendStopLeft) when its command changed nothing outside
@@ -273,6 +276,21 @@ func pending(d Done) []string {
 		}
 	}
 	return out
+}
+
+// anyStopped reports whether some command's latest entry is a `stop`: a command that stopped and
+// has not run again since.
+func anyStopped(ops []Operation) bool {
+	latest := map[string]string{}
+	for _, o := range ops {
+		latest[o.Command] = o.State
+	}
+	for _, state := range latest {
+		if state == stateStop {
+			return true
+		}
+	}
+	return false
 }
 
 func wrap(err error, what string) error { return fmt.Errorf("%w: %s", err, what) }

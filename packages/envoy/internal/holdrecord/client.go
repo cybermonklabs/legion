@@ -15,11 +15,11 @@
 // at most one command is past its intent at any time. A command whose own check refuses after its
 // intent writes a `stop` entry (AppendStop, AppendStopLeft), which ends the intent and records what
 // the command left; `hold release` follows only a complete record or one whose stops all left
-// nothing changed (LeftUnchanged), and `hold abort` is every workflow's way out once no intent is
-// pending, so a command that can never succeed cannot hold the hold. The workflow table and Decide
-// are the ones model_test.go explores: every workflow from its true start, with crashes between
-// any two writes, two operator processes, restores landing outside the hold, the row lost and
-// restored, and a buckets command that fails for good after its intent.
+// nothing changed (LeftUnchanged), and `hold abort` is every workflow's way out once a command has
+// stopped and no intent is pending, so a command that can never succeed cannot hold the hold. The
+// workflow table and Decide are the ones model_test.go explores: every workflow from its true
+// start, with crashes between any two writes, two operator processes, restores landing outside the
+// hold, the row lost and restored, and a buckets command that fails for good after its intent.
 package holdrecord
 
 import (

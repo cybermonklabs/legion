@@ -885,6 +885,79 @@ func TestTheHoldJournal(t *testing.T) {
 		}
 	})
 
+	// Outside hub-restore hold abort is the way out of a failed command, not a way to end a
+	// workflow that is going well: with no command's latest entry a stop it is refused.
+	t.Run("outside hub-restore hold abort is refused until a command's latest entry is a stop", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-nostop", holdrecord.WorkflowCutover, nil)
+		abortRefused := func(step string) {
+			t.Helper()
+			writes := r.RecordWrites()
+			_, err := c.Admit(ctx, "h-nostop", cmd(holdrecord.CommandAbort), nil)
+			refused(t, "hold abort "+step, err, holdrecord.ErrOutOfOrder, "no command has stopped")
+			if r.RecordWrites() != writes {
+				t.Fatalf("the abort refused %s wrote %d records", step, r.RecordWrites()-writes)
+			}
+		}
+		abortRefused("with hold set's done entry alone")
+		run(t, c, "h-nostop", cmd("create-bucket"), nil, nil)
+		abortRefused("after create-bucket's done entry")
+		// convert stops, replay gives K a start, and convert's rerun completes: convert's latest
+		// entry is then its done, so no command has stopped, and abort is refused again.
+		if _, err := c.Admit(ctx, "h-nostop", cmd("convert"), nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendStop(ctx, "h-nostop", "convert", "no safe start for K"); err != nil {
+			t.Fatal(err)
+		}
+		d, _ := journal(t, c, "h-nostop")
+		if err := holdrecord.Decide(d, cmd(holdrecord.CommandAbort)); err != nil {
+			t.Fatalf("hold abort after convert's stop answered %v, want admitted", err)
+		}
+		run(t, c, "h-nostop", cmd("replay"), map[string]string{"key": "K"}, nil)
+		run(t, c, "h-nostop", cmd("convert"), nil, nil)
+		abortRefused("after convert's rerun completed it")
+	})
+
+	// The model's finding: an abort whose own intent a crash left pending must be admitted again,
+	// though the stop it followed has been superseded since, or the hold can never end.
+	t.Run("a crashed hold abort runs again after the stop it followed is superseded", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		prepare(t, c, "h-abortrerun", holdrecord.WorkflowCutover, nil)
+		if err := c.AppendStop(ctx, "h-abortrerun", holdrecord.CommandSet, "a step of 2 to 6 failed"); err != nil {
+			t.Fatal(err)
+		}
+		// The first abort stops at its row move (the row was restored since its read)...
+		if _, err := c.Admit(ctx, "h-abortrerun", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("hold abort after hold set's stop: %v", err)
+		}
+		if err := c.AppendStop(ctx, "h-abortrerun", holdrecord.CommandAbort, "409 gen_mismatch at the row move"); err != nil {
+			t.Fatal(err)
+		}
+		// ...hold set runs again and finishes, so hold set's latest entry is a done...
+		run(t, c, "h-abortrerun", cmd(holdrecord.CommandSet), nil, nil)
+		// ...the second abort, admitted on its own stop, crashes after its intent...
+		if _, err := c.Admit(ctx, "h-abortrerun", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("hold abort after its own stop: %v", err)
+		}
+		// ...and its rerun, with no command's latest entry a stop, is admitted and ends the hold.
+		if _, err := c.Admit(ctx, "h-abortrerun", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("the crashed abort's rerun: %v", err)
+		}
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, "h-abortrerun", "aborted"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendDone(ctx, "h-abortrerun", holdrecord.CommandAbort, nil); err != nil {
+			t.Fatal(err)
+		}
+		if d, _ := journal(t, c, "h-abortrerun"); !d.Complete {
+			t.Fatal("the rerun's done entry did not complete the record")
+		}
+	})
+
 	t.Run("hold abort is refused while a command's intent is pending, and admitted in any workflow once it stops", func(t *testing.T) {
 		r := newRig(t)
 		c := r.client(t)

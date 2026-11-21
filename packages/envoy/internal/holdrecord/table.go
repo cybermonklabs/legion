@@ -1,5 +1,7 @@
 package holdrecord
 
+import "slices"
+
 // rules are the rule choices that changed between versions of the hold's design, so the model in
 // model_test.go runs the table of each version and of each rule set with one fix removed.
 // currentRules are the design's, and the package's functions use them.
@@ -24,8 +26,9 @@ type rules struct {
 	CompletionSurvivesRowRestore bool // release does not compare hold_gen, so a row restored by RestoreRow can release
 	// WayOut: the buckets commands are Stoppable, a stop records what its command left, hold
 	// release follows a record whose other entries are stops that left nothing changed, and hold
-	// abort is every workflow's way out once no intent is pending, so a command that fails for
-	// good after its intent cannot hold the hold.
+	// abort is every workflow's way out: outside hub-restore it is admitted once a command's latest
+	// entry is a stop and no intent is pending, so a command that fails for good after its intent
+	// cannot hold the hold.
 	WayOut bool
 }
 
@@ -206,6 +209,12 @@ func (t table) Decide(d Done, req modelRequest) error {
 		if hasDone(d.Ops, x) {
 			return wrap(ErrExcluded, x)
 		}
+	}
+	// Outside hub-restore abort is admitted once a command has stopped, and its own rerun after a
+	// crash left its intent pending is admitted too: that intent shows it was admitted, and the
+	// stop it followed may have been superseded since (the stopped command ran again and finished).
+	if c == CommandAbort && w != WorkflowHubRestore && t.Rules.WayOut && !anyStopped(d.Ops) && !slices.Contains(pending(d), c) {
+		return wrap(ErrOutOfOrder, "no command has stopped")
 	}
 	for _, q := range e.requires {
 		if e.epochal && q == CommandProve {
