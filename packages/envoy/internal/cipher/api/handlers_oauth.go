@@ -7,32 +7,39 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
 // deviceAuthorization is POST /v1/oauth/device_authorization: a machine login's device
 // authorization request (RFC 8628), public. It spends its source address's launcher bucket before
-// the provider does any work, as the token login does (refuseAddress), and at the edge the edge's
-// one bucket every caller shares too (launcherLimiter.overall). Deps.DeviceLogin then verifies the
-// request and opens the login in the provider's transaction, and only a login it opened spends
-// the bucket of the person its login_hint names (spendDeviceLoginBucket), so a request that writes
-// nothing costs that person nothing; a refusal there rolls the login back. A refused request is
-// 429 with Retry-After. Deps.DeviceLogin's refusals are OAuth errors (invalid_request) whose
-// description names the broker's code: a request object that does not verify, repeats a jti or
-// names another key than dpop_jkt REQUEST_INVALID, one naming a service
-// SERVICE_LOGS_IN_WITH_TOKEN. The answer's verification_uri is this listener's page
-// (server.verificationURI).
+// the provider does any work, as the token login does (refuseAddress). At the edge, a request that
+// can open a login (deviceLoginCanOpen) then spends the edge's one bucket every caller shares
+// (launcherLimiter.overall); a request that cannot is left to the provider to refuse and spends
+// nothing of it. Deps.DeviceLogin then verifies the request and opens the login in the provider's
+// transaction, and only a login it opened spends the bucket of the person its login_hint names
+// (spendDeviceLoginBucket), so a request that writes nothing costs that person nothing; a refusal
+// there rolls the login back. A refused request is 429 with Retry-After. Deps.DeviceLogin's
+// refusals are OAuth errors (invalid_request) whose description names the broker's code: a
+// request object that does not verify, repeats a jti or names another key than dpop_jkt
+// REQUEST_INVALID, one naming a service SERVICE_LOGS_IN_WITH_TOKEN. The answer's verification_uri
+// is this listener's page (server.verificationURI).
 func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
-	if refused, ok := s.launcherLimiter.addressAllows(r); !ok {
-		oauth.WriteRefusal(w, rateLimitedRefusal(refused.Every))
+	if !s.launcherLimiter.addressAllows(r) {
+		oauth.WriteRefusal(w, rateLimitedRefusal(s.launcherLimiter.perAddress.Every()))
 		return
 	}
 	if !readOAuthForm(w, r) {
+		return
+	}
+	if s.launcherLimiter.overall != nil && s.deviceLoginCanOpen(r.PostForm) && !s.launcherLimiter.overallAllows() {
+		oauth.WriteRefusal(w, rateLimitedRefusal(s.launcherLimiter.overall.Every()))
 		return
 	}
 	s.deps.OAuth.DeviceAuthorize(w, r, s.verificationURI, func(ctx context.Context, form url.Values, userCode string) error {
@@ -43,25 +50,52 @@ func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// deviceLoginCanOpen reports whether form is a device authorization the provider can open a login
+// for: the device login's own client, and a request object that verifies for this listener
+// (record.VerifyRequestObject: its signature, audience, times and fields, which cost no database
+// read). A request that fails either is refused by the provider or by Deps.DeviceLogin with
+// nothing written. A replay of an object that verifies passes here, and spends the edge's shared
+// bucket, since only Deps.DeviceLogin reads its jti; that is the accepted cost of checking without
+// the database.
+func (s *server) deviceLoginCanOpen(form url.Values) bool {
+	if form.Get("client_id") != oauthwire.ClientID {
+		return false
+	}
+	_, err := record.VerifyRequestObject(form.Get("request"), s.deps.MachineLogin.Audience, s.deps.MachineLogin.Skew, time.Now())
+	return err == nil
+}
+
 // spendDeviceLoginBucket spends one request of the bucket of the person form's request object
-// names, which Deps.DeviceLogin has verified: person:<login> under this listener's key prefix
-// (server.loginKeyPrefix), and at the edge the caller's address after it
-// (server.loginKeyByAddress), so a flood from one address spends that address's bucket for the
-// person and never the one a caller elsewhere uses. It is a RATE_LIMITED refusal when that bucket
-// is empty.
+// names, which Deps.DeviceLogin has verified (deviceLoginKey), and is a RATE_LIMITED refusal when
+// that bucket is empty.
 func (s *server) spendDeviceLoginBucket(r *http.Request, form url.Values) error {
 	obj, err := record.VerifyRequestObject(form.Get("request"), s.deps.MachineLogin.Audience, s.deps.MachineLogin.Skew, time.Now())
 	if err != nil {
 		return err
 	}
-	key := s.loginKeyPrefix + launcherLoginKey(obj)
-	if s.loginKeyByAddress {
-		key += ":" + s.address(r)
-	}
-	if !s.launcherLimiter.perLogin.AllowAt(key, time.Now()) {
+	if !s.launcherLimiter.perLogin.AllowAt(s.deviceLoginKey(obj, r), time.Now()) {
 		return rateLimitedRefusal(s.launcherLimiter.perLogin.Every())
 	}
 	return nil
+}
+
+// deviceLoginKey is the per-login bucket a device login of obj from r spends, under this
+// listener's key prefix (server.loginKeyPrefix): person:<login> on the broker's own address
+// (launcherLoginKey), and at the edge the person at the caller's address (edgePersonKey,
+// server.loginKeyByAddress), so a flood from one address spends that address's bucket for the
+// person and never the one a caller elsewhere uses.
+func (s *server) deviceLoginKey(obj record.RequestObject, r *http.Request) string {
+	if !s.loginKeyByAddress {
+		return s.loginKeyPrefix + launcherLoginKey(obj)
+	}
+	return s.loginKeyPrefix + edgePersonKey(record.CanonicalLogin(obj.LoginHint), s.address(r))
+}
+
+// edgePersonKey is the key of a person's bucket at an address: person:<length of
+// login>:<login>:<address>. Both a login (a quoted local part) and an address (IPv6) can hold
+// ":", so the login's length comes first and no two pairs make one key.
+func edgePersonKey(login, address string) string {
+	return "person:" + strconv.Itoa(len(login)) + ":" + login + ":" + address
 }
 
 // deviceLoginRefusal is the OAuth refusal a device login's error answers with: the broker's own

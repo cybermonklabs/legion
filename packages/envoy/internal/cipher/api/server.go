@@ -779,8 +779,9 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 const healthCacheFor = time.Second
 
 // cachedPing is a Postgres ping whose result is kept for healthCacheFor: the edge's
-// Deps.DatabasePing (RegisterEdge). Callers that ask while a ping runs wait for it rather than
-// ping again, so at most one ping runs at a time.
+// Deps.DatabasePing (RegisterEdge). At most one ping runs at a time: a caller that asks while one
+// runs waits for it, and leaves as soon as its own request ends, so a database that hangs keeps
+// no waiter past its own deadline.
 type cachedPing struct {
 	ping func(context.Context) error
 	now  func() time.Time
@@ -788,23 +789,45 @@ type cachedPing struct {
 	mu  sync.Mutex
 	at  time.Time
 	err error
+	// running is closed when the ping that runs now ends; nil while none runs.
+	running chan struct{}
 }
 
-// result is the last ping's result while it is under healthCacheFor old, and a new ping's
-// otherwise. A ping the caller's own request ended (ctx done) is answered to that caller and not
-// kept, since it says nothing about the database.
+// result is the last ping's result while it is under healthCacheFor old, and otherwise the result
+// of a ping it runs or waits for. A ping the caller's own request ended (ctx done) is answered to
+// that caller and not kept, since it says nothing about the database; a waiter whose request ends
+// first answers its own context's error.
 func (c *cachedPing) result(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if now := c.now(); !c.at.IsZero() && now.Sub(c.at) < healthCacheFor {
-		return c.err
-	}
-	err := c.ping(ctx)
-	if ctx.Err() != nil {
+	for {
+		c.mu.Lock()
+		if now := c.now(); !c.at.IsZero() && now.Sub(c.at) < healthCacheFor {
+			err := c.err
+			c.mu.Unlock()
+			return err
+		}
+		if wait := c.running; wait != nil {
+			c.mu.Unlock()
+			select {
+			case <-wait:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		done := make(chan struct{})
+		c.running = done
+		c.mu.Unlock()
+
+		err := c.ping(ctx)
+		c.mu.Lock()
+		if ctx.Err() == nil {
+			c.at, c.err = c.now(), err
+		}
+		c.running = nil
+		close(done)
+		c.mu.Unlock()
 		return err
 	}
-	c.at, c.err = c.now(), err
-	return err
 }
 
 // signInStatusResponse is GET /signin/status's answer, the broker's one signin_status row as it

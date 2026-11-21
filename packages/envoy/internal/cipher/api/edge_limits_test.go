@@ -6,6 +6,7 @@ package api_test
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -120,5 +121,51 @@ func TestTheEdgeBoundsTheDeviceAuthorizationsOfEveryCallerTogether(t *testing.T)
 	m := newDeviceMachine(t, rig)
 	if da := m.login(t); da.UserCode == "" {
 		t.Fatal("the broker's own address opened no login after the edge's shared bucket ran out")
+	}
+}
+
+// TestTheEdgeSpendsItsSharedBucketOnlyOnALoginItCanOpen: a device authorization that could open
+// no login spends nothing of the bucket every caller shares, so requests that store nothing cannot
+// empty it for everyone. With that bucket at a burst of three that does not refill within the
+// test, three addresses each send one such request: another client's id, a request object that is
+// no JWS, and a request object signed for the broker's own address rather than the edge. Each is
+// refused and writes nothing. A valid login from a fourth address is then served, and so are two
+// more; the fourth valid login is refused 429 RATE_LIMITED, so valid logins still spend the bucket.
+//
+// The named revert: spend the shared bucket before the request is verified, beside the address's
+// own, and the first valid login is refused 429.
+func TestTheEdgeSpendsItsSharedBucketOnlyOnALoginItCanOpen(t *testing.T) {
+	rig := ciphertest.NewRig(t, ciphertest.WithEdgeDeviceLimit(ratelimit.Limit{Every: time.Hour, Burst: 3}))
+	before := loginRows(t, rig)
+	for i, junk := range []func() url.Values{
+		func() url.Values {
+			form := edgeDeviceForm(t, rig.EdgeURL, outsidePerson)
+			form.Set("client_id", "junk")
+			return form
+		},
+		func() url.Values {
+			form := edgeDeviceForm(t, rig.EdgeURL, outsidePerson)
+			form.Set("request", "junk")
+			return form
+		},
+		func() url.Values { return edgeDeviceForm(t, rig.URL, outsidePerson) },
+	} {
+		client := fmt.Sprintf("198.51.100.%d", 180+i)
+		status, body := postEdge(t, rig.EdgeURL, "/v1/oauth/device_authorization", junk(), map[string]string{"X-Forwarded-For": forwardedFor("", client)})
+		if status < 400 || status >= 500 || status == http.StatusTooManyRequests {
+			t.Fatalf("junk device authorization %d from %s = %d %v, want a 4xx refusal that is no 429", i+1, client, status, body)
+		}
+	}
+	if after := loginRows(t, rig); after != before {
+		t.Fatalf("the junk device authorizations wrote %d rows, want none", after-before)
+	}
+	for i := range 3 {
+		client := fmt.Sprintf("198.51.100.%d", 190+i)
+		if status, body := edgeLogin(t, rig, client, outsidePerson, false); status != http.StatusOK {
+			t.Fatalf("valid login %d of 3 from %s after the junk = %d %v, want 200: junk spent the shared bucket", i+1, client, status, body)
+		}
+	}
+	if status, body := edgeLogin(t, rig, "198.51.100.199", outsidePerson, false); status != http.StatusTooManyRequests || body["code"] != "RATE_LIMITED" {
+		t.Fatalf("a fourth valid login = %d %v, want 429 RATE_LIMITED from the shared bucket", status, body)
 	}
 }

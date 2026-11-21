@@ -1424,19 +1424,29 @@ What the edge does that the API's port does not:
   reads, and its per-login keys open with `edge:`. A flood at the edge spends nothing a caller of
   the API's port is held to, and naming a person there cannot lock that person's machine logins
   out on the private network. Three of its buckets differ from the API's port:
-  - A person's bucket is that person's at the caller's address (`edge:person:<login>:<address>`),
-    and only a login the broker opened spends it, so anyone on the internet naming a person can
-    spend their own address's bucket for that person and never the one the person uses.
+  - A person's bucket is that person's at the caller's address
+    (`edge:person:<length of login>:<login>:<address>`, the length first because a login and an
+    IPv6 address can both hold `:`), and only a login the broker opened spends it, so anyone on the
+    internet naming a person can spend their own address's bucket for that person and never the
+    one the person uses.
   - An IPv6 caller is keyed on the `/64` that holds its address, since one host or one site holds
     a whole `/64`.
-  - Every device authorization at the edge spends one more bucket that all callers share: a
-    burst of 30 and one every two seconds, per pod. It bounds what callers from many addresses
-    together can make the broker store, about 480 pending edge logins per pod at the 15-minute
-    pending time, three rows each. Cloud Armor's per-address rules in front of the balancer stop
-    one address's flood before it reaches a pod; this bucket covers what no per-address rule can.
+  - A device authorization that can open a login (the device login's client, and a request
+    object that verifies for the edge) spends one more bucket that all callers share: a burst of
+    30 and one every two seconds, per pod. A request that cannot, another client's id or an object
+    that does not verify, spends nothing of it. It caps the pending edge logins a pod holds, about
+    480 at the 15-minute pending time, three rows each, however many addresses send them. Its cost:
+    a caller who sends valid device authorizations from about 15 addresses, each within its own
+    address bucket, holds it empty on every pod, and every outside person's new device login at
+    the edge is refused `429` until the flood stops; the burst refills in a minute after that.
+    Refresh, device-code polls and trades at the edge, and the broker's own address, do not spend
+    it. It is a constant of the release, with no setting. Per-address rules at the load balancer
+    (Cloud Armor), once the deployment's edge security policy applies them, refuse one address's
+    flood before it reaches a pod; the deployment must apply them, since the broker cannot.
 - **Its health check pings Postgres at most once a second.** `GET /healthz` at the edge answers
   from one ping for a second, so a caller on the internet who asks at any rate costs the database
-  at most one ping a second per pod. A draining pod still fails it at once.
+  at most one ping a second per pod. A check that asks while a ping runs waits for it and leaves
+  when its own request ends. A draining pod still fails it at once.
 - **A person of the Workspace cannot be named there.** A device authorization whose `login_hint`
   is an address on `BROKER_SIGNIN_DOMAIN` or a `BROKER_SIGNIN_WORKSPACE_DOMAINS` domain, or on a
   subdomain of one, in any case, with a trailing dot or written in characters IDNA maps onto one,

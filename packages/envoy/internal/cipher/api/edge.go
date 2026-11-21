@@ -109,7 +109,7 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 	if edge.DeviceLimit != nil {
 		device = *edge.DeviceLimit
 	}
-	launchers.overall = ratelimit.NewBucket(device)
+	launchers.overall = ratelimit.NewKeyed(device)
 	s := &server{
 		deps:              edgeDeps,
 		launcherLimiter:   launchers,

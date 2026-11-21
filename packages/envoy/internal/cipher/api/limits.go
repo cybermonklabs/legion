@@ -378,8 +378,10 @@ type launcherLimiter struct {
 	// edge).
 	address func(*http.Request) string
 	// overall is the one bucket every caller of a device authorization shares beside its own
-	// address's (DefaultEdgeDeviceLimit), at the edge alone; nil on the broker's own address.
-	overall *ratelimit.Bucket
+	// address's (DefaultEdgeDeviceLimit), at the edge alone, under the one key overallKey; nil on
+	// the broker's own address. It is spent only by a request that can open a login
+	// (server.deviceLoginCanOpen), so requests that store nothing cannot empty it.
+	overall *ratelimit.Keyed
 }
 
 func newLauncherLimiter(limits LauncherLimits, address func(*http.Request) string) *launcherLimiter {
@@ -390,15 +392,27 @@ func newLauncherLimiter(limits LauncherLimits, address func(*http.Request) strin
 	}
 }
 
+// overallKey is the one key of launcherLimiter.overall.
+const overallKey = "edge"
+
 // DefaultEdgeDeviceLimit bounds the device authorizations the broker's edge takes from every
 // caller together, per process, beside each address's own bucket: a burst of 30 and one every
 // two seconds. Each device authorization the edge serves writes a device code, a machine login
 // and the jti of its request object, and each stays until the login's PendingTTL (15 minutes by
 // default), so one pod holds at most about 30 + 900/2 = 480 pending edge logins, three rows each,
 // whatever the number of addresses a flood comes from. An outside collaborator opens a few logins
-// a day, so the limit is far above any real use. Cloud Armor's per-address rules in front of the
-// load balancer refuse a single address's flood before it reaches a pod; this bucket bounds what
-// many addresses together can make the broker store, which no per-address rule can.
+// a day, so the limit is far above any real use. Only a request that can open a login spends it
+// (server.deviceLoginCanOpen): another client's id or a request object that does not verify
+// spends nothing.
+//
+// Its cost: it caps new device logins at the edge for every outside person together. A caller
+// who sends valid device authorizations from about 15 addresses (each within its own address
+// bucket, two a minute) holds the bucket empty on every pod, and every outside person's new
+// device login at the edge is refused 429 until the flood stops; the burst refills in a minute
+// after that. Refresh, device-code polls and trades at the edge, and everything on the broker's
+// own address, do not spend it. It is a constant: cmd/cipherd passes no api.Edge.DeviceLimit, so
+// changing it takes a release. Per-address rules in front of the load balancer, once the
+// deployment applies them, refuse a single address's flood before it reaches a pod.
 var DefaultEdgeDeviceLimit = ratelimit.Limit{Every: 2 * time.Second, Burst: 30}
 
 // clientAddress resolves the source address every per-address bucket keys on. With no trusted
@@ -510,14 +524,15 @@ func (l *launcherLimiter) refuseAccount(w http.ResponseWriter, subject string) (
 	return nil, true
 }
 
-// addressAllows spends one request of r's source address's bucket and, at the edge, of the bucket
-// every caller shares (overall), both or neither. It reports whether it could, and the limit that
-// refused it when it could not.
-func (l *launcherLimiter) addressAllows(r *http.Request) (refused ratelimit.Limit, ok bool) {
-	if l.overall == nil {
-		return ratelimit.Limit{Every: l.perAddress.Every()}, l.perAddress.AllowAt(l.address(r), time.Now())
-	}
-	return l.perAddress.AllowBothAt(l.address(r), l.overall, time.Now())
+// addressAllows spends one request of r's source address's bucket, reporting whether it had one.
+func (l *launcherLimiter) addressAllows(r *http.Request) bool {
+	return l.perAddress.AllowAt(l.address(r), time.Now())
+}
+
+// overallAllows spends one request of the bucket every caller shares (overall), reporting whether
+// it had one; true where there is none (the broker's own address).
+func (l *launcherLimiter) overallAllows() bool {
+	return l.overall == nil || l.overall.AllowAt(overallKey, time.Now())
 }
 
 // tokenAllows spends one request of r's source address's token-endpoint bucket, reporting
