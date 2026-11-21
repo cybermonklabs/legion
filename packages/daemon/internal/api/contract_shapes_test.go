@@ -81,7 +81,7 @@ func bootstrapMessage() string {
 //
 // NoBody, KeyPaths and Domains are all written on every record, so an answer that writes no body
 // at all (`claims/ready` and its three siblings, which answer 204) reads differently from one
-// whose body has no key (the empty object the eight fact routes answer). The first is
+// whose body has no key (the empty object the fact routes answer). The first is
 // `"noBody": true` with no key path, the second `"noBody": false` with no key path. An answer
 // with no enumerated field of its own writes `"domains": {}`.
 type contractShape struct {
@@ -585,7 +585,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// object: READY and the daemon's merge went, and the `note` that reported them with
 		// them, so the body this route writes carries no key at any contract from 86 on.
 		AnswerHandoffComplete: {roots: typesOf(HandoffCompleteResponse{}), bodies: []any{HandoffCompleteResponse{}}},
-		// The empty object the eight fact routes answer. Six Go types write it, and none of them
+		// The empty object the fact routes answer. Six Go types write it, and none of them
 		// declares a field, so the record of this answer is an empty set of key paths over a
 		// body that exists.
 		AnswerEmptyObject: {

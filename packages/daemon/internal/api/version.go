@@ -2945,7 +2945,11 @@ package api
 // answer moves, so a caller at 205 is served what one at 199 is, and 205's records are 199's under
 // its own number. The route leaves the empty object's row of answers.go's Answers, since no plugin
 // at 205 parses that answer there, and an older plugin parses the refusal it gets as it parses any
-// refusal. `ROUTE_REMOVED` is a value of the refusal's `code`, which no reader enumerates.
+// refusal. `ROUTE_REMOVED` is a value of the refusal's `code`, which no reader enumerates. The
+// request records of 193 and 199 hold the route's body (`request-shapes.json`). The route leaves
+// the request types the gate walks, reads no body and answers that body with the refusal, and
+// requests.go's RemovedRoutes declares it removed at 205, so the record of 205 and of every later
+// contract holds no body for it.
 // (This entry took 191 at first, the lowest number above main's 188 that no other open pull
 // request declared at a reading that ended at 2026-11-20T10:18:19Z, and the forward merge of
 // 2026-11-20 that brought in 0ec9ed84 left main at 188 and found 191 still free. The forward merge

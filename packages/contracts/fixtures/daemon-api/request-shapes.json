@@ -465,14 +465,6 @@
   },
   {
     "contract": 205,
-    "route": "POST /legion/v1/children/park",
-    "fieldPaths": [
-      "grantId",
-      "issue"
-    ]
-  },
-  {
-    "contract": 205,
     "route": "POST /legion/v1/children/rerun",
     "fieldPaths": [
       "grantId",
