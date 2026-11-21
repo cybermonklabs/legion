@@ -1162,7 +1162,7 @@ ci-ok reports there, so the required checks pass on the merged tree before anyth
 that tree again, and .github/workflows/ci-caches.yaml fills the Go caches on that push instead.
 workflow_dispatch is the bypass check's (.github/workflows/main-bypass-check.yaml): it starts a
 run at main's tip when a commit reached main without a passing merge-group ci-ok, and `changes`
-selects every job there. A dispatch of any other branch is a full run started by hand (`gh
+selects every job there. A dispatch of any other ref is a full run started by hand (`gh
 workflow run ci.yaml --ref <branch>`), and it reports under names of its own
 (.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own).
 
@@ -2270,13 +2270,13 @@ run that failed and was re-run green would stay blocked by it. This step sets ev
 check run on the head but this job's own to what this job concluded, so one verdict stands
 at the end of every attempt (ci-ok-reconcile.sh says what it passes over and why a refusal
 only warns). `job.status` is this job's conclusion, and `always()` is what runs the step
-after the verdict, the "Judge every job of this run" step, failed. On a dispatch of a branch
-the step is skipped: that run's verdict is not the head's ci-ok, so it sets no ci-ok of the head
-either (the next section says why).
+after the verdict, the "Judge every job of this run" step, failed. On a dispatch of any ref but
+exactly refs/heads/main the step is skipped: that run's verdict is not the head's ci-ok, so it
+sets no ci-ok of the head either (the next section says why).
 
 ## Why a dispatched run off main reports under names of its own
 
-A workflow_dispatch run of a branch other than main tests the branch's own tree, while a pull
+A workflow_dispatch run of a ref other than main tests that ref's own tree, while a pull
 request's run tests the merge of the branch with its base. Both put their check runs on the
 same commit, the branch's head, which is the pull request's head, so under the plain names that
 commit carried two ci-ok check runs with two verdicts over two trees, and a pr-title that the
@@ -2304,14 +2304,36 @@ ci-ok runs on every event, so it is `ci-ok` on a pull request, a merge group and
 check's dispatch on main, and GitHub evaluates its name when the job is queued, after its needs:
 on scratch run 44872165102 the queued check run 136750697832 was already named ci-ok. pr-title
 runs only on a pull request that is not a draft and on a merge group, and is named pr-title
-there. Every run that skips it, a dispatch of any branch, main's included, and a draft's run,
+there. Every run that skips it, a dispatch of any ref, main's included, and a draft's run,
 leaves its name unevaluated, and its check run carries the text of the expression,
 `github.event_name == 'workflow_dispatch' && … || 'pr-title'`, with the conclusion skipped:
 check run 136745386648 of scratch dispatch run 44871030917, and check run 136755360755 of draft
 scratch run 44874260916, whose own ci-ok, 136755360774, concluded failure (read 2026-11-21).
 Either way it is not named pr-title, so a draft's head carries no pr-title from this file, and
 marking the pull request ready starts the run that checks it. (pr-title.yaml, which runs on an
-edit of a pull request, draft or not, still posts its own.)
+edit of a pull request, draft or not, still posts its own.) pr-title needs no job, so its name
+can read nothing but the event: `${{ github.event_name == 'workflow_dispatch' && 'pr-title
+(dispatch)' || 'pr-title' }}`. Its dispatch arm is never evaluated, since the job runs on no
+dispatch, and what keeps a skipped pr-title from posting a pass under that name is that its name
+is an expression at all.
+
+Which dispatch is of main is read by a shell test, not by an expression. GitHub's expression
+`==` and `!=` ignore case, so `github.ref != 'refs/heads/main'` is false for the branches
+refs/heads/Main and refs/heads/MAIN, which git accepts (`git check-ref-format` passes both),
+and `github.ref_name != 'main'` is false for those and for a tag named main too: a dispatch of
+any of them would report ci-ok and run the reconcile step. The changes job's step "Read whether
+this run's ref is exactly refs/heads/main" runs `[ "$GITHUB_REF" = refs/heads/main ]`, whose `=`
+is case-sensitive, and writes is_main=true for exactly that ref and is_main=false for every
+other; the job hands it on as the output `ref_is_main`. ci-ok's name is `${{ github.event_name ==
+'workflow_dispatch' && needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' ||
+'ci-ok' }}` and the reconcile step's if: is `${{ always() && (github.event_name !=
+'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}`. The comparisons left
+are of a fixed event name and of the string the step wrote, which case cannot change. A dispatch
+whose changes job failed or was cancelled wrote no output, and reads as a dispatch of another
+ref: it is named `ci-ok (dispatch)` and skips the reconcile step, main's included. Evaluated with
+GitHub's expression library (@actions/expressions 0.3.61) and the step run by bash for each ref
+(2026-11-21): the expression form read Main, MAIN and Main with changes failed as main, and the
+shell form reads only exactly refs/heads/main as main.
 
 The dispatched run still reaches its verdict and shows it on the head under its own name, so a
 reader by name finds one ci-ok and one pr-title on a pull request's head, and they are the pull
@@ -2320,9 +2342,7 @@ main report ci-ok, and only the first two report pr-title: they are the runs the
 queue read, and the bypass check's run posts its verdict on main's tip, which is no pull
 request's head and where a person reading that commit looks for it. The name is chosen by the
 event and the ref of the run alone, so no run has to read whether another run exists, and
-nothing races. check-ci-filters.sh holds both jobs to that one `name:` (ci_filter_coverage.py's
-dispatch_name), the reconcile step to the one `if:` (RECONCILE_IF), and every other job to a
-name that can evaluate to neither check. The term compares `github.ref` with
-`'refs/heads/main'` rather than `github.ref_name` with `'main'`, which a tag named main matches
-too; ci_workflow_rules.py's push-condition rule, which reads a comparison of `github.ref` with a
-branch ref as dead in this file, admits this one, joined to the workflow_dispatch event, as live.
+nothing races. check-ci-filters.sh holds both jobs to their one `name:` (ci_filter_coverage.py's
+DISPATCH_NAMES), the reconcile step to its one `if:` (RECONCILE_IF), the changes job to the
+output and the exact step (REF_OUTPUT, REF_STEP_RUN), and every other job to a name that can
+evaluate to neither check.

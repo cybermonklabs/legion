@@ -14,8 +14,10 @@
 # (CI_OK_SELECTED_BY, CI_OK_ALWAYS_RUN, CI_OK_EXEMPT) and a CI_OK_ALWAYS_RUN job must be gated by
 # no changes output, every job but changes and those CI_OK_EXEMPT names must end with the ci-ok
 # report step, the ci-ok job must need every job but itself and the exempt ones, each check
-# main's ruleset requires must be the ci.yaml job of that name and no other job may carry one,
-# and a PUSH_WORKFLOWS workflow's
+# main's ruleset requires must be the ci.yaml job of that name, carrying the one name that sets a
+# dispatch of any ref but exactly refs/heads/main apart, no other job may carry one, the ci-ok
+# job's reconcile step must carry its one if:, the changes job's ref step must test the ref with
+# the shell's case-sensitive `=`, and a PUSH_WORKFLOWS workflow's
 # on.push.paths must equal its filter, no `if:` of ci.yaml may test for a push event or compare
 # github.ref with a branch ref, every job's if: but those two jobs' must hold the term that skips
 # it on a re-run attempt of a merge-group run and theirs must not, ci-caches.yaml's save of a
@@ -137,12 +139,16 @@ jobs:
     outputs:
       app: ${{ steps.filter.outputs.app }}
       image: ${{ steps.filter.outputs.image }}
+      ref_is_main: ${{ steps.ref.outputs.is_main }}
     steps:
       - uses: dorny/paths-filter@v4
         id: filter
         with:
           predicate-quantifier: some-with-excludes
           filters: .github/ci-filters.yaml
+      - name: Read whether this run's ref is exactly refs/heads/main
+        id: ref
+        run: if [ "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >> "$GITHUB_OUTPUT"
   app:
     needs: changes
     if: needs.changes.outputs.app == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -184,14 +190,14 @@ jobs:
           changes: ${{ toJSON(needs.changes) }}
           job-status: ${{ job.status }}
   pr-title:
-    name: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && 'pr-title (dispatch)' || 'pr-title' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-24.04
     steps:
       - name: Check the pull request's text
         run: echo text
   ci-ok:
-    name: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && 'ci-ok (dispatch)' || 'ci-ok' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' || 'ci-ok' }}
     needs: [changes, app, image, lint]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
@@ -199,7 +205,7 @@ jobs:
       - name: Judge every job of this run
         run: echo verdict
       - name: Set every other ci-ok on this head to this job's conclusion
-        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}
         run: echo reconcile
 YAML
   cat > "$root/.github/ci-filters.yaml" <<'YAML'
@@ -1054,57 +1060,66 @@ check "fails" "$(is "$status" 1)"
 check "names the job and the check" \
   "$(contains "$out" "job image is named pr-title, a check main's ruleset requires, and is not the pr-title job")"
 
+# The two names, the reconcile step's if: and the ref step's run: the fixture carries, as
+# check_ci_ok holds them and prints them.
+ciok_name="\${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' || 'ci-ok' }}"
+prtitle_name="\${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}"
+reconcile_if="\${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}"
+ref_run='if [ "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >> "$GITHUB_OUTPUT"'
+# has <text> <string>: true/false for check, a fixed-string match: these strings hold [ and $,
+# which contains would read as a regex.
+has() { grep -Fq -- "$2" <<<"$1" && echo true || echo false; }
+
 echo "case: a job named for a required check renamed away from the check"
 root=$(fixture pr-title-renamed)
-replace "$root/.github/workflows/ci.yaml" \
-  "    name: \${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && 'pr-title (dispatch)' || 'pr-title' }}" \
-  "    name: PR title"
+replace "$root/.github/workflows/ci.yaml" "    name: $prtitle_name" "    name: PR title"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the name it carries and the one it must carry" \
-  "$(contains "$out" "job pr-title carries \`name: PR title\`, and pr-title is a check main's ruleset requires: give it \`name: \${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && 'pr-title (dispatch)' || 'pr-title' }}\`")"
+  "$(has "$out" "job pr-title carries \`name: PR title\`, and pr-title is a check main's ruleset requires: give it \`name: $prtitle_name\`")"
 
 echo "case: a required check's job carries no name, so a dispatch of a branch would report it"
 # The shape of ci.yaml before this rule: a workflow_dispatch run of a pull request's branch
 # posted its own ci-ok, and its pr-title skipped, on the pull request's head, beside the pull
 # request's own, where a reader by name takes the newer.
 for job in ci-ok pr-title; do
+  want=$ciok_name
+  [ "$job" = ci-ok ] || want=$prtitle_name
   root=$(fixture "$job-unnamed")
-  replace "$root/.github/workflows/ci.yaml" \
-    $'\n'"    name: \${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && '$job (dispatch)' || '$job' }}"$'\n' \
-    $'\n'
+  replace "$root/.github/workflows/ci.yaml" $'\n'"    name: $want"$'\n' $'\n'
   run_check "$root"
   check "$job: fails" "$(is "$status" 1)"
   check "$job: says it carries no name and names the one it must carry" \
-    "$(contains "$out" "job $job carries no \`name:\`, and $job is a check main's ruleset requires: give it \`name: \${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && '$job (dispatch)' || '$job' }}\`")"
+    "$(has "$out" "job $job carries no \`name:\`, and $job is a check main's ruleset requires: give it \`name: $want\`")"
   check "$job: and says what a dispatch of a branch does" \
-    "$(contains "$out" "never sits beside the pull request's $job on the branch's head")"
+    "$(has "$out" "never sits beside the pull request's $job on the branch's head")"
 done
 
 echo "case: a required check's job named apart on every dispatch, main's among them"
 # The bypass check's dispatch on main posts its verdict on main's tip under ci-ok, where a person
-# reading that commit looks for it; only a dispatch of another branch reports under its own name.
+# reading that commit looks for it; only a dispatch of another ref reports under its own name.
 root=$(fixture ci-ok-dispatch-everywhere)
-replace "$root/.github/workflows/ci.yaml" \
-  "    name: \${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && 'ci-ok (dispatch)' || 'ci-ok' }}" \
-  "    name: \${{ github.event_name == 'workflow_dispatch' && 'ci-ok (dispatch)' || 'ci-ok' }}"
+every="\${{ github.event_name == 'workflow_dispatch' && 'ci-ok (dispatch)' || 'ci-ok' }}"
+replace "$root/.github/workflows/ci.yaml" "    name: $ciok_name" "    name: $every"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the name it carries" \
-  "$(contains "$out" "job ci-ok carries \`name: \${{ github.event_name == 'workflow_dispatch' && 'ci-ok (dispatch)' || 'ci-ok' }}\`")"
+check "names the name it carries" "$(has "$out" "job ci-ok carries \`name: $every\`")"
 
-echo "case: a required check's job named apart by github.ref_name, which a tag named main matches"
-# A dispatch of a tag named main, or of a branch a ref_name comparison reads differently, would
-# report under the plain name; github.ref names a branch as refs/heads/<name>, and only a branch
-# is the bypass check's main.
-root=$(fixture ci-ok-dispatch-ref-name)
-replace "$root/.github/workflows/ci.yaml" \
-  "    name: \${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && 'ci-ok (dispatch)' || 'ci-ok' }}" \
-  "    name: \${{ github.event_name == 'workflow_dispatch' && github.ref_name != 'main' && 'ci-ok (dispatch)' || 'ci-ok' }}"
-run_check "$root"
-check "fails" "$(is "$status" 1)"
-check "names the ref_name form and the github.ref form it must carry" \
-  "$(contains "$out" "job ci-ok carries \`name: \${{ github.event_name == 'workflow_dispatch' && github.ref_name != 'main' && 'ci-ok (dispatch)' || 'ci-ok' }}\`, and ci-ok is a check main's ruleset requires: give it \`name: \${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && 'ci-ok (dispatch)' || 'ci-ok' }}\`")"
+echo "case: ci-ok named apart by an expression's comparison of the ref, which ignores case"
+# GitHub's expression == and != ignore case, so github.ref != 'refs/heads/main' is false for the
+# branches refs/heads/Main and refs/heads/MAIN, which git accepts, and github.ref_name != 'main'
+# for those and for a tag named main: a dispatch of any of them reported ci-ok.
+n=0
+for form in "github.ref != 'refs/heads/main'" "github.ref_name != 'main'"; do
+  n=$((n + 1))
+  root=$(fixture "ci-ok-dispatch-expression-ref-$n")
+  named="\${{ github.event_name == 'workflow_dispatch' && $form && 'ci-ok (dispatch)' || 'ci-ok' }}"
+  replace "$root/.github/workflows/ci.yaml" "    name: $ciok_name" "    name: $named"
+  run_check "$root"
+  check "$form: fails" "$(is "$status" 1)"
+  check "$form: names the form it carries and the one it must carry" \
+    "$(has "$out" "job ci-ok carries \`name: $named\`, and ci-ok is a check main's ruleset requires: give it \`name: $ciok_name\`")"
+done
 
 echo "case: a job whose name expression can evaluate to a required check's name"
 # A plain-name comparison passed `\${{ … && 'ci-ok' || 'changes' }}`: on a run where the term is
@@ -1122,17 +1137,63 @@ replace "$root/.github/workflows/ci.yaml" $'\n  image:\n' \
 run_check "$root"
 check "a name expression that names no required check passes" "$(is "$status" 0)"
 
-echo "case: the verdict job's reconcile step runs on a dispatch of a branch"
+echo "case: the verdict job's reconcile step runs on a dispatch of another ref"
 # On such a run every other ci-ok of the head is a pull request's or the queue's, and the step
-# would set each posted one to that run's verdict; `if: always()` alone was the shape before.
-root=$(fixture ci-ok-reconcile-always)
-replace "$root/.github/workflows/ci.yaml" \
-  "        if: \${{ always() && !(github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}" \
-  "        if: always()"
+# would set each posted one to that run's verdict; `if: always()` alone was the shape before, and
+# the expression's comparison of github.ref read refs/heads/Main as main.
+n=0
+for given in "always()" "\${{ always() && !(github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}"; do
+  n=$((n + 1))
+  root=$(fixture "ci-ok-reconcile-if-$n")
+  replace "$root/.github/workflows/ci.yaml" "        if: $reconcile_if" "        if: $given"
+  run_check "$root"
+  check "if: $given: fails" "$(is "$status" 1)"
+  check "if: $given: names the step, the if: it carries and the one it must carry" \
+    "$(has "$out" "job ci-ok's step \"Set every other ci-ok on this head to this job's conclusion\" carries \`if: $given\`: give it \`if: $reconcile_if\`")"
+done
+
+echo "case: the changes job without the output the name and the reconcile step read"
+root=$(fixture ref-output-absent)
+replace "$root/.github/workflows/ci.yaml" $'      ref_is_main: ${{ steps.ref.outputs.is_main }}\n' ""
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the step, the if: it carries and the one it must carry" \
-  "$(contains "$out" "job ci-ok's step \"Set every other ci-ok on this head to this job's conclusion\" carries \`if: always()\`: give it \`if: \${{ always() && !(github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}\`")"
+check "names the output it must carry" \
+  "$(has "$out" "the changes job has no output ref_is_main: give it \`ref_is_main: \${{ steps.ref.outputs.is_main }}\`")"
+
+echo "case: the changes job's ref step changed from the exact shell test"
+# A case-folding test reads refs/heads/Main as main again, a step held back by an if: writes
+# nothing on the runs it skips, and with no step the output is empty on every run.
+fold_run='if [ "${GITHUB_REF,,}" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >> "$GITHUB_OUTPUT"'
+for change in fold if absent; do
+  root=$(fixture "ref-step-$change")
+  case $change in
+    fold) replace "$root/.github/workflows/ci.yaml" "        run: $ref_run" "        run: $fold_run" ;;
+    if) replace "$root/.github/workflows/ci.yaml" $'        id: ref\n' \
+          $'        id: ref\n        if: github.event_name == \'workflow_dispatch\'\n' ;;
+    absent) replace "$root/.github/workflows/ci.yaml" \
+              $'      - name: Read whether this run\'s ref is exactly refs/heads/main\n        id: ref\n'"        run: $ref_run"$'\n' "" ;;
+  esac
+  run_check "$root"
+  check "$change: fails" "$(is "$status" 1)"
+  check "$change: names the step and the exact run: it must carry" \
+    "$(has "$out" "with id ref, and must hold exactly one, named \"Read whether this run's ref is exactly refs/heads/main\", with no \`if:\` and \`run: $ref_run\`")"
+done
+
+echo "case: the ref step the check holds ci.yaml to reads main case-sensitively"
+# The check holds ci.yaml's step to REF_STEP_RUN, the engine's own text, and this case runs that
+# text: only exactly refs/heads/main is main, and Main, MAIN, a tag named main, a branch whose
+# name starts with main and a pull request's merge ref are not.
+held_run=$(cd "$script_dir" && python3 -c 'import ci_filter_coverage as c; print(c.REF_STEP_RUN)' 2>&1) ||
+  held_run="the engine holds no REF_STEP_RUN"
+check "is the fixture's step" "$(is "$held_run" "$ref_run")"
+for pair in refs/heads/main=true refs/heads/Main=false refs/heads/MAIN=false refs/tags/main=false \
+  refs/heads/main-next=false refs/pull/1/merge=false; do
+  ref=${pair%=*}
+  want=${pair#*=}
+  : >"$work/ref-output"
+  GITHUB_REF=$ref GITHUB_OUTPUT="$work/ref-output" bash -c "$held_run" 2>/dev/null || true
+  check "$ref: writes is_main=$want" "$(is "$(cat "$work/ref-output")" "is_main=$want")"
+done
 
 echo "case: a job named for a required check holding the re-run term"
 root=$(fixture pr-title-rerun-guard)
@@ -1165,7 +1226,7 @@ check "and asks the verdict to need it" \
 
 echo "case: the file has no pr-title job"
 root=$(fixture pr-title-absent)
-replace "$root/.github/workflows/ci.yaml" $'  pr-title:\n    name: ${{ github.event_name == \'workflow_dispatch\' && github.ref != \'refs/heads/main\' && \'pr-title (dispatch)\' || \'pr-title\' }}\n    if: github.event_name == \'pull_request\' || github.event_name == \'merge_group\'\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Check the pull request\'s text\n        run: echo text\n' ""
+replace "$root/.github/workflows/ci.yaml" $'  pr-title:\n    name: ${{ github.event_name == \'workflow_dispatch\' && \'pr-title (dispatch)\' || \'pr-title\' }}\n    if: github.event_name == \'pull_request\' || github.event_name == \'merge_group\'\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Check the pull request\'s text\n        run: echo text\n' ""
 replace "$root/.github/workflows/ci.yaml" "CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\"]'" "CI_OK_EXEMPT: '[\"ci-ok\"]'"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
@@ -1205,7 +1266,7 @@ echo "case: the file has no ci-ok job"
 # The job is the last of the fixture, and `replace` reads the file without its trailing newline,
 # so the block to cut starts at the newline before it and ends at its last line.
 root=$(fixture ci-ok-absent)
-replace "$root/.github/workflows/ci.yaml" $'\n  ci-ok:\n    name: ${{ github.event_name == \'workflow_dispatch\' && github.ref != \'refs/heads/main\' && \'ci-ok (dispatch)\' || \'ci-ok\' }}\n    needs: [changes, app, image, lint]\n    if: ${{ always() }}\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Judge every job of this run\n        run: echo verdict\n      - name: Set every other ci-ok on this head to this job\'s conclusion\n        if: ${{ always() && !(github.event_name == \'workflow_dispatch\' && github.ref != \'refs/heads/main\') }}\n        run: echo reconcile' ""
+replace "$root/.github/workflows/ci.yaml" $'\n  ci-ok:\n    name: ${{ github.event_name == \'workflow_dispatch\' && needs.changes.outputs.ref_is_main != \'true\' && \'ci-ok (dispatch)\' || \'ci-ok\' }}\n    needs: [changes, app, image, lint]\n    if: ${{ always() }}\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Judge every job of this run\n        run: echo verdict\n      - name: Set every other ci-ok on this head to this job\'s conclusion\n        if: ${{ always() && (github.event_name != \'workflow_dispatch\' || needs.changes.outputs.ref_is_main == \'true\') }}\n        run: echo reconcile' ""
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the check nothing would carry" \

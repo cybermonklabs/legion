@@ -87,15 +87,21 @@
 #      CI_OK_SELECTED_BY also maps, or
 #      that is no job of the file at all; a job named for a check main's ruleset requires (ci-ok
 #      and pr-title), or named by an expression that can evaluate to one, that is not the job of
-#      that name, and either of those two jobs carrying any `name:` but `${{ github.event_name ==
-#      'workflow_dispatch' && github.ref != 'refs/heads/main' && '<job> (dispatch)' || '<job>' }}`,
-#      since a job posts its own check under its display name,
-#      a skipped one posts a pass, and a dispatch of a branch tests the branch's tree and lands
-#      its check runs on the branch's head, a pull request's head, beside the pull request's own,
-#      where a reader by name takes the newer; the ci-ok job's step "Set every other ci-ok on this
-#      head to this job's conclusion" carrying any `if:` but `${{ always() && !(<that dispatch
-#      term>) }}`, since on a dispatch of a branch it would set a pull request's ci-ok check runs
-#      to that run's verdict; a pr-title job that is missing, since nothing else
+#      that name; ci-ok carrying any `name:` but `${{ github.event_name == 'workflow_dispatch' &&
+#      needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' || 'ci-ok' }}`, pr-title
+#      any but `${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' ||
+#      'pr-title' }}`, since a job posts its own check under its display name, a skipped one posts
+#      a pass, and a dispatch of any ref but exactly refs/heads/main tests that ref's tree and
+#      lands its check runs on the branch's head, a pull request's head, beside the pull
+#      request's own, where a reader by name takes the newer; the ci-ok job's step "Set every
+#      other ci-ok on this head to this job's conclusion" carrying any `if:` but `${{ always() &&
+#      (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true')
+#      }}`, since on any other dispatch it would set a pull request's ci-ok check runs to that
+#      run's verdict; the changes job lacking the output `ref_is_main: ${{
+#      steps.ref.outputs.is_main }}` or its one step `ref`, whose `run:` is exactly `if [
+#      "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >>
+#      "$GITHUB_OUTPUT"` with no `if:`, since an expression's `==` and `!=` ignore case and read
+#      refs/heads/Main as main where the shell's `=` does not; a pr-title job that is missing, since nothing else
 #      reports that check on a pull request or a merge group; a ci-ok job — the verdict, whose own
 #      check run is the other check that ruleset requires — that is missing, that CI_OK_EXEMPT
 #      does not name, or whose
@@ -170,10 +176,7 @@
 #      be in ci.yaml itself. It refuses those two comparisons and
 #      nothing else: `github.ref_name`, and `github.ref` outside such a comparison, are left
 #      alone, since a merge_group run's github.ref really is a branch ref
-#      (refs/heads/gh-readonly-queue/...) and a startsWith on it is live. It also leaves alone the
-#      one comparison that is live in this file, `github.event_name == 'workflow_dispatch' &&
-#      github.ref != 'refs/heads/main'` written exactly so, since a dispatched run's github.ref is
-#      the branch it was dispatched on. As everywhere here, the
+#      (refs/heads/gh-readonly-queue/...) and a startsWith on it is live. As everywhere here, the
 #      same test written as a function call is the review's to catch, not this check's.
 #  11. a cache family .github/workflows/ci-caches.yaml saves whose `key:` or `path:` is not
 #      exactly that of the matching actions/cache/restore of ci.yaml or of a workflow ci.yaml

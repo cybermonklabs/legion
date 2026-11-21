@@ -882,12 +882,15 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
     the file holds it. A reference to a paths-filter step that reads no such file is passed over
     here, since rule 21 refuses that step and no filter of it was read to hold the name to; so is
     every name while no filter was read at all, since each way that happens is refused on its own
-    (changes_filters, rule 21) and holding the names to nothing would refuse every output again."""
+    (changes_filters, rule 21) and holding the names to nothing would refuse every output again.
+    REF_OUTPUT is no filter's verdict: check_ci_ok holds it and the one step that writes it."""
     job = (document.get("jobs") or {}).get("changes") or {}
     steps = job.get("steps") or []
     ids = [str(s.get("id", "")) for s in steps if s.get("id")]
     filter_steps = {str(s.get("id", "")): s for s in filter_input_steps(job)}
     for output, expression in (job.get("outputs") or {}).items():
+        if output == REF_OUTPUT:
+            continue
         for step_id, name in STEP_OUTPUT_REF.findall(str(expression)):
             if step_id not in ids:
                 problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
@@ -1491,12 +1494,14 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
     inputs_of = input_expressions(documents, problems)
     # Rule 3 over every document of the set: a called file's job or step is gated through an
     # input of its own, resolved to the caller's expression here, and the refusal names the file
-    # the condition is in.
+    # the condition is in. REF_OUTPUT is no filter: the condition reading it is check_ci_ok's.
     gated = defaultdict(set)  # (workflow, job) -> filters its job-level if: names
     for path, document in documents.items():
         for job_id, job in (document.get("jobs") or {}).items():
             for step, condition in conditions(job or {}):
                 for name in GATE_REF.findall(resolve_condition(condition, inputs_of.get(path, {}))):
+                    if name == REF_OUTPUT:
+                        continue
                     if step is None:
                         gated[(path, job_id)].add(name)
                     if name not in gates and name not in excluded:
@@ -1717,39 +1722,56 @@ REPORT_STATUS = "${{ job.status }}"
 # carry one of these names, since a job posts the check its display name gives and a skipped job
 # posts a passing one.
 #
-# Each of the two carries the one `name:` dispatch_name gives it, and no other. GitHub evaluates
+# Each of the two carries the one `name:` DISPATCH_NAMES gives it, and no other. GitHub evaluates
 # a job's name only when the job runs. ci-ok runs on every event: it is `ci-ok` on a pull
-# request, a merge group and a dispatch on main, and `ci-ok (dispatch)` on a dispatch of any
-# other branch. pr-title runs only on a pull request that is not a draft and on a merge group,
-# and is named pr-title there; every run that skips it, a dispatch of any branch and a draft's
-# run among them, leaves the name unevaluated, and the check run carries the expression's text,
-# which is no pr-title either. A dispatch of a branch tests the branch's own tree, not its merge
-# with the base, and its check runs land on the branch's head, which is a pull request's head:
-# under the plain name that commit carried a second ci-ok with another tree's verdict, and a
-# skipped pr-title. Pull request #3513 at a368687e carried both on 2026-11-21 from
-# workflow_dispatch run 44860519340, a ci-ok success beside its pull_request run's failure.
-# GitHub's rollup of the pull request read no check run of the dispatched run, but a reader by
-# name (the commit's check-runs list, or a record keeping the higher check run id per name)
-# takes the dispatched run's.
+# request, a merge group and a dispatch of exactly refs/heads/main, and `ci-ok (dispatch)` on a
+# dispatch of any other ref. pr-title runs only on a pull request that is not a draft and on a
+# merge group, and is named pr-title there; every run that skips it, a dispatch of any ref and a
+# draft's run among them, leaves the name unevaluated, and the check run carries the
+# expression's text, which is no pr-title either. A dispatch of a branch tests the branch's own
+# tree, not its merge with the base, and its check runs land on the branch's head, which is a
+# pull request's head: under the plain name that commit carried a second ci-ok with another
+# tree's verdict, and a skipped pr-title. Pull request #3513 at a368687e carried both on
+# 2026-11-21 from workflow_dispatch run 44860519340, a ci-ok success beside its pull_request
+# run's failure. GitHub's rollup of the pull request read no check run of the dispatched run,
+# but a reader by name (the commit's check-runs list, or a record keeping the higher check run
+# id per name) takes the dispatched run's.
 #
-# DISPATCH_TERM compares github.ref, which names a branch as refs/heads/<name>, rather than
-# github.ref_name, which a tag named main matches too. ci_workflow_rules.py's push-condition rule
-# admits this one comparison of github.ref with a branch ref, joined to the dispatch event.
+# Whether a dispatch is of main is read by a shell test in the changes job (REF_STEP), not by an
+# expression: GitHub's `==` and `!=` ignore case, so `github.ref != 'refs/heads/main'` is false
+# for the branches refs/heads/Main and refs/heads/MAIN, which git accepts. The step writes
+# is_main=true only for exactly refs/heads/main, and the changes job hands it on as
+# REF_OUTPUT; a dispatch whose changes job wrote nothing (it failed) is no dispatch of main
+# either. pr-title needs no job, so it cannot read that output, and its name carries the event
+# alone: it runs on no dispatch, so its dispatch arm is never evaluated, and what keeps a
+# skipped pr-title from posting a pass named pr-title is that its name is an expression at all.
 REQUIRED_CHECKS = ("ci-ok", "pr-title")
 VERDICT_JOB = "ci-ok"
-DISPATCH_TERM = "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'"
+REF_OUTPUT = "ref_is_main"
+REF_OUTPUT_VALUE = "${{ steps.ref.outputs.is_main }}"
+REF_STEP_ID = "ref"
+REF_STEP_NAME = "Read whether this run's ref is exactly refs/heads/main"
+REF_STEP_RUN = ('if [ "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi '
+                '>> "$GITHUB_OUTPUT"')
+DISPATCH_OFF_MAIN = f"github.event_name == 'workflow_dispatch' && needs.changes.outputs.{REF_OUTPUT} != 'true'"
+DISPATCH_NAMES = {
+    "ci-ok": f"${{{{ {DISPATCH_OFF_MAIN} && 'ci-ok (dispatch)' || 'ci-ok' }}}}",
+    "pr-title": "${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}",
+}
 # The verdict job's step that sets every other ci-ok on the head to its conclusion, and the one
-# `if:` it carries: it runs after a failed verdict (always()) and never on a dispatch of a branch,
-# since every other ci-ok on such a head is a pull request's or the queue's.
+# `if:` it carries: it runs after a failed verdict (always()) and on no dispatch but one of
+# exactly refs/heads/main, since every other ci-ok on such a head is a pull request's or the
+# queue's.
 RECONCILE_STEP = "Set every other ci-ok on this head to this job's conclusion"
-RECONCILE_IF = f"${{{{ always() && !({DISPATCH_TERM}) }}}}"
+RECONCILE_IF = (f"${{{{ always() && (github.event_name != 'workflow_dispatch' || "
+                f"needs.changes.outputs.{REF_OUTPUT} == 'true') }}}}")
 
 
 def dispatch_name(job_id: str) -> str:
-    """The one `name:` a REQUIRED_CHECKS job carries: `<job id> (dispatch)` on a dispatch of a
-    branch other than main, and the job id on every other run that evaluates it. A run that skips
-    the job evaluates no name, and its check run carries this expression's text."""
-    return f"${{{{ {DISPATCH_TERM} && '{job_id} (dispatch)' || '{job_id}' }}}}"
+    """The one `name:` a REQUIRED_CHECKS job carries: `<job id> (dispatch)` on a dispatch of any
+    ref but exactly refs/heads/main, and the job id on every other run that evaluates it. A run
+    that skips the job evaluates no name, and its check run carries this expression's text."""
+    return DISPATCH_NAMES[job_id]
 
 
 def quoted_names(named: str) -> set:
@@ -1859,11 +1881,11 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
                 carried = "carries no `name:`" if named == job_id else f"carries `name: {named}`"
                 problems.append(error(WORKFLOW, f"job {job_id} {carried}, and {job_id} is a check main's "
                                                 f"ruleset requires: give it `name: {want_name}`, so that a "
-                                                f"workflow_dispatch run of a branch, which tests the branch's tree "
-                                                f"rather than its merge with the base, reports under a name of its "
-                                                f"own and never sits beside the pull request's {job_id} on the "
-                                                f"branch's head, while every other run that runs the job reports "
-                                                f"{job_id}"))
+                                                f"workflow_dispatch run of any ref but exactly refs/heads/main, which "
+                                                f"tests that ref's tree rather than a merge with the base, reports "
+                                                f"under a name of its own and never sits beside the pull request's "
+                                                f"{job_id} on the branch's head, while every other run that runs the job "
+                                                f"reports {job_id}"))
             continue
         if named in REQUIRED_CHECKS:
             problems.append(error(WORKFLOW, f"job {job_id} is named {named}, a check main's ruleset "
@@ -1880,9 +1902,27 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
         if isinstance(step, dict) and step.get("name") == RECONCILE_STEP and str(step.get("if", "")) != RECONCILE_IF:
             problems.append(error(WORKFLOW, f"job {VERDICT_JOB}'s step \"{RECONCILE_STEP}\" carries `if: "
                                             f"{squash(str(step.get('if', '')))}`: give it `if: {RECONCILE_IF}`, so that "
-                                            f"it runs after a failed verdict and never on a workflow_dispatch run of a "
-                                            f"branch, whose verdict is no pull request's and must set none of a pull "
-                                            f"request's ci-ok check runs"))
+                                            f"it runs after a failed verdict and on no workflow_dispatch run but one of "
+                                            f"exactly refs/heads/main, since any other dispatch's verdict is no pull "
+                                            f"request's and must set none of a pull request's ci-ok check runs"))
+    # The output the name and the reconcile step read, and the one step that writes it.
+    changes = jobs.get("changes") or {}
+    have_output = (changes.get("outputs") or {}).get(REF_OUTPUT)
+    why_shell = ("the shell's `=` is case-sensitive, where an expression's `==` and `!=` ignore case and read "
+                 "refs/heads/Main as main")
+    if str(have_output) != REF_OUTPUT_VALUE:
+        carried = f"has no output {REF_OUTPUT}" if have_output is None else \
+            f"carries `{REF_OUTPUT}: {squash(str(have_output))}`"
+        problems.append(error(WORKFLOW, f"the changes job {carried}: give it `{REF_OUTPUT}: {REF_OUTPUT_VALUE}`, the "
+                                        f"output job {VERDICT_JOB}'s name and its step \"{RECONCILE_STEP}\" read to tell "
+                                        f"a dispatch of exactly refs/heads/main from one of any other ref"))
+    ref_steps = [s for s in changes.get("steps") or [] if isinstance(s, dict) and s.get("id") == REF_STEP_ID]
+    exact = (len(ref_steps) == 1 and ref_steps[0].get("name") == REF_STEP_NAME and "if" not in ref_steps[0]
+             and str(ref_steps[0].get("run", "")).strip() == REF_STEP_RUN)
+    if not exact:
+        problems.append(error(WORKFLOW, f"the changes job holds {len(ref_steps)} step(s) with id {REF_STEP_ID}, and "
+                                        f"must hold exactly one, named \"{REF_STEP_NAME}\", with no `if:` and `run: "
+                                        f"{REF_STEP_RUN}`: it is what writes {REF_OUTPUT}, and {why_shell}"))
     for check in REQUIRED_CHECKS:
         if check != VERDICT_JOB and check not in jobs:
             problems.append(error(WORKFLOW, f"this file has no {check} job, a check main's ruleset "
