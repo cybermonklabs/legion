@@ -161,7 +161,7 @@ named after `<n>` rather than after the hub's own name:
 | Deployment `<n>-tailnet` (only with `tailnet`) | `tailnet.replicas` tailnet hosts (see [The tailnet hosts](#the-tailnet-hosts)), rolled with `maxUnavailable: 0` and `maxSurge: 1`. It waits on the Secret, the ConfigMap, the ServiceAccount and the priority class read. |
 | PodDisruptionBudget `<n>-tailnet` (only with `tailnet`) | `maxUnavailable: 1` over the tailnet hosts. |
 | ServiceAccount `<n>-listener` (only with `tailnet`) | The session listener's account, which mounts no token: the listener calls no Kubernetes API. |
-| Deployment `<n>-listener` (only with `tailnet`) | One session listener pod (see [The session listener](#the-session-listener)), rolled with `maxUnavailable: 0` and `maxSurge: 1`; with `<l>.replaceUnderHold: true`, `Recreate` with no `rollingUpdate` block, and `pulumi.com/skipAwait: "true"` ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). It waits on the ServiceAccount and the priority class read. |
+| Deployment `<n>-listener` (only with `tailnet`) | One session listener pod (see [The session listener](#the-session-listener)), rolled with `maxUnavailable: 0` and `maxSurge: 1`; with `listener.replaceUnderHold: true` or `tailnet.listener.replaceUnderHold: true`, `Recreate` with no `rollingUpdate` block, and `pulumi.com/skipAwait: "true"` ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). It waits on the ServiceAccount and the priority class read. |
 | Service `<n>-listener` (only with `tailnet`) | Port 9020 to the listener pod's port 9020. Each tailnet host forwards the Tailscale Service's port 9020 to it. |
 | NetworkPolicy `<n>-listener` (only with `tailnet`) | An Ingress policy on the listener's pods with exactly one rule: TCP 9020 from the tailnet hosts' pods. Every other port of that pod is admitted to nobody. |
 | PodDisruptionBudget `<n>-listener` (only with `tailnet`) | `maxUnavailable: 1` over the one listener pod, so a node drain or an Autopilot upgrade moves it rather than stalling on it. |
@@ -1733,12 +1733,12 @@ Azure form, which `azureChatEndpoint` takes too, the projected token at
 `/var/run/secrets/azure-federation/token`; and with `chatTokenSecret`, the answerer's bearer token
 at `/var/run/secrets/chat-token/token`.
 
-Outside the writer hold, each Deployment takes its update strategy from its own replica count. At
-one pod it is recreated, stopping the old pod before the new one starts: a roll would run the
-outgoing and the incoming builds together, which is safe only once the outgoing build follows the
-rules for two builds running side by side and keeps its assets in the shared store, and a one-pod
-release cannot know that of the build it replaces. Above one pod it rolls, with
-`maxUnavailable: 0` and `maxSurge: 1`, so a new pod is ready before any old one goes down: an
+With `replaceUnderHold` unset or false, each Deployment takes its update strategy from its own
+replica count. At one pod it is recreated, stopping the old pod before the new one starts: a roll
+would run the outgoing and the incoming builds together, which is safe only once the outgoing
+build follows the rules for two builds running side by side and keeps its assets in the shared
+store, and a one-pod release cannot know that of the build it replaces. Above one pod it rolls,
+with `maxUnavailable: 0` and `maxSurge: 1`, so a new pod is ready before any old one goes down: an
 operator who runs a workload above one pod runs such builds and wants no gap in service. So at one
 replica an input or image update recreates that workload's one pod, which is a brief outage, and
 the front door, at its default of two, rolls. The one input that sets a strategy is

@@ -1173,10 +1173,10 @@ reaches it:
 
 The hub's own NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the hosts.
 
-How it is updated. Outside the writer hold, a change of the listener's image, size or environment
-rolls the one pod with `maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old
-one stops. The new pod
-is Ready only once its `/v1` serves, since its startup probe passes only then (below), and `/v1`
+How it is updated. With the listener's `replaceUnderHold` unset or false, a change of the
+listener's image, size or environment rolls the one pod with `maxUnavailable: 0` and
+`maxSurge: 1`, so the new pod starts before the old one stops. The new pod is Ready only once its
+`/v1` serves, since its startup probe passes only then (below), and `/v1`
 opens without waiting for the durable, which the old pod holds until it stops, so the new pod's
 `/v1` cannot wait on the old pod. The new pod's listener starts its bind of the durable right
 after its `/v1` opens, and the old pod is sent SIGTERM only once the new pod is Ready, at most one
