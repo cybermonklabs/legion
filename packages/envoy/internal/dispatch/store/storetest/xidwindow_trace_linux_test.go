@@ -3,6 +3,7 @@
 package storetest
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -135,5 +136,35 @@ func TestAGapIsTheCodesTimeLessTheMachinesWaits(t *testing.T) {
 		if got := test.gap.Made(); got != test.want {
 			t.Errorf("%s: Made() = %s, want %s", test.name, got, test.want)
 		}
+	}
+}
+
+// The process's clock is tied to the monotonic clock only by a read of it that two monotonic reads
+// bracket within xidClockTieBound: a stall between the reads - here 50 ms between the process's
+// read and the second monotonic read, as a reviewer planted it into the lone pair of reads before
+// this - leaves the pair untaken, and the next three reads tie the clocks. A tie that took the
+// stalled pair would place every moment 50 ms late on the trace. A machine on which no three reads
+// ever fall within the bound answers an error naming the closest, not a tie.
+func TestTheClocksAreTiedOnlyByAReadNoStallSplits(t *testing.T) {
+	ms := func(n float64) int64 { return int64(n * float64(time.Millisecond)) }
+	wall := time.Now()
+	readings := []int64{ms(0), ms(50.002), ms(60), ms(60.004)}
+	walls := []time.Time{wall, wall.Add(60 * time.Millisecond)}
+	monoReads, wallReads := 0, 0
+	mono := func() (int64, error) { monoReads++; return readings[monoReads-1], nil }
+	now := func() time.Time { wallReads++; return walls[wallReads-1] }
+	tiedWall, tiedMono, err := xidTieClocks(mono, now)
+	if err != nil {
+		t.Fatalf("tie the clocks: %v", err)
+	}
+	if !tiedWall.Equal(walls[1]) || tiedMono != ms(60.002) {
+		t.Fatalf("the clocks were tied at %s and monotonic %d ns, want the second read, %s and %d ns: the stalled pair was taken",
+			tiedWall.Sub(wall), tiedMono, walls[1].Sub(wall), ms(60.002))
+	}
+
+	stalled := func() (int64, error) { monoReads++; return int64(monoReads) * ms(1), nil }
+	monoReads = 0
+	if _, _, err := xidTieClocks(stalled, time.Now); err == nil || !strings.Contains(err.Error(), "never lay within 20µs, the closest 1ms apart") {
+		t.Fatalf("clocks whose reads always lie 1 ms apart: %v, want an error naming the closest pair", err)
 	}
 }

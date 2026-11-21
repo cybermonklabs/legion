@@ -70,9 +70,11 @@ func TestXidWindowRigNeverExcusesASleepForSoftirqs(t *testing.T) {
 // them, each counted as a NET_RX on the gap's CPU, for 1.6 ms of CPU past the bound and that cap:
 // the gap breaks rule 1, over the 7.4 ms bound the cap sets. The rig judges it as on a kernel that
 // charges interrupt time to the thread it lands on (storetest.XidChargeInterruptTime), so the cap
-// is in play on every kernel. With the gap's cap planted out, its counts hold all the CPU it ran,
-// its bound passes 7.4 ms, and the test fails at its check of the bound. With the softirq read
-// planted to read nothing, the gap counts no receive and the run stops as one that proves nothing.
+// is in play on every kernel. The run proves something only where the gap counted enough device
+// runs that their holds reach the cap, five at 0.5 ms each; one that counted fewer stops as one
+// that proves nothing. With the gap's cap planted out, its counts hold all the CPU it ran, its
+// bound passes 7.4 ms, and the test fails at its check of the bound. With the softirq read planted
+// to read nothing, the gap counts no receive and the run stops as one that proves nothing.
 func TestXidWindowRigHoldsAGapsSoftirqsToTheirCap(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
 	storetest.XidChargeInterruptTime(t)
@@ -85,9 +87,9 @@ func TestXidWindowRigHoldsAGapsSoftirqsToTheirCap(t *testing.T) {
 	}
 	window := report.Windows[0]
 	gap := window.Gaps[0]
-	if !gap.Counted || !strings.Contains(gap.Softirqs.String(), "NET_RX") || gap.Ran < xidOwnSendsGap {
-		t.Fatalf("the gap ran %s of CPU and its CPU %s (counted: %t): want %s of sends counted as network receives, so this run proves nothing\n%s",
-			storetest.XidMillis(gap.Ran), gap.Softirqs, gap.Counted, storetest.XidMillis(xidOwnSendsGap), window.Detail())
+	if runs := gap.Softirqs.Device(); !gap.Counted || time.Duration(runs)*storetest.XidSoftirqRunHold < storetest.XidSoftirqGapHold || gap.Ran < xidOwnSendsGap {
+		t.Fatalf("the gap ran %s of CPU and its CPU %s, %d device runs (counted: %t): want %s of sends and device runs enough to hold %s, so this run proves nothing\n%s",
+			storetest.XidMillis(gap.Ran), gap.Softirqs, runs, gap.Counted, storetest.XidMillis(xidOwnSendsGap), storetest.XidMillis(storetest.XidSoftirqGapHold), window.Detail())
 	}
 	if want := storetest.XidMaxGap + storetest.XidSoftirqGapHold; gap.Bound() != want {
 		t.Fatalf("the gap's bound is %s, want %s: its device softirqs held more than the gap's cap, storetest.XidSoftirqGapHold\n%s",

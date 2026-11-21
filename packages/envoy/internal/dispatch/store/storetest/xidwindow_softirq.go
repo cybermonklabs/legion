@@ -76,8 +76,8 @@ var xidSoftirqVectors = [...]xidSoftirqVector{
 // indexed as xidSoftirqVectors.
 type XidSoftirqs [len(xidSoftirqVectors)]int64
 
-// device is how many times a device vector ran (xidSoftirqVector.device).
-func (s XidSoftirqs) device() int64 {
+// Device is how many times a device vector ran (xidSoftirqVector.device).
+func (s XidSoftirqs) Device() int64 {
 	var n int64
 	for i, count := range s {
 		if xidSoftirqVectors[i].device {
@@ -153,7 +153,7 @@ func (g XidGap) SoftirqHold() time.Duration {
 	if !g.Counted || !xidInterruptTimeCharged() {
 		return 0
 	}
-	return min(time.Duration(g.Softirqs.device())*XidSoftirqRunHold, XidSoftirqGapHold, max(g.Ran, 0))
+	return min(time.Duration(g.Softirqs.Device())*XidSoftirqRunHold, XidSoftirqGapHold, max(g.Ran, 0))
 }
 
 // Bound is the most time D6 lets the code make in the gap: XidMaxGap, and beside it the time its

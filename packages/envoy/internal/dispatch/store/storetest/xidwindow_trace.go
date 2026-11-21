@@ -82,22 +82,76 @@ func (s *xidTraceSink) arrived(n int) <-chan struct{} {
 }
 
 // startXidTrace starts the execution tracer. It stops the world to start, so Measure starts it
-// before the operation and none of that pause is inside a window. Then it fills the runtime's pool
-// of trace buffers (warm).
+// before the operation and none of that pause is inside a window. Then it ties the process's clock
+// to the system's monotonic clock (xidTieClocks) and fills the runtime's pool of trace buffers
+// (warm).
 func startXidTrace() (*xidTrace, error) {
 	x := &xidTrace{}
 	if err := trace.Start(&x.sink); err != nil {
 		return nil, err
 	}
-	var mono unix.Timespec
-	x.baseTime = time.Now()
-	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &mono); err != nil {
+	var err error
+	if x.baseTime, x.baseMono, err = xidTieClocks(xidMonotonic, xidTraceNow); err != nil {
 		trace.Stop()
 		return nil, err
 	}
-	x.baseMono = mono.Nano()
 	x.warm()
 	return x, nil
+}
+
+// xidTraceNow reads the process's clock for the trace's calibration (xidTieClocks). A variable, so
+// that the test of a stall in the calibration can plant one.
+var xidTraceNow = time.Now
+
+// xidMonotonic reads the system's monotonic clock, the one the trace's clock is tied to.
+func xidMonotonic() (int64, error) {
+	var mono unix.Timespec
+	err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &mono)
+	return mono.Nano(), err
+}
+
+// xidClockTieBound is the most the two monotonic reads xidTieClocks takes around a read of the
+// process's clock may lie apart for the pair to stand. Read back to back, the three reads take well
+// under a microsecond; a thread the kernel switched out between them, or a stall of any kind, puts
+// them far further apart. The midpoint of the two reads then stands for the moment of the process's
+// clock's read to within half the bound, 10 us, so every moment the rig maps onto the trace is
+// placed to within that.
+const xidClockTieBound = 20 * time.Microsecond
+
+// xidClockTieTries is how many times xidTieClocks reads the three clocks before it gives up.
+const xidClockTieTries = 1000
+
+// xidTieClocks ties the process's clock (now) to the system's monotonic clock (mono): it reads the
+// monotonic clock, then the process's clock, then the monotonic clock again, and takes the pair
+// only where the two monotonic reads lie within xidClockTieBound, with their midpoint as the
+// monotonic moment of the process's read. A stall between two reads - the thread switched out, a
+// debugger's stop - would otherwise shift every moment the rig maps onto the trace by as long as
+// the stall: a 50 ms stall between a lone pair of reads shifted a gap's stretch of the trace onto
+// a later one, which showed the goroutine runnable throughout, and a gap of 6.020 ms of the code's
+// CPU read 0.000 ms made. It reads the three again where the bound is not met, and answers an error
+// after xidClockTieTries such reads, naming the closest pair it read.
+func xidTieClocks(mono func() (int64, error), now func() time.Time) (time.Time, int64, error) {
+	closest := time.Duration(-1)
+	for range xidClockTieTries {
+		before, err := mono()
+		if err != nil {
+			return time.Time{}, 0, err
+		}
+		wall := now()
+		after, err := mono()
+		if err != nil {
+			return time.Time{}, 0, err
+		}
+		spread := time.Duration(after - before)
+		if spread >= 0 && spread <= xidClockTieBound {
+			return wall, before + (after-before)/2, nil
+		}
+		if closest < 0 || (spread >= 0 && spread < closest) {
+			closest = spread
+		}
+	}
+	return time.Time{}, 0, fmt.Errorf("could not tie the process's clock to the monotonic clock: in %d reads the two monotonic reads around it never lay within %s, the closest %s apart",
+		xidClockTieTries, xidClockTieBound, closest)
 }
 
 // xidTraceBatch is the size of one of the runtime's trace buffers, the largest batch the trace

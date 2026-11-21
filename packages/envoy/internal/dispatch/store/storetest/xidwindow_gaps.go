@@ -52,13 +52,14 @@ func (g XidGap) Asleep() time.Duration { return max(g.Clock-g.Ran-g.Runnable, 0)
 // so no sleep or wait the code made is ever taken out: where the thread slept through the runtime's
 // wait and also waited for a CPU outside it, Made reads the lesser of those two as the code's too.
 // A thread stopped by a debugger, a stop signal or a freezer is asleep to its clocks, and reads as
-// the code's. Made never reads more than the gap's own time on the clock. A gap whose clocks were
-// not read (Read) is its time on the clock.
+// the code's. Made never reads more than the gap's own time on the clock, nor less than nothing:
+// GoRunnable is the goroutine's runnable stretches clipped to the gap, so the first reading lies
+// between zero and Clock. A gap whose clocks were not read (Read) is its time on the clock.
 func (g XidGap) Made() time.Duration {
 	if !g.Read {
 		return g.Clock
 	}
-	return min(g.Clock, max(min(g.Clock-g.GoRunnable, g.Ran+g.Asleep()+g.GoWaiting), 0))
+	return min(g.Clock-g.GoRunnable, g.Ran+g.Asleep()+g.GoWaiting)
 }
 
 // xidStretch reads the stretch from to to off thread's clocks, from's reading and to's, where both
