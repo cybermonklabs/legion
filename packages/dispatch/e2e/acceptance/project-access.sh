@@ -393,12 +393,6 @@ if [ "$priv_private" = 1 ]; then
   # server indexes.
   await_index_settled "$index_settle_seconds" main twin
   until_true 120 "both servers to reconcile delivery once" reconciled
-  # The walk holds every list beside the twin, GET /api/v1/search/coverage among them, which counts
-  # what each server's embedding queue has written so far: main embeds PRIV's items beside PUB's,
-  # each on its own scan cadence, so mid-queue the two count PUB's items current differently. So the
-  # walk starts only once neither owes a vector (access-lib.sh's indexed), as the search section's
-  # reads do.
-  until_true 120 "both servers to owe no vector" indexed main twin
   logs_hold_own_writes
   # The route index this server serves, and the Probes of its own tables.
   send main carol GET /api/v1
