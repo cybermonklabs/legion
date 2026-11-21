@@ -69,13 +69,19 @@ type intakeDelivery struct {
 	// the delivery's loss watcher (heldDurable.watchLoss).
 	sealed       bool
 	sealedSignal chan struct{}
-	// settled is set once the hold is released with every hand-back confirmed (markSettled).
-	settled bool
+	// settled is the settlement of the hold this delivery delivers under, which every delivery made
+	// under that hold shares (heldDurable.settled): set once the hold is released with every hand-back
+	// the connection carries confirmed (markSettled). It is nil for a delivery made under no hold.
+	settled *atomic.Bool
 
 	// beforeHandBackPublish, when set, runs before each hand-back is admitted and published, once
 	// the rule has let it through (publishHandBack). It is nil outside tests: a test sets it to take
 	// nats.go's connection lock in that moment, or to hold the hand-back there while a stop seals.
 	beforeHandBackPublish atomic.Pointer[func()]
+	// afterHandBackAdmitted, when set, runs once a hand-back is admitted and its connection marked
+	// (admitHandBack), before its publish. It is nil outside tests: a test sets it to hold an admitted
+	// hand-back there while the intake stops.
+	afterHandBackAdmitted atomic.Pointer[func()]
 }
 
 // intakeMessage is one message on its way to its key's handler, with its envelope when keying
@@ -98,7 +104,7 @@ type intakeMessage struct {
 func (d *heldDurable) subscribe(deliverSubject string) (*natsgo.Subscription, error) {
 	handling, abandon := context.WithCancel(context.Background())
 	delivery := &intakeDelivery{
-		nats: d.nats, key: d.key, hold: d.hold, subject: deliverSubject,
+		nats: d.nats, key: d.key, hold: d.hold, settled: d.settled, subject: deliverSubject,
 		handling: handling, abandon: abandon, sealedSignal: make(chan struct{}),
 	}
 	delivery.keys = newKeyedRunner(func(message intakeMessage) { d.handle(delivery, message) })
@@ -120,23 +126,21 @@ func (d *heldDurable) subscribe(deliverSubject string) (*natsgo.Subscription, er
 }
 
 // markSettled records that the hold this delivery delivers under is being released with every
-// hand-back of it confirmed (heldDurable.stop, finalizeHandBacks), so the release, which closes the
-// hold's Lost as a loss does, is not taken for one (heldDurable.watchLoss). A nil delivery is
-// nothing to mark.
+// hand-back the connection carries confirmed (heldDurable.stop, finalizeHandBacks), so the release,
+// which closes the hold's Lost as a loss does, is taken for one by the loss watcher of no delivery
+// made under that hold (heldDurable.watchLoss): neither the latest's nor an earlier one's still
+// flushing for its own hand-back, which would otherwise flush again and sever the connection when
+// that flush took over intakeFlushWait. A nil delivery, or one made under no hold, is nothing to mark.
 func (d *intakeDelivery) markSettled() {
-	if d == nil {
+	if d == nil || d.settled == nil {
 		return
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.settled = true
+	d.settled.Store(true)
 }
 
-// settledBeforeRelease reports whether markSettled has run.
+// settledBeforeRelease reports whether markSettled has run for a delivery made under this one's hold.
 func (d *intakeDelivery) settledBeforeRelease() bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.settled
+	return d.settled != nil && d.settled.Load()
 }
 
 // subscribeDurable subscribes deliver to wanted's durable through client.Subscribe at
@@ -475,19 +479,23 @@ func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) {
 // hand-back the server may not have yet (heldDurable.severHandBacks), so that none reaches the
 // server after the hold has lapsed.
 //
-// Each hand-back marks the client's connection before its publish (bus.Client.MarkUnconfirmed),
-// until a flush on that same connection confirms it (heldDurable.handBacksSettled): a socket that
-// closes meanwhile -- at shutdown, or given up as stale before a reconnect -- is reset, so bytes of
-// the hand-back still in its kernel send queue are discarded rather than sent after the release.
+// Each hand-back marks the client's connection as it is admitted, before its publish
+// (bus.Client.MarkUnconfirmed, admitHandBack), until a flush on that same connection confirms it
+// (heldDurable.handBacksSettled): a socket that closes meanwhile -- at shutdown, or given up as stale
+// before a reconnect -- is reset, so bytes of the hand-back still in its kernel send queue are
+// discarded rather than sent after the release.
 func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
 	if hook := d.beforeHandBackPublish.Load(); hook != nil {
 		(*hook)()
 	}
-	if !d.admitHandBack() {
+	written, admitted := d.admitHandBack()
+	if !admitted {
 		slog.Info(handBackSealed, "subject", msg.Subject)
 		return
 	}
-	written := d.nats.MarkUnconfirmed()
+	if hook := d.afterHandBackAdmitted.Load(); hook != nil {
+		(*hook)()
+	}
 	callNATS("hand a message back for redelivery", func() (struct{}, error) {
 		defer func() {
 			written()
@@ -506,23 +514,29 @@ func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
 // hand-back was admitted (admitHandBack).
 const handBackSealed = "dispatch delivery: the intake has stopped or lost its hold, so the hand-back is withheld and the message is left with the durable for the next holder's take-over"
 
-// admitHandBack counts a hand-back about to be published (publishing) and reports true, or reports
-// false once the delivery is sealed. The read of the seal and the count are one step under mu, as
-// the seal is (seal): a hand-back the rule let through before the stop decided that none may begin
-// any more is counted, and the hold's release waits for it; one after is never published. So a
-// subscription callback that passed the rule, and was then descheduled while an unsubscribe went
-// on without it, cannot hand a message back past a release that did not count it.
-func (d *intakeDelivery) admitHandBack() bool {
+// admitHandBack counts a hand-back about to be published (publishing), marks the client's
+// connection as carrying it (bus.Client.MarkUnconfirmed), and returns the mark's written with true;
+// or it returns false once the delivery is sealed. The read of the seal, the count and the mark are
+// one step under mu, as the seal is (seal): a hand-back the rule let through before the stop decided
+// that none may begin any more is counted and marked, and the hold's release waits for it; one after
+// is never published. So a subscription callback that passed the rule, and was then descheduled while
+// an unsubscribe went on without it, cannot hand a message back past a release that did not count it.
+// The mark is made before mu is released because a release under the same hold whose latest delivery
+// is a later one reads only the connection's marks (heldDurable.handBacksReached): a mark made after
+// the admission, outside mu, let a release that came between the two read no mark, and the hand-back
+// was written after it. The lock order is mu, then the connection's dialer's lock; nothing holding the
+// dialer's lock takes a delivery's.
+func (d *intakeDelivery) admitHandBack() (written func(), admitted bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.sealed {
-		return false
+		return nil, false
 	}
 	if d.publishing == 0 {
 		d.published = make(chan struct{})
 	}
 	d.publishing++
-	return true
+	return d.nats.MarkUnconfirmed(), true
 }
 
 // seal decides that no hand-back of this delivery begins any more (admitHandBack). Every hand-back

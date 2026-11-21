@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
@@ -14,6 +15,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -446,4 +448,263 @@ func delivering(durable *heldDurable) *intakeDelivery {
 	durable.mu.Lock()
 	defer durable.mu.Unlock()
 	return durable.delivering
+}
+
+// A hand-back an earlier delivery has admitted keeps the hold at the stop before its publish begins.
+//
+// The stop's release waits for the latest delivery's own hand-backs, and for an earlier delivery
+// under the same hold it reads only the connection's marks (bus.Client.CarriesUnconfirmed,
+// ConfirmMarked). A subscription callback the earlier delivery's unsubscribe went on without can be
+// admitted for a hand-back just before that delivery's seal (admitHandBack). When the connection was
+// marked only after the admission, outside the delivery's lock, a callback descheduled between the
+// two let a later stop read no mark and release the hold, and its -NAK was written after the release.
+//
+// The row's holder takes the hold and the durable by hand, with a callback that holds the one message
+// in its keying. The first delivery's stop begins and waits for its drain, which the held callback
+// keeps from ending. The callback is then let go: its message's key has stopped, so it hands the
+// message back, and the row holds that hand-back once it is admitted (afterHandBackAdmitted), before
+// its publish. The row ends the stop's context, so the first delivery unsubscribes and seals with the
+// hand-back counted, subscribes a second delivery under the same hold, which hands nothing back, and
+// stops the holder under a context that has already ended. It requires the hold still live once that
+// stop has returned. It then lets the hand-back go on, and requires that the -NAK reached the server
+// before the standby created the durable and that the standby's consumer delivered the message once
+// (requireHandBackBeforeCreation). The negative control is the mark made after the admission, with
+// this hook between the two: the stop releases the hold, and the row fails at the hold's check.
+func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop(t *testing.T) {
+	logs := captureLogs(t)
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+	natsURL := testnats.URL(t)
+	client := intakeTestClient(t)
+	recorded := watchDurableEvents(t, natsURL)
+
+	const number = 100
+	keying := make(chan struct{})
+	var entered sync.Once
+	letKeyingGo := make(chan struct{})
+	releaseKeying := sync.OnceFunc(func() { close(letKeyingGo) })
+	t.Cleanup(releaseKeying)
+	durable := newHeldDurable(client, deliveryTestLeases(t, pool), deliveryConsumerConfig,
+		func(msg *natsgo.Msg) (string, *contracts.Envelope, bool) {
+			entered.Do(func() { close(keying) })
+			<-letKeyingGo
+			return intakeKey(msg)
+		}, func(*intakeDelivery, intakeMessage) {})
+	if !durable.takeHold(ctx) {
+		t.Fatal("control: the holder did not take the delivery durable's hold")
+	}
+	first := durable.config()
+	if _, err := durable.subscribe(first.DeliverSubject); err != nil {
+		t.Fatalf("subscribe the holder's first delivery at %s: %v", first.DeliverSubject, err)
+	}
+	if _, err := client.JS().AddConsumer(bus.Stream, &first); err != nil {
+		t.Fatalf("create the delivery durable: %v", err)
+	}
+	token := intakeHoldToken{subject: first.DeliverSubject}
+	if err := durable.hold.SetToken(ctx, token.String()); err != nil {
+		t.Fatalf("record the holder's deliver subject: %v", err)
+	}
+	durable.recorded, durable.subject = token, first.DeliverSubject
+	earlier := delivering(&durable)
+	// Registered before the hand-back's release, so that release runs first: a finalizer waits for
+	// the hand-back to land.
+	t.Cleanup(durable.waitFinalizers)
+	t.Cleanup(func() { durable.stop(cancelled()) })
+
+	standby := startIntakeProcess(t, pool, natsURL, func(int) bool { return true })
+	from := recorded.count()
+	sequences := []uint64{publishMergedPullRequest(t, client, number)}
+	select {
+	case <-keying:
+	case <-time.After(30 * time.Second):
+		t.Fatal("control: the first delivery's callback never began keying the message: " + consumerState(client))
+	}
+
+	admitted := make(chan struct{})
+	var reached sync.Once
+	letPublishGo := make(chan struct{})
+	releasePublish := sync.OnceFunc(func() { close(letPublishGo) })
+	t.Cleanup(releasePublish)
+	hook := func() {
+		reached.Do(func() { close(admitted) })
+		<-letPublishGo
+	}
+	earlier.afterHandBackAdmitted.Store(&hook)
+
+	stopping, endStop := context.WithCancel(context.Background())
+	defer endStop()
+	firstStopped := make(chan struct{})
+	go func() {
+		durable.StopDelivering(stopping)
+		close(firstStopped)
+	}()
+	waitFor(t, 30*time.Second, func() bool { return stopReleased(earlier) }, func() string {
+		return "control: the first delivery's stop never reached its wait for the drain to end"
+	})
+	releaseKeying()
+	select {
+	case <-admitted:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("control: the callback's hand-back was never admitted: the rule withheld it; logged %q", loggedMessages(logs()))
+	}
+	endStop()
+	select {
+	case <-firstStopped:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the first delivery's stop did not return within 30 s of its context's end")
+	}
+	select {
+	case <-earlier.handBacksLanded():
+		t.Fatal("control: the first delivery's stop returned with no hand-back counted")
+	default:
+	}
+
+	second := durable.config()
+	if _, err := durable.subscribe(second.DeliverSubject); err != nil {
+		t.Fatalf("subscribe the holder's second delivery at %s: %v", second.DeliverSubject, err)
+	}
+	if latest := delivering(&durable); latest == earlier || latest.hold != earlier.hold || latest.handedBack() {
+		t.Fatal("control: the holder's second delivery is not a new one under the same hold that handed nothing back")
+	}
+	stopped := make(chan struct{})
+	go func() {
+		durable.stop(cancelled())
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the holder's stop did not return within 30 s")
+	}
+	if !holdLive(t, pool) {
+		t.Fatalf("the stop released its hold while the earlier delivery's admitted hand-back had not been published, so its -NAK goes out after a standby can recreate the durable; events %q", recorded.since(from))
+	}
+	releasePublish()
+	waitFor(t, 60*time.Second, func() bool { return standby.fetches(number) >= 1 }, func() string {
+		return fmt.Sprintf("the standby did not start the message the holder left: %s; events %q", consumerState(client), recorded.since(from))
+	})
+	standby.release()
+	requireHandBackBeforeCreation(t, recorded, from, client, sequences)
+}
+
+// A release at the stop is no loss to an earlier delivery whose loss watcher is still confirming its
+// hand-back.
+//
+// The stop releases the hold only once every hand-back the connection carries is confirmed, and the
+// release closes the hold's Lost as a loss does. An earlier delivery under the same hold, sealed with a
+// hand-back, keeps its loss watcher flushing until a flush confirms it (heldDurable.watchLoss). A
+// release marked settled only for the latest delivery left that watcher reading the release as a loss:
+// it flushed again (lostWith), and severed the connection when that flush took over intakeFlushWait.
+//
+// The row's holder takes the hold and the durable by hand, through a relay it can freeze
+// (testnats.StallRelay.Freeze). Its first delivery hands its one message back on the moving link, with
+// a delay that keeps the server from delivering it again during the row (handBackOwn), and a flush
+// confirms that hand-back, so the connection carries no mark. The row then freezes the link
+// and fills the relay's window, so no flush answers. It stops the first delivery, whose watcher then
+// flushes on the frozen link, subscribes a second delivery under the same hold, which hands nothing
+// back, and stops the holder under a context that has already ended, which releases the hold: the
+// connection carries nothing unconfirmed. Once both deliveries' watchers have ended, the row requires
+// that none severed the connection. The negative control is the settlement of the latest delivery
+// alone: the first delivery's watcher severs, and the row fails naming the severed connection.
+func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHandBack(t *testing.T) {
+	logs := captureLogs(t)
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+	natsURL := testnats.URL(t)
+	relay := testnats.StartStallRelay(t, natsURL)
+	publisher := intakeTestClient(t)
+	client, err := bus.Connect([]string{relay.URL()}, bus.WithName(intakeConnectionName))
+	if err != nil {
+		t.Fatalf("connect the holder through the relay: %v", err)
+	}
+	t.Cleanup(client.Close)
+	handed := make(chan *natsgo.Msg, 1)
+	durable := newHeldDurable(client, deliveryTestLeases(t, pool), deliveryConsumerConfig, intakeKey,
+		func(_ *intakeDelivery, message intakeMessage) {
+			select {
+			case handed <- message.msg:
+			default:
+			}
+		})
+	before := lossWatchers()
+	if !durable.takeHold(ctx) {
+		t.Fatal("control: the holder did not take the delivery durable's hold")
+	}
+	first := durable.config()
+	if _, err := durable.subscribe(first.DeliverSubject); err != nil {
+		t.Fatalf("subscribe the holder's first delivery at %s: %v", first.DeliverSubject, err)
+	}
+	if _, err := publisher.JS().AddConsumer(bus.Stream, &first); err != nil {
+		t.Fatalf("create the delivery durable: %v", err)
+	}
+	token := intakeHoldToken{subject: first.DeliverSubject}
+	if err := durable.hold.SetToken(ctx, token.String()); err != nil {
+		t.Fatalf("record the holder's deliver subject: %v", err)
+	}
+	durable.recorded, durable.subject = token, first.DeliverSubject
+	earlier := delivering(&durable)
+	// Run in reverse: the link moves and the holder stops before its finalizer is waited for.
+	t.Cleanup(durable.waitFinalizers)
+	t.Cleanup(func() {
+		relay.Move()
+		durable.stop(cancelled())
+	})
+
+	publishMergedPullRequest(t, publisher, 100)
+	var msg *natsgo.Msg
+	select {
+	case msg = <-handed:
+	case <-time.After(30 * time.Second):
+		t.Fatal("control: the holder's first delivery was not handed the message: " + consumerState(publisher))
+	}
+	earlier.handBackOwn(msg, time.Hour)
+	select {
+	case <-earlier.handBacksLanded():
+	case <-time.After(30 * time.Second):
+		t.Fatal("control: the first delivery's hand-back did not return within 30 s on the moving link")
+	}
+	if !earlier.handedBack() {
+		t.Fatalf("control: the first delivery withheld its hand-back; logged %q", loggedMessages(logs()))
+	}
+	if !durable.handBacksSettled() || client.CarriesUnconfirmed() {
+		t.Fatal("control: a flush on the moving link did not confirm the first delivery's hand-back")
+	}
+
+	relay.Freeze()
+	holderConn := client.Connection()
+	if err := writeFiller(holderConn); err != nil {
+		t.Fatalf("control: the holder's connection did not write the filler into its socket: %v", err)
+	}
+	relay.AwaitParked(t)
+	durable.StopDelivering(cancelled())
+	second := durable.config()
+	if _, err := durable.subscribe(second.DeliverSubject); err != nil {
+		t.Fatalf("subscribe the holder's second delivery at %s: %v", second.DeliverSubject, err)
+	}
+	if latest := delivering(&durable); latest == earlier || latest.hold != earlier.hold || latest.handedBack() {
+		t.Fatal("control: the holder's second delivery is not a new one under the same hold that handed nothing back")
+	}
+	waitFor(t, 10*time.Second, func() bool { return lossWatchers()-before == 2 }, func() string {
+		return fmt.Sprintf("control: %d loss watchers run, want 2: the first delivery's, flushing on the frozen link, and the second's", lossWatchers()-before)
+	})
+	stopped := make(chan struct{})
+	go func() {
+		durable.stop(cancelled())
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the holder's stop did not return within 30 s")
+	}
+	if holdLive(t, pool) {
+		t.Fatalf("control: the stop did not release its hold, with nothing unconfirmed on the connection; logged %q", loggedMessages(logs()))
+	}
+	waitFor(t, 30*time.Second, func() bool { return lossWatchers()-before <= 0 }, func() string {
+		return fmt.Sprintf("%d loss watchers still run 30 s after the release", lossWatchers()-before)
+	})
+	if loggedMessage(logs(), intakeHandBacksSevered) || holderConn.IsClosed() {
+		t.Fatalf("the stop released its hold with every hand-back confirmed, and the earlier delivery's loss watcher read the release as a loss and severed the connection (status %v); logged %q",
+			holderConn.Status(), loggedMessages(logs()))
+	}
 }

@@ -216,6 +216,9 @@ type heldDurable struct {
 
 	// hold is the durable's hold while this intake holds it.
 	hold *duty.Hold
+	// settled is hold's settlement, made with it (takeHold) and shared by every delivery made under
+	// it (intakeDelivery.markSettled).
+	settled *atomic.Bool
 	// recorded is the token the hold's row records (intakeHoldToken): the deliver subject the last
 	// holder made the durable deliver to, which may be this intake's own, and the start a take-over
 	// that deleted the durable and did not create it again recorded.
@@ -307,7 +310,7 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 			// watcher seals it and settles its hand-backs meanwhile (watchLoss), on a goroutine
 			// of its own, so nothing this loop waits for can delay that.
 			d.stopDeliveringWithin(intakeHoldMargin)
-			d.hold, d.subject = nil, ""
+			d.hold, d.settled, d.subject = nil, nil, ""
 		}
 	}
 }
@@ -378,7 +381,7 @@ func (d *heldDurable) takeHold(ctx context.Context) bool {
 		d.throttle.reportStandby(d.name, heldElsewhere)
 		return false
 	}
-	d.hold, d.recorded = hold, parseIntakeHoldToken(token)
+	d.hold, d.settled, d.recorded = hold, new(atomic.Bool), parseIntakeHoldToken(token)
 	slog.Info("dispatch delivery: took the intake's hold", "name", d.name, "hold", holdName)
 	return true
 }
@@ -696,7 +699,7 @@ func (d *heldDurable) stop(ctx context.Context) {
 		return
 	}
 	hold, lapse := d.hold, d.recorded.start != 0
-	d.hold, d.subject = nil, ""
+	d.hold, d.settled, d.subject = nil, nil, ""
 	d.mu.Lock()
 	delivery := d.delivering
 	d.mu.Unlock()
@@ -796,11 +799,12 @@ func (d *heldDurable) severHandBacks() {
 // hold. It waits for hold.Lost, which a release closes too, or for the delivery's seal at the end of
 // its stop, whichever comes first:
 //
-//   - On the loss, it returns at once when the hold was released with every hand-back of delivery
-//     confirmed (intakeDelivery.markSettled). Otherwise it seals delivery, so no hand-back begins any
-//     more (intakeDelivery.seal), and severs (severHandBacks) when a hand-back delivery began may
-//     still reach the server -- one NATS has not taken (handBacksLanded), or one whose arrival a
-//     flush does not confirm within intakeFlushWait, half the hold's margin (handBacksSettled).
+//   - On the loss, it returns at once when the hold was released with every hand-back the connection
+//     carries confirmed, which marks every delivery made under the hold (intakeDelivery.markSettled).
+//     Otherwise it seals delivery, so no hand-back begins any more (intakeDelivery.seal), and severs
+//     (severHandBacks) when a hand-back delivery began may still reach the server -- one NATS has not
+//     taken (handBacksLanded), or one whose arrival a flush does not confirm within intakeFlushWait,
+//     half the hold's margin (handBacksSettled).
 //   - Once sealed, it returns when delivery handed nothing back, since nothing of it can reach the
 //     server any more; otherwise it flushes until a flush confirms every hand-back, one flush at a
 //     time, and returns then. A loss before that is handled as above.
