@@ -321,9 +321,11 @@ export async function deviceLoginPlace(path: string): Promise<void> {
   await checkLoginDirectory(dir);
   try {
     await access(dir, constants.W_OK | constants.X_OK);
-  } catch {
+  } catch (error) {
+    const code = readErrorCode(error);
+    // Only a mode this user can change has chmod for a cure; a read-only mount, say, has not.
     throw new Error(
-      `this user cannot enter and write to the directory of ${DEVICE_LOGIN_FILE_NAMED}; run chmod 700 on it`
+      `this user cannot enter and write to the directory of ${DEVICE_LOGIN_FILE_NAMED}: ${code}${code === "EACCES" ? "; run chmod 700 on it" : ""}`
     );
   }
 }
@@ -451,16 +453,16 @@ async function saveDeviceLogin(
   const saveFailed = (error: unknown): Error =>
     new Error(`save ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   try {
-    const handle = await open(temp, "wx", 0o600).catch((error: unknown) => {
-      throw saveFailed(error);
-    });
     try {
-      await handle.writeFile(data);
-      await handle.sync();
+      const handle = await open(temp, "wx", 0o600);
+      try {
+        await handle.writeFile(data);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
     } catch (error) {
       throw saveFailed(error);
-    } finally {
-      await handle.close();
     }
     if (!(await held())) throw lockLost();
     await rename(temp, path).catch((error: unknown) => {

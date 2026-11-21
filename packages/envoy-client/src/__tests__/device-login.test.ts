@@ -137,11 +137,15 @@ test("dispatch login refuses a call it cannot make, and says why", async () => {
   expect(openDirectory.stdout).toContain("chmod 700");
   expect(stub.authorizations).toHaveLength(0);
   // So is a directory of this user's own that this user cannot enter (0600, as a `chmod -R 600`
-  // leaves it) or cannot write to (0555).
-  for (const [name, mode] of [
-    ["unentered", 0o600],
-    ["closed", 0o555],
-  ] as const) {
+  // leaves it) or cannot write to (0555). Root passes `access` on any mode, so under root these
+  // cases would ask for a code; they run only as an ordinary user, as CI's runner is.
+  const asRoot = process.getuid?.() === 0;
+  for (const [name, mode] of asRoot
+    ? []
+    : ([
+        ["unentered", 0o600],
+        ["closed", 0o555],
+      ] as const)) {
     const closed = path.join(tempDir(), name, "device-login.json");
     mkdirSync(path.dirname(closed));
     chmodSync(path.dirname(closed), mode);
@@ -152,6 +156,7 @@ test("dispatch login refuses a call it cannot make, and says why", async () => {
     chmodSync(path.dirname(closed), 0o700);
     expect(closedDirectory.code, `${name}: ${closedDirectory.stdout}`).toBe(2);
     expect(closedDirectory.stdout, name).toContain("cannot enter and write");
+    expect(closedDirectory.stdout, name).toContain("EACCES; run chmod 700");
     expect(stub.authorizations, name).toHaveLength(0);
   }
 

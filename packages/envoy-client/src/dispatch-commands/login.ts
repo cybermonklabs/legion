@@ -140,8 +140,8 @@ export async function loginCommand(
   let path: string;
   try {
     // An http broker off this machine's loopback is refused here, before any request, and so is
-    // a login directory another user could replace the login in: no person approves a login
-    // this machine could not keep.
+    // a login directory another user could replace the login in, or one this user cannot enter
+    // and write to: no person approves a login this machine could not keep.
     deviceLoginBroker(brokerUrl);
     path = deviceLoginFile(env);
     await deviceLoginPlace(path);

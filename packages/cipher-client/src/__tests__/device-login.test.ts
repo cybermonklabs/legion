@@ -874,7 +874,7 @@ test("a trade refused after its holder lost the lock is one a later trade cures,
 test("a trade refused under a lock still held after a refresh just made is final", async () => {
   // Once with no kept token, refreshed before the first trade; once with a kept token refused,
   // refreshed, and refused again. Either way the broker refused a token it had just minted, so
-  // no second refresh can cure it. The trade would go through a third time, so a loop that
+  // no second refresh can cure it. The trade would go through at its next try, so a loop that
   // refreshed again would end in a token, not the refusal.
   for (const [kept, refusals] of [
     [false, 1],
