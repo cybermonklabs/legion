@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+    `legion cutover-read drain|filters --projects <KEY,…>` (hidden) takes plan C's two readings
+    around the deploy that drops the shared wake filter. It connects with `NATS_URLS` and the nkey
+    seed of `NATS_NKEY_SEED_FILE`, which the in-cluster listener's pod carries, and reads only the
+    stream's info, its consumer list and stored messages by sequence (`STREAM.MSG.GET` with
+    `next_by_subj`). It makes no call on a daemon's durable.
+
+    The drain read passes a project only when its `legion-go-<P>-wake` durable hears both wake
+    subjects and every message stored on `notifications.legion.wake` past the durable's ack floor is
+    `listener_ready`. Otherwise it names the sequence and kind of the first wake still unread. The
+    filter read passes only when every daemon durable of each project is on exactly its kind's
+    filter set.
+
+    Each prints a line per project and the verdict, `GATE OPEN`, `GATE SHUT` or `UNKNOWN`, on its
+    last line, and exits 0, 1 or 3. `packages/envoy/scripts/cutover-read.sh` runs it in the cluster
+    under the listener's identity.
+time: 2026-11-21T06:34:27.480959704Z
+custom:
+    Issue: pr4726
