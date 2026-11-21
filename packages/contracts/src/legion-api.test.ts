@@ -2563,17 +2563,19 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   ]);
   expect(block.data?.caches).toEqual(live.caches);
 
-  // Every other key is the state golden's own, the `contract` mark and `lowestPluginContract`
-  // aside: the mark names the contract the caller is served at, 199, the recorded contract below
-  // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
-  // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
-  // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
-  // nothing beside it.
+  // Every other key is the state golden's own, the `contract` mark, `lowestPluginContract` and
+  // `questionsForController` aside: the mark names the contract the caller is served at, 199, the
+  // recorded contract below the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's,
+  // which moved no answer's shape, the lowest plugin contract reports the claims of the snapshot
+  // the route projected the body from, a pod at 201, which `state.json`'s own fixture does not
+  // hold, and the questions are left off a caller below 208 (`withoutQuestionsForController`). No
+  // other band stands above 199 but the repositories block's, so the narrowing changes this one
+  // block beside the questions and nothing else.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
   expect(served.contract).toEqual({ daemon: daemonApiVersion, caller: 199 });
+  expect(served).not.toHaveProperty("questionsForController");
   const {
     repositories: _narrowedBlock,
     contract: _narrowedMark,
@@ -2584,6 +2586,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     repositories: _block,
     contract: _mark,
     lowestPluginContract: _lowest,
+    questionsForController: _questions,
     ...rest
   } = fixtureBody("state.json");
   expect(narrowedRest).toEqual(rest);
@@ -2748,6 +2751,84 @@ test("the state golden names the held lifecycle rows, and the list may be left o
   const dropped = fixture("state.json") as Record<string, unknown>;
   delete dropped.heldOutboxRows;
   expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
+});
+
+// The questions passed to the controller (contract 208): the golden carries the question LEGION-208's
+// stopped implementer passed model_calls on after it merged with gh, naming that merge and a
+// comment whose exit gh never answered, and the one LEGION-207's stopped tester could not answer;
+// a state with none carries an empty list rather than none. What is refused is a question of a
+// role this build does not know and a write with no command. No plugin code reads a question's
+// fields, so a question without its `passedAt` or its `writes` is read rather than refused
+// (LEGION_ANSWER_READS). The key is not required, for the reason `wakesWaiting` is not: a daemon
+// at this contract leaves it off the state it serves a caller below 208, since a reader before it
+// refuses the key however empty (`api.stateFor`, `withoutQuestionsForController`). So a body
+// without the key parses, and a reader of it learns nothing about which questions were passed
+// rather than losing the whole state.
+test("the state golden lists the questions passed to the controller, and the key may be absent", () => {
+  const state = LegionStateResponse.parse(fixture("state.json"));
+  expect(state.questionsForController).toEqual([
+    {
+      id: "9e2b7c41d05a3f68e1c4a7b0d9f2e536",
+      issue: "LEGION-208",
+      role: "implementer",
+      session: "ses_implementer_208",
+      asker: "session:ses_architect_208 (LEGION-208 architect)",
+      ref: "envoy:evt-5521",
+      reason: "model_calls",
+      passedAt: "2026-09-22T09:16:40Z",
+      writes: [
+        { seq: 1, command: "pr merge", repository: "acme/widgets", exit: 0 },
+        {
+          seq: 3,
+          command: "api POST repos/acme/widgets/issues/208/comments",
+          repository: "acme/widgets",
+          exit: null,
+        },
+      ],
+    },
+    {
+      id: "5f0c2a9e7b14d3866a1e0c4b9d2f7a35",
+      issue: "LEGION-207",
+      role: "tester",
+      session: "ses_tester_207",
+      asker: "user:octocat",
+      ref: "dispatch://LEGION-207/message/m-4411",
+      reason: "not_answered",
+      passedAt: "2026-09-22T09:14:03Z",
+      writes: [],
+    },
+  ]);
+  expect(LegionStateResponse.parse(fixture("state-stage3.json")).questionsForController).toEqual(
+    []
+  );
+
+  const unrolled = fixture("state.json") as { questionsForController: Record<string, unknown>[] };
+  unrolled.questionsForController = [{ ...unrolled.questionsForController[0], role: "controller" }];
+  expect(LegionStateResponse.safeParse(unrolled).success).toBeFalse();
+
+  const undated = fixture("state.json") as { questionsForController: Record<string, unknown>[] };
+  const { passedAt: _, ...withoutPassedAt } = undated.questionsForController[0] ?? {};
+  undated.questionsForController = [withoutPassedAt];
+  expect(LegionStateResponse.safeParse(undated).success).toBeTrue();
+
+  const unwritten = fixture("state.json") as { questionsForController: Record<string, unknown>[] };
+  const { writes: __, ...withoutWrites } = unwritten.questionsForController[1] ?? {};
+  unwritten.questionsForController = [withoutWrites];
+  expect(LegionStateResponse.safeParse(unwritten).success).toBeTrue();
+
+  const uncommanded = fixture("state.json") as {
+    questionsForController: { writes: Record<string, unknown>[] }[];
+  };
+  const [merged] = uncommanded.questionsForController;
+  if (merged === undefined) throw new Error("the golden lists no question");
+  merged.writes = [{ ...merged.writes[0], command: "" }];
+  expect(LegionStateResponse.safeParse(uncommanded).success).toBeFalse();
+
+  const stripped = fixture("state.json") as Record<string, unknown>;
+  delete stripped.questionsForController;
+  const served = LegionStateResponse.safeParse(stripped);
+  expect(served.success).toBeTrue();
+  expect(served.data?.questionsForController).toBeUndefined();
 });
 
 // The wakes the pacing holds (contract 53): the golden names one of each kind the daemon paces,

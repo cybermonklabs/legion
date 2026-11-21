@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,8 @@ import (
 	"testing"
 
 	configpkg "github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghroute"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // The legion.yaml example the repository ships (deploy/kubernetes/daemon/legion.yaml.example, the
@@ -20,7 +23,7 @@ import (
 // an operator's first check. The example names no Postgres; the environment does, as its comment
 // offers.
 func TestShippedLegionYAMLExamplePassesCheckConfig(t *testing.T) {
-	checkShippedExample(t, func(example string) string { return example })
+	checkShippedExample(t, func(example string) string { return example }, nil)
 }
 
 // The example's commented role_config_files, uncommented with the operator-roles volume and mount
@@ -36,7 +39,7 @@ func TestShippedLegionYAMLExamplesRoleConfigFilesPassCheckConfig(t *testing.T) {
 			"        #   config_map: {name: legion-operator-roles}",
 			"        # - {volume: operator-roles, mount_path: /etc/legion-operator-roles}",
 		)
-	})
+	}, nil)
 	cfg, err := configpkg.LoadForValidation(config, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +69,7 @@ func TestShippedLegionYAMLExamplesMemoryPassesCheckConfig(t *testing.T) {
 		// on moves to the second, so this comments the first out, after the uncommenting above, to
 		// which a commented `WIDGETS: {}` would otherwise be the first `# WIDGETS:` line.
 		return strings.Replace(example, "\n  WIDGETS: {}", "\n  # WIDGETS: {}", 1)
-	})
+	}, nil)
 	cfg, err := configpkg.LoadForValidation(config, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +107,7 @@ func TestShippedLegionYAMLExamplesExperimentsPassCheckConfig(t *testing.T) {
 		// The example's two forms of the project entry are alternatives, as the memory test says:
 		// the active empty one is commented out so the uncommented one is the project's whole entry.
 		return strings.Replace(example, "\n  WIDGETS: {}", "\n  # WIDGETS: {}", 1)
-	})
+	}, nil)
 	cfg, err := configpkg.LoadForValidation(config, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +149,7 @@ func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *te
 		// The example's two forms of the project entry are alternatives, as the memory test says:
 		// the active empty one is commented out so the uncommented one is the project's whole entry.
 		return strings.Replace(example, "\n  WIDGETS: {}", "\n  # WIDGETS: {}", 1)
-	})
+	}, nil)
 	cfg, err := configpkg.LoadForValidation(config, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +172,7 @@ func TestShippedLegionYAMLExamplesLeakCheckPassesCheckConfig(t *testing.T) {
 			"#   manifest_sha256: <64 hex digits>",
 		)
 		return strings.Replace(example, "manifest_sha256: <64 hex digits>", "manifest_sha256: "+checker, 1)
-	})
+	}, nil)
 	cfg, err := configpkg.LoadForValidation(config, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +203,7 @@ func TestShippedLegionYAMLExamplesFirstHookIsTheShippedDefault(t *testing.T) {
 			"#       takes a step back, reads what each of you says, and decides the path. Carry on with the",
 			"#       work while you wait, and say so if you read it as on track.",
 		)
-	})
+	}, nil)
 	cfg, err := configpkg.LoadForValidation(config, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +224,7 @@ func TestShippedLegionYAMLExampleRefusesAWorkerSilenceUnderTheFloor(t *testing.T
 	config := stageShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example, "# worker_silence_minutes: 30")
 		return strings.Replace(example, "worker_silence_minutes: 30", "worker_silence_minutes: 15", 1)
-	})
+	}, nil)
 
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
@@ -243,7 +246,7 @@ func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *te
 	config := stageShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example, "# worker_background_hours: 4")
 		return strings.Replace(example, "worker_background_hours: 4", "worker_background_hours: 0.5", 1)
-	})
+	}, nil)
 
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
@@ -273,7 +276,7 @@ var memoryGuardExampleLines = []string{
 func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
 	config := checkShippedExample(t, func(example string) string {
 		return uncommentExample(t, example, memoryGuardExampleLines...)
-	})
+	}, nil)
 	cfg, err := configpkg.LoadForValidation(config, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -292,7 +295,7 @@ func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T
 	config := stageShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example, memoryGuardExampleLines...)
 		return strings.Replace(example, "act_percent: 85", "act_percent: 96", 1)
-	})
+	}, nil)
 
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
@@ -352,7 +355,7 @@ func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAcc
 					example = strings.Replace(example, edit[0], edit[1], 1)
 				}
 				return example
-			})
+			}, nil)
 
 			var out, errb bytes.Buffer
 			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
@@ -380,11 +383,12 @@ func uncommentExample(t *testing.T, example string, lines ...string) string {
 	return example
 }
 
-// stageShippedExample writes the shipped example as edit leaves it beside the files it names,
-// and answers the configuration's path, ready for `legion config check` to be run over
-// it: the check that passes (checkShippedExample) and the check a bad value makes fail
+// stageShippedExample writes the shipped example as edit leaves it beside the files it names and
+// each of extra (a name under the configuration's own directory, or an absolute path), and
+// answers the configuration's path, ready for `legion config check` to be run over it:
+// the check that passes (checkShippedExample) and the check a bad value makes fail
 // (TestShippedLegionYAMLExampleRefusesAWorkerSilenceUnderTheFloor) stage the same files.
-func stageShippedExample(t *testing.T, edit func(string) string) string {
+func stageShippedExample(t *testing.T, edit func(string) string, extra map[string]string) string {
 	t.Helper()
 	legionState(t)
 	t.Setenv("LEGION_POSTGRES_DSN", "postgres://legion:legion@127.0.0.1:1/legion")
@@ -398,7 +402,7 @@ func stageShippedExample(t *testing.T, edit func(string) string) string {
 	}
 	dir := t.TempDir()
 	config := filepath.Join(dir, "legion.yaml")
-	for name, contents := range map[string]string{
+	files := map[string]string{
 		config:           edit(string(example)),
 		"operator-token": "operator\n",
 		"dispatch-token": "dispatch\n",
@@ -411,7 +415,9 @@ users: [{name: legion-daemon, user: {token: placeholder}}]
 contexts: [{name: legion-daemon, context: {cluster: example, user: legion-daemon, namespace: legion}}]
 current-context: legion-daemon
 `,
-	} {
+	}
+	maps.Copy(files, extra)
+	for name, contents := range files {
 		if !filepath.IsAbs(name) {
 			name = filepath.Join(dir, name)
 		}
@@ -430,11 +436,12 @@ const shippedExampleCheckOK = "Config OK: project=WIDGETS design-gate-steps=spec
 	"plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
 
 // checkShippedExample runs `legion config check` on the shipped example as edit leaves
-// it, beside the files it names, and answers the file's path. It logs the command's exit code,
-// stdout and stderr, so a `-v` run shows what the check printed for each edit of the example.
-func checkShippedExample(t *testing.T, edit func(string) string) string {
+// it, beside the files it names and each of extra (a name under the configuration's own directory,
+// or an absolute path), and answers the file's path. It logs the command's exit code, stdout and
+// stderr, so a `-v` run shows what the check printed for each edit of the example.
+func checkShippedExample(t *testing.T, edit func(string) string, extra map[string]string) string {
 	t.Helper()
-	config := stageShippedExample(t, edit)
+	config := stageShippedExample(t, edit, extra)
 
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
@@ -444,4 +451,90 @@ func checkShippedExample(t *testing.T, edit func(string) string) string {
 		t.Fatalf("legion config check on the shipped example = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), shippedExampleCheckOK)
 	}
 	return config
+}
+
+// The example's commented `answers` block, uncommented, passes the check too, on the postgres
+// session store the example already names: its gh found by LEGION_GH_PATH, the deployment's leak
+// check setting in its two variables (the example leaves its leak_check block commented), the
+// shared public leak check's pin found in LEGION_LEAK_CHECK_TAG as the worker image sets it for
+// the daemon it runs (the pin ghroute.ReadsProvenCheckTag holds), its conversation store's URL
+// file read, and its placeholder api_key_command, which sh could not run, never run — a key is
+// read for each model call, never by the check. Without that pin, or without the setting, the same
+// file is refused, naming what is missing, since a Kubernetes daemon's gh tool would then have no
+// check to run before any call.
+func TestTheShippedExamplesAnswersBlockPassesCheckConfig(t *testing.T) {
+	gh := filepath.Join(t.TempDir(), "gh")
+	if err := os.WriteFile(gh, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LEGION_GH_PATH", gh)
+	files := map[string]string{
+		"conversations-dsn": "postgres://legion-daemon:placeholder@conversations.internal.example:5432/omp_sessions\n",
+		"anthropic-key":     "placeholder\n",
+	}
+	setting := func(t *testing.T) {
+		t.Setenv(leakguard.RepositoryVar, "example-org/deployment")
+		t.Setenv(leakguard.ManifestVar, strings.Repeat("5e", 32))
+	}
+	t.Run("with the worker image's pin", func(t *testing.T) {
+		setting(t)
+		t.Setenv(leakguard.TagVariable, ghroute.ReadsProvenCheckTag)
+		config := checkShippedExample(t, uncommentAnswers, files)
+		cfg, err := configpkg.LoadForValidation(config, func(name string) string {
+			if name == "LEGION_POSTGRES_DSN" {
+				return "postgres://127.0.0.1:1/legion"
+			}
+			return os.Getenv(name)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Answers == nil || len(cfg.Answers.Providers) != 2 || len(cfg.Answers.Prices) != 2 || cfg.Answers.ConversationStore.DSNFile == "" {
+			t.Fatalf("the uncommented answers block settled as %+v, want both providers, both prices and the store's file", cfg.Answers)
+		}
+	})
+	t.Run("with no pin", func(t *testing.T) {
+		setting(t)
+		t.Setenv(leakguard.TagVariable, "")
+		config := stageShippedExample(t, uncommentAnswers, files)
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+		if code != 1 || !strings.Contains(errb.String(), "answers needs the shared public leak check") || !strings.Contains(errb.String(), leakguard.TagVariable) {
+			t.Fatalf("legion config check with no %s = %d, stdout %q, stderr %q; want 1 and the refusal naming the pin", leakguard.TagVariable, code, out.String(), errb.String())
+		}
+	})
+	t.Run("with no leak check setting", func(t *testing.T) {
+		t.Setenv(leakguard.RepositoryVar, "")
+		t.Setenv(leakguard.ManifestVar, "")
+		t.Setenv(leakguard.TagVariable, ghroute.ReadsProvenCheckTag)
+		config := stageShippedExample(t, uncommentAnswers, files)
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+		if code != 1 || !strings.Contains(errb.String(), "answers needs the shared public leak check") ||
+			!strings.Contains(errb.String(), leakguard.RepositoryVar+" and "+leakguard.ManifestVar) {
+			t.Fatalf("legion config check with no leak check setting = %d, stdout %q, stderr %q; want 1 and the refusal naming %s and %s",
+				code, out.String(), errb.String(), leakguard.RepositoryVar, leakguard.ManifestVar)
+		}
+	})
+}
+
+// uncommentAnswers is the example with its whole commented `answers` block, which runs from the
+// `# answers:` line to the blank line after it, uncommented: the block is commented line by line,
+// so turning it on is one `# ` removed per line. A line whose text is itself a comment stays one,
+// since what is left of it begins with spaces and a `#`: the block's own notes, and the `# user:`
+// line, the alternative to `dsn_file`.
+func uncommentAnswers(example string) string {
+	start := strings.Index(example, "\n# answers:")
+	if start < 0 {
+		return example
+	}
+	end := strings.Index(example[start+1:], "\n\n")
+	if end < 0 {
+		return example
+	}
+	var block strings.Builder
+	for _, line := range strings.SplitAfter(example[start+1:start+1+end+1], "\n") {
+		block.WriteString(strings.TrimPrefix(line, "# "))
+	}
+	return example[:start+1] + block.String() + example[start+1+end+1:]
 }

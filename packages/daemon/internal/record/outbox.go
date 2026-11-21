@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/sjawhar/envoy/steprecord"
@@ -425,6 +426,13 @@ type Notice struct {
 	// the legion.yaml line that records a decision; a gap is the operator's to close or decide, a
 	// live row's the session's environment to fix, and neither is the controller's.
 	OpenCapabilities []string `json:"openCapabilities,omitempty"`
+	// Question is an agent-question notice's account of the question the answer loop passed on,
+	// and absent from every other kind; the notice's Role is the agent's and its Reason why the
+	// question was passed on.
+	Question *AgentQuestion `json:"question,omitempty"`
+	// AgentDecision is an agent-decision notice's account of the person's decision the answer loop
+	// passed on, and absent from every other kind; the notice's Role is the agent's.
+	AgentDecision *AgentDecision `json:"agent_decision,omitempty"`
 	// Blocked is every issue Legion waits on a Dispatch issue nobody has finished for (INFRA-225),
 	// one it has still to start or one it started that gave its admission slot back for the wait,
 	// with what each still waits on. Only a tick controller
@@ -647,6 +655,74 @@ func (v VolumeNearFull) MarshalJSON() ([]byte, error) {
 		out.Sizes = []VolumeSize{}
 	}
 	return json.Marshal(out)
+}
+
+// AgentQuestion is a question to a stopped agent that the daemon's answer loop passed to the
+// controller (an agent-question notice): the question's id (answer_questions), the agent's issue
+// and session, who asked (`user:<login>`, or `session:<id>` with the asking session's title when
+// the listener stamped one), where it was asked (a dispatch:// reference, or `envoy:<event id>`),
+// its text, cut at AgentQuestionTextLimit characters with a note saying so, and every gh call that
+// writes which the loop ran for it before it was passed on, absent for none.
+type AgentQuestion struct {
+	ID      string               `json:"id"`
+	Issue   string               `json:"issue"`
+	Session string               `json:"session"`
+	Asker   string               `json:"asker"`
+	Ref     string               `json:"ref"`
+	Text    string               `json:"text"`
+	Writes  []AgentQuestionWrite `json:"writes,omitempty"`
+}
+
+// AgentQuestionWrite is one gh call that writes which the answer loop ran for a question
+// (ghtool.Writes): its seq among the question's calls, its command words (for gh api its method
+// and endpoint), the repository its arguments name ("" for none), and gh's exit status, null
+// where gh answered none, since it could not start or the daemon stopped while it ran.
+type AgentQuestionWrite struct {
+	Seq        int    `json:"seq"`
+	Command    string `json:"command"`
+	Repository string `json:"repository"`
+	Exit       *int   `json:"exit"`
+}
+
+// AgentDecision is a person's decision on an ask a stopped agent opened, which the daemon's answer
+// loop passed on (an agent-decision notice): the decision's id (`dispatch:<event id>` of the ask's
+// answer, or `dispatch:<comment id>` of a reply that hands the ask back to the agent), the agent's
+// issue and session, the person who decided (`user:<login>`), where (`dispatch://<KEY>/ask/<id>`
+// or `dispatch://<KEY>/comment/<id>`), and what they decided (the options they selected and their
+// text), cut as AgentDecisionText cuts it.
+type AgentDecision struct {
+	ID      string `json:"id"`
+	Issue   string `json:"issue"`
+	Session string `json:"session"`
+	Asker   string `json:"asker"`
+	Ref     string `json:"ref"`
+	Text    string `json:"text"`
+}
+
+// AgentQuestionTextLimit is the most characters of a question's or a decision's text an
+// agent-question or agent-decision notice carries; the rest is left out, and a note says how long
+// the text was and where to read it.
+const AgentQuestionTextLimit = 2000
+
+// AgentQuestionText is text as an agent-question notice carries it: whole when it is at most
+// AgentQuestionTextLimit characters, otherwise its first AgentQuestionTextLimit characters and a
+// note naming its length and ref, where the whole question is.
+func AgentQuestionText(text, ref string) string { return cutNoticeText(text, ref, "question") }
+
+// AgentDecisionText is text as an agent-decision notice carries it, cut as AgentQuestionText cuts a
+// question's.
+func AgentDecisionText(text, ref string) string { return cutNoticeText(text, ref, "decision") }
+
+func cutNoticeText(text, ref, what string) string {
+	runes := 0
+	for i := range text {
+		if runes == AgentQuestionTextLimit {
+			return text[:i] + fmt.Sprintf("\n\n[cut: the %s is %d characters; the first %d are shown, the whole %s is at %s]",
+				what, utf8.RuneCountInString(text), AgentQuestionTextLimit, what, ref)
+		}
+		runes++
+	}
+	return text
 }
 
 // NoticeFailure is why a claim failed, as the notices of that failure name it: Cause is the one
@@ -902,7 +978,9 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // operator's suspension holds a role of it, where the runtime cannot say which pod the issue's
 // Sandbox holds, or where the replacement by issue is refused or not offered
 // (runtime.IssuePodReplacer): otherwise the daemon replaces that pod by issue at the bound. It is
-// told once per round (the daemon's reconcilePodUpdates). A
+// told once per round (the daemon's reconcilePodUpdates). An agent-question notice names a
+// question to a stopped agent that the daemon's answer loop passed on, with its account
+// (Notice.Question), the agent's role and why (Reason), once per question (the daemon's PassOn). A
 // provider-errors notice names an issue whose role has ended six turns in a row in a provider
 // error: its Role is that role, and its Reason the model and the HTTP status the provider
 // answered, where it answered one, in words built from structured fields alone (supervise's
@@ -915,8 +993,8 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // tree's quiet hours, each issue the workflow still runs with its phase, the role whose turn it
 // is and the state of its pull request, and what the controller is to decide. It is told once
 // for each stall: the daemon marks the root with the movement the notice was told for, and tells
-// again only once the tree moves past that mark. When admission sends each is its rule
-// (admit.Admission.wakeController and its callers, admit's releaseUnslotted,
+// again only once the tree moves past that mark. When admission sends each of the others is its
+// rule (admit.Admission.wakeController and its callers, admit's releaseUnslotted,
 // admit.Admission.TellController).
 //
 // A parked-decision notice names a person's decision on a tree Legion is not running, which
@@ -950,6 +1028,7 @@ const (
 	AwaitingPersonNotice   NoticeKind = "awaiting-person"
 	ParkedDecisionNotice   NoticeKind = "parked-decision"
 	UpdateStalledNotice    NoticeKind = "update-stalled"
+	AgentQuestionNotice    NoticeKind = "agent-question"
 	ProviderErrorsNotice   NoticeKind = "provider-errors"
 	TreeStalledNotice      NoticeKind = "tree-stalled"
 	ArchitectStalledNotice NoticeKind = "architect-stalled"
@@ -1023,6 +1102,14 @@ type ArchitectStall struct {
 	Arm        ArchitectStallArm
 	At         time.Time
 }
+
+// AgentDecisionNotice names a person's decision on an ask a stopped agent opened — their answer to
+// it, or their reply that hands it back to the agent — which the daemon's answer loop passed on,
+// with its account (Notice.AgentDecision) and the agent's role, once per decision (the daemon's
+// Decide). It is an architect's notice, sent to the architect that owns the agent's issue while that
+// architect holds its role, and the controller's otherwise, in a controller notice row of the same
+// kind.
+const AgentDecisionNotice NoticeKind = "agent-decision"
 
 // NoticePerClaim is whether one unpublished controller notice of kind stands per claim — the
 // issue and the role that names it — rather than one per project
@@ -2222,6 +2309,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if (value.Kind == "catch-up") != (value.CatchUp != nil) {
 			return fmt.Errorf("a %s notice carries a catch-up only when it is one", value.Kind)
 		}
+		if value.Question != nil {
+			return fmt.Errorf("a %s notice carries a question; only a controller's agent-question notice does", value.Kind)
+		}
+		if err := validAgentDecision(value.Kind, value.AgentDecision); err != nil {
+			return err
+		}
 		if _, spec := SpecDecision(value.Kind); !spec && (value.Actor != "" || value.Ref != "") {
 			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does", value.Kind)
 		}
@@ -2254,6 +2347,15 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	case ControllerNotice:
 		if !controllerOnlyNoticeKind(value.Kind) && !validNoticeKind(value.Kind) {
 			return fmt.Errorf("unknown controller notice kind %q", value.Kind)
+		}
+		if (value.Kind == AgentQuestionNotice) != (value.Question != nil) {
+			return fmt.Errorf("a %s controller notice carries a question only when it is an agent-question notice", value.Kind)
+		}
+		if value.Question != nil && value.Question.ID == "" {
+			return fmt.Errorf("an agent-question notice names its question's id")
+		}
+		if err := validAgentDecision(value.Kind, value.AgentDecision); err != nil {
+			return err
 		}
 		if value.Kind == ParkedDecisionNotice {
 			if !validDecisionKind(value.Decision) || value.Root == "" || value.Ref == "" || !PersonActor(value.Actor) {
@@ -2548,6 +2650,7 @@ var validNoticeKinds = []NoticeKind{
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
+	AgentDecisionNotice,
 	"session-lost", "session-forgotten", "session-store-fault",
 }
 
@@ -2562,6 +2665,18 @@ const VolumeNearFullNotice NoticeKind = "volume-near-full"
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
+}
+
+// validAgentDecision checks that a notice of kind carries a decision's account when, and only
+// when, it is an agent-decision notice, and that the account names its decision's id.
+func validAgentDecision(kind NoticeKind, decision *AgentDecision) error {
+	if (kind == AgentDecisionNotice) != (decision != nil) {
+		return fmt.Errorf("a %s notice carries a decision only when it is an agent-decision notice", kind)
+	}
+	if decision != nil && decision.ID == "" {
+		return fmt.Errorf("an agent-decision notice names its decision's id")
+	}
+	return nil
 }
 
 // validateNoticeFailure holds a notice's failure record to the two kinds that report a claim's
@@ -2610,7 +2725,7 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
-		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, ProjectPausedNotice, ProjectResumedNotice:
+		UpdateStalledNotice, AgentQuestionNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, ProjectPausedNotice, ProjectResumedNotice:
 		return true
 	default:
 		return false

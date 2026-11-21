@@ -116,8 +116,9 @@ func roundCap(value *yaml.Node, key string) (*int, error) { return readPositiveI
 // its state and listens, how many issues run at once, the controller, the deployment's
 // instructions and the agents' Oh My Pi and its credentials, the endpoints and token files, the
 // projects, the repository renames, the hooks, the design gate and the GitHub Apps, the runtime
-// block, the per-role overrides and the capability decisions, the wake pacing and the quiet-worker
-// timers, the workflow limits, and the supervision budgets and timers. It is not the order of
+// block and the answer loop, which reads the conversations where the runtime keeps them, the
+// per-role overrides and the capability decisions, the wake pacing and the quiet-worker timers,
+// the workflow limits, and the supervision budgets and timers. It is not the order of
 // `deploy/kubernetes/daemon/legion.yaml.example`, which names fewer keys in an order of its own.
 //
 // A row that names a Positive is finished here rather than written out: its Default is that row's
@@ -286,6 +287,11 @@ var topLevelKeys = func() []keyDescriptor {
 				file.Kubernetes, file.Tmux = kubernetes, tmux
 				return nil
 			},
+		},
+		{
+			Name: answersKey, Default: "the daemon answers nothing, and a message to an agent that is not running is refused", RequiredBy: "no",
+			Description: "The model loop that answers a question to one of the daemon's agents that is not running — a Dispatch message or mention, a reply on the thread of its ask, another agent's Envoy message — in that agent's name, from its own conversation and on the model that conversation last ran on; with the loop on, which takes at least one provider in `providers` and, under `runtime: kubernetes`, `conversation_store`'s connection as well, boot refuses to start without the real `gh` on the daemon's own host (`LEGION_GH_PATH`, else the first `gh` on `PATH`), which the loop's `gh` tool runs, and without the shared public leak check that tool's guard runs before every call: under `runtime: tmux` the machine's own (`PUBLIC_LEAK_CHECK`, `public-leak-check.sh` on `PATH` or the pointer file), and under `runtime: kubernetes` the check `leak_check` names (or `LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_MANIFEST_SHA256`), which the daemon reads from that repository at the pin in its environment, `LEGION_LEAK_CHECK_TAG`, which the worker image sets, installs, and holds to that manifest digest. Where `leak_check` is set, the guard holds the check it runs to its manifest digest under either runtime.",
+			Read:        reads(readAnswers, func(f *fileConfig, v *answersFile) { f.Answers = v }),
 		},
 		{
 			Name: "worker_backends", Default: "every role runs on Oh My Pi", RequiredBy: "no",
@@ -571,6 +577,10 @@ var nestedKeys = []memberGroup{
 			Description: "Oh My Pi settings overlays every pane names in `PI_CONFIG_FILES`, in file order and before the pane's own `role_config_files`; a path holding `:` is refused, since that is what separates the overlays the variable names."},
 		{Name: "take_over", Default: "the tmux runtime refuses a claim another runtime recorded", RequiredBy: "no",
 			Description: "The runtime whose claims this daemon takes over from the project's store while a project moves onto this host, `kubernetes` being the one value accepted; stop every process of that runtime first."},
+		{Name: "session_store", Default: "`files`", RequiredBy: "no",
+			Description: "Where every pane's Oh My Pi keeps its sessions: `files`, on the daemon's own host, or `postgres`, as rows of the database `session_dsn_file` names, which every pane is told as `OMP_SESSION_SQL_DSN_FILE` and the answer loop reads its conversations through; Claude Code transcripts stay files under either, and any other value is refused."},
+		{Name: "session_dsn_file", Default: "none: `postgres` is refused without it", RequiredBy: "when `session_store` is `postgres`",
+			Description: "The file holding the `postgres://` URL of that database, resolved against this file's directory, which boot reads and refuses unless it holds one; every pane can read it, so give its login no rights beyond that database, and `files` refuses the key rather than leaving it inert."},
 	}},
 	{Path: kubernetesKey, Members: []member{
 		{Name: "namespace", Default: "none: a block that names no namespace is refused", RequiredBy: "yes",
@@ -847,6 +857,64 @@ var nestedKeys = []memberGroup{
 			Description: "How long, from 1 to 60 seconds, the guard waits after a kill for the reading to fall before it stops for a rise that kill did not lower."},
 		{Name: "interval_milliseconds", Default: "`100`", RequiredBy: "no",
 			Description: "How often, from 50 to 5000 milliseconds, the guard reads the pod's anonymous memory and the container's limit."},
+	}},
+	{Path: answersKey, Members: []member{
+		{Name: "providers", Default: "none: the answer loop is then off, as with no `answers`, and the loader warns", RequiredBy: "when the answer loop is to run: it names each model provider the loop may call",
+			Description: "The model providers the loop may call, at least one of `anthropic` and `openai`, each with the endpoint it is called at and its key; a conversation on a model of a provider it leaves out is not answered on (`no_provider`)."},
+		{Name: "prices", Default: "none: a block that names a provider and prices no model is refused", RequiredBy: "when `providers` names a provider",
+			Description: "The USD price per million tokens of each model the loop may answer on, by the id its conversation names (`<provider>/<model>`), at least one and each a model of a provider `providers` names; a conversation on a model with no price is not answered on (`no_price`)."},
+		{Name: "conversation_store", Default: "none: under `runtime: kubernetes` the answer loop is then off, as with no `answers`, and the loader warns, and under `runtime: tmux` the daemon reads each conversation where its panes keep it", RequiredBy: "when runtime is kubernetes and the answer loop is to run: it names the daemon's own connection to the session database, which the loop reads the conversations through",
+			Description: "The daemon's own way into the database the conversations live in: `dsn_file` under `runtime.kubernetes.session_store: postgres` and `user` under `cloudsql-iam`, each store refusing the key it does not use; `runtime: tmux` refuses the block, since the daemon reads each conversation where its panes keep it."},
+		{Name: "bounds", Default: "every bound at its own default", RequiredBy: "no",
+			Description: "The loop's limits: per answer its time, its model calls and each call's output tokens; per `gh` call its time and how much of its output the model reads; `gh` calls per answer; conversations answered at once; and USD the project spends a UTC day."},
+	}},
+	{Path: answersKey + ".providers", Members: []member{
+		{Name: string(AnswerAnthropic), Default: "the loop calls no Anthropic model, so a conversation on one, a Claude Code conversation among them, is not answered on (`no_provider`)", RequiredBy: "when the block names no `openai`: the loop calls at least one provider",
+			Description: "Anthropic's Messages API, which the loop calls for a conversation on an `anthropic/…` model and for a Claude Code conversation."},
+		{Name: string(AnswerOpenAI), Default: "the loop calls no OpenAI model, so a conversation on one is not answered on (`no_provider`)", RequiredBy: "when the block names no `anthropic`: the loop calls at least one provider",
+			Description: "OpenAI's Responses API, which the loop calls for a conversation on an `openai/…` model."},
+	}},
+	{Path: answersKey + ".providers.<PROVIDER>", Members: []member{
+		{Name: "base_url", Default: "none: a provider that names no base URL is refused", RequiredBy: "yes",
+			Description: "The provider's API endpoint, an `http` or `https` URL, from which the loop takes every call's base and never from its environment."},
+		{Name: "api_key_file", Default: "the key comes from `api_key_command`", RequiredBy: "when the provider names no `api_key_command`: a provider carries exactly one key",
+			Description: "A file holding the provider's key, resolved against this file's directory and read again for every model call, so a rotated key is the one each call carries; neither boot nor `legion config check` reads it, and no refusal or log line carries the key."},
+		{Name: "api_key_command", Default: "the key comes from `api_key_file`", RequiredBy: "when the provider names no `api_key_file`: a provider carries exactly one key",
+			Description: "A command that prints the provider's key, run under `sh` with the daemon's environment less its NATS seeds for every model call, as `github_apps`' `private_key_command` is, so a short-lived token it mints is the one each call carries; neither boot nor `legion config check` runs it."},
+	}},
+	{Path: answersKey + ".prices.<MODEL>", Members: []member{
+		{Name: "input", Default: "none: a model priced without it is refused, since a price left out would be a cost `bounds.daily_usd` never counts", RequiredBy: "yes",
+			Description: "USD per million input tokens the provider reads fresh, a non-negative number, `0` where it charges nothing for them."},
+		{Name: "output", Default: "none: a model priced without it is refused, since a price left out would be a cost `bounds.daily_usd` never counts", RequiredBy: "yes",
+			Description: "USD per million output tokens, a non-negative number."},
+		{Name: "cache_write", Default: "none: a model priced without it is refused, since a price left out would be a cost `bounds.daily_usd` never counts", RequiredBy: "yes",
+			Description: "USD per million input tokens written to the provider's cache, a non-negative number, `0` where it charges nothing for them."},
+		{Name: "cache_read", Default: "none: a model priced without it is refused, since a price left out would be a cost `bounds.daily_usd` never counts", RequiredBy: "yes",
+			Description: "USD per million input tokens read from the provider's cache, a non-negative number."},
+	}},
+	{Path: conversationStoreKey, Members: []member{
+		{Name: "dsn_file", Default: "none: under `runtime.kubernetes.session_store: postgres` the answer loop is then off, as with no `answers`, and the loader warns", RequiredBy: "when `runtime.kubernetes.session_store` is `postgres` and the answer loop is to run",
+			Description: "A file holding the `postgres://` URL of the session database, resolved against this file's directory, which boot reads and refuses unless it holds one, and through which the daemon reads and appends to the conversations; `cloudsql-iam` refuses the key rather than leaving it inert."},
+		{Name: "user", Default: "none: under `runtime.kubernetes.session_store: cloudsql-iam` the answer loop is then off, as with no `answers`, and the loader warns", RequiredBy: "when `runtime.kubernetes.session_store` is `cloudsql-iam` and the answer loop is to run",
+			Description: "The IAM login the daemon signs in as to `runtime.kubernetes.session_database`'s instance and database, through a Cloud SQL proxy of its own over the daemon's own cloud identity; `postgres` refuses the key rather than leaving it inert."},
+	}},
+	{Path: answersKey + ".bounds", Members: []member{
+		{Name: "answer_seconds", Default: "`180`", RequiredBy: "no",
+			Description: "How many seconds one answer may take, its model calls and `gh` calls together."},
+		{Name: "model_calls", Default: "`8`", RequiredBy: "no",
+			Description: "How many model calls one answer may make; the last one allowed offers no tool, so it must be the reply."},
+		{Name: "output_tokens", Default: "`4000`", RequiredBy: "no",
+			Description: "How many output tokens one model call may write."},
+		{Name: "gh_seconds", Default: "`30`", RequiredBy: "no",
+			Description: "How many seconds one `gh` call may run."},
+		{Name: "gh_output_chars", Default: "`60000`", RequiredBy: "no",
+			Description: "How many characters of a `gh` call's output the model reads; the rest is cut with a note saying how much. It also bounds the daemon's own `gh` reads for an answer, the lookup of a call's comment or review after a restart among them, at `gh_output_chars` times `gh_calls` characters, and a read past that bound is refused rather than cut."},
+		{Name: "gh_calls", Default: "`20`", RequiredBy: "no",
+			Description: "How many `gh` calls one answer may make."},
+		{Name: "concurrent", Default: "`4`", RequiredBy: "no",
+			Description: "How many conversations the project answers at once; the questions to one conversation always run one after another."},
+		{Name: "daily_usd", Default: "`50`", RequiredBy: "no",
+			Description: "How many USD the project spends on answers a UTC day, a positive number; an answer past it is not made (`over_limit`). The limit is checked before each answer starts, and the answers already running when the day reaches it can take the day past it, by at most `concurrent` answers' cost."},
 	}},
 	{Path: kubernetesKey + ".sandbox", Members: []member{
 		{Name: "type", Default: "`gvisor`", RequiredBy: "no",

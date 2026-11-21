@@ -1,0 +1,17 @@
+[
+  {
+    "accepted_as": null,
+    "accepted_at": null,
+    "attempt": 1,
+    "delivery": "steer",
+    "duplicate": false,
+    "envelope_id": null,
+    "error": "no holder for role legion-alx-alx-1-architect",
+    "reply_id": null,
+    "requested_by": {
+      "kind": "user"
+    },
+    "session_id": "",
+    "state": "failed"
+  }
+]

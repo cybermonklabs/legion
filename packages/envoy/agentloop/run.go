@@ -33,7 +33,10 @@ const placeholderKey = "read-per-call"
 // or a Fault saying why the run ended short of one, each with every step that finished and what
 // those steps spent. The error is for a request the loop cannot run at all, for the caller's
 // context ending, and for a callback that returned an error; the Result then still carries what
-// the calls made so far produced and cost.
+// the calls made so far produced and cost. A reply Request.Check refuses is asked for again
+// inside the same run and the same bounds, at most Request.AskAgain times (doc.go, "Asking
+// again"), and a call whose reply the provider cut for length is made again, without that
+// reply, at most Request.CallAgainWhenCut times (doc.go, "A reply cut for length").
 func Run(ctx context.Context, req Request) (Result, error) {
 	if err := req.validate(); err != nil {
 		return Result{}, err
@@ -49,7 +52,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	}
 	messages := append(history, input...)
 
-	transport := newModelTransport(req.Model.Endpoint)
+	transport := newModelTransport(req.Model.Endpoint, req.Final, req.Log)
 	model, options, err := languageModel(req, transport.client())
 	if err != nil {
 		return Result{}, err
@@ -68,9 +71,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		indexes: make(map[string]int, len(req.Tools)), next: req.FirstToolIndex + 1,
 	}
 	opts := []aisdk.StreamOption{
-		aisdk.WithModelMessages(messages...),
 		aisdk.WithMaxOutputTokens(req.Bounds.OutputTokens),
-		aisdk.WithStopWhen(aisdk.StepCountIs(req.Bounds.Calls)),
 		aisdk.WithProviderOptions(options),
 		aisdk.WithMaxRetries(0),
 		aisdk.WithPrepareStep(r.prepareStep),
@@ -100,36 +101,116 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	runCtx, cancel := context.WithTimeout(ctx, req.Bounds.Time)
 	defer cancel()
 	r.cancel = cancel
-	stream := aisdk.StreamText(runCtx, model, opts...)
-	r.drain(stream)
-
-	result := r.result()
-	switch failure := r.failure(); {
-	case failure != nil:
-		return result, failure
-	case ctx.Err() != nil:
-		return result, fmt.Errorf("agentloop: %w", ctx.Err())
-	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
-		result.Fault, result.Detail = FaultTime, fmt.Sprintf("the run went past %s", req.Bounds.Time)
-	case stream.Err() != nil:
-		result.Fault, result.Detail = FaultProviderError, stream.Err().Error()
-	case len(result.Steps) == 0:
-		result.Fault, result.Detail = FaultProviderError, "the model made no reply"
-	default:
-		r.finish(&result, stream)
+	for {
+		stream := r.ask(runCtx, model, opts, messages)
+		result := r.result()
+		// Every path below returns the steps the run finished, a fault's among them, so each
+		// is given its call's own output items before any path is taken.
+		r.native(&result)
+		switch failure := r.failure(); {
+		case failure != nil:
+			return result, failure
+		case ctx.Err() != nil:
+			return result, fmt.Errorf("agentloop: %w", ctx.Err())
+		case errors.Is(runCtx.Err(), context.DeadlineExceeded):
+			result.Fault, result.Detail = FaultTime, fmt.Sprintf("the run went past %s", req.Bounds.Time)
+		case stream.Err() != nil:
+			result.Fault, result.Detail = FaultProviderError, stream.Err().Error()
+		case len(result.Steps) == r.before:
+			result.Fault, result.Detail = FaultProviderError, "the model made no reply"
+		default:
+			r.finish(&result, stream)
+		}
+		if r.callAgain(runCtx, result) {
+			// The cut call is made again from the messages it was sent: the ones this
+			// ask was given and every message its calls before the cut one produced. The
+			// SDK's response messages end with the cut call's own, which the stream's last
+			// response holds, so none of the cut reply goes back to the model.
+			produced := stream.ResponseMessages()
+			messages = slices.Concat(messages, produced[:len(produced)-len(stream.Response().Messages)])
+			r.dropped()
+			continue
+		}
+		refusal, again := r.refusal(runCtx, result)
+		if !again {
+			return result, nil
+		}
+		// The run goes on from its own messages: the ones this ask was given, every
+		// message its calls produced as the SDK carries a step's turn to the next call,
+		// the refused reply among them, and the check's sentence answering that reply.
+		messages = slices.Concat(messages, stream.ResponseMessages(), []provider.Message{provider.UserText(refusal)})
+		r.askedAgain(refusal)
 	}
-	return result, nil
+}
+
+// ask makes the model calls of one ask, the run's first, one after Request.Check refused a
+// reply, or a cut call made again: a stream of the messages the run holds so far, stopped at
+// the model calls the run has left, read to its end.
+func (r *run) ask(ctx context.Context, model provider.LanguageModel, opts []aisdk.StreamOption, messages []provider.Message) *aisdk.StreamTextResult {
+	stream := aisdk.StreamText(ctx, model, slices.Concat([]aisdk.StreamOption{
+		aisdk.WithModelMessages(messages...),
+		aisdk.WithStopWhen(aisdk.StepCountIs(r.req.Bounds.Calls - r.before)),
+	}, opts)...)
+	r.drain(stream)
+	return stream
+}
+
+// refusal is the sentence the run asks the model again with, and whether it asks again at all:
+// it does where the last reply answered with a value, Request.Check refuses that value, and the
+// run has an ask, a model call and time left. A run that does not ask again returns its last
+// reply as it stands.
+func (r *run) refusal(ctx context.Context, result Result) (string, bool) {
+	if r.req.Check == nil || result.Fault != "" || result.Value == nil || r.asked >= r.req.AskAgain ||
+		len(result.Steps) >= r.req.Bounds.Calls || ctx.Err() != nil {
+		return "", false
+	}
+	if err := r.req.Check(result.Value); err != nil {
+		return err.Error(), true
+	}
+	return "", false
+}
+
+// callAgain is whether the run makes its last model call again: it does where the provider cut
+// that call's reply for length, the request makes a cut call again and has a call again left,
+// and the run has a model call and time left. A run that does not call again ends on the cut
+// reply's FaultLength.
+func (r *run) callAgain(ctx context.Context, result Result) bool {
+	return result.Fault == FaultLength && r.cut < r.req.CallAgainWhenCut &&
+		len(result.Steps) < r.req.Bounds.Calls && ctx.Err() == nil
+}
+
+// askedAgain records the sentence the run sends after its last step's reply on that step, and
+// starts the next ask's count of calls after every call the run has made.
+func (r *run) askedAgain(refusal string) {
+	r.mu.Lock()
+	r.steps[len(r.steps)-1].AskedAgain = refusal
+	r.before = len(r.steps)
+	r.mu.Unlock()
+	r.asked++
+}
+
+// dropped marks the run's last step as the cut call the run makes again, and starts the next
+// ask's count of calls after every call the run has made, the dropped one included.
+func (r *run) dropped() {
+	r.mu.Lock()
+	r.steps[len(r.steps)-1].Dropped = true
+	r.before = len(r.steps)
+	r.mu.Unlock()
+	r.cut++
 }
 
 // validate is whether the request is one the loop can run at all: it has its bounds, an
-// endpoint that reads a token, a model, and tools that are each named, run something and are
-// named once.
+// endpoint that reads a token, a model, a Final object for any Check to read, and tools that are
+// each named, run something and are named once.
 func (req Request) validate() error {
 	if req.Bounds.Time <= 0 || req.Bounds.Calls <= 0 || req.Bounds.OutputTokens <= 0 {
 		return errors.New("agentloop: the request has no time, call or output token bound")
 	}
 	if err := req.Model.validate(); err != nil {
 		return err
+	}
+	if req.Check != nil && req.Final == nil {
+		return errors.New("agentloop: the request checks a final object it does not ask for")
 	}
 	named := make(map[string]bool, len(req.Tools))
 	for _, t := range req.Tools {
@@ -209,10 +290,16 @@ func languageModel(req Request, client *http.Client) (provider.LanguageModel, pr
 	}
 }
 
-// finalOutput is Request.Final as the SDK's output: the last reply is validated against the
-// schema and read back as the object itself. A schema the SDK refuses is a request the loop
-// cannot run.
+// finalOutput is Request.Final as the SDK's output: the schema is held to the strict
+// structured-output subset both providers enforce (strict.go), and the last reply is validated
+// against it and read back as the object itself. A schema outside that subset, or one the SDK
+// refuses, is a request the loop cannot run: no model call is made. The check runs here, before
+// the run's first call, because the SDK sends a schema on as it is written and a provider that
+// cannot compile a constraint drops it silently.
 func finalOutput(final json.RawMessage) (aisdk.Output, error) {
+	if err := strictFinal(final); err != nil {
+		return nil, fmt.Errorf("agentloop: the request's final schema: %w", err)
+	}
 	s, err := schema.SchemaFromJSON(final)
 	if err != nil {
 		return nil, fmt.Errorf("agentloop: the request's final schema: %w", err)
@@ -243,6 +330,12 @@ type run struct {
 	// call; afterHistory finds where they end in a step's messages, and the marks a step
 	// moves are the ones after them.
 	history int
+	// before is how many model calls the run made before its current ask, which prepareStep
+	// adds to a step's own number, counted from the ask's first, to find the run's last
+	// allowed call; asked is how many times the run has asked again, and cut how many times
+	// it has made a cut call again. All three change only between two asks, before the
+	// stream that reads them starts.
+	before, asked, cut int
 
 	mu sync.Mutex
 	// steps are the model calls that finished, in order; text and reason are the last of
@@ -370,32 +463,47 @@ func (r *run) failure() error {
 	return r.failed
 }
 
-// prepareStep offers no tool on the last allowed call, so that call must answer, and on the
-// kinds Anthropic serves, where the run places cache marks, moves the newest message's mark:
-// the history's end keeps the one Run put there, because the step takes a mark off no message
-// of the history, the newest message gets one, and the one an earlier step put on its newest
+// prepareStep offers no tool on the last allowed call of the whole run, so that call must answer,
+// and on the kinds Anthropic serves, where the run places cache marks, moves the newest message's
+// mark: the history keeps the marks Run put in it, because the step takes a mark off no message of
+// the history, the newest message gets one, and the one an earlier step put on its newest
 // message is taken off (the SDK carries a step's message overrides into later steps; Anthropic
-// allows four marks). Where the request's Input is empty, the first call's newest message is
-// the history's own last message, which keeps the history's mark for the whole run.
+// allows four marks, which is this one and the three markAnthropicHistory places). Where the
+// request's Input is empty, the first call's newest message is the history's own last message,
+// which keeps the history's mark for the whole run. An ask after Request.Check refused a reply
+// starts from the run's own messages, which carry the history's marks and no other, so its
+// newest message, the check's sentence, takes the fourth. A cut call made again starts from the
+// messages the cut call was sent, so its newest message is the cut call's and takes the mark
+// the cut call put there.
+//
+// The last allowed call also carries Request.LastCall, after every other message and after the
+// mark: that call is the run's last, so nothing re-sends the sentence, a mark on it would pay for
+// a cache write nothing reads, and without one the call's marks and its cached prefix are the
+// ones it would have without the sentence. No later step takes the override on, and no Step
+// holds it: the SDK builds a step's response messages from the step's own output.
 func (r *run) prepareStep(state aisdk.PrepareStepState) (*aisdk.PrepareStepResult, error) {
 	result := &aisdk.PrepareStepResult{}
-	if state.StepNumber == r.req.Bounds.Calls-1 {
+	last := r.before+state.StepNumber == r.req.Bounds.Calls-1
+	if last {
 		result.ToolChoice = &provider.ToolChoice{Type: provider.ToolChoiceNone}
 	}
-	if !anthropicKind(r.kind) || r.req.NoCache || len(state.Messages) == 0 {
-		return result, nil
-	}
-	messages := slices.Clone(state.Messages)
-	for i := afterHistory(messages, r.history); i < len(messages); i++ {
-		if _, marked := messages[i].ProviderOptions["anthropic"].(anthropic.AnthropicCacheControl); marked {
-			options := maps.Clone(messages[i].ProviderOptions)
-			delete(options, "anthropic")
-			messages[i].ProviderOptions = options
+	messages := state.Messages
+	if anthropicKind(r.kind) && !r.req.NoCache && len(messages) > 0 {
+		messages = slices.Clone(messages)
+		for i := afterHistory(messages, r.history); i < len(messages); i++ {
+			if _, marked := messages[i].ProviderOptions["anthropic"].(anthropic.AnthropicCacheControl); marked {
+				options := maps.Clone(messages[i].ProviderOptions)
+				delete(options, "anthropic")
+				messages[i].ProviderOptions = options
+			}
 		}
+		newest := len(messages) - 1
+		messages[newest].ProviderOptions = withOption(messages[newest].ProviderOptions, anthropic.CacheControl("ephemeral"))
+		result.Messages = messages
 	}
-	last := len(messages) - 1
-	messages[last].ProviderOptions = withOption(messages[last].ProviderOptions, anthropic.CacheControl("ephemeral"))
-	result.Messages = messages
+	if last && r.req.LastCall != "" {
+		result.Messages = slices.Concat(messages, []provider.Message{provider.UserText(r.req.LastCall)})
+	}
 	return result, nil
 }
 
@@ -446,10 +554,10 @@ func (r *run) result() Result {
 	return result
 }
 
-// finish reads the last model call into result: its output items, the refusal the call may have
-// ended on, the fault it ended on, and the object the reply was required to be when the request
-// asked for one. It is the only reader of the raw chunks drain kept, and runs once drain has
-// returned, so every chunk of every call is in by now.
+// finish reads the last model call into result: the refusal the call may have ended on, the
+// fault it ended on, and the object the reply was required to be when the request asked for one.
+// It runs once drain has returned, so every chunk of every call is in by now; the output items
+// those chunks carry are native's, which Run gives every result.
 func (r *run) finish(result *Result, stream *aisdk.StreamTextResult) {
 	r.mu.Lock()
 	reason := r.reason
@@ -463,9 +571,6 @@ func (r *run) finish(result *Result, stream *aisdk.StreamTextResult) {
 	}
 	switch r.kind {
 	case OpenAIResponses:
-		for i := range result.Steps {
-			result.Steps[i].Native = r.calls[i].items
-		}
 		if refused(r.calls[len(result.Steps)-1].items) {
 			result.Fault, result.Detail = FaultRefusal, "the last reply is a refusal"
 			return
@@ -510,6 +615,22 @@ func (r *run) finish(result *Result, stream *aisdk.StreamTextResult) {
 		return
 	}
 	result.Value = value
+}
+
+// native gives each step of result, on a kind whose steps carry their call's own output items
+// (OpenAI Responses), those items, which drain kept from the call's raw chunks. A step is in the
+// result only once its call finished, so the items of that call are whole; r.calls may hold one
+// call more than the steps, the one in progress when the run ended, which no step names, and a
+// step whose chunks never came gets none (finish faults such a run).
+func (r *run) native(result *Result) {
+	if r.kind != OpenAIResponses {
+		return
+	}
+	for i := range result.Steps {
+		if i < len(r.calls) {
+			result.Steps[i].Native = r.calls[i].items
+		}
+	}
 }
 
 // refused is whether a call's output items hold a refusal.
@@ -700,13 +821,15 @@ func openaiOptions(effort string) openai.OpenAIResponsesOptions {
 }
 
 // chatOptions is a Chat Completions call at the model's reasoning effort, with a Final reply's
-// schema sent as it is rather than in OpenAI's strict mode: strict mode refuses schemas that are
-// valid JSON Schema, a oneOf at the root or a property left out of required among them, and this
-// package reads the reply back against the schema itself, raising FaultMalformed where it does
-// not fit, so strict mode would turn requests the model can serve into requests it refuses and
-// buy no check the run does not already make.
+// schema sent as response_format.json_schema in OpenAI's strict mode, so the reply is
+// constrained as it is generated rather than only checked afterwards. Strict mode refuses a
+// schema outside the subset it compiles — a property left out of required and a union at the
+// root among them — and every Final schema is held to that subset before the first call
+// (strict.go), so the schemas this package serves are the schemas strict mode takes. The reply
+// is still read back against the schema itself, raising FaultMalformed where it does not fit:
+// an endpoint that speaks the Chat Completions protocol is not always OpenAI.
 func chatOptions(effort string) openaicompatible.OpenAIOptions {
-	strict := false
+	strict := true
 	return openaicompatible.OpenAIOptions{
 		ReasoningEffort:  openaiEffort(effort),
 		StrictJSONSchema: &strict,

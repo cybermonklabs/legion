@@ -558,6 +558,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: questionsForControllerContract, state: withoutQuestionsForController, dropped: "questionsForController"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -971,9 +972,28 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with this change's own number, and it is the last number of answers.go's SupportedContracts,
-// which names the constant rather than its number for that reason.
+// with that change's own number, and answers.go's SupportedContracts names the constant rather
+// than its number for that reason.
 const repositoriesLiveContract = 202
+
+// questionsForControllerContract is the daemon contract that added `questionsForController` to
+// the state (version.go's 208): every question to a stopped agent that the daemon's answer loop
+// passed to the controller in the last QuestionsForControllerWindow. A plugin before it is served
+// the state without the key (withoutQuestionsForController, its row of stateNarrowings): one built
+// before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body
+// for a key it does not name, empty as surely as naming a question, and one built after strips the
+// key instead, so the band keeps the body its own contract's record describes.
+// repositoriesLiveContract stands below it with no row of stateNarrowings between the two, so a
+// caller from repositoriesLiveContract to below this contract is served the `repositories` block
+// this daemon writes and not the questions. The one enumerated field it added is
+// `questionsForController.*.role` (answers.go's questionRoles), whose values arrived with the key
+// and ride its band.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the key arrived at stays where it is. It moves only with this
+// change's own number, which is why answers.go's SupportedContracts names it rather than its
+// number.
+const questionsForControllerContract = 208
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1599,6 +1619,18 @@ func withoutClaimRoundReport(issue Issue) (Issue, bool) {
 		view.UpdateState, view.Wake = "", nil
 		return view
 	})
+}
+
+// withoutQuestionsForController is state with no `questionsForController`, the one key
+// questionsForControllerContract added to this route. The key is left off rather than emptied,
+// because the strict reader before the contract refuses it as surely when it is empty as when it
+// names a question, which is why State.MarshalJSON writes the key on every body but this one
+// (State.questionsForControllerHidden), as withoutWakesWaiting leaves off `wakesWaiting`. The flag
+// is set on a value of the state's own, so the state the source answered is left as it was. The
+// band reports a move on every body it serves, as withoutWakesWaiting does.
+func withoutQuestionsForController(state State) (State, bool) {
+	state.QuestionsForController, state.questionsForControllerHidden = nil, true
+	return state, true
 }
 
 // withoutLeakCheckCause is the issue with no claim view carrying `leakCheckCause`, the one key

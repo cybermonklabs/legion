@@ -38,6 +38,7 @@ import {
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
+  NO_LIVE_SESSION,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
   REFERENCE_TARGETS_MAX,
@@ -357,6 +358,12 @@ const MintedDedupeKeyPattern = ${JSON.stringify(MINTED_DEDUPE_KEY_PATTERN)}
 // send. Generated from RECEIPT_TIMEOUT_CAUSE in packages/contracts so the string Dispatch writes
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
+
+// NoLiveSession opens the listener's refusal of a session it will not answer for ("no live
+// session <id>", noLiveSession in cmd/listener) and is the failure Dispatch records for such a
+// session itself. Generated from NO_LIVE_SESSION in packages/contracts so the listener, Dispatch
+// and every reader that keys on the words spell them once.
+const NoLiveSession = ${JSON.stringify(NO_LIVE_SESSION)}
 
 // StoreUnconfirmedCause is what a delivery attempt records when the listener answered its send
 // 503 with the code that says the message may be stored (listenerwire.CodeMaybeStored). Generated

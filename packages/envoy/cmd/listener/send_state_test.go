@@ -484,7 +484,7 @@ func TestASendToASessionNeitherStoreKnowsIsTheNotFound(t *testing.T) {
 	if unknown.status != http.StatusNotFound {
 		t.Fatalf("a send to a session neither store knows: status %d, body %s; want 404", unknown.status, unknown.raw)
 	}
-	if !strings.HasPrefix(unknown.Error, "no live session ses_never_registered") {
+	if !strings.HasPrefix(unknown.Error, contracts.NoLiveSession+" ses_never_registered") {
 		t.Fatalf("the 404 reads %q, want it to open with the session it names", unknown.Error)
 	}
 
@@ -504,7 +504,7 @@ func TestASendToASessionNeitherStoreKnowsIsTheNotFound(t *testing.T) {
 	if old.status != http.StatusNotFound {
 		t.Fatalf("a send to a session whose record aged out: status %d, body %s; want 404", old.status, old.raw)
 	}
-	if !strings.HasPrefix(old.Error, "no live session "+aged) {
+	if !strings.HasPrefix(old.Error, contracts.NoLiveSession+" "+aged) {
 		t.Fatalf("the 404 reads %q, want it to open with the session it names", old.Error)
 	}
 }

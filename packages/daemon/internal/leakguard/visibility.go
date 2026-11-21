@@ -430,13 +430,13 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 }
 
 // OwnerNotServedError is the refusal `legion gh` makes of a call naming a repository of Owner, an
-// owner the project's gh bundle under OwnersDir holds no directory for (cmd/legion's
-// ownerGHConfigDir): the role's GitHub App is not installed on Owner, so no directory of the
-// bundle is Owner's own. `legion gh` prints it after `legion gh: `, alone, and exits 2. It is
-// exported because the guard reads exactly that answer to its REST read as such an owner
-// (Guard.unservedOwner), and reads the repository's visibility with no credential instead: words
-// written from a second copy could part from the ones `legion gh` prints, and a write to another
-// owner's public repository would again be refused before it was scanned.
+// owner the project's gh bundle under OwnersDir holds no directory for (ghroute's ownerDir): the
+// role's GitHub App is not installed on Owner, so no directory of the bundle is Owner's own.
+// `legion gh` prints it after `legion gh: `, alone, and exits 2. It is exported because the guard
+// reads exactly that answer to its REST read as such an owner (Guard.unservedOwner), and reads
+// the repository's visibility with no credential instead: words written from a second copy could
+// part from the ones `legion gh` prints, and a write to another owner's public repository would
+// again be refused before it was scanned.
 type OwnerNotServedError struct {
 	Owner     string
 	OwnersDir string
@@ -462,8 +462,8 @@ func ownerNotServedLine(owner, ownersDir string) string {
 // in the guard's environment, which is the environment gh ran with. Anything else says nothing of
 // the owner and stays the failure it was: another refusal of `legion gh`, these words for another
 // owner or another bundle, these words beside other words in one line (the refusal of a
-// configured rename whose new owner the bundle holds no directory for, cmd/legion's
-// ghConfigDirFor), these words beside other output, and these words under another exit status.
+// configured rename whose new owner the bundle holds no directory for, ghroute.DirFor), these
+// words beside other output, and these words under another exit status.
 func (g *Guard) unservedOwner(status int, printed, slug string) *unservedOwnerError {
 	if status != 2 {
 		return nil

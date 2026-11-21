@@ -18,9 +18,9 @@ const REPO_ROOT = resolve(import.meta.dir, "../../..");
 const EXAMPLES_DIR = "deploy/kubernetes";
 
 /** One nested key of a top-level key, as `legion config reference --json` prints it: `path` is the
- *  mapping an operator writes it under, with `<KEY>`, `<APP>`, `<POD>` and `<NAME>` for a name the
- *  operator chooses and `[]` for a sequence entry, so `path` and `name` joined with a dot are the
- *  key as it is written. */
+ *  mapping an operator writes it under, with `<KEY>`, `<APP>`, `<POD>`, `<NAME>`, `<PROVIDER>` and
+ *  `<MODEL>` for a name the operator chooses and `[]` for a sequence entry, so `path` and `name`
+ *  joined with a dot are the key as it is written. */
 interface NestedKey {
   path: string;
   name: string;
@@ -101,7 +101,7 @@ function renderKeys(keys: ConfigKey[]): string {
   const lines = [
     "## Keys",
     "",
-    `The daemon reads one file, \`legion.yaml\`, whose ${keys.length} top-level keys are below, each followed by the keys of the mappings it carries (${nested} in all). A nested key is written as the table names it: \`runtime.kubernetes.image\` is \`image\` under \`kubernetes\` under \`runtime\`, a \`<KEY>\`, \`<APP>\`, \`<POD>\` or \`<NAME>\` segment is a name you choose, and \`[]\` is an entry of a sequence. **Default** is what the daemon does when the key is absent, and an em dash is a key with nothing in its place.`,
+    `The daemon reads one file, \`legion.yaml\`, whose ${keys.length} top-level keys are below, each followed by the keys of the mappings it carries (${nested} in all). A nested key is written as the table names it: \`runtime.kubernetes.image\` is \`image\` under \`kubernetes\` under \`runtime\`, a \`<KEY>\`, \`<APP>\`, \`<POD>\`, \`<NAME>\`, \`<PROVIDER>\` or \`<MODEL>\` segment is a name you choose, and \`[]\` is an entry of a sequence. **Default** is what the daemon does when the key is absent, and an em dash is a key with nothing in its place.`,
     "",
     "| Key | Default | Required | What it does |",
     "| --- | --- | --- | --- |",

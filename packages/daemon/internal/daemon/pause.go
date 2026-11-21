@@ -359,10 +359,12 @@ func (p *projectPause) Paused(ctx context.Context, held store.Pause, asked []sto
 // wake pacing and sends the task the claim holds where it may now go; each operator's spawn the
 // pause stopped owing a launch is resumed by rule (resumeOwedSpawns); the hold of each pod with a
 // live role ends (endLiveHolds); every outbox lane of the project with a row is woken, so the rows
-// the pause held run now (outbox.wakeUnfinished); and one admission pass is applied
-// (applyResumePass). Every launch goes through the pacing: each held row launches its role when
-// it runs, and an operator's spawn, whose launch no row can carry, is launched by the rule's
-// resume, which the pacing paces as it paces every resume of the rule.
+// the pause held run now (outbox.wakeUnfinished); one admission pass is applied
+// (applyResumePass); and the answer loop, where it is on, is woken, so the questions the
+// pause held are answered now rather than at its next sweep. Every launch goes through the pacing:
+// each held row launches its role when it runs, and an operator's spawn, whose launch no row can
+// carry, is launched by the rule's resume, which the pacing paces as it paces every resume of the
+// rule.
 func (p *projectPause) Resumed(ctx context.Context, ended store.Pause) {
 	for _, m := range p.supervisor.supervised() {
 		token := m.View().Claim.Token
@@ -374,6 +376,9 @@ func (p *projectPause) Resumed(ctx context.Context, ended store.Pause) {
 		r.wakeUnfinished(ctx)
 	}
 	p.applyResumePass(ctx, ended)
+	if a := p.workflow.answers; a != nil && a.loop != nil {
+		a.loop.Poke()
+	}
 }
 
 // resumeOwedSpawns resumes by rule each operator's spawn whose stop ended `stopped` owing a launch

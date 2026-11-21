@@ -236,26 +236,117 @@ func withOption(options provider.ProviderOptions, option provider.ProviderOption
 	return marked
 }
 
-// markAnthropicHistory puts Anthropic's ephemeral cache mark at the end of the run's first
-// history messages, so the next model call of the run, and the next run within the cache's
-// life, reads the conversation from the cache. The provider gives a message's mark to that
-// message's last block alone and drops it on a thinking block, so the mark goes on the last
-// message of the history whose last part is not reasoning: a turn the model cut off at its
-// limit, which ends in thinking, would otherwise take the mark and lose it. A history every
-// message of which ends in reasoning goes unmarked, and where Input is not empty the newest
-// message's mark, which the run places itself, is then the call's only one. Where Input is
-// empty the newest message is that same history message, whose mark the provider drops as
-// well, and the call carries no mark at all. The run places the marks unless the caller turns
-// them off with Request.NoCache.
+// cacheableChars is how much message text a cache breakpoint needs in front of it to be worth
+// one of the four Anthropic allows. The provider writes no cache entry for a prefix below its
+// model's minimum cacheable length, the lowest of which is 512 tokens, and reports nothing for
+// the breakpoint it ignored; at four characters to the token that is these 2048 characters,
+// and the tools and the system prompt the prefix covers as well only add to what the count
+// sees.
+const cacheableChars = 2048
+
+// markAnthropicHistory puts Anthropic's ephemeral cache marks in the run's first history
+// messages, so the next model call of the run, and the next run within the cache's life, read
+// the conversation from the cache. It marks the history's end, and, where the conversation is
+// long enough to cache, the two boundaries the run before it marked: the history's last
+// question, which was that run's newest message, and the message before the question, which
+// was the end of the history as that run was given it. Anthropic writes a cache entry at a
+// breakpoint and nowhere else, and reads one only where an earlier request already wrote: a
+// run that marks its own history end alone leaves both of the previous run's entries
+// unmarked, and then reads one only if the lookback, which walks back twenty block positions
+// and finds an entry only once it is there to be found, happens to reach it. A caller that
+// appends each exchange to the conversation, which is what the daemon's answer loop does
+// between two questions to the same agent, grows the history between runs, so marking what
+// the run before marked is what puts a breakpoint on the entry itself.
+//
+// The provider gives a message's mark to that message's last block alone and drops it on a
+// thinking block, so each mark goes on a message whose last part is not reasoning: a turn the
+// model cut off at its limit, which ends in thinking, would otherwise take a mark and lose
+// it. A history every message of which ends in reasoning goes unmarked, and where Input is not
+// empty the newest message's mark, which the run places itself, is then the call's only one.
+// Where Input is empty the newest message is that same history message, whose mark the
+// provider drops as well, and the call carries no mark at all. These three marks and the
+// newest message's are the four Anthropic allows, and the run places them unless the caller
+// turns them off with Request.NoCache.
 func markAnthropicHistory(messages []provider.Message, history int) {
-	for i := history - 1; i >= 0; i-- {
-		m := messages[i]
-		if m.Content[len(m.Content)-1].Type == provider.ContentPartTypeReasoning {
-			continue
-		}
-		messages[i].ProviderOptions = withOption(m.ProviderOptions, anthropic.CacheControl("ephemeral"))
+	end := markable(messages, history)
+	if end < 0 {
 		return
 	}
+	markCache(messages, end)
+	question := lastQuestion(messages, end)
+	if question < 0 || prefixChars(messages[:question+1]) < cacheableChars {
+		return
+	}
+	markCache(messages, question)
+	before := markable(messages, question)
+	if before < 0 || prefixChars(messages[:before+1]) < cacheableChars {
+		return
+	}
+	markCache(messages, before)
+}
+
+// markCache puts Anthropic's ephemeral cache mark on the message at index.
+func markCache(messages []provider.Message, index int) {
+	messages[index].ProviderOptions = withOption(messages[index].ProviderOptions, anthropic.CacheControl("ephemeral"))
+}
+
+// markable is the last message before limit that can carry a cache mark, and -1 where no
+// message before limit can: the provider drops a mark on a thinking block, so a message whose
+// last part is reasoning takes none.
+func markable(messages []provider.Message, limit int) int {
+	for i := limit - 1; i >= 0; i-- {
+		if m := messages[i]; m.Content[len(m.Content)-1].Type != provider.ContentPartTypeReasoning {
+			return i
+		}
+	}
+	return -1
+}
+
+// lastQuestion is the last user turn before limit, which is the message the run before this
+// one was given as its input and marked as its newest, and -1 where the messages hold none. A
+// tool result, which Anthropic carries in a user message of its own, is a message of the tool
+// role here and never a question.
+func lastQuestion(messages []provider.Message, limit int) int {
+	for i := limit - 1; i >= 0; i-- {
+		if messages[i].Role == provider.RoleUser {
+			return i
+		}
+	}
+	return -1
+}
+
+// prefixChars is how much text the messages carry, which is what a prefix's length is measured
+// by: a part's own text, a tool call's arguments and a tool result's output, and the bytes of
+// a file or an image, which run well above the tokens the provider counts them as.
+func prefixChars(messages []provider.Message) int {
+	chars := 0
+	for _, m := range messages {
+		for _, p := range m.Content {
+			chars += partChars(p)
+		}
+	}
+	return chars
+}
+
+// partChars is how much text one part carries.
+func partChars(p provider.ContentPart) int {
+	chars := len(p.Text) + len(p.Input) + len(p.ToolName) + dataChars(p.Data)
+	if p.Output == nil {
+		return chars
+	}
+	chars += len(p.Output.Text) + len(p.Output.JSON)
+	for _, value := range p.Output.Content {
+		chars += len(value.Text) + dataChars(value.Data)
+	}
+	return chars
+}
+
+// dataChars is how much a file's data carries, whichever arm of it the caller filled.
+func dataChars(d *provider.DataContent) int {
+	if d == nil {
+		return 0
+	}
+	return len(d.Bytes) + len(d.Base64) + len(d.URL) + len(d.Reference) + len(d.Text)
 }
 
 // markOpenAIHistory puts an explicit prompt cache breakpoint at the end of the run's first

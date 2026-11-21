@@ -51,12 +51,22 @@ const (
 	Internal Visibility = "internal"
 )
 
-// Options are the guard's seams, each of them a field a test fills and a call site leaves alone.
-// The engine needs no seam: its rules are embedded in this package and it is linked into this
-// binary, so there is no copy of it for a test to stand in for.
+// Options are what a guard is built with, and a field left empty is the ordinary case, a role's:
+// every call resolves the check for itself (Resolve) in this process's own environment, and makes
+// the private copy of a check under a deployment's digest under this package's PrivateCopyBase or
+// its fallback. A caller sets what it holds of its own: `legion gh` an observer of the visibility
+// answer (OnVisibility), the daemon the environment it resolves the machine's check in (Env), and
+// the answer loop's gh tool, on every call, the check its host answered, the environment the
+// guard's children start from and the directory of the private copy (Check, Env and
+// PrivateCopyBase, internal/ghtool's Answer.leakGuard). Visibility, Clock and Curl are seams a
+// test fills. The engine needs no seam: its rules are embedded in this package and it is linked
+// into this binary, so there is no copy of it for a test to stand in for.
 type Options struct {
-	// Check is the shared public leak check's path. Empty is the ordinary case, where every call
-	// resolves the check for itself (Resolve); a test fills it with a stand-in of its own.
+	// Check is the shared public leak check's path, which stands in front of every place Resolve
+	// reads. Empty, every call resolves the check for itself (Resolve), as a role's `legion gh`
+	// does. The answer loop's gh tool sets it on every call, to the check its host answered for
+	// that call (internal/ghtool's Answer.leakGuard, Host.LeakCheck), so its guard resolves none
+	// of its own; a test fills it with a stand-in.
 	Check string
 	// Visibility is the REST read of what GitHub reports a repository slug ("owner/name"). Nil is
 	// the ordinary case, gh's REST read with headers (Guard.ghVisibility). It replaces that first
@@ -82,12 +92,20 @@ type Options struct {
 	// it with a stand-in of its own: no shipped binary sets it, and cmd/legion's test binary sets
 	// the value it passes from LEGION_CMD_TEST_CURL (its TestMain).
 	Curl string
+	// PrivateCopyBase is the directory a guard under a deployment's digest makes the copy of the
+	// check it runs under (Guard.sharedCheck, privateCopy), in place of this package's
+	// PrivateCopyBase and its fallback. Empty is the ordinary case, a role's: the role's own
+	// private directory where it is there, else /tmp. A caller that is no role sets it to a
+	// directory of its own that only its user reaches: the daemon's answer loop, whose container
+	// may hold the worker image's root-owned, empty PrivateCopyBase and binds nothing writable
+	// there (internal/ghtool's Answer.leakGuard). The copy is made in it and nowhere else.
+	PrivateCopyBase string
 }
 
 // Guard runs the two checks. It holds no answer of an earlier call: every call site builds a
 // guard of its own for the one write it is about to make (cmd/legion's gh and leak-check,
-// internal/ghbranch), and each entry point reads a destination's visibility at most once, so
-// there is nothing a shared answer would spare.
+// internal/ghtool's call of the answer loop, internal/ghbranch), and each entry point reads a
+// destination's visibility at most once, so there is nothing a shared answer would spare.
 type Guard struct {
 	opts Options
 	// noAnswer is the askpass program the children are pointed at, resolved once from the base
@@ -96,15 +114,22 @@ type Guard struct {
 	// curl is the curl the guard's reads through curl run (Guard.CurlGet): Options.Curl, or
 	// curlProgram where that is empty. This package's own tests set it directly.
 	curl string
+	// copyBase and copyFallback are where the private copy of a check under a deployment's digest
+	// is made (privateCopy): Options.PrivateCopyBase for both where it is set, and otherwise
+	// PrivateCopyBase and privateCopyFallback. This package's own tests set them directly.
+	copyBase, copyFallback string
 }
 
 // New is a guard with opts' seams. It resolves no check: the shared check publishes often, and a
 // guard that resolved one at start would keep running a copy the current rules have moved past, so
 // every call resolves it again.
 func New(opts Options) *Guard {
-	g := &Guard{opts: opts, curl: curlProgram}
+	g := &Guard{opts: opts, curl: curlProgram, copyBase: PrivateCopyBase, copyFallback: privateCopyFallback}
 	if opts.Curl != "" {
 		g.curl = opts.Curl
+	}
+	if opts.PrivateCopyBase != "" {
+		g.copyBase, g.copyFallback = opts.PrivateCopyBase, opts.PrivateCopyBase
 	}
 	g.noAnswer = noAnswer(g.base())
 	return g

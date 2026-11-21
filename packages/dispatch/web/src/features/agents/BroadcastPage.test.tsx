@@ -1,5 +1,5 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { DELIVERY_DUPLICATE_WINDOW_MS } from "@legion/contracts";
+import { DELIVERY_DUPLICATE_WINDOW_MS, NO_LIVE_SESSION } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -302,7 +302,7 @@ test("a stranded send older than the duplicate window is not promised a single d
 // A settled failure is different: nothing is outstanding, so a mode change sends rather than
 // duplicates, and the agent card's full retry row applies.
 test("a failed attempt offers the same-mode retry and the mode changes", async () => {
-  const failed = attempt({ error: "no live session", state: "failed" });
+  const failed = attempt({ error: NO_LIVE_SESSION, state: "failed" });
   const page = renderBroadcast(broadcast([failed]));
   try {
     const row = await screen.findByRole("article", { name: "Planner" });

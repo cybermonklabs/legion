@@ -265,7 +265,9 @@ func (in ServedInstall) logf(format string, args ...any) {
 }
 
 // InstallServed installs the check the daemon served into in.Dir. The pod's launcher runs it once
-// for the pod, before any role starts; every role's shim then reads the install (Installed).
+// for the pod, before any role starts; every role's shim then reads the install (Installed). A
+// Kubernetes daemon with `answers` runs it too, at each boot, for its own gh tool's guard
+// (internal/ghtool's LeakCheck.Install).
 //
 // The steps are in this order, and the order is the point:
 //

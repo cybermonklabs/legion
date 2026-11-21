@@ -262,13 +262,15 @@ held_only_by() {
   return 1
 }
 
-# await_start NAME PID SECONDS DESCRIPTION COMMAND... waits, bounded, for COMMAND to succeed while
-# the service NAME started as PID lives, and fails the check naming the service's log the moment it
-# exits.
+# await_start NAME PID SECONDS DESCRIPTION COMMAND... waits up to SECONDS of wall time for COMMAND
+# to succeed while the service NAME started as PID lives, and fails the check naming the service's
+# log the moment it exits. The bound is time and not a count of polls, so a COMMAND that itself
+# waits (a curl --max-time against a kept port, which accepts before any server answers) does not
+# stretch it.
 await_start() {
-  local name=$1 pid=$2 limit=$3 what=$4 i
+  local name=$1 pid=$2 limit=$3 what=$4 started=$SECONDS
   shift 4
-  for ((i = 0; i < limit * 2; i++)); do
+  while ((SECONDS - started < limit)); do
     if "$@" >/dev/null 2>&1; then return 0; fi
     kill -0 "$pid" 2>/dev/null || fail "$what: the process exited; see $evidence/logs/$name.log"
     sleep 0.5
@@ -295,9 +297,21 @@ await_start() {
 start_process() {
   local name=$1
   shift
+  start_grouped "${name}_pid" "$evidence/logs/$name.log" "$@"
+}
+
+# start_grouped VAR LOG COMMAND... is start_process's recipe for a process that is no service of
+# its own name: COMMAND, a program or a shell function, starts in the background in a process group
+# of its own with /dev/null on stdin and its output appended to LOG, VAR is set to its pid, and its
+# start is recorded (record_start), or `gone` where it has already exited, so stop_pid, signal_group
+# and stop_tree signal it only while it is still that process (start_process says why each part is
+# there).
+start_grouped() {
+  local _start_var=$1 _start_log=$2
+  shift 2
   set -m
-  "$@" </dev/null >>"$evidence/logs/$name.log" 2>&1 &
-  printf -v "${name}_pid" '%s' "$!"
+  "$@" </dev/null >>"$_start_log" 2>&1 &
+  printf -v "$_start_var" '%s' "$!"
   set +m
   record_start "$!" || started_at[$!]=gone
 }

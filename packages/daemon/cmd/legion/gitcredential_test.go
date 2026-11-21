@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
 )
 
 // gitCredentialBundle writes a gh bundle of a role whose issue is acme's: one directory per
@@ -529,7 +530,7 @@ func runGhGitCredentialHere(t *testing.T, stdin string) (code int, stdout, stder
 
 // answersNothingForTheFork fails the test unless the helper, asked for the repository slug of an
 // owner the bundle at root holds no directory for, answered nothing, exit 1, on one stderr that
-// says so as ghConfigDirFor says it and names slug and each of says, and that holds no token.
+// says so as ghroute.DirFor says it and names slug and each of says, and that holds no token.
 // Every token these tests write begins `ghs_`; the one that holds a line break ends `break_write`
 // after it.
 func answersNothingForTheFork(t *testing.T, code int, stdout, stderr, root, slug string, says ...string) {
@@ -556,7 +557,7 @@ func answersNothingForTheFork(t *testing.T, code int, stdout, stderr, root, slug
 // repository, the head of a pull request to it, then carries the token the role holds for the
 // served repository, and not nothing, which git ended every such push on. The owner and the name
 // are asked in another case and with `.git`, as git may send them, and the answer is the same;
-// the parent is routed as every request is (ghConfigDirFor), so a parent that a configured rename
+// the parent is routed as every request is (ghroute.DirFor), so a parent that a configured rename
 // moved is answered from the directory of the owner it moved to; and `legion gh auth
 // git-credential get`, which gh's own git asks, answers the same through the same function. Each
 // answer comes from one read.
@@ -781,7 +782,7 @@ func TestGitCredentialAnswersNothingForAnOutsideRepositoryThatIsNoServedFork(t *
 // with the wait its Retry-After asks for; a curl that could not reach GitHub; a body that is not
 // JSON; a 200 with no fork field; a fork whose parent is a repository of an owner the bundle
 // holds a directory for, which a configured rename moved to an owner it holds none for, so that a
-// request for the parent answers nothing (ghConfigDirFor) and so does the fork, naming the parent
+// request for the parent answers nothing (ghroute.DirFor) and so does the fork, naming the parent
 // and the pair, with its source, acme/sample-project, not tried though the bundle holds acme's
 // directory; and no curl at the path. No read is made without a token: where GH_CONFIG_DIR is
 // unset, is no directory of the bundle, holds a hosts.yml with no token, or a token with a line
@@ -989,7 +990,7 @@ func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 		"sleep "+sleepSeconds+" </dev/null >/dev/null 2>&1 &\necho $! > "+shellWord(pidFile)+"\nexec sleep 290\n")
 	useForkRead(t, github.program, 2*time.Second)
 	forkReadPane(t, root, acme)
-	killRecordedHelper(t, pidFile, sleepSeconds)
+	ghroutetest.KillRecordedHelper(t, pidFile, sleepSeconds)
 	start := time.Now()
 	code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/sample-project"), "get")
 	if took := time.Since(start); took > 5*time.Second {
@@ -1004,7 +1005,7 @@ func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the fake GitHub recorded the sleep's PID %q: %v", data, err)
 	}
-	for deadline := time.Now().Add(3 * time.Second); helperRunning(pid, sleepSeconds); time.Sleep(50 * time.Millisecond) {
+	for deadline := time.Now().Add(3 * time.Second); ghroutetest.HelperRunning(pid, sleepSeconds); time.Sleep(50 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the fake GitHub's sleep, PID %d, still runs 3 s after the helper answered; want the read's end to stop curl's whole process group", pid)
 		}
@@ -1013,7 +1014,7 @@ func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 
 // R2: a request for a repository of an owner the bundle holds a directory for is answered as it
 // was before the fork read, and no read is made: a served owner's repository gets that owner's
-// token; one a configured rename moved to an owner with no directory keeps ghConfigDirFor's
+// token; one a configured rename moved to an owner with no directory keeps ghroute.DirFor's
 // refusal naming the pair, since the path's own owner is served; and a path naming only an
 // outside owner, or an outside owner and a name GitHub serves no repository under (ghrepo.Parse
 // refuses `..`), answers nothing, as before, with no repository to read. So does an outside

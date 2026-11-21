@@ -112,9 +112,9 @@ ARG GH_TOOL=gh@2.98.0
 # newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-20T00:45:44Z,
 # and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
 # is where the launcher and each role's shim read it. Go holds the same tag once more:
-# ghReadsProvenCheck in packages/daemon/cmd/legion/gh_reads.go, the check `legion gh`'s list of
-# reads was proven against, and TestGhReadsAreProvenAgainstThePinnedCheck holds the two equal, so
-# a bump moves both, by the steps ghReadsProvenCheck's comment gives.
+# ReadsProvenCheckTag in packages/daemon/internal/ghroute/reads.go, the check `legion gh`'s list
+# of reads was proven against, and TestGhReadsAreProvenAgainstThePinnedCheck holds the two equal,
+# so a bump moves both, by the steps that constant's comment gives.
 ARG LEAK_CHECK_TAG=leak-check-v21
 # go.work's `go` line: the Go stage builds in workspace mode, and the golang image's GOTOOLCHAIN=local
 # fails the build if go.work moves past this. The toolchain stage ships the same release to the workers

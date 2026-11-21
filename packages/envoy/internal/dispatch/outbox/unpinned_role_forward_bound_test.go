@@ -167,8 +167,8 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 	// The sender's lane reaches the sends at last, both resolve to no session and fail. Nothing
 	// of the mention is owed from then on, so the pass that reads the row publishes the copy.
 	if _, err := rig.database.Pool.Exec(ctx, `
-		update comment_deliveries set state = 'failed', error = 'no live session' where comment_id = $1
-	`, commentID); err != nil {
+		update comment_deliveries set state = 'failed', error = $2 where comment_id = $1
+	`, commentID, contracts.NoLiveSession); err != nil {
 		t.Fatalf("fail the comment's mentions: %v", err)
 	}
 	if _, err := rig.database.Pool.Exec(ctx, `

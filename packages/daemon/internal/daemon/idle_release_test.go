@@ -663,6 +663,110 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 	}
 }
 
+// A role stop that suspends its claim tells the agent registry's mirror so
+// (outbox.standingsChanged) once the suspension and the release's record of it both stand, so the
+// claim's entry says `released` at once rather than at the mirror's next minute, during which the
+// listener would hand a message for its session to the answer loop instead of leaving it to the
+// wake. When the mirror is told, the store already names the session released, which is what the
+// read the mirror makes then sees. A role stop that suspends nothing tells it nothing: one of a
+// release that is over, one whose boundary cancels the release, and one whose claim runs nothing.
+func TestARoleStopTellsTheRegistryMirrorOfTheClaimItSuspendedAndOfNoOther(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// before is what happens between the release's decision and the run of its rows. below is
+		// an id the outbox's own sequence handed out before the release queued its rows
+		// (idleRig.outboxID), which no row holds.
+		before   func(t *testing.T, rig *idleRig, below int64)
+		suspends bool
+	}{
+		{name: "the stop suspends its claim", suspends: true},
+		{name: "the release is over", before: func(t *testing.T, rig *idleRig, _ int64) {
+			// No mark holds the release's rows any more, as a release cancelled or finished
+			// leaves them.
+			if _, err := rig.pool.Exec(context.Background(), `delete from issue_releases where issue = $1`, rig.issue.Key); err != nil {
+				t.Fatalf("end the release: %v", err)
+			}
+		}},
+		{name: "the boundary cancels the release", before: func(t *testing.T, rig *idleRig, below int64) {
+			// A start for another role of the pod whose transaction took its id before the release
+			// queued its rows, not yet due, which the boundary finds
+			// (TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease).
+			if boundary := rig.boundary(t); below >= boundary {
+				t.Fatalf("control: the start's id %d is not below the release's boundary %d", below, boundary)
+			}
+			if _, err := rig.pool.Exec(context.Background(), `insert into outbox (id, kind, issue, payload, attempts, next_at, last_error)
+				values ($1, 'supervise', $2, '{"op":"start","tree":"LEGION-208","role":"tester","generation":1}', 0, now() + interval '1 hour', '')`,
+				below, rig.issue.Key); err != nil {
+				t.Fatalf("queue a start around the mark: %v", err)
+			}
+		}},
+		{name: "the claim runs nothing", before: func(t *testing.T, rig *idleRig, _ int64) {
+			if err := rig.machine.Handle(context.Background(), supervise.RequestStop{Claim: rig.token}); err != nil {
+				t.Fatalf("retire the claim the stop is for: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIdleRig(t)
+			ctx := context.Background()
+			// The outbox runs its rows on this goroutine (RunOnce), so the hook runs here too.
+			var told []map[string]string
+			rig.runner.standingsChanged = func() {
+				released, err := rig.st.ReleasedSessions(ctx, "legion")
+				if err != nil {
+					t.Errorf("read the released claims as the mirror is told: %v", err)
+				}
+				told = append(told, released)
+			}
+			below := rig.outboxID(t)
+			queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
+			if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+				t.Fatalf("queued rows = %v, want the save, the implementer's stop and the teardown", queued)
+			}
+			if tc.before != nil {
+				tc.before(t, rig, below)
+			}
+
+			rig.drain(t)
+
+			got := rig.machine.Claim()
+			if !tc.suspends {
+				if got.Released() {
+					t.Fatalf("the claim = %s by %s, want the stop to have suspended nothing", got.State, got.SuspendedBy)
+				}
+				if len(told) != 0 {
+					t.Fatalf("the mirror was told %d times, want never: the stop suspended no claim, so no entry changed", len(told))
+				}
+				return
+			}
+			if !got.Released() {
+				t.Fatalf("the claim = %s by %s, want it released", got.State, got.SuspendedBy)
+			}
+			if len(told) != 1 || told[0]["ses-implementer"] != rig.issue.Key {
+				t.Fatalf("the mirror was told %d times, the store then naming %v released; want once, with ses-implementer released on %s: until its entry says released, the listener hands a message for it to the answer loop",
+					len(told), told, rig.issue.Key)
+			}
+		})
+	}
+}
+
+// The boot's attach hands the outbox the registry mirror's nudge the plan carries, which run sets
+// from the daemon's mirror (plan.standingsChanged), so the idle release's role stops reach the
+// mirror that writes the registry.
+func TestAttachHandsTheOutboxTheRegistryMirrorsNudge(t *testing.T) {
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	told := 0
+	w := &workflowRuntime{records: record.NewStore(), log: quietLogger()}
+	w.attach(&supervision{supervisor: sup, log: quietLogger(), plan: plan{standingsChanged: func() { told++ }}})
+	if w.outbox.standingsChanged == nil {
+		t.Fatal("attach left the outbox no nudge for the registry's mirror")
+	}
+	w.outbox.standingsChanged()
+	if told != 1 {
+		t.Fatalf("the plan's nudge was called %d times, want once: the outbox must call the mirror's own", told)
+	}
+}
+
 // R4's boundary, through the whole daemon path. The boundary is the stop of the first role
 // process of the pod, and until it has run a delivery for a role of the pod cancels the
 // release: one queued below the release's own rows was in flight when the mark was written,

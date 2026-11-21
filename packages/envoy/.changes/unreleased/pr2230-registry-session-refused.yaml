@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  The listener refuses with 403 every write to the Legion agent registry that presents a
+  secrets-broker access token: `PUT /v1/legion/agents`, `PUT /v1/legion/agents/sessions/{id}` and
+  `PUT /v1/legion/projects/{legion_project}`. Such a token always names a session, and these writes
+  decide which daemon answers a stopped session's messages, so a session that wrote
+  `answering: true` for a project and an entry naming another session could have that session's
+  sends answered by the daemon instead of stored for it. The refusal writes nothing and logs one
+  WARN line naming the token's session and the path, never the token. The Legion daemon writes
+  these routes with its Envoy bearer (`envoy_token_file`), which names no session, and is served
+  as before.
+time: 2026-11-19T17:00:00.000000000Z
+custom:
+    Issue: pr2230

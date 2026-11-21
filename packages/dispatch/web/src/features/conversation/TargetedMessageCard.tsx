@@ -15,6 +15,7 @@ import {
   duplicateText,
   failureGuidance,
   isSafeRetry,
+  keptForRoleParts,
   MODE_LABELS,
   queuedParts,
   withGuidance,
@@ -61,6 +62,9 @@ export interface TargetedMessageAttempt {
   /** The listener already held this message, so this attempt reached it and changed nothing. */
   readonly duplicate?: boolean;
   readonly error?: string | null;
+  /** The listener kept this queued attempt for the role it was addressed to, for the role's next
+   *  session, rather than storing it for a session (`keptForRole`). Absent means it did not. */
+  readonly keptForRole?: boolean;
   readonly state: DeliveryAttemptState;
   /** The session this attempt reached (an agent part, so it is drawn by `AgentName`), else the
    *  address it was aimed at; a role address is text. */
@@ -75,10 +79,10 @@ export function takenAsUserTurn(deliveries: readonly TargetedMessageAttempt[]): 
 }
 
 /** The headline one targeted message gets: who answered it, that it reached the session's own
- *  conversation, why it failed, that it is queued for a session that is not running, that it is
- *  still going out, that it is a BTW waiting on an answer, or that it was delivered, naming the
- *  mode as the composer does (`MODE_LABELS`). It is `AgentPart`s, so the agents it names keep
- *  their identity until `AgentParts` draws them.
+ *  conversation, why it failed, that it is queued for a session that is not running or kept for
+ *  a role's next session, that it is still going out, that it is a BTW waiting on an answer, or
+ *  that it was delivered, naming the mode as the composer does (`MODE_LABELS`). It is
+ *  `AgentPart`s, so the agents it names keep their identity until `AgentParts` draws them.
  *  `asking` is that BTW branch, whose line ends in a separator because it carries a timestamp:
  *  the two belong to one decision, so the caller reads it here rather than restating the
  *  condition.
@@ -110,9 +114,14 @@ function deliveryHeadline(
     };
   }
   // A queued attempt is read before a pending one, a BTW's wait and a duplicate: the listener
-  // took the message for a session that is not running, and that is the fact a person acts on,
-  // whatever mode it went in.
-  if (delivery?.state === "queued") return { parts: queuedParts(targetName), asking: false };
+  // took the message for a session that is not running, or kept it for a role's next session,
+  // and that is the fact a person acts on, whatever mode it went in.
+  if (delivery?.state === "queued") {
+    return {
+      parts: delivery.keptForRole === true ? keptForRoleParts(targetName) : queuedParts(targetName),
+      asking: false,
+    };
+  }
   const mode = delivery?.delivery ?? "steer";
   if (delivery?.state === "pending")
     return { parts: ["Sending to ", targetName, ` (${MODE_LABELS[mode]})`], asking: false };
@@ -129,14 +138,16 @@ function deliveryHeadline(
 function attemptSummary(attempt: TargetedMessageAttempt, targetName: AgentPart): AgentPart[] {
   const reached = attempt.targetName ?? targetName;
   if (attempt.state === "failed") return [`Failed: ${attempt.error ?? "delivery failed"}`];
-  if (attempt.state === "queued") return queuedParts(reached);
+  if (attempt.state === "queued")
+    return attempt.keptForRole === true ? keptForRoleParts(reached) : queuedParts(reached);
   if (attempt.duplicate === true) return [duplicateText];
   const verb = attempt.state === "pending" ? "Sending" : "Sent";
   return [`${verb} to `, reached, ` (${MODE_LABELS[attempt.delivery]})`];
 }
 
 /** What became of a targeted message: answered, taken into the session's conversation as the
- *  person's own turn, failed, queued for a session that is not running, asking (BTW), or sent -
+ *  person's own turn, failed, queued for a session that is not running or kept for a role's next
+ *  session, asking (BTW), or sent -
  *  then the earlier attempts, oldest first. Shared by the card and by a delivered reply in its
  *  thread. `retryRow` is whether the surface shows `DeliveryRetry` beneath it, whose buttons the
  *  failure's guidance names. */

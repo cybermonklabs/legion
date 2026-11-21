@@ -1,4 +1,4 @@
-import { shortSessionId } from "@legion/contracts";
+import { NO_LIVE_SESSION, shortSessionId } from "@legion/contracts";
 
 import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
 import {
@@ -80,7 +80,7 @@ test("a person's message to a stopped but known session is queued for it, and th
     // The registry no longer holds the session, so the card names it by the short form of its
     // id, as it names every session that has left.
     await expect(turn(page, body)).toContainText(QUEUED(shortSessionId(planner.session_id)));
-    await expect(turn(page, body)).not.toContainText("no live session");
+    await expect(turn(page, body)).not.toContainText(NO_LIVE_SESSION);
     // Queued is the listener having taken it, so the send is real and Retry is not offered: a
     // second copy is exactly what the stored message makes unnecessary.
     expect(await sentTo()).toEqual([planner.session_id]);
@@ -138,7 +138,7 @@ test("a mention of a stopped but known session is queued for it, and the listene
       .click();
     const deliveries = page.getByRole("list", { name: "Mention deliveries" });
     await expect(deliveries).toContainText(QUEUED("Planner"));
-    await expect(deliveries).not.toContainText("no live session");
+    await expect(deliveries).not.toContainText(NO_LIVE_SESSION);
     await expect(deliveries.getByRole("button", { name: "Retry" })).toHaveCount(0);
     await expect.poll(sentTo).toEqual([planner.session_id]);
   } finally {
@@ -284,7 +284,7 @@ test("a message to a session Envoy does not know is queued by Dispatch itself, w
     const page = await alice.newPage();
     await page.goto(`/issues/${issue}/conversation`);
     await expect(turn(page, body)).toContainText(QUEUED(shortSessionId(planner.session_id)));
-    await expect(turn(page, body)).not.toContainText("no live session");
+    await expect(turn(page, body)).not.toContainText(NO_LIVE_SESSION);
     await expect(turn(page, body).getByRole("button", { name: "Retry" })).toHaveCount(0);
     expect(await sentTo()).toEqual([]);
     const queued = await queuedEnvelopesOf(message.id);

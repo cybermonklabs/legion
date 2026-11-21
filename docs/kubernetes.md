@@ -1,6 +1,6 @@
 # Legion on Kubernetes
 
-This runbook covers the worker image, the session store, the Kubernetes runtime, the operator-launched controller, and the one thing in it a role does for itself:
+This runbook covers the worker image, the session store, the daemon's answer loop for stopped agents ([The answer loop](#the-answer-loop)), the Kubernetes runtime, the operator-launched controller, and the one thing in it a role does for itself:
 running a workload in the cluster from a role ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role)).
 
 This file uses semantic line breaks: one sentence per line, and a long sentence may break after a clause.
@@ -112,7 +112,7 @@ It carries:
   A served digest other than the setting is drift, so the kept pod starts safely under its own pin and its update round replaces it.
   If its launcher holds an install from before, the role is told none and that install runs unhashed, as every check did before the setting, until the pod is next replaced.
   The role's name for the digest is not the daemon's, so a configuration a role loads, `legion config check` among them, never reads one half of the daemon's setting without the other.
-  A `legion gh` call that writes nothing is read by the check alone only where the check's `public_leak_check.py` hashes to the sha256 this release's read rule was proven against, which the release compiles in (`ghReadsProvenCheck`, `cmd/legion/gh_reads.go`); under any other check it gets the whole guard, and the digest a role is told plays no part in it.
+  A `legion gh` call that writes nothing is read by the check alone only where the check's `public_leak_check.py` hashes to the sha256 this release's read rule was proven against, which the release compiles in (`ghroute.ReadsProvenCheckSHA256`, `internal/ghroute/reads.go`); under any other check it gets the whole guard, and the digest a role is told plays no part in it.
   Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent, records another tag, its tag file is refused, or it has a manifest digest other than the one the role is told (`leakguard.Installed`, read by `spawnOnce`, `internal/shim/shim.go`): so a pin moved without the deployment's `manifest_sha256` starts no role.
   Under the digest, the guard of every write holds the check it finds to it as well: a check whose manifest digest is anything else, or that misses a file of it, refuses the call, a `legion gh` read included, with `LEAK CHECK SETUP ERROR: <the write>: the shared public leak check found is not the one the deployment names`, naming the digest told and the digest found (`Guard.sharedCheck`, `internal/leakguard/check.go`).
   Where the environment names no check, the shim names the install for everything it starts.
@@ -1217,8 +1217,9 @@ A Claude Code start into such a pod is admitted: the launcher matches no agent's
   So each such claim needs a retry once its pod is replaced: `legion claims retry --operator-token-file <file> --claim <token>`, or `--failed` in place of `--claim` for every failed claim.
 
 `postgres` holds the whole connection URL, password and all, in one providers-Secret key.
-The daemon never holds the connection string:
+The daemon holds no copy of the connection string for its pods:
 put it in the providers Secret (`legion-<project>-providers`) under the key `session_dsn_secret` names, as one `postgres://…` URL.
+With the answer loop on, the daemon also holds a connection of its own to that database, through `answers.conversation_store.dsn_file`, a file the daemon reads at boot, and an `answers` block without that key leaves the loop off ([The answer loop](#the-answer-loop)).
 Every issue pod, the controller's pod and the image probe mount that key read-only at `/var/run/legion/providers/OMP_SESSION_SQL_DSN`, whatever the key is called, so a Secret without it refuses boot at the image probe, naming the Secret and its keys (`internal/runtime/sandbox/manifest.go`, `providers`).
 
 With the store settled, every generation a launcher starts gets two variables in its start command (`mainEnvironment`):
@@ -1353,7 +1354,8 @@ Keep the route unchanged across the copy below in particular: there every sessio
 ### What `cloudsql-iam` puts in a pod
 
 No session key, anywhere.
-No issue pod, no controller pod and no image-probe pod mounts one (`sessionSecretKey`, `internal/runtime/sandbox/manifest.go`, which answers for `postgres` alone), the daemon holds no connection string, and no URL sits in a Secret, a volume, an argv, an environment value or a log.
+No issue pod, no controller pod and no image-probe pod mounts one (`sessionSecretKey`, `internal/runtime/sandbox/manifest.go`, which answers for `postgres` alone), the daemon holds no connection string for its pods, and no URL sits in a Secret, a volume, an argv, an environment value or a log;
+with the answer loop on, the daemon signs in to the same database itself, as `answers.conversation_store.user`, through a Cloud SQL proxy of its own, and an `answers` block without that key leaves the loop off ([The answer loop](#the-answer-loop)).
 What the pod's `legion launcher` is told instead is where the database is
 — `--session-instance <project:region:instance>`, `--session-database <name>` and `--session-user <login>`, in that order, the three values of `session_database` (`sessionProxyFlags` over `sessionProxyFlagNames`, `manifest.go`), once for every role it serves.
 When `impersonate_service_account` is set, a fourth flag follows the three: `--session-impersonate-service-account <email>` (`sessionProxyAccountFlag`, `manifest.go`).
@@ -1676,6 +1678,368 @@ The check lives inside the image: `legion probe-image`, which the image build ru
 The daemon's image probe passes only an OK line that carries its daemon API contract, which a `legion probe-image` of this release prints only after that probe passed, under every store.
 The daemon never probes a host Oh My Pi for this: pods run the image's build, not the host's.
 
+## The answer loop
+
+With the answer loop on, which `answers` in `legion.yaml` configures, the daemon answers a question to one of its agents that is not running
+— a Dispatch message sent to it, a Dispatch comment that mentions it, a reply on the thread of an ask it opened, another agent's Envoy message
+— in that agent's name, from the agent's own conversation, on the model that conversation last ran on.
+It adds the exchange to the conversation in the harness's own format, so the agent finds it there when it next resumes, and posts the reply where the question was asked.
+Without `answers` the daemon answers nothing and keeps none of the records below beyond its history of conversations, and a message to a stopped agent is refused as before.
+The Envoy listener hands the daemon a message for a stopped agent in place of the `404` or the dropped delivery, and Dispatch delivers a message or mention to a stopped agent instead of recording `no live session`, each only while the agent's daemon last said it answers ([Rolling back below the release that answers for a stopped agent](#rolling-back-below-the-release-that-answers-for-a-stopped-agent) says how that record is written).
+It runs under either runtime.
+
+The code: `packages/daemon/internal/answerloop` (the question pipeline:
+intake, classification, one writer per conversation, posting, passing on), `internal/answer` (the model loop, which builds the request and reads the reply but makes its model calls through `packages/envoy/agentloop`, the loop the daemon and Dispatch share and this repository's only import of Grafana's AI SDK for Go), `internal/conversation` (`omp` and `claude`:
+each harness's conversation read as it rebuilds it on resume, and appended to in its own format), `internal/ghtool` (the loop's `gh` tool) and `internal/agenthistory` (the record of conversations the loop answers from, and its mirror in the Envoy listener's agent registry).
+
+### Configuration
+
+```yaml
+answers:
+  providers:                         # anthropic and/or openai; with none, the loop is off
+    anthropic: { base_url: "https://<gateway>.example/anthropic", api_key_file: ./anthropic-key }
+    openai: { base_url: "https://<gateway>.example/openai", api_key_command: "<a command that prints the key>" }
+  prices:                            # with a provider, required: USD per million tokens, by the model id a conversation names
+    anthropic/claude-opus-5-5: { input: 5, output: 25, cache_write: 6.25, cache_read: 0.5 }
+  conversation_store:                # runtime: kubernetes only
+    dsn_file: ./conversations-dsn    # under session_store postgres; under cloudsql-iam, user: <the daemon's IAM login>
+  bounds: { answer_seconds: 180, model_calls: 8, output_tokens: 4000, gh_seconds: 30, gh_output_chars: 60000, gh_calls: 20, concurrent: 4, daily_usd: 50 }
+```
+
+- `providers` (without it, the loop is off): At least one of `anthropic` (Anthropic's Messages API) and `openai` (OpenAI's Responses API); no other key.
+  Absent, null or empty, it names no model the loop may call, and the loop is off (below).
+
+- `providers.<provider>.base_url` (required): The provider's API endpoint, an `http` or `https` URL.
+  The loop takes every base URL from here, never from its environment.
+
+- `providers.<provider>.api_key_file`, `api_key_command` (exactly one): The provider's key: a file (relative to `legion.yaml`'s directory), or a command run under `sh` with the daemon's environment less its NATS seeds that prints it, as `github_apps`' `private_key_command` is.
+  Read again for every model call, so a rotated key or a short-lived token is the one each call carries; neither boot nor `legion config check` reads it, and no refusal or log line carries the key.
+
+- `prices` (required with a provider): At least one model, keyed `<provider>/<model>` as the conversation names it (`anthropic/claude-opus-5-5`), each with all four of `input`, `output`, `cache_write` and `cache_read`, non-negative USD per million tokens (0 where the provider charges nothing).
+  A model of a provider `providers` does not name is refused.
+  A block that names no provider has nothing to price, so it may leave `prices` out or empty, but every model it prices is refused.
+  A conversation on a model with no price is never answered on (`no_price`).
+
+- `conversation_store.dsn_file` (under `runtime.kubernetes.session_store: postgres`): The daemon's connection to the conversation store, a file holding the `postgres://` URL of the session database, which boot reads and refuses unless it holds one.
+  The daemon reads and appends to conversations through it, and without it the loop is off (below).
+
+- `conversation_store.user` (under `session_store: cloudsql-iam`): The daemon's connection to the conversation store, the IAM login the daemon signs in as to `session_database`'s instance and database, through a Cloud SQL proxy of its own over the daemon's own cloud identity.
+  Without it the loop is off (below).
+
+- `bounds.answer_seconds` (180): How long one answer may take, its model calls and `gh` calls together.
+
+- `bounds.model_calls` (8): Model calls per answer; the last one allowed offers no tool, so it must be the reply.
+  That call carries a short message after everything else it is sent: that it is the last call, that it offers no tool, to reply now, in the reply form, from what the agent already knows, and that a `not_answered` or `needs_work` reply must say in `needs` what it needs, since that call's reply is never asked for again.
+  The message is the loop's own instruction to that call, as its system prompt is, so the exchange written into the agent's conversation never holds it.
+
+- `bounds.output_tokens` (4000): Output tokens per model call.
+  A reply the provider cuts there is taken for a model running on inside the reply form, not for a longer answer:
+  across 415 answer calls in three proof runs, the longest reply the bound did not cut used 567 output tokens, and the one it cut was a complete answer of about 350 tokens inside the form's `text`, followed by about 3800 newline escapes.
+  So a cut reply is never sent back to the model: the daemon makes the same model call once more without it, inside the same `model_calls` and `answer_seconds`, and the reply to that call is the agent's.
+  The exchange written into the agent's conversation never holds the cut reply, and its tokens and cost count in the answer's.
+  A second cut reply, or one on the last call `model_calls` allows, is `length` (below).
+
+- `bounds.gh_seconds` (30): How long one `gh` call may run.
+
+- `bounds.gh_output_chars` (60000): How much of a `gh` call's output the model reads; the rest is cut with a note saying how much.
+  It also bounds the daemon's own `gh` reads for an answer, the lookup of a call's comment or review after a restart among them, at `gh_output_chars` times `gh_calls` characters, and a read past that bound is refused rather than cut.
+
+- `bounds.gh_calls` (20): `gh` calls per answer.
+
+- `bounds.concurrent` (4): Conversations the project answers at once; the questions to one conversation always run one after another.
+
+- `bounds.daily_usd` (50): USD the project spends on answers per UTC day.
+  The limit is checked before each answer starts, and the answers already running when the day reaches it can take the day past it, by at most `concurrent` answers' cost.
+
+Each count is a positive integer, each `_seconds` a positive whole number of seconds, and `daily_usd` a positive number;
+a key the block does not model is refused by name.
+Each store refuses the `conversation_store` key it does not use, as `runtime.kubernetes`' session keys do.
+The loop is off, as without `answers`, in two ways.
+A block that names no model provider, its `providers` absent, null or empty, leaves the loop off under either runtime.
+Under `runtime: kubernetes`, a block that names a provider and no connection to the conversation store, its `conversation_store` left out or empty, leaves it off too.
+Either way the daemon boots, resolving no `gh` and no leak check for the loop, and logs one line, `answers is set, but the answer loop is off: …`, naming the key that turns the loop on and what to set it to;
+a block that names neither gets the provider line alone, which then names `conversation_store` too.
+`legion config check` prints the same line right after `Config OK` and exits 0;
+and every message to a stopped agent is refused and dropped as it is without `answers`.
+The rest of the block is still read first and held to its rules, so a malformed provider, price or bound, an unknown key and a `conversation_store` key the runtime does not use are refused, never turned off.
+Under `runtime: tmux` the block names no `conversation_store` at all, and one is refused:
+the daemon reads each conversation where its panes keep it ([The conversation stores](#the-conversation-stores)).
+With the loop on, either runtime resolves at boot the real `gh` the loop's tool runs, `LEGION_GH_PATH` or else the first `gh` on `PATH`, never a script (a tmux daemon reuses the one it resolves for its panes), and refuses to start without one.
+A daemon running in the worker image, whose first `gh` on `PATH` is Legion's wrapper script, sets `LEGION_GH_PATH=/usr/local/bin/gh`, the image's real gh.
+Beside that `gh`, boot needs the shared public leak check the loop's tool runs before every call ([The `gh` tool, a security decision](#the-gh-tool-a-security-decision)), and refuses to start without one, naming the check and where it looked:
+a tmux daemon resolves the machine's check as it resolves a pane's (`PUBLIC_LEAK_CHECK`, then `public-leak-check.sh` on `PATH`, then the pointer file under the configuration home), and a Kubernetes daemon needs the deployment's leak check setting, `LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_MANIFEST_SHA256` or the `leak_check` block ([Worker image](#worker-image)), and reads the tag it installs that check at, its own environment's `LEGION_LEAK_CHECK_TAG`, which the worker image sets.
+A Kubernetes daemon runs no other tool of its host but that check, which it installs and runs itself, since its pods run the image's.
+`legion config check` and `legion probe-boot` make the same refusals.
+While the loop is on, `legion state --json` shows the block under `settings.answers`, and while it is off it shows none, as without `answers`:
+each provider's `base_url` and `api_key_source` (which key names it), the prices and the settled bounds, never a key, a key's command or file, or the conversation store's connection.
+`deploy/kubernetes/daemon/legion.yaml.example` carries the block, commented out.
+
+### How a question reaches it
+
+The daemon records every conversation that worked one of its issues' roles, a phase worker's or a root architect's (never the controller's), in `agent_conversations`, at each registration and, for conversations older than this release, by a scan at boot that finds them by their titles (`Legion <role> · <ISSUE>`) and their own role claim, logging every one it skips with its path.
+A close forgets a claim's session; this record keeps it.
+With the loop on, the daemon mirrors that record into the Envoy listener's agent registry (`PUT /v1/legion/agents`, in batches at boot and one write per registration) and writes its project's `answering` heartbeat (`PUT /v1/legion/projects/<project>`) every minute;
+the listener hands a project's messages off while that record last said `answering`, whatever its age, so a daemon that stops still gets its agents' messages and answers them when it returns, and one that loses `answers`, or whose loop is off, or that is taken down states `answering: false` at its next boot, which gives its agents' messages the listener's own answers again at once:
+a send stored for a session Envoy still knows or a `404`, a role message kept for the role's next holder.
+A listener too old for these routes answers `404`, which the daemon logs once per boot and tries again every minute.
+The daemon writes these routes with its Envoy bearer (`envoy_token_file`, sent as `Authorization: Bearer`), which names no session.
+The listener refuses every registry write that presents a secrets-broker access token with `403`, since such a token always names a session, and a session that could write an entry or `answering: true` could have another session's messages answered by a daemon instead of stored for it.
+That refusal closes the broker token's way in and no other: every launch also carries the daemon's Envoy bearer (`ENVOY_TOKEN_FILE`), which names no session, so a session that presents it writes these routes as the daemon does.
+
+Each entry carries `finished`, whether its issue has left the workflow
+— closed or done, parked, or its tree retired or lingering past its close — so no next holder of that role is coming.
+The daemon reads the standing of every issue its history names each minute and writes that issue's entries again whenever it changes, in either direction, so an issue a person moves back into the workflow stops being finished within the minute.
+It decides what a message to a role **nobody holds** gets:
+a finished role's message is handed to the daemon and its sender answered `200` with the stopped agent as `recipient`, while an unfinished role's is kept on that role's kept lane for its next worker for one hour and answered `202` with `kept: true`, which is what the gap between two phase workers of one issue, and a pod being replaced, both need.
+A message addressed to a session id is handed off whether its issue is finished or not, ahead of the copy the listener would store for a session it still knows:
+that session has stopped, and the message is for it rather than for a role another session will take.
+
+A hand-off arrives on `notifications.legion.<project>.agents.<session>` (`packages/contracts/src/legion-handoff.ts`), read by a durable consumer, so one published while the daemon was down is read when it returns.
+The daemon answers only for a session its own record holds, of its own project: any other hand-off is logged (`answers: hand-off dropped: the daemon's history holds no such conversation`) and dropped.
+Every notice the daemon publishes carries `"handoff": false`, so a notice to a stopped architect is held and resent as before, never answered.
+A message the daemon sends in a stopped agent's name carries no such field:
+when the agent it answers is stopped too, the listener hands that answer to its daemon in place of refusing it, and the loop writes it into the asking agent's conversation rather than answering it (below).
+
+### What it answers, and what it refuses
+
+- **Asked.**
+  A Dispatch message sent to the agent; a Dispatch comment that mentions it;
+  a comment on the thread of an ask the agent opened (a session that only follows the ask is not asked); and another agent's Envoy message.
+  An Envoy message and a person's reply on the agent's ask may ask nothing, and then nothing is posted.
+
+- **Never asked**, decided before any model call:
+  an edit, a resolution, a delivery receipt, a claim, an issue event, an ask's answer, the daemon's own notices and posts, the Envoy broker's own messages, and anything carrying the loop's own marker (its `legion-answer:` dedupe key, the `<!-- legion-answer:<id> -->` marker every reply it posts carries, or a Legion footer with an `answer` key), so the loop never answers itself.
+
+- **The loop's own answer to a stopped asker.**
+  The answer it posts for an Envoy message goes to the asker through the listener, which hands it to the asker's own daemon when that agent is stopped, in place of the copy it would store for the asker or its `404`.
+  It is never answered — no model call, no spend, nothing posted, and no question of it reaches the controller
+  — and it is written into the asking agent's conversation as a message it received, the shape the question side of an exchange is written in, so the asker holds the answer when it runs again, as a running asker holds what the listener delivered to it live.
+  It is written in once: the append records the envelope's `dedupe_key` as the delivery's own, the way it records the question an exchange answered, so a hand-off delivered again and one read after a restart add nothing (`answers: the asking agent's conversation already holds this answer; it is not delivered again`).
+  A claim that runs the conversation takes it live instead, as a forwarded question does:
+  the loop sends the answer to that session through the listener in its sender's own words, for a live session and nobody else (`"handoff": false`), and nothing is written into a running agent's conversation.
+  A send the listener refuses is an agent that stopped again in that race, and its answer is written in after all, so no message goes round between the two.
+
+- **Once.**
+  A question's identity holds across retries and restarts:
+  the Dispatch message's or comment's id, or the Envoy envelope's `dedupe_key`, together with the agent it was handed to.
+  A second hand-off of the same question is recorded and not answered again, and a newer conversation of that agent recorded between two hand-offs makes no second question of it.
+
+- **Which conversation.**
+  A message to a session is answered from that session's conversation, an older session of a role a newer one replaced included;
+  a message to a role, from the role's newest conversation.
+
+- **Never a running conversation.**
+  When the conversation is its claim's current one and the claim runs it, or is starting it, nothing is appended:
+  the question, with every `gh` call the loop already made for it and its result, goes to the running agent on its role topic, held and offered again until a live session holds the role, and back to the loop if the claim stops first.
+  A claim's start waits at most 10 seconds for an answer being appended to its conversation.
+
+- **Never a released claim.**
+  The loop answers for three stopped states alone:
+  a claim the workflow suspended (a parked child, or a tree whose root left the workflow during its linger), one retired, and one closed.
+  A claim the daemon suspended by idle release is none of them:
+  its idle issue pod was released with its session, phase and pending task kept, and the next message to it is the wake that brings the pod back and resumes that very session.
+  So the mirror writes such a session's registry entry `released` as the release suspends the claim, and again without it once a wake resumes the claim, and the listener hands no message for a `released` session or role off.
+  Each gets the listener's own answer instead:
+  a send is stored for the session and answered `state: stopped`, or `404` for a session Envoy knows no record of, beside its wake;
+  a delivery nothing can place is given up with its `no_holder` notice and its wake; and a role message is kept for the role's next holder and wakes the role.
+  Dispatch records a session's answer as the listener gave it, and keeps a person's message to such a role for its next holder (`queued`), whose session may then reply to it.
+  A question that reached the loop before the mirror's write is treated as one to a running conversation (above):
+  forwarded to the role topic, where a message nobody holds wakes the released role, and offered again until the resumed worker holds it, never answered in the name of a worker that is coming back.
+
+- **The model** is the conversation's own:
+  an `anthropic/…` model run on `anthropic-messages` through Anthropic's Messages API, an `openai/…` model run on `openai-responses` through OpenAI's Responses API, a Claude Code conversation's model through Anthropic's.
+  Any other is not answered (`no_provider`), nor is a conversation holding a record its reader does not know (`unknown_format`), and no model call is made for either.
+  An Oh My Pi compaction written as images, its snapcompact, is such a record:
+  Oh My Pi writes one for a compaction that carries no instructions, a person's bare `/compact` among them, so the reader declines it and the question is passed on.
+  The daemon's own compaction carries instructions, so its summary is text, which the reader reads ([Starting fresh when a session is lost or wedged](#starting-fresh-when-a-session-is-lost-or-wedged)).
+  A provider's 429, 5xx or transport error is retried once, within the answer's time; nothing else retries.
+
+- **The reply** is one JSON object the daemon checks, of four kinds:
+  `answered`, posted as the answer; `not_answered` (the agent cannot answer from its conversation and what `gh` reads) and `needs_work` (the question asks for work only a running agent can do, which the agent says it cannot do now, never promising it), both posted and passed on;
+  and `none`, offered only for an Envoy message or a person's reply on the agent's ask, which posts nothing.
+  The form's own field descriptions tell the model the two rules its schema cannot hold a reply to: a `not_answered` or `needs_work` reply names what it needs, and every kind but `none` carries text.
+  The daemon holds a reply to one more rule: the text of every kind but `none` is no placeholder, meaning one word of letters alone that is neither yes nor no and is no word of the agent's conversation, the question or the answer's `gh` results, raw JSON among them read with each escape such as `\n` as a space.
+  The rule is that narrow so that a terse right answer passes: `No.`, a commit sha, or a marker such as `SBOM-ZINC-512`.
+  A reply that breaks one of these rules is asked for once again, with the daemon's reason as a message after it, inside the same `model_calls`, `answer_seconds` and `output_tokens`, and the exchange appended to the conversation then holds the refused reply, that message and the reply after it, in that order.
+  A second such reply, or one made on the last call `model_calls` allows, is `malformed` (below).
+  The placeholder rule does not read an exchange of its own that the conversation holds, a refused placeholder and the daemon's reason after it, so a placeholder refused once is refused again on a later question.
+
+- **No answer.**
+  A bound passed (`answer_seconds`, `model_calls`, `length` at `output_tokens`), a refusal, a reply not in the form (`malformed`), a provider that failed (`provider_error`), the day's spend over `daily_usd` (`over_limit`), `no_provider`, `no_price`, `unknown_format`, a run the provider metered no call of
+  — no counts at all, or zero input, output and cache tokens on every call, which is what a gateway that strips usage leaves (`unmetered`:
+  its answer is unpriced, so it would move the day's spend by nothing and `daily_usd` would bound no answer)
+  — and a conversation its store no longer holds (`no_conversation`):
+  the daemon replies in the agent's name, naming the bound or the fault and that it passed the question to the Legion controller, and passes it on.
+  A reply Dispatch or the listener refuses for good is passed on as `post_refused`.
+  The reply also names each `gh` write the question's calls ran, this run's and an earlier run's, by its command, its repository and gh's exit, so an asker who reads that the agent could not answer also reads what it already merged, approved or posted:
+  ``I could not answer within the bound of 8 model calls. I had already run these gh writes: `gh pr merge` on acme/widgets (exit 0). I passed your question to the Legion controller.``
+  A write is every call but a read: a comment, a review, `pr merge`, `pr edit`, `run rerun`, `workflow run` and a `gh api` call of any method but `GET` and `HEAD`, among the rest.
+  A read (`pr view`, `run view`, a search, a `gh api` `GET` or `HEAD`, a GraphQL query), a call asking for `--help` and a call the tool refused are not named, and a write the daemon stopped during is named with no exit.
+  When a model call returned anything before the fault, the run's turns are appended to the agent's conversation as an answer's are, each `gh` call with its result, without the cut reply made again or the last call's message, and after them a message from the daemon saying that the answer ended with no reply and quoting the reply it posted, so the agent finds its writes when it next resumes.
+  A fault decided before any model call, or a first call that returned nothing, appends nothing.
+
+- **Passing on.**
+  The daemon sends the controller one `agent-question` notice per question on its controller topic (`{kind, role, reason, question: {id, issue, session, asker, ref, text, writes}}`, the text cut at 2,000 characters).
+  Because that topic is a live wake only, `legion state` lists every question passed on in the last seven days, newest first and at most 100, as `questionsForController` (daemon API contract 208).
+  Both name each `gh` write the question's calls ran, as the reply does, so the controller never decides on a question without knowing what the agent already did:
+  `writes` is a list of `{seq, command, repository, exit}`, `command` being the command's words (for `gh api` its method and endpoint, `api PUT repos/acme/widgets/pulls/7/merge`), `repository` `""` where the call named none, and `exit` `null` where gh answered no status.
+  The notice leaves `writes` out when there is none, and `questionsForController` carries `[]`.
+  A person's decision on an ask a stopped agent opened is passed on once, as one `agent-decision` notice (`{kind, role, agent_decision: {id, issue, session, asker, ref, text}}`, the text cut as a question's is):
+  to the architect that owns the agent's issue while it holds its role and its tree neither lingers nor has closed, and otherwise to the controller on its controller topic.
+  A decision the parked-decision relay of the ask's own tree carries itself gets no such notice.
+
+- **Posting**, in the agent's name and once:
+  a Dispatch message through its delivery's reply route, a mention through the comment's reply route, an ask thread as a comment carrying the reply's marker (the thread is read for it before a post is made again), an Envoy message by a direct message to its sender in reply to it.
+
+- **After a restart** a question resumes where it stood:
+  one not yet appended is answered again, the model given the `gh` calls the earlier run made (a comment or review call whose outcome was never recorded is looked up on GitHub by its footer first, so it is posted once), unless its conversation already holds the exchange an earlier run wrote there, which the `legion-answer` entry naming the question says:
+  the reply recorded before that write is then posted and no model is called.
+  One appended is posted without being answered again, since its answer is already in the conversation.
+
+- **While the project is paused** ([Pausing a project](#pausing-a-project)), the loop does no work.
+  It reads the pause's own flag, the one the daemon's launches and task sends read.
+  No answer starts, and an answer in flight when the pause comes stops before its next model call or `gh` call, its cost so far counted in the day's spend.
+  A question that arrives during the pause, or is in flight when it comes, is kept where it stood (`answers: the project is paused; the question waits for the resume`): nothing is posted for it, and it is not passed to the controller.
+  After the resume the loop answers the questions in the order they arrived, each within its usual bounds, and a run the pause stopped is answered again as one after a restart is, given the `gh` calls it already made.
+  A daemon that cannot hold a pause, a tmux daemon among them, never pauses its loop.
+
+### Cost and logs
+
+Every answer logs one line, `answers: answered`, with `question`, `issue`, `role`, `session`, `model`, `kind`, `fault`, `calls`, `inputTokens`, `outputTokens`, `cacheWriteTokens`, `cacheReadTokens`, `reasoningTokens` and `costUSD`, each summed over every model call of the answer, cache writes included, at `prices`.
+An answer the project's pause stopped carries `paused` too, set to true.
+The cost is added to the project's spend for the UTC day, kept in the daemon's store so a restart keeps it;
+the spend is checked before each answer, so the answer that crosses `daily_usd` finishes, and every question after it that day gets the daemon's `over_limit` reply.
+Beside it: one `answers: question` line per change of a question's state, one `answers: gh` line per `gh` call naming the App (its role and configured id) and the owner it ran as, and `answers: question passed to the controller` once per question passed on.
+
+### The `gh` tool, a security decision
+
+`gh` is the loop's one tool: GitHub's own command line with the GitHub access the agent's pane has.
+
+- **What the model is told.**
+  The tool's description is built for each answer.
+  It says the tool is GitHub's own gh, which the daemon runs as the agent's role App in an empty directory with no checkout of any repository, so every call names its repository: `-R <owner>/<repo>`, a github.com URL, or, for `gh api`, a `repos/<owner>/<repo>/…` endpoint.
+  It names the repository the agent's issue works and, where the daemon's record holds one, the number of the issue's pull request, and says nothing of a pull request where the record holds none.
+  It lists the commands the tool takes, the allow list below in the tool's own words, and gives one call that runs as written against that repository, which the input schema gives as its example too:
+  `pr view <number> -R <owner>/<repo> --json state,headRefOid,reviews`, or `pr list -R <owner>/<repo> --limit 5` where the record holds no pull request.
+  It also says the tool writes when the message asks for it, and that every comment or review carries the footer the tool adds.
+  The system prompt's sentence on `gh` carries the same words on the checkout and the repository, from the one place they are written (`ghtool.Usage`).
+
+- **A refusal says how to call it.**
+  A call naming no command the tool takes is refused with its reason and then the same words:
+  a call naming no command at all, which is what gh's own `--help` or `-h` on its own reads as, gh's `--version`, a command gh has and the tool does not, and one the allow list refuses.
+  A call gh ran that failed for naming no repository, git's `not a git repository` failure that gh passes on, is not refused: the model reads gh's output and then those words, so it names the repository rather than making the same call again;
+  that call is recorded in `answer_tool_calls` with what the model read.
+  Every refusal for another reason, such as an option opening a browser, keeps its own reason alone.
+
+A pane is a sandbox; the daemon's host is not, holding the daemon's own credentials and disk.
+So the tool runs only what is safe there, and decides before anything runs:
+
+- **Allowed:** `api`, `pr` (but not `pr checkout`), `run` (but not `run download`), `workflow`, `search`, `repo view`, `release view` and `list`, `issue view`, `list` and `comment`, `label list` and `cache list`.
+  Everything else is refused, `extension`, `alias`, `config`, `auth`, `codespace`, `browse`, `gist`, `secret`, `ssh-key`, `gpg-key`, `repo clone` and `release download` among them, and so is an option opening a browser (`--web`, `-w`), `gh api --hostname`, and an option reading a file or standard input on the daemon's host (`--body-file`, a `pr` or `issue` command's `-F`, `pr create --recover`, a workflow field's `@<path>`).
+  Each is refused as an option and never inside the value an option is given:
+  the tool holds the options of every command the allow list names, from gh's own help, and reads a call's arguments against them as pflag does, so a body, a title, a merge subject, a search query or a `jq` expression beginning with a hyphen
+  — `--body "-worker.Stop() is gone"`, `--search "-wip in:title"` — is text.
+  Where an argument names an option no such table holds, a later gh's new one among them, every argument that could be an option is read as one again.
+
+- **One API host.**
+  A `gh api` endpoint is a path, `repos/<owner>/<repo>/…`, or the one absolute URL `https://api.github.com/…`;
+  another host or another scheme is refused before gh starts, for this tool and for a pane's `legion gh` alike (`internal/ghroute`).
+  gh sends the bundle's token to whatever an absolute endpoint names, so `http://api.github.com/…` would hand it over in the clear, GitHub's redirect to https coming only once it has it.
+
+- **The footer.**
+  Every comment or review a call posts carries the agent's Legion footer, `<!-- legion: {"session":"<session>","phase":"<phase>","answer":"<question>.<seq>"} -->`, which the tool adds itself:
+  after a `pr comment`, `issue comment` or `pr review` `--body`, after a closing or reopening `--comment`, as the body of a bare `--approve`, `--request-changes` or `--comment` review, after every literal `body` field of a `gh api` write, and as the body of a `gh api` POST creating or submitting a review that gives none.
+  A form whose text the tool cannot read is refused rather than posted without one:
+  `--editor`, `gh api --input`, a typed field's `@<path>`, and a GraphQL mutation, which has a REST endpoint to use instead.
+  The review intake ignores the footer's `answer` key, and a restart finds a post by it.
+  A review's footer also names the head the agent's recorded round read, `"head":"<40-hex sha>"` beside the session, phase and answer: the commit its role's phases row records it completed against (`handoff_commit`).
+  Before a review runs (every `pr review`, a `gh api` POST creating or submitting one, and a `gh api` PUT replacing a review's body, whose last footer is the one the daemon reads), the tool reads the current head of the pull request the call names (a number with `-R`, a URL, or the `gh api` endpoint) with a read of its own, routed and in the scrubbed environment, and a review naming its pull request none of those ways is refused.
+  It refuses the review, gh never run for it, when that head is not the recorded one, naming both and saying the agent has not read the new head and the round waits for the reviewer itself; when the record names no head; and when a `gh api` review's `commit_id` names another commit.
+  The reason is the daemon's own review rule: a review the review App submits decides a round only when the head its footer names is the pull request's current head (`refusesRound` in `internal/workflow/review.go`), so a review naming no head, or a head a push has since moved past, would decide nothing.
+  A refused review is recorded in `answer_tool_calls` and logged as every refusal is; a comment, and a review's dismissal, run as before, with no head read and no head named.
+  A write that posts no comment or review (`pr merge`, `run rerun`, `workflow run`) runs as given.
+
+- **Routing and credentials.**
+  A call goes to the one directory of the agent's bundle that every repository and owner it names routes to, as a pane's `legion gh` routes it (`internal/ghroute`, read from the real gh's own help, each repository routed by `ghroute.DirFor`):
+  the owner's own directory, or, for a repository a configured rename moved, the directory of the owner holding it now.
+  A call whose repositories route to two directories is refused before gh runs, and so is a write naming an owner the role's App is not installed on.
+  A read naming only such owners runs with the bundle's default directory, the issue's repository's owner's, as a pane's `legion gh` runs it (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
+  The bundle is the one a pane of the agent's role gets: a directory for every owner the role's App is installed on, each holding that installation's lease at the role's own permissions, and the configured renames it routes by (`renames.txt`).
+  The bundle is written per answer to a fresh 0700 `<state_dir>/answers/<question>/gh` and removed when the answer ends.
+
+- **A scrubbed environment.**
+  `PATH` of gh's and git's directories, `HOME` and the XDG directories at the answer's empty ones, `GH_CONFIG_DIR` the routed owner's, `GH_PATH` a wrapper running this binary's `legion gh` (so the git gh runs itself authenticates as a pane's does), gh's prompts, update check, spinner and colour off, and nothing else of the daemon's environment;
+  the working directory is an empty one with no remotes, which is why every call names its repository (above).
+  Each call is recorded in `answer_tool_calls` before it runs and finished after; a call whose start cannot be recorded does not run.
+
+- **The leak guard.**
+  Every call passes the shared leak guard before gh is handed anything (`internal/leakguard`, the guard a pane's `legion gh` runs), once the call's repository and the files it would send are known:
+  the whole argv, the destination the call was routed to and those files are read, and a call the check refuses, or one whose check could not be made to run, is refused with the guard's own message as the tool's result, gh never started, the refusal recorded in `answer_tool_calls` and one `answers: gh call refused by the leak guard` line logged with the issue, the role, the repository and the reason.
+  The guard's own children — the check, and its `gh` read of a repository's visibility
+  — run in the daemon's environment rather than the call's, with the real gh and the routed owner's `GH_CONFIG_DIR` in front of it and no token of the daemon's own, so that read is the agent's App and never the `legion gh` wrapper, which would call a guard of its own.
+
+- **The check the guard runs.**
+  Each runtime has one rule for the check the guard runs (`ghtool.Host.LeakCheck`), which the tool asks for at every call and hands the guard, so the guard never resolves a check of its own.
+  Where the deployment names its leak check ([Worker image](#worker-image)), the guard is told that check's manifest digest as `LEGION_LEAK_CHECKER_MANIFEST_SHA256`, under either runtime (`ghtool.Host.LeakCheckManifestSHA256`), and holds the check it is handed to it as a pane's or a pod's guard does: a check whose manifest digest is anything else refuses the call, gh never started, with `LEAK CHECK SETUP ERROR: the gh call: the shared public leak check found is not the one the deployment names`, naming the digest told and the digest found.
+  Under that digest the guard runs a private copy of the check it held to it, and the tool has it make that copy in the answer's own 0700 directory, `<state_dir>/answers/<question>/gh/leak-check-copies`, never in a role's private directory (`leakguard.Options.PrivateCopyBase`): the worker image holds that directory root-owned and empty, and nothing writable is bound over it in the daemon's container.
+  Where the deployment names none, the guard is told no digest, a `LEGION_LEAK_CHECKER_MANIFEST_SHA256` of the daemon's own environment included.
+  Under `runtime: kubernetes` the repository the check is read from and its manifest digest are the deployment's setting, which the loop needs there: boot refuses to start without it, naming `LEGION_LEAK_CHECK_REPOSITORY`, `LEGION_LEAK_CHECK_MANIFEST_SHA256` and the `leak_check` block, and a served check whose manifest digest is not the setting's is a cause no wait changes (below).
+
+- **The check under `runtime: kubernetes`.**
+  The daemon hands the guard a copy it installs and runs itself, since its environment holds none of the three places a check is resolved from, and boot refuses to start without the tag it installs:
+  it reads the check from the repository the setting names, at its own environment's `LEGION_LEAK_CHECK_TAG`, through the reader every pod's launcher is pushed the check from, so one read of a tag serves both.
+  The check it read must have the setting's manifest digest, as a pod built under the setting is pushed none of another, or nothing is installed.
+  It installs that check under `<state_dir>/leak-check/` with the launcher's own installer (`leakguard.InstallServed`: the unpack into a staging directory, the tag recorded, one `--help` run, the rename over what the directory held), reads it back as a role's shim reads its pod's install, at the tag and of the setting's manifest digest (`leakguard.Installed`), and logs `answers: installed the shared public leak check the gh tool's leak guard runs` with the tag and the path.
+  A cause that is not GitHub's own trouble refuses the boot with the cause sentence a pod's start is refused with, `the shared public leak check could not be installed: …`, told as the boot's GitHub App mint tells it (`appTransient`, permanent unless GitHub reports its own trouble):
+  a tag not of the published shape, a daemon with no GitHub App, a tarball read GitHub answers 404 (the tag is missing) or 403 for anything but its rate limit, a tarball that holds no check or misses a file of its manifest, an App with no installation on the check's owner, GitHub refusing the reading permissions the read's token asks for, any other token mint GitHub does not report as its own trouble, a served check whose manifest digest is not the setting's, `the check the daemon read at <tag> has the manifest digest <digest>, not the deployment's <digest> (LEGION_LEAK_CHECK_MANIFEST_SHA256 or leak_check.manifest_sha256)`, and a served check whose install fails, its `--help` run among them.
+  GitHub's trouble boots the daemon all the same and leaves the install to the background: the read's transport failing, the body included, its time bound passing, an HTTP 5xx answer to the tarball read, GitHub's rate limit (a 429, or a 403 that carries it), a 401 to the token the read was made with, which the daemon then forgets so the next try mints a fresh one, and a token mint that failed as GitHub's trouble.
+  The daemon tries the install again 5 seconds later, doubling the wait up to 30 seconds, until it lands, a try meets a cause that is not GitHub's trouble, or the daemon stops, and logs each failed try as `answers: the shared public leak check is not installed, so the gh tool refuses every call until it is; installing it again` with the tag, the wait (`retryIn`) and the cause.
+  Until the install lands, every `gh` call is refused before gh starts with the setup error naming the pin and the last try's cause, `LEAK CHECK SETUP ERROR: the gh call: the shared public leak check at <tag>, the pin LEGION_LEAK_CHECK_TAG names, is not installed yet, …`, recorded and logged as the guard's own refusals are.
+  A try in the background that meets a cause that is not GitHub's trouble, a manifest digest that is not the setting's among them, ends the install:
+  the daemon logs it once at Error, `answers: the shared public leak check cannot be installed, so the gh tool refuses every call until the daemon's next boot; installing it no more`, with the tag and the cause, and tries no more.
+  Every `gh` call from then on is refused with that cause, in a setup error that says so, `LEAK CHECK SETUP ERROR: the gh call: the shared public leak check at <tag>, the pin LEGION_LEAK_CHECK_TAG names, could not be installed, and the daemon tries the install again only at its next boot: …`.
+  The first call after the install lands runs under the installed check.
+  Every boot installs again over what the last one left, so a re-pin, which moves the image's pin and with it the daemon's environment, is the next boot's install of the new tag, logged as `answers: the install of <new tag> replaced the install of <old tag> at <dir>`.
+
+- **The check under `runtime: tmux`.**
+  The check is the machine's own, which the tool resolves at each call in the daemon's own environment, as the daemon resolves a pane's at each launch (`PUBLIC_LEAK_CHECK`, then `public-leak-check.sh` on `PATH`, then the pointer file under the configuration home), since an operator's machine installs, moves and republishes the check while the daemon runs.
+  It never resolves the check in the environment the guard's children run in, whose `PATH` has gh's directory in front and which carries no `PUBLIC_LEAK_CHECK`.
+  A call made while the machine's setup is broken, or names no check at all, is refused with the setup error naming what the resolution read, whether or not the deployment names a leak check: a pane of a deployment that names none runs its writes under the guard's rules alone where no check is named, and the tool runs no call without one.
+  Where the deployment names a leak check, the guard holds the machine's check to its manifest digest (above).
+
+### The conversation stores
+
+| Runtime and store | Where the loop reads and appends |
+| --- | --- |
+| `runtime: tmux`, `runtime.tmux.session_store: files` (the default) | An Oh My Pi session file on the daemon's host at its recorded path, appended with one `O_APPEND` write; a Claude Code transcript under `<state_dir>/claude/<claim token>/`, the same way. |
+| `runtime: tmux`, `runtime.tmux.session_store: postgres` | An Oh My Pi session as a row of the session table, through `runtime.tmux.session_dsn_file`, the file the panes read; a Claude Code transcript as a file, as above. |
+| `runtime: kubernetes`, `session_store: postgres` | A row of the session table, through `answers.conversation_store.dsn_file`; without that key the loop is off. |
+| `runtime: kubernetes`, `session_store: cloudsql-iam` | A row of the session table, through the daemon's own proxy as `answers.conversation_store.user`; without that key the loop is off. |
+
+An append to a row runs in one transaction that reads the row for update and is refused when the session moved past what the loop read; the question then goes to the agent.
+The boot scan reads the session table under a database store, and the pane home's session files and the Claude Code transcripts under tmux's files store.
+
+### `runtime.tmux.session_store`
+
+A tmux daemon's panes keep their Oh My Pi sessions as files on its host by default.
+With `session_store: postgres` they keep them in a Postgres database instead, as a pod's do, which lets a tmux daemon run the loop on a database store:
+
+```yaml
+runtime:
+  tmux:
+    session_store: postgres             # files (the default) or postgres
+    session_dsn_file: ./sessions-dsn    # required with postgres, refused with files
+```
+
+`session_dsn_file` (relative to `legion.yaml`'s directory) holds the database's `postgres://` URL, which boot reads and refuses unless it is one.
+Every pane is told `OMP_SESSION_STORAGE=sql` and `OMP_SESSION_SQL_DSN_FILE` naming that file, so every pane can read the URL:
+give its login no rights beyond that database.
+The boot gate also runs the session-storage probe a pod's image runs, on the Oh My Pi every pane runs, and reads the session table through the URL, refusing to start on a database it cannot reach or a table its login may not read (a database no Oh My Pi has opened yet holds no table, which the first pane creates: it passes, logged).
+A resume of a recorded session file looks it up in the table and refuses a row the table lacks, as a pod's launcher does, never starting a fresh agent.
+A claim that records the session's id and no file resumes the newest row under that id, and where the table holds none the claim forgets the session once and starts a fresh agent, as it does when a search of the files finds no file of the id.
+Claude Code transcripts stay files.
+The scalar `runtime: tmux` is the files store, and `legion state --json` shows `settings.runtime.tmux.session_store` only under `postgres`, never the file.
+
 ## Kubernetes runtime: the Go daemon on Agent Sandbox
 
 Under the Go coordinator, `runtime: kubernetes` runs every issue as one Agent Sandbox:
@@ -1721,8 +2085,7 @@ The effect checks both workflow generations, later starts, unfinished stop effec
 A held turn, unfinished or uncertain launch, or Kubernetes error keeps the effect pending; a superseded close finishes without acting.
 Once the roles have stopped, the daemon sets that issue's Sandbox to `Suspended` and waits for its pod to disappear, which takes the disk that pod owns.
 Then it deletes the Sandbox, whatever the close was:
-a child set `done`, one set `backlog`, `icebox` or `triage`, and a root leaving the workflow with its tree are one case now, since a Sandbox kept behind would hold nothing (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed issue's
-Sandbox and the role Secrets it owned` — the six role Secrets go with it by owner reference.
+a child set `done`, one set `backlog`, `icebox` or `triage`, and a root leaving the workflow with its tree are one case now, since a Sandbox kept behind would hold nothing (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed issue's Sandbox and the role Secrets it owned` — the six role Secrets go with it by owner reference.
 Where the Sandbox owns a kept volume, the foreground delete deletes that volume too ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 An `issue_close` retires the claim and keeps its whole session, the id (the volume reaping's evidence) and the resume path, so a later admission resumes each role in the session it recorded, or in a new one once supervise's `forgetSession` has dropped it (a session no store holds any more is dropped and reported, R8).
 The parent's Sandbox is another issue's and is never touched.
@@ -2702,6 +3065,75 @@ A pod the rollback leaves running keeps its trimmer and the identifier that trim
 `psql` answers `DELETE` with the number of count rows the statement deleted, not the number of notices.
 With the counts gone, nothing of these notices need come back except one kind: a notice of a filling volume is reported again by its trimmer at its next sweep that ends above the low mark once the newer release is pinned again, but the notice that a trimmer switched itself off is not, since that trimmer sends nothing more until its roles container restarts.
 The trimmer itself needs no statement either — `runtime.kubernetes.volume_trim` is a key an earlier loader refuses by name, so take the block out of `legion.yaml` before pinning that image, and a pod of the earlier release's own worker image runs no trimmer at all.
+
+#### Rolling back below the release that answers for a stopped agent
+
+The release that added the answer loop ([The answer loop](#the-answer-loop)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-204 (cybermonklabs/legion)`.
+Name it by that entry rather than by its contract number, which moved more than once while it was open, each time `main` or another open pull request reached the number it held.
+So the release before it is whichever release of `main` precedes that entry, and the rules below apply to a rollback to it under either runtime.
+A rollback below it has three steps of its own, all taken before the earlier image is pinned, and a tmux daemon whose panes keep their sessions in a database has a wait of its own as well.
+
+**The project must stop saying it answers, while this release still runs.**
+This release's daemon writes its project's answering record into the Envoy listener's agent registry, the key `project.<legion_project>` of the `legion_agents` bucket, at its boot and every minute after.
+A listener of this release hands a message off to the project's daemon while that record last said `answering: true`, whatever the record's age:
+a message to a session the registry names, once that session is gone, and a message to a role nobody holds, once the role's newest entry is `finished`, in either case while that entry is not `released`.
+It publishes the message on `notifications.legion.<project>.agents.<session>` and answers its sender as delivered.
+An earlier daemon writes no record and no entry, so the last `answering: true` stands, and it opens no consumer on that subject, so every message the listener hands off goes unanswered.
+Take `answers` out of `legion.yaml` and restart this release's daemon once:
+without `answers` it still writes the record with its own Envoy credential (`envoy_url` and `envoy_token_file`) as soon as it has booted, and the record then says `answering: false`.
+`GET /v1/legion/agents/sessions/<session>` of any session of the project, with the listener's bearer, answers `"answering": false` once that write has landed.
+From then on the listener answers the project's messages as it did before the hand-off existed, a send stored for a session it still knows or a `404`, and a role's message kept for the role's next holder.
+Dispatch reads the same flag before it delivers to a stopped agent, so its deliveries to a stopped agent go back to what they were too.
+One case reads no flag: a message to a role whose newest entry is `released` and not `finished`, which Dispatch keeps for the role's next holder whatever the project says.
+No earlier daemon writes to the bucket, so that `false` stands until this release runs again.
+A hand-off the listener published before the write waits on the stream for this release's durable consumer, which no earlier daemon opens.
+
+**An earlier listener needs nothing.**
+A listener below this release hands nothing off and reads no answering record: its registry reads take a session's key or an issue's or a role's prefix, never `project.`, and it decodes an entry leniently, so the `finished` and `released` this release wrote mean nothing to it.
+The entries stay in the bucket, which deletes nothing, and its routes serve them as before.
+
+**`answers`, `runtime.tmux.session_store` and `runtime.tmux.session_dsn_file` must come out of `legion.yaml`.**
+An earlier loader knows none of the three and refuses the file, naming the first of them it meets in file order (`unknown key answers`, `unknown key runtime.tmux.session_store`, `unknown key runtime.tmux.session_dsn_file`), so its daemon does not start while one of them stands.
+`answers` is out after the step above.
+Take the two tmux keys out as well, `session_store: files` included, and `legion config check` on the earlier image reads the file clean.
+A file that never set them needs nothing.
+
+**A queued `agent-question` or `agent-decision` notice must go before the earlier image is pinned.**
+The answer loop queues two notice kinds an earlier release does not know, each with a payload member of its own:
+`agent-question`, a question it passed to the controller, with `question`, and `agent-decision`, a person's decision on a stopped agent's ask, with `agent_decision`.
+An earlier daemon decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so it can never decode such a row while it is queued, and its outbox calls no notice row's failure permanent, so the row is retried on its backoff for ever.
+An `agent-question` row, and an `agent-decision` row for the controller, are `controller_notice` rows: each attempt logs `outbox row failed`, and the controller never hears of it.
+An `agent-decision` row for the architect that owns the agent's issue is a `notice` row, and it fails more than itself, as the `volume-near-full` row above does:
+on its backoff it is one of the rows `WaitingNotices` reads, so `pacedCatchUps` fails `GET /legion/v1/state` for the whole project on every read, and `releaseWaiting` fails every release of the notices owed to architects that became ready.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' in ('agent-question', 'agent-decision');
+```
+
+The statement takes these rows of every project the database holds.
+Where another project's daemon shares the database and stays on this release, add `and split_part(issue, '-', 1) = '<PROJECT>'`, the Dispatch project key the rolled-back daemon's issues carry, which is how `WaitingNotices` itself selects a project.
+What the delete costs is the notices themselves.
+The loop marked each question and each decision passed in the transaction that queued its notice (`processed_events`), so a roll forward queues neither again:
+a deleted question is still listed in `questionsForController`, among the newest 100, for seven days from its pass, in the state this release serves a caller at contract 208 or later, and a deleted decision is not told again.
+
+**The four tables need no statement.**
+This release creates `answer_tool_calls` (`20261106214000_answer_tool_calls`), `agent_conversations` (`20261106214001_agent_conversations`), and `answer_questions` and `answer_spend` (`20261106214002_answer_questions`).
+An earlier daemon does not refuse a database that records migrations it does not know: its migrator applies each migration it embeds that the database has not recorded and compares nothing else (`Store.Migrate` in `store/store.go`), so it boots on that database and names none of the four tables.
+Leave them and their three `schema_version` rows as they are: a roll forward finds the three versions recorded, runs none of them again, and finds the conversations, the questions and the day's spend as this release left them.
+
+**A tmux daemon on `runtime.tmux.session_store: postgres` waits until it holds no session to resume.**
+Under that store this release tells every pane `OMP_SESSION_STORAGE=sql` and `OMP_SESSION_SQL_DSN_FILE`, so each pane's Oh My Pi session is a row of the session table, keyed by the path its file would have had.
+An earlier daemon tells its panes neither variable, and its `runtime.tmux.pane_env` refuses both names, so its panes keep their sessions as files.
+Its resume looks for the session as a file, at its recorded path or by its name in another folder of a sessions directory, and a session that is a row is found nowhere:
+the claim forgets the session and starts a fresh agent, charged nothing, and the loss is reported to the issue, its architect and the controller.
+Nothing copies a row back out to a file (`legion sessions` has `import` alone), so no step here saves those sessions.
+Roll such a daemon back once none of its claims records an Oh My Pi session it is still to resume, or accept a fresh agent for each one that does.
+A Claude Code transcript is a file under either store, and resumes as before.
+
+**Nothing else in the database needs a statement.**
+This release adds no other migration and no other notice kind or payload member.
+The marks the loop writes in `processed_events`, under the sources `agent-question` and `agent-decision`, sit in a table the earlier release reads by source and event id, and it reads neither source.
 
 ### Pinning a release that drops what a running pod still uses
 
@@ -3732,7 +4164,7 @@ A file that gives a pod a request below its limit passes and prints, after the c
 resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed
 ```
 
-Legion holds no model route.
+Legion holds no model route for its agents; the daemon's own answer loop, with `answers` set, calls the providers that block names ([The answer loop](#the-answer-loop)).
 `pod` is the operator's: `env`, `volumes` (each a `secret`, `config_map`, `projected`, `persistent_volume_claim` or `nfs` source), `volume_mounts` and `service_account`, added to every pod, the image probe's included, and refused where they name a path or variable of Legion's own or the worker image's.
 A ConfigMap or Secret a volume names must exist in the daemon's namespace, with every key the volume asks of it:
 the image probe refuses the boot at once, naming it, when it does not, for every volume a `volume_mounts` entry mounts (the kubelet attempts no other) ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)).
@@ -4481,7 +4913,7 @@ When the wait ends, the kills that the watch named no process for have one `kill
   the launcher's stop, which sends SIGKILL to a role's `role-init` at the end of the stop grace, and the kernel then to every process of the role's namespace (`endGeneration`, `packages/daemon/internal/launcher/process.go`);
   the Claude bridge's stop, which sends SIGKILL to Claude Code its grace after its SIGTERM (`end`, `packages/daemon/internal/claudebridge/bridge.go`);
   and any `exec.CommandContext` of Legion's, whose default `Cancel` sends SIGKILL when its context ends (`Process.Kill`), and whose `WaitDelay` sends SIGKILL to a process that a `Cancel` of its own asked to stop with SIGTERM and that has not exited by then.
-  The default `Cancel` sends it to `legion gh`'s reads of `gh` and `git` at their timeout, in a role's tree (`readGhHelp` in `packages/daemon/cmd/legion/gh.go`, `gitLines` in `packages/daemon/cmd/legion/gh_selectors.go`);
+  The default `Cancel` sends it to `legion gh`'s reads of `gh` and `git` at their timeout, in a role's tree (`ReadHelp` in `packages/daemon/internal/ghroute/route.go`, `gitLines` in `packages/daemon/internal/ghroute/selectors.go`);
   to the shim's agent-secrets `keygen` at its timeout, and to that `keygen` and the secrets renewer at the end of the shim's loop, which every exit of the shim brings (`identity` and `startRenewer`, `packages/daemon/internal/shim/agentsecrets.go`);
   and to the launcher's test-database script at its bound (`runTestPG` and `CheckTestPostgres`, `packages/daemon/internal/launcher/testpg.go`).
   `WaitDelay` sends it to the CodeGraph warm-up's `codegraph` (`runCodegraph`, `packages/daemon/internal/workspace/codegraph.go`) once the shim has stopped the warm-up, which it does while its agent still runs: that process is a direct child of the shim, so a session process, and it is named with the `kernel-protected` cause with no departure to set it aside.
@@ -7832,6 +8264,7 @@ a refusal is boot's own, on stderr, and exits 1.
   It also reads every secret file the configuration names, as `legion config check` does, so the host it runs on holds all of them.
   Of their contents, only the pane NATS seed's enters the probe: it decides the pane NATS user the probe checks the providers Secret's seed against.
   Every other file only has to pass boot's reads.
+  With the loop on it also resolves the real `gh` the answer loop's tool runs, as boot does (`LEGION_GH_PATH`, else the first `gh` on `PATH`, never a script), so in the worker image, whose first `gh` on `PATH` is Legion's wrapper script, set `LEGION_GH_PATH=/usr/local/bin/gh`, the image's real gh.
 
 - **Its own probe Sandbox.**
   A booting daemon names its probe Sandbox for the project and the image;
@@ -7989,7 +8422,7 @@ Four prerequisites and caveats the configuration cannot check for you:
 ### Operator configuration
 
 The Go coordinator's.
-Legion holds no model, provider or route.
+Legion holds no model, provider or route for its agents (the daemon's own answer loop calls the providers `answers` names: [The answer loop](#the-answer-loop)).
 Everything a pod's Oh My Pi needs to reach a model is the operator's, and the daemon hands the same pieces to every pod it runs:
 each issue's pod (every role of it alike) and the image probe's.
 
@@ -8829,6 +9262,7 @@ A claim can record a session and no file of it: every release from `legion-v18.0
 Such a claim on Oh My Pi is resumed by its id, and never started as a fresh agent while it records the session, because the daemon refuses the registration of any other session on it.
 A claim on Claude Code forgets such a session instead, because no runtime looks a Claude Code transcript up by its id.
 The tmux runtime resumes the newest file named `*_<id>.jsonl` one folder below the pane's sessions directory.
+Under `runtime.tmux.session_store: postgres` it resumes the newest row of the session table whose path ends in `_<id>.jsonl` instead, and a table that holds no such row is that session gone, as under Kubernetes below: the claim forgets it and starts a fresh agent in the same try.
 Under Kubernetes the daemon names the id to the role's launcher (`resumeSession` in the start frame).
 The launcher reads the newest row of the table whose path ends in `_<id>.jsonl`, and starts Oh My Pi with `--resume=<that row's path>`, which also resumes a session whose recorded directory no longer exists.
 A table that holds no such row is that session gone, and the claim forgets it and starts the fresh agent above in the same try.

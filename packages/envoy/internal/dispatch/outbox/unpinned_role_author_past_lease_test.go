@@ -105,8 +105,8 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 	// is pinned, so the copy is the outbox's and the pass that reads the row next publishes it.
 	// The wait is a wait and not a drop.
 	if _, err := rig.database.Pool.Exec(ctx, `
-		update comment_deliveries set state = 'failed', error = 'no live session' where comment_id = $1 and target = $2
-	`, commentID, target); err != nil {
+		update comment_deliveries set state = 'failed', error = $3 where comment_id = $1 and target = $2
+	`, commentID, target, contracts.NoLiveSession); err != nil {
 		t.Fatalf("fail the resend of the mention of %s: %v", target, err)
 	}
 	if _, err := rig.database.Pool.Exec(ctx, `

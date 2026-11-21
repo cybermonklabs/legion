@@ -46,13 +46,13 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193 is the constant rather than its number, because the entry that added the shaped answers
-// names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares. The last is
-// repositoriesLiveContract rather than its number for the same reason: it is this daemon's own
-// contract, dispatch://INFRA-4401's, and a renumber of that change moves the constant and this
-// list with it.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract}
+// Three are constants rather than numbers. shapedAnswersContract, 193, is the contract that
+// brought this list, and the entry that added the shaped answers names it.
+// repositoriesLiveContract, 202, is dispatch://INFRA-4401's entry, and
+// questionsForControllerContract is this change's own entry, the last one. A renumber of any of
+// the three entries moves its constant and this list with it, and moving the constant or the list
+// alone would describe a shape at a contract no entry declares.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, questionsForControllerContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -347,6 +347,12 @@ var stateEnumeratedFields = []EnumeratedField{
 	// contract whole (shaping.go's withoutPause). The pause's `by.kind` and `endedBy.kind` are no
 	// rows: each is the discriminator of a discriminated union, read with a `z.literal`.
 	{Answer: AnswerState, KeyPath: "paused.waitsOn.*.role", Values: pauseStopRoles},
+	// `role` of one question the answer loop passed to the controller
+	// (api.QuestionForController.Role). It arrived with `questionsForController`, which is served
+	// down below that contract whole (shaping.go's withoutQuestionsForController). The question's
+	// `reason` beside it is no row: the schema reads it as a string, so a reason a later loop
+	// names is read rather than refused.
+	{Answer: AnswerState, KeyPath: "questionsForController.*.role", Values: questionRoles},
 	// `runtime` of the registered controller's locator, the runtime this daemon runs under
 	// (api.ControllerLocator.Runtime).
 	{Answer: AnswerState, KeyPath: "controllerLocator.runtime", Values: controllerRuntimes},
@@ -529,15 +535,15 @@ var claimViewStates = valuesFrom(ServingFloor,
 // floorRoles is every role a claim could hold at ServingFloor, named constant by constant. It
 // names each one rather than reading claim.Roles, as failureCauses does its causes, because these
 // lists record the contract a value arrived at: a role added to claim.Roles later arrives at its
-// own contract and not at the floor, at the wakes' or at the pause's.
+// own contract and not at the floor, at the wakes', at the pause's or at the questions'.
 var floorRoles = []claim.Role{
 	claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 	claim.RoleReviewer, claim.RoleMerger,
 }
 
-// claimRoles is every role a claim can hold, which four rows share: the stranded report's, the
-// registration's, the wake's and the pause stop's, those last two at their own arrivals
-// (wakeRoles, pauseStopRoles). The list has not moved since the floor.
+// claimRoles is every role a claim can hold, which five rows share: the stranded report's, the
+// registration's, the wake's, the pause stop's and the question's, those last three at their own
+// arrivals (wakeRoles, pauseStopRoles, questionRoles). The list has not moved since the floor.
 var claimRoles = valuesFrom(ServingFloor, floorRoles...)
 
 // wakeRoles is the same list of roles at the contract `wakesWaiting` arrived at: no wake of that
@@ -548,6 +554,12 @@ var wakeRoles = valuesFrom(wakesWaitingContract, floorRoles...)
 // each claim the open pause waits on takes (api.PauseStopView.Role): no `paused` is served below
 // that contract at all (shaping.go's withoutPause).
 var pauseStopRoles = valuesFrom(pauseContract, floorRoles...)
+
+// questionRoles is the same list of roles at the contract `questionsForController` arrived at,
+// which the role of the stopped agent each question was asked of takes
+// (api.QuestionForController.Role): no `questionsForController` is served below that contract at
+// all (shaping.go's withoutQuestionsForController).
+var questionRoles = valuesFrom(questionsForControllerContract, floorRoles...)
 
 // updateStates is every value of a claim view's `updateState`, recorded at the contract this
 // change adds the key under. The words are the four the package declares (updatestate.go), so a

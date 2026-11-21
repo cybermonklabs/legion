@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { SettledDeliveryState } from "@legion/contracts";
+import { NO_LIVE_SESSION, type SettledDeliveryState } from "@legion/contracts";
 
 import type { DispatchEvent } from "../../api/types";
 import { activityDescription, buildActivityItems, dateKey } from "./activity-model";
@@ -119,6 +119,8 @@ test("a project's default assignee names the person it moved to; a retained clea
 function commentDelivery(receipt: {
   state: SettledDeliveryState;
   duplicate?: boolean;
+  session_id?: string | null;
+  target?: string;
 }): DispatchEvent {
   return {
     actor: { id: "alice", kind: "user" },
@@ -133,7 +135,7 @@ function commentDelivery(receipt: {
       reply_id: null,
       session_id: null,
       target: "session:planner",
-      ...(receipt.state === "failed" ? { error: "no live session planner" } : {}),
+      ...(receipt.state === "failed" ? { error: `${NO_LIVE_SESSION} planner` } : {}),
       ...receipt,
     },
     seq: 1,
@@ -165,7 +167,29 @@ test("a mention receipt says whether the mention reached its target", () => {
   ]);
 });
 
-function messageDelivery(state: SettledDeliveryState): DispatchEvent {
+// sjawhar/legion#2230: a mention of a role no live session holds, whose Legion pod its daemon
+// released, is kept by the listener for the role's next session, so the line says it was kept for
+// the role and who gets it within the keep window rather than calling the role a stopped session.
+// A role's holder whose session stopped is still a session the message was stored for.
+test("a mention receipt kept for a role says the role's next session gets it", () => {
+  const role = "role:legion-infra-infra-204-planner";
+  expect(activityDescription(commentDelivery({ state: "queued", target: role }))).toEqual([
+    `kept a comment mention for ${role}; the role's next session gets it if one takes the role within one hour`,
+  ]);
+  expect(
+    activityDescription(commentDelivery({ session_id: "planner", state: "queued", target: role }))
+  ).toEqual([
+    `queued a comment mention for ${role}, which is stopped; it gets the message if it runs again within 72 hours`,
+  ]);
+});
+
+function messageDelivery(
+  state: SettledDeliveryState,
+  addressed: { session_id: string; target: string } = {
+    session_id: "planner",
+    target: "session:planner",
+  }
+): DispatchEvent {
   return {
     actor: { id: "alice", kind: "user" },
     created_at: "2026-10-25T00:00:00Z",
@@ -176,10 +200,9 @@ function messageDelivery(state: SettledDeliveryState): DispatchEvent {
       attempt: 1,
       delivery: "steer",
       message_id: "message-1",
-      session_id: "planner",
       state,
-      target: "session:planner",
       title: "planner",
+      ...addressed,
     },
     seq: 2,
     type: "message.delivery",
@@ -191,6 +214,14 @@ test("a message receipt says a queued message waits for the stopped session", ()
   expect(activityDescription(messageDelivery("sent"))).toEqual(["delivered a message"]);
   expect(activityDescription(messageDelivery("queued"))).toEqual([
     "queued a message for session:planner, which is stopped; it gets the message if it runs again within 72 hours",
+  ]);
+});
+
+// A role-routed message the listener keeps for a released role's next session names no session.
+test("a message receipt kept for a role says the role's next session gets it", () => {
+  const role = "role:legion-infra-infra-204-planner";
+  expect(activityDescription(messageDelivery("queued", { session_id: "", target: role }))).toEqual([
+    `kept a message for ${role}; the role's next session gets it if one takes the role within one hour`,
   ]);
 });
 

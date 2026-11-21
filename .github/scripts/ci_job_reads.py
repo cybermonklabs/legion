@@ -990,12 +990,12 @@ RULES = {
     # the load-test harness's main package is parsed for a listener route named outside its client.
     f"{ENVOY}/listenerwire/clients_test.go": [
         run(ENVOY, ["./internal/cipher/wake", "./internal/dispatch/envoy", "./loadtest/listenerclient", "./internal/testnats/cmd/refillrig"],
-            "listenerwire/clients_test.go:27,30 wirecheck.Check runs go list -deps -export over them in packages/envoy (internal/wirecheck/wirecheck.go goList)",
+            "listenerwire/clients_test.go:30,33 wirecheck.Check runs go list -deps -export over them in packages/envoy (internal/wirecheck/wirecheck.go goList)",
             mode="build"),
-        run(DAEMON, ["./internal/notify", "./internal/controller"],
-            "listenerwire/clients_test.go:28,30 wirecheck.Check runs go list -deps -export over them in packages/daemon (internal/wirecheck/wirecheck.go goList)",
+        run(DAEMON, ["./internal/notify", "./internal/controller", "./internal/registrywrite"],
+            "listenerwire/clients_test.go:31,33 wirecheck.Check runs go list -deps -export over them in packages/daemon (internal/wirecheck/wirecheck.go goList)",
             mode="build"),
-        *[Read(path, "listenerwire/clients_test.go:100 lists the load-test package's Go files and :110 parses each, "
+        *[Read(path, "listenerwire/clients_test.go:102 lists the load-test package's Go files and :112 parses each, "
                      "test files passed over (TestTheLoadTestCallsTheListenerOnlyThroughItsClient)")
           for path in files_but_tests(f"{ENVOY}/loadtest")]],
     # --- envoy-infra

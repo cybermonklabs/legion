@@ -1,0 +1,36 @@
+{
+  "id": 900000041,
+  "number": 41,
+  "state": "open",
+  "title": "Answer loop proof ALF-7 (closed by the run)",
+  "user": { "login": "example-implement[bot]", "type": "Bot" },
+  "body": null,
+  "html_url": "https://github.com/sjawhar/legion-smoke/pull/41",
+  "updated_at": "2026-11-08T22:40:00Z",
+  "head": {
+    "label": "sjawhar:legion-e2eal/alf-7",
+    "ref": "legion-e2eal/alf-7",
+    "sha": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+    "repo": {
+      "id": 900000000,
+      "name": "legion-smoke",
+      "full_name": "sjawhar/legion-smoke",
+      "owner": { "login": "sjawhar", "type": "User" },
+      "private": false
+    }
+  },
+  "base": {
+    "label": "sjawhar:main",
+    "ref": "main",
+    "sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+    "repo": {
+      "id": 900000000,
+      "name": "legion-smoke",
+      "full_name": "sjawhar/legion-smoke",
+      "owner": { "login": "sjawhar", "type": "User" },
+      "private": false,
+      "default_branch": "main"
+    }
+  },
+  "merged": false
+}

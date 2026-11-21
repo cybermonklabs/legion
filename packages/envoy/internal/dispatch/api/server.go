@@ -248,7 +248,11 @@ type DepsInput struct {
 	// Dispatch's Google Cloud machine (cmd/dispatch: ENVOY_ACCOUNT_GOOGLE_AUDIENCE), which every
 	// listener call presents in EnvoyToken's place (envoy.WithGoogleIdentity); empty presents none.
 	// With neither it nor EnvoyAccountTokenFile, Dispatch presents no identity and refuses every
-	// send for a role (envoy.ErrNoListenerIdentity).
+	// send marked with a role (envoy.ErrNoListenerIdentity): a send for a role route to a session
+	// it resolved for the role, the role's holder or the session the attempt recorded. What it
+	// sends for a role no live session holds whose target the Legion agent registry named - a
+	// publish for a released holder, a send to a finished role's stopped agent - carries no mark
+	// (sendResolvedDelivery).
 	EnvoyGoogleAudience string
 	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
 	// a test exercising a receipt timeout sets a short one rather than waiting that out.

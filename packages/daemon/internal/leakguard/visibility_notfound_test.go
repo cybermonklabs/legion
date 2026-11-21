@@ -72,7 +72,7 @@ func TestAVisibilityRead404IsToldAsNotFound(t *testing.T) {
 				_, err := guard.GhCall(bound(t), GhRequest{Args: patchCall, Repo: theRepo})
 				return err
 			},
-			target: new(*NotFound), words: notFoundWords(whatGhCall),
+			target: new(*NotFound), words: notFoundWords(WhatGhCall),
 		},
 		{
 			name: "a push", rest: ghNotFound, curl: curlAnswers("private"),
@@ -95,7 +95,7 @@ func TestAVisibilityRead404IsToldAsNotFound(t *testing.T) {
 				_, err := guard.GhCall(bound(t), GhRequest{Args: patchCall, Repo: theRepo})
 				return err
 			},
-			target: new(*NotFound), words: notFoundWords(whatGhCall), curlRuns: 1,
+			target: new(*NotFound), words: notFoundWords(WhatGhCall), curlRuns: 1,
 		},
 		{
 			name: "the shared check's own read", rest: ghNotFound, curl: curlAnswers("private"),

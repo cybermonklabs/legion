@@ -218,9 +218,11 @@ func pluginsLine(cfg config.Config) string {
 // public key when there is one, never the seed.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its
-// top level — in the words boot logs it with: what the key would have been refused for, and what
-// to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
-// since such a key is ignored and never refused.
+// top level, then the line saying an `answers` block that names no model provider, or no
+// connection to the conversation store, leaves the answer loop off — in the words boot logs it
+// with: what the key would have been refused for, or why the loop is off, and what to change. A
+// deprecation is the first thing an operator reads that way, and the exit stays 0, since such a
+// key is ignored and never refused.
 // Then one line per project, in key order, naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
 // check at a merge. After them, one line per configured repository rename
@@ -377,7 +379,9 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 	// start that never reaches a boot has logged them too, and the lines are the first a reader of
 	// the log meets
 	// (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
-	// The boot goes on: a key another deployment still sets is ignored, never refused.
+	// The boot goes on: a key another deployment still sets is ignored, never refused, and an
+	// `answers` block with no model provider or no connection to the conversation store runs as
+	// no block.
 	for _, warning := range cfg.Warnings {
 		log.Warn(warning)
 	}
@@ -617,6 +621,7 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	if wakes := wakesWaitingSummary(state.WakesWaiting); wakes != "" {
 		fmt.Fprintln(stdout, wakes)
 	}
+	fmt.Fprint(stdout, questionsSummary(state.QuestionsForController))
 	for _, line := range repositoryLines(state.Repositories.Live) {
 		fmt.Fprintln(stdout, line)
 	}
@@ -1256,6 +1261,27 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 		}
 	}
 	return fmt.Sprintf("claims nothing will wake: %d — %s", len(stranded), strings.Join(groups, "; "))
+}
+
+// questionsSummary is what an operator reads of the questions to stopped agents the daemon's answer
+// loop passed to the controller (api.State.QuestionsForController): how many in the window, then
+// one line each, newest first, naming when, the agent's issue, role and session, who asked, where
+// and why. With none the line says so. The session and the asker are Go-quoted, as quotedOrNone
+// prints a field a worker supplies: an asking session is named with its title, which its agent
+// chooses, so a newline or any other control character in either is an escape rather than another
+// line of this listing.
+func questionsSummary(questions []api.QuestionForController) string {
+	days := int(api.QuestionsForControllerWindow / (24 * time.Hour))
+	if len(questions) == 0 {
+		return fmt.Sprintf("questions for the controller: none in the last %d days\n", days)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "questions for the controller: %d in the last %d days, newest first\n", len(questions), days)
+	for _, q := range questions {
+		fmt.Fprintf(&b, "  %s %s %s %q: from %q at %s, %s (question %s)\n",
+			q.PassedAt.UTC().Format(time.RFC3339), q.Issue, q.Role, q.Session, q.Asker, q.Ref, q.Reason, q.ID)
+	}
+	return b.String()
 }
 
 // entryBehind is one issue the plain state names for its phase entry: the issue, the role it is

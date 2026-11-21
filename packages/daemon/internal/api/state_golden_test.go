@@ -989,6 +989,26 @@ func populatedState(t *testing.T) State {
 		},
 		// The resolved maximal kubernetes file, so the fixture pins every key `settings` can carry.
 		Settings: SettingsOf(settingsFixtureConfig(t)),
+		// The stopped implementer of LEGION-208 merged its pull request with gh and then passed
+		// model_calls, and a comment it began when the daemon stopped has no exit; the stopped
+		// tester of LEGION-207 could not answer a person's question from its conversation. The
+		// answer loop passed both to the controller.
+		QuestionsForController: []QuestionForController{
+			{
+				ID: "9e2b7c41d05a3f68e1c4a7b0d9f2e536", Issue: "LEGION-208", Role: claim.RoleImplementer, Session: "ses_implementer_208",
+				Asker: "session:ses_architect_208 (LEGION-208 architect)", Ref: "envoy:evt-5521", Reason: "model_calls",
+				PassedAt: time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC),
+				Writes: []record.AgentQuestionWrite{
+					{Seq: 1, Command: "pr merge", Repository: "acme/widgets", Exit: new(int)},
+					{Seq: 3, Command: "api POST repos/acme/widgets/issues/208/comments", Repository: "acme/widgets"},
+				},
+			},
+			{
+				ID: "5f0c2a9e7b14d3866a1e0c4b9d2f7a35", Issue: "LEGION-207", Role: claim.RoleTester, Session: "ses_tester_207",
+				Asker: "user:octocat", Ref: "dispatch://LEGION-207/message/m-4411", Reason: "not_answered",
+				PassedAt: time.Date(2026, 9, 22, 9, 14, 3, 0, time.UTC),
+			},
+		},
 		// The three durable consumers the daemon opens, in the order Lag answers them
 		// (intake.Consumers.Lag): the Dispatch consumer is caught up; the GitHub consumer has 412
 		// messages waiting and has handled none for over a minute; the listener-wake consumer's
@@ -1124,13 +1144,14 @@ func TestStateGolden(t *testing.T) {
 // own state, asked through the route itself. 201 is no contract SupportedContracts records, so the
 // caller is served at 199, the recorded contract below it (recordedContractAtOrBelow), which the
 // mark names: its `repositories` block in the shape contract 152 gave it, written from the same
-// entries (withoutRepositoriesLive), and every other key as a caller at 199 is served it, since no
-// other row of stateNarrowings stands above 199. 199 moved no answer's shape, so those are the
-// keys a caller at 193 is served too. shapedAnswersContract's row and pauseContract's stand below
-// it, which is why the golden carries `lowestPluginContract`, each claim view's `updateState` and
-// `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's
-// schema of the block, so the narrowing is held to the reader it is written for, and its drift
-// gate holds every key of the file to that copy.
+// entries (withoutRepositoriesLive), no `questionsForController` (withoutQuestionsForController),
+// and every other key as a caller at 199 is served it, since no other row of stateNarrowings
+// stands above 199. 199 moved no answer's shape, so those are the keys a caller at 193 is served
+// too. shapedAnswersContract's row and pauseContract's stand below it, which is why the golden
+// carries `lowestPluginContract`, each claim view's `updateState` and `paused`.
+// `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
+// the block, so the narrowing is held to the reader it is written for, and its drift gate holds
+// every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
 	body := stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1)

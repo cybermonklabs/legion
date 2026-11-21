@@ -78,6 +78,8 @@ type workflowRuntime struct {
 	dispatchProject string
 	stateDir        string
 	log             *slog.Logger
+	// answers is the answer loop where it is on (config.Answers settled), nil where it is off.
+	answers *answering
 	// conn is the Envoy NATS connection. It is written only on run's own goroutine while the
 	// daemon boots, once per connect attempt: connect runs there, inside bootprobe.Run, which
 	// retries it, and a failed attempt stores nil (daemon.go). Every one of those writes is
@@ -331,7 +333,11 @@ var appMintAttempt = 15 * time.Second
 // own bound (appAttempt, startRateLimits).
 var appMintRetry = bootprobe.Retry{Initial: 5 * time.Second, Max: 30 * time.Second, Attempts: 5}
 
-// appTransient is a failure GitHub reports as its own trouble (appauth.TransientError).
+// appTransient is a failure GitHub reports as its own trouble (appauth.TransientError): the one
+// line the daemon draws between a failure a wait may end and one no wait changes, for the boot's
+// App reads and mints, its repository reads (bootReadTransient), and the install of the answer
+// loop's shared public leak check, whose tarball read is reported in the same type
+// (installAnswersLeakCheck's transientReads).
 func appTransient(err error) bool {
 	var transient *appauth.TransientError
 	return errors.As(err, &transient)
@@ -1056,6 +1062,18 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		w.conn.Store(nil)
 		return natsauth.WithLastError(err, conn)
 	}
+	if w.answers != nil {
+		// The answer loop's hand-offs (listenerwire.LegionHandoffSubject): the listener hands this
+		// project's stopped agents' messages to the daemon there.
+		w.answers.handoffs, err = intake.OpenHandoffs(ctx, js, w.pool, intake.HandoffSpec{
+			Project: w.answers.project, AckWait: cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
+		})
+		if err != nil {
+			conn.Close()
+			w.conn.Store(nil)
+			return natsauth.WithLastError(err, conn)
+		}
+	}
 	if servesNone {
 		w.log.Info("workflow: no live record of the project names a repository, so the daemon serves no repository until an issue names one",
 			"project", cfg.Project)
@@ -1589,10 +1607,11 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
 // (queueMergeStateFollow). All are set before the records' wake can reach the outbox
-// (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
-// unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
-// and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
-// which also drops that repository (podEndsOn).
+// (outboxWake). Its idle release tells the agent registry's mirror the plan carries of each claim
+// it suspends (standingsChanged). Whether an issue still holds its workspace, which a repository
+// kept for an unrecorded issue is answered while (keptRepository), is read from the runtime
+// (workspaceHeldBy), and so is the rule the end of an issue's pod runs the rename pass under, the
+// outbox's podEnded, which also drops that repository (podEndsOn).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
@@ -1601,6 +1620,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
+	w.outbox.standingsChanged = supervision.plan.standingsChanged
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
@@ -1947,6 +1967,18 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 		w.outbox.Run(store.ForConcurrentWorker(running))
 		return nil
 	})
+	if w.answers != nil {
+		group.Go(func() error {
+			if err := w.answers.handoffs.Run(store.ForConcurrentWorker(running), w.answers.loop.Receive); err != nil {
+				return fmt.Errorf("the answer loop's hand-offs stopped: %w", natsauth.WithLastError(err, w.conn.Load()))
+			}
+			return nil
+		})
+		group.Go(func() error {
+			w.answers.loop.Run(store.ForConcurrentWorker(running))
+			return nil
+		})
+	}
 	group.Go(func() error {
 		w.pollHoldRelease(store.ForConcurrentWorker(running))
 		return nil

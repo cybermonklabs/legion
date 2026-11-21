@@ -352,7 +352,7 @@ has one session read every file of a skill and reports whether each arrived whol
 
 ```bash
 cd packages/pi-legion/scripts/skill-scenarios
-LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic ./rig.sh profile head <checkout>
+LEGION_E2E_MODEL_GATEWAY_URL=<gateway base URL> ./rig.sh profile head <checkout>
 # or, with no gateway: LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file>
 # or, through a provider block of your own models.yml whose apiKey is `!cat <absolute file>`:
 #   LEGION_E2E_MODEL_ROUTE=provider LEGION_E2E_MODEL_PROVIDER_FILE=<models.yml> LEGION_E2E_MODEL_PROVIDER=<block>

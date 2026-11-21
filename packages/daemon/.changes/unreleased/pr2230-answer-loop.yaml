@@ -1,0 +1,30 @@
+kind: Added
+body: |-
+  The daemon can answer a question sent to a Legion agent that is not running (suspended by the
+  workflow, retired or closed) from that agent's own conversation, without starting its pod. An
+  operator turns it on with the `answers:` block of `legion.yaml`: the model providers, their
+  prices, the bounds and the conversation store. Without that block the daemon behaves as before
+  and tells the Envoy listener that it does not answer. Under `runtime: kubernetes`, a block that
+  names no connection to the conversation store (`conversation_store.dsn_file` under
+  `session_store: postgres`, `conversation_store.user` under `cloudsql-iam`) leaves the loop off
+  in the same way: the daemon boots, `legion start` logs one warning saying why and
+  `legion config check` prints it after `Config OK`, and a message to a stopped agent is refused
+  and dropped as it is without the block. A block that names no model provider (`providers`
+  absent, null or empty) leaves the loop off the same way under either runtime, with its own
+  warning in place of the conversation store's.
+
+  The daemon reads and appends Oh My Pi and Claude Code conversations, answers on the model the
+  agent last ran on, and posts the answer in the agent's name where the question was asked. The
+  model gets a `gh` tool that acts as the agent's role App, and every call passes the shared leak
+  guard before gh starts. A review that tool submits names, in its Legion footer, the head the
+  agent's recorded round read, and the tool refuses the review when the pull request's head is
+  not that head.
+
+  A question the loop cannot answer, or a request for work, goes to the controller once
+  (`agent-question`, and `questionsForController` in `legion state`). A person's decision on a
+  stopped agent's ask goes to the running architect, else to the controller (`agent-decision`).
+  The loop does not answer for a claim the idle release suspended: its message is kept and wakes
+  it, as before.
+time: 2026-11-17T05:20:13.000000000Z
+custom:
+    Issue: pr2230

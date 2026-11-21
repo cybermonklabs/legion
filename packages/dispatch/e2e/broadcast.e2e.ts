@@ -1,4 +1,4 @@
-import { shortSessionId } from "@legion/contracts";
+import { NO_LIVE_SESSION, shortSessionId } from "@legion/contracts";
 
 import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
 import {
@@ -24,6 +24,13 @@ import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
+
+// The broadcast page's line naming the sessions Dispatch left out because the listener holds no
+// record of them: their exclusion reason is NO_LIVE_SESSION (resolveBroadcastTargets in
+// broadcasts.go).
+const EXCLUDED_AS_NOT_LIVE = new RegExp(
+  `Excluded: .*\\(${NO_LIVE_SESSION}\\)\\. Nothing was sent to them\\.`
+);
 
 // No `last_seen`: the fixture answers every read of the session with the current time. A literal
 // computed when this module is imported ages with the whole suite, and a session ten minutes
@@ -334,9 +341,7 @@ test("a session that goes away before the send is excluded by the server and nam
     await send.click();
     await page.waitForURL(/\/agents\/broadcasts\/[0-9a-f-]+$/);
 
-    await expect(
-      page.getByText(/Excluded: .*\(no live session\)\. Nothing was sent to them\./)
-    ).toBeVisible();
+    await expect(page.getByText(EXCLUDED_AS_NOT_LIVE)).toBeVisible();
     await expect(page.getByRole("article", { name: "Observer" })).toHaveCount(0);
 
     const failed = page.getByRole("article", { name: "Tester" });
@@ -505,9 +510,7 @@ test("a session that leaves between a refused send and its restore is still in t
     expect(posted[1]?.key).not.toBe(posted[0]?.key);
 
     const view = page.getByRole("region", { name: "Broadcast" });
-    await expect(
-      view.getByText(/Excluded: .*\(no live session\)\. Nothing was sent to them\./)
-    ).toBeVisible();
+    await expect(view.getByText(EXCLUDED_AS_NOT_LIVE)).toBeVisible();
     await expect(view.getByRole("article")).toHaveText([/Planner/]);
     await expect
       .poll(async () => (await getSentMessages()).map((entry) => entry.target_session))

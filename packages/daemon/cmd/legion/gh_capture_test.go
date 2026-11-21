@@ -606,13 +606,13 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 			{"config", "credential.useHttpPath", "true"},
 			{"config", "http.https://github.com/.extraheader", "AUTHORIZATION: basic example"},
 		}), nil, []string{"pr", "view", "1", "--json", "title"}, "acme", ""},
-		// The git `legion gh` routes a call by runs with gh's own environment (gitLines), so a
-		// caller's GIT_DIR, which gh's git never sees, cannot route the call to another owner's
-		// directory than the repository gh then acts on.
+		// The git `legion gh` routes a call by runs with gh's own environment
+		// (ghroute.ReadGitRemotes), so a caller's GIT_DIR, which gh's git never sees, cannot route
+		// the call to another owner's directory than the repository gh then acts on.
 		row{issueWorkspace, []string{"GIT_DIR=" + filepath.Join(otherClone, ".git")}, []string{"pr", "view", "1", "--json", "title"}, "acme", ""},
 		// An explicit submodule recursion, which no configuration turns off, is refused by name:
 		// `pr checkout --recurse-submodules` runs `git submodule update --init --recursive`. A
-		// clone's git flags are judged against an allowlist (ghCloneGitFlags): a flag that sets the
+		// clone's git flags are judged against an allowlist (ghroute.TargetOf): a flag that sets the
 		// clone's configuration, in full or abbreviated, its hooks, its submodules or where its
 		// objects come from is refused and sends nothing; the flags a fixture clone of
 		// scripts/e2e passes reach GitHub with the owner's token.
@@ -702,8 +702,8 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// tests count as the shared check the read rule was proven against (testProvenCheckEnv), which
 	// the guard runs alone for a call that writes nothing: the whole guard would first read the
 	// repository's visibility, which `legion gh` refuses for an owner it holds no directory for. A
-	// GraphQL query, which ghWritesNothing does not count as a read, gets the whole guard, and names
-	// no repository whose visibility it would read.
+	// GraphQL query, which ghroute.Target.WritesNothing does not count as a read, gets the whole
+	// guard, and names no repository whose visibility it would read.
 	proven := []string{"PUBLIC_LEAK_CHECK=" + ghCheckAt(t, ghCheckPasses), testProvenCheckEnv + "=" + ghProvenProgramSHA256}
 	for _, tc := range []struct {
 		dir   string

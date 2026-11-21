@@ -1,5 +1,5 @@
 import type { Actor, DispatchEvent } from "../../api/types";
-import { queuedWait } from "../conversation/delivery";
+import { keptForRole, keptForRoleWait, queuedWait } from "../conversation/delivery";
 import { blockInvalidDescription } from "../issue/event-description";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
 
@@ -127,11 +127,14 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     case "comment.answered":
       return "answered a comment";
     // Same rule as the issue timeline's line. A queued mention is the listener holding it for a
-    // session that is not running, which is neither delivered nor refused, so it reads as queued
-    // first, a queued repeat included; a repeat the stream recognised says so next.
+    // session that is not running, or keeping it for a role's next session, which is neither
+    // delivered nor refused, so it reads as queued or kept first, a repeat included; a repeat
+    // the stream recognised says so next.
     case "comment.delivery":
       if (event.payload.state === "queued") {
-        return `queued a comment mention for ${event.payload.target}, which ${queuedWait}`;
+        return keptForRole(event.payload.target, event.payload.session_id)
+          ? `kept a comment mention for ${event.payload.target}; ${keptForRoleWait}`
+          : `queued a comment mention for ${event.payload.target}, which ${queuedWait}`;
       }
       if (event.payload.duplicate === true) {
         return `already delivered a comment mention to ${event.payload.target}`;
@@ -181,9 +184,12 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     case "message.created":
       return "sent a message";
     case "message.delivery":
-      // A message the listener holds for a session that is not running is not delivered yet.
+      // A message the listener holds for a session that is not running, or keeps for a role's
+      // next session, is not delivered yet.
       if (event.payload.state === "queued") {
-        return `queued a message for ${event.payload.target ?? `session:${event.payload.session_id}`}, which ${queuedWait}`;
+        return keptForRole(event.payload.target, event.payload.session_id)
+          ? `kept a message for ${event.payload.target}; ${keptForRoleWait}`
+          : `queued a message for ${event.payload.target ?? `session:${event.payload.session_id}`}, which ${queuedWait}`;
       }
       return "delivered a message";
     case "message.accepted":

@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  A tmux daemon can keep its Oh My Pi panes' conversations in Postgres
+  (`runtime.tmux.session_store: postgres`, with `runtime.tmux.session_dsn_file`), as a Kubernetes
+  deployment can. The boot gate runs the session-storage probe and reads the session table, and a
+  resume of a recorded session file refuses one the table lacks rather than start a fresh agent. A
+  claim that records only the session's id resumes the table's newest row of it, and forgets the
+  session once where the table holds none.
+time: 2026-11-17T05:20:14.000000000Z
+custom:
+    Issue: pr2230

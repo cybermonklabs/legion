@@ -122,6 +122,12 @@ const MintedDedupeKeyPattern = "^(?:envoy\\.role\\.forward\\.)?(?:publish|agent\
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = "The listener didn't answer within the send window; the message may already have been delivered."
 
+// NoLiveSession opens the listener's refusal of a session it will not answer for ("no live
+// session <id>", noLiveSession in cmd/listener) and is the failure Dispatch records for such a
+// session itself. Generated from NO_LIVE_SESSION in packages/contracts so the listener, Dispatch
+// and every reader that keys on the words spell them once.
+const NoLiveSession = "no live session"
+
 // StoreUnconfirmedCause is what a delivery attempt records when the listener answered its send
 // 503 with the code that says the message may be stored (listenerwire.CodeMaybeStored). Generated
 // from STORE_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the string

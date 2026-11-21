@@ -466,66 +466,6 @@ func TestGhChildGitRecursesIntoNoSubmodule(t *testing.T) {
 	}
 }
 
-// `legion gh` refuses, before gh runs, what has gh's git recurse into a submodule or take
-// configuration from the call: `pr checkout --recurse-submodules`, and any git flag a clone leaf
-// (repo clone, repo fork, gist clone) passes on that ghCloneGitFlagTakes does not hold, spelled in
-// full, abbreviated, joined, with `=`, or after a second `--`. It reads every flag passed on, not
-// the first alone: the second review's `-- --depth 1 -c ...` is refused at its `-c`. The flags it
-// holds, a directory first, pass, scripts/e2e's fixture clone among them, at gh 2.104.0 and 2.98.0.
-func TestGhTargetOfRefusesRecursionAndUnreadCloneFlags(t *testing.T) {
-	off, proxy := "http.https://github.com/.sslVerify=false", "http.https://github.com/.proxy=http://127.0.0.1:1"
-	for _, version := range []string{"2.104.0", "2.98.0"} {
-		help := savedGhHelpOf(t, version)
-		for _, tc := range []struct {
-			argv   []string
-			refuse string // "" for a call that passes
-		}{
-			{[]string{"pr", "checkout", "1", "-R", "acme/widgets", "--recurse-submodules"}, `"--recurse-submodules" runs`},
-			{[]string{"pr", "checkout", "1", "-R", "acme/widgets", "--recurse-submodules=false"}, `"--recurse-submodules=false" runs`},
-			{[]string{"repo", "clone", "acme/widgets", "w2", "--", "-c", off, "-c", proxy}, `hands "-c" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--depth", "1", "-c", off}, `hands "-c" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--config", off}, `hands "--config" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--config=" + off}, `hands "--config=` + off + `" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--conf", off}, `hands "--conf" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--recurse-submodules"}, `hands "--recurse-submodules" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--recurse-submodules=lib"}, `hands "--recurse-submodules=lib" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--recursive"}, `hands "--recursive" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--template", "/tmp/example-template"}, `hands "--template" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--template=/tmp/example-template"}, `hands "--template=/tmp/example-template" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "-u", "/tmp/example-upload-pack"}, `hands "-u" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--upload-pack", "/tmp/example-upload-pack"}, `hands "--upload-pack" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--reference", "/tmp/example-reference"}, `hands "--reference" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--reference-if-able", "/tmp/example-reference"}, `hands "--reference-if-able" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--separate-git-dir", "/tmp/example-git-dir"}, `hands "--separate-git-dir" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "-qn"}, `hands "-qn" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "-bmain"}, `hands "-bmain" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "-b=main"}, `hands "-b=main" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--quiet=true"}, `hands "--quiet=true" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--depth"}, `hands "--depth" to git clone with no value`},
-			{[]string{"repo", "clone", "acme/widgets", "widgets", "extra"}, `hands "extra" to git clone`},
-			{[]string{"repo", "clone", "acme/widgets", "--", "widgets", "--", "--recursive"}, `hands "--" to git clone`},
-			{[]string{"repo", "fork", "acme/widgets", "--clone", "--", "--recursive"}, `hands "--recursive" to git clone`},
-			{[]string{"repo", "fork", "acme/widgets", "--clone", "--", "-c", off}, `hands "-c" to git clone`},
-			{[]string{"gist", "clone", "0123456789abcdef", "--", "-c", "core.hooksPath=/tmp/example-hooks"}, `hands "-c" to git clone`},
-			{[]string{"pr", "checkout", "1", "-R", "acme/widgets"}, ""},
-			{[]string{"repo", "clone", "acme/widgets", "widgets", "--", "--quiet", "--depth", "1", "--branch", "main"}, ""},
-			{[]string{"repo", "clone", "acme/widgets", "--", "--depth=1", "--filter=blob:none", "--single-branch", "-b", "main", "--no-tags", "--origin", "up"}, ""},
-			{[]string{"repo", "clone", "--", "acme/widgets", "widgets", "--bare", "-q", "--branch", "--recursive"}, ""},
-			{[]string{"repo", "fork", "acme/widgets", "--clone", "--", "--depth", "1"}, ""},
-			{[]string{"gist", "clone", "0123456789abcdef", "notes", "--", "--quiet"}, ""},
-			{[]string{"pr", "checkout", "1", "-R", "acme/widgets", "--worktree", "/tmp/example-worktree"}, ""},
-		} {
-			_, err := ghTargetOf(tc.argv, nil, help, noGitRepository, ownersOwnDirectories)
-			switch {
-			case tc.refuse == "" && err != nil:
-				t.Errorf("ghTargetOf(%q) at gh %s = %v, want no refusal", tc.argv, version, err)
-			case tc.refuse != "" && (err == nil || !strings.Contains(err.Error(), tc.refuse)):
-				t.Errorf("ghTargetOf(%q) at gh %s = %v, want a refusal containing %q", tc.argv, version, err, tc.refuse)
-			}
-		}
-	}
-}
-
 // The configuration a git of gh's reads later, in another worktree or after a checkout, is the one
 // ghRepoGitConfigRefusal read before gh ran, or the call is refused. Three routes the third side
 // review measured, each built here so that the check's own directory reads clean but for the key

@@ -76,6 +76,12 @@ func legionEntry(id, issue, role, started string) string {
 		id, issue, role, "legion-infra-"+strings.ToLower(issue)+"-"+role, "Legion "+role+" · "+issue, started)
 }
 
+// finishedLegionEntry is legionEntry's entry for a session whose issue has left the workflow, so
+// no next holder of its role is coming (legionagents.Entry.Finished).
+func finishedLegionEntry(id, issue, role, started string) string {
+	return strings.TrimSuffix(legionEntry(id, issue, role, started), "}") + `,"finished":true}`
+}
+
 // legionAnswer is one entry as a read answers it.
 type legionAnswer struct {
 	SessionID     string  `json:"session_id"`
@@ -88,6 +94,7 @@ type legionAnswer struct {
 	StartedAt     string  `json:"started_at"`
 	RecordedAt    string  `json:"recorded_at"`
 	Live          bool    `json:"live"`
+	Answering     bool    `json:"answering"`
 	ReplacedBy    *string `json:"replaced_by"`
 	ReplacedAt    *string `json:"replaced_at"`
 }
@@ -268,7 +275,8 @@ func TestLegionAgentRoutesRefuseMovingASession(t *testing.T) {
 	}
 }
 
-// The project.<legion_project> key is the daemon's own (INFRA-204), and no route reads it.
+// The project.<legion_project> key is the daemon's own (INFRA-204), and no read answers it as an
+// entry.
 func TestLegionAgentRoutesIgnoreAProjectKey(t *testing.T) {
 	client := setupPublishTestClient(t)
 	l := newLegionListener(t, client)
@@ -286,6 +294,54 @@ func TestLegionAgentRoutesIgnoreAProjectKey(t *testing.T) {
 		}
 	}
 	l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents/sessions/ses-tester", "")
+}
+
+// Every read answers each entry's `answering` from its project's answering record as it stands at
+// the read, the condition the hand-off reads on the project (answeringAgent): false while the
+// project has stated none, then the flag it last stated. A listing whose entries are of two
+// projects answers each entry its own project's flag.
+func TestLegionAgentReadsAnswerTheirProjectsAnsweringFlag(t *testing.T) {
+	l := newLegionListener(t, setupPublishTestClient(t))
+	other := strings.NewReplacer(`"legion_project":"infra"`, `"legion_project":"other"`, "legion-infra-", "legion-other-").
+		Replace(legionEntry("ses-other", "INFRA-448", "reviewer", "2026-10-26T04:00:00Z"))
+	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents", `{"entries":[`+
+		legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z")+`,`+other+`]}`)
+	reads := []string{
+		"/v1/legion/agents/sessions/ses-tester", "/v1/legion/agents/sessions/ses-other",
+		"/v1/legion/agents/roles/legion-infra-infra-448-tester", "/v1/legion/agents/roles/legion-other-infra-448-reviewer",
+		"/v1/legion/agents?issue=INFRA-448",
+	}
+	answers := func(t *testing.T, state string, want map[string]bool) {
+		t.Helper()
+		seen := map[string]int{}
+		for _, target := range reads {
+			body := l.want(t, http.StatusOK, http.MethodGet, target, "")
+			entries := decodeLegion[struct{ Entries []legionAnswer }](t, body).Entries
+			if strings.Contains(target, "/sessions/") {
+				entries = []legionAnswer{decodeLegion[legionAnswer](t, body)}
+			}
+			for _, entry := range entries {
+				seen[entry.SessionID]++
+				if entry.Answering != want[entry.SessionID] {
+					t.Fatalf("%s: GET %s answered %s answering %t, want %t", state, target, entry.SessionID, entry.Answering, want[entry.SessionID])
+				}
+			}
+		}
+		// Each session is answered by its own key, its role token's listing and its issue's.
+		if seen["ses-tester"] != 3 || seen["ses-other"] != 3 {
+			t.Fatalf("%s: the reads answered %v, want each session three times", state, seen)
+		}
+	}
+	project := func(answering bool) {
+		l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/projects/infra",
+			fmt.Sprintf(`{"answering":%t,"updated_at":"2026-10-26T05:00:00Z"}`, answering))
+	}
+
+	answers(t, "no project record", map[string]bool{"ses-tester": false, "ses-other": false})
+	project(true)
+	answers(t, "infra answering: true", map[string]bool{"ses-tester": true, "ses-other": false})
+	project(false)
+	answers(t, "infra answering: false", map[string]bool{"ses-tester": false, "ses-other": false})
 }
 
 // The registry is the bucket's: a listener started again over a restarted NATS answers what the

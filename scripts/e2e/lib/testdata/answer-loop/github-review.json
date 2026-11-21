@@ -1,0 +1,18 @@
+{
+  "id": 2147483648124,
+  "node_id": "PRR_kwDOexampleReview",
+  "user": {
+    "login": "example-review[bot]",
+    "id": 900000001,
+    "node_id": "BOT_kgDOexample",
+    "type": "Bot",
+    "site_admin": false
+  },
+  "body": "Approved: nothing to change.\n\n<!-- legion: {\"session\":\"session-reviewer\",\"phase\":\"reviewing\",\"head\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c\"} -->",
+  "state": "APPROVED",
+  "html_url": "https://github.com/sjawhar/legion-smoke/pull/41#pullrequestreview-2147483648124",
+  "pull_request_url": "https://api.github.com/repos/sjawhar/legion-smoke/pulls/41",
+  "author_association": "NONE",
+  "submitted_at": "2026-11-08T22:40:00Z",
+  "commit_id": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"
+}

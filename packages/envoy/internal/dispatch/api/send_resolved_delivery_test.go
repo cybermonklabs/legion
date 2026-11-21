@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // The dashboard reads a failed attempt row that carries an envelope id as one its session answered
@@ -19,6 +21,18 @@ import (
 func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 	session := "s1"
 	live := ResolvedMention{Target: "session:s1", Delivery: "steer", SessionID: &session}
+	kept := keptForPlanner()
+	// published answers a publish to the role's topic with status and body, and fails the test for
+	// any other request: a role kept for its next holder is published, never sent.
+	published := func(status int, body string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/publish" {
+				t.Errorf("unexpected request %s %s, want the role publish", r.Method, r.URL.Path)
+			}
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}
+	}
 	for _, tc := range []struct {
 		name         string
 		target       ResolvedMention
@@ -56,6 +70,22 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 		{name: "the listener stored the send for a stopped session", target: live, answer: func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"event_id":"envelope-3","recipient":"s1","state":"stopped","last_seen":1700000000000}`))
 		}, wantEnvelope: true, wantQueued: true},
+		// A role kept for its next holder: the listener's 202 kept the message on the role's kept
+		// lane, so the send carries the kept copy's envelope and the attempt it settles is queued.
+		{name: "the listener kept the publish for the role's next holder", target: kept,
+			answer:       published(http.StatusAccepted, `{"event_id":"envelope-4","kept":true,"kept_reason":"unclaimed","kept_until":1793003600000}`),
+			wantEnvelope: true, wantQueued: true},
+		{name: "a live holder of the role took the publish", target: kept,
+			answer:       published(http.StatusOK, `{"event_id":"envelope-5","holder":"s2","holder_state":"live"}`),
+			wantEnvelope: true},
+		{name: "the listener kept nothing of the publish", target: kept,
+			answer:      published(http.StatusNotFound, `{"error":"no holder for role planner","reason":"unclaimed"}`),
+			wantFailure: true},
+		{name: "the listener answered the publish too late", target: kept, answer: func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(400 * time.Millisecond)
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"event_id":"envelope-late","kept":true}`))
+		}, wantFailure: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			url := "http://127.0.0.1:1"
@@ -71,6 +101,151 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 				outcome.queued != tc.wantQueued || (outcome.failure != "") != tc.wantFailure {
 				t.Fatalf("sendResolvedDelivery = %+v, want envelope %v, duplicate %v, queued %v, failure %v",
 					outcome, tc.wantEnvelope, tc.wantDup, tc.wantQueued, tc.wantFailure)
+			}
+		})
+	}
+}
+
+// keptForPlanner is the role planner as resolveDeliveryTarget resolves it when no live session
+// holds it and its newest registry entry is released and not finished: the role itself, kept for
+// its next holder, beside the listener's own no-holder answer.
+func keptForPlanner() ResolvedMention {
+	return ResolvedMention{
+		Target: "role:planner", Delivery: "steer",
+		redirect: &registryRedirect[ResolvedMention]{
+			keepForRole:    "planner",
+			listenerAnswer: ResolvedMention{Target: "role:planner", Delivery: "steer", ResolveError: "no holder for role planner"},
+		},
+	}
+}
+
+// A role kept for its next holder is published with the failures a send's are worded with: the
+// listener's own text for a publish it kept nothing of, the receipt-timeout cause for one whose
+// answer missed the window, since the listener keeps the copy before it answers, and the
+// unconfirmed-store cause for a 503 coded maybe_stored (listenerwire.CodeMaybeStored).
+func TestSendResolvedDeliveryWordsAKeptRolesFailuresAsASendsAre(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		answer  http.HandlerFunc
+		failure string
+	}{
+		{name: "nothing kept", answer: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no holder for role planner","reason":"unclaimed"}`))
+		}, failure: "no holder for role planner"},
+		{name: "answered too late", answer: func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(400 * time.Millisecond)
+			w.WriteHeader(http.StatusAccepted)
+		}, failure: receiptTimeoutText},
+		{name: "a listener that is starting", answer: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"service starting"}`))
+		}, failure: listenerUnreachablePrefix + "listener returned 503: service starting"},
+		{name: "a publish the listener could not confirm stored", answer: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"code":"maybe_stored","error":"envoy: the message bus did not answer: publish unacknowledged"}`))
+		}, failure: storeUnconfirmedText},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener := httptest.NewServer(tc.answer)
+			t.Cleanup(listener.Close)
+			s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(150*time.Millisecond))}}
+			outcome := s.sendResolvedDelivery(
+				context.Background(), keptForPlanner(), "role:planner", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+			if outcome.failure != tc.failure || outcome.envelopeID != nil || outcome.queued {
+				t.Fatalf("sendResolvedDelivery = %+v, want failure %q with no envelope", outcome, tc.failure)
+			}
+		})
+	}
+}
+
+// A connected-only send asks for a session that is running now, and a role kept for its next
+// holder has none, so it is not kept: nothing is published, and the attempt settles with the
+// listener's own no-holder answer as refused, as a stopped session refuses it.
+func TestAConnectedOnlySendToAReleasedRoleIsNotKept(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request %s %s: a connected-only send keeps nothing for a role", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(listener.Close)
+	s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
+	kept := keptForPlanner()
+	outcome := s.sendResolvedDelivery(
+		context.Background(), kept, "role:planner", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), true)
+	if outcome.failure != "no holder for role planner" || outcome.refused != &kept.redirect.listenerAnswer ||
+		outcome.envelopeID != nil || outcome.queued {
+		t.Fatalf("sendResolvedDelivery = %+v, want the listener's no-holder answer refused, with nothing kept", outcome)
+	}
+}
+
+// A session the Legion agent registry named is sent to so that its daemon answers the message,
+// and the listener answers a send it hands to that daemon with no state. A send it answers
+// stopped it only stored for the stopped session, having handed it to no daemon - the project
+// said it stopped answering after the registry was read - and that session does not run again to
+// read it. So it settles as the listener's refusal does: the listener's own answer for the route,
+// refused, with no envelope and nothing queued, and so does a take-over's repeat of it, which the
+// stream recognises as a duplicate. A session the listener resolved itself and stored the send for
+// is queued as ever ("the listener stored the send for a stopped session" above).
+//
+// Each send is made on its own route, a role's included, and carries no role mark: the registry
+// names a role's session only once the role's issue has finished, and the listener hands a send to
+// that session to the agent's daemon on its session id, which needs no Dispatch identity. A client
+// that presents no identity, as this one, refuses a marked send outright
+// (envoy.ErrNoListenerIdentity). A recheck that finds the listener's record of that session names
+// no redirect, and its send is marked; the listener hands that one off on the role token
+// (handOffOrKeepRoleSend in cmd/listener).
+func TestASendTheListenerOnlyStoresForARegistrySessionSettlesWithTheListenersAnswer(t *testing.T) {
+	stopped := "stopped-2"
+	registered := func(answer ResolvedMention) ResolvedMention {
+		return ResolvedMention{Target: answer.Target, Delivery: "steer", SessionID: &stopped, redirect: &registryRedirect[ResolvedMention]{listenerAnswer: answer}}
+	}
+	role := registered(ResolvedMention{Target: "role:planner", Delivery: "steer", ResolveError: "no holder for role planner"})
+	session := registered(ResolvedMention{
+		Target: "session:stopped-2", Delivery: "steer", ResolveError: contracts.NoLiveSession + " stopped-2",
+		attemptSessionID: stopped,
+	})
+	const stored = `{"event_id":"stored-1","recipient":"stopped-2","recipient_state":"gone","state":"stopped"}`
+	for _, tc := range []struct {
+		name    string
+		target  ResolvedMention
+		answer  string
+		refused bool
+	}{
+		{name: "a role's newest session", target: role, answer: stored, refused: true},
+		{name: "a session the listener holds no record of", target: session, answer: stored, refused: true},
+		{name: "a repeat of the stored send", target: session, refused: true,
+			answer: `{"event_id":"stored-1","recipient":"stopped-2","state":"stopped","duplicate":true}`},
+		// The control: the listener handed the send to the agent's daemon.
+		{name: "a send handed to the daemon", target: role, answer: `{"event_id":"handed-off-1","recipient":"stopped-2"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/send" {
+					t.Errorf("unexpected request %s %s, want the send", r.Method, r.URL.Path)
+				}
+				var sent listenerwire.SendRequest
+				if err := json.NewDecoder(r.Body).Decode(&sent); err != nil || sent.Role != "" {
+					t.Errorf("the send carried role %q (decode: %v), want no role mark on a send to a session the registry named", sent.Role, err)
+				}
+				_, _ = w.Write([]byte(tc.answer))
+			}))
+			t.Cleanup(listener.Close)
+			s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
+			outcome := s.sendResolvedDelivery(
+				context.Background(), tc.target, tc.target.Target, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+			if !tc.refused {
+				if outcome.failure != "" || outcome.refused != nil || outcome.queued || outcome.envelopeID == nil ||
+					*outcome.envelopeID != "handed-off-1" {
+					t.Fatalf("sendResolvedDelivery = %+v, want it sent with the hand-off's envelope", outcome)
+				}
+				return
+			}
+			answer := &tc.target.redirect.listenerAnswer
+			if outcome.failure != answer.ResolveError || outcome.refused != answer || outcome.envelopeID != nil ||
+				outcome.queued || outcome.duplicate {
+				t.Fatalf("sendResolvedDelivery = %+v, want the listener's own answer %q refused, with no envelope and nothing queued",
+					outcome, answer.ResolveError)
 			}
 		})
 	}

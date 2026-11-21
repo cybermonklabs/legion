@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  The answer loop asks once again for a reply its form's own rules refuse. The schema's field
+  descriptions state the two rules (a `not_answered` or `needs_work` reply names what it needs,
+  and every kind but `none` carries text), which the strict schema subset the providers enforce
+  cannot state, since it takes no `minLength`, `pattern` or `anyOf`. A reply that breaks one is
+  answered with the daemon's reason as a message after it and asked for again, within the same
+  `model_calls`, `answer_seconds` and `output_tokens`. A second such reply, or one made on the
+  last allowed call, is `malformed`. The exchange appended to the agent's Oh My Pi session or
+  Claude Code transcript holds the refused reply, that message as a user message and the reply
+  after it, in that order, so the agent resumes holding the run as it happened.
+time: 2026-11-17T19:06:57.000000000Z
+custom:
+    Issue: pr2230

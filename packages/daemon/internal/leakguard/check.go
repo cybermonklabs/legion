@@ -36,8 +36,10 @@ const (
 	checkWantsStdin    = 4 // the gh call reads standard input; buffer it and ask again
 )
 
-// whyNoCheck is the setup failure of a call that found no shared check at all.
-const whyNoCheck = "the shared public leak check could not be found"
+// WhyNoCheck is the setup failure of a call that found no shared check at all. It is exported
+// because the daemon's gh tool refuses a call with it when the machine's check resolves nowhere
+// (internal/ghtool's MachineLeakCheck), before the guard is handed any check.
+const WhyNoCheck = "the shared public leak check could not be found"
 
 // whyOtherCheck is the setup failure of a call whose check is found and is not the deployment's
 // (CheckerVar): its manifest digest (Manifest) is another one, or cannot be read.
@@ -62,7 +64,8 @@ const pointerFile = "public-leak-check/path"
 // Resolve is the shared public leak check's path, found the way the check itself says to find
 // it: CheckVar, then public-leak-check.sh on PATH, then the pointer file under the
 // configuration home, whose content is the path of the script. The guard's own Check option
-// stands in front of all three, and is how a test hands the guard a stand-in. Where none of the
+// stands in front of all three: the answer loop's gh tool hands every call the check its runtime
+// answers there (internal/ghtool), and a test hands the guard a stand-in. Where none of the
 // three names a check at all — CheckVar unset, nothing of the check's name on any PATH entry, and
 // no pointer file — the error is a noneNamed, which sharedCheck reads apart from a broken setup
 // (brokenCheck): a check that is named and is no executable file, a file of the check's name on
@@ -205,13 +208,14 @@ func (r sharedRun) remove() {
 // deployment that runs no shared leak check of its own (Setting.Configured) refuses no write for
 // the check's absence, and the write gets the rest of the guard, the visibility read and the
 // private-name pass. Under a deployment that names one, and wherever a check is named but cannot
-// be resolved, the answer is the setup failure whyNoCheck, which refuses the write.
+// be resolved, the answer is the setup failure WhyNoCheck, which refuses the write.
 //
 // Under a deployment's manifest digest the check found must be that check too: the manifest digest
 // of its four files (readHeldCheck: the launcher script, the program, the must-pass lines and the
 // README beside it) must be CheckerVar, or the answer is the setup failure whyOtherCheck, naming
 // both digests. The write then runs those very bytes, written into a copy only this role can reach
-// (privateCopy), and never the directory they were read from: a pod's install is on the issue's
+// (privateCopy, under the role's private directory or the caller's Options.PrivateCopyBase), and
+// never the directory they were read from: a pod's install is on the issue's
 // scratch, which every role of the pod can write, since they all run as one user, so a file
 // replaced there between the read and the run would otherwise be the check that judges the write.
 // So a role runs every write under the one check its deployment named, whatever
@@ -228,7 +232,7 @@ func (g *Guard) sharedCheck(what string) (sharedRun, error) {
 		if NoneNamed(err) && checker == "" {
 			return sharedRun{}, nil
 		}
-		return sharedRun{}, &SetupFailure{What: what, Why: whyNoCheck, Err: err}
+		return sharedRun{}, &SetupFailure{What: what, Why: WhyNoCheck, Err: err}
 	}
 	if checker == "" {
 		return sharedRun{path: check}, nil
@@ -242,7 +246,7 @@ func (g *Guard) sharedCheck(what string) (sharedRun, error) {
 		return sharedRun{}, &SetupFailure{What: what, Why: whyOtherCheck,
 			Err: fmt.Errorf("%s=%s, and the check at %s has the manifest digest %s", CheckerVar, checker, check, held.digest)}
 	}
-	dir, err := held.privateCopy(PrivateCopyBase, privateCopyFallback)
+	dir, err := held.privateCopy(g.copyBase, g.copyFallback)
 	if err != nil {
 		return sharedRun{}, &SetupFailure{What: what, Why: "the shared public leak check could not be copied where only this role can reach it",
 			Err: fmt.Errorf("the check at %s, of the manifest digest %s=%s: %w", check, CheckerVar, checker, err)}

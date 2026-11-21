@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import type { LegionRole } from "@legion/contracts";
+import { type LegionRole, roleToken } from "@legion/contracts";
 
 import { type FakeInterest, type FakeSession, legionAgentEntry } from "../agents";
 import { withoutHarnessPort } from "../harness-ports";
@@ -339,6 +339,101 @@ test("a stopped session is read only with stopped in include=, and a send to it 
     const sent = await send(origin, "stopped", "key-5", true);
     expect(sent.status).toBe(200);
     expect(await sent.json()).toMatchObject({ recipient_state: "live", state: "connected" });
+  } finally {
+    await stop();
+  }
+});
+
+/** A role publish as Dispatch's listener client writes one for a role it keeps a message for,
+ *  under a key of the role's own, with `keep` as given (left out when undefined). */
+function publish(origin: string, role: string, keep?: boolean) {
+  return Bun.fetch(`${origin}/v1/messages/publish`, {
+    body: JSON.stringify({
+      expects_reply: "optional",
+      idempotency_key: `key-${role}`,
+      message: "Who planned this?",
+      payload: "{}",
+      source: "dispatch",
+      topic: `notifications.role.${role}`,
+      ...(keep === undefined ? {} : { keep }),
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+}
+
+// The publish route for a role topic, as Dispatch uses it to keep a message for a role whose
+// Legion pod its daemon released (packages/envoy/cmd/listener/confirmed.go roleSend): a role no
+// live session holds keeps the message, answered 202 `kept` with the end of its hour, unless the
+// publish asked `keep: false`, which keeps nothing and is the role lookup's 404; a role a live
+// session holds takes it, answered 200 naming that holder. Every publish is recorded, and a
+// registry entry seeded `released` is read back released.
+test("a role publish is kept while no live session holds the role, and every publish is recorded", async () => {
+  const { origin, stop } = await startFakeEnvoy();
+  try {
+    const planner = roleToken("e2elegion", "E2E-2", "planner");
+    const reviewer = roleToken("e2elegion", "E2E-2", "reviewer");
+    const sessions: FakeSession[] = [{ roles: [reviewer], session_id: "holder", title: "Holder" }];
+    expect((await putFixture(origin, "/__fixture/sessions", sessions)).status).toBe(200);
+
+    const before = Date.now();
+    const kept = await publish(origin, planner, true);
+    expect(kept.status).toBe(202);
+    const keptAnswer = (await kept.json()) as Record<string, unknown>;
+    expect(keptAnswer).toEqual({
+      event_id: "publish-1",
+      kept: true,
+      kept_reason: "unclaimed",
+      kept_until: expect.any(Number),
+      topic: `notifications.role.${planner}`,
+    });
+    expect(Number(keptAnswer.kept_until)).toBeGreaterThanOrEqual(before + 3_600_000);
+    const refused = await publish(origin, planner, false);
+    expect(refused.status).toBe(404);
+    expect(await refused.json()).toEqual({
+      claim_revision: 0,
+      error: `no holder for role ${planner}`,
+      reason: "unclaimed",
+    });
+    const delivered = await publish(origin, reviewer);
+    expect(delivered.status).toBe(200);
+    expect(await delivered.json()).toEqual({
+      event_id: "publish-3",
+      holder: "holder",
+      holder_state: "live",
+      topic: `notifications.role.${reviewer}`,
+    });
+    expect(
+      (
+        await Bun.fetch(`${origin}/v1/messages/publish`, {
+          body: JSON.stringify({ message: "m", topic: "notifications.team.ops" }),
+          headers: { "Content-Type": "application/json" },
+          method: "POST",
+        })
+      ).status
+    ).toBe(400);
+
+    const recorded = await Bun.fetch(`${origin}/__fixture/publishes`);
+    expect(await recorded.json()).toMatchObject([
+      { idempotency_key: `key-${planner}`, keep: true, topic: `notifications.role.${planner}` },
+      { keep: false, topic: `notifications.role.${planner}` },
+      { topic: `notifications.role.${reviewer}` },
+      { topic: "notifications.team.ops" },
+    ]);
+
+    const released = legionAgentEntry({
+      issue: "E2E-2",
+      legionProject: "e2elegion",
+      released: true,
+      role: "planner",
+      sessionId: "released-planner",
+      startedAt: "2026-10-26T00:00:00Z",
+    });
+    expect((await putFixture(origin, "/__fixture/legion-agents", [released])).status).toBe(200);
+    const read = await Bun.fetch(`${origin}/v1/legion/agents/roles/${planner}`);
+    expect(await read.json()).toMatchObject({
+      entries: [{ released: true, role_token: planner, session_id: "released-planner" }],
+    });
   } finally {
     await stop();
   }

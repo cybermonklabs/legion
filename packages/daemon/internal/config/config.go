@@ -11,11 +11,13 @@
 //
 // Load reads the file and nothing it names: a path key (`instructions`, `envoy_token_file`,
 // `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
-// `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
-// against the file's directory and kept as a path. What sits at that path is read at boot, by
-// ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
-// configuration loads on a machine that has none of the files it names; `legion config check`
-// then reads them as boot does (daemon.CheckStart).
+// `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`, `answers.conversation_store.dsn_file`)
+// is resolved against the file's directory and kept as a path. What sits at that path is read at
+// boot, by ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's
+// client, so a configuration loads on a machine that has none of the files it names; `legion
+// config check` then reads them as boot does (daemon.CheckStart). A model provider's key
+// (`answers.providers.<provider>`'s `api_key_file` or `api_key_command`) is read at none of these:
+// AnswerCredential reads it again for every model call.
 package config
 
 import (
@@ -234,6 +236,10 @@ type Config struct {
 	// WorkerBackends is `worker_backends`: the phase-worker roles that run on a backend other than
 	// Oh My Pi, by role; a role it leaves out runs on Oh My Pi (BackendFor).
 	WorkerBackends map[claim.Role]runtime.Backend
+	// Answers is the `answers` block, settled: the model loop that answers a question to an agent
+	// that is not running, from its own conversation. Nil when the file sets none, and the daemon
+	// then answers nothing, as before the block existed.
+	Answers *Answers
 	// RoleConfigFiles is `role_config_files`: the Oh My Pi settings overlays one role names in its
 	// PI_CONFIG_FILES and no other role does, by role, each after the overlays every role names
 	// (runtime.tmux.pi_config_files, or runtime.kubernetes.pod.env's PI_CONFIG_FILES); a role it
@@ -270,6 +276,11 @@ type Config struct {
 	// a project still sets such a key (readProject's `deploys`): the key is accepted and warned
 	// about rather than refused, since the deployment that writes it releases on its own schedule
 	// (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
+	// After them comes at most one more: the line saying the answer loop is off because the file
+	// sets `answers` and names no model provider (answersOffWithNoProvider) or, naming one, no
+	// connection to the conversation store (answersOff). When both are missing it is the provider
+	// line alone, which then names both (resolveAnswers). It comes last since the loader settles
+	// `answers` only once it has read every key.
 	// `legion start` logs each before any other work this boot does with the configuration, and
 	// `legion config check` prints each right after its OK line, so an operator reads the
 	// same sentence either way.
@@ -425,6 +436,7 @@ type fileConfig struct {
 	Durations                map[string]int
 	Counts                   map[string]int
 	WorkerBackends           map[claim.Role]runtime.Backend
+	Answers                  *answersFile
 	RoleConfigFiles          map[claim.Role][]string
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
@@ -710,14 +722,7 @@ func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 // daemon's HTTP client as "unsupported protocol scheme", which the boot's readiness gate would
 // otherwise wait out forever as if Dispatch were merely unreachable (LEGION-580).
 func dispatchBase(value, key string) (string, error) {
-	parsed, err := validURL(value, key)
-	if err != nil {
-		return "", err
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", fmt.Errorf("%s must be http or https, not %q", key, parsed.Scheme)
-	}
-	base, err := trimmedBase(parsed, key)
+	base, err := httpBase(value, key)
 	if err != nil {
 		return "", err
 	}
@@ -725,6 +730,19 @@ func dispatchBase(value, key string) (string, error) {
 		return "", fmt.Errorf("%s must be the dispatch service base URL, not the /mcp endpoint", key)
 	}
 	return base, nil
+}
+
+// httpBase is a base URL an HTTP client appends paths to: an http or https scheme, a host, no
+// query or fragment, and its trailing slashes dropped (trimmedBase).
+func httpBase(value, key string) (string, error) {
+	parsed, err := validURL(value, key)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("%s must be http or https, not %q", key, parsed.Scheme)
+	}
+	return trimmedBase(parsed, key)
 }
 
 // readStrings reads a sequence of non-empty strings, in order and with repeats — the shipped
@@ -1120,6 +1138,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, err
 	}
 	if err := checkCommitIssueTrailerRenames(&cfg); err != nil {
+		return Config{}, err
+	}
+	if err := resolveAnswers(file, configDir, &cfg); err != nil {
 		return Config{}, err
 	}
 	cfg.Hooks = settleHooks(file.Hooks, configDir)

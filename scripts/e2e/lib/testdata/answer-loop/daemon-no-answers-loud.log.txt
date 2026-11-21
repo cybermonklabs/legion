@@ -1,0 +1,5 @@
+{"time":"2026-11-08T23:40:00.100Z","level":"INFO","msg":"legion daemon starting","store":"files"}
+{"time":"2026-11-08T23:40:01.000Z","level":"INFO","msg":"the agent registry mirror wrote a stopped agent","session":"session-architect"}
+{"time":"2026-11-08T23:40:02.000Z","level":"WARN","msg":"the Envoy listener answers 404 on PUT /v1/legion/projects/{project}; the daemon's answering heartbeat is not heard","route":"PUT /v1/legion/projects/{project}"}
+{"time":"2026-11-08T23:40:03.000Z","level":"WARN","msg":"the Envoy listener answers 404 on GET /v1/legion/agents/sessions/{session}","route":"GET /v1/legion/agents/sessions/{session}"}
+{"time":"2026-11-08T23:40:04.000Z","level":"INFO","msg":"answers: question","question":"q-seven","session":"session-planner","state":"handed_off"}

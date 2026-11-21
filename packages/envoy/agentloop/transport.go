@@ -2,31 +2,49 @@ package agentloop
 
 import (
 	"bytes"
+	"cmp"
 	"context"
+	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 // modelTransport carries every model call of a run. It puts the endpoint's token, read again for
-// the attempt, on each request; adds the endpoint's own query parameters to it; and makes the
+// the attempt, on each request; adds the endpoint's own query parameters to it; puts the run's
+// Final schema in the body back in the order its caller wrote it (inFinalOrder); and makes the
 // run's one retry, on a 429, a 5xx or a transport error, within the run's time.
 type modelTransport struct {
 	base  http.RoundTripper
 	kind  Kind
 	token func(context.Context) (string, error)
 	query url.Values
+	// final is the run's Request.Final, and nil for a run with no Final and for a decision.
+	final json.RawMessage
+	// log takes the warning for a call whose schema inFinalOrder could not put back. It is
+	// never nil: newModelTransport puts slog.Default() in place of a nil one.
+	log *slog.Logger
 }
 
 // newModelTransport is the transport one Run or one Decide makes its model calls through, over
-// the default transport, for the endpoint whose protocol, token and query parameters it carries.
-func newModelTransport(endpoint Endpoint) *modelTransport {
-	return &modelTransport{base: http.DefaultTransport, kind: endpoint.Kind, token: endpoint.Token, query: endpoint.Query}
+// the default transport, for the endpoint whose protocol, token and query parameters it carries,
+// the run's Final, which a decision has none of, and log, the run's Request.Log, which a decision
+// passes as nil since its transport never warns. A nil log is slog.Default(), resolved here once
+// for both callers.
+func newModelTransport(endpoint Endpoint, final json.RawMessage, log *slog.Logger) *modelTransport {
+	return &modelTransport{
+		base: http.DefaultTransport, kind: endpoint.Kind, token: endpoint.Token, query: endpoint.Query,
+		final: final, log: cmp.Or(log, slog.Default()),
+	}
 }
 
 // client is the HTTP client one Run or one Decide makes its model calls with: this transport,
@@ -59,6 +77,8 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return nil, err
 		}
 	}
+	// Once for the call, so the retry sends the very bytes the first attempt sent.
+	body = t.inFinalOrder(body)
 	ctx := req.Context()
 	for attempt := 0; ; attempt++ {
 		var key string
@@ -73,6 +93,10 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		r := req.Clone(ctx)
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		r.ContentLength = int64(len(body))
+		// The base transport reads the body again through GetBody when it sends the request
+		// again on a new connection, after a kept-alive one closed under it, and the clone's
+		// GetBody gives the SDK's own bytes, not these.
+		r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 		switch t.kind {
 		case AnthropicMessages:
 			r.Header.Set("X-Api-Key", key)
@@ -106,6 +130,192 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return nil, err
 		}
 		return resp, nil
+	}
+}
+
+// finalSchemaPath is where a request body of the protocol carries the run's Final schema, as the
+// SDK's request builders write it: output_config.format.schema on the Messages API, which
+// azure-anthropic speaks as well, text.format.schema on the Responses API, and
+// response_format.json_schema.schema on Chat Completions. A decision carries no schema.
+func finalSchemaPath(kind Kind) []string {
+	switch kind {
+	case AnthropicMessages, AzureAnthropic:
+		return []string{"output_config", "format", "schema"}
+	case OpenAIResponses:
+		return []string{"text", "format", "schema"}
+	case OpenAIChat:
+		return []string{"response_format", "json_schema", "schema"}
+	default:
+		return nil
+	}
+}
+
+// inFinalOrder is body with the schema it carries at its protocol's path (finalSchemaPath) put
+// back in the order of Request.Final: every byte of the body stays as it came but for that
+// schema's objects, each of which takes the order of the same object in Final (appendInOrder);
+// why is doc.go's "The structured reply". A run with no Final and a decision are sent byte for
+// byte as they came. So are a body that carries no schema at the path, a schema of another JSON
+// kind than Final's, a Final that is no JSON the transport can read, and a body that is no JSON,
+// which is the provider's to refuse; but every call of a run with a Final carries its schema
+// there, so each of these logs one warning for the call.
+func (t *modelTransport) inFinalOrder(body []byte) []byte {
+	path := finalSchemaPath(t.kind)
+	if t.final == nil || path == nil {
+		return body
+	}
+	// Such a call sends the schema as the SDK wrote it, sorted on the Anthropic and Responses
+	// adapters, which is the order this function is here to undo, so it must not go unseen.
+	unordered := func(reason string) []byte {
+		t.log.Warn("agentloop: the final schema was not put back in its caller's order, so this call sends it as the SDK wrote it",
+			"protocol", string(t.kind), "reason", reason)
+		return body
+	}
+	start, end := 0, len(body)
+	for i, name := range path {
+		members, ok := jsonParts(body[start:end], jsontext.KindBeginObject)
+		if !ok {
+			if i == 0 {
+				return unordered("the body is no JSON object")
+			}
+			return unordered(strings.Join(path[:i], ".") + " is no JSON object")
+		}
+		j := slices.IndexFunc(members, func(m jsonPart) bool { return m.name == name })
+		if j < 0 {
+			return unordered(fmt.Sprintf("no member %q on the path %s", name, strings.Join(path, ".")))
+		}
+		start, end = start+members[j].start, start+members[j].end
+	}
+	// appendInOrder appends a value whose kind is not Final's as it stands, which for the
+	// schema itself would put nothing back.
+	schema := body[start:end]
+	sent, want := jsontext.Value(schema).Kind(), jsontext.Value(t.final).Kind()
+	if sent == want {
+		if ordered, ok := appendInOrder(append(make([]byte, 0, len(body)), body[:start]...), schema, t.final); ok {
+			return append(ordered, body[end:]...)
+		}
+	} else if name, ok := jsonKinds[want]; ok {
+		return unordered(fmt.Sprintf("the schema at %s is a JSON %s where Final is a JSON %s",
+			strings.Join(path, "."), jsonKinds[sent], name))
+	}
+	// The walk to the schema read every value of the body, so what could not be read here is
+	// Final: a key it holds twice, or bytes that are no JSON.
+	return unordered("Final is no JSON the transport can read")
+}
+
+// jsonKinds names the kind each JSON value begins with, for a warning's reason.
+var jsonKinds = map[jsontext.Kind]string{
+	jsontext.KindBeginObject: "object", jsontext.KindBeginArray: "array", jsontext.KindString: "string",
+	jsontext.KindNumber: "number", jsontext.KindTrue: "true", jsontext.KindFalse: "false",
+	jsontext.KindNull: "null",
+}
+
+// appendInOrder appends sent, a value of the schema a request body carries, to dst with each
+// object in it in the order of final, the value at the same place in Request.Final: the keys
+// final holds come first, in final's order, and a key final lacks keeps its place after them.
+// It goes on into each member's value with final's value at that key, and into an array element
+// by element with final's element of the same index. Every other value, and a value final holds
+// nothing of the same kind for, is appended as its bytes stand, so strings and numbers reach the
+// provider as the SDK wrote them. A key is written again with no HTML escaping, as RFC 8785
+// writes a string. It is false where sent or final is no JSON.
+func appendInOrder(dst, sent, final []byte) ([]byte, bool) {
+	kind := jsontext.Value(sent).Kind()
+	if (kind != jsontext.KindBeginObject && kind != jsontext.KindBeginArray) || jsontext.Value(final).Kind() != kind {
+		return append(dst, sent...), true
+	}
+	sentParts, ok := jsonParts(sent, kind)
+	if !ok {
+		return nil, false
+	}
+	finalParts, ok := jsonParts(final, kind)
+	if !ok {
+		return nil, false
+	}
+	// Each part of sent in the order it is written, beside final's value at the same place.
+	type pair struct {
+		sent  jsonPart
+		final []byte
+	}
+	pairs := make([]pair, 0, len(sentParts))
+	end := jsontext.KindEndArray
+	if kind == jsontext.KindBeginArray {
+		for i, p := range sentParts {
+			var f []byte
+			if i < len(finalParts) {
+				f = final[finalParts[i].start:finalParts[i].end]
+			}
+			pairs = append(pairs, pair{sent: p, final: f})
+		}
+	} else {
+		end = jsontext.KindEndObject
+		placed := make([]bool, len(sentParts))
+		for _, f := range finalParts {
+			if i := slices.IndexFunc(sentParts, func(p jsonPart) bool { return p.name == f.name }); i >= 0 {
+				pairs = append(pairs, pair{sent: sentParts[i], final: final[f.start:f.end]})
+				placed[i] = true
+			}
+		}
+		for i, p := range sentParts {
+			if !placed[i] {
+				pairs = append(pairs, pair{sent: p})
+			}
+		}
+	}
+	dst = append(dst, byte(kind))
+	for i, p := range pairs {
+		if i > 0 {
+			dst = append(dst, ',')
+		}
+		if kind == jsontext.KindBeginObject {
+			var err error
+			if dst, err = jsontext.AppendQuote(dst, p.sent.name); err != nil {
+				return nil, false
+			}
+			dst = append(dst, ':')
+		}
+		if dst, ok = appendInOrder(dst, sent[p.sent.start:p.sent.end], p.final); !ok {
+			return nil, false
+		}
+	}
+	return append(dst, byte(end)), true
+}
+
+// jsonPart is one member of a JSON object, its name and where its value lies in the object's
+// bytes, or one element of a JSON array, which has no name.
+type jsonPart struct {
+	name       string
+	start, end int
+}
+
+// jsonParts is the members of value, a JSON object, or the elements of value, a JSON array, in
+// the order its bytes hold them. kind is the kind value begins with; ok is false where value
+// begins with another or is no JSON.
+func jsonParts(value []byte, kind jsontext.Kind) (all []jsonPart, ok bool) {
+	// A bytes.Buffer is read in place: no byte of value is copied, and an offset the decoder
+	// reports is an offset into value itself.
+	dec := jsontext.NewDecoder(bytes.NewBuffer(value))
+	if open, err := dec.ReadToken(); err != nil || open.Kind() != kind {
+		return nil, false
+	}
+	for {
+		switch dec.PeekKind() {
+		case jsontext.KindEndObject, jsontext.KindEndArray:
+			return all, true
+		}
+		var p jsonPart
+		if kind == jsontext.KindBeginObject {
+			name, err := dec.ReadToken()
+			if err != nil {
+				return nil, false
+			}
+			p.name = name.String()
+		}
+		v, err := dec.ReadValue()
+		if err != nil {
+			return nil, false
+		}
+		p.end = int(dec.InputOffset())
+		p.start = p.end - len(v)
+		all = append(all, p)
 	}
 }
 

@@ -482,7 +482,7 @@ func curlAnswer(status int, stdout, stderr, slug string) (Visibility, error) {
 //
 // In a pod, that gh is `legion gh`. It answers this request before anything else (cmd/legion's
 // runGh) with runGitCredential: it reads the hosts.yml of the bundle's directory for the repository
-// (ghConfigDirFor), which is the directory it runs the guard's REST read with. For a repository of
+// (ghroute.DirFor), which is the directory it runs the guard's REST read with. For a repository of
 // an owner the bundle holds a directory for, it runs no gh and makes no request, so it answers
 // while gh's TLS cannot. The guard's REST read of any other owner's repository is one `legion gh`
 // refuses before gh runs, so that repository never reaches this read (Guard.readUnservedOwner).

@@ -2978,4 +2978,58 @@ package api
 // merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 202
+//
+// 208: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
+// question to a stopped agent that the daemon's answer loop passed to the controller in the last
+// seven days (id, issue, role, session, asker, ref, reason, passedAt, and writes, each gh call
+// that writes which the loop ran for it), newest first and at most 100: the controller's
+// `agent-question` notice is a live wake only, so a controller that starts later reads what it
+// missed here. A body this contract writes carries it on every state, never null, and a caller
+// whose contract is under 208 — the one its `Legion-Plugin-Contract` header states, else the
+// highest its pod's claims record below 193, since a plugin from 193 states its contract — is
+// served the state without the key (shaping.go's stateNarrowings, questionsForControllerContract,
+// withoutQuestionsForController), since a reader before 208 does not take it. The bands compose
+// with the pause's: a caller below 178 is served neither the pause's keys nor this one, and a
+// caller from 178 to 207 is served the pause alone of the two; 193's and 202's bands, between
+// them, decide their own keys. The 208 reader takes the key as optional for that body alone, as
+// it takes `wakesWaiting`; a daemon below 208 is not what serves it a body without the key, since
+// the boot gate and `legion probe-image` refuse that mixed pair. The key's one enumerated field
+// is each question's `role` (answers.go's questionRoles), whose values arrived with the key and
+// ride its band. 208's records are 202's under its own number with the key paths of
+// `questionsForController` and that field's domain on the state's. Each state record from 46 to
+// 202 gains that domain empty, as `"questionsForController.*.role": []`, since a record holds the
+// domain of every enumerated field of its answer at every contract
+// (TestTheRecordSetIsOneRecordPerAnswerPerContract) and no value of this one arrived below 208;
+// nothing else of a record below 208 moves. No request a plugin sends moves. (This branch
+// took 38, then 52 while main stood at 51, then 57 while main stood at 56, then 58 while main
+// stood at 57, then 59 while main stood at 58, then 60 while main stood at 59, then 61 while main
+// stood at 59 and #2539 and #2731 also declared 60, then 122 while main stood at 111, then 126
+// while main stood at 123, then 149 while main stood at 144 and kept it while main stood at 146,
+// then 157 while main stood at 151, then 162 while main stood at 152, then 168 while main stood
+// at 160, then 170 while main stood at 160, then 171 while main stood at 168, then 183 while main
+// stood at 178, then 191 while main stood at 188, then 190 while main stood at 189, then 198
+// while main stood at 189, 190 being declared by #4611 too, and kept 198 at the forward merge that
+// brought main in at 193 (#3659), which is below it, then 203 while main stood at 199, 198 being
+// declared by #4175 and #4589 too, then 208 while main stood at 202, 203 being declared by #3993,
+// #4065, #4175, #4553, #4592, #4596 and #4661 too. It took 198 because a census of every open
+// pull request at 2026-11-20T19:29Z, read with the `declared_by_open_pull_requests` of main's
+// .github/scripts/check-daemon-api-contract.sh, found 189 declared by #2402, #3512, #3995, #4184,
+// #4206, #4209, #4274, #4533, #4631, #4634 and #4639, 190 by this change's own earlier head and
+// #4611, 191 by #4049 and #4573, 192 by #4175, #4180, #4182 and #4193, 193 by #3659 and #3712,
+// 194 by #3831 and #4030, 195 by #4590, 196 by #3993, #4173, #4273, #4392, #4432, #4493, #4495,
+// #4580, #4592 and #4596, 197 by #4065, #4553 and #4578, and nothing at 198, so 198 was then the
+// lowest number above main's that no open pull request declared. It took 203 because a census of
+// every open pull request at 2026-11-20T23:55Z, read the same way, found 196 declared by #3993,
+// #4173, #4180, #4193, #4273, #4432, #4592 and #4596, 197 by #4578, 198 by #4175 and #4589, 199
+// by #2697, #3831, #4187, #4274, #4392 and #4661, 200 by #4065 and #4493, 201 by #4553 and #4611,
+// 202 by #4580, and nothing at 203, so 203 was then the lowest number above main's 199 that no
+// open pull request declared. It took 208 because a census of every open pull request at
+// 2026-11-21T04:50Z, read the same way, found 200 declared by #4049, 201 by #4611, 202 by #2827,
+// #3729, #4273, #4274, #4392, #4438, #4457, #4557, #4580, #4590 and #4726, 203 by #3993, #4065,
+// #4175, #4553, #4592, #4596 and #4661, 204 by #3831, 205 by #3712 and #4573, 206 by #4540, 207
+// by #4030 and #4432, and nothing at 208, so 208 is the lowest number above main's 202 that no
+// open pull request declares. main held 202 at the forward merge that last read this number,
+// main's 19674f67; read main's own number and every open pull request's again at the next merge
+// rather than from this line. A renumber moves `questionsForControllerContract` in shaping.go
+// with it, the last number of answers.go's SupportedContracts.)
+const DaemonAPIVersion = 208

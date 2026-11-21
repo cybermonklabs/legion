@@ -155,7 +155,7 @@ func TestACheckNamedByARelativePathIsABrokenSetup(t *testing.T) {
 					t.Fatalf("Resolve = %v, want a broken setup at %s", resolved, checkName)
 				}
 				failed := setupFailure(t, guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"}))
-				says(t, failed, whyNoCheck, source.said+" names "+checkName+", which is no absolute path")
+				says(t, failed, WhyNoCheck, source.said+" names "+checkName+", which is no absolute path")
 				if ran, _ := os.ReadFile(record); len(ran) != 0 {
 					t.Fatalf("a check of the name ran: %q", ran)
 				}

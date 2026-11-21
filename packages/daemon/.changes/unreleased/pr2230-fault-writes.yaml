@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  A `gh` write that the answer loop ran before an answer ended on a fault is named in every record
+  the agent, the asker and the controller read. The daemon's reply names each write the question's
+  calls ran, by its command, its repository and gh's exit, for example "I could not answer within
+  the bound of 8 model calls. I had already run these gh writes: `gh pr merge` on acme/widgets
+  (exit 0). I passed your question to the Legion controller." A read is not named. The
+  controller's `agent-question` notice's `question.writes` and the `writes` of each
+  `questionsForController` entry list the same writes as `{seq, command, repository, exit}`. When a
+  model call returned anything before the fault, the run's turns are appended to the agent's Oh My
+  Pi session or Claude Code transcript as an answer's are, each `gh` call with its result, and
+  after them a message from the daemon that quotes the reply it posted.
+time: 2026-11-19T16:10:00.000000000Z
+custom:
+    Issue: pr2230

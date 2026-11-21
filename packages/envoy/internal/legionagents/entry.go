@@ -4,8 +4,8 @@
 // the listener's PUT routes; Dispatch reads it through the GET routes (cmd/listener/api.go).
 //
 // Key layout. session.<session_id> holds the entry, and two index keys hold the same entry JSON:
-// issue.<ISSUE>.<session_id> and role.<role_token>.<session_id>. project.<legion_project> is
-// reserved for the daemon's own record (INFRA-204), and no read here reaches it: every read is a
+// issue.<ISSUE>.<session_id> and role.<role_token>.<session_id>. project.<legion_project> is the
+// daemon's answering record (Project, INFRA-204), which no agent read reaches: every one is a
 // session key or an issue or role prefix. A write claims the session key first, by compare-and-swap,
 // and writes the index keys after it, so a session two writes race for is listed under the winner's
 // issue alone. Nothing is ever deleted, so a closed issue's agents keep their entries and no read
@@ -25,8 +25,8 @@ import (
 )
 
 // Entry is one Legion session as the registry stores it, which the listener's wire package
-// declares (listenerwire.LegionAgentEntry). Readers ignore fields they do not know, so a later
-// writer may add some.
+// declares (listenerwire.LegionAgentEntry), its finished and released flags among it. Readers
+// ignore fields they do not know, so a later writer may add some.
 type Entry = listenerwire.LegionAgentEntry
 
 // Agent is an entry with what a read derives from the other sessions of its role token, ordered by
@@ -162,11 +162,8 @@ func Validate(entry Entry) error {
 	if err := ValidateSessionID(entry.SessionID); err != nil {
 		return err
 	}
-	if len(entry.LegionProject) > maxProjectBytes {
-		return invalid("legion_project is %d bytes, past %d", len(entry.LegionProject), maxProjectBytes)
-	}
-	if !projectTokenPattern.MatchString(entry.LegionProject) {
-		return invalid("legion_project %q is not a Legion project token (lower-case letters and digits)", entry.LegionProject)
+	if err := ValidateProject(entry.LegionProject); err != nil {
+		return err
 	}
 	if err := ValidateIssue(entry.Issue); err != nil {
 		return err

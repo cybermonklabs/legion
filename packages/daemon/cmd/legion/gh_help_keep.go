@@ -14,20 +14,22 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/legion/daemon/internal/ghroute"
 )
 
-// ghHelpKeep answers gh's help of a command path (readGhHelp) from a copy kept the last time gh
-// printed it, so a `legion gh` call starts gh for its help only where no kept copy answers.
-// ghTargetOf reads two or more helps for a command (gh's own, a group's, the leaf's), and each
-// read is a gh process of its own, while gh prints the same help for a path until its binary,
-// its configuration, its extensions or the variables it prints under change.
+// ghHelpKeep answers gh's help of a command path (ghroute.ReadHelp) from a copy kept the last
+// time gh printed it, so a `legion gh` call starts gh for its help only where no kept copy
+// answers. ghroute.TargetOf reads two or more helps for a command (gh's own, a group's, the
+// leaf's), and each read is a gh process of its own, while gh prints the same help for a path
+// until its binary, its configuration, its extensions or the variables it prints under change.
 //
 // A copy answers only a read whose inputs are the ones it was printed under (ghHelpInputs): the
 // gh binary, the two files of the gh directory gh reads before it prints anything, the directory
 // it lists its extensions from and the variables that change how it prints. A change to any of
-// them reads the help again, so ghTargetOf decides from the text gh would print now. A help gh
-// refused is never kept: its refusal is read again on the next call, as it was before there were
-// copies.
+// them reads the help again, so ghroute.TargetOf decides from the text gh would print now. A help
+// gh refused is never kept: its refusal is read again on the next call, as it was before there
+// were copies.
 //
 // The copies are under the role's own state directory, $XDG_STATE_HOME/legion-gh/help, one for
 // each command path and each set of the variables ghHelpEnvDigest reads. They are written as files
@@ -39,8 +41,8 @@ import (
 // no XDG_STATE_HOME, no GH_CONFIG_DIR, or a gh path that is not absolute or whose links end at a
 // file not named gh, nothing is kept and every help is read from gh.
 type ghHelpKeep struct {
-	// fresh is gh's own answer for a path: readGhHelp of the gh the keep is for, under the context
-	// the keep was made with.
+	// fresh is gh's own answer for a path: ghroute.ReadHelp of the gh the keep is for, under the
+	// context the keep was made with.
 	fresh func(path []string) (string, error)
 	// dir is where the copies are, "" where nothing is kept.
 	dir string
@@ -94,9 +96,10 @@ var ghPrintingVariables = map[string]bool{"CLICOLOR": true, "CLICOLOR_FORCE": tr
 
 // newGhHelpKeep is the keep of the gh at the path gh for a call run under env, whose reads of gh
 // run under ctx: runGh's signal context (beforeGh), so a SIGINT, SIGTERM or SIGHUP stops a read in
-// progress and its process group (readGhHelp). A read a signal or its bound stopped is an error,
-// even where gh printed part of its help or exited 0 on the stop (exec answers a command whose
-// Cancel ran with the context's error), so it is never kept, and no later call is answered with it.
+// progress and its process group (ghroute.ReadHelp). A read a signal or its bound stopped is an
+// error, even where gh printed part of its help or exited 0 on the stop (exec answers a command
+// whose Cancel ran with the context's error), so it is never kept, and no later call is answered
+// with it.
 //
 // The gh binary is the file gh's links end at, and only a file named gh is taken for one. A
 // compiled multiplexer, such as mise's shim, is a link to the multiplexer itself, which picks the
@@ -104,7 +107,7 @@ var ghPrintingVariables = map[string]bool{"CLICOLOR": true, "CLICOLOR_FORCE": tr
 // of the gh that prints the help, and nothing is kept for it. A multiplexer copied or hard-linked
 // under the name gh is not told apart.
 func newGhHelpKeep(ctx context.Context, gh string, env map[string]string, helpEnv []string) *ghHelpKeep {
-	keep := &ghHelpKeep{fresh: func(path []string) (string, error) { return readGhHelp(ctx, gh, helpEnv, path) }, uid: os.Getuid()}
+	keep := &ghHelpKeep{fresh: func(path []string) (string, error) { return ghroute.ReadHelp(ctx, gh, helpEnv, path) }, uid: os.Getuid()}
 	state, config := env["XDG_STATE_HOME"], env["GH_CONFIG_DIR"]
 	if state == "" || config == "" || !filepath.IsAbs(gh) {
 		return keep
@@ -182,7 +185,7 @@ func ghHelpEnvDigest(helpEnv []string) string {
 
 // read is gh's help of path: the kept copy where one answers, and otherwise gh's own answer
 // (fresh), which is kept when gh printed it. A copy runs no gh, so it needs no
-// leakguard.RunByRealGhVar; every read that runs gh is readGhHelp's, which carries it.
+// leakguard.RunByRealGhVar; every read that runs gh is ghroute.ReadHelp's, which carries it.
 func (k *ghHelpKeep) read(path []string) (string, error) {
 	if k.dir == "" {
 		return k.fresh(path)

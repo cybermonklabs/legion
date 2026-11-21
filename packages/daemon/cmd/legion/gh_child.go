@@ -12,9 +12,9 @@ import (
 )
 
 // ghChildEnviron is the environment `legion gh` runs gh with, and the git this command runs to
-// route a call (gitLines), built in one place so the two never read a different repository: this
-// package's test hook (ghChildTestEnviron), then the names of environ that gh is allowed
-// (ghChildKeeps), then ghChildForced and set, then the git configuration gh's git gets
+// route a call (ghroute.ReadGitRemotes), built in one place so the two never read a different
+// repository: this package's test hook (ghChildTestEnviron), then the names of environ that gh is
+// allowed (ghChildKeeps), then ghChildForced and set, then the git configuration gh's git gets
 // (ghChildGitConfig), each later one winning, as exec takes the last value of a name. The hook
 // comes first so that a test of the allowlist reads it: a caller's name the allowlist wrongly kept
 // would win over the hook's own. It is an allowlist and never the caller's whole environment less
@@ -79,8 +79,8 @@ var ghChildTestEnviron []string
 //     and cache (go-gh pkg/config/config.go:276-327);
 //   - GH_REPO, which gh takes a command's own repository from (cli/cli v2.104.0
 //     pkg/cmdutil/repo_override.go:77, pkg/cmd/pr/create/create.go:289, pkg/cmd/api/api.go:604)
-//     and ghTargetOf routes by, so gh must read the one this command was routed for;
-//   - GH_TOKEN and GITHUB_TOKEN, which ghTargetOf refuses for every call but the guard's own
+//     and ghroute.TargetOf routes by, so gh must read the one this command was routed for;
+//   - GH_TOKEN and GITHUB_TOKEN, which ghroute.TargetOf refuses for every call but the guard's own
 //     visibility read, which runs with the caller's token (ghVisibilityRead);
 //   - NO_COLOR, CLICOLOR, CLICOLOR_FORCE, COLORTERM, GLAMOUR_STYLE, GH_MDWIDTH and
 //     GH_SPINNER_DISABLED, how gh prints (go-gh pkg/term/env.go:162-173, cli
@@ -150,7 +150,7 @@ var ghChildNames = map[string]bool{
 //     and fetch.recurseSubmodules true in its own configuration, submodule.<name>
 //     .fetchRecurseSubmodules true there, or in the .gitmodules of HEAD or of the fetched commit.
 //     An explicit recursion, which no configuration turns off, is refused by name: `gh pr
-//     checkout --recurse-submodules` (ghRefusedOptions) and a clone's git flags (ghCloneGitFlags).
+//     checkout --recurse-submodules` and a clone's git flags (ghroute.TargetOf).
 var ghForcedGitConfig = [][2]string{
 	{"http.sslVerify", "true"},
 	{"submodule.recurse", "false"},

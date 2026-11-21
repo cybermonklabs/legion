@@ -3,13 +3,15 @@ package main
 // brokerauth.go is the listener's third credential: an access token the secrets broker issued,
 // presented under RFC 9449's DPoP scheme (Authorization: DPoP <token> with a DPoP: proof header).
 // internal/ciphertoken decides it; what is here is the settings a deployment configures it with,
-// the spent-proof store it needs, how a decided caller reaches the handlers, and which requests
-// are held to the session that caller names.
+// the spent-proof store it needs, how a decided caller reaches the handlers, which requests are
+// held to the session that caller names, and which such a token may not make.
 //
 // It is the one credential that says who is calling. The shared token and the OIDC pair say only
 // that the caller holds a credential this listener trusts, so a request under either names its
 // own session in its body and is believed; a broker token names the session the broker issued it
-// to, so a write that acts as a session is held to that one (sessionNotBound).
+// to, so a write that acts as a session is held to that one (sessionNotBound), and the Legion agent
+// registry's writes, which the daemon makes under a bearer, are refused to it
+// (registryWriteBySession). A session that presents the daemon's bearer instead is not refused.
 
 import (
 	"context"
@@ -340,4 +342,37 @@ func sessionNotBound(r *http.Request, logger *logging.Logger, session string) st
 		slog.String("request_session", session),
 		slog.String("path", r.URL.Path))
 	return fmt.Sprintf("this access token acts as session %s, so it may not act as %s", caller.Session, session)
+}
+
+// registryWriteBySession is the refusal a write to the Legion agent registry gets from a
+// credential that names a session: empty when the request presented no broker token, and
+// otherwise the message the route answers 403 with. It logs that refusal where it decides it, one
+// line naming the session and the path and never the token, as sessionNotBound does.
+//
+// The registry's writes - an entry (PUT /v1/legion/agents, PUT /v1/legion/agents/sessions/
+// <session_id>) and a project's answering record (PUT /v1/legion/projects/<legion_project>) -
+// decide which messages the listener hands to a Legion daemon (handOffToLegion): a session that
+// wrote answering: true for a project and an entry naming another session S would have a send
+// to a gone S answered by that daemon instead of stored for S. The daemon writes them under a
+// bearer, the shared token or a service account's OIDC token
+// (packages/daemon/internal/registrywrite sends envoy_token_file's token as Authorization:
+// Bearer), neither of which names a session. A broker token always names one
+// (ciphertoken.Caller.Session), so every broker token is refused here, the token of the very
+// session an entry names included.
+//
+// That closes the broker token's way in, and no other. Every launch also carries the daemon's
+// Envoy bearer, envoy_token_file's token, as its ENVOY_TOKEN launch secret
+// (packages/daemon/internal/daemon/launchsecrets.go, launchSecrets), which each runtime hands the
+// agent as a file behind ENVOY_TOKEN_FILE (packages/daemon/internal/runtime/paneenv.go). That
+// bearer names no session, so a session that presents it passes this check and writes the
+// registry as the daemon does.
+func registryWriteBySession(r *http.Request, logger *logging.Logger) string {
+	caller, ok := brokerCaller(r)
+	if !ok {
+		return ""
+	}
+	logger.Warn("listener: broker token of a session writes the Legion agent registry",
+		slog.String("token_session", caller.Session),
+		slog.String("path", r.URL.Path))
+	return fmt.Sprintf("this access token acts as session %s, and a secrets-broker access token may not write the Legion agent registry", caller.Session)
 }

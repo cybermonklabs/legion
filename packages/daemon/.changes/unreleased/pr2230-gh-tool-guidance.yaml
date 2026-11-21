@@ -1,0 +1,24 @@
+kind: Added
+body: |-
+  The answer loop tells the model how to call its `gh` tool. The tool's description is built for
+  each answer: GitHub's own gh, run by the daemon as the agent's role App in an empty directory
+  with no checkout of any repository, so every call names its repository (`-R <owner>/<repo>`, a
+  github.com URL, or a `repos/<owner>/<repo>/…` endpoint for `gh api`); the repository the agent's
+  issue works and, where the daemon's record holds one, the issue's pull request number; the
+  commands the tool takes; and one example call that runs as written against that repository,
+  which the input schema gives too. The system prompt's sentence on `gh` carries the checkout
+  sentence, the repository and the pull request, and points to the tool's description for the
+  commands and the example. The tool writes (comment, review, merge and the other writes its rules
+  allow) when the message asks for it, with the Legion footer on every comment or review.
+
+  A call naming no gh command, gh's `--version`, `--help` or `-h` on its own, and a command the
+  tool does not take are refused with their reason and then the same guidance, and a call gh ran
+  that failed with git's `not a git repository` carries gh's output and then the guidance; the
+  guidance is part of what `answer_tool_calls` records for the call. Other refusals keep their own
+  reason. The last model call of an answer, the one that offers no tool, carries a short message
+  saying it is the last call, to reply now in the reply form, and that a `not_answered` or
+  `needs_work` reply must say in `needs` what it needs; that message is the loop's own and is
+  never written into the agent's conversation.
+time: 2026-11-18T04:43:18.000000000Z
+custom:
+    Issue: pr2230

@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -702,12 +703,17 @@ func TestTheCheckOfTheRepositoriesTheLiveRecordsAddIsBoundedPerCheck(t *testing.
 
 // namedGitHub answers GET /repos/{owner}/{repo} for each repository it names, as
 // "<GitHub's spelling>@<default branch>", or as "301 <owner>/<name>" for one GitHub renamed, which
-// it answers as GitHub does: a 301 to the new name's path.
-type namedGitHub struct{ url string }
+// it answers as GitHub does: a 301 to the new name's path. requests is how many requests it was
+// asked, of any path.
+type namedGitHub struct {
+	url      string
+	requests atomic.Int32
+}
 
 func newNamedGitHub(t *testing.T, repos map[string]string) *namedGitHub {
 	t.Helper()
-	return &namedGitHub{url: githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	g := &namedGitHub{}
+	g.url = githubtest.Server(t, githubtest.Spec{Record: func(*http.Request) { g.requests.Add(1) }, Handle: func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/repos/")
 		named, ok := repos[strings.ToLower(path)]
 		if r.Method != http.MethodGet || !ok {
@@ -721,7 +727,8 @@ func newNamedGitHub(t *testing.T, repos map[string]string) *namedGitHub {
 		}
 		name, branch, _ := strings.Cut(named, "@")
 		_, _ = w.Write([]byte(`{"full_name":"` + name + `","default_branch":"` + branch + `"}`))
-	}})}
+	}})
+	return g
 }
 
 // The state's repositories block carries each repository a live record names with its cache,
@@ -1134,6 +1141,91 @@ func TestALaterLaunchOfAKeptIssuePutsItsRepositoryBackInTheCacheSet(t *testing.T
 	}
 	if got := cached(); !slices.Equal(got, []string{"Acme/Widgets"}) {
 		t.Fatalf("the cache set after LEGION-9's second launch = %v, want Acme/Widgets back in it", got)
+	}
+}
+
+// A question to a stopped agent whose issue the workflow does not record reads the repository the
+// issue works and starts no launch work (recordFacts, questionRepository). Before any launch it
+// reads the one Dispatch resolves the issue to, with no read of GitHub, adds it to neither the
+// cache set nor what GitHub intake hears and keeps nothing for the issue, so the issue's next
+// launch still reads Dispatch and prepares. Once a launch keeps one, it reads the kept one with no
+// read of Dispatch, and a cache set a read of the live records emptied stays empty. An issue that
+// resolves to no repository, and one Dispatch does not answer for, are refused in the words of
+// their launch's refusals. Control: with issueRepository back in recordFacts.Facts, the question
+// about LEGION-9 puts zeta/tools in the cache set.
+func TestAQuestionAboutAnUnrecordedIssueLaunchesNothing(t *testing.T) {
+	ctx := context.Background()
+	github := newNamedGitHub(t, map[string]string{"zeta/tools": "zeta/tools@main", "acme/widgets": "Acme/Widgets@main"})
+	installs := &installations{}
+	client := &repositoryDispatch{
+		issues: map[string]dispatch.Issue{
+			"LEGION-9":  {Key: "LEGION-9", Project: "LEGION", ResolvedRepo: "zeta/tools"},
+			"LEGION-10": {Key: "LEGION-10", Project: "LEGION"},
+			"LEGION-12": {Key: "LEGION-12", Project: "LEGION", ResolvedRepo: "acme/widgets"},
+		},
+		failing: map[string]error{"LEGION-11": errors.New("Dispatch answered 503")},
+	}
+	var told atomic.Int32
+	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatch: client, dispatchProject: "LEGION", installs: installs,
+		repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(),
+		setRepositories: func(context.Context, []ghrepo.Repository) error {
+			told.Add(1)
+			return nil
+		},
+		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now),
+		workspaceHeld:   func(string, ghrepo.Repository) bool { return true }}
+	question := recordFacts{w}
+	cached := func() []string { return repositoryNames(w.cacheRepositories()) }
+
+	facts, err := question.Facts(ctx, "LEGION-9")
+	if err != nil || facts.Recorded || facts.Repository.String() != "zeta/tools" {
+		t.Fatalf("the facts of LEGION-9 = %+v, %v; want it unrecorded, on zeta/tools, the repository Dispatch resolves it to", facts, err)
+	}
+	if got := cached(); len(got) != 0 {
+		t.Fatalf("the cache set after a question about LEGION-9 = %v, want none: a question starts no repository cache", got)
+	}
+	if got := told.Load(); got != 0 {
+		t.Fatalf("GitHub intake was told %d sets after a question about LEGION-9, want none: a question widens no intake", got)
+	}
+	if requests, asked, webhook := github.requests.Load(), installs.asks(), client.webhookChecks(); requests != 0 || len(asked) != 0 || len(webhook) != 0 {
+		t.Fatalf("a question about LEGION-9 made %d requests of GitHub, the installation reads %v and the webhook App checks %v; want none: a question prepares nothing",
+			requests, asked, webhook)
+	}
+	if _, _, err := w.launchRepository(ctx, "LEGION-9"); err != nil || client.detailReads("LEGION-9") != 2 || installs.reads("implement zeta/tools") != 1 {
+		t.Fatalf("LEGION-9's launch after the question = %v after %d reads of Dispatch and %d of the implement App's installation; want Dispatch read again and the repository prepared, which shows the question kept nothing for the issue",
+			err, client.detailReads("LEGION-9"), installs.reads("implement zeta/tools"))
+	}
+
+	if _, _, err := w.launchRepository(ctx, "LEGION-12"); err != nil {
+		t.Fatalf("LEGION-12's launch: %v", err)
+	}
+	if err := w.refreshLive(ctx); err != nil {
+		t.Fatalf("read the live records again: %v", err)
+	}
+	if got := cached(); len(got) != 0 {
+		t.Fatalf("the cache set after the read of the live records = %v, want none: no live record names a repository", got)
+	}
+	reads := client.detailReads("LEGION-12")
+	facts, err = question.Facts(ctx, "LEGION-12")
+	if err != nil || facts.Recorded || facts.Repository.String() != "Acme/Widgets" {
+		t.Fatalf("the facts of LEGION-12 = %+v, %v; want it unrecorded, on Acme/Widgets, the repository kept for it", facts, err)
+	}
+	if got := client.detailReads("LEGION-12"); got != reads {
+		t.Fatalf("a question about LEGION-12 read Dispatch %d times more, want none: its repository is kept", got-reads)
+	}
+	if got := cached(); len(got) != 0 {
+		t.Fatalf("the cache set after a question about LEGION-12 = %v, want none: a question puts no kept repository back", got)
+	}
+
+	for _, tc := range []struct{ key, want string }{
+		{"LEGION-10", "LEGION-10 names no repository: set the repository of LEGION-10, or the default repository of project LEGION, in Dispatch"},
+		{"LEGION-11", "read the repository of LEGION-11 from Dispatch: Dispatch answered 503"},
+	} {
+		_, asked := question.Facts(ctx, tc.key)
+		_, _, launched := w.launchRepository(ctx, tc.key)
+		if asked == nil || asked.Error() != tc.want || launched == nil || launched.Error() != tc.want {
+			t.Fatalf("a question about %s answers %v and its launch %v; want both refused with %q", tc.key, asked, launched, tc.want)
+		}
 	}
 }
 

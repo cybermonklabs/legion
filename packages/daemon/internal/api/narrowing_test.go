@@ -292,14 +292,15 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
-	// The newest narrowing is a row of the table like every other, so the caller below it is
-	// told what it lost: a caller one contract below the highest row, 201, which states that
-	// contract in its header as every plugin from shapedAnswersContract on does, is served at the
-	// recorded contract below it, 199, so it stands below that row alone and the log holds that
-	// row's line and nothing else. This subtest does not catch a strip applied beside the loop,
-	// because it reads both its expectation and its answer from stateNarrowings; the subtests
-	// below, which name their lines as literals, are what catch that.
-	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
+	// The repositories narrowing is a row of the table like every other, so the caller below it is
+	// told what it lost: a caller one contract below that row, 201, which states that contract in
+	// its header as every plugin from shapedAnswersContract on does, is served at the recorded
+	// contract below it, 199, so it stands below that row and questionsForControllerContract's
+	// above it, and the log holds those two rows' lines and nothing else. This subtest does not
+	// catch a strip applied beside the loop, because it reads both its expectation and its answer
+	// from stateNarrowings; the subtests below, which name their lines as literals, are what catch
+	// that.
+	t.Run("the repositories narrowing and the one above it write their own lines", func(t *testing.T) {
 		state := populatedState(t)
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000",
 			podClaims(repositoriesLiveContract-1), repositoriesLiveContract-1)
@@ -363,6 +364,43 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 				t.Errorf("line %d of a caller at %d says it dropped %q, want %q",
 					i, assignmentsContract-1, line.Dropped, want[i])
 			}
+		}
+	})
+
+	// The questions narrowing is a row of the table like every other, so a caller below it is
+	// told what it lost. A plugin from shapedAnswersContract on states its contract in the header
+	// and no pod's claims place it (podContracts), so the caller one contract below the row states
+	// that contract, from the pod whose claims record it too: the log holds the line of that row
+	// and of every row above it and nothing else, and the row's own line is named here as a
+	// literal, as the assignments line is below, naming the contract the caller stated and no pod.
+	t.Run("the questions narrowing writes its own line for a caller that states its contract", func(t *testing.T) {
+		const stated = questionsForControllerContract - 1
+		state := populatedState(t)
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(stated), stated)
+
+		if bytes.Contains(body, []byte(`"questionsForController"`)) {
+			t.Errorf("the body served to a caller stating %d carries `questionsForController`, the key %d added: %s",
+				stated, questionsForControllerContract, body)
+		}
+		want := narrowingsExpected(state, stated)
+		if len(narrowings) != len(want) {
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
+				len(narrowings), stated, len(want), narrowings)
+		}
+		named := false
+		for i, line := range narrowings {
+			if line.Dropped != want[i] {
+				t.Errorf("line %d of a caller at %d says it dropped %q, want %q", i, stated, line.Dropped, want[i])
+			}
+			if line.PluginContract != stated || line.Pod != "" {
+				t.Errorf("line %d of a caller stating %d names contract %d in pod %q, want %d in no pod",
+					i, stated, line.PluginContract, line.Pod, stated)
+			}
+			named = named || line.Dropped == "questionsForController"
+		}
+		if !named {
+			t.Errorf("a caller stating %d was served no line saying it dropped %q; the daemon wrote %+v",
+				stated, "questionsForController", narrowings)
 		}
 	})
 
@@ -476,10 +514,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 // band that changes no byte has taken no key, and the log must say nothing of it. Today the
 // bands of the body's own keys do change the bytes, because every state carries
 // `admission.trees`, `wakesWaiting`, `claimsToRefresh`, the mark, `admission.held`,
-// `lowestPluginContract` for these claims and the repositories block, which the band of
-// repositoriesLiveContract writes in contract 152's shape whatever it names, all but
-// withoutRepositoryApps: this state serves no repository, so that band has no `apps` to take and
-// logs nothing.
+// `lowestPluginContract` for these claims, the repositories block, which the band of
+// repositoriesLiveContract writes in contract 152's shape whatever it names, and
+// `questionsForController`, all but withoutRepositoryApps: this state serves no repository, so
+// that band has no `apps` to take and logs nothing.
 func TestAnEmptyStateLogsNoDropOfAKeyItNeverCarried(t *testing.T) {
 	const below = supervise.PodUpdateContract - 1
 	claims := podClaims(below)

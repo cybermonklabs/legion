@@ -15,8 +15,9 @@ import (
 
 // Dispatch's listener client (internal/dispatch/envoy) reads the Legion agent registry through the
 // real listener mux over real NATS, so the two sides' shapes are one: what the daemon's batch write
-// records, the client's Agent, RoleAgents and IssueAgents read back, with live and the replacement
-// the listener derives, an unknown session as ErrNotFound and an issue with no agents as none.
+// records, the client's Agent, RoleAgents and IssueAgents read back, with live, answering and the
+// replacement the listener derives, an unknown session as ErrNotFound and an issue with no agents
+// as none.
 func TestDispatchClientReadsTheLegionAgentRegistry(t *testing.T) {
 	l := newLegionListener(t, setupPublishTestClient(t))
 	server := httptest.NewServer(l.mux)
@@ -28,6 +29,7 @@ func TestDispatchClientReadsTheLegionAgentRegistry(t *testing.T) {
 	if err := l.deps.sessions.Put("ses-new-reviewer", session.SessionEntry{Port: 1, MachineID: "test-machine"}); err != nil {
 		t.Fatalf("register ses-new-reviewer: %v", err)
 	}
+	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/projects/infra", `{"answering":true,"updated_at":"2026-10-26T04:00:00Z"}`)
 	client := dispatchenvoy.New(server.URL)
 	ctx := context.Background()
 
@@ -38,7 +40,7 @@ func TestDispatchClientReadsTheLegionAgentRegistry(t *testing.T) {
 	if old.LegionProject != "infra" || old.Issue != "INFRA-448" || old.Role != "reviewer" ||
 		old.RoleToken != "legion-infra-infra-448-reviewer" || old.Title != "Legion reviewer · INFRA-448" ||
 		old.Harness != "omp" || old.StartedAt != "2026-10-26T01:00:00Z" || old.RecordedAt == "" || old.Live ||
-		deref(old.ReplacedBy) != "ses-new-reviewer" || deref(old.ReplacedAt) != "2026-10-26T02:00:00Z" {
+		!old.Answering || deref(old.ReplacedBy) != "ses-new-reviewer" || deref(old.ReplacedAt) != "2026-10-26T02:00:00Z" {
 		t.Fatalf("agent = %#v", old)
 	}
 	if _, err := client.Agent(ctx, "ses-unknown"); !errors.Is(err, dispatchenvoy.ErrNotFound) {
@@ -49,7 +51,8 @@ func TestDispatchClientReadsTheLegionAgentRegistry(t *testing.T) {
 	if err != nil || len(reviewers) != 2 {
 		t.Fatalf("role agents = %#v, %v", reviewers, err)
 	}
-	if current := reviewers[0]; current.SessionID != "ses-new-reviewer" || !current.Live || current.ReplacedBy != nil || current.ReplacedAt != nil {
+	if current := reviewers[0]; current.SessionID != "ses-new-reviewer" || !current.Live || !current.Answering ||
+		current.ReplacedBy != nil || current.ReplacedAt != nil {
 		t.Fatalf("the current reviewer = %#v, want the live new reviewer, not replaced", current)
 	}
 	if reviewers[1].SessionID != "ses-old-reviewer" || reviewers[1].Live {

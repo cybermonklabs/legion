@@ -1,0 +1,1039 @@
+# shellcheck shell=bash disable=SC2154,SC2034 # the variables below are the caller's (listed below)
+# Every read the answer loop's live proof judges a criterion by (scripts/e2e/answer-loop.sh): the
+# daemon's log, the stopped agents' conversations, the asker's inbox, the listener's log, the
+# recording proxy's records, Dispatch, GitHub and the daemon's own state. They live here, apart
+# from the rig that produces what they read, so that scripts/e2e/lib/answer-loop-reads.test.ts can
+# run each of them over fixtures of the shapes a run writes (lib/testdata/answer-loop) with no
+# model, no network, no Postgres and no NATS. A read is the one part of a live proof a live run
+# cannot check: a read that is wrong reports a pass for evidence that holds nothing, and every
+# round of this proof has had one — jq over an array as an object, a reachability preflight
+# counted as a model call, the agent's own words counted as the loop's append, a bigint the
+# record carries as a string compared as a number, a pipe that fails under `pipefail` on an empty
+# result and takes the whole run with it. Each read here is given a passing fixture, a failing
+# one and an empty one by that test.
+#
+# Sourced, never run. The caller sets
+#   evidence       the run's evidence directory, holding inbox.jsonl, model-calls.jsonl,
+#                  logs/listener.log and a13/<branch|base>/<store>/
+#   daemon_log     the current store's daemon log, every boot of it appended to one file
+#   boot_offset    its size in bytes when the daemon booted, so boot_log reads this boot alone
+#   store          the conversation store of the pass ("files" or "postgres"), part of the
+#                  evidence's paths and of the daemon's proxy label
+#   run_tag        the run's own number, part of the Oh My Pi session database's name
+#   daemon_db      the daemon's own database for this pass, which review_record reads the round from
+#   repo           the smoke repository, owner/name, whose comments and reviews the reads below read
+#   agent          the run's agents, keyed `<store>:<name>.<field>` (file, session, issue, token)
+#   questions_file scripts/e2e/answer-loop/questions.json, the questions and their answer keys
+#   controller_session  the stand-in session the daemons' controller notices are heard on
+#   mode           `workflow` when the daemon runs its workflow, else `claims-only`
+#   app_keys_missing  the App key command inputs the run was not given, an array of their names,
+#                  empty in workflow mode
+# and defines, beside the reads below, nothing of its own. The reads call, and the caller defines:
+#   pg_sql DATABASE SQL      the statement's rows as one JSON array
+#   legion_cmd ARG...        the daemon's own binary against its configuration
+#   dispatch_get PATH        a Dispatch read as the agents' bearer
+#   smoke_gh ARG...          one gh call on the smoke repository as the implement App
+#   note TEXT                one line of a check's evidence
+# Every read judges what it is given: an empty log, an empty conversation, an inbox with nothing
+# in it, a GitHub error body in place of a list. None of them ends the run under `set -e`.
+
+# ---- the daemon's log ------------------------------------------------------------------------------
+# boot_log prints the current boot's daemon log lines, JSON only.
+boot_log() { tail -c "+$((boot_offset + 1))" "$daemon_log" | jq -c -R 'fromjson? // empty'; }
+# run_log prints every line of this store's daemon log, JSON only: the whole run, every boot of it,
+# which is what a check judges when another check restarted the daemon before it (A14 after A12's
+# five restarts, whose own boot holds no answer at all).
+run_log() { jq -c -R 'fromjson? // empty' "$daemon_log"; }
+
+# answers_lines MSG [SESSION [STATE]]: how many lines of this boot's daemon log carry MSG, for
+# SESSION and in STATE when given.
+answers_lines() {
+  boot_log | jq -s --arg m "$1" --arg s "${2:-}" --arg st "${3:-}" \
+    '[.[] | select(.msg == $m and ($s == "" or .session == $s) and ($st == "" or .state == $st))] | length'
+}
+# question_lines QUESTION: how many lines of this boot's daemon log name QUESTION, whatever the
+# `answers:` message. Zero says the boot was handed nothing of it at all.
+question_lines() {
+  boot_log | jq -s --arg q "$1" '[.[] | select(((.msg // "") | startswith("answers:")) and .question == $q)] | length'
+}
+# newest_question SESSION STATE: the id of the newest question of SESSION this boot logged in
+# STATE, empty for none.
+newest_question() {
+  boot_log | jq -s -r --arg s "$1" --arg st "$2" \
+    '[.[] | select(.msg == "answers: question" and .session == $s and .state == $st) | .question] | last // ""'
+}
+# answer_dropped SESSION: this boot dropped an answer of SESSION's because its conversation had
+# started, and forwarded the question to the agent instead (A7).
+answer_dropped() {
+  boot_log | jq -e -s --arg s "$1" 'any(.[];
+    .msg == "answers: the agent'"'"'s conversation is running or moved; the answer is dropped and the question forwarded"
+    and .started == true and .session == $s)' >/dev/null
+}
+# question_forwarded ROLE: this boot forwarded a question of ROLE's to its agent, which a resume
+# mid-answer does (A18).
+question_forwarded() {
+  boot_log | jq -e -s --arg r "$1" 'any(.[]; .msg == "answers: question" and .state == "forwarded" and .role == $r)' >/dev/null
+}
+# fault_passed_on FAULT: this boot passed a question to the controller for a reason naming FAULT
+# (A12).
+fault_passed_on() {
+  boot_log | jq -e -s --arg f "$1" \
+    'any(.[]; .msg == "answers: question passed to the controller" and ((.reason // "") | contains($f)))' >/dev/null
+}
+# answered_fault_is LINE FAULT CALLS: the `answers: answered` LINE reports FAULT after CALLS model
+# calls. An empty line (the boot logged none) is no such line.
+answered_fault_is() {
+  jq -e --arg f "$2" --argjson c "$3" '.fault == $f and .calls == $c' <<<"${1:-null}" >/dev/null 2>&1
+}
+# decision_lines COMMENT: this boot's `decision passed on` lines for the person's reply COMMENT, as
+# an array of what each says.
+decision_lines() {
+  boot_log | jq -s -c --arg d "dispatch:$1" \
+    '[.[] | select(.msg == "answers: decision passed on" and .decision == $d) | {decision, to, issue, role, session, asker, ref}]'
+}
+# decision_passed_once LINES TO: LINES (decision_lines) holds exactly one line, to TO.
+decision_passed_once() {
+  jq -e --arg to "$2" 'length == 1 and .[0].to == $to' <<<"${1:-[]}" >/dev/null 2>&1
+}
+# registry_404_routes LOG: the registry routes the boot's LOG (boot_log) says the listener answered
+# 404 on, with how many lines each: `[]` when it answered none, which is what a boot must show.
+registry_404_routes() {
+  jq -s -c '[.[] | select(((.msg // "") | startswith("the Envoy listener answers 404 on"))) | .route]
+    | group_by(.) | map({route: .[0], lines: length})' <<<"${1:-}"
+}
+# app_keys_missing_names prints the App key command inputs this run was not given, as the mode
+# note and the WAITING line below name them: one name, or both joined by ` and `. A run given
+# both is in workflow mode and neither line is written, so the empty list names both rather than
+# nothing.
+app_keys_missing_names() {
+  case "${#app_keys_missing[@]}" in
+    1) printf '%s' "${app_keys_missing[0]}" ;;
+    2) printf '%s and %s' "${app_keys_missing[0]}" "${app_keys_missing[1]}" ;;
+    *) printf 'LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND and LEGION_E2E_REVIEW_APP_KEY_COMMAND' ;;
+  esac
+}
+# answering_blockers prints, one per line, what the answering criteria wait on in this run: the
+# daemon's workflow (the answer loop runs in it, and it boots only with both role Apps, each from
+# its own key command, so the line names the input the run was not given), and the listener's
+# hand-off (plan task 6), read from this boot's log: the daemon writes the project's answering
+# heartbeat at boot, and a listener without the hand-off answers its route 404.
+answering_blockers() {
+  [ "$mode" = workflow ] ||
+    printf 'WAITING (needs %s): the daemon runs without its workflow, which carries the answer loop and boots only with both role Apps, each minting its tokens from the key its command prints\n' "$(app_keys_missing_names)"
+  if boot_log | jq -e -s 'any(.[]; (.msg // "") | startswith("the Envoy listener answers 404 on PUT /v1/legion/projects/{project}"))' >/dev/null; then
+    printf 'WAITING (needs the listener hand-off, task 6): the listener answers the heartbeat route PUT /v1/legion/projects/{project} 404, so it hands nothing off\n'
+  fi
+}
+# check_boot_without_answers: the negative control for the boot and A13's daemon half: the same
+# daemon with `answers` removed writes no conversation to the agent registry and runs no loop. It
+# still writes the project's answering heartbeat, saying it does not answer — a daemon whose
+# operator removed `answers` stops the listener's hand-offs at its next boot rather than when the
+# last answering key ages out (internal/daemon, newConversationHistory) — and on a listener
+# without the hand-off that heartbeat's route answers 404, one line a minute. So the heartbeat
+# route's own 404 is what this boot must show, and a registry write, a 404 on any other route and
+# any `answers:` line are what it must not.
+heartbeat_route='PUT /v1/legion/projects/{project}'
+check_boot_without_answers() {
+  local lines beats
+  lines=$(boot_log | jq -s -c --arg beat "$heartbeat_route" \
+    '[.[] | select((.route // "") != $beat) | select((((.msg // "") | test("agent registry|answers:")) or ((.msg // "") | startswith("the Envoy listener answers 404 on"))))] | length')
+  beats=$(boot_log | jq -s -c --arg beat "$heartbeat_route" '[.[] | select((.route // "") == $beat)] | length')
+  note "with answers removed: $lines registry, loop or other-route 404 lines this boot (want 0); heartbeat-route lines $beats"
+  [ "$lines" = 0 ]
+}
+# cost_price is jq's price table of the models the run answers on and prices (answer-loop.sh's
+# answers_prices), USD per million tokens as [input, output, cache write, cache read]: Claude
+# Sonnet 5.5, whichever harness names it, and GPT-6.1; null for any other model.
+cost_price='def cost_price: (.model // "") as $m
+  | if ($m | test("claude-sonnet-5-5")) then [3, 15, 3.75, 0.3]
+    elif $m == "openai/gpt-6.1-sol" then [2, 10, 2.5, 0.1]
+    else null end; '
+# bad_cost_lines LINES: the `answers: answered` LINES (one JSON object a line) of a model cost_price
+# prices whose costUSD is not the price of the tokens they report, cache writes and cache reads
+# included. `[]` says every one of them recomputes. A line of another model is not judged here;
+# unpriced_cost_lines names it.
+bad_cost_lines() {
+  jq -s -c "$cost_price"'[.[] | cost_price as $p | select($p != null)
+    | select(((((.inputTokens // 0) * $p[0]) + ((.outputTokens // 0) * $p[1]) + ((.cacheWriteTokens // 0) * $p[2]) + ((.cacheReadTokens // 0) * $p[3])) / 1000000 - (.costUSD // 0) | fabs) > 0.000001)]' <<<"${1:-}"
+}
+# unpriced_cost_lines LINES: those of the `answers: answered` LINES whose model cost_price does not
+# price, each as {question, model}, so no cost of theirs is recomputed. `[]` says every line is of
+# a model A14 recomputes.
+unpriced_cost_lines() {
+  jq -s -c "$cost_price"'[.[] | select(cost_price == null) | {question, model}]' <<<"${1:-}"
+}
+# cache_read_tokens LINE: the tokens an `answers: answered` LINE read from the provider's cache, 0
+# for a line that reports none and for no line at all.
+cache_read_tokens() { jq -r '.cacheReadTokens // 0' <<<"${1:-null}" 2>/dev/null || printf '0\n'; }
+# question_log_lines MSG QUESTION prints this boot's lines of QUESTION that carry MSG, an array
+# in the order they were logged, `[]` for a question with none. QUESTION is the id every answer
+# the loop posts carries in its marker (answer_question_id). A reply that never came names no
+# question, and that is no line rather than the lines of some answer logged with no id, so an
+# empty id reads no log at all.
+question_log_lines() {
+  [ -n "$2" ] || {
+    printf '[]\n'
+    return 0
+  }
+  boot_log | jq -s -c --arg m "$1" --arg q "$2" '[.[] | select(.msg == $m and .question == $q)]'
+}
+# first_line_where LINES TEST ARG... prints the first element of the JSON array LINES that TEST
+# passes, called as `TEST <element> ARG...`, and fails when none does. A check judges the lines of
+# the answer it reads (question_gh_lines, question_leak_refusals) and passes when one of them is
+# the line it needs: the model may make another call after that one, and another answer may log
+# its own after both. In proof run 44163479734 the Claude Code reviewer's answer read go.mod with
+# two good calls, then made a third gh call with no arguments, which the tool refused; the last gh
+# line of the role was that refusal, owner "" and exit -1, and A15 read the answer as made with
+# no read.
+first_line_where() {
+  local lines=$1 predicate=$2 line
+  shift 2
+  while IFS= read -r line; do
+    if "$predicate" "$line" "$@"; then
+      printf '%s\n' "$line"
+      return 0
+    fi
+  done < <(jq -c '.[]' <<<"${lines:-[]}" 2>/dev/null)
+  return 1
+}
+# answered_line QUESTION prints this boot's `answers: answered` line for QUESTION, and nothing
+# for a question this boot answered nothing of. A check asking one agent several questions reads
+# each one's own line this way, where the session's last line is whichever answer was logged last.
+answered_line() { question_log_lines "answers: answered" "$1" | jq -c 'last // empty'; }
+# gh_line_is LINE APP OWNER EXIT: the `answers: gh` LINE is a call of APP on OWNER that ended as
+# EXIT says — `0`, `nonzero` for a refused call, or `any`. No line at all is no such call.
+gh_line_is() {
+  local exit_test
+  case "$4" in
+    0) exit_test='.exit == 0' ;;
+    nonzero) exit_test='.exit != 0' ;;
+    any) exit_test='true' ;;
+    *) return 2 ;;
+  esac
+  jq -e --arg app "$2" --arg owner "$3" ".app == \$app and .owner == \$owner and ($exit_test)" <<<"${1:-null}" >/dev/null 2>&1
+}
+# question_gh_lines QUESTION prints this boot's `answers: gh` lines of QUESTION
+# (question_log_lines).
+question_gh_lines() { question_log_lines "answers: gh" "$1"; }
+# question_leak_refusals QUESTION prints this boot's lines of QUESTION where the shared leak
+# guard refused a gh call (question_log_lines): the loop writes one `answers: gh call refused by
+# the leak guard` line before it refuses the call, carrying the question, the seq, the issue, the
+# role, the repository and the reason (internal/ghtool's Run).
+question_leak_refusals() { question_log_lines "answers: gh call refused by the leak guard" "$1"; }
+# leak_refusal_is LINE ISSUE ROLE REPOSITORY REASON: the refusal LINE is a call of ROLE's on
+# ISSUE to REPOSITORY refused for REASON — the report the shared check printed itself, which the
+# refusal carries back word for word (leakguard's Refusal). The reason is read and not the line
+# alone: a guard that resolved no check at all refuses every call and writes this same line, with
+# a setup failure's words in `why` and nothing of any check in it. No line at all is no refusal.
+leak_refusal_is() {
+  jq -e --arg i "$2" --arg r "$3" --arg repo "$4" --arg why "$5" \
+    '.issue == $i and .role == $r and .repository == $repo and ((.why // "") | contains($why))' \
+    <<<"${1:-null}" >/dev/null 2>&1
+}
+# review_refused ISSUE REASON: this boot set aside a review of ISSUE's pull request for REASON, the
+# workflow's `workflow: a review decides nothing: <reason>` line naming ISSUE (workflow's review,
+# RefusesRound). A review the review App submitted from a session that is not the reviewer's is
+# refused `the review App submitted it from a session that is not the reviewer's` (A19's control).
+review_refused() {
+  boot_log | jq -e -s --arg i "$1" --arg m "workflow: a review decides nothing: $2" 'any(.[]; .msg == $m and .issue == $i)' >/dev/null
+}
+# phase_changed ISSUE FROM TO: this boot moved ISSUE from phase FROM to phase TO, the workflow's
+# `workflow: phase changed` line (workflow's engine), as an approval that ends a review round moves
+# its issue from reviewing to accepting (A19).
+phase_changed() {
+  boot_log | jq -e -s --arg i "$1" --arg f "$2" --arg t "$3" \
+    'any(.[]; .msg == "workflow: phase changed" and .issue == $i and .from == $f and .to == $t)' >/dev/null
+}
+
+# ---- the stopped agents' conversations ---------------------------------------------------------------
+# conversation_text NAME prints the agent's conversation as its store holds it: the session file
+# under the files store, the session table's row under postgres (Oh My Pi's sessions), and a Claude
+# Code transcript as a file under either.
+conversation_text() {
+  local file=${agent[$store:$1.file]}
+  if [ "$store" = postgres ] && [ "$1" != pre_change ]; then
+    pg_sql "omp_sessions_$run_tag" "select coalesce(string_agg(content, '' order by start_offset), '') as text from (select 0 as start_offset, content from omp_session_files where path = '$file' union all select start_offset, content from omp_session_files_parts where path = '$file') p" |
+      jq -r '(.[0].text // "")'
+  else
+    cat -- "$file"
+  fi
+}
+# conversation_holds NAME NEEDLE: NAME's conversation holds NEEDLE, whatever entry carries it. The
+# whole conversation is read before it is searched, never piped into a search that stops at its
+# first match: under the session table it is one jq string, and a `grep -q` that closes the pipe
+# early fails jq's write, which `pipefail` makes the read's answer (A7 and A15 read a conversation
+# holding the needle as one that did not, beside `jq: error: writing output failed: Broken pipe`).
+# A session file longer than the pipe's buffer does the same to `cat`.
+conversation_holds() {
+  local text
+  text=$(conversation_text "$1") || return 1
+  grep -qF -- "$2" <<<"$text"
+}
+# text_compactions NAME: how many compactions NAME's Oh My Pi conversation holds whose summary is
+# text the loop's reader reads. The reader declines the two others (compactionSummary in
+# packages/daemon/internal/conversation/omp/context.go): Oh My Pi's image-based snapcompact, an
+# entry whose preserveData carries `snapcompact`, which it writes for a compaction that carries no
+# instructions, a person's bare `/compact` among them; and a context rollover (details.kind
+# `experimental-context-rollover`). A question to a conversation holding either is passed on, not
+# answered.
+text_compactions() {
+  conversation_text "$1" | jq -R -s '[split("\n")[] | fromjson? | select(.type == "compaction")
+    | select(((.preserveData? | objects | has("snapcompact")) // false) | not)
+    | select((.details.kind? // "") != "experimental-context-rollover")] | length'
+}
+# notices_in_conversation NAME NEEDLE: how many entries of NAME's conversation that are not its own
+# replies hold NEEDLE (what reached it, as prompts and notices).
+notices_in_conversation() {
+  conversation_text "$1" | jq -R -s --arg n "$2" '[split("\n")[] | fromjson? | select((.message.role // "") != "assistant") | tojson | select(contains($n))] | length'
+}
+# appended_exchanges NAME [QUESTION_ID]: how many exchanges the loop appended to NAME's
+# conversation, all of them or QUESTION_ID's alone. Every append ends in the marker entry naming
+# the question it answered, a `legion-answer` custom entry in an Oh My Pi session
+# (conversation/omp.AnswerEntryType) and a `legion-answer` line in a Claude Code transcript
+# (conversation/claude.AnswerLineType). The model never sees that entry and no agent writes one,
+# so it counts the loop's appends where the question's or the answer's own words cannot: an agent
+# that was asked the same thing before it stopped holds those words itself.
+appended_exchanges() {
+  conversation_text "$1" | jq -R -s --arg q "${2:-}" '[split("\n")[] | fromjson?
+    | select((.type == "custom" and .customType == "legion-answer" and ($q == "" or (.data.questionId? // "") == $q))
+      or (.type == "legion-answer" and ($q == "" or (.questionId? // "") == $q)))] | length'
+}
+# assistant_texts_after NAME NEEDLE prints, one a line, the words of every reply NAME's Oh My Pi
+# conversation holds after the last entry not its own that holds NEEDLE: everything the agent said
+# in the turn that entry started, which is what an agent resumed after its answers says next (A9,
+# whose NEEDLE is the task it was delivered). Every reply of the turn is read and not the last: a
+# resumed agent may answer a person's earlier reply in the same turn, and its last words then
+# answer that. A reply holding no text (a tool call alone) prints no line, and a conversation with
+# no such entry prints nothing.
+assistant_texts_after() {
+  conversation_text "$1" | jq -R -s -r --arg n "$2" '[split("\n")[] | fromjson?] as $entries
+    | ([range($entries | length) | select(($entries[.].message.role? // "") != "assistant" and ($entries[.] | tojson | contains($n)))] | last) as $at
+    | if $at == null then empty else
+        $entries[$at + 1:][] | select(.type == "message" and .message.role == "assistant")
+          | [.message.content[]? | .text? // empty] | join(" ") | select(. != "")
+      end'
+}
+# transcript_effort TRANSCRIPT: the effort a Claude Code transcript last ran at, which the loop's
+# replay of it must carry; empty for a transcript that records none.
+transcript_effort() { jq -R -r 'fromjson? | select(.type == "assistant") | .effort // empty' <<<"${1:-}" | tail -1; }
+# transcript_signatures TRANSCRIPT: every thinking signature a Claude Code transcript holds, one a
+# line, which the loop's replay must carry byte for byte.
+transcript_signatures() {
+  jq -R -r 'fromjson? | select(.type == "assistant") | .message.content[]? | select(.type == "thinking") | .signature // empty' <<<"${1:-}"
+}
+# transcript_thinking TRANSCRIPT: how many thinking blocks a Claude Code transcript's own turns
+# hold. None leaves A10's byte-for-byte clause with nothing to replay, which the check reads as a
+# FAIL rather than as every signature carried.
+transcript_thinking() {
+  jq -R -s '[split("\n")[] | fromjson? | select(.type == "assistant") | .message.content[]? | select(.type? == "thinking")] | length' <<<"${1:-}"
+}
+# omp_thinking_level TRANSCRIPT: the thinking level an Oh My Pi conversation last ran at, as the
+# loop's reader reads it (conversation/omp's buildContext): its last thinking_level_change, `off`
+# for a change that names no level and for a conversation with no change at all.
+omp_thinking_level() {
+  local level
+  level=$(jq -R -s -r '[split("\n")[] | fromjson? | objects | select(.type == "thinking_level_change")]
+    | last | if . == null then "off" else (.thinkingLevel // "off") end' <<<"${1:-}" 2>/dev/null) || level=
+  printf '%s\n' "${level:-off}"
+}
+# omp_turns holds two jq definitions over an Oh My Pi session's raw text: assistant_turns, its
+# assistant messages in order, and failed, a turn the loop's reader drops, one that ended aborted
+# or in error (conversation/omp's dropFailedTurns), with what it said and asked.
+# openai_reasoning's encrypted_reasoning reads an OpenAI reasoning item, as an Oh My Pi turn stores
+# it, a Responses request carries it or a response returns it: {id, encrypted_content} for an
+# object of type `reasoning` with both, which is the only kind a stateless call can carry back,
+# and nothing for anything else.
+omp_turns='def assistant_turns: [split("\n")[] | fromjson? | objects
+  | select(.type == "message" and .message.role? == "assistant") | .message];
+def failed: (.stopReason? // "") | IN("aborted", "error"); '
+openai_reasoning='def encrypted_reasoning: objects
+  | select(.type? == "reasoning" and (.id? | type) == "string" and (.encrypted_content? | type) == "string")
+  | {id, encrypted_content}; '
+# omp_reasoning_items TRANSCRIPT prints, as one JSON array, the OpenAI reasoning items an Oh My Pi
+# conversation's assistant turns store, each as {id, encrypted_content}: the items of type
+# `reasoning` in a turn's providerPayload (an openaiResponsesHistory), those with both an id and
+# encrypted content, which the loop's replay must carry as they are stored. A failed turn's items
+# are none of them, since the loop's reader drops that turn. `[]` for none.
+omp_reasoning_items() {
+  local items
+  items=$(jq -R -s -c "$omp_turns$openai_reasoning"'[assistant_turns[] | select(failed | not)
+    | (.providerPayload.items? // [])[]? | encrypted_reasoning]' <<<"${1:-}" 2>/dev/null) || items=
+  printf '%s\n' "${items:-[]}"
+}
+# omp_openai_summary TRANSCRIPT: what an Oh My Pi conversation's own turns hold, as one JSON object:
+# how many assistant turns and how many of them failed (omp_turns), the distinct
+# `<provider>/<api>/<model>` they ran on, and, of the turns that did not fail, the tool calls and
+# the OpenAI reasoning items, all of them (`reasoning`) and those with an id and encrypted content
+# (`encrypted`, omp_reasoning_items). A GPT-6.1 transcript whose `encrypted` or `tool_calls` is 0
+# leaves A10's GPT-6.1 clause short of what it replays, which the check reads as a FAIL.
+omp_openai_summary() {
+  local summary
+  summary=$(jq -R -s -c "$omp_turns$openai_reasoning"'assistant_turns as $all | [$all[] | select(failed | not)] as $turns
+    | [$turns[] | (.providerPayload.items? // [])[]? | objects | select(.type? == "reasoning")] as $reasoning
+    | {turns: ($all | length), failed: ([$all[] | select(failed)] | length),
+       models: ([$all[] | [.provider, .api, .model] | map(. // "-") | join("/")] | unique),
+       tool_calls: ([$turns[] | .content[]? | objects | select(.type == "toolCall")] | length),
+       reasoning: ($reasoning | length), encrypted: ([$reasoning[] | encrypted_reasoning] | length)}' \
+    <<<"${1:-}" 2>/dev/null) || summary=
+  [ -n "$summary" ] || summary='{"turns":0,"failed":0,"models":[],"tool_calls":0,"reasoning":0,"encrypted":0}'
+  printf '%s\n' "$summary"
+}
+# answer_question_id REPLY prints the question id of the loop's answer REPLY: the id in the
+# `<!-- legion-answer:<id> -->` marker every reply the loop posts carries (intake.AnswerMarker).
+# A reply carrying no marker, and no reply at all, print nothing.
+answer_question_id() { grep -oE 'legion-answer:[0-9a-f]+' <<<"$1" | head -1 | cut -d: -f2 || true; }
+# occurrences TEXT NEEDLE: how many times NEEDLE occurs in TEXT.
+occurrences() { grep -oF -- "$2" <<<"$1" | wc -l || true; }
+# question_suffix ID TAG MARKER: the suffix the rig ends a question it will count with, which names
+# the question ID, the run TAG and the MARKER of the check that asks it. The ask and the count
+# (question_occurrences) both take it from here, so the two cannot drift apart.
+question_suffix() { printf '(question %s of run %s, %s)' "$1" "$2" "$3"; }
+# question_occurrences REQUEST ID TAG MARKER: how many times the question ID of run TAG asked under
+# MARKER occurs in REQUEST, counted by the whole suffix the rig asks it with (question_suffix) and
+# not by MARKER alone: a model's own reply can name the marker ("the same as for the earlier
+# questions, A10-1 included"), and a later request carries that reply in the conversation, so the
+# marker alone counts the question twice (proof run 44858316560, A10 under the postgres store).
+question_occurrences() { occurrences "$1" "$(question_suffix "$2" "$3" "$4")"; }
+
+# ---- the asker's inbox -------------------------------------------------------------------------------
+# inbox_reply EVENT prints the text the asker received in reply to EVENT, or fails; inbox_replies
+# EVENT counts them. A reply that never came prints nothing rather than jq's `null`, which an
+# answer key would then be looked for in.
+inbox_reply() {
+  [ -f "$evidence/inbox.jsonl" ] || return 1
+  jq -s -e -r --arg e "In Reply To: $1" '[.[] | select(.text | contains($e)) | .text] | (.[0] // empty)' "$evidence/inbox.jsonl"
+}
+# inbox_message EVENT prints only the message of that reply: the inbox renders an envelope as a
+# reply header, `Message:`, the message, a blank line and `Topic: …` (lib/envoy-inbox.ts).
+inbox_message() {
+  inbox_reply "$1" | jq -R -s -r 'split("\nMessage:\n") | (.[1] // .[0]) | sub("\n\nTopic: [^\n]*\n?$"; "")'
+}
+inbox_replies() {
+  if [ -f "$evidence/inbox.jsonl" ]; then
+    jq -s --arg e "In Reply To: $1" '[.[] | select(.text | contains($e))] | length' "$evidence/inbox.jsonl"
+  else
+    printf '0\n'
+  fi
+}
+# first_reply_of EVENT EVENT: the text of whichever of the two answers reached the asker first, so
+# a check reads the order they were answered in (A9).
+first_reply_of() {
+  [ -f "$evidence/inbox.jsonl" ] || return 1
+  jq -s -r --arg a "In Reply To: $1" --arg b "In Reply To: $2" \
+    '[.[] | select((.text | contains($a)) or (.text | contains($b)))] | (.[0].text // empty)' "$evidence/inbox.jsonl"
+}
+# controller_notices KIND NEEDLE: how many notices of KIND the controller stand-in received whose
+# text holds NEEDLE.
+controller_notices() {
+  if [ -f "$evidence/inbox.jsonl" ]; then
+    jq -s --arg s "$controller_session" --arg k "\"kind\":\"$1\"" --arg n "$2" \
+      '[.[] | select(.session == $s and (.text | contains($k)) and (.text | contains($n)))] | length' "$evidence/inbox.jsonl"
+  else
+    printf '0\n'
+  fi
+}
+
+# ---- the listener's log ------------------------------------------------------------------------------
+# listener_handoffs EVENT: how many hand-offs the listener published for the envelope EVENT (its
+# "listener handed a message to its legion daemon" lines). Each is published with the envelope's
+# dedupe key in its MsgId, `legion.handoff.<dedupe key>:<subject>`, so however many are published
+# for one key the stream stores one message (cmd/listener/legion_handoff.go).
+listener_handoffs() {
+  jq -R -s --arg e "$1" \
+    '[split("\n")[] | fromjson? | select(.msg == "listener handed a message to its legion daemon" and .event_id == $e)] | length' \
+    "$evidence/logs/listener.log"
+}
+# listener_handoffs_to SESSION: how many hand-offs the listener published for SESSION's own
+# daemon, whatever the envelope ("listener handed a message to its legion daemon" naming it).
+listener_handoffs_to() {
+  jq -R -s --arg s "$1" \
+    '[split("\n")[] | fromjson? | select(.msg == "listener handed a message to its legion daemon" and .session_id == $s)] | length' \
+    "$evidence/logs/listener.log"
+}
+
+# ---- the listener's answers ----------------------------------------------------------------------------
+# consumer_registration ANSWER SESSION [TOPIC...]: the listener's ANSWER to SESSION's registration
+# (POST /v1/interests/subscribe) gives SESSION a consumer of its own, relayed on SESSION's relay
+# subject (`notifications.envoy.deliver.<session>`, the one subject the run's inbox reads for it),
+# and stores every TOPIC. A registration that asks for no consumer is refused `409 not_requested`
+# with no delivery at all, and a controller lane is stored only for a session holding that
+# project's controller role, so an answer that left one out does not hold it.
+consumer_registration() {
+  local answer=$1 session=$2
+  shift 2
+  jq -e --arg s "$session" '.session_id == $s and .delivery.mode == "consumer"
+    and .delivery.subject == "notifications.envoy.deliver." + $s
+    and ((.topics // []) as $stored | all($ARGS.positional[]; . as $topic | any($stored[]; . == $topic)))' \
+    --args "$@" <<<"${answer:-null}" >/dev/null 2>&1
+}
+# stored_for_stopped BODY SESSION: the listener's answer to a send stored the message for SESSION as
+# a session that is not running (`state: stopped`), the answer a send to a stopped agent gets with
+# `answers` removed, on the base commit as on the branch. A send handed to a stopped agent's daemon
+# names its recipient with no state, and a session Envoy knows nothing of is a 404 naming none.
+stored_for_stopped() {
+  jq -e --arg s "$2" '.recipient == $s and .state == "stopped"' <<<"${1:-null}" >/dev/null 2>&1
+}
+
+# ---- the recording proxy's records ---------------------------------------------------------------------
+# Each read below takes jq's answer into a variable and prints that: a jq that fails (the records
+# file is not written yet) must leave the fallback alone, where a `jq … || printf` pipeline prints
+# jq's own empty answer and the fallback's after it, two lines where a check reads one.
+#
+# proxy_count LABEL: how many model calls of LABEL the recording proxy has finished. A model call
+# is a request whose body holds a messages array (Anthropic's Messages API) or an input array
+# (OpenAI's Responses API), which jq's model_call below tests: the proxy records every request of a
+# label, and two of them are no call of the model — Claude Code's `HEAD /api/hello` reachability
+# preflight, which it sends as each session starts, and an Oh My Pi agent's `GET /v1/models`, both
+# with no body at all. (A10 counted those too, so the resumed Claude Code reviewer's "first
+# request" was the preflight, which holds no question.)
+model_call='def model_call: (.request_body | type) == "object"
+  and (((.request_body.messages | type) == "array") or ((.request_body.input | type) == "array")); '
+proxy_count() {
+  local count
+  count=$(jq -s --arg l "$1" "$model_call"'[.[] | select(.label == $l and model_call)] | length' \
+    "$evidence/model-calls.jsonl" 2>/dev/null) || count=
+  printf '%s\n' "${count:-0}"
+}
+# proxy_ordinal LABEL: the ordinal LABEL has reached, every request the proxy recorded for it
+# counted, model call or not, which is what a hold names (hold_at). The proxy records a request
+# once it ends, so a request still in flight has an ordinal past this count: a check that must
+# know the ordinal of a held call reads it off the proxy's own held list (held_since).
+proxy_ordinal() {
+  local count
+  count=$(jq -s --arg l "$1" '[.[] | select(.label == $l)] | length' "$evidence/model-calls.jsonl" 2>/dev/null) || count=
+  printf '%s\n' "${count:-0}"
+}
+# first_request_after LABEL N prints the request body of LABEL's first model call after its first
+# N, counted as proxy_count counts them: the preflight and the model listing the proxy records for
+# the label are no model call of it, and neither is the body a check reads here.
+first_request_after() {
+  local body
+  body=$(jq -s -c --arg l "$1" --argjson n "${2:-0}" "$model_call"'[.[] | select(.label == $l and model_call)] | sort_by(.ordinal) | (.[$n].request_body // null)' \
+    "$evidence/model-calls.jsonl" 2>/dev/null) || body=
+  printf '%s\n' "${body:-null}"
+}
+# answer_calls LABEL MARKER [LATER] prints, as one JSON array in ordinal order, the proxy's records
+# of LABEL's model calls whose request body holds MARKER and not LATER: the calls of the one answer
+# MARKER's question was (A10's GPT-6.1 clause). Every call of an answer carries its question, and
+# every call of a later answer carries the exchange the loop appended for it, that question's
+# marker with it, so LATER, the next question's own marker, leaves the later answer's calls out.
+# `[]` for none.
+answer_calls() {
+  local calls
+  calls=$(jq -s -c --arg l "$1" --arg m "$2" --arg later "${3:-}" "$model_call"'[.[] | select(.label == $l and model_call)
+    | select((.request_body | tostring) as $b | ($b | contains($m)) and ($later == "" or ($b | contains($later) | not)))]
+    | sort_by(.ordinal)' "$evidence/model-calls.jsonl" 2>/dev/null) || calls=
+  printf '%s\n' "${calls:-[]}"
+}
+# calls_on_model CALLS PATH MODEL: CALLS (answer_calls) are at least one call, and each is a POST
+# to PATH whose request names MODEL: the answer was made on that API and on that model.
+calls_on_model() {
+  jq -e --arg p "$2" --arg m "$3" \
+    'type == "array" and length > 0 and all(.[]; .method == "POST" and .path == $p and .request_body.model? == $m)' \
+    <<<"${1:-null}" >/dev/null 2>&1
+}
+# calls_efforts CALLS prints the reasoning effort each of CALLS' requests carries, OpenAI's
+# `reasoning.effort`, as one JSON array in call order, null for a request that carries none.
+# efforts_all CALLS EFFORT: CALLS are at least one call, and every request carries EFFORT.
+calls_efforts() {
+  local efforts
+  efforts=$(jq -c '[(if type == "array" then .[] else empty end) | (.request_body.reasoning.effort? // null)]' \
+    <<<"${1:-null}" 2>/dev/null) || efforts=
+  printf '%s\n' "${efforts:-[]}"
+}
+efforts_all() {
+  jq -e --arg e "$2" 'length > 0 and all(.[]; . == $e)' <<<"$(calls_efforts "$1")" >/dev/null 2>&1
+}
+# reasoning_replayed TRANSCRIPT REQUEST prints `<carried> <stored> [<missing>]`: how many reasoning
+# items an Oh My Pi TRANSCRIPT stores (omp_reasoning_items), how many of them REQUEST, the body of
+# an OpenAI Responses call, carries as a reasoning input item with that id and that encrypted
+# content, byte for byte, and the ids of those it does not carry, joined by commas. The replay
+# holds when the transcript stores some and the request carries each one; `0 0` is a transcript
+# that stores none and leaves nothing to replay. The two go to jq on its standard input, never as
+# arguments: a conversation's encrypted content outgrows one. A request that is no JSON carries
+# none of them.
+reasoning_replayed() {
+  local stored answer
+  stored=$(omp_reasoning_items "$1")
+  answer=$(jq -n -r "$openai_reasoning"'(input) as $stored | (input) as $request
+    | [$request | .. | encrypted_reasoning] as $sent
+    | [$stored[] | select(. as $item | any($sent[]; . == $item) | not) | .id] as $missing
+    | "\(($stored | length) - ($missing | length)) \($stored | length) \($missing | join(","))"' \
+    <<<"${stored:-[]}"$'\n'"${2:-null}" 2>/dev/null) ||
+    answer=$(jq -r '"0 \(length) \(map(.id) | join(","))"' <<<"${stored:-[]}" 2>/dev/null) || answer=
+  answer=${answer% }
+  printf '%s\n' "${answer:-0 0}"
+}
+# reasoning_carried CALLS prints `<carried> <owed>` for one answer's model calls (answer_calls):
+# owed counts each reasoning item a call's response returned, paired with each later call of the
+# answer, and carried the pairs whose later request holds a reasoning item of that id with that
+# encrypted content. What a response returned is what its `response.output_item.done` events hold:
+# the SDK's stream adapter builds the next step's reasoning from that event
+# (grafana/ai-sdk providers/openai, stream_adapter.go, handleOutputItemDone), and agentloop keeps
+# the same items as the step's Step.Native (packages/envoy/agentloop/run.go, readRaw), which the
+# append stores. The proxy keeps a streamed answer as the text it streamed, which also holds each
+# item in `response.output_item.added`, shorter, and in `response.completed`, whose encrypted
+# content differs from the done event's (measured through the model gateway on 2026-11-18):
+# neither is what the next step carries. The answer's last call has no later one, so what it alone
+# returned is owed nowhere, and `0 0` says no step but the last returned reasoning at all. A call
+# whose response ended incomplete (a `response.incomplete` event: the provider cut it for length)
+# owes nothing either: the daemon makes such a call once more (agentloop's
+# Request.CallAgainWhenCut, which it sets to 1), sent the cut call's request byte for byte, so by
+# design no later request holds anything the cut call returned. A cut call that is not the
+# answer's last is always one made again; the last call owes nothing anyway.
+reasoning_carried() {
+  local answer
+  answer=$(jq -r "$openai_reasoning"'def returned:
+      if type == "string" then
+        [split("\n")[] | rtrimstr("\r") | select(startswith("data:")) | ltrimstr("data:") | ltrimstr(" ")
+          | fromjson? | objects] as $events
+        | if any($events[]; .type == "response.incomplete") then []
+          else [$events[] | select(.type == "response.output_item.done") | .item | encrypted_reasoning] end
+      else [] end;
+    def sent: [.request_body | .. | encrypted_reasoning];
+    (if type == "array" then . else [] end) as $calls
+    | [range($calls | length) as $i | ($calls[$i].response_body | returned)[] as $item
+        | range($i + 1; $calls | length) as $j | ($calls[$j] | sent) | any(.[]; . == $item)]
+    | "\(map(select(.)) | length) \(length)"' <<<"${1:-[]}" 2>/dev/null) || answer=
+  printf '%s\n' "${answer:-0 0}"
+}
+# carried_total CARRIED... sums reasoning_carried's `<carried> <owed>` lines, one an answer's, into
+# one such line: of the reasoning earlier steps of all those answers returned, how many pairs a
+# later request of the same answer carried, and how many were owed. A line that is not two counts
+# adds nothing, so no answer at all is `0 0`.
+carried_total() {
+  local line carried owed sum_carried=0 sum_owed=0
+  for line in "$@"; do
+    read -r carried owed <<<"$line" || true
+    [[ $carried =~ ^[0-9]+$ && $owed =~ ^[0-9]+$ ]] || continue
+    sum_carried=$((sum_carried + carried))
+    sum_owed=$((sum_owed + owed))
+  done
+  printf '%s %s\n' "$sum_carried" "$sum_owed"
+}
+# a10_next_question ASKED CARRIED... prints the id of the question A10's GPT-6.1 leg asks next,
+# given that it has asked ASKED of the questions file's a10.reasoning list and that CARRIED are the
+# reasoning_carried lines of every answer it has asked, the two cache answers' first: the list's
+# next question while those answers owe nothing, since then no step that returned reasoning had a
+# later step after it and clause (c) has nothing to judge. It prints nothing once some answer owed
+# a carry, whether or not the later request carried it, and nothing once the list is spent, which
+# is the leg's bound. In proof run 44461333495 no step of the four cache answers returned
+# reasoning at all (reasoning_tokens 0 in each), which is the case this read asks again for.
+a10_next_question() {
+  local asked=$1 total next
+  shift
+  total=$(carried_total "$@")
+  [ "${total#* }" = 0 ] || return 0
+  next=$(jq -r --argjson n "$asked" 'if ($n | type) == "number" and $n >= 0 then (.a10.reasoning[$n]? // empty) else empty end' \
+    "$questions_file" 2>/dev/null) || next=
+  printf '%s\n' "$next"
+}
+# call_cached_tokens CALL prints the input tokens the model read from the provider's cache for one
+# OpenAI Responses call, a record of the proxy (answer_calls): the response's own
+# usage.input_tokens_details.cached_tokens, off the `response.completed` event of a streamed
+# answer or off the response itself. 0 for a call that reports none and for no call at all. It is
+# the one call's read, where an `answers: answered` line's cacheReadTokens sums every call of the
+# answer, and a later call of an answer reads what an earlier call of that same answer wrote.
+call_cached_tokens() {
+  local tokens
+  tokens=$(jq -r '(.response_body? // null)
+    | if type == "string" then
+        [split("\n")[] | rtrimstr("\r") | select(startswith("data:")) | ltrimstr("data:") | ltrimstr(" ")
+          | fromjson? | objects | select(.type == "response.completed")
+          | (.response.usage.input_tokens_details.cached_tokens? // 0)] | last // 0
+      elif type == "object" then (.usage.input_tokens_details.cached_tokens? // 0)
+      else 0 end' <<<"${1:-null}" 2>/dev/null) || tokens=
+  printf '%s\n' "${tokens:-0}"
+}
+# daemon_call_for TEXT prints the proxy's record of the loop's first model call (this store's daemon
+# label) whose request body holds TEXT, `null` for none, and daemon_request_for TEXT that call's
+# request body. The first is the earliest by ordinal: a later answer's request carries the
+# exchanges the loop appended before it, and with them the text of their questions.
+daemon_call_for() {
+  local call
+  call=$(jq -s -c --arg l "daemon-$store" --arg t "$1" '[.[] | select(.label == $l and (.request_body | tostring | contains($t)))] | sort_by(.ordinal) | (.[0] // null)' \
+    "$evidence/model-calls.jsonl" 2>/dev/null) || call=
+  printf '%s\n' "${call:-null}"
+}
+daemon_request_for() {
+  local body
+  body=$(jq -c '.request_body? // null' <<<"$(daemon_call_for "$1")" 2>/dev/null) || body=
+  printf '%s\n' "${body:-null}"
+}
+# call_organization CALL prints the Anthropic organization that served CALL, a record of the proxy
+# (daemon_call_for): the `anthropic-organization-id` header of the answer it forwarded. A prompt
+# cache is kept per organization, so a call a gateway sent to another organization than the call
+# before it reads nothing that call wrote (A10). A stand-in's answer carries no such header, and
+# neither does no call at all: each prints an empty line.
+call_organization() {
+  local organization
+  organization=$(jq -r '(.response_headers? // {})["anthropic-organization-id"]? // ""' <<<"${1:-null}" 2>/dev/null) || organization=
+  printf '%s\n' "$organization"
+}
+# same_organization_pair ORGANIZATION...: given the answers in the order they were asked, each as
+# the organization that served it (call_organization, "" where its call names none), prints
+# "<earlier> <later>", the indexes of the first answer whose organization an earlier answer's also
+# was and of the latest such earlier answer, and fails when no two answers share one. The later
+# answer reads the cache the earlier one wrote whatever was served between them, since a prompt cache
+# is kept per organization and not per call: in proof run 44095624771 six answers strictly
+# alternated two organizations and each read what its own organization's answer before it wrote
+# (A10-2r1 read the 3184 tokens A10-1 wrote). Answers naming no organization at all share one, a
+# route that sends no such header. The caller keeps every answer inside the cache's lifetime.
+same_organization_pair() {
+  local organizations=("$@") earlier later
+  for ((later = 1; later < ${#organizations[@]}; later++)); do
+    for ((earlier = later - 1; earlier >= 0; earlier--)); do
+      if [ "${organizations[earlier]}" = "${organizations[later]}" ]; then
+        printf '%s %s\n' "$earlier" "$later"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+# request_effort REQUEST: the effort a model request carries, wherever in the body it stands;
+# empty for a request that carries none and for no request at all.
+request_effort() {
+  local effort
+  effort=$(jq -r '[.. | objects | .effort? // empty] | first // ""' <<<"${1:-null}" 2>/dev/null) || effort=
+  printf '%s\n' "$effort"
+}
+# openai_effort LEVEL: the reasoning effort the loop asks of an OpenAI model for a conversation at
+# thinking LEVEL (agentloop's openaiEffort): `none` for `off`, which both of OpenAI's protocols
+# name so, and every other level as it is.
+openai_effort() {
+  if [ "${1:-off}" = off ]; then
+    printf 'none\n'
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+# ---- the model route's answer ---------------------------------------------------------------------
+# preflight_refusal CODE BODY [KEY] prints how the model route refused answer-loop.sh's GPT-6.1
+# preflight (gpt_preflight), from the HTTP status CODE its POST /v1/responses answered (or curl's
+# `unreachable (curl exited N)` where nothing answered) and the file BODY that holds the answer,
+# and prints nothing where the route served the model: 200 with a response whose status is
+# `completed`. A refusal says `answered <code>`, the response's own status where it has one, and
+# the message the body's error gives — `error.message` in OpenAI's and LiteLLM's shape, a bare
+# `error` string, or `message` or `detail` — on one line, cut to 300 characters. What a LiteLLM
+# refusal says of the key it was sent, its masked tail and its hash (`Received API Key = sk-...abcd,
+# Key Hash (Token) =<hex>`), is left out of it, and so is KEY itself wherever the message echoes
+# it, before the cut, so that no head of a long key is left where the cut fell inside it.
+preflight_refusal() {
+  local code=$1 body=$2 key=${3:-} status message
+  status=$(jq -r '.status? | strings' "$body" 2>/dev/null) || status=
+  [ "$code" != 200 ] || [ "$status" != completed ] || return 0
+  message=$(jq -r '((.error?.message? | strings) // (.error? | strings) // (.message? | strings) // (.detail? | strings) // empty)
+    | gsub("(?i)api key = [^, ]*"; "API key = <left out>") | gsub("(?i)key hash \\(token\\) = ?[0-9a-f]*"; "key hash <left out>")' \
+    "$body" 2>/dev/null) || message=
+  message=${message//[$'\r\n\t']/ }
+  [ -z "$key" ] || message=${message//"$key"/<the key>}
+  case "$code" in
+    [0-9][0-9][0-9]) printf 'answered %s' "$code" ;;
+    *) printf '%s' "$code" ;;
+  esac
+  printf '%s%s\n' "${status:+, response status $status}" "${message:+: ${message:0:300}}"
+}
+
+# ---- the questions file ---------------------------------------------------------------------------
+question() { jq -ce --arg id "$1" '.questions[] | select(.id == $id)' "$questions_file"; }
+question_text() { question "$1" | jq -r .text; }
+# answer_holds ID TEXT: TEXT holds every must_contain string of question ID, case-insensitively, and
+# prints the first one missing when it does not. A question the file does not hold is no pass: it
+# prints what is missing and fails, where reading its keys as none would have every text hold them.
+answer_holds() {
+  local key keys
+  keys=$(question "$1" | jq -r '.must_contain[]?') || {
+    printf 'no question %s in %s\n' "$1" "$questions_file"
+    return 1
+  }
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    grep -qiF -- "$key" <<<"$2" || {
+      printf '%s\n' "$key"
+      return 1
+    }
+  done <<<"$keys"
+}
+# recorded_hit FILE TEXT: the questions file records FILE's line TEXT as a hit of A16's search that
+# is not about the answer loop (a16.unrelated_hits, by its whole text or the start of it).
+recorded_hit() {
+  jq -e --arg f "$1" --arg t "$2" \
+    'any(.a16.unrelated_hits[]; .file == $f and (.text == $t or (.starts_with as $s | $s != null and ($t | startswith($s)))))' \
+    "$questions_file" >/dev/null
+}
+# a16_pattern prints A16's own search pattern: the questions file's a16.phrases joined with `|`,
+# an extended regular expression. Each phrase says the meaning, not a bare word: the absence of
+# tools said of the loop or an agent within one clause (`no tools`, `without tools` or `tool-less`
+# and `loop` or `agent`, either order, with no `.` and at most 60 characters between), or `never
+# give(s)`/`hand(s)` with `tool(s)` in one clause. A bare `never give` hit rules about labels and
+# peers' fields, and `no tools` an eval's arms; a word boundary keeps `never given up`, the outbox
+# retry's sentence, out. a16_hit TEXT: TEXT holds one of the phrases, case-insensitively, as a
+# line of the search does; no text at all is no hit, and no run of its own ends here.
+a16_pattern() { jq -r '.a16.phrases | join("|")' "$questions_file"; }
+a16_hit() {
+  local pattern
+  pattern=$(a16_pattern) || return 1
+  grep -qiE -- "$pattern" <<<"${1:-}"
+}
+
+# ---- Dispatch -------------------------------------------------------------------------------------
+# ask_of SESSION ISSUE prints the id of the newest ask SESSION opened on ISSUE, empty for none;
+# ask_reply_by ASK SESSION prints SESSION's newest reply on ASK's thread, or fails. The asks route
+# answers an array, so a body that is not one (an error object) names no ask.
+ask_of() {
+  dispatch_get "issues/$2/asks?thread=1" |
+    jq -r --arg s "$1" 'if type == "array" then ([.[] | select(.author.id == $s)] | last | .id? // empty) else empty end' || true
+}
+ask_reply_by() { dispatch_get "asks/$1" | jq -e -r --arg s "$2" '[.replies[]? | select(.author.id == $s)] | (last | .body? // empty)'; }
+# comment_reply_by ISSUE COMMENT SESSION prints SESSION's newest reply to COMMENT on ISSUE's own
+# thread, or fails: the answer a role mention of a stopped agent is answered with (A3).
+comment_reply_by() {
+  dispatch_get "issues/$1/comments" |
+    jq -e -r --arg id "$2" --arg s "$3" '[.[]? | select(.reply_to == $id and .author.id == $s)] | (last | .body? // empty)'
+}
+# record_reply_by RECORD SESSION prints SESSION's first reply in the message record a conversation
+# page reads (GET agents/<session>/messages), empty for none.
+record_reply_by() {
+  jq -r --arg s "$2" 'first(.replies[]? | select(.author.id == $s) | .body) // empty' <<<"${1:-null}" 2>/dev/null || true
+}
+# collaborator_role_token COLLABORATORS SESSION prints the role token the issue's Collaborators
+# view names for the current tester SESSION (the one no later session replaced), empty for none.
+collaborator_role_token() {
+  jq -r --arg s "$2" \
+    '[.agents[]? | select(.session_id == $s and .legion.role == "tester" and .legion.replaced_by == null) | .legion.role_token] | first // empty' \
+    <<<"${1:-null}" 2>/dev/null || true
+}
+# comment_delivered_to COMMENT SESSION: Dispatch's record of COMMENT as it holds it now (GET
+# comments/<id>, as comment_deliveries reads it) holds one delivery, sent to SESSION. The comment's
+# own POST answer is no such record: Dispatch settles a mention after it answers, so that answer
+# carries the delivery pending (A3 waits for this read, as it waits for its control's refusal).
+comment_delivered_to() {
+  local body
+  body=$(dispatch_get "comments/$1" 2>/dev/null) || body=
+  jq -e --arg s "$2" '(.comment.deliveries? // null) | type == "array" and length == 1 and .[0].state == "sent" and .[0].session_id == $s' \
+    <<<"${body:-null}" >/dev/null 2>&1
+}
+# comment_deliveries COMMENT prints COMMENT's delivery records as Dispatch holds them now
+# (GET comments/<id>), each as {state, error}, and `[]` for a comment it answers no record of. A
+# mention's delivery is read again rather than off the comment's own answer, which can carry it
+# pending while its sender waits out a listener take-over.
+comment_deliveries() {
+  local body
+  body=$(dispatch_get "comments/$1" 2>/dev/null) || body=
+  jq -c '[.comment.deliveries[]? | {state, error}]' <<<"${body:-null}" 2>/dev/null || printf '[]\n'
+}
+# one_delivery_in DELIVERIES STATE [ERROR]: the delivery records are one, in STATE, and, with ERROR
+# given, its error begins with ERROR. A3's control reads a mention of a session nobody registered
+# as `failed` with `no live session <id>`, the refusal no listener keeps; A13 reads Dispatch's
+# delivery to a stopped agent's role as `failed` and to its session as `queued`, the message stored
+# for a session that may run again.
+one_delivery_in() {
+  jq -e --arg state "$2" --arg error "${3:-}" \
+    'type == "array" and length == 1 and .[0].state == $state and ((.[0].error // "") | startswith($error))' \
+    <<<"${1:-null}" >/dev/null 2>&1
+}
+# rows_hold_paths ROWS PATH...: the omp_session_files rows hold a row for each PATH.
+rows_hold_paths() {
+  local rows=$1 path
+  shift
+  for path in "$@"; do
+    jq -e --arg p "$path" 'type == "array" and any(.[]; .path == $p)' <<<"${rows:-null}" >/dev/null 2>&1 || return 1
+  done
+}
+# scan_rows ROWS SESSION: how many of the daemon's agent_conversations ROWS record SESSION's Claude
+# Code conversation found by the title scan, which is the one row a boot must have written for it.
+scan_rows() {
+  jq --arg s "$2" '[.[] | select(.session == $s and .source == "scan" and .harness == "claude")] | length' \
+    <<<"${1:-[]}" 2>/dev/null || printf '0\n'
+}
+# registry_entry_matches ENTRY ISSUE: the listener's Legion agent registry holds ENTRY for the
+# stopped agent of ISSUE, and says it is not live.
+registry_entry_matches() {
+  jq -e --arg i "$2" '.issue == $i and .live == false' <<<"${1:-null}" >/dev/null 2>&1
+}
+# registry_replaced_by ENTRY SESSION: that registry entry names SESSION as the session that
+# replaced it (the tester the daemon restarted under a new session).
+registry_replaced_by() {
+  jq -e --arg s "$2" '.replaced_by == $s' <<<"${1:-null}" >/dev/null 2>&1
+}
+
+# ---- GitHub ----------------------------------------------------------------------------------------
+# pr_comment_listing NUMBER prints the smoke repository's comments on the pull request as GitHub
+# answered them, a JSON array, and `null` where no listing was read at all: a gh call that failed
+# or printed nothing, and GitHub's error body, which is an object and no list of comments. The
+# call's body is read into a variable rather than piped, so a failing gh leaves one answer and not
+# two (the pipe would print the empty answer and the fallback another, under `pipefail`). A half
+# that must show a write was never made reads this and not pr_comments: an empty list of matches
+# is what a listing nobody could read prints too.
+pr_comment_listing() {
+  local body
+  body=$(smoke_gh api "repos/$repo/issues/$1/comments?per_page=100" 2>/dev/null) || body=
+  jq -s -c '(.[0] // null) | if type == "array" then . else null end' <<<"$body" 2>/dev/null ||
+    printf 'null\n'
+}
+# pr_comments NUMBER MARKER prints the comments of that listing which hold MARKER, as
+# {id, user, body}: a listing that is none — GitHub's error body, a gh call that printed nothing
+# or failed — holds no comment and prints [].
+pr_comments() {
+  local listing
+  listing=$(pr_comment_listing "$1") || listing=null
+  jq -c --arg m "$2" '(if type == "array" then . else [] end) | [.[] | select(.body | contains($m)) | {id, user: .user.login, body}]' \
+    <<<"$listing" 2>/dev/null || printf '[]\n'
+}
+# one_comment_by COMMENTS LOGIN SESSION: the comments holding the marker are one, posted by LOGIN,
+# and its Legion footer names SESSION.
+one_comment_by() {
+  jq -e --arg login "$2" --arg s "$3" \
+    'type == "array" and length == 1 and .[0].user == $login and (.[0].body | contains("\"session\":\"" + $s + "\""))' \
+    <<<"${1:-null}" >/dev/null 2>&1
+}
+# refused_write_absent LISTING KEPT REFUSED: GitHub answered a listing of the pull request's
+# comments (pr_comment_listing), that listing holds the comment whose body carries KEPT, and none
+# of its comments holds REFUSED — the write the leak guard refused was never made, read on the
+# listing that proves it was read at all.
+#
+# The KEPT half is what makes the REFUSED half mean anything. jq's `all` over an empty array is
+# true, so a listing of nothing passes "no comment holds the marker" having examined no comment:
+# a listing of the wrong pull request, one GitHub answered empty, and a comment page that moved
+# would each have read the absence of a write nobody looked for. KEPT is the comment the leg
+# posted minutes before, on that pull request, which is known to be there, so a listing without
+# it is the wrong listing rather than an empty pull request.
+#
+# A listing that is no listing (`null`: the read failed, or GitHub answered an error body) fails
+# here too: a read nobody could make has shown nothing.
+refused_write_absent() {
+  jq -e --arg kept "$2" --arg refused "$3" \
+    'type == "array"
+      and any(.[]; (.body // "") | contains($kept))
+      and all(.[]; ((.body // "") | contains($refused)) | not)' <<<"${1:-null}" >/dev/null 2>&1
+}
+# refusal_mentioned REPLY: the agent's reply says GitHub refused its write.
+refusal_mentioned() { grep -qiE 'refus|denied|403|404|not accessible|permission' <<<"${1:-}"; }
+# leak_reason_quoted REPLY REASON: the agent's reply to the asker carries REASON, the shared
+# check's own report of why it refused the call, which the refusal handed the tool word for word.
+# It is one half of the leak-guard leg and never the whole: a reply saying a call was refused is
+# what an agent writes for any refusal, so the write that was not made is read beside it
+# (refused_write_absent). No reply at all carries nothing.
+leak_reason_quoted() { grep -qiF -- "$2" <<<"${1:-}"; }
+# reviewer_approvals NUMBER SESSION prints the approving reviews of the pull request whose Legion
+# footer names SESSION, as {id, user, commit_id, footer}. GitHub's error body is an object, not the
+# array of reviews, and so is no review: it prints [], as a gh call that printed nothing or failed
+# does, and one list either way (pr_comments).
+reviewer_approvals() {
+  local body
+  body=$(smoke_gh api "repos/$repo/pulls/$1/reviews" 2>/dev/null) || body=
+  jq -s -c --arg s "$2" '(.[0] // []) | if type == "array" then
+      [.[] | select(.state == "APPROVED" and (.body | contains("\"session\":\"" + $s + "\"")))
+        | {id, user: .user.login, commit_id, footer: (.body | [capture("legion: (?<f>\\{[^}]*\\})").f] | first // null)}]
+      else [] end' <<<"$body" 2>/dev/null ||
+    printf '[]\n'
+}
+# approval_by APPROVALS LOGIN HEAD: the approvals are one, the review App LOGIN's, on HEAD.
+approval_by() {
+  jq -e --arg login "$2" --arg h "$3" 'type == "array" and length == 1 and .[0].user == $login and .[0].commit_id == $h' \
+    <<<"${1:-null}" >/dev/null 2>&1
+}
+# approval_id APPROVALS: the id of the one approval, 0 for none. A review id is a bigint, which
+# every reader of it compares as a string.
+approval_id() { jq -r '(.[0].id // 0) | tostring' <<<"${1:-[]}" 2>/dev/null || printf '0\n'; }
+
+# ---- the daemon's own record and state ----------------------------------------------------------------
+# review_record ISSUE prints the daemon's record of ISSUE's review round: its phase, the reviewer's
+# recorded decision, and the newest deciding review its pull request has seen.
+review_record() {
+  pg_sql "$daemon_db" "select i.phase, p.decision, r.review_seen from issues i join phases p on p.issue = i.key and p.role = 'reviewer' join pull_requests r on r.issue = i.key where i.key = '$1'" | jq -c '.[0]'
+}
+# review_round_undecided RECORD: the round is still open, the reviewer has decided nothing, and the
+# pull request has seen no deciding review. review_seen is a bigint, which the record carries as a
+# string ("0" before any review is seen), so every read of it compares strings.
+review_round_undecided() {
+  jq -e '.phase == "reviewing" and .decision == null and ((.review_seen // 0) | tostring) == "0"' <<<"${1:-null}" >/dev/null 2>&1
+}
+# review_round_ended RECORD ID: the round is no longer open and the review the daemon ended it on
+# is ID (a bigint, compared as a string). No record at all ended nothing.
+review_round_ended() {
+  jq -e --arg id "$2" 'type == "object" and .phase != "reviewing" and ((.review_seen // 0) | tostring) == $id' <<<"${1:-null}" >/dev/null 2>&1
+}
+# tree_is_live ROOT PHASE: the daemon's own state says ROOT's tree is live and does not linger —
+# admission.trees is record.LiveRoots, the very set admission's release pass judges a root against
+# (admit's releaseUnslotted) — and ROOT still stands at PHASE, which that release would have left
+# at `done`.
+tree_is_live() {
+  legion_cmd state --json |
+    jq -e --arg root "$1" --arg phase "$2" '(.admission.trees | index($root)) != null and .issues[$root].phase == $phase' >/dev/null
+}
+# passed_to_controller EVENT REASON: legion state lists a question passed on for REASON whose id or
+# reference names EVENT.
+passed_to_controller() {
+  legion_cmd state --json | jq -e --arg q "$1" --arg r "$2" 'any(.questionsForController[]?; (((.id // "") + " " + (.ref // "")) | contains($q)) and .reason == $r)' >/dev/null
+}
+# controller_questions REASON: how many questions `legion state` lists for the controller with
+# REASON.
+controller_questions() {
+  legion_cmd state --json | jq --arg r "$1" '[.questionsForController[]? | select(.reason == $r)] | length'
+}
+# tree_claims_parked CLAIMS TREE: the listing `legion claims list --json` printed holds at least
+# one claim of TREE, and every claim of TREE in it stands suspended or retired, so nothing of the
+# tree started (A1). The claim it must hold is what makes the rest mean anything: jq's `all` over
+# no claims is true, so a listing of nothing, or of other trees alone, would pass having examined
+# no claim of TREE. A listing that is no listing says nothing of the kind.
+tree_claims_parked() {
+  jq -e --arg t "$2" 'type == "object"
+    and any(.claims[]?; .tree == $t)
+    and all(.claims[]? | select(.tree == $t); .state | IN("suspended", "retired"))' <<<"${1:-null}" >/dev/null 2>&1
+}
+
+# ---- A13: branch against base ------------------------------------------------------------------------
+# merge_base_commit ROOT REV prints "<merge base> <rev> <head>": the commit A13's base build is of,
+# the merge base of REV and ROOT's checkout, then REV and that checkout's head, each a full commit.
+# The head is the working copy's commit under jj and HEAD under git (CI's checkout). A13 asks
+# whether the branch answers as the commit it changed answers, so a base ahead of the branch must
+# not be built: in proof run 44095624771 the base was main's tip, a2b379d1, which carries #4281's
+# `requested_by.proven` and the branch does not, and the criterion read main's change as the
+# branch's. REV an ancestor of the head is its own merge base. It fails when REV or the head does
+# not resolve, or when the two share no history.
+merge_base_commit() {
+  local root=$1 rev=$2 commit head base
+  if command -v jj >/dev/null && jj -R "$root" root >/dev/null 2>&1; then
+    commit=$(jj -R "$root" log -r "$rev" --no-graph -T 'commit_id' 2>/dev/null) &&
+      head=$(jj -R "$root" log -r @ --no-graph -T 'commit_id' 2>/dev/null) &&
+      base=$(jj -R "$root" log -r "fork_point($commit | $head)" --no-graph -T 'commit_id' 2>/dev/null) || return 1
+  else
+    commit=$(git -C "$root" rev-parse --verify --quiet "$rev^{commit}") &&
+      head=$(git -C "$root" rev-parse --verify --quiet HEAD) &&
+      base=$(git -C "$root" merge-base "$commit" "$head") || return 1
+  fi
+  # One full commit each: a revision naming several commits names no base, and jj answers two
+  # histories that share nothing with its root commit, which is no commit of either.
+  local full='^[0-9a-f]{40}$'
+  [[ $commit =~ $full ]] && [[ $head =~ $full ]] && [[ $base =~ $full ]] || return 1
+  [ "$base" != 0000000000000000000000000000000000000000 ] || return 1
+  printf '%s %s %s\n' "$base" "$commit" "$head"
+}
+# a13_same FILE: branch's and base's FILE for the current store say the same thing — byte for byte,
+# but for what each stack minted for its own call, which no two calls can share. A listener's answer
+# (send.body, publish.body) mints its envelope's ids — its own and its source's, its dedupe key and
+# its trace id — and the time it was issued, and its answer to a role message it keeps for the
+# role's next holder names the end of that copy's hour, `kept_until`, the time the stream stored the
+# copy plus the hour. Dispatch's delivery records (dispatch-session.json, dispatch-role.json) mint
+# the envelope each delivery sent, `envelope_id`. A minted field is compared by whether it is there
+# at all: one side that carries it and one that carries none, or null, still differ. The status
+# files are compared byte for byte. Both captures must exist and hold bytes before any comparison:
+# `cmp` reads two empty files, or two missing ones, as the same, so a probe that captured nothing
+# on either stack would pass.
+a13_minted_answer='with_entries(if (.key | IN("event_id", "source_event_id", "dedupe_key", "trace_id", "issued_at", "kept_until")) and .value != null then .value = "minted" else . end)'
+a13_minted_deliveries='map(with_entries(if .key == "envelope_id" and .value != null then .value = "minted" else . end))'
+a13_same() {
+  local branch=$evidence/a13/branch/$store/$1 base=$evidence/a13/base/$store/$1 minted left right
+  [ -s "$branch" ] && [ -s "$base" ] || return 1
+  cmp -s "$branch" "$base" && return 0
+  case "$1" in
+    send.body | publish.body) minted=$a13_minted_answer ;;
+    dispatch-session.json | dispatch-role.json) minted=$a13_minted_deliveries ;;
+    *) return 1 ;;
+  esac
+  left=$(jq -S "$minted" "$branch" 2>/dev/null) && right=$(jq -S "$minted" "$base" 2>/dev/null) || return 1
+  [ "$left" = "$right" ]
+}

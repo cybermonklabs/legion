@@ -100,6 +100,12 @@ type outbox struct {
 	// happens (config.IdleReleaseConfig.Backstop, `backstop_minutes`); zero where the deployment
 	// releases no pod, and then a release arms none.
 	backstop time.Duration
+	// standingsChanged tells the agent registry's mirror that a `release` row suspended its claim
+	// (agenthistory.Mirror.StandingsChanged), so the claim's entry says `released` at once rather
+	// than at the mirror's next minute. It never waits on the mirror or the listener. The boot's
+	// attach sets it from the plan; nil, where the daemon keeps no mirror and in a test that builds
+	// the outbox by hand, tells no one.
+	standingsChanged func()
 	// readPullRequest reads one pull request from GitHub (one GET /pulls/{number}) and answers the
 	// implement App's client of its repository with it; applyMergeability applies what that read
 	// says about merging the head, reading the base's rules with that client on a conflicting
@@ -2793,7 +2799,18 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// to tell a claim this release suspended that something resumed since from one still in
 		// the pod (store.ReleaseSuspendedClaim). The row returns its error rather than swallowing
 		// it, so a retry suspends and records together.
-		return r.trees.ReleaseSuspendedClaim(ctx, r.project, row.Issue, payload.Role, row.ID)
+		if err := r.trees.ReleaseSuspendedClaim(ctx, r.project, row.Issue, payload.Role, row.ID); err != nil {
+			return err
+		}
+		// Both stand, so the agent registry's mirror is told now rather than finding the claim at
+		// its next minute: until the claim's entry says `released`, the listener hands a message
+		// for its session to the answer loop instead of leaving it to the wake. The mirror reads
+		// the released claims again itself, which already name this one, and nothing here waits
+		// on it.
+		if r.standingsChanged != nil {
+			r.standingsChanged()
+		}
+		return nil
 	case "issue_close":
 		// A child's close as done: the claim is closed as a tree close closes it, retired with its
 		// session kept, since the issue is finished and its next run, should a person set it todo

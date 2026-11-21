@@ -151,7 +151,8 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 		return DecideResult{}, fmt.Errorf("agentloop: the %s endpoint: %w", SystemOne, err)
 	}
 	post.Header.Set("Content-Type", "application/json")
-	client := newModelTransport(req.Model.Endpoint).client()
+	// A decision carries no schema, so its transport never warns and is given no logger.
+	client := newModelTransport(req.Model.Endpoint, nil, nil).client()
 
 	resp, err := client.Do(post)
 	var raw []byte

@@ -557,6 +557,36 @@
   },
   {
     "answer": "state",
+    "keyPath": "questionsForController.*.role",
+    "values": [
+      {
+        "value": "architect",
+        "since": 208
+      },
+      {
+        "value": "implementer",
+        "since": 208
+      },
+      {
+        "value": "merger",
+        "since": 208
+      },
+      {
+        "value": "planner",
+        "since": 208
+      },
+      {
+        "value": "reviewer",
+        "since": 208
+      },
+      {
+        "value": "tester",
+        "since": 208
+      }
+    ]
+  },
+  {
+    "answer": "state",
     "keyPath": "controllerLocator.runtime",
     "values": [
       {

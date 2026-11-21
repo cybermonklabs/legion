@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  The answer loop does no work while its project is paused. No answer starts, an answer in flight
+  stops before its next model call or `gh` call, and no reply is posted or passed to the
+  controller. Each question keeps its state and is answered after the resume, in the order it was
+  received and with its normal bounds. A `gh` call that the stopped answer made is given to the
+  next answer as an earlier call, so a write is not made twice. The loop reads the daemon's own
+  pause flag, and the resume wakes it.
+time: 2026-11-20T02:42:20.000000000Z
+custom:
+    Issue: pr2230

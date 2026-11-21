@@ -15,6 +15,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/sjawhar/legion/daemon/internal/ghroute"
+	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
@@ -80,15 +82,19 @@ func readHelps(t *testing.T, gh string, env map[string]string) []string {
 	return helps
 }
 
-// ghTargetOfKept is ghTargetOf of argv with gh's help as help answers it, and the row every test
-// of the resolver runs through it: the same argv is resolved twice more through a ghHelpKeep that
-// help backs, first by a keep that keeps each help it reads, then by a new keep of the same state,
-// which reads from the kept copies and from help only for a path whose help help refused, which
-// is never kept. Each must give the target, the refusal text and the files sent that help gives
-// directly.
-func ghTargetOfKept(t *testing.T, argv []string, env map[string]string, help func([]string) (string, error), remotes func() ([]ghRemote, error), dirFor func(owner, name string) (string, error)) (ghTarget, error) {
+// ghTargetOfKept is ghroute.TargetOf of argv with gh's help as help answers it, resolved twice
+// more through a ghHelpKeep that help backs: first by a keep that keeps each help it reads, then
+// by a new keep of the same state, which reads from the kept copies and from help only for a path
+// whose help help refused, which is never kept. Each must give the target, the refusal text and
+// the files sent that help gives directly. This package's own resolver calls run through it (the
+// rename pair's routing rows, the guard rig's reads), and so does every row ghroute's tests hold
+// TargetOf to that reads no git remote: ghroutetest's resolver tables
+// (TestGhHelpKeepDecidesTheResolverTablesAsGhsOwnHelp) and its read-rule lists
+// (TestGhHelpKeepDecidesTheReadRulesCallsAsGhsOwnHelp). The rows that read the working
+// directory's remotes stay beside the resolver: the keep reads no remote.
+func ghTargetOfKept(t *testing.T, argv []string, env map[string]string, help func([]string) (string, error), remotes func() ([]ghroute.Remote, error), dirFor func(owner, name string) (string, error)) (ghroute.Target, error) {
 	t.Helper()
-	want, wantErr := ghTargetOf(argv, env, help, remotes, dirFor)
+	want, wantErr := ghroute.TargetOf(argv, env, help, remotes, dirFor)
 	// The gh the keep is keyed on, which it never runs: help answers in its place.
 	gh := filepath.Join(t.TempDir(), "gh")
 	if err := os.WriteFile(gh, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
@@ -112,9 +118,9 @@ func ghTargetOfKept(t *testing.T, argv []string, env map[string]string, help fun
 			}
 			return text, err
 		}
-		target, err := ghTargetOf(argv, env, keep.read, remotes, dirFor)
+		target, err := ghroute.TargetOf(argv, env, keep.read, remotes, dirFor)
 		if !reflect.DeepEqual(target, want) || errorText(err) != errorText(wantErr) {
-			t.Errorf("%s decided ghTargetOf(%q) = %+v, %q; gh's own help decides %+v, %q", call, argv, target, errorText(err), want, errorText(wantErr))
+			t.Errorf("%s decided ghroute.TargetOf(%q) = %+v, %q; gh's own help decides %+v, %q", call, argv, target, errorText(err), want, errorText(wantErr))
 		}
 	}
 	return want, wantErr
@@ -126,6 +132,57 @@ func errorText(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// Every call internal/ghroute's read-rule rows resolve over ghroutetest's lists (its
+// TestGhWritesNothingReadsTheLeafAndTheMethod and TestGhReadLeafCallsCoverEveryReadLeaf) is
+// decided through a keep as gh's own help decides it (ghTargetOfKept): the calls that write
+// nothing, each read leaf's call among them, the guarded calls and leaf spellings, and every gh
+// api cross product of a guarded option or endpoint. Those rows live beside the resolver, which
+// cannot reach this package's keep.
+func TestGhHelpKeepDecidesTheReadRulesCallsAsGhsOwnHelp(t *testing.T) {
+	calls := slices.Concat(
+		ghroutetest.ReadCalls(),
+		ghroutetest.GuardedCalls,
+		ghroutetest.GuardedLeafSpellings,
+		ghroutetest.APICalls(ghroutetest.APIGuardedSpellings, ghroutetest.APIReadEndpoints),
+		ghroutetest.APICalls(ghroutetest.APIReadSpellings, ghroutetest.APIGuardedEndpoints),
+		ghroutetest.APICalls(ghroutetest.APIGuardedSpellings, ghroutetest.APIGuardedEndpoints),
+		ghroutetest.GuardedAPICalls(),
+	)
+	for _, argv := range calls {
+		if _, err := ghTargetOfKept(t, argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories); err != nil {
+			t.Errorf("ghroute.TargetOf(%q) = %v", argv, err)
+		}
+	}
+}
+
+// Every row of ghroutetest's resolver tables, the ones ghroute's TestGhTargetOfFailsClosed,
+// TestGhTargetOfNamesTheOneRepositoryEverySelectorNames, TestGhTargetOfRefusalsSayHowToNameTheRepository
+// and TestGhTargetOfReadsTheFilesTheCallWouldSend hold TargetOf to, is decided through a keep as
+// gh's own help decides it (ghTargetOfKept), as main's #4394 ran those tables: the target, the
+// refusal text and the files sent alike, a help gh refuses among them (an unknown command, a gh
+// alias's help), which is never kept and is read from gh again. Each row is read under its own
+// edits of gh's saved help.
+func TestGhHelpKeepDecidesTheResolverTablesAsGhsOwnHelp(t *testing.T) {
+	rows := 0
+	for _, calls := range [][]ghroutetest.TargetCall{ghroutetest.FailsClosedCalls, ghroutetest.OneRepositoryCalls} {
+		for _, tc := range calls {
+			ghTargetOfKept(t, tc.Argv, tc.Env, tc.Help(savedGhHelp), noGitRepository, ghroutetest.OwnersOwnDirectories)
+			rows++
+		}
+	}
+	for argv := range ghroutetest.RefusalAdvice {
+		ghTargetOfKept(t, strings.Fields(argv), nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
+		rows++
+	}
+	for _, tc := range ghroutetest.SentFileCalls {
+		ghTargetOfKept(t, tc.Argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
+		rows++
+	}
+	if rows < 150 {
+		t.Errorf("%d rows ran through the keep, want the tables' whole, at least 150", rows)
+	}
 }
 
 // The guard's own visibility reads run one gh process, the read itself, and read no gh help: the

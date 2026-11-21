@@ -1,0 +1,9 @@
+{
+  "id": "resp_incomplete",
+  "object": "response",
+  "status": "incomplete",
+  "incomplete_details": { "reason": "max_output_tokens" },
+  "model": "gpt-6.1-sol",
+  "output": [],
+  "error": null
+}

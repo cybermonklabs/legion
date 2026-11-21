@@ -1,0 +1,26 @@
+kind: Fixed
+body: |-
+  `agentloop`'s final schema, `Request.Final`, now reaches the provider with each of its objects'
+  keys in the order the caller wrote them, nested objects included, on every protocol `Run`
+  serves: `anthropic-messages`, `azure-anthropic`, `openai-responses` and `openai-chat`. The SDK's
+  Anthropic and Responses adapters rebuild the schema as a map before they send it, so on the
+  first three it reached the provider with every object's keys sorted; `openai-chat` already sent
+  it as written. Under structured output the model writes its reply's keys in the schema's order:
+  the Legion daemon's reply form, declared `kind`, `text`, `needs`, was sent as `kind`, `needs`,
+  `text`, and a replay of one run's last call, 12 times in each order, answered `not_answered`
+  with an empty `needs` 10 times of 12 in the sorted order and 0 times of 12 in the declared
+  order. The run's HTTP transport now puts each object of the schema in the request body back in
+  `Final`'s order before the call is sent, once per call, so the retry sends the same bytes. A
+  key the SDK adds that `Final` lacks keeps its place after `Final`'s own, every value but an
+  object or an array keeps the bytes the SDK wrote, a key is written again without HTML escaping,
+  and a request with no `Final` is sent byte for byte as before.
+  The secrets broker's model judge now declares `reason` before `verdict`, so its schema reaches
+  its provider in the order it did on `anthropic-messages`, `azure-anthropic` and
+  `openai-responses`, and on `openai-chat` it moves from `verdict`, `reason` to `reason`,
+  `verdict`. A call whose schema the transport cannot put back, because its body holds none at the
+  protocol's path, holds one of another JSON kind than `Final`'s, or is no JSON, or because `Final`
+  is no JSON the transport can read, is sent as the SDK wrote it and logs one warning to the new
+  `Request.Log`, or to `slog.Default()` where it is nil.
+time: 2026-11-21T04:28:35.000000000Z
+custom:
+    Issue: pr2230

@@ -245,6 +245,16 @@ func unplaceableAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliver
 	// original payload, so an envelope near the server's max payload yields a notice refused
 	// bus.ErrTooLarge on every attempt - which ran the message to the durable's MaxDeliver
 	// with no give-up record at all.
+	//
+	// Before the notice, the stopped Legion agent's daemon is offered the message in place of it
+	// (offerAgentDeliveryToLegion): the deferrals are spent, so nothing here will place it with a
+	// session, and the daemon answers it from the agent's own conversation. Every listener's
+	// durable reaches this point for the same message, and the hand-off's MsgId stores their
+	// copies once. An offer that was taken, and one whose publish failed, each disposed of the
+	// message themselves; only an offer nothing took leaves the give-up below.
+	if offerAgentDeliveryToLegion(cfg, message, item, sessionID) {
+		return
+	}
 	applyDeliveryOutcome(cfg, item, deliveryOutcome{
 		sessionID:    sessionID,
 		metricStatus: "unplaceable_no_record",

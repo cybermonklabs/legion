@@ -9,7 +9,7 @@
 # LEGION_E2E_MODEL_ROUTE (`gateway`, `key-file` or `box-login`), SMOKE_UPSTREAM_NATS (the production
 # Envoy NATS the GitHub bridge subscribes on, by its fully-qualified name), and, depending on the
 # route:
-#   - `gateway`: LEGION_E2E_MODEL_GATEWAY_URL, the model gateway's Anthropic endpoint. It needs
+#   - `gateway`: LEGION_E2E_MODEL_GATEWAY_URL, the model gateway's /v1/messages base URL. It needs
 #     agent-tier secrets and the operator's own hawk login, with the keyring holding it unlocked:
 #     the agents' model is Anthropic through the Hawk model gateway
 #     (lib/install-model-gateway.sh), and no Anthropic key reaches a pane.

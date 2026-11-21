@@ -168,7 +168,8 @@ export async function setListsState(state: ListsState): Promise<void> {
 
 /** One Legion agent registry entry as the daemon writes it to the listener
  *  (`packages/envoy/internal/legionagents` `Entry`); `role_token` is
- *  `roleToken(legion_project, issue, role)` from `@legion/contracts`. */
+ *  `roleToken(legion_project, issue, role)` from `@legion/contracts`. `released` marks an entry
+ *  whose claim the daemon suspended by idle release; the listener writes it only when it is true. */
 export interface FakeLegionAgent {
   session_id: string;
   legion_project: string;
@@ -179,21 +180,25 @@ export interface FakeLegionAgent {
   harness: "omp" | "claude";
   started_at: string;
   recorded_at?: string;
+  released?: true;
 }
 
 /** One registry entry as the daemon writes it: `omp` harness, the role's own token under the
  *  Legion project, and the title the daemon stamps. A spec that seeds the registry builds its
  *  rows here so the `role_token` a read is checked against is always the one the daemon would
- *  have written for that project, issue and role. */
+ *  have written for that project, issue and role. `released` is a claim whose idle issue pod the
+ *  daemon released, to resume the session on the role's next wake. */
 export function legionAgentEntry({
   issue,
   legionProject,
+  released = false,
   role,
   sessionId,
   startedAt,
 }: {
   issue: string;
   legionProject: string;
+  released?: boolean;
   role: LegionRole;
   sessionId: string;
   startedAt: string;
@@ -207,6 +212,7 @@ export function legionAgentEntry({
     session_id: sessionId,
     started_at: startedAt,
     title: `Legion ${role} · ${issue}`,
+    ...(released ? { released: true } : {}),
   };
 }
 
@@ -233,6 +239,14 @@ export async function setLegionRegistryState(state: RegistryState): Promise<void
 
 export async function getSentMessages(): Promise<Record<string, unknown>[]> {
   return (await fixtureRequest("/__fixture/sends", "GET")).json() as Promise<
+    Record<string, unknown>[]
+  >;
+}
+
+/** Every publish the fake listener's publish route took, in order: a role's topic, the send's own
+ *  fields and `keep`, as Dispatch writes one for a role it keeps a message for. */
+export async function getPublishedMessages(): Promise<Record<string, unknown>[]> {
+  return (await fixtureRequest("/__fixture/publishes", "GET")).json() as Promise<
     Record<string, unknown>[]
   >;
 }

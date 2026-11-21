@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  When the provider cuts an answer's reply at `output_tokens`, the answer loop makes that model
+  call once more without the cut reply, inside the same `model_calls` and `answer_seconds`, and
+  never sends the cut reply back to the model. The exchange appended to the agent's Oh My Pi
+  session or Claude Code transcript never holds the cut reply, while the answer's calls, tokens
+  and cost count it. A second cut reply, or one on the last allowed call, is the `length` fault.
+  The bound is 4000 because, across 415 answer calls in three proof runs, the longest reply it did
+  not cut used 567 output tokens, and the one reply it cut was a complete answer of about 350
+  tokens inside the form's `text` followed by about 3800 newline escapes; five replays of that
+  request with the bound at 64000 ended at 167 to 487 tokens.
+time: 2026-11-19T06:22:01.000000000Z
+custom:
+    Issue: pr2230
