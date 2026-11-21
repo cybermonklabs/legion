@@ -65,7 +65,8 @@ agents:available-then-die) echo LEGION_OMP_AGENTS=available >&2; echo "database 
 # A pass that takes its time, as Oh My Pi does on a loaded machine: longer than a budget of a
 # second or two, and far inside the rig's.
 agents:available-slowly) sleep 2; echo LEGION_OMP_AGENTS=available >&2; exit 0 ;;
-agents:missing-then-hang) echo LEGION_OMP_AGENTS=missing >&2; exec sleep 30 ;;
+# Answers, then hangs past the rig's answerBudget, so the budget cuts it only after the answer.
+agents:missing-then-hang) echo LEGION_OMP_AGENTS=missing >&2; exec sleep 120 ;;
 load:yes) printf "$legion$with_envoy" >&2; exit 0 ;;
 load:no) echo LEGION_PLUGIN_LOADED=no >&2; exit 0 ;;
 load:elsewhere) printf "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$dir/elsewhere/pi-legion/dist/legion.js\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
@@ -170,18 +171,22 @@ func imageGateUnder(t *testing.T, f imageOmp, legion string, attempts int) (plug
 // The two attempt budgets of the gate rigs, the boot gate's (gateUnder) and the image probe's
 // (imageGateUnder). answerBudget is one no attempt of a fake that answers comes near, however
 // loaded the machine: a pass that ran past a budget of a second or two was cut off and asked
-// again, and the probe ran once more than its case said. hangBudget is the budget of a case whose
-// plan hangs (hangsUnder), short so that each attempt it cuts off costs the suite little; such a
-// case holds no step that must answer in time.
+// again, and the probe ran once more than its case said. An attempt that answers and then hangs
+// keeps it, and its hang outlasts it, so the budget cuts it only after the answer. hangBudget is
+// the budget of a case whose cut attempts answer nothing (hangsUnder), short so that each attempt
+// it cuts off costs the suite little; such a case runs no attempt that must answer in time, so no
+// probe that answers runs before the one that hangs, and its attempts are counted from the gate
+// (its refusal and its transient lines), since an attempt cut off before the fake wrote its count
+// leaves none.
 const (
 	answerBudget = time.Minute
 	hangBudget   = 500 * time.Millisecond
 )
 
-// hangsUnder gives gate hangBudget, bounded to attempts, where plan holds a step that hangs until
-// the budget cuts it off, and leaves it as it is otherwise.
+// hangsUnder gives gate hangBudget, bounded to attempts, where plan holds a step that hangs before
+// it answers anything, and leaves it as it is otherwise.
 func hangsUnder(gate *pluginGate, plan []string, attempts int) {
-	if slices.ContainsFunc(plan, func(step string) bool { return strings.HasSuffix(step, "hang") }) {
+	if slices.Contains(plan, "hang") {
 		gate.timeout, gate.retry.Attempts = hangBudget, attempts
 	}
 }
@@ -437,7 +442,7 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 			if testCase.refusal != nil && !strings.Contains(err.Error(), f.path) {
 				t.Errorf("the refusal does not name the launch command %s: %v", f.path, err)
 			}
-			if n := f.attempts(t, "agents"); n != testCase.attempts {
+			if n := f.attempts(t, "agents"); n > testCase.attempts || (n < testCase.attempts && !slices.Contains(testCase.plan, "hang")) {
 				t.Errorf("the pi.agents probe ran %d times, want %d", n, testCase.attempts)
 			}
 			if got, want := strings.Count(logged.String(), "failed transiently"), testCase.attempts-1; got != want {
@@ -447,7 +452,8 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 	}
 }
 
-// The session-storage probe: a build that carries the setting refuses the probe's nonsense value,
+// The session-storage probe, run on its own (verifySessionStorage), so no other probe's attempt
+// runs under a case's budget: a build that carries the setting refuses the probe's nonsense value,
 // naming the variable; a clean start is a build that predates the setting, refused; any other
 // failure is the launch dying before the setting's resolver ran, waited out.
 func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
@@ -463,21 +469,24 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 	} {
 		t.Run(strings.Join(testCase.plan, ","), func(t *testing.T) {
 			f := newImageOmp(t, []string{"available"}, []string{"yes"}, testCase.plan)
-			gate, _ := imageGateUnder(t, f, contractCurrent, 0)
+			gate, logged := imageGateUnder(t, f, contractCurrent, 0)
 			hangsUnder(&gate, testCase.plan, testCase.attempts)
 
-			err := gate.verifyImage(context.Background())
+			err := gate.verifySessionStorage(context.Background())
 
 			if testCase.refusal == nil && err != nil {
-				t.Fatalf("verifyImage = %v, want a pass", err)
+				t.Fatalf("verifySessionStorage = %v, want a pass", err)
 			}
 			for _, want := range testCase.refusal {
 				if err == nil || !strings.Contains(err.Error(), want) {
-					t.Errorf("verifyImage = %v, want a refusal saying %q", err, want)
+					t.Errorf("verifySessionStorage = %v, want a refusal saying %q", err, want)
 				}
 			}
-			if n := f.attempts(t, "session"); n != testCase.attempts {
+			if n := f.attempts(t, "session"); n > testCase.attempts || (n < testCase.attempts && !slices.Contains(testCase.plan, "hang")) {
 				t.Errorf("the session-storage probe ran %d times, want %d", n, testCase.attempts)
+			}
+			if got, want := strings.Count(logged.String(), "failed transiently"), testCase.attempts-1; got != want {
+				t.Errorf("logged %d transient failures, want %d:\n%s", got, want, logged.String())
 			}
 		})
 	}
@@ -501,7 +510,7 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			f := newImageOmp(t, testCase.agents, []string{"yes"}, testCase.session)
-			gate, _ := imageGateUnder(t, f, contractCurrent, 3)
+			gate, logged := imageGateUnder(t, f, contractCurrent, 3)
 			hangsUnder(&gate, testCase.agents, 3)
 
 			err := gate.verifyImage(context.Background())
@@ -511,8 +520,11 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 					t.Errorf("verifyImage = %v, want an error saying %q", err, want)
 				}
 			}
-			if n := f.attempts(t, testCase.kind); n != 3 {
+			if n := f.attempts(t, testCase.kind); n > 3 || (n < 3 && !slices.Contains(testCase.agents, "hang")) {
 				t.Errorf("the %s probe ran %d times, want the bound, 3", testCase.kind, n)
+			}
+			if got := strings.Count(logged.String(), "failed transiently"); got != 2 {
+				t.Errorf("logged %d transient failures, want 2 before the bound:\n%s", got, logged.String())
 			}
 		})
 	}
