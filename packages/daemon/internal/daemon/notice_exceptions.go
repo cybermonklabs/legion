@@ -35,7 +35,7 @@ import (
 // refused by every listener once no reader is left on it, so nothing reports a forward under it.
 // exceptionNotice reads the role from the report.
 func noticeExceptionSubject(project string) string {
-	return "notifications.envoy.exceptions." + notify.RoleTopicPrefix + project + ".*"
+	return "notifications.envoy.exceptions." + subjectforms.RoleSubject(project, "*")
 }
 
 // roleLaneProject is the project the lanes of this deployment's roles are under: the one each of
