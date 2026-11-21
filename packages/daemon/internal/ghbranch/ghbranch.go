@@ -57,7 +57,9 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 	if err == nil || errors.As(err, &answer) && answer.Status == http.StatusUnprocessableEntity && alreadyExists(answer) {
 		return nil
 	}
-	return fmt.Errorf("create %s on %s at %s: %w", ref, repo, head, err)
+	// The base's commit is GitHub's words, or those of whatever answers in its place, so the
+	// refusal names it only as a commit's sha (githubrest.ShownSHA).
+	return fmt.Errorf("create %s on %s at %s: %w", ref, repo, githubrest.ShownSHA(head), err)
 }
 
 // RefPath is branch as a path under any route of GitHub's REST API that takes a branch name with
@@ -90,7 +92,9 @@ type Repository struct {
 // read through github, the repository's REST API. An answer naming no default branch, or a
 // full_name that is not owner/name, is refused by name, as is every answer other than 2xx, whose
 // refusal wraps GitHub's *githubrest.Answer so a caller can tell GitHub's rate limit (RateLimited,
-// with how long GitHub asks it to wait) from GitHub's verdict on the repository.
+// with how long GitHub asks it to wait) from GitHub's verdict on the repository. The full_name is
+// GitHub's words, or those of whatever answers in its place, so its refusal names the field and the
+// repository asked for, and nothing the answer wrote there.
 func Read(ctx context.Context, github githubrest.Client, repo ghrepo.Repository) (Repository, error) {
 	var info struct {
 		FullName      string `json:"full_name"`
@@ -104,7 +108,7 @@ func Read(ctx context.Context, github githubrest.Client, repo ghrepo.Repository)
 	}
 	name, err := ghrepo.Parse("GitHub's full_name of "+repo.String(), info.FullName)
 	if err != nil {
-		return Repository{}, err
+		return Repository{}, fmt.Errorf("read the default branch of %s: GitHub's full_name of it is not an owner/name GitHub allows", repo)
 	}
 	return Repository{Name: name, DefaultBranch: info.DefaultBranch}, nil
 }

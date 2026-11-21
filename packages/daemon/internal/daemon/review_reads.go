@@ -94,7 +94,7 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 		return false
 	}
 	w.log.Warn("workflow: GitHub holds a deciding review the daemon has not recorded; applying it as its webhook would",
-		"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "review", review.ID, "author", review.Author, "state", review.State, "submitted_at", review.SubmittedAt)
+		"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "review", review.ID, "author", githubrest.ShownLogin(review.Author), "state", review.State, "submitted_at", review.SubmittedAt)
 	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, review, w.handlers...); err != nil {
 		w.log.Warn("apply a review read from GitHub", "repo", pr.Repo, "pullRequest", pr.Number, "review", review.ID, "error", err)
 	}
@@ -154,6 +154,10 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 // set is held in memory, so after a restart the first read judges a review not yet recorded
 // again, with the permission GitHub gives then. A read that failed judged nothing, and the next
 // read of the issue asks again.
+//
+// A listed review's author is GitHub's words, or those of whatever answers in GitHub's place, which
+// can echo the read's token back: every line and error of the read names it only as a login GitHub
+// allows (githubrest.ShownLogin). Its state has passed Decides, so it is one of two words.
 func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.Client, pr record.PullRequest, reviews []githubReview) (intake.PullRequestReview, bool, error) {
 	var candidates []intake.PullRequestReview
 	for _, listed := range reviews {
@@ -164,7 +168,7 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 		}
 		if review.ID == 0 || review.SubmittedAt.IsZero() {
 			return intake.PullRequestReview{}, false, fmt.Errorf("GitHub listed %s's %s review of pull request %s#%d with id %d and submission time %s, which no review can be ordered by",
-				review.Author, review.State, pr.Repo, pr.Number, review.ID, listed.SubmittedAt)
+				githubrest.ShownLogin(review.Author), review.State, pr.Repo, pr.Number, review.ID, listed.SubmittedAt)
 		}
 		if review.Order().After(pr.ReviewSeen) {
 			candidates = append(candidates, review)
@@ -197,14 +201,14 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 		}
 		resolved, err := intake.ResolveAuthorCanWrite(ctx, review, w.reviewerCanWrite)
 		if err != nil {
-			return intake.PullRequestReview{}, false, fmt.Errorf("read whether %s may decide review %d: %w", review.Author, review.ID, err)
+			return intake.PullRequestReview{}, false, fmt.Errorf("read whether %s may decide review %d: %w", githubrest.ShownLogin(review.Author), review.ID, err)
 		}
 		refusal := w.engine.RefusesRound(resolved, pr, reviewerSession)
 		if refusal.Reason == "" {
 			return resolved, true, nil
 		}
 		w.log.Warn("workflow: a review GitHub lists decides nothing; this read passes over it and reads the review below it",
-			"issue", pr.Issue, "repo", pr.Repo, "pullRequest", pr.Number, "review", resolved.ID, "author", resolved.Author,
+			"issue", pr.Issue, "repo", pr.Repo, "pullRequest", pr.Number, "review", resolved.ID, "author", githubrest.ShownLogin(resolved.Author),
 			"state", resolved.State, "refused", refusal.Reason, "footer_head", resolved.LegionHead(), "head", pr.HeadSHA)
 		// Only a refusal that stands at every head is remembered: a review refused for the head
 		// its footer names is refused at the head the record holds now, and the next read of the

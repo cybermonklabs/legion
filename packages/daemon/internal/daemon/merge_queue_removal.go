@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -77,15 +78,17 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 	readAt := r.now().UTC()
 	attributes := []any{"row", row.ID, "issue", row.Issue, "pullRequest", payload.Number, "head", payload.Head, "attempt", attempt}
 	switch {
+	// GitHub's merge commit and state are its words, or those of whatever answers in its place: the
+	// read decides on them as they came, and its line names each only in GitHub's shape for it.
 	case failed == nil && pull.Merged:
-		r.log.Info("outbox merge-queue read: GitHub answered merged; the merge is applied", append(attributes, "mergeCommit", pull.MergeCommitSHA)...)
+		r.log.Info("outbox merge-queue read: GitHub answered merged; the merge is applied", append(attributes, "mergeCommit", githubrest.ShownSHA(pull.MergeCommitSHA))...)
 		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("merge-queue-merged:%s:%d", row.Issue, row.ID),
 			intake.PullRequestMerged{Repo: pr.Repo, Number: payload.Number, MergeSHA: pull.MergeCommitSHA, HeadSHA: pull.Head.SHA}, r.handlers...); err != nil {
 			return fmt.Errorf("apply the merge of %s's pull request #%d: %w", row.Issue, payload.Number, err)
 		}
 		return nil
 	case failed == nil:
-		r.log.Info("outbox merge-queue read: GitHub answered not merged; the merger is told", append(attributes, "state", pull.State,
+		r.log.Info("outbox merge-queue read: GitHub answered not merged; the merger is told", append(attributes, "state", githubrest.ShownWord(pull.State, "open", "closed"),
 			"mergeable", string(pull.mergeability()), "mergeState", string(pull.mergeState()))...)
 		if err := r.applyMergeability(ctx, github, *pr, pull, readAt, fmt.Sprintf("merge-queue-mergeability:%s:%d:%d", row.Issue, row.ID, attempt)); err != nil {
 			return fmt.Errorf("apply the mergeability of %s's pull request #%d: %w", row.Issue, payload.Number, err)

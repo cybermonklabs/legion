@@ -620,9 +620,11 @@ func TestTheReadAppliesNoPushWhenTheActivityCannotBeFollowed(t *testing.T) {
 			if got := headReads(t, pool, "push-read"); got != 0 || len(pr.Pushes) != 0 {
 				t.Fatalf("the read applied %d push facts and the record holds %+v, want none", got, pr.Pushes)
 			}
+			// The stand-in's head "pushed" is no commit's sha, so the line names it by the fixed
+			// phrase it prints in place of a head that is not one (githubrest.ShownSHA).
 			warned := false
 			for _, line := range strings.Split(logged.String(), "\n") {
-				warned = warned || (strings.Contains(line, `"level":"WARN"`) && strings.Contains(line, "the read cannot rebuild from GitHub") && strings.Contains(line, `"head":"pushed"`))
+				warned = warned || (strings.Contains(line, `"level":"WARN"`) && strings.Contains(line, "the read cannot rebuild from GitHub") && strings.Contains(line, `"head":"(a sha that is not a commit's)"`))
 			}
 			if !warned {
 				t.Fatalf("the read logged %s, want a WARN that it cannot rebuild the pushes", logged.String())

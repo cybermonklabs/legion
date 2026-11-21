@@ -79,7 +79,7 @@ func (w *workflowRuntime) reviewerCanWrite(ctx context.Context, review intake.Pu
 		return false, nil
 	}
 	if left := w.rateLimitLeft(); left > 0 {
-		return false, rateLimitRefusal(left, fmt.Sprintf("read %s's permission on %s", review.Author, repository.String()))
+		return false, rateLimitRefusal(left, fmt.Sprintf("read %s's permission on %s", githubrest.ShownLogin(review.Author), repository.String()))
 	}
 	canWrite, err := w.readPermission(ctx, repository, review.Author)
 	if err != nil {
@@ -189,13 +189,21 @@ func (w *workflowRuntime) reviewAppClient(ctx context.Context, repository ghrepo
 }
 
 // readPermission reads login's permission on repository from GitHub, as reviewerCanWrite says.
+//
+// login is a review's author, which a read of GitHub's list of reviews names as GitHub wrote it, and
+// GitHub's answer names an account and a permission: each is GitHub's words, or those of whatever
+// answers in GitHub's place, which can echo the read's token back. The read decides on each as it
+// came, and every line and error here names the logins only as logins GitHub allows
+// (githubrest.ShownLogin) and the permission only as one of the words GitHub documents for it,
+// admin, write, read or none (githubrest.ShownWord).
 func (w *workflowRuntime) readPermission(ctx context.Context, repository ghrepo.Repository, login string) (bool, error) {
+	shown := githubrest.ShownLogin(login)
 	// The mint and every call below are made on the repository GitHub holds this one under now,
 	// so repository is that one from here on and each log line and refusal names what was read.
 	client, lease, repository, err := w.reviewAppClient(ctx, repository)
 	if errors.Is(err, appauth.ErrNotInstalled) {
 		w.log.Error("workflow: the review App is not installed on the owner GitHub holds the review's repository under, so the review decides nothing; install the review App there for its reviews to decide a round",
-			"app", appauth.Review, "installation_owner", repository.Owner(), "repo", repository.String(), "login", login, "error", err)
+			"app", appauth.Review, "installation_owner", repository.Owner(), "repo", repository.String(), "login", shown, "error", err)
 		return false, nil
 	}
 	if err != nil {
@@ -210,37 +218,43 @@ func (w *workflowRuntime) readPermission(ctx context.Context, repository ghrepo.
 	if err := client.Get(ctx, "/collaborators/"+url.PathEscape(login)+"/permission", &answer); err != nil {
 		var refused *githubrest.Answer
 		if !errors.As(err, &refused) {
-			return false, fmt.Errorf("read %s's permission on %s: %w", login, repository.String(), err)
+			return false, fmt.Errorf("read %s's permission on %s: %w", shown, repository.String(), err)
 		}
 		switch {
 		case refused.RateLimited:
 			w.holdRateLimit(refused.RetryAfter)
 			return false, &intake.RetryLater{After: refused.RetryAfter,
-				Err: fmt.Errorf("read %s's permission on %s: GitHub's rate limit, retry in %s: %w", login, repository.String(), refused.RetryAfter, err)}
+				Err: fmt.Errorf("read %s's permission on %s: GitHub's rate limit, retry in %s: %w", shown, repository.String(), refused.RetryAfter, err)}
 		case refused.Status == http.StatusNotFound:
 			w.log.Info("workflow: GitHub gives the review's author no write access to the repository",
-				"repo", repository.String(), "login", login, "status", refused.Status)
+				"repo", repository.String(), "login", shown, "status", refused.Status)
 			return false, nil
 		case refused.Status == http.StatusForbidden:
 			w.log.Error("workflow: GitHub refuses the review App's installation a review author's repository permission, so the review decides nothing; while the installation may not read the repository's collaborators, no review but the review App's decides a round",
-				"app", appauth.Review, "bot", lease.Identity.Name, "installation_owner", repository.Owner(), "repo", repository.String(), "login", login, "status", refused.Status, "body", refused.Body)
+				"app", appauth.Review, "bot", lease.Identity.Name, "installation_owner", repository.Owner(), "repo", repository.String(), "login", shown, "status", refused.Status, "body", refused.Body)
 			return false, nil
 		case refused.Status == http.StatusUnauthorized:
-			return false, w.tokenRefused(repository, lease, fmt.Errorf("read %s's permission on %s: %w", login, repository.String(), err))
+			return false, w.tokenRefused(repository, lease, fmt.Errorf("read %s's permission on %s: %w", shown, repository.String(), err))
 		}
-		return false, fmt.Errorf("read %s's permission on %s: %w", login, repository.String(), err)
+		return false, fmt.Errorf("read %s's permission on %s: %w", shown, repository.String(), err)
 	}
 	if !strings.EqualFold(answer.User.Login, login) {
 		w.log.Warn("workflow: GitHub answered the repository permission of another account than the review's author, so the review decides nothing",
-			"repo", repository.String(), "login", login, "answered_login", answer.User.Login, "permission", answer.Permission)
+			"repo", repository.String(), "login", shown, "answered_login", githubrest.ShownLogin(answer.User.Login), "permission", shownPermission(answer.Permission))
 		return false, nil
 	}
 	if answer.Permission != "admin" && answer.Permission != "write" {
 		w.log.Info("workflow: GitHub gives the review's author no write access to the repository",
-			"repo", repository.String(), "login", login, "permission", answer.Permission)
+			"repo", repository.String(), "login", shown, "permission", shownPermission(answer.Permission))
 		return false, nil
 	}
 	return true, nil
+}
+
+// shownPermission is a permission GitHub's collaborator permission answer names, as a line prints
+// it: one of the words GitHub documents for it, or githubrest.NotDocumented.
+func shownPermission(permission string) string {
+	return githubrest.ShownWord(permission, "admin", "write", "read", "none")
 }
 
 // noWriteAccess says whether key is an account this repository gave no write access within the

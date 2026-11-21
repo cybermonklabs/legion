@@ -582,7 +582,10 @@ func OpenedRead(project, repo, branch string, pull githubrest.PullRequest, gener
 	if recorded != nil {
 		against = fmt.Sprintf("%d/%s/%s", recorded.Number, recorded.State, recorded.HeadUpdatedAt.UTC().Format(time.RFC3339Nano))
 	}
-	return fact, fmt.Sprintf("opened-read:%s:%s#%d:%s:%s:%d:%s", project, repo, pull.Number, pull.Head.SHA, pull.UpdatedAt.UTC().Format(time.RFC3339Nano), generation, against)
+	// The head is GitHub's words, or those of whatever answers in its place, and the id prints in an
+	// apply's error: it names the head as a commit's sha, or by a digest of what GitHub wrote, which
+	// tells two such heads apart as they came (githubrest.SHAKey).
+	return fact, fmt.Sprintf("opened-read:%s:%s#%d:%s:%s:%d:%s", project, repo, pull.Number, githubrest.SHAKey(pull.Head.SHA), pull.UpdatedAt.UTC().Format(time.RFC3339Nano), generation, against)
 }
 
 // PullRequestSynchronized records a new observed head, including the fields the shipped reducer
@@ -710,9 +713,9 @@ func (r PullRequestReview) LegionSession() string {
 
 // LegionHead is the head the review says it read: the head field of the last Legion footer in the
 // review's body (lastLegionFooter). It is "" when the body carries no footer, the footer's JSON
-// cannot be parsed, it names no head, or the head it names is not a full commit SHA
-// (fullCommitSHA) - a short SHA or a branch name names no commit, since only the whole of it says
-// which code was read.
+// cannot be parsed, it names no head, or the head it names is not a full commit SHA, exactly 40
+// lowercase hexadecimal characters (githubrest.CommitSHA) - a short SHA or a branch name names no
+// commit, since only the whole of it says which code was read.
 //
 // The workflow holds a review the review App submitted to this rather than to CommitID because
 // GitHub rewrites commit_id to the pull request's current head, so its REST record of a review
@@ -722,7 +725,7 @@ func (r PullRequestReview) LegionSession() string {
 // heads apart.
 func (r PullRequestReview) LegionHead() string {
 	head := r.lastLegionFooter().Head
-	if !fullCommitSHA(head) {
+	if !githubrest.CommitSHA(head) {
 		return ""
 	}
 	return head
@@ -751,21 +754,6 @@ func (r PullRequestReview) LegionEntry() int64 {
 		return 0
 	}
 	return int64(entry)
-}
-
-// fullCommitSHA says whether s is a commit as GitHub names one: exactly 40 lowercase hexadecimal
-// characters. Nothing shorter is compared with a head, since a prefix names a commit only by
-// chance and GitHub spells every head it reports this way.
-func fullCommitSHA(s string) bool {
-	if len(s) != 40 {
-		return false
-	}
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 // Order is where the review falls among the pull request's reviews (record.ReviewOrder): when it

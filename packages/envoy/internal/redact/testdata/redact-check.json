@@ -5068,6 +5068,300 @@
       }
     },
     {
+      "id": "daemon-answer-words-permission-another-login",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAPermissionReadLogsGitHubsLoginAndPermissionOnlyInTheirShape/another-login",
+      "production": "daemon workflowRuntime.readPermission: the account GitHub's permission answer names logged only as a login GitHub allows (githubrest.ShownLogin)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).readPermission",
+      "capture": "daemon.answer-words/permission-another-login",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/review_permission.go",
+        "preimage": "\"answered_login\", githubrest.ShownLogin(answer.User.Login)",
+        "replacement": "\"answered_login\", answer.User.Login"
+      }
+    },
+    {
+      "id": "daemon-answer-words-permission-permission",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAPermissionReadLogsGitHubsLoginAndPermissionOnlyInTheirShape/permission",
+      "production": "daemon workflowRuntime.readPermission: GitHub's permission logged only as admin, write, read or none (shownPermission)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).readPermission",
+      "capture": "daemon.answer-words/permission-permission",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/review_permission.go",
+        "preimage": "\"login\", shown, \"permission\", shownPermission(answer.Permission))",
+        "replacement": "\"login\", shown, \"permission\", answer.Permission)"
+      }
+    },
+    {
+      "id": "daemon-answer-words-permission-author",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAPermissionReadLogsGitHubsLoginAndPermissionOnlyInTheirShape/author",
+      "production": "daemon workflowRuntime.readPermission: a review's author, which GitHub's list of reviews names, logged only as a login GitHub allows",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).readPermission",
+      "capture": "daemon.answer-words/permission-author",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/review_permission.go",
+        "preimage": "shown := githubrest.ShownLogin(login)",
+        "replacement": "shown := login"
+      }
+    },
+    {
+      "id": "daemon-answer-words-permission-control",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAPermissionReadLogsGitHubsLoginAndPermissionOnlyInTheirShape/control",
+      "production": "daemon workflowRuntime.readPermission: a login and a documented permission still log as they came"
+    },
+    {
+      "id": "daemon-answer-words-merge-queue-merged",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAMergeQueueReadLogsGitHubsMergeCommitAndStateOnlyInTheirShape/merged",
+      "production": "daemon outbox.mergeQueueRead: GitHub's merge commit logged only as a commit's sha (githubrest.ShownSHA)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.outbox).mergeQueueRead",
+      "capture": "daemon.answer-words/merge-queue-merged",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/merge_queue_removal.go",
+        "preimage": "\"mergeCommit\", githubrest.ShownSHA(pull.MergeCommitSHA)",
+        "replacement": "\"mergeCommit\", pull.MergeCommitSHA"
+      }
+    },
+    {
+      "id": "daemon-answer-words-merge-queue-state",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAMergeQueueReadLogsGitHubsMergeCommitAndStateOnlyInTheirShape/state",
+      "production": "daemon outbox.mergeQueueRead: GitHub's pull request state logged only as open or closed (githubrest.ShownWord)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.outbox).mergeQueueRead",
+      "capture": "daemon.answer-words/merge-queue-state",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/merge_queue_removal.go",
+        "preimage": "\"state\", githubrest.ShownWord(pull.State, \"open\", \"closed\")",
+        "replacement": "\"state\", pull.State"
+      }
+    },
+    {
+      "id": "daemon-answer-words-merge-queue-control-merged",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAMergeQueueReadLogsGitHubsMergeCommitAndStateOnlyInTheirShape/control-merged",
+      "production": "daemon outbox.mergeQueueRead: a merge commit that is a sha still logs as it came"
+    },
+    {
+      "id": "daemon-answer-words-merge-queue-control-state",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAMergeQueueReadLogsGitHubsMergeCommitAndStateOnlyInTheirShape/control-state",
+      "production": "daemon outbox.mergeQueueRead: a documented state still logs as it came"
+    },
+    {
+      "id": "daemon-answer-words-follow-head-unfollowed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAFollowedHeadLogsGitHubsShaOnlyInItsShape/unfollowed",
+      "production": "daemon followHead, headPushes, followActivity and readIssuePullRequest: GitHub's head logged and named in errors only as a commit's sha (githubrest.ShownSHA)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).followHead",
+      "capture": "daemon.answer-words/follow-head-unfollowed",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/pull_request_reads.go",
+        "preimage": "\"head\", githubrest.ShownSHA(head), \"updated_at\"",
+        "replacement": "\"head\", head, \"updated_at\""
+      }
+    },
+    {
+      "id": "daemon-answer-words-follow-head-pushed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAFollowedHeadLogsGitHubsShaOnlyInItsShape/pushed",
+      "production": "daemon followHead: a rebuilt push's commit named in its apply error only as a commit's sha",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).followHead",
+      "capture": "daemon.answer-words/follow-head-pushed",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/pull_request_reads.go",
+        "preimage": "githubrest.ShownSHA(push.fact.After)",
+        "replacement": "push.fact.After"
+      }
+    },
+    {
+      "id": "daemon-answer-words-follow-head-control",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAFollowedHeadLogsGitHubsShaOnlyInItsShape/control",
+      "production": "daemon followHead: a head that is a sha still logs as it came"
+    },
+    {
+      "id": "daemon-answer-words-opened-read-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAnOpenedReadLogsGitHubsShaOnlyInItsShape/echo",
+      "production": "daemon workflowRuntime.issuePullRequest: the head GitHub lists logged only as a commit's sha",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).issuePullRequest",
+      "capture": "daemon.answer-words/opened-read-echo",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/issue_reads.go",
+        "preimage": "\"head\", githubrest.ShownSHA(pull.Head.SHA), \"updated_at\"",
+        "replacement": "\"head\", pull.Head.SHA, \"updated_at\""
+      }
+    },
+    {
+      "id": "daemon-answer-words-opened-read-control",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAnOpenedReadLogsGitHubsShaOnlyInItsShape/control",
+      "production": "daemon workflowRuntime.issuePullRequest: a listed head that is a sha still logs as it came"
+    },
+    {
+      "id": "daemon-answer-words-activity-not-on-the-page",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAnActivityItCannotFollowIsNamedOnlyInItsShape/not-on-the-page",
+      "production": "daemon followActivity: the head no entry left the branch at, named only as a commit's sha",
+      "function": "github.com/sjawhar/legion/daemon/internal/daemon.followActivity",
+      "capture": "daemon.answer-words/activity-not-on-the-page",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/pull_request_reads.go",
+        "preimage": "left it at %s\", len(activity), githubrest.ShownSHA(to))",
+        "replacement": "left it at %s\", len(activity), to)"
+      }
+    },
+    {
+      "id": "daemon-answer-words-activity-left-it-at",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAnActivityItCannotFollowIsNamedOnlyInItsShape/left-it-at",
+      "production": "daemon followActivity: the commit an entry of GitHub's activity left the branch at, named only as a commit's sha",
+      "function": "github.com/sjawhar/legion/daemon/internal/daemon.followActivity",
+      "capture": "daemon.answer-words/activity-left-it-at",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/pull_request_reads.go",
+        "preimage": "githubrest.ShownSHA(at), githubrest.ShownSHA(entry.After))",
+        "replacement": "githubrest.ShownSHA(at), entry.After)"
+      }
+    },
+    {
+      "id": "daemon-answer-words-activity-not-a-push",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAnActivityItCannotFollowIsNamedOnlyInItsShape/not-a-push",
+      "production": "daemon followActivity: an entry's activity_type named only as one GitHub documents (githubrest.ShownWord)",
+      "function": "github.com/sjawhar/legion/daemon/internal/daemon.followActivity",
+      "capture": "daemon.answer-words/activity-not-a-push",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/pull_request_reads.go",
+        "preimage": "githubrest.ShownWord(entry.Type, activityTypes...)",
+        "replacement": "entry.Type"
+      }
+    },
+    {
+      "id": "daemon-answer-words-activity-no-way-back",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAnActivityItCannotFollowIsNamedOnlyInItsShape/no-way-back",
+      "production": "daemon followActivity: the head the page does not lead back from, named only as a commit's sha"
+    },
+    {
+      "id": "daemon-answer-words-activity-control",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAnActivityItCannotFollowIsNamedOnlyInItsShape/control",
+      "production": "daemon followActivity: commits that are shas and a documented type are still named as they came"
+    },
+    {
+      "id": "daemon-answer-words-push-read",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAPushReadsEventIDNamesNoCommitThatIsNotOne",
+      "production": "daemon workflowRuntime.pushReadEventID: a rebuilt push's commits named as shas or by a digest (githubrest.SHAKey)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).pushReadEventID",
+      "capture": "daemon.answer-words/push-read-echo",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/pull_request_reads.go",
+        "preimage": "githubrest.SHAKey(before)+\"...\"+githubrest.SHAKey(after)",
+        "replacement": "before+\"...\"+after"
+      }
+    },
+    {
+      "id": "daemon-answer-words-listed-review-unordered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAListedReviewLogsItsAuthorOnlyInItsShape/unordered",
+      "production": "daemon workflowRuntime.reviewToApply: a listed review's author named in its error only as a login GitHub allows"
+    },
+    {
+      "id": "daemon-answer-words-listed-review-refused",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAListedReviewLogsItsAuthorOnlyInItsShape/refused",
+      "production": "daemon workflowRuntime.reviewToApply: a listed review's author logged only as a login GitHub allows",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).reviewToApply",
+      "capture": "daemon.answer-words/listed-review-refused",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/review_reads.go",
+        "preimage": "\"author\", githubrest.ShownLogin(resolved.Author)",
+        "replacement": "\"author\", resolved.Author"
+      }
+    },
+    {
+      "id": "daemon-answer-words-listed-review-control",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAListedReviewLogsItsAuthorOnlyInItsShape/control",
+      "production": "daemon workflowRuntime.reviewToApply: a listed review's author that is a login still logs as it came"
+    },
+    {
+      "id": "intake-answer-words-opened-read",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/intake",
+      "test": "TestAnOpenedReadsEventIDNamesNoCommitThatIsNotOne",
+      "production": "intake OpenedRead: the head GitHub lists named in the event id as a sha or by a digest (githubrest.SHAKey)",
+      "function": "github.com/sjawhar/legion/daemon/internal/intake.OpenedRead",
+      "capture": "intake.answer-words/opened-read-echo",
+      "mutation": {
+        "file": "packages/daemon/internal/intake/facts.go",
+        "preimage": "githubrest.SHAKey(pull.Head.SHA)",
+        "replacement": "pull.Head.SHA"
+      }
+    },
+    {
+      "id": "ghbranch-answer-words-create-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/ghbranch",
+      "test": "TestACreateNamesTheBasesCommitOnlyInItsShape/echo",
+      "production": "ghbranch Create: the base's commit GitHub names, in a refused create's error, only as a commit's sha",
+      "function": "github.com/sjawhar/legion/daemon/internal/ghbranch.Create",
+      "capture": "ghbranch.answer-words/create-echo",
+      "mutation": {
+        "file": "packages/daemon/internal/ghbranch/ghbranch.go",
+        "preimage": "githubrest.ShownSHA(head), err)",
+        "replacement": "head, err)"
+      }
+    },
+    {
+      "id": "ghbranch-answer-words-create-control",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/ghbranch",
+      "test": "TestACreateNamesTheBasesCommitOnlyInItsShape/control",
+      "production": "ghbranch Create: a base commit that is a sha is still named as it came"
+    },
+    {
+      "id": "ghbranch-answer-words-full-name",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/ghbranch",
+      "test": "TestAReadRefusesAFullNameNamingNoneOfIt",
+      "production": "ghbranch Read: a full_name that is no owner/name refused naming the field and the repository asked for, and none of it",
+      "function": "github.com/sjawhar/legion/daemon/internal/ghbranch.Read",
+      "capture": "ghbranch.answer-words/full-name",
+      "mutation": {
+        "file": "packages/daemon/internal/ghbranch/ghbranch.go",
+        "preimage": "is not an owner/name GitHub allows\", repo)",
+        "replacement": "is not an owner/name GitHub allows: %v\", repo, err)"
+      }
+    },
+    {
       "id": "githubrest-decided-as-it-came",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
@@ -6586,6 +6880,51 @@
       "site": "Dispatch's member_kind, decoded into a plain string and printed raw by the project access client's ErrUnknownMemberKind",
       "source": "round 5's deep review",
       "guard": "projectaccess-answer-words-member-kind"
+    },
+    {
+      "site": "GitHub's user.login and permission in the collaborator permission answer, decoded into plain strings and logged raw by the daemon's permission read",
+      "source": "round 5's deep review",
+      "guard": "daemon-answer-words-permission-another-login"
+    },
+    {
+      "site": "GitHub's merge commit sha and pull request state, decoded into plain strings and logged raw by the merge-queue read",
+      "source": "round 5's deep review",
+      "guard": "daemon-answer-words-merge-queue-merged"
+    },
+    {
+      "site": "GitHub's head sha, decoded into a plain string and logged raw by the per-issue read when it cannot follow the head and when it applies an opened",
+      "source": "round 5's deep review",
+      "guard": "daemon-answer-words-opened-read-echo"
+    },
+    {
+      "site": "GitHub's activity commits and activity_type, decoded into plain strings and printed raw in the reason the read cannot follow a branch's activity",
+      "source": "round 5's deep review",
+      "guard": "daemon-answer-words-activity-left-it-at"
+    },
+    {
+      "site": "GitHub's head sha, decoded into a plain string and named raw in the event id of the opened a read applies",
+      "source": "round 5's deep review",
+      "guard": "intake-answer-words-opened-read"
+    },
+    {
+      "site": "GitHub's head and a rebuilt push's commit, logged raw and named raw in the apply errors of the read that follows a head",
+      "source": "the class search of round 5's deep review",
+      "guard": "daemon-answer-words-follow-head-unfollowed"
+    },
+    {
+      "site": "GitHub's activity commits, named raw in the event id of a push the read rebuilds",
+      "source": "the class search of round 5's deep review",
+      "guard": "daemon-answer-words-push-read"
+    },
+    {
+      "site": "a listed review's author, as GitHub's list of reviews names it, logged raw by the reviews read and the permission read",
+      "source": "the class search of round 5's deep review",
+      "guard": "daemon-answer-words-listed-review-refused"
+    },
+    {
+      "site": "GitHub's base commit and full_name, printed raw in the branch create's and the repository read's errors",
+      "source": "the class search of round 5's deep review",
+      "guard": "ghbranch-answer-words-create-echo"
     },
     {
       "site": "a note blob's encoding, printed raw by the GitHub App client",
