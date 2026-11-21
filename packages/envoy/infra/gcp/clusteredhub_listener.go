@@ -252,7 +252,7 @@ func newClusteredHubListener(ctx *pulumi.Context, s clusteredHubSettings, classR
 	if namespaces := s.listener.clientNamespaces; len(namespaces) > 0 {
 		ingress = append(ingress, ingressFrom(core.DefaultListenerPort, namespacePeers(namespaces)))
 	}
-	if err := networkPolicy(ctx, name, s.namespace, clusteredHubListenerSelector(s.name), ingress, opts...); err != nil {
+	if _, err := networkPolicy(ctx, name, s.namespace, clusteredHubListenerSelector(s.name), ingress, opts...); err != nil {
 		return err
 	}
 	// The workload is one pod, so a budget of one unavailable allows its eviction: a node drain

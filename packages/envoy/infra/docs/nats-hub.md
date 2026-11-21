@@ -327,8 +327,9 @@ nothing to refuse.
 `privateProjects` is checked when the hub is planned, and renders one thing itself: the server tag
 `server_tags: ["envoy-private-projects"]` after the ping lines (the README's
 [NATS authorization](../README.md#nats-authorization)). nats-server copies it into every
-authorization request, and the auth service admits Dispatch's hub-admission proof only on a request
-that carries it, and there admits a listener only in required privacy mode. A change that brings
+authorization request. The auth service does not read it yet: its private-hub admission, later
+work, is to admit Dispatch's hub-admission proof only on a request that carries it, and there to
+admit a listener only in required privacy mode. A change that brings
 the hub to what `privateProjects` demands (the callout, no session user, no client user beside the
 auth service's) reaches a running server only when that server restarts: it changes `auth_callout`,
 its `auth_users` or `no_auth_user`, and nats-server 2.15.1 refuses that whole reload, the tag that
@@ -343,7 +344,19 @@ waits on the hub pods' NetworkPolicy, so no pod takes the tag, by reload or by r
 policy that closes 8222 is applied. On `gcp:NatsHub` the VM takes the demands and the tag when the
 group replaces the VM. Turn on Dispatch's `DISPATCH_PRIVATE_PROJECTS` only after the hub's
 update has completed on every server: every pod of the clustered hub has restarted, or the VM hub's
-new VM is up. Turn the hub's `privateProjects` off only after no project is private.
+new VM is up.
+
+Turn the hub's `privateProjects` off only after every project is public again; a project switched
+back to public releases what was written while it was private. Nothing orders the apply that
+removes it: without `privateProjects` the chart does not wait on the NetworkPolicy, so a policy
+that opens 8222 in the same apply can do so before a pod drops the tag, and a pod keeps the tag
+until its reload or its restart. With every project public, an open 8222 names no private
+project's subjects or connections, and a pod that still carries the tag has no private project to
+admit anyone to. On `gcp:ClusteredNatsHub`, give `monitorNamespaces` back only in a later apply
+than the one that removes `privateProjects`, after that apply has restarted every hub pod on the
+untagged lines (each pod's `envoy-infra.sjawhar.dev/auth-callout` annotation is the untagged
+hash), so that no pod carries the tag while 8222 is open, the order the chart keeps when the tag
+comes.
 
 ## The hub's listener
 

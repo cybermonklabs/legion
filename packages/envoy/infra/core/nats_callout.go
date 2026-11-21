@@ -85,10 +85,13 @@ const calloutPingLines = "# a replica of the auth service that answers nothing i
 // it sends the auth service (claim.Server.Tags = s.getOpts().Tags, server/auth_callout.go:377). The
 // request's server claim also carries the server's name, host, id, version, cluster and xkey
 // (auth_callout.go:367-373, :383), and none of those says how the hub was rendered, so the tag is
-// how a request proves that its hub was rendered with PrivateProjects: there, and only there, the
-// auth service admits Dispatch's hub-admission proof and holds every listener to required privacy
-// mode (natsgrant.HubAdmissionAudience, natsgrant.PrivacyRequiredSuffix). A hub rendered without
-// PrivateProjects carries no tag, so its requests prove nothing.
+// how a request can show that its hub was rendered with PrivateProjects. The auth service does not
+// read it yet: its private-hub admission, which is to admit Dispatch's hub-admission proof and hold
+// every listener to required privacy mode only on a request that carries the tag
+// (natsgrant.HubAdmissionAudience, natsgrant.PrivacyRequiredSuffix), is later work (natsgrant's
+// package comment). A hub rendered without PrivateProjects carries no tag. The comment line says
+// only what the tag is, so it stays true once the auth service reads the tag, and that change
+// rolls no hub.
 //
 // The lines are part of CalloutLines, so the clustered hub rolls its pods when the tag comes or
 // goes (CalloutLines says why). nats-server also reloads server_tags (server/reload.go:360-366,
@@ -100,7 +103,7 @@ const calloutPingLines = "# a replica of the auth service that answers nothing i
 // reconnects through the callout (reload.go:2291-2299, :2349-2352, :2398-2432). Envoy's auth
 // service names each client it admits. An unnamed client that presented no user name or nkey goes
 // through the callout again on its live connection (reload.go:2354-2358).
-const privateProjectsTagLines = "# this hub is rendered with privateProjects: the auth service admits Dispatch's hub-admission proof only on a request that carries this tag, and there admits a listener only in required privacy mode\n" +
+const privateProjectsTagLines = "# this hub is rendered with privateProjects: nats-server names this tag in each authorization request it sends the auth service\n" +
 	"server_tags: [\"" + natsgrant.PrivateProjectsServerTag + "\"]\n"
 
 // The auth service's grant as NATS defines it: the service subscribes to the authorization

@@ -48,8 +48,8 @@ const calloutPingLines = "# a replica of the auth service that answers nothing i
 	"ping_max: 2\n"
 
 // privateProjectsTagLines are the lines core renders after the ping lines beside privateProjects:
-// the server tag the auth service reads off each authorization request.
-const privateProjectsTagLines = "# this hub is rendered with privateProjects: the auth service admits Dispatch's hub-admission proof only on a request that carries this tag, and there admits a listener only in required privacy mode\n" +
+// the server tag nats-server copies into each authorization request.
+const privateProjectsTagLines = "# this hub is rendered with privateProjects: nats-server names this tag in each authorization request it sends the auth service\n" +
 	`server_tags: ["envoy-private-projects"]` + "\n"
 
 func otherXKey(t *testing.T) string {

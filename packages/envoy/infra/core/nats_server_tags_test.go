@@ -21,9 +21,9 @@ import (
 )
 
 // privateProjectsTagLines are the two lines core renders after the callout's ping lines with
-// privateProjects: the server tag the auth service reads off each authorization request as the
-// proof that the hub was rendered private.
-const privateProjectsTagLines = "# this hub is rendered with privateProjects: the auth service admits Dispatch's hub-admission proof only on a request that carries this tag, and there admits a listener only in required privacy mode\n" +
+// privateProjects: the server tag nats-server copies into each authorization request, which shows
+// that the hub was rendered private.
+const privateProjectsTagLines = "# this hub is rendered with privateProjects: nats-server names this tag in each authorization request it sends the auth service\n" +
 	`server_tags: ["envoy-private-projects"]` + "\n"
 
 // TestAPrivateHubCarriesTheServerTag: with privateProjects the text ends with the server tag's two
@@ -200,47 +200,57 @@ func refuseEachClient(curve, issuer nkeys.KeyPair, requests chan<- *jwt.Authoriz
 
 // TestTheStubHandsOverTheClaimsOnlyAfterItsAnswer: refuseEachClient hands a request's claims to
 // the test only after its answer is sent, so its last report comes before the test can read them.
-// The row gives it a well-formed sealed request whose answer cannot be sent, a message bound to no
-// subscription (nats.go's Msg.Respond refuses it with ErrMsgNotBound): the stub reports that
-// failure, and hands over nothing.
+// The row gives it a well-formed sealed request whose answer cannot be sent
+// (unboundAuthorizationRequest): the stub reports that failure, and hands over nothing.
 //
 // Control: hand the claims over before m.Respond; the row fails with "the stub handed over the
 // claims of a request it did not answer".
 func TestTheStubHandsOverTheClaimsOnlyAfterItsAnswer(t *testing.T) {
-	newKey := func(create func() (nkeys.KeyPair, error)) (nkeys.KeyPair, string) {
-		t.Helper()
-		pair, err := create()
-		require.NoError(t, err)
-		key, err := pair.PublicKey()
-		require.NoError(t, err)
-		return pair, key
-	}
-	curve, curveKey := newKey(nkeys.CreateCurveKeys)
-	issuer, issuerKey := newKey(nkeys.CreateAccount)
-	server, serverKey := newKey(nkeys.CreateServer)
-	serverCurve, serverCurveKey := newKey(nkeys.CreateCurveKeys)
-	_, userKey := newKey(nkeys.CreateUser)
-
-	request := jwt.NewAuthorizationRequestClaims(issuerKey)
-	request.UserNkey = userKey
-	request.Server = jwt.ServerID{ID: serverKey, XKey: serverCurveKey}
-	token, err := request.Encode(server)
-	require.NoError(t, err)
-	sealed, err := serverCurve.Seal([]byte(token), curveKey)
-	require.NoError(t, err)
+	curve, curveKey := newKeyPair(t, nkeys.CreateCurveKeys)
+	issuer, issuerKey := newKeyPair(t, nkeys.CreateAccount)
 
 	var reports []string
 	requests := make(chan *jwt.AuthorizationRequestClaims, 1)
 	refuseEachClient(curve, issuer, requests, func(format string, args ...any) {
 		reports = append(reports, fmt.Sprintf(format, args...))
-	})(&natsgo.Msg{
-		Subject: "$SYS.REQ.USER.AUTH",
-		Reply:   "$SYS._INBOX.example",
-		Header:  natsgo.Header{"Nats-Server-Xkey": []string{serverCurveKey}},
-		Data:    sealed,
-	})
+	})(unboundAuthorizationRequest(t, issuerKey, curveKey, ""))
 
 	require.Equal(t, []string{"answer the authorization request: " + natsgo.ErrMsgNotBound.Error()}, reports,
 		"the stub opened, decoded, signed and sealed the request, and reported only the answer it could not send")
 	require.Empty(t, requests, "the stub handed over the claims of a request it did not answer")
+}
+
+// newKeyPair is a key pair that create makes, and its public key.
+func newKeyPair(t *testing.T, create func() (nkeys.KeyPair, error)) (nkeys.KeyPair, string) {
+	t.Helper()
+	pair, err := create()
+	require.NoError(t, err)
+	key, err := pair.PublicKey()
+	require.NoError(t, err)
+	return pair, key
+}
+
+// unboundAuthorizationRequest is an authorization request as nats-server sends it for a client
+// presenting token, signed by a server key of its own and sealed to the callout's xkey curveKey,
+// in a message bound to no subscription: a handler opens, decodes and answers it as a live one,
+// but nats.go's Msg.Respond refuses its answer with ErrMsgNotBound.
+func unboundAuthorizationRequest(t *testing.T, issuerKey, curveKey, token string) *natsgo.Msg {
+	t.Helper()
+	server, serverKey := newKeyPair(t, nkeys.CreateServer)
+	serverCurve, serverCurveKey := newKeyPair(t, nkeys.CreateCurveKeys)
+	_, userKey := newKeyPair(t, nkeys.CreateUser)
+	request := jwt.NewAuthorizationRequestClaims(issuerKey)
+	request.UserNkey = userKey
+	request.Server = jwt.ServerID{ID: serverKey, XKey: serverCurveKey}
+	request.ConnectOptions.Token = token
+	encoded, err := request.Encode(server)
+	require.NoError(t, err)
+	sealed, err := serverCurve.Seal([]byte(encoded), curveKey)
+	require.NoError(t, err)
+	return &natsgo.Msg{
+		Subject: "$SYS.REQ.USER.AUTH",
+		Reply:   "$SYS._INBOX.example",
+		Header:  natsgo.Header{"Nats-Server-Xkey": []string{serverCurveKey}},
+		Data:    sealed,
+	}
 }

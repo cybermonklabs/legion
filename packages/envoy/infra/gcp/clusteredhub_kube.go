@@ -138,9 +138,11 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 	// monitoring port, 8222, to every namespace (monitorBesidePrivateProjects refuses
 	// monitorNamespaces beside it) and adds the server tag to auth.conf, which a pod takes from the
 	// ConfigMap by its reloader or at its restart. So no server takes the tag before the policy
-	// that closes 8222 is applied.
+	// that closes 8222 is applied. Without privateProjects nothing orders the two, as before (R9):
+	// the hub's docs (The auth service) turn privateProjects off only after every project is
+	// public, and give monitorNamespaces back only in a later apply.
 	hubPods := clusteredHubSelector(s.name)
-	policy, err := newNetworkPolicy(ctx, s.name, s.namespace, hubPods, clusteredHubIngress(s), child...)
+	policy, err := networkPolicy(ctx, s.name, s.namespace, hubPods, clusteredHubIngress(s), child...)
 	if err != nil {
 		return err
 	}

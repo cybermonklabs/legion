@@ -81,13 +81,15 @@ type hangOutcome struct {
 // hangAReplica runs the hub's image on config, rig's authorization rendered, starts replicas A
 // (through a testnats.Proxy) and B in the callout's queue group as rig's service user, freezes A
 // for good, waits up to hungReplicaDeadline for the server to close A, and then connects
-// clientsAfterTheHang clients presenting the admitted token, one at a time.
+// clientsAfterTheHang clients presenting the admitted token, one at a time. Before it returns it
+// waits for an answer counted for each client the server admitted (calloutRig.answer), so replica
+// B's handler has passed its last report for each of them before the test can end.
 func hangAReplica(t *testing.T, rig *calloutRig, config string) hangOutcome {
 	t.Helper()
 	uri, monitor := startHubOn(t, rig, config)
 	replica := func(server, name string) {
 		conn := connectWhenUp(t, server, rig.serviceSeed, natsgo.Name(name))
-		_, err := conn.QueueSubscribe("$SYS.REQ.USER.AUTH", calloutQueue, func(m *natsgo.Msg) { rig.answer(t, m) })
+		_, err := conn.QueueSubscribe("$SYS.REQ.USER.AUTH", calloutQueue, func(m *natsgo.Msg) { rig.answer(m, t.Errorf) })
 		require.NoError(t, err)
 		require.NoError(t, conn.Flush())
 	}
@@ -110,6 +112,8 @@ func hangAReplica(t *testing.T, rig *calloutRig, config string) hangOutcome {
 		reason, _ := connection(t, monitor, "closed", replicaA)
 		t.Logf("the server had closed %s %s after the hang, as %q", replicaA, time.Since(hung).Round(100*time.Millisecond), reason)
 	}
+	before := rig.requests.Load()
+	admitted := int64(0)
 	for i := range clientsAfterTheHang {
 		start := time.Now()
 		conn, err := testnats.ConnectSeed(t, uri, "", natsgo.Token(sessionToken), natsgo.Timeout(5*time.Second))
@@ -118,8 +122,10 @@ func hangAReplica(t *testing.T, rig *calloutRig, config string) hangOutcome {
 			outcome.refused = append(outcome.refused, err)
 			continue
 		}
+		admitted++
 		conn.Close()
 	}
+	require.GreaterOrEqual(t, rig.awaitAnswers(before+admitted), before+admitted, "replica B answered each client the server admitted")
 	return outcome
 }
 

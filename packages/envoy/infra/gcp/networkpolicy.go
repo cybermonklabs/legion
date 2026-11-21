@@ -46,15 +46,9 @@ func ingressFrom(port int, peers networkingv1.NetworkPolicyPeerArray) networking
 }
 
 // networkPolicy registers NetworkPolicy name in namespace: an Ingress policy on the pods wearing
-// pods' labels, admitting what ingress names and nothing else.
-func networkPolicy(ctx *pulumi.Context, name, namespace string, pods map[string]string, ingress networkingv1.NetworkPolicyIngressRuleArray, opts ...pulumi.ResourceOption) error {
-	_, err := newNetworkPolicy(ctx, name, namespace, pods, ingress, opts...)
-	return err
-}
-
-// newNetworkPolicy is networkPolicy returning the policy, for a caller that orders a resource
-// after it.
-func newNetworkPolicy(ctx *pulumi.Context, name, namespace string, pods map[string]string, ingress networkingv1.NetworkPolicyIngressRuleArray, opts ...pulumi.ResourceOption) (*networkingv1.NetworkPolicy, error) {
+// pods' labels, admitting what ingress names and nothing else. It returns the policy, for a caller
+// that orders a resource after it.
+func networkPolicy(ctx *pulumi.Context, name, namespace string, pods map[string]string, ingress networkingv1.NetworkPolicyIngressRuleArray, opts ...pulumi.ResourceOption) (*networkingv1.NetworkPolicy, error) {
 	return networkingv1.NewNetworkPolicy(ctx, name, &networkingv1.NetworkPolicyArgs{
 		Metadata: objectMeta(name, namespace),
 		Spec: &networkingv1.NetworkPolicySpecArgs{
