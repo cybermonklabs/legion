@@ -353,6 +353,7 @@ func clusteredSeedRows() []clusteredSeedRow {
 		{"tailnet.listener.oidcAccounts", "tailnet.listener.oidcAccounts[0]", func(a *A, s string) {
 			listener(a).OidcAccounts = []string{"system:serviceaccount:legion:" + strings.ToLower(s)}
 		}},
+		{"tailnet.listener.consumerNames", "tailnet.listener.consumerNames", func(a *A, s string) { listener(a).ConsumerNames = "fresh-" + s }},
 		{"listener.image", "listener.image", func(a *A, s string) { ownListener(a).Image = "example.invalid/" + s + digest }},
 		{"listener.machineId", "listener.machineId", func(a *A, s string) { ownListener(a).MachineID = str(s) }},
 		{"listener.seedSecretName", "listener.seedSecretName", func(a *A, s string) { ownListener(a).SeedSecretName = strings.ToLower(s) }},
@@ -370,6 +371,7 @@ func clusteredSeedRows() []clusteredSeedRow {
 		{"listener.oidcAccounts", "listener.oidcAccounts[0]", func(a *A, s string) {
 			ownListener(a).OidcAccounts = []string{"system:serviceaccount:legion:" + strings.ToLower(s)}
 		}},
+		{"listener.consumerNames", "listener.consumerNames", func(a *A, s string) { ownListener(a).ConsumerNames = strings.ToLower(s) }},
 		{"authCallout.issuer", "authCallout.issuer", func(a *A, s string) { a.AuthCallout = authCallout(); a.AuthCallout.Issuer = s }},
 		{"authCallout.xkey", "authCallout.xkey", func(a *A, s string) { a.AuthCallout = authCallout(); a.AuthCallout.XKey = strings.ToLower(s) }},
 		{"authCallout.serviceUser", "authCallout.serviceUser", func(a *A, s string) {

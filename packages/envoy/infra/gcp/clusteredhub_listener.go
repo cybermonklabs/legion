@@ -207,15 +207,24 @@ func newClusteredHubListener(ctx *pulumi.Context, s clusteredHubSettings, classR
 	// listener's durable bind deadline for the subscription the first copy holds, gives up and
 	// restarts, for ever. The new pod is surged in before the old one goes, so the rollout is a
 	// handover rather than a gap, and the durable the old pod holds is free by the time the new
-	// one has waited its deadline out.
+	// one has waited its deadline out. Under the writer hold (replaceUnderHold) the hold refuses
+	// the new pod's NATS connection, so its /v1 never serves and its startup probe
+	// (clusteredHubListenerStartupProbe) never passes, and a surge would keep the old pod for as
+	// long as the hold lasts: there the Deployment is recreated and not waited for instead
+	// (heldReplacement).
+	meta := objectMeta(name, s.namespace)
+	strategy := dispatchStrategy{
+		strategyType:  dispatchStrategyRollingUpdate,
+		rollingUpdate: &dispatchRollingUpdate{maxUnavailable: 0, maxSurge: 1},
+	}
+	if s.listener.replaceUnderHold {
+		strategy = heldReplacement(meta)
+	}
 	if _, err := appsv1.NewDeployment(ctx, name, &appsv1.DeploymentArgs{
-		Metadata: objectMeta(name, s.namespace),
+		Metadata: meta,
 		Spec: appsv1.DeploymentSpecArgs{
 			Replicas: pulumi.Int(1),
-			Strategy: deploymentStrategy(dispatchStrategy{
-				strategyType:  dispatchStrategyRollingUpdate,
-				rollingUpdate: &dispatchRollingUpdate{maxUnavailable: 0, maxSurge: 1},
-			}),
+			Strategy: deploymentStrategy(strategy),
 			Selector: &metav1.LabelSelectorArgs{MatchLabels: pods},
 			Template: corev1.PodTemplateSpecArgs{
 				Metadata: &metav1.ObjectMetaArgs{Labels: pods},

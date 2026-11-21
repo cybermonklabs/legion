@@ -260,6 +260,16 @@ type ClusteredHubListenerArgs struct {
 	// limit: 500m and 1Gi by default.
 	Cpu    *string `pulumi:"cpu,optional"`
 	Memory *string `pulumi:"memory,optional"`
+	// How the listener names the JetStream consumers it creates, ENVOY_CONSUMER_NAMES: "fixed" or
+	// "fresh". Unset renders no variable, and the listener runs fixed; any other value is refused
+	// (core.CheckConsumerNames). The listener reads it only at its start, so a change rolls its pod.
+	ConsumerNames string `pulumi:"consumerNames,optional"`
+	// The writer hold's update rule (heldReplacement): true recreates the listener's Deployment,
+	// so its old pod stops before the new one starts, and lets the apply finish without waiting for
+	// the new pod, whose startup probe cannot pass while the hold refuses its NATS connection. Unset
+	// or false, the Deployment rolls, the new pod surged in before the old one stops, and the apply
+	// waits for it, as it always has.
+	ReplaceUnderHold bool `pulumi:"replaceUnderHold,optional"`
 }
 
 // Annotate names the type gcp:ClusteredHubListener in the schema, for the reason NATSUserArgs's
@@ -375,6 +385,7 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 		list(path+".allowedHosts", l.AllowedHosts)
 		fields = append(fields, field{path + ".oidcIssuer", l.OidcIssuer}, field{path + ".oidcAudience", l.OidcAudience})
 		list(path+".oidcAccounts", l.OidcAccounts)
+		fields = append(fields, field{path + ".consumerNames", l.ConsumerNames})
 	}
 	listener("listener", args.Listener)
 	if t := args.Tailnet; t != nil {

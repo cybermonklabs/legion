@@ -200,8 +200,13 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	require.ElementsMatch(t, []string{
 		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "clientNamespaces", "allowedHosts",
 		"oidcIssuer", "oidcAudience", "oidcAccounts", "senderMessagesPerMinute", "senderMessageBurst", "cpu", "memory",
+		"consumerNames", "replaceUnderHold",
 	}, slices.Collect(maps.Keys(listener.Properties)))
 	require.ElementsMatch(t, []string{"image", "nkey", "seedSecretName", "seedSecretKey"}, listener.Required)
+	// The consumer-name mode and the writer hold's update rule: a plain string and a plain boolean,
+	// optional, which a consumer's stack values give.
+	require.Equal(t, "string", listener.Properties["consumerNames"].Type)
+	require.Equal(t, "boolean", listener.Properties["replaceUnderHold"].Type)
 
 	require.ElementsMatch(t, []string{"serviceUrl", "podSelector", "statefulSetName", "tailnetNatsUrl", "tailnetEnvoyUrl"},
 		slices.Collect(maps.Keys(hub.Properties)))
@@ -238,6 +243,14 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 		"azureTenantId", "azureClientId", "azureFederationAudience",
 	} {
 		require.Contains(t, dispatch.InputProperties, input)
+		require.False(t, dispatch.InputProperties[input].Secret, input)
+		require.NotContains(t, dispatch.RequiredInputs, input)
+	}
+	// The consumer-name mode and the writer hold's update rule, as gcp:ClusteredHubListener takes
+	// them: optional plain values, neither a secret.
+	require.Equal(t, "string", dispatch.InputProperties["consumerNames"].Type)
+	require.Equal(t, "boolean", dispatch.InputProperties["replaceUnderHold"].Type)
+	for _, input := range []string{"consumerNames", "replaceUnderHold"} {
 		require.False(t, dispatch.InputProperties[input].Secret, input)
 		require.NotContains(t, dispatch.RequiredInputs, input)
 	}
