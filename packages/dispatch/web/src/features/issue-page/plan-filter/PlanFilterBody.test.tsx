@@ -454,6 +454,57 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
   }
 });
 
+// A task's serves chips can repeat: two chips of one task can carry the same words, or the same
+// reference, since the server refuses a pointer named twice only by its raw value. The row draws
+// each of them, and React is never handed two chips under one key, which would drop or reorder
+// one of them as the row is drawn again.
+test("a bar draws every serves chip, two with the same words or the same reference included", () => {
+  setViewport(1440);
+  const chip = (name: string, ref: string): NodeChip => ({
+    answered: true,
+    gone: false,
+    name,
+    ref,
+  });
+  const statement = `dispatch://${KEY}/spec#b-r3`;
+  const errors = spyOn(console, "error");
+  const view = renderBody(
+    issue([
+      {
+        ...task("t1"),
+        alsoUnder: [
+          chip("Same words", "not a reference"),
+          chip("Same words", "not a reference"),
+          chip("The same statement", statement),
+          chip("The same statement", statement),
+        ],
+      },
+    ])
+  );
+  try {
+    expect(
+      [...rowOf(view, "t1").querySelectorAll("[data-plan-serve]")].map((one) => [
+        one.textContent,
+        one.querySelector("a")?.getAttribute("href"),
+      ])
+    ).toEqual([
+      ["Same words", undefined],
+      ["Same words", undefined],
+      ["The same statement", `/issues/${KEY}/spec#b-r3`],
+      ["The same statement", `/issues/${KEY}/spec#b-r3`],
+    ]);
+    expect(
+      errors.mock.calls
+        .map((call) => call.map(String).join(" "))
+        .filter((said) => said.includes("same key")),
+      "React was handed two serves chips of one task under one key"
+    ).toEqual([]);
+  } finally {
+    view.unmount();
+    errors.mockRestore();
+  }
+});
+
 // The chart's bars are reached in order with the keyboard, by the outline's keys.
 test("the keys reach the bars in order, and the focused step's facts go to Details", async () => {
   setViewport(1440);
@@ -821,6 +872,12 @@ test("a refused read's line stays drawn while its Retry reads again, its Retry b
     expect(retry.getAttribute("aria-busy"), "the Retry of a read running again is not busy").toBe(
       "true"
     );
+    expect(
+      view.container
+        .querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`)
+        ?.getAttribute("aria-busy"),
+      "the view's empty tree is not busy while its refused read runs again"
+    ).toBe("true");
     expect(document.activeElement, "the focus leaves the Retry while its read runs again").toBe(
       retry
     );
@@ -884,6 +941,12 @@ test("a refused read's line stays drawn while its Retry waits for the network", 
       line()?.querySelector("button")?.textContent,
       "the statements line drops its Retry while its Retry waits for the network"
     ).toBe(CONTROL_LABELS.retry);
+    expect(
+      view.container
+        .querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`)
+        ?.getAttribute("aria-busy"),
+      "the view's empty tree reads busy while its refused read waits for the network"
+    ).toBe("false");
   } finally {
     view.unmount();
     // Back online once the view is gone: its query client no longer listens for the network

@@ -998,6 +998,13 @@ function BarRow({
   const unit = 100 / end;
   const ref = useRef<HTMLDivElement | null>(null);
   const press = useRowOnScreen(ref, focused);
+  // Each chip's React key, unique within the task and the same on every render. Two chips of one
+  // task can carry the same words, or the same reference: the server refuses a pointer named
+  // twice only by its raw value, so two written differently can name one statement. A chip is
+  // keyed by its reference, or by its words where it has none, each under its kind, and a repeat
+  // of that key by the count of chips before it that hold it: `ref:` or `words:` begins the first,
+  // and a count and a space begin each repeat, so no repeat takes another chip's key.
+  const keyed = new Map<string, number>();
   const serves = [
     ...(task.parentLine === undefined || task.parentLine.type !== "requirement"
       ? []
@@ -1005,7 +1012,12 @@ function BarRow({
     ...task.alsoUnder
       .filter((chip) => chip.name !== "")
       .map((chip) => ({ line: chip.name, reference: chip.ref })),
-  ];
+  ].map((one) => {
+    const base = one.reference === undefined ? `words:${one.line}` : `ref:${one.reference}`;
+    const before = keyed.get(base) ?? 0;
+    keyed.set(base, before + 1);
+    return { ...one, key: before === 0 ? base : `${before} ${base}` };
+  });
   // The needs the row names, each by the words of its chip. `planChart` reads each need from one
   // of the task's `needs` chips, so every need has its chip; one with no words is drawn as none.
   const needs = bar.needs.flatMap((needed) => {
@@ -1082,11 +1094,11 @@ function BarRow({
           // row and give the row the focus.
           const look = `min-w-0 rounded-[5px] border px-1.5 text-xs leading-[18px] font-semibold text-page-statement [overflow-wrap:anywhere] ${pageHairBorder}`;
           return route === undefined ? (
-            <span className={look} data-plan-serve="" key={one.line} {...authorText}>
+            <span className={look} data-plan-serve="" key={one.key} {...authorText}>
               {chipWords(one.line)}
             </span>
           ) : (
-            <span className={`relative ${look}`} data-plan-serve="" key={one.reference}>
+            <span className={`relative ${look}`} data-plan-serve="" key={one.key}>
               <Link
                 className="dispatch-inline-link after:absolute after:-inset-px after:content-['']"
                 tabIndex={-1}
