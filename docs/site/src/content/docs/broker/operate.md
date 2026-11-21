@@ -1251,7 +1251,10 @@ secret is refused, so no session gets one until the broker is rolled forward aga
   and secret-reread rate limiters see each caller's address rather than the proxy's. The broker
   reads the last entry of the header's last line: a proxy that folds the lines into one, appends
   to the last line or adds a line of its own leaves its entry there, after any line a caller sent,
-  so a line a caller adds picks it no bucket. The token
+  so a line a caller adds picks it no bucket. A proxy that appends to the first line and passes a
+  later line the caller sent would leave the caller's text last; the setting assumes the proxy is
+  not of that kind, and one that sends a single line, folding or overwriting the header, never
+  is. The token
   endpoint (`POST /v1/oauth/token`) has its own per-address bucket in each process, a burst of 60
   refilled at two a second, far above a machine's poll every five seconds and refresh about once a
   day; a refused request is `429` `invalid_request` (`RATE_LIMITED: …`) with `Retry-After`.

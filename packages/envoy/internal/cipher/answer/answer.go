@@ -156,11 +156,12 @@ const (
 var codePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
 
 // NewAnswers registers broker_answers_total on r and answers it, for Middleware, which serves the
-// API port and the edge, and for the airlock's proxy port, which count their answers on the one
-// counter (Count, CountCarried); its HELP names the three ports.
+// API port, EdgeMiddleware, which serves the edge, and the airlock's proxy port, which count their
+// answers on the one counter (Count, CountCarried); its HELP names the three ports and the port
+// label the edge's samples alone carry (PortEdge).
 func NewAnswers(r *metrics.Registry) *metrics.Counter {
 	return r.NewCounter("broker_answers_total",
-		"Answers of the broker's API port, its edge and its airlock's proxy port, by outcome (served, refused, rate_limited, pending, failed, cancelled), the code the answer named and the caller's class.")
+		"Answers of the broker's API port, its edge and its airlock's proxy port, by outcome (served, refused, rate_limited, pending, failed, cancelled), the code the answer named and the caller's class; the edge's answers also carry the label port=edge, which the other two ports' do not.")
 }
 
 // recorderKey carries the request's Recorder on its context.

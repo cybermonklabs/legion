@@ -425,13 +425,16 @@ var DefaultEdgeDeviceLimit = ratelimit.Limit{Every: 2 * time.Second, Burst: 30}
 // proxy itself appended — rather than an earlier, client-supplied entry a caller could forge to
 // pick its own bucket.
 //
-// The entry read is the last of the header's last line. A proxy that appends to the header either
-// folds every line the client sent into one line that ends in its own entry (Go's
+// The entry read is the last of the header's last line. That is the proxy's own entry for a proxy
+// that folds every line the client sent into one line ending in its own (Go's
 // httputil.ReverseProxy joins them so), appends its entry to the last line, or adds a line of its
-// own after the client's; in each, the last line ends in the proxy's entry, and a line the client
-// sent itself comes before it. Reading the first line, as this did before, let a caller that sent a
-// line of its own pick its bucket by that line's last entry. A last line holding no entry keys on
-// r.RemoteAddr, as a request with no header does.
+// own after the client's. It is not for a proxy that appends to the first line and passes a line
+// the client sent after it: there the last line is the client's own text, and the caller picks its
+// bucket. BROKER_TRUSTED_PROXY_HEADER assumes the proxy is not of that kind; one that sends a
+// single line, as a proxy that folds or overwrites the header does, is never. Reading the first
+// line, as this did before, let a caller that sent a line of its own before the proxy's pick its
+// bucket by that line's last entry. A last line holding no entry keys on r.RemoteAddr, as a request
+// with no header does.
 func clientAddress(r *http.Request, trustedProxyHeader string) string {
 	if trustedProxyHeader != "" {
 		if lines := r.Header.Values(trustedProxyHeader); len(lines) > 0 {

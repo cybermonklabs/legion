@@ -873,7 +873,10 @@ type Config struct {
 	// which appends that entry; otherwise a caller can forge the header and pick its own rate-limit
 	// bucket. The last line is read because a proxy that folds the lines into one, appends to the
 	// last line, or adds a line of its own leaves its entry at the end of the last line, after any
-	// line the client sent. The broker's edge (BROKER_EDGE_LISTEN_ADDR) does not read it: its
+	// line the client sent. A proxy that appends to the first line and passes a later line the
+	// client sent would leave the client's text last, so the setting assumes the proxy is not of
+	// that kind; one that sends a single line never is. The broker's edge (BROKER_EDGE_LISTEN_ADDR)
+	// does not read it: its
 	// buckets key on the second-to-last entry of its one X-Forwarded-For line, the one its load
 	// balancer appends for the client.
 	TrustedProxyHeader string
