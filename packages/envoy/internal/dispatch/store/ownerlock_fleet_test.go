@@ -308,10 +308,11 @@ func setFleetLockTimeout(ctx context.Context, t *testing.T, tx pgx.Tx) error {
 
 // waitRegistrationsOut gives owner_lock_legacy_registration, in s's database alone, the bound
 // setFleetLockTimeout gives a fleet test's own transactions in place of its registrationGateBound,
-// for a row whose subject is not that bound. Such a row holds the gate across steps of its own while
-// a registration waits for it, and on a machine slow enough to take longer than the function's 5 s
-// over those steps, the function's own bound would refuse the registration and fail the row by the
-// clock. TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound keeps the bound.
+// for a row whose subject is not that bound: one in which a transaction of this build can hold the
+// gate while a registration waits for it, the row's own steps or a writer it races. On a machine
+// slow enough to hold it longer than the function's 5 s, the function's own bound would refuse the
+// registration and fail the row by the clock.
+// TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound keeps the bound.
 func waitRegistrationsOut(ctx context.Context, t *testing.T, s *Store) {
 	t.Helper()
 	bound := "0"
