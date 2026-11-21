@@ -217,7 +217,6 @@ on:
       - 'packages/envoy/internal/oidc/*'
       - 'packages/envoy/internal/pglisten/*'
       - 'packages/envoy/internal/pgmigrate/*'
-      - 'packages/envoy/internal/projectscope/*'
       - 'packages/envoy/internal/redact/*'
       - 'packages/envoy/internal/tlsalert/*'
       - 'packages/envoy/internal/redirects/*'
