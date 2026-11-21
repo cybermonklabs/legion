@@ -3,7 +3,9 @@ import {
   type CSSProperties,
   type ReactNode,
   type RefObject,
+  useCallback,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -21,6 +23,10 @@ import {
   pageKindTag,
   pageMutedText,
   pageOwnWordsRule,
+  pagePathRing,
+  pagePathRingFolded,
+  pagePointRing,
+  pagePointRingFolded,
   pageQuietText,
   pageRowAct,
   pageRowActs,
@@ -29,18 +35,25 @@ import {
   pageWordsText,
 } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
-import { buildReferencePath, parseNodeReference } from "../refs/routes";
+import { MarkdownBody } from "../refs/MarkdownBody";
+import { usePlainHeadline } from "../refs/plain-text";
+import { ReferenceHostIs } from "../refs/reference-host";
+import { blockLineReading, useReadingName } from "../refs/reference-names";
+import { parseNodeReference, referenceHref } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
+import type { PointMark } from "./current-point";
 import { DecisionActions } from "./DecisionActions";
 import { useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import {
+  chipName,
   drawnLine,
   firstLineOf,
   isStatement,
-  lineWords,
+  lineReading,
+  type NodeAnswer,
   type NodeChip,
   type ParentLine,
   type TreeNode,
@@ -48,7 +61,7 @@ import {
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
-import { chipWords } from "./node-row-chip";
+import { documentWord } from "./node-row-chip";
 import { shortDay } from "./node-time";
 import { type ThreadMark, ThreadReadMark } from "./outline-thread-read";
 import { type OutlineWriter, replyItemOf, takesAnswer, useOutlineWriter } from "./outline-writer";
@@ -58,6 +71,7 @@ import {
   type AuthorKind,
   BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
+  CURRENT_POINT,
   GAP_LINES,
   GAP_WORDS,
   GLYPH_TOKENS,
@@ -65,7 +79,8 @@ import {
   type NodeType,
   nodeStateWord,
 } from "./page-words";
-import { documentWord, RowText } from "./RowText";
+import { RowText, useOutOfTabOrder } from "./RowText";
+import { titleReading } from "./tree-drafts";
 
 /**
  * One row of the issue's outline, and the body it opens on focus (R1, R6, R9, R34, and the
@@ -113,6 +128,7 @@ export function NodeRow({
   author,
   body,
   context,
+  current,
   document,
   editable = false,
   editing,
@@ -148,6 +164,10 @@ export function NodeRow({
   /** Whether the view draws this row only as the ancestor of a match: the row is faint and
    *  marked, and the arrow keys reach it as they reach any other row (R2). */
   context: boolean;
+  /** Whether this row carries the conversation's current point: `here` on the point's own row,
+   *  `path` on a row above it on its path while its own row is folded away (R12); undefined on
+   *  every other row. */
+  current?: PointMark;
   /** The document this row's node is a block of, which its body writes against: a decision's
    *  Keep and Change are writes on the decisions document (R7). Undefined for a node that is
    *  no block of a document of this issue. */
@@ -232,15 +252,20 @@ export function NodeRow({
   // which its document's blocks draw before the coverage read brings them - draws them cut, and
   // one that brings the same words in new objects leaves the row as it stands (`useClamp`).
   const clamp = useClamp(words, cuttable, node.tree ?? node.text);
+  // A reference in the words takes its name after they are first drawn - the page's batched
+  // read answers last, and a party's own read after it - and its words can run longer or shorter
+  // than the words written: the row measures its cut again, as for words of another value
+  // (`useClamp`), so no word is cut short of the room or drawn past it (INFRA-1196 decision 350).
+  const redrawn = useCallback(() => {
+    const element = words.current;
+    if (cuttable && element !== null) clampRedrawn(element);
+  }, [cuttable]);
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
 
   const press = useRowOnScreen(row, focused, BELOW_WHAT_STAYS, placesItself);
 
   const depth = level - 1;
-  // R1's one line, cut from the words of the node's first block (`lineWords`), as every one-line
-  // drawing of a node is cut, so a heading never runs into the paragraph after it.
-  const first = firstLineOf(lineWords(node));
   // How many nodes a folded branch holds: on its one line, and after its words once its focus
   // or its pin draws them whole, so the reader still knows what the fold hides (R1).
   const count =
@@ -271,9 +296,13 @@ export function NodeRow({
   const more = clamp !== undefined && !body;
   return (
     <div
+      // The conversation's current point (R12), named by the screen reader's own words for the
+      // current location. It is no control: it takes no focus and answers no press.
+      aria-current={current === "here" ? CURRENT_POINT : undefined}
       aria-expanded={expanded}
       aria-level={level}
       className="relative min-w-0 pl-[calc(var(--row-depth)*23px)] outline-none max-[761px]:pl-[calc(var(--row-depth)*17px)]"
+      data-current-point={current}
       data-editable={editable ? "" : undefined}
       data-folded-count={folded}
       data-node-context={context ? "" : undefined}
@@ -305,6 +334,7 @@ export function NodeRow({
       <div className={`${NODE_ROW_LAYOUT.box} ${focused ? pageFocusedRow : ""}`} data-node-card="">
         <Bullet
           collapsed={collapsed}
+          current={current}
           expanded={expanded}
           foldable={foldable}
           onToggle={onToggle}
@@ -320,9 +350,7 @@ export function NodeRow({
             <p
               className={`text-[15px] leading-6 break-words ${context ? pageQuietText : pageWordsText}`}
             >
-              <span data-node-first-line="" {...authorText}>
-                {drawnLine(first)}
-              </span>
+              <FirstLine node={node} />
               {count === null ? null : (
                 <span className={`ml-1.5 text-xs ${pageQuietText}`}>{count}</span>
               )}
@@ -342,6 +370,7 @@ export function NodeRow({
                 <RowText
                   focused={focused}
                   markdown={node.text}
+                  onRedrawn={redrawn}
                   source={node.source}
                   tabStops={tabStops}
                   tree={node.tree}
@@ -350,6 +379,7 @@ export function NodeRow({
                 // A child issue's row is one line, as the prototype's `.kr` draws it: its title,
                 // then how it stands, what blocks it and who holds it, small and grey (ruling 5).
                 <p className="break-words">
+                  {/* A title holds no markup: the reading list's `node-row-child-title`. */}
                   <span {...authorText}>{node.text}</span>
                   <ChildIssueFacts child={node.child} tabStops={tabStops} />
                 </p>
@@ -380,7 +410,13 @@ export function NodeRow({
             <NodeOptions body={body} node={node} tabStops={tabStops} writer={writer} />
           )}
           {node.answer === undefined || oneLine ? null : (
-            <AskAnswer answerer={answerer ?? ""} node={node} own={ownAnswer} />
+            <AskAnswer
+              answerer={answerer ?? ""}
+              focused={focused}
+              node={node}
+              own={ownAnswer}
+              tabStops={tabStops}
+            />
           )}
           {/* Under a filter, the node's parent where the filter draws it as no row: one line,
               its kind's word and its first line (R2, R1's first-line rule). */}
@@ -426,6 +462,61 @@ export function NodeRow({
         {threadRead === undefined || oneLine ? null : <ThreadReadMark mark={threadRead} />}
       </div>
     </div>
+  );
+}
+
+/**
+ * A node's one line (R1), as every place that draws one draws it - a folded branch's line, a
+ * parent's line under a filter and a crumb above a zoom (`IssueTree.tsx`): its node's first line,
+ * projected from its words by the shared plain-text projection (`lineReading`) and cut by R1's
+ * first-line rule (`firstLineOf`), with an ellipsis only where the cut ended inside a sentence
+ * (`drawnLine`), so a heading never runs into the paragraph after it. A reference in it reads as
+ * the same reference in the node's row does (`RowText.tsx`): as its target's current name once it
+ * resolves, and as the words its author wrote until then (R8, INFRA-1196 decision 350); and a
+ * numbered step keeps its number (decisions 66 and 88). The issue's own line is its key, which
+ * the page writes before its projected title and R1's rule reads a label after
+ * (`LineReading.key`). Each role is read by the issue the node's record is on. `line` is
+ * `undefined` until the projection has answered, which is one pre-paint commit on a page whose
+ * engine is loaded, and `""` for a node whose words hold none.
+ * `reads` draws nothing and the caller mounts it where it draws the line.
+ */
+export function useNodeLine(
+  node: Pick<TreeNode, "id" | "source" | "text" | "tree" | "type">,
+  {
+    surface,
+  }: { readonly surface: "node-row-first-line" | "node-row-parent-line" | "outline-crumb" }
+): { line: string | undefined; reads: ReactNode } {
+  const { id, source, text: stored, tree, type } = node;
+  const reading = useMemo(
+    () => lineReading({ id, text: stored, tree, type }),
+    [id, stored, tree, type]
+  );
+  const { reads, text } = usePlainHeadline(
+    "tree" in reading ? reading.tree : undefined,
+    "markdown" in reading ? reading.markdown : undefined,
+    { firstLine: "markdown" in reading, issue: source?.issue, surface }
+  );
+  const words = "none" in reading ? "" : text?.text;
+  const key = "key" in reading ? reading.key : undefined;
+  const line = words === undefined || key === undefined ? words : `${key} ${words}`.trimEnd();
+  return { line: line === undefined ? undefined : drawnLine(firstLineOf(line, key)), reads };
+}
+
+/** The words a place that names a node by its one line draws where it must name it by
+ *  something (`ParentLink`): the line (`useNodeLine`), and the page's word for the node's kind
+ *  where its words hold none (R22). Nothing until the projection has answered. */
+export function lineOrKindWord(line: string | undefined, type: NodeType): string {
+  return line === "" ? NODE_TYPE_NAMES[type] : (line ?? "");
+}
+
+/** A folded branch's one line (`useNodeLine`): empty until the projection has answered. */
+function FirstLine({ node }: { node: TreeNode }): ReactNode {
+  const { line, reads } = useNodeLine(node, { surface: "node-row-first-line" });
+  return (
+    <span data-node-first-line="" {...authorText}>
+      {reads}
+      {line ?? ""}
+    </span>
   );
 }
 
@@ -587,6 +678,9 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
       return "decision";
     case "plan_task":
       return "step";
+    case "reading":
+      return "agent";
+    case "criterion":
     case "requirement":
       // Only the spec's own requirement is a statement (`isStatement`); one of any other
       // document is a block and nothing more, in a block's colour (decision 246).
@@ -621,9 +715,14 @@ function stateTone(node: TreeNode): keyof typeof pageStateText {
  * would open its body, and a folded row with its body open draws its words whole, not the one
  * line the fold is for (R1). On a phone the fold control's box is 24 px square, the least target
  * WCAG 2.5.8 allows (`NODE_ROW_LAYOUT.foldControl`).
+ *
+ * A row that carries the conversation's current point rings the dot (R12, `pointRing`): quietly
+ * on the point's own row, lighter on each row above it on its path while its own row is folded
+ * away. The ring is drawn, never a control, and moves no focus.
  */
 function Bullet({
   collapsed,
+  current,
   expanded,
   foldable,
   onToggle,
@@ -631,6 +730,7 @@ function Bullet({
   tone,
 }: {
   collapsed: boolean;
+  current?: PointMark;
   expanded?: boolean;
   foldable: boolean;
   onToggle: () => void;
@@ -640,7 +740,7 @@ function Bullet({
   const dot = (
     <i
       aria-hidden="true"
-      className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""}`}
+      className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""} ${pointRing(current, collapsed)}`}
     />
   );
   if (!foldable) {
@@ -671,6 +771,15 @@ function Bullet({
       {dot}
     </button>
   );
+}
+
+/** The ring on the bullet's dot of a row that carries the conversation's current point (R12): the
+ *  quiet ring on the point's own row and the lighter one on a row above it on its path, each set
+ *  outside the halo on a folded branch's dot; nothing on every other row. */
+function pointRing(current: PointMark | undefined, collapsed: boolean): string {
+  if (current === "here") return collapsed ? pagePointRingFolded : pagePointRing;
+  if (current === "path") return collapsed ? pagePathRingFolded : pagePathRing;
+  return "";
 }
 
 /**
@@ -811,9 +920,15 @@ export function RowMargin({
  * the question waits on the reader every one in the waiting colour. The words an option carries
  * beside its name are drawn in the focused node's body (R6).
  *
+ * An option's name and its words are the ask's stored text, drawn by the renderer from the
+ * server's reading of each, as the ask's card draws them (the reading list's `ask-option-text`).
+ * Whatever that draws that takes the focus - a reference's link - is out of the tab order unless
+ * `tabStops` holds, as every other control inside a row is (R9).
+ *
  * An open question's options are the choices of its answer (R16, the prototype's `button.opt`):
  * a press picks one, or lets it go, and sets the line at the foot of the outline to answer the
- * question, where the keyboard picks them too; the one picked is drawn on the waiting tint.
+ * question, where the keyboard picks them too; the one picked is drawn on the waiting tint. A
+ * reference inside such an option reads as a link and is none: the press is the option's.
  */
 export function NodeOptions({
   body,
@@ -827,12 +942,14 @@ export function NodeOptions({
   tabStops?: boolean;
   writer: OutlineWriter | undefined;
 }): ReactNode {
+  const list = useRef<HTMLUListElement>(null);
+  useOutOfTabOrder(list, !tabStops);
   const chosen = new Set(node.answer?.selected ?? []);
   const answering = writer !== undefined && takesAnswer(node);
   const picks =
     writer?.answer !== undefined && writer.answer.nodeId === node.id ? writer.answer.selected : [];
   return (
-    <ul className="my-0.5 text-sm leading-[21px]" data-node-options="">
+    <ul className="my-0.5 text-sm leading-[21px]" data-node-options="" ref={list}>
       {(node.options ?? []).map((option) => {
         const picked = chosen.has(option.label);
         const words = (
@@ -841,11 +958,27 @@ export function NodeOptions({
               {picked || picks.includes(option.label) ? "●" : "○"}
             </span>
             <span className="min-w-0 break-words">
-              <span {...authorText}>{option.label}</span>
+              <span {...authorText}>
+                <MarkdownBody
+                  markdown={option.label}
+                  source={node.source}
+                  surface="ask-option-text"
+                  tree={option.labelTree}
+                  variant="inline"
+                />
+              </span>
               {body && option.description !== undefined ? (
                 <span className={`font-normal ${pageQuietText}`}>
                   <span {...pageChrome}> — </span>
-                  <span {...authorText}>{option.description}</span>
+                  <span {...authorText}>
+                    <MarkdownBody
+                      markdown={option.description}
+                      source={node.source}
+                      surface="ask-option-text"
+                      tree={option.descriptionTree}
+                      variant="inline"
+                    />
+                  </span>
                 </span>
               ) : null}
             </span>
@@ -892,7 +1025,7 @@ export function NodeOptions({
                 tabIndex={tabStops ? undefined : -1}
                 type="button"
               >
-                {words}
+                <ReferenceHostIs host="control">{words}</ReferenceHostIs>
               </button>
             ) : (
               words
@@ -914,6 +1047,10 @@ export function NodeOptions({
  * statement, a check, a decision - takes no reply in today's model, which holds no reply to a
  * block, so it draws none; and with no writer (`OutlineWriterProvider`)
  * the row draws none of the three.
+ *
+ * After Reply, Write a criterion on an ask, a comment or a message of this issue, on an issue
+ * that takes one (`OutlineWriter.takesCriterion`): it aims the line at the node to write a
+ * criterion under it. No key presses it, and `f` reaches it as it reaches every act.
  *
  * Last, Copy reference copies the node's `dispatch://` address, as today's page offers it on the
  * same node (part G's R6, root R19). It writes nothing, so it is drawn whether or not a writer
@@ -953,6 +1090,13 @@ export function RowActs({
       act: "reply",
       label: CONTROL_LABELS.reply,
       run: () => (item === undefined ? writer.writeOnIssue() : writer.replyTo(item)),
+    });
+  }
+  if (writer?.takesCriterion(node) === true) {
+    acts.push({
+      act: "criterion",
+      label: CONTROL_LABELS.write_criterion,
+      run: () => writer.criterionUnder(node),
     });
   }
   const reference = node.reference;
@@ -1003,18 +1147,29 @@ export function RowActs({
  * A person's answer to an ask, which is part of the ask and no node of its own
  * (R1): the page's word for it, who answered by
  * a name and a shape as every author is drawn (R9), what they chose where the ask offers no list
- * to mark it in, and what they wrote, whole and character for character, keeping the line breaks
- * they typed (R9, ruling 1). The reader's own answer carries the ink rule their own words carry
- * (R34).
+ * to mark it in, and what they wrote, whole (R9, ruling 1). The reader's own answer carries the
+ * ink rule their own words carry (R34).
+ *
+ * What they wrote is drawn as the row draws its node's words (`RowText`): from the server's
+ * reading of it, by the renderer, and where the read sent none as stored, character for
+ * character, keeping the line breaks they typed. What they chose is drawn by the renderer from
+ * the reading of each option's name the answer carries, as the Answers page draws it (the
+ * reading list's `answers-chosen-options`).
  */
 export function AskAnswer({
   answerer,
+  focused = false,
   node,
   own,
+  tabStops = false,
 }: {
   answerer: string;
+  /** Whether the row holds the focus (`RowText`'s `focused`). */
+  focused?: boolean;
   node: TreeNode;
   own: boolean;
+  /** Whether a link in the answer keeps its place in the tab order (`NodeRow`'s `tabStops`). */
+  tabStops?: boolean;
 }): ReactNode {
   const answer = node.answer;
   if (answer === undefined) return null;
@@ -1036,29 +1191,60 @@ export function AskAnswer({
         </span>
       </p>
       {node.options !== undefined || answer.selected.length === 0 ? null : (
-        <ul className={`flex min-w-0 flex-col text-sm leading-[21px] ${pageInkText}`}>
-          {answer.selected.map((option) => (
-            <li
-              className="break-words font-semibold"
-              data-answer-choice=""
-              key={option}
-              {...authorText}
-            >
-              {option}
-            </li>
-          ))}
-        </ul>
+        <AnswerChoices answer={answer} source={node.source} tabStops={tabStops} />
       )}
       {answer.text === "" ? null : (
-        <p
-          className={`text-[15px] leading-6 whitespace-pre-wrap break-words ${own ? pageInkText : pageWordsText}`}
+        <div
+          className={`text-[15px] leading-6 ${own ? pageInkText : pageWordsText}`}
           data-answer-text=""
           {...authorText}
         >
-          {answer.text}
-        </p>
+          <RowText
+            focused={focused}
+            markdown={answer.text}
+            source={node.source}
+            tabStops={tabStops}
+            tree={answer.textTree}
+          />
+        </div>
       )}
     </div>
+  );
+}
+
+/** The options an answer chose, where its ask offers no list to mark them in: each drawn by the
+ *  renderer from the reading of its name the answer carries, at the same index, and every link
+ *  that draws out of the tab order unless `tabStops` holds (R9). */
+function AnswerChoices({
+  answer,
+  source,
+  tabStops,
+}: {
+  answer: NodeAnswer;
+  source: TreeNode["source"];
+  tabStops: boolean;
+}): ReactNode {
+  const list = useRef<HTMLUListElement>(null);
+  useOutOfTabOrder(list, !tabStops);
+  return (
+    <ul className={`flex min-w-0 flex-col text-sm leading-[21px] ${pageInkText}`} ref={list}>
+      {answer.selected.map((option, index) => (
+        <li
+          className="break-words font-semibold"
+          data-answer-choice=""
+          key={option}
+          {...authorText}
+        >
+          <MarkdownBody
+            markdown={option}
+            source={source}
+            surface="answers-chosen-options"
+            tree={answer.selectedTrees?.[index]}
+            variant="inline"
+          />
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -1074,18 +1260,21 @@ export function NodeEdges({
   /** Whether a chip's link keeps its place in the tab order (`NodeRow`'s `tabStops`). */
   tabStops?: boolean;
 }): ReactNode {
+  // A chip reads a role by the issue the node's record is on, as the node's own words do.
+  const issue = node.source?.issue;
   return (
     <>
       {node.alsoUnder.map((chip) => (
         <Chip
           chip={chip}
+          issue={issue}
           key={`also:${chip.ref}`}
           label={CONTROL_LABELS.also_under}
           tabStops={tabStops}
         />
       ))}
       {node.chips.map((chip) => (
-        <Chip chip={chip} key={chip.ref} label={chip.label} tabStops={tabStops} />
+        <Chip chip={chip} issue={issue} key={chip.ref} label={chip.label} tabStops={tabStops} />
       ))}
       {node.gaps.map((gap) => (
         <span data-gap="" data-gap-kind={gap} key={gap} {...pageChrome}>
@@ -1098,50 +1287,88 @@ export function NodeEdges({
 
 /**
  * One tie of the node that is not the spine, on the node's own line (ruling 5): the page's word
- * for the tie where it has one, then the target by its short name where the model holds one, and
- * until then by its first words, cut at a word within 32 characters (`chipWords`), as the link a
- * reader follows to it; a whole document by the page's word for one, because today's model
- * holds no title for a document and its name is its file name (`documentWord`, part G's R4). No
- * address, slug or document name is drawn in its place (R22), save one: a short reference that
- * two or more targets answer to (`ambiguous`) names no one target, so it is drawn as its author
- * wrote it, as words with no link, and never as a target deleted (decision 62). A target nothing
- * answers to now says so. A chip whose target the batched reference read has not named yet
- * draws nothing until it does - "the names come last and all at once" (`useIssueTree.ts`) - and
- * neither does one the read named with no words at all: there is nothing to name it by. A
- * target's name is plain words already (`tree-drafts.ts`'s `treeContext` names every kind of
- * target in plain words, decisions 66 and 88), so it is drawn as it stands, with no markdown
- * pass: a pass would read "1. Stand the harness up." as a list and draw it without its number.
+ * for the tie where it has one, then the target by its name, cut as a chip's words are
+ * (`chipName`): a block's first line, and at a word within 32 characters, as the link a reader
+ * follows to it; a whole document by the page's word for one, because today's model holds no
+ * title for a document and its name is its file name (`documentWord`, part G's R4). No address,
+ * slug or document name is drawn in its place (R22), save one: a short reference that two or
+ * more targets answer to (`ambiguous`) names no one target, so it is drawn as its author wrote
+ * it, as words with no link, and never as a target deleted (decision 62). A target nothing
+ * answers to now says so.
+ *
+ * The name is the chip's address as the shared plain-text projection reads it standing alone:
+ * its target's current name (R8), which for a target the page's batched read answered is the
+ * name the page published for it (`refs/reference-names.tsx`) as a link to the target reads it,
+ * projected from the target's own words in plain words with no list or block reading, so "1.
+ * Stand the harness up." keeps its number (decisions 66 and 88); a party by its own name (R5),
+ * its role read by the issue the node's record is on (`issue`); and an issue by its key and
+ * title. A block is the one target a chip names by other words than a link does: by the first
+ * block of its words that holds any, from the reading the chip carries (`blockLineReading`),
+ * projected as the page's names are (`useReadingName`), so a decision's chip is its heading. A
+ * chip whose target has no name yet draws nothing until it has one - "the names come last and
+ * all at once" (`useIssueTree.ts`) - which the projection's own answer says
+ * (`MarkdownHeadline.named`): a chip draws no address.
  */
 function Chip({
   chip,
+  issue,
   label,
   tabStops,
 }: {
   chip: NodeChip;
+  issue: string | undefined;
   label?: string;
   tabStops: boolean;
 }): ReactNode {
   // A chip names a node the page may not be drawing, and the old page's decision cards reached
   // each one by its words (R18, c-nothing-lost). A target nothing answers to now, one of several
-  // a short reference names, or a reference the grammar cannot read, is text: there is nowhere
-  // to go.
+  // a short reference names, a reference the grammar cannot read, or a person, whom no page
+  // shows (R5), is text: there is nowhere to go.
   const ambiguous = chip.ambiguous === true;
   const gone = chip.gone && !ambiguous;
   const target = parseNodeReference(chip.ref);
-  const word = ambiguous ? undefined : documentWord(target);
-  const words = ambiguous ? chip.ref : (word ?? chipWords(chip.name));
-  if (!gone && words === "") return null;
-  const route = chip.gone ? undefined : target;
+  // A whole document by the page's word for it, which the chip carries (`tree-drafts.ts`'s
+  // `documentWord`), and the word for any document where it carries none.
+  const anyDocument = ambiguous ? undefined : documentWord(target);
+  const carried =
+    chip.reading !== undefined && "words" in chip.reading ? chip.reading.words : undefined;
+  const word = anyDocument === undefined ? undefined : (carried ?? anyDocument);
+  // A block by its first block of words, from the reading the chip carries, with no read made.
+  const lineReading = useMemo(
+    () => (ambiguous || gone ? undefined : blockLineReading(chip.ref, chip.reading)),
+    [ambiguous, chip.reading, chip.ref, gone]
+  );
+  const line = useReadingName(lineReading, Number.POSITIVE_INFINITY);
+  // The address as one text run, which the projection reads as the reference it is.
+  const address = useMemo(() => titleReading(chip.ref), [chip.ref]);
+  const { reads, text } = usePlainHeadline(
+    ambiguous || gone || word !== undefined || lineReading !== undefined ? undefined : address,
+    undefined,
+    { issue, surface: "node-row-chip" }
+  );
+  // Named only where the projection wrote its target's name in place of the address, which a
+  // chip never draws (`MarkdownHeadline.named`).
+  const named = text !== undefined && text.named.length > 0;
+  const name =
+    line !== undefined
+      ? chipName(target, line)
+      : text !== undefined && named
+        ? chipName(target, text.text)
+        : "";
+  const words = ambiguous ? chip.ref : (word ?? name);
+  if (!gone && words === "") return reads;
+  const href = chip.gone || target === undefined ? undefined : referenceHref(target);
   // The page's word for a document is the page's, and a target's own words are its author's.
   const marks = word === undefined ? authorText : pageChrome;
   return (
     <span className="min-w-0 [overflow-wrap:anywhere]" data-node-chip="">
+      {reads}
       {label === undefined ? null : <span {...pageChrome}>{label} </span>}
       {/* A sentence about the target, so a colon sets it apart from the target's own words. */}
       {chip.stale === true ? <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span> : null}
       {gone ? (
         <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
-      ) : route === undefined ? (
+      ) : href === undefined ? (
         // An address as written may run longer than the line, so it alone may wrap.
         <span className={ambiguous ? undefined : "whitespace-nowrap"} data-chip-name="" {...marks}>
           {words}
@@ -1154,7 +1381,7 @@ function Chip({
           className={`dispatch-inline-link font-medium whitespace-nowrap underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
           data-chip-name=""
           tabIndex={tabStops ? undefined : -1}
-          to={buildReferencePath(route)}
+          to={href}
           {...marks}
         >
           {words}
@@ -1164,24 +1391,32 @@ function Chip({
   );
 }
 
-/** The parent's own first line, as the link a reader follows to that node where the model gives
- *  it an address (R18, and R26: a step's row reaches the statement it serves). Out of the tab
- *  order, as every other control inside a row is, unless `tabStops` holds: `f` steps to it and
- *  Enter follows it. */
+/** The parent's own first line, as every one line of a node is drawn (`useNodeLine`), and the
+ *  page's word for its kind where its words hold none (R22): as the link a reader follows to
+ *  that node where the model gives it an address (R18, and R26: a step's row reaches the
+ *  statement it serves), and as words with no link where that address names a person, whom no
+ *  page shows (R5). Out of the tab order, as every other control inside a row is, unless
+ *  `tabStops` holds: `f` steps to it and Enter follows it. */
 function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
-  const route = line.reference === undefined ? undefined : parseNodeReference(line.reference);
-  return route === undefined ? (
+  const parent = line.reference === undefined ? undefined : parseNodeReference(line.reference);
+  const href = parent === undefined ? undefined : referenceHref(parent);
+  const { line: drawn, reads } = useNodeLine(line, { surface: "node-row-parent-line" });
+  // Nothing until the projection answers, one pre-paint commit on a page whose engine is loaded.
+  const words = lineOrKindWord(drawn, line.type);
+  return href === undefined ? (
     <span className="min-w-0 break-words" {...authorText}>
-      {line.line}
+      {reads}
+      {words}
     </span>
   ) : (
     <Link
       className={`dispatch-inline-link min-w-0 break-words underline decoration-page-bullet underline-offset-[3px] ${pageQuietText}`}
       tabIndex={tabStops ? undefined : -1}
-      to={buildReferencePath(route)}
+      to={href}
       {...authorText}
     >
-      {line.line}
+      {reads}
+      {words}
     </Link>
   );
 }

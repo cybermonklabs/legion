@@ -30,6 +30,7 @@ const GLYPH_PATHS: Readonly<Record<string, string>> = {
   check: "M2 8 l4 5 l8 -11",
   "child-issue": "M3 2 v8 a3 3 0 0 0 3 3 h7 M10 10 l3 3 l-3 3",
   comment: "M2 3 h12 v8 h-7 l-5 4 Z",
+  criterion: "M8 2 a6 6 0 1 0 0.01 0 Z M8 6 a2 2 0 1 0 0.01 0 Z",
   decision: "M8 1 L15 5 v6 L8 15 L1 11 V5 Z",
   document: "M3 1 h7 l3 3 v11 h-10 Z",
   handoff: "M1 8 h10 M8 4 l4 4 l-4 4 M14 2 v12",
@@ -37,6 +38,7 @@ const GLYPH_PATHS: Readonly<Record<string, string>> = {
   issue: "M8 1 a7 7 0 1 0 0.01 0 Z",
   message: "M1 4 h14 v8 h-14 Z M1 4 l7 5 l7 -5",
   "plan-task": "M2 2 h12 v12 h-12 Z M5 8 h6",
+  reading: "M1 8 q7 -7 14 0 q-7 7 -14 0 Z M8 6.5 a1.5 1.5 0 1 0 0.01 0 Z",
   requirement: "M3 1 h10 v14 l-5 -4 l-5 4 Z",
   result: "M8 2 l2 4 l4 1 l-3 3 l1 4 l-4 -2 l-4 2 l1 -4 l-3 -3 l4 -1 Z",
   /** Who wrote the node, one shape per kind of author, drawn beside the author's name. */

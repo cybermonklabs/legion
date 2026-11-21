@@ -355,6 +355,14 @@ registerText("link on callout-info", LINK, CALLOUT_INFO_BG);
 registerText("primary text on selected card", TEXT_PRIMARY, SELECTED_CARD_BG);
 registerText("option description text on selected card", TEXT_OPTION_DESCRIPTION, SELECTED_CARD_BG);
 registerText("link text on selected card", LINK, SELECTED_CARD_BG);
+/** The reference picker's rows wear it on the list's own recessed surface as well as on the
+ *  fill of the highlighted row (`RefPickerList`), so the detail line reads the same either
+ *  way. */
+registerText(
+  "option description text on surface-recessed",
+  TEXT_OPTION_DESCRIPTION,
+  SURFACE_RECESSED
+);
 
 // ---------------------------------------------------------------------------------------------
 // Architecture tree: component fill bars and the trust outline
@@ -877,6 +885,23 @@ export const pageFocusedRow =
 export const pageOwnWordsRule = "shadow-[inset_2px_0_0_var(--color-page-ink)] pl-2.5";
 /** A folded branch's bullet keeps a halo of the hairline grey around it (`.card.collapsed`). */
 export const pageFoldedHalo = "shadow-[0_0_0_4px_var(--color-page-hair)]";
+/** The conversation's current point, the node the reader's next turn answers: a quiet ring 2 px
+ *  off the bullet's dot on the point's own row. It is an outline and not a shadow because a
+ *  folded branch's halo is a box-shadow, and the ring has to stand outside it without the two
+ *  classes fighting over one property; an outline is also still drawn in forced colours, where a
+ *  shadow is not. The colour is part B's `--color-page-quiet` (styles.css), which Tailwind serves
+ *  as `outline-page-quiet`. */
+export const pagePointRing = "outline-[1.5px] outline-offset-2 outline-page-quiet";
+/** The same ring on a folded branch's bullet (R12), 5 px off the dot so it stands outside the
+ *  4 px halo (`pageFoldedHalo`). */
+export const pagePointRingFolded = "outline-[1.5px] outline-offset-[5px] outline-page-quiet";
+/** A lighter ring on the bullet of each row above the current point on its path while the
+ *  point's own row is folded away (R12), so the reader sees which branch to open: thinner, and
+ *  in part B's `--color-page-bullet`, served as `outline-page-bullet`. An outline for the same
+ *  reasons as `pagePointRing`. */
+export const pagePathRing = "outline-1 outline-offset-2 outline-page-bullet";
+/** The path's ring on a folded branch's bullet (R12), outside its 4 px halo. */
+export const pagePathRingFolded = "outline-1 outline-offset-[5px] outline-page-bullet";
 /** Each kind of node's colour (the prototype's `--k`): its bullet's fill, and the words of the
  *  tag that names a typed kind at the right of its row (R34). An agent's words have the quiet
  *  grey bullet and no tag; a person's the ink. The tag's word says the kind, and the author's
@@ -932,8 +957,7 @@ export const pageStateText = {
  * kind's colour, filled while pressed (`.ck`), and on a phone they are drawn only while the
  * caret is in the box. Every word in it says what it is, so the colours repeat what is written
  * (R6). A phone here is a window 760 px wide or narrower, the prototype's breakpoint; Tailwind
- * builds `max-[761px]:` as a width under 761 px, so it holds 760 px (decision 72 of
- * dispatch://INFRA-1196/artifact/part-decisions-md).
+ * builds `max-[761px]:` as a width under 761 px, so it holds 760 px.
  */
 export const pageComposer = {
   answering:
@@ -970,6 +994,21 @@ export const pageComposer = {
 const pageSendBox = `ml-1 rounded-[7px] px-3 py-px text-xs leading-[22px] font-semibold text-page-paper refused:cursor-default refused:bg-page-hair refused:text-page-muted ${focusVisibleRing}`;
 export const pageSend = `${pageSendBox} bg-page-ink`;
 export const pageSendAnswer = `${pageSendBox} bg-page-waiting-text`;
+
+/** A control of the issue page's box - a kind's chip, an option of the question it answers, the
+ *  control that ends its target, Decline, a refusal's Retry and Discard draft - with its words
+ *  centred in its target. The target's 24 by 24 px at every width (WCAG 2.2's 2.5.8, which
+ *  `pageComposer`'s 22 px chips and 20 px clear control fall short of) is one rule of
+ *  `styles.css`, which holds every button of the box to it, Send and Stop trying too, and below
+ *  1280 px puts it in place of the 44 px floor. */
+export const pageComposerControl = "inline-flex items-center justify-center";
+
+/** The answer line's options, Decline to answer and Send answer, as one row of the box beside or
+ *  under the field (`IssueComposer.tsx`): `pageComposer.controls` with no `flex-none`, so a row
+ *  that a question's options make wider than the line shrinks to the line's width and wraps
+ *  there, and every control stands inside the box and the screen. The write line's kinds and
+ *  Send, which fit any width, keep `pageComposer.controls`. */
+export const pageComposerAnswerControls = "flex min-w-0 flex-wrap items-center gap-[5px] pb-px";
 
 /** The quiet line of what the focused row's reader can do with it, under its words (the
  *  prototype's `.acts`): plain words in the muted grey, each a control that underlines on hover,

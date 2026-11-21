@@ -3025,11 +3025,13 @@ GATES = [
         # is what its two tsc programs list, so check-ts-filters.sh writes them into the filter's
         # listed block and holds the block to them (ci_ts_programs.py, LISTED), and rule 9's second
         # direction passes over that block's patterns.
+        (".github/scripts/dispatch-browser-shard-suite.sh", f"packages/dispatch/e2e/__tests__/reading-walk.test.ts:279-301, the new URL at :282, reads the spec files of the references lane out of its `references)` arm, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
         (f"{FIX}/live/**", "packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts:2-4, e2e/__tests__/delivery-live-probe.test.ts:12-16"),
         (f"{FIX}/decision-blocks/**", "packages/dispatch/web/src/features/doc/decision-blocks.test.ts:9-10, features/inbox/AskCard.test.tsx:380-381"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/features/doc/schema.ts:1, features/refs/markdown-engine.test.ts:4 and features/doc/ProofDocument.admission.test.tsx:5 import blocks.json, and packages/proof-editor/tests/manifest-schema.test.ts:14, block-schema-fixture.ts:8 and nested-directive.test.ts:30 read it; packages/proof-editor/tests/ask-concurrent-edit.test.ts:278 reads block-node-types.json of the same directory"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, by the three suites this job runs over the one table: features/refs/fixture-table-readings.test.ts, markdown-engine.test.ts and markdown-surfaces.test.tsx"),
         (f"{ENVOY}/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json", "packages/dispatch/e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs: the digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the same bytes"),
+        (f"{ENVOY}/internal/dispatch/text/testdata/head-refs.json", f"packages/dispatch/web/src/features/refs/head-refs.test.ts:22-32, the new URL at :25, reads the head table the Go text package's HeadRefs is held to as well, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
         (f"{ENVOY}/scripts/fixtures/shell-quote.json", "packages/dispatch/e2e/__tests__/local-instance-support.test.ts:358-360, the new URL at :359"),
         ("packages/contracts/schemas/dispatch-openapi.json",
          "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:50-53, the new URL at :51: the generated API "
@@ -3969,4 +3971,8 @@ EXCLUDED = {
                     "every file the build reads",
     "browser_image": "gates browser-image.yaml's image build; .github/scripts/check-image-trigger-paths.sh proves it covers "
                      "every file the build reads",
+    "dispatch_references": "gates ci.yaml's dispatch-references job, a pull-request preview of the reference rows that is "
+                           "outside ci-ok (CI_OK_EXEMPT) and so gates no merge; its filter names the eleven spec files "
+                           "and what they test, less than the job reads on purpose, and the dispatch_browser gate, "
+                           "whose full lane the merge queue runs, holds every read of those rows",
 }

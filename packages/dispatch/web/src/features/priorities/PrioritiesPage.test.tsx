@@ -1,12 +1,25 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the drag of a row onto another below is a drag and a drop, which user-event has no form for
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { api } from "../../api/client";
-import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { countEngineParses, displayTree } from "../../__tests__/display-trees";
+import { answerRoute } from "../../__tests__/send-answers";
+import { api, type WriteBounds } from "../../api/client";
+import type {
+  IssueSummary,
+  PatchPriorityInput,
+  Priorities,
+  Priority,
+  PriorityRow,
+} from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { PrioritiesPage } from "./PrioritiesPage";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
   return {
@@ -134,7 +147,11 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
     : ({ event_head: "0", kind: "token", login: "ci" } as never);
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
   const create = spyOn(api, "createPriority").mockResolvedValue(saved("new"));
-  const patch = spyOn(api, "patchPriority").mockImplementation(async (id) => saved(id));
+  // A change to a priority is a write on its line (`priority:<id>`), made from its request alone,
+  // so it is answered on its route.
+  const patch = answerRoute<
+    (id: string, input: PatchPriorityInput, bounds: WriteBounds) => Promise<Priority>
+  >("PATCH", "/api/v1/priorities/*").mockImplementation(async (id) => saved(id));
   // The unit DOM lays nothing out: give every table's box the height a window would.
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
@@ -389,8 +406,11 @@ test("a row counts the work in flight, waiting, parked and closed in the last 7 
 test("the first line of a description shows on a closed row and the whole of it when it opens", async () => {
   const user = userEvent.setup();
   page(FIFTEEN, [issue("CORE-1", ["legion-first"]), issue("CORE-2")]);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  expect(screen.getByText("The first line.")).toBeDefined();
+  const row = await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  // Closed, the row reads the description's first line in plain words (`PlainText`'s
+  // `firstLine`), which the engine answers once it has loaded, and none of the line after it.
+  expect(await within(row).findByText("The first line.")).toBeDefined();
+  expect(within(row).queryByText(/The rest of it/)).toBeNull();
   await user.click(screen.getByRole("button", { name: "Open P1 Legion works reliably first" }));
   // Open, the row reads the whole description rendered, and a click on its text opens its source.
   const rendered = await screen.findByRole("group", { name: "Description of P1" });
@@ -400,6 +420,34 @@ test("the first line of a description shows on a closed row and the whole of it 
   expect((whole as HTMLTextAreaElement).value).toBe(
     "The first line.\nThe rest of it, which the row shows when it is open."
   );
+});
+
+// A description is a stored text, and the priorities read sends the reading the server made of
+// it (`description_tree`): a closed row draws the first line of that tree, and parses nothing on
+// the page's thread. The tree reads differently from the markdown beside it, so a row drawn from
+// a parse of the markdown would read `The opening line.`.
+test("a closed row draws its description's first line from the tree the priorities read sends", async () => {
+  const tree = displayTree("The **opening** line, from the tree.\n\nThe rest of it.");
+  const parses = countEngineParses();
+  try {
+    page(
+      body({
+        priorities: [
+          priority("legion-first", {
+            description: "The **opening** line.\n\nThe rest of it.",
+            description_tree: tree,
+            title: "Legion works reliably first",
+          }),
+        ],
+      })
+    );
+    const row = await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+    expect(await within(row).findByText("The opening line, from the tree.")).toBeDefined();
+    expect(within(row).queryByText(/The rest of it/)).toBeNull();
+    expect(parses.count()).toBe(0);
+  } finally {
+    parses.restore();
+  }
 });
 
 test("opening a row lists the work advancing that priority, over every project", async () => {

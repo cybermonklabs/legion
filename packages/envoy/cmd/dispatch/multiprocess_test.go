@@ -4073,7 +4073,7 @@ const (
 // by a table lock this test takes, or by the GitHub listing the fake holds - which is the only way
 // two processes' passes are made to overlap on purpose rather than by luck.
 //
-// Five of the twelve leases are observable here inside a window a test can wait out, and they
+// Five of the fourteen leases are observable here inside a window a test can wait out, and they
 // keep different rules once the hold lets go. webhook-redelivery, block-index and
 // search-term-stats are timer loops whose first pass is immediate, and what this row holds them
 // to is per period: at least one pass across the two processes, and no period served twice.
@@ -4085,8 +4085,10 @@ const (
 // pglisten.Hub wake after its first LISTEN: the process that found the lease held retries (every
 // two seconds, its MinGap) until it runs a pass of its own, because the other's pass may have
 // read before whatever woke it, so after the release each process runs at least one pass and no
-// count is held to one. The other seven are not observable, and this row says so rather than
-// pretending: issue-ask-repair's first leased pass is one IssueAskRepairInterval (10 min) in, the
+// count is held to one. The other nine are not observable, and this row says so rather than
+// pretending: refs-forms is a timer loop whose passes, on a database owing nothing, are one read
+// of refs_forms_owed and one count, so whether the two processes' passes meet is luck;
+// issue-ask-repair's first leased pass is one IssueAskRepairInterval (10 min) in, the
 // boot's repair taking no lease; suggestion-outcomes is held only by the keyed writes'
 // maintenance sweep now (api.RunMaintenanceSweep, the suggestion outcome sweep taking no lease),
 // which no longer touches write_suggestions, the table this row once held it by, and whose first
@@ -4101,9 +4103,11 @@ const (
 // passes meet is luck too (docs.TestEditNoticeSweepRetriesAHeldLease holds its retry, and
 // docs.TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce what its lease is for);
 // settlement-resumption's period is SettlementResumeInterval (1 min) and each pass is over in
-// milliseconds, so this window holds several of its periods, each served once; and
+// milliseconds, so this window holds several of its periods, each served once;
 // server-processes' prune is one delete on server_processes, the table every process's heartbeat
-// writes every five seconds, so a lock that held the prune would hold the registry itself.
+// writes every five seconds, so a lock that held the prune would hold the registry itself; and
+// text-tree-fill's first pass is at each process's start, and on a database whose stored texts
+// already carry their trees it takes one candidate scan and ends done.
 func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	pair := newPair(t)
 	waitOutABucketBoundary(t, time.Hour)
@@ -4186,6 +4190,7 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	requireLeasedOncePerPeriod(t, pair, "document-compaction")
 	requireLeasedOncePerPeriod(t, pair, "search-term-stats")
 	for _, unobserved := range []struct{ lease, why string }{
+		{"refs-forms", "a timer loop whose passes, on a database owing nothing, are one read of refs_forms_owed and one count, so whether the two processes' passes meet is luck"},
 		{"issue-ask-repair", "its first leased pass is one IssueAskRepairInterval (10 min) after each process started"},
 		{"suggestion-outcomes", "only the keyed writes' maintenance sweep holds it, which no longer touches write_suggestions; api.TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners holds its lease"},
 		{"architecture-import", "its first pass is jittered over SyncInterval (5 min) and each process draws its own"},

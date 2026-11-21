@@ -1,19 +1,5 @@
-import {
-  drawnLine,
-  firstLineOf,
-  heldBy,
-  isCheck,
-  isStatement,
-  lineWords,
-  nodeWords,
-  type TreeNode,
-} from "./issue-tree";
-import {
-  type FILTER_SIGNAL_WORDS,
-  NODE_TYPE_NAMES,
-  type NodeType,
-  type Preset,
-} from "./page-words";
+import { heldBy, isCheck, isStatement, nodeWords, parentLineOf, type TreeNode } from "./issue-tree";
+import type { FILTER_SIGNAL_WORDS, NodeType, Preset } from "./page-words";
 
 /**
  * The page with no filter on, and the four filters, as views of the one tree.
@@ -59,9 +45,9 @@ export function isFilter(preset: Preset): preset is Filter {
 
 /** The kinds each filter draws as rows of its own (R2). */
 const ROW_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
-  decisions: ["ask", "decision"],
+  decisions: ["ask", "decision", "reading"],
   plan: ["plan_task"],
-  spec: ["requirement"],
+  spec: ["requirement", "criterion"],
   verification: ["check", "result"],
 };
 
@@ -80,7 +66,7 @@ const CONTEXT_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
 const COUNTED_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   decisions: ["ask", "decision"],
   plan: ["plan_task"],
-  spec: ["requirement"],
+  spec: ["requirement", "criterion"],
   verification: ["check"],
 };
 
@@ -198,10 +184,22 @@ function filterView(
   const everyPlacement = filter === "verification";
   const context = new Set<string>();
   const matched = new Set<string>();
+  // Whether Decisions leaves `child` out where it stands under a question: a reading the address
+  // does not name.
+  const hiddenReading = (child: TreeNode): boolean =>
+    child.type === "reading" && !named.has(child.id);
   // The rows `node` gives the view, and whether `node` is itself one of them: either the node
   // with its own rows under it, or, where it is no row, the rows of its branch lifted to where
   // it stood.
   const lift = (node: TreeNode): { readonly drawn: boolean; readonly rows: TreeNode[] } => {
+    // Decisions draws an agent decision's readings under it, and none of any question's but one
+    // the address names, which every filter draws: the question is lifted again without the
+    // others, so this runs once for it. A reading stands only under an answered question, since
+    // the schema refuses one in an ask with no answer.
+    if (filter === "decisions" && node.type === "ask" && node.children.some(hiddenReading)) {
+      const kept = node.children.filter((child) => !hiddenReading(child));
+      return lift({ ...node, children: kept });
+    }
     if (!everyPlacement && node.transcluded) return { drawn: false, rows: [] };
     const parts = node.children.map(lift);
     // A `requirement` or `check` block of a document that does not play that part is of no
@@ -216,24 +214,15 @@ function filterView(
       contextKinds.includes(kind) &&
       (wanted === "" || holds(node, wanted) || parts.some((part) => part.rows.length > 0));
     const drawn = own || placing;
-    // A drawn child under a node that is no row carries that node as its one line, cut by R1's
-    // first-line rule from the words of the node's first block (`lineWords`), so a heading is
-    // never run into the paragraph after it, and drawn as a row's first line is (`drawnLine`):
-    // an ellipsis only where the cut ended inside a sentence. A node with no words - no text, or
-    // a reading none of whose blocks holds a word - is named by the page's word for its kind
-    // (`NODE_TYPE_NAMES`), never by its id, which is no name a reader reads (R22). A drawn
-    // child's own rows are the child alone.
-    const line =
-      drawn || !parts.some((part) => part.drawn)
-        ? undefined
-        : {
-            id: node.id,
-            line: parentLineOf(node),
-            // The parent's own address, which makes its line the link a reader follows to it
-            // (R18, and R26: a step's row reaches the statement it serves).
-            ...(node.reference === undefined ? {} : { reference: node.reference }),
-            type: node.type,
-          };
+    // A drawn child under a node that is no row carries that node as its one line, which the row
+    // projects from the node's own words as every one line of a node is drawn (`lineReading`):
+    // R1's first-line rule over the words of the node's first block, so a heading is never run
+    // into the paragraph after it, with an ellipsis only where the cut ended inside a sentence. A
+    // node with no words is named by the page's word for its kind (`NODE_TYPE_NAMES`), never by
+    // its id, which is no name a reader reads (R22). The line carries the node's own address,
+    // which makes it the link a reader follows to it (R18, and R26: a step's row reaches the
+    // statement it serves). A drawn child's own rows are the child alone.
+    const line = drawn || !parts.some((part) => part.drawn) ? undefined : parentLineOf(node);
     const below = parts.flatMap((part) =>
       part.drawn && line !== undefined
         ? part.rows.map((row) => ({ ...row, parentLine: line }))
@@ -253,14 +242,6 @@ function filterView(
     root: { ...root, children: top, held: heldBy(top) },
     rootRow: false,
   };
-}
-
-/** The one line a node that is no row of a filter is drawn as on its child's row: R1's first
- *  line of its first block's words (`lineWords`), and the page's word for its kind where those
- *  hold none (R22). */
-function parentLineOf(node: TreeNode): string {
-  const words = lineWords(node);
-  return words === "" ? NODE_TYPE_NAMES[node.type] : drawnLine(firstLineOf(words));
 }
 
 /** What one control of the filter row draws after its name (R2): its count, then, where the

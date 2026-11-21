@@ -1,7 +1,7 @@
-import { expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
 
 import { api } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
@@ -17,17 +17,30 @@ import type {
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import {
+  type PublishedReferences,
+  type ReferenceNameReading,
+  ReferenceNamesProvider,
+  useKnownReferences,
+  usePublishReferenceNames,
+} from "../refs/reference-names";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
-import {
-  ReferenceNamesProvider,
-  useKnownAmbiguousReferences,
-  useKnownReferenceName,
-  useKnownReferenceNames,
-  usePublishReferenceNames,
-} from "./reference-names";
 import { nodesInOrder } from "./tree-keys";
 import { useIssueTree } from "./useIssueTree";
+
+/** The name the page published for `reference`, as a surface under the store reads it, or
+ *  `undefined` where it published none. */
+function useKnownReferenceName(reference: string): string | undefined {
+  return useKnownReferences().names.get(reference);
+}
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * The names of the issue page's tree, across a change to the tree itself. The batched name read
@@ -519,7 +532,7 @@ test("the page publishes an ambiguous reference a comment cites as ambiguous, a 
       () => {
         useIssueTree(issue);
         return {
-          ambiguous: useKnownAmbiguousReferences(),
+          ambiguous: useKnownReferences().ambiguous,
           names: [useKnownReferenceName(ambiguous), useKnownReferenceName(gone)],
           task: useKnownReferenceName(TASK_REF),
         };
@@ -549,16 +562,28 @@ interface Seen {
   names?: ReadonlyMap<string, string>;
 }
 
-/** A surface that publishes `published` for as long as it is mounted. */
+/** A surface that publishes `published` for as long as it is mounted: each name as words the
+ *  store draws as they stand, beside the references it read as ambiguous. */
 function Publisher({ published }: { readonly published: Published }): ReactNode {
-  usePublishReferenceNames(published.names, published.ambiguous);
+  const value = useMemo<PublishedReferences>(
+    () => ({
+      ambiguous: published.ambiguous,
+      asked: new Set(published.names.keys()),
+      gone: new Set(),
+      readings: new Map([...published.names].map(([reference, words]) => [reference, { words }])),
+      unnamed: new Set(),
+    }),
+    [published]
+  );
+  usePublishReferenceNames(value);
   return null;
 }
 
 /** A link under the provider, which writes what it reads into `seen` on every render. */
 function Reader({ seen }: { readonly seen: Seen }): ReactNode {
-  seen.ambiguous = useKnownAmbiguousReferences();
-  seen.names = useKnownReferenceNames();
+  const known = useKnownReferences();
+  seen.ambiguous = known.ambiguous;
+  seen.names = known.names;
   return null;
 }
 
@@ -625,8 +650,9 @@ test("one publisher leaving keeps the names and ambiguous references another pub
 });
 
 // R21: the batched read names an ask by its question as stored, which is markdown, and every
-// link that reads the page's published names draws the name as it is, so the page publishes the
-// question's plain words, the name a chip naming the ask draws (`targetNaming`).
+// surface that reads the page's published names draws the name as it is, so the page publishes
+// the projection of the question's reading, as a link to the ask reads it (R8), from which a
+// chip naming the ask cuts its own words (`targetNaming`, `chipName`).
 test("a published name of an ask is its question's plain words, never its markdown", async () => {
   const cited = `dispatch://${KEY}/ask/ask-9`;
   const stubs = stubTreeReads(
@@ -1142,7 +1168,9 @@ test("A plan with no role that the issue names by its id has its blocks read and
     expect(api.getArtifactBlocks).toHaveBeenCalledWith(roleless.id);
     // A comment citing the whole plan carries a chip that names it as the plan.
     const chips = nodesInOrder(view.result.current).find((node) => node.id === comment.id)?.chips;
-    expect(chips?.map(({ name, ref }) => ({ name, ref }))).toEqual([
+    const words = (reading: ReferenceNameReading | undefined) =>
+      reading !== undefined && "words" in reading ? reading.words : undefined;
+    expect(chips?.map((chip) => ({ name: words(chip.reading), ref: chip.ref }))).toEqual([
       { name: PRESET_NAMES.plan, ref: cites },
     ]);
     view.unmount();
@@ -1152,10 +1180,10 @@ test("A plan with no role that the issue names by its id has its blocks read and
 });
 
 // The batched read names a typed block by its stored excerpt, which opens on the block's
-// directive line. Every link that reads the page's published names draws the name as it is, so
-// the page publishes the name a chip naming the block draws (`targetNaming`): the first line of
-// the server's reading where the read sends one, and the page's word for the block's kind where
-// it sends none - never the directive line.
+// directive line. Every surface that reads the page's published names draws the name as it is,
+// so the page publishes the name a chip naming the block is cut from (`targetNaming`): the first
+// block of the server's reading where the read sends one, whole, and the page's word for the
+// block's kind where it sends none - never the directive line.
 test("A published name of a typed block is never its directive line", async () => {
   const opener = `:::plan_task{#t1 serves="dispatch://${KEY}/spec#b-r1"}`;
   const reading: DisplayTree = {

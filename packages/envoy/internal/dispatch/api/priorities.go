@@ -12,6 +12,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -153,7 +154,45 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, body)
+	WriteJSON(w, http.StatusOK, s.prioritiesReadOf(r.Context(), body, wantsDisplayTrees(r)))
+}
+
+// prioritiesRead is what GET /api/v1/priorities answers: the listing, each priority's row with the
+// tree of its description. It declares model.Priorities' fields itself, in their order, so an
+// answer to a caller that asked for no trees keeps the bytes of the listing it shapes.
+type prioritiesRead struct {
+	Priorities          []priorityRowRead         `json:"priorities"`
+	WorkUnderNoPriority model.WorkUnderNoPriority `json:"work_under_no_priority"`
+	PriorityWorkParked  model.PriorityWorkParked  `json:"priority_work_parked"`
+	Empty               string                    `json:"empty,omitempty"`
+}
+
+// priorityRowRead is one priority's row with the tree of its description: markdown its writer
+// typed in a box that carries the reference picker (`priority-description`), which the dashboard
+// draws through the renderer on the priority's page and the open row of the table, and whose
+// first line a closed row draws through the plain-text projection, all from this tree.
+type priorityRowRead struct {
+	model.PriorityRow
+	DescriptionTree model.DisplayTree `json:"description_tree,omitempty"`
+}
+
+// prioritiesReadOf is body shaped for the dashboard, each description registered with the
+// request's reader, which is nil for a caller that asked for no trees (wantsDisplayTrees). The
+// trees are the table's rows where it holds them, and the read stores what it did not.
+func (s *server) prioritiesReadOf(ctx context.Context, body model.Priorities, trees bool) prioritiesRead {
+	read := prioritiesRead{
+		Priorities:          make([]priorityRowRead, len(body.Priorities)),
+		WorkUnderNoPriority: body.WorkUnderNoPriority,
+		PriorityWorkParked:  body.PriorityWorkParked,
+		Empty:               body.Empty,
+	}
+	reader := s.readDisplayTrees(ctx, trees)
+	for index, row := range body.Priorities {
+		read.Priorities[index].PriorityRow = row
+		reader.text(&read.Priorities[index].DescriptionTree, row.Description)
+	}
+	reader.resolve()
+	return read
 }
 
 // createPriorityInput is the body of POST /api/v1/priorities.

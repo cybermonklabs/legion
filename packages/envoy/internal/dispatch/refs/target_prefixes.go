@@ -41,12 +41,14 @@ type ShortID struct {
 // answers every other id of the call too. ambiguous is nil when no id is ambiguous. An id that
 // ids holds twice is read once.
 //
-// Every candidate is read as the zero Viewer reads it. A short message id in a reference always
+// Every candidate is read as a Viewer that is no person and no session reads it, with serverURL
+// the deployment whose dashboard URLs a first line cuts around (FirstLine), as ResolvePrefix reads
+// it with that Viewer. A short message id in a reference always
 // names the issue of its message (PrefixScope), so a message is resolved within its issue alone.
 // Thus no direct message is ever a candidate, and this function needs no part that decides
 // which session can read the first line of a direct message, as ResolvePrefix has. A message id
 // whose scope names no issue is no match.
-func ResolvePrefixes(ctx context.Context, q Queryer, ids []ShortID) (whole map[ShortID]Candidate, ambiguous map[ShortID]bool, err error) {
+func ResolvePrefixes(ctx context.Context, q Queryer, ids []ShortID, serverURL string) (whole map[ShortID]Candidate, ambiguous map[ShortID]bool, err error) {
 	var asks, comments, messages, documents, latest, pinned, order []ShortID
 	seen := make(map[ShortID]bool, len(ids))
 	for _, id := range ids {
@@ -77,12 +79,12 @@ func ResolvePrefixes(ctx context.Context, q Queryer, ids []ShortID) (whole map[S
 	}
 	found := make(map[ShortID][]Candidate, len(order))
 	for _, read := range []func() error{
-		func() error { return itemShortIDCandidates(ctx, q, "ask", asks, found) },
-		func() error { return itemShortIDCandidates(ctx, q, "comment", comments, found) },
-		func() error { return messageShortIDCandidates(ctx, q, messages, found) },
-		func() error { return artifactShortIDCandidates(ctx, q, documents, found) },
-		func() error { return blockShortIDCandidates(ctx, q, latest, false, found) },
-		func() error { return blockShortIDCandidates(ctx, q, pinned, true, found) },
+		func() error { return itemShortIDCandidates(ctx, q, "ask", asks, serverURL, found) },
+		func() error { return itemShortIDCandidates(ctx, q, "comment", comments, serverURL, found) },
+		func() error { return messageShortIDCandidates(ctx, q, messages, serverURL, found) },
+		func() error { return artifactShortIDCandidates(ctx, q, documents, serverURL, found) },
+		func() error { return blockShortIDCandidates(ctx, q, latest, false, serverURL, found) },
+		func() error { return blockShortIDCandidates(ctx, q, pinned, true, serverURL, found) },
 	} {
 		if err := read(); err != nil {
 			return nil, nil, err
@@ -111,7 +113,7 @@ func ResolvePrefixes(ctx context.Context, q Queryer, ids []ShortID) (whole map[S
 // prefix names, oldest id first, as itemPrefixCandidates reads them for one id: within the issue
 // or the document that its scope names, or among every item of the kind where its scope names
 // neither.
-func itemShortIDCandidates(ctx context.Context, q Queryer, kind string, ids []ShortID, found map[ShortID][]Candidate) error {
+func itemShortIDCandidates(ctx context.Context, q Queryer, kind string, ids []ShortID, serverURL string, found map[ShortID][]Candidate) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -149,7 +151,7 @@ func itemShortIDCandidates(ctx context.Context, q Queryer, kind string, ids []Sh
 			return fmt.Errorf("scan the %ss that %d short ids name: %w", kind, len(ids), err)
 		}
 		short := ids[ordinal-1]
-		found[short] = append(found[short], itemCandidate(kind, id, issueKey, project, slug, body))
+		found[short] = append(found[short], itemCandidate(kind, id, issueKey, project, slug, body, serverURL))
 	}
 	return rows.Err()
 }
@@ -157,7 +159,7 @@ func itemShortIDCandidates(ctx context.Context, q Queryer, kind string, ids []Sh
 // messageShortIDCandidates reads into found, under each of ids, the messages of its issue that
 // its prefix names, oldest id first, as messagePrefixCandidates reads them for one id within an
 // issue. Every id names an issue (ResolvePrefixes), so no direct message is read.
-func messageShortIDCandidates(ctx context.Context, q Queryer, ids []ShortID, found map[ShortID][]Candidate) error {
+func messageShortIDCandidates(ctx context.Context, q Queryer, ids []ShortID, serverURL string, found map[ShortID][]Candidate) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -184,7 +186,7 @@ func messageShortIDCandidates(ctx context.Context, q Queryer, ids []ShortID, fou
 			return fmt.Errorf("scan the messages that %d short ids name: %w", len(ids), err)
 		}
 		short := ids[ordinal-1]
-		found[short] = append(found[short], itemCandidate("message", id, issueKey, project, "", body))
+		found[short] = append(found[short], itemCandidate("message", id, issueKey, project, "", body, serverURL))
 	}
 	return rows.Err()
 }
@@ -192,7 +194,7 @@ func messageShortIDCandidates(ctx context.Context, q Queryer, ids []ShortID, fou
 // artifactShortIDCandidates reads into found, under each of ids, the documents and the files
 // that its prefix names, oldest id first, as artifactPrefixCandidates reads them for one id:
 // within the issue that its scope names, or among every document where its scope names none.
-func artifactShortIDCandidates(ctx context.Context, q Queryer, ids []ShortID, found map[ShortID][]Candidate) error {
+func artifactShortIDCandidates(ctx context.Context, q Queryer, ids []ShortID, serverURL string, found map[ShortID][]Candidate) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -219,7 +221,7 @@ func artifactShortIDCandidates(ctx context.Context, q Queryer, ids []ShortID, fo
 			return fmt.Errorf("scan the documents that %d short ids name: %w", len(ids), err)
 		}
 		short := ids[ordinal-1]
-		found[short] = append(found[short], artifactCandidate(document, name))
+		found[short] = append(found[short], artifactCandidate(document, name, serverURL))
 	}
 	return rows.Err()
 }
@@ -230,7 +232,7 @@ func artifactShortIDCandidates(ctx context.Context, q Queryer, ids []ShortID, fo
 // document_blocks holds. With pinned, every id is of the version that its reference pins, whose
 // blocks are the ids that document_block_texts records a text of at or before that version, the
 // latest of those texts each, and none at all unless a block-aware build indexed that version.
-func blockShortIDCandidates(ctx context.Context, q Queryer, ids []ShortID, pinned bool, found map[ShortID][]Candidate) error {
+func blockShortIDCandidates(ctx context.Context, q Queryer, ids []ShortID, pinned bool, serverURL string, found map[ShortID][]Candidate) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -285,7 +287,7 @@ func blockShortIDCandidates(ctx context.Context, q Queryer, ids []ShortID, pinne
 			return fmt.Errorf("scan the blocks that %d short ids name: %w", len(ids), err)
 		}
 		short := ids[ordinal-1]
-		found[short] = append(found[short], blockCandidate(blockID, body, document))
+		found[short] = append(found[short], blockCandidate(blockID, body, document, serverURL))
 	}
 	return rows.Err()
 }

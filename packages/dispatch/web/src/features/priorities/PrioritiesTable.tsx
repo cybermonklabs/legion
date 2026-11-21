@@ -88,12 +88,12 @@ export function PrioritiesTable({
   const onDragEnd = useCallback(() => setDragging(undefined), []);
   const onDescribe = useCallback(
     (item: PriorityItem, description: string) =>
-      patch.mutate({
+      patch.mutateAsync({
         id: item.priority.id,
         input: { description },
         label: `Description of the priority “${item.priority.title}”`,
       }),
-    [patch.mutate]
+    [patch.mutateAsync]
   );
   const onMove = useCallback(
     (item: PriorityItem, by: -1 | 1) => {
@@ -123,14 +123,15 @@ export function PrioritiesTable({
   const onRename = useCallback(
     (item: PriorityItem, title: string) => {
       const next = title.trim();
-      if (next === "" || next === item.priority.title) return;
-      patch.mutate({
+      // A blank title, or the one it already has, is no write to make.
+      if (next === "" || next === item.priority.title) return Promise.resolve();
+      return patch.mutateAsync({
         id: item.priority.id,
         input: { title: next },
         label: `Rename the priority “${item.priority.title}” to “${next}”`,
       });
     },
-    [patch.mutate]
+    [patch.mutateAsync]
   );
   // One object while nothing a row can do changes, since the column declarations are built
   // over it (`usePriorityColumns`) and the table is built over those.

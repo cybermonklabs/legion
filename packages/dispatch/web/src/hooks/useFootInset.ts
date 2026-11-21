@@ -16,6 +16,12 @@ export type FootInsetProperty =
   | typeof FOOT_COMPOSER_INSET_PROPERTY
   | typeof FOOT_STATUS_INSET_PROPERTY;
 
+/** The attribute a host sets on an element it holds at the screen's foot without fixing it
+ *  there: the new issue page's box, which `sticky bottom-0` holds at the foot of its column while
+ *  the outline scrolls under it (`slots/foot.tsx`). The host knows where it holds its element,
+ *  so it says so, and no style the browser reports is read for it. */
+export const FOOT_HELD_ATTRIBUTE = "data-foot-held";
+
 /** One element this hook holds: how far up from the screen's bottom edge it reaches - 0 while it
  *  is laid out in the page, hidden, or not on screen - and the measurement that reads that again
  *  where the element now stands. */
@@ -68,6 +74,9 @@ function publish(property: FootInsetProperty): void {
  * moves it, and adds how far up from the screen's bottom edge it reaches to `property`, which
  * holds the largest of the elements published into it; a composer's by default. It counts only
  * while the element is fixed (`position: fixed`) and has a box.
+ * An element its host marks as held at the foot (`FOOT_HELD_ATTRIBUTE`) counts too, while its box
+ * ends at the screen's bottom edge, within 1 px, and counts nothing once the page has moved it
+ * off that edge.
  */
 export function useFootInset(
   ref: RefObject<HTMLElement | null>,
@@ -85,6 +94,14 @@ export function useFootInset(
         const box = element.getBoundingClientRect();
         const fixed = box.height > 0 && getComputedStyle(element).position === "fixed";
         control.reach = fixed ? Math.max(0, window.innerHeight - box.top) : 0;
+        // A held element reaches up from the foot only while it stands there: one the page has
+        // scrolled away from the bottom edge sits in the page, under nothing of the shell's.
+        const held =
+          !fixed &&
+          box.height > 0 &&
+          element.hasAttribute(FOOT_HELD_ATTRIBUTE) &&
+          Math.abs(window.innerHeight - box.bottom) <= 1;
+        if (held) control.reach = Math.max(0, window.innerHeight - box.top);
         publish(property);
       },
       reach: 0,

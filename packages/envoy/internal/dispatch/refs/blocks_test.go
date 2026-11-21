@@ -102,7 +102,7 @@ func windowFixture(t *testing.T) pgx.Tx {
 func indexVersionAndWindow(t *testing.T, tx pgx.Tx, artifact string, version int, markdown string, blocks []model.ArtifactBlock, what string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := IndexBlocks(ctx, tx, artifact, version, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, err := IndexBlocks(ctx, tx, artifact, version, time.Now(), markdown, blocks, nil, nil, ""); err != nil {
 		t.Fatalf("index %s: %v", what, err)
 	}
 	if err := WriteDocumentWindows(ctx, tx, artifact, markdown, blocks); err != nil {
@@ -146,7 +146,7 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 	`, "The first paragraph.\n\nThe second paragraph.").Scan(&comment); err != nil {
 		t.Fatalf("insert the comment: %v", err)
 	}
-	if _, err := IndexItem(ctx, tx, ItemComment, comment, "The first paragraph.\n\nThe second paragraph.", time.Now(), nil, nil); err != nil {
+	if _, err := IndexItem(ctx, tx, ItemComment, comment, "The first paragraph.\n\nThe second paragraph.", "", time.Now(), nil, nil); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
 	// An item's index writes no window (IndexItem): the block-index tick's window arm writes
@@ -194,7 +194,7 @@ func TestWindowingAnItemThatIsGoneWritesNothing(t *testing.T) {
 	`, body).Scan(&comment); err != nil {
 		t.Fatalf("insert the comment: %v", err)
 	}
-	if _, err := IndexItem(ctx, tx, ItemComment, comment, body, time.Now(), nil, nil); err != nil {
+	if _, err := IndexItem(ctx, tx, ItemComment, comment, body, "", time.Now(), nil, nil); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `delete from comments where id = $1::uuid`, comment); err != nil {
@@ -335,7 +335,8 @@ func TestUniqueBlocksKeepsTheFirstHolderOfEachID(t *testing.T) {
 // IndexBlocks is the tests' one call for a document version's whole block index: ReadBlockIndex,
 // PlanBlocks, Cited and Queue back to back, the queued statements run at once as a batch of
 // their own. It writes no window: the row it records marks the document owed them, and the
-// window arm writes them (WriteDocumentWindows).
+// window arm writes them (WriteDocumentWindows). serverURL is the deployment whose dashboard URLs
+// each block's excerpt is cut around (BlockExcerpt).
 func IndexBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -346,12 +347,13 @@ func IndexBlocks(
 	blocks []model.ArtifactBlock,
 	located []text.Located,
 	pointers []Pointer,
+	serverURL string,
 ) ([]Target, error) {
 	index, err := ReadBlockIndex(ctx, tx, artifactID)
 	if err != nil {
 		return nil, err
 	}
-	indexing, err := PlanBlocks(index, artifactID, version, versionAt, markdown, blocks, located, pointers)
+	indexing, err := PlanBlocks(index, artifactID, version, versionAt, markdown, blocks, located, pointers, serverURL)
 	if err != nil {
 		return nil, err
 	}

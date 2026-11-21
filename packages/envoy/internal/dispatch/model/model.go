@@ -749,15 +749,20 @@ type SearchAsk struct {
 	Resolution *AskResolution     `json:"resolution,omitempty"`
 }
 
-// AskAnswerWithTree is an answer a read gives with the tree of its text. It is the read's own
-// shape rather than a field on AskAnswer itself: the answer is an event payload's shape, and no
-// payload gains a tree field. A search hit's ask and a person's answer history both answer with
-// it.
+// AskAnswerWithTree is an answer a read gives with the trees of its texts: its own text, and the
+// label of each option it chose. It is the read's own shape rather than fields on AskAnswer
+// itself: the answer is an event payload's shape, and no payload gains a tree field. A search
+// hit's ask, a person's answer history, an ask's thread and the ask itself all answer with it.
 type AskAnswerWithTree struct {
 	AskAnswer
 	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
 	// `Dispatch-Trees: 1`.
 	TextTree DisplayTree `json:"text_tree,omitempty"`
+	// SelectedTrees is the ProseMirror tree each label of Selected is shown as, at that label's
+	// own index, present only for a caller that sent `Dispatch-Trees: 1` and only where Selected
+	// holds a label. A label is the label of an option the ask held when it was answered, which
+	// the ask's write stored the tree of; it may be one the ask has since renamed or removed.
+	SelectedTrees []DisplayTree `json:"selected_trees,omitempty"`
 }
 
 // SearchResult is one ranked Dispatch search hit.
@@ -2236,9 +2241,17 @@ type MyReplyRow struct {
 	// Priority is the owning issue's coarse priority, absent on a row with no issue or none set.
 	Priority *int `json:"priority,omitempty"`
 	// Project is the thread owner's project key, absent on an Agent row, which has no owner.
-	Project *string      `json:"project,omitempty"`
-	Subject string       `json:"subject"`
-	Reply   MyReplyReply `json:"reply"`
+	Project *string `json:"project,omitempty"`
+	// Subject is the thread root's first line, cut by refs.FirstLine: the line the
+	// Inbox draws for the row. SubjectTree is that line read as the document a reader is shown,
+	// present only for a caller that sent `Dispatch-Trees: 1` - the Inbox draws the row's line
+	// through the one renderer every body is drawn with, so without the tree beside it the
+	// browser would parse the line itself (web/src/features/inbox/ThreadTitle.tsx). The tree
+	// stands on this row rather than on a read shape of its own because no event payload
+	// carries a reply row: this shape is the replies read's alone.
+	Subject     string       `json:"subject"`
+	SubjectTree DisplayTree  `json:"subject_tree,omitempty"`
+	Reply       MyReplyReply `json:"reply"`
 	// ReadThrough is the caller's read mark on the thread (user_threads.read_through), absent on
 	// an Agent row, whose replies are read by id rather than by a mark.
 	ReadThrough *time.Time `json:"read_through,omitempty"`
@@ -2900,7 +2913,7 @@ type Comment struct {
 
 // ReplyBlock is the block a reply answers: its node id ('<item kind>/<item id>#<block id>') and
 // reference (none for a block of a direct message, which has no address), its id, its stored
-// excerpt (its text cut to refs.BlockExcerptRunes, the last text it held once removed), and
+// excerpt (its text as refs.BlockExcerpt cuts it, the last text it held once removed), and
 // whether its item's current revision no longer holds it.
 type ReplyBlock struct {
 	Node    string `json:"node"`

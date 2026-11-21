@@ -51,16 +51,21 @@ export function useFollowLatest({
 
   // The newest turn must sit immediately beneath the sticky composer. Recording the actual
   // post-scroll position distinguishes that automated placement from a reader's later scroll,
-  // regardless of whatever height the issue header has at this breakpoint.
+  // regardless of whatever height the issue header has at this breakpoint. The composer stands
+  // above the list only where it is sticky, from `sm` up; below `sm` it is fixed at the foot of
+  // the screen (`MentionComposer`'s docked form), so the newest turn goes to the top of the
+  // viewport and the composer's height, which its hint and a reply chip grow, is no offset. An
+  // offset of the foot composer's height lands the newest turn under that composer once twice
+  // its height and the turn's no longer fit above it (`e2e/phone-landing.e2e.ts`).
   const jumpToLatest = useCallback(() => {
     const newest = document.querySelector<HTMLElement>(NEWEST_TURN_SELECTOR);
     if (newest === null) {
       window.scrollTo({ top: 0 });
     } else {
-      const composerHeight =
-        document
-          .querySelector<HTMLElement>('[aria-label="Comment composer"]')
-          ?.getBoundingClientRect().height ?? 0;
+      const composer = document.querySelector<HTMLElement>('[aria-label="Comment composer"]');
+      const composerAbove =
+        composer !== null && window.getComputedStyle(composer).position !== "fixed";
+      const composerHeight = composerAbove ? composer.getBoundingClientRect().height : 0;
       const target = window.scrollY + newest.getBoundingClientRect().top - composerHeight;
       window.scrollTo({ top: Math.max(target, 0) });
     }

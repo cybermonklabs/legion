@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import type {
   Actor,
   Ask,
@@ -11,12 +11,19 @@ import type {
 } from "../../api/types";
 import { activityDescription } from "../activity/activity-model";
 import type { AgentPart } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
   buildConversations,
   focusConversation,
   handoffFields,
   matchesFilter,
 } from "./conversation-model";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // A writer carried by a frame's payload is one of the kinds Dispatch writes, where a route's
 // read states a plain string, so this one is written as the literal it is: a `block.invalid`
@@ -421,17 +428,32 @@ test("a handoff body expands to one row per top-level field and one per proof en
   });
 
   expect(handoffFields(body)).toEqual([
-    { field: "schemaVersion", json: false, label: "schemaVersion", text: "1" },
-    { field: "phase", json: false, label: "phase", text: "implement" },
-    { field: "verified", json: false, label: "verified", text: "true" },
-    { field: "note", json: false, label: "note", text: "null" },
-    { field: "files", json: true, label: "files", text: '[\n  "a.ts",\n  "b.ts"\n]' },
-    { field: "ci", json: true, label: "ci", text: '{\n  "status": "green"\n}' },
-    { field: "proof", json: false, label: "proof 1", text: "bun test passed" },
+    {
+      field: "schemaVersion",
+      label: "schemaVersion",
+      path: "/schemaVersion",
+      shape: "value",
+      text: "1",
+    },
+    { field: "phase", label: "phase", path: "/phase", shape: "prose", text: "implement" },
+    { field: "verified", label: "verified", path: "/verified", shape: "value", text: "true" },
+    { field: "note", label: "note", path: "/note", shape: "value", text: "null" },
+    {
+      field: "files",
+      label: "files",
+      path: "/files",
+      shape: "json",
+      text: '[\n  "a.ts",\n  "b.ts"\n]',
+    },
+    { field: "ci", label: "ci", path: "/ci", shape: "json", text: '{\n  "status": "green"\n}' },
+    // A proof entry's path is where the server keeps its reading: its JSON Pointer, `/proof/<n>`
+    // from 0.
+    { field: "proof", label: "proof 1", path: "/proof/0", shape: "prose", text: "bun test passed" },
     {
       field: "proof",
-      json: true,
       label: "proof 2",
+      path: "/proof/1",
+      shape: "json",
       text: '{\n  "command": "bun run typecheck",\n  "exit": 0\n}',
     },
   ]);
@@ -439,11 +461,23 @@ test("a handoff body expands to one row per top-level field and one per proof en
 
 test("a proof that is not a list is one row, and a body that is not a JSON object has none", () => {
   expect(handoffFields('{"proof":"see CI"}')).toEqual([
-    { field: "proof", json: false, label: "proof", text: "see CI" },
+    { field: "proof", label: "proof", path: "/proof", shape: "prose", text: "see CI" },
   ]);
   expect(handoffFields("{not json")).toBeUndefined();
   expect(handoffFields("[1, 2]")).toBeUndefined();
   expect(handoffFields("null")).toBeUndefined();
+});
+
+// The path is a JSON Pointer (RFC 6901), so a top-level field named `proof.0` and the first proof
+// entry have keys of their own, and a key holding `/` or `~` is written with the pointer's
+// escapes, `~1` and `~0`, as the server writes the key of its tree.
+test("each handoff row's path is its own JSON Pointer into the body", () => {
+  const body = JSON.stringify({ "a/b~c": "slashed", "proof.0": "x", proof: ["y"] });
+  expect(handoffFields(body)?.map(({ label, path }) => [label, path])).toEqual([
+    ["a/b~c", "/a~1b~0c"],
+    ["proof.0", "/proof.0"],
+    ["proof 1", "/proof/0"],
+  ]);
 });
 
 // The activity line is the Activity tab's (`features/activity/activity-model.ts`); these cases
@@ -616,7 +650,14 @@ test("an answer that replaced an earlier one reads as a change in the activity l
     seq: 5,
     type: "ask.answered",
   } as DispatchEvent;
-  expect(activityDescription(answered)).toEqual(["answered “Ship it?”"]);
+  // The question is a part of its own: the one reader draws it, as the ask's own record, so a
+  // mention in it reads as its target's name and never as the link's source (`SentenceParts`).
+  const question = {
+    prose: "Ship it?",
+    source: { id: "ask-1", issue: "CORE-1", kind: "ask" as const },
+    tree: undefined,
+  };
+  expect(activityDescription(answered)).toEqual(["answered “", question, "”"]);
   expect(
     activityDescription({
       ...answered,
@@ -627,5 +668,5 @@ test("an answer that replaced an earlier one reads as a change in the activity l
         state: "answered",
       },
     } as DispatchEvent)
-  ).toEqual(["changed the answer to “Ship it?”"]);
+  ).toEqual(["changed the answer to “", question, "”"]);
 });

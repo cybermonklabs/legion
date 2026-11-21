@@ -153,14 +153,19 @@ function unanswered(node: TreeNode): boolean {
     // check carries the verdict; and the issue itself is the root, which is drawn whatever this
     // says. A document, an image and a handoff are nodes of the issue and not of its
     // conversation, so the tree holds none of them (R1, R3).
+    // A criterion is what a person wants to be able to do, and the statements written under it
+    // carry what is open of it; a reading is an agent's account of what a decision or an
+    // answered question means, and that decision or question carries any turn it waits on.
     case "callout":
     case "child_issue":
     case "comment":
+    case "criterion":
     case "document":
     case "handoff":
     case "image":
     case "issue":
     case "message":
+    case "reading":
     case "result":
       return false;
   }

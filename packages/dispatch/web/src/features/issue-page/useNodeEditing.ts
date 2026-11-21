@@ -6,6 +6,7 @@ import { focusOnDocument } from "../shell/roving";
 import type { DocumentAdmissions } from "./document-admission";
 import { documentOfNode, type NodeDocument } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
+import { roomTarget, useRoomFacts } from "./model-rows/room-target";
 import {
   caretInBlock,
   caretOutOfBlock,
@@ -20,6 +21,7 @@ import {
   selectionIntoBlock,
   tabStopsFrom,
 } from "./node-caret";
+import { useOutlineWriter } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
 import { trackPress } from "./press-focus";
 import { rowSelectorOf } from "./tree-focus";
@@ -201,9 +203,27 @@ export function useNodeEditing({
   const [editing, setEditing] = useState<EditedRow | undefined>(undefined);
   // The row the reader has just left the caret in, so that row takes the focus back.
   const leaving = useRef<string | undefined>(undefined);
+  // The room of the issue's tree read, read through a ref so `edit` keeps its dependencies, by
+  // the issue the page's writer is of (`OutlineWriter.issueKey`); with no writer there is none,
+  // and a row is edited as it is without a room.
+  const room = useRoomFacts(useOutlineWriter()?.issueKey);
+  const roomNow = useRef(room);
+  roomNow.current = room;
 
   const edit = useCallback(
     (row: string, node: TreeNode) => {
+      // An issue whose tree read the cache holds is edited in its room: a node of another issue,
+      // and on a converted issue the conversation, take no caret there.
+      const facts = roomNow.current;
+      if (facts !== undefined) {
+        const target = roomTarget(node, artifacts, facts);
+        if ("report" in target) {
+          onReport(KEY_REPORTS[target.report]);
+          return;
+        }
+        setEditing({ artifactId: target.artifactId, blockId: target.blockId, row });
+        return;
+      }
       const place = documentOfNode(node.id, artifacts);
       if (place === undefined) {
         onReport(KEY_REPORTS.no_text);

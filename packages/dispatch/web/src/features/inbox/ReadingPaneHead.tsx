@@ -16,13 +16,14 @@ import { CopyRefButton } from "../refs/CopyRefButton";
 import { buildIssuePath, buildProjectPath, itemRoute } from "../refs/routes";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe } from "./AssignToMe";
-import { askIssueKey, controlName } from "./ask-name";
+import { askIssueKey } from "./ask-name";
 import { DismissControl } from "./DismissControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { threadReferenceRoute } from "./list-row";
 import { SnoozeControl } from "./SnoozeControl";
 import { isUnassigned } from "./sections";
 import { isSnoozed } from "./snooze";
+import { useControlName } from "./useControlName";
 
 /** The page "Open page" opens: the question's issue, or — for a project document, which has no
  *  issue page — the document itself at the section the column is scrolled to. The section is the
@@ -97,7 +98,7 @@ export function ReadingPaneHead({
   // optimistic update that takes the issue out of `isUnassigned`. The head does the same.
   const [assignLive, setAssignLive] = useState(false);
   const onAssignLive = useCallback((_askId: string, live: boolean) => setAssignLive(live), []);
-  const name = controlName(ask, undefined);
+  const { name, reads } = useControlName(ask, undefined);
   const page = openPagePath(ask, sectionBlockId);
   const reference = itemRoute("ask", ask, ask.document);
   const approval = ask.kind === "approval" ? ask.approval : undefined;
@@ -123,6 +124,7 @@ export function ReadingPaneHead({
       (isUnassigned({ ask, kind: "ask" }) || assignLive) ? (
         <AssignToMe askId={ask.id} issueKey={ask.issue_key} onLive={onAssignLive} viewer={viewer} />
       ) : null}
+      {reads}
       <SnoozeControl
         askId={ask.id}
         label={name}

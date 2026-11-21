@@ -1,4 +1,4 @@
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the in-the-step rows press and check in one synchronous step, which user-event's awaited press cannot give
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -12,8 +12,15 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError } from "../../api/client";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { RepoProject } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { SettingsPage } from "./SettingsPage";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** Renders the page on `queryClient`, and hands that client back, which a case that stops a late
  *  write reaches as the shell's indicator does. */

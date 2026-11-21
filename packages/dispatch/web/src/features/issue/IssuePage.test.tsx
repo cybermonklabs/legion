@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -37,8 +37,15 @@ import type {
 import type { ConnectionCallbacks } from "../doc/connection";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { IssuePage } from "./IssuePage";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const issue = {
   route_status: null,
@@ -1816,6 +1823,57 @@ test("IssuePage explains when an artifact slug does not exist", async () => {
     expect(screen.getByRole("tablist", { name: "Issue detail" })).not.toBeNull();
   } finally {
     view.unmount();
+    restore();
+  }
+});
+
+// A document renamed to a slug-shaped name keeps the slug its first name gave it, and a reference
+// written with its current name links to the page at that name: the page finds the document as
+// the link did (`artifactAtAddress`), rather than answering that the issue holds no such artifact.
+test("IssuePage opens a document at its current name when its slug kept an earlier one", async () => {
+  const documentArtifact = {
+    created_at: "2026-09-09T01:00:00Z",
+    created_by: { id: "alice", kind: "user" as const },
+    id: "artifact-notes",
+    issue_key: "CORE-1",
+    project: "CORE",
+    kind: "doc" as const,
+    name: "launch-notes",
+    primary: false,
+    ref_key: "CORE-1/notes-md",
+    session_id: null,
+    slug: "notes-md",
+    versions: [
+      {
+        authors: [{ id: "alice", kind: "user" as const }],
+        created_at: "2026-09-09T01:00:00Z",
+        mime: "text/markdown",
+        named: false,
+        number: 1,
+        sha256: "notes-sha",
+        size: 10,
+        summary: null,
+      },
+    ],
+  };
+  const restore = stubIssuePage({ ...issue, artifacts: [...issue.artifacts, documentArtifact] });
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({ ...documentArtifact });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "# Notes",
+    version: 1,
+    token: "sha256:notes",
+  });
+  const view = renderIssuePage("/issues/CORE-1/artifacts/launch-notes");
+
+  try {
+    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
+    expect(screen.getByRole("heading", { name: "launch-notes" })).not.toBeNull();
+    expect(screen.queryByText("No artifact launch-notes on CORE-1.")).toBeNull();
+    await waitFor(() => expect(getArtifactText).toHaveBeenCalledWith("artifact-notes"));
+  } finally {
+    view.unmount();
+    getArtifact.mockRestore();
+    getArtifactText.mockRestore();
     restore();
   }
 });

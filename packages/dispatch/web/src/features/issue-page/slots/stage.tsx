@@ -97,6 +97,8 @@ export const SLOT_FILLED: SlotsFilled = {
 /** A slot's tree itself, which holds the focus only where it has no row to give it to. */
 const SLOT_TREE = '[role="tree"]';
 
+export { TAB_STOP_ROW };
+
 /**
  * One view, drawn where the outline is, which takes the keyboard focus on its tree's tab-stop
  * row once that row is drawn, where the tester found the focus left on the page's body: a page

@@ -3,15 +3,8 @@ import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import { blockFragment } from "../../refs/block-reference";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
 import { type ChangeComment, inReviewList } from "../decision-review";
-import {
-  drawnLine,
-  firstLineOf,
-  lineWords,
-  type ParentLine,
-  type TreeAsk,
-  type TreeNode,
-} from "../issue-tree";
-import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
+import { type ParentLine, parentLineOf, type TreeAsk, type TreeNode } from "../issue-tree";
+import { type DecisionState, isReader } from "../page-words";
 
 /**
  * The Decisions filter's parts, read from the tree, the decisions read, the issue's asks and its
@@ -90,8 +83,9 @@ export type DecisionsPart = (typeof DECISIONS_PART_ORDER)[number];
 export interface ShapedStatement {
   /** The statement's node id. */
   readonly id: string;
-  /** Its first line, as R1 cuts a row's: the page draws one line for it here. */
-  readonly line: string;
+  /** The statement, whose one line a row projects from its words, as R1 cuts a row's
+   *  (`issue-tree.ts`'s `lineReading`): the page draws one line for it here. */
+  readonly node: TreeNode;
   /** Its address in the conversation, where it has one. */
   readonly path?: string;
   /** Whether the decision changed after it first named the statement and the statement has not
@@ -394,30 +388,13 @@ export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
     if (!placed.has(node.id)) {
       placed.set(node.id, {
         node,
-        ...(above === undefined || above === root
-          ? {}
-          : {
-              parent: {
-                id: above.id,
-                line: lineOf(above),
-                type: above.type,
-              },
-            }),
+        ...(above === undefined || above === root ? {} : { parent: parentLineOf(above) }),
       });
     }
     for (const child of node.children) walk(child, node);
   };
   walk(root, undefined);
   return placed;
-}
-
-/** A node's one line, as every one-line drawing of a node is cut (R1, `issue-tree.ts`'s
- *  `ParentLine.line`): the first line of its first block's words (`lineWords`), drawn as
- *  `drawnLine` reads it, and the page's word for its kind where those hold none, never its id
- *  (R22). */
-function lineOf(node: TreeNode): string {
-  const words = lineWords(node);
-  return words === "" ? NODE_TYPE_NAMES[node.type] : drawnLine(firstLineOf(words));
 }
 
 /** The id of every node `view` holds. */
@@ -484,7 +461,7 @@ function shapesOf(
     const held = shapes.get(node.id);
     shapes.set(node.id, {
       id: node.id,
-      line: lineOf(node),
+      node,
       ...pathOf(node),
       stale: link.stale || held?.stale === true,
     });

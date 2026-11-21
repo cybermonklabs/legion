@@ -126,6 +126,12 @@ export function ThreadList({
   const anchoredRegion = useRef<HTMLElement>(null);
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
   const [layoutTops, setLayoutTops] = useState<ReadonlyMap<string, number>>(() => new Map());
+  // How tall the anchored region stands: the bottom of its lowest card, read where the cards'
+  // tops are, so it changes the moment a card does. Read at render instead, it held a card's
+  // height from the last render: a reply composer's picker that opened and closed inside a card
+  // left the region its open height, until an unrelated render - the hover a pointer makes on
+  // its way to Send - read it again and the margin's scroll clamped under the press.
+  const [regionHeight, setRegionHeight] = useState(0);
   // Which section a thread lives in is a property of its data - it has a live (non-orphaned)
   // anchor or it does not - never of whether its mark has been measured yet. Placements arrive
   // after the document renders; deciding membership by them moved a card from Discussion into
@@ -169,6 +175,7 @@ export function ThreadList({
       }
       return next;
     });
+    setRegionHeight(previousBottom);
   }, [anchored, topFor]);
 
   useLayoutEffect(() => {
@@ -223,12 +230,7 @@ export function ThreadList({
           className="relative"
           ref={anchoredRegion}
           style={{
-            minHeight: Math.max(
-              ...anchored.map((thread) => {
-                const top = layoutTops.get(thread.key) ?? topFor(thread, renderOrigin);
-                return top + (cardRefs.current.get(thread.key)?.offsetHeight ?? 0) + 8;
-              })
-            ),
+            minHeight: regionHeight,
           }}
         >
           {anchored.map((thread) => (

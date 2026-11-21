@@ -3,6 +3,7 @@ import { outsideAskCard } from "../inbox/ask-card";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
 import { ACTION_WORDS, CHIP_ACTIONS, chipBox } from "./approval-chip-box";
+import { EDIT_TITLE_BUTTON } from "./IssueTitleRow";
 import { PROPERTY_LABELS } from "./page-structure";
 
 /**
@@ -15,7 +16,6 @@ const HEADER = "[data-issue-header]";
 const PIN_TOGGLE = 'button[data-issue-action="pin"]';
 const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
 const STATUS_SELECT = `select[aria-label="${PROPERTY_LABELS.status}"]`;
-const TITLE_HEADING = 'h1[tabindex="0"]';
 
 /** The header control `selector` names, or `null` when it is absent or refuses input (a closed
  *  issue, a save in flight): the one fact both the key's `run` and the `when` that offers it read,
@@ -127,15 +127,15 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       when: () => usableControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
     },
     {
-      // The heading's click opens the editor, and a focus does not, so the key clicks it: a
-      // heading that already holds the focus - where Escape and Enter leave it - takes no new
-      // focus. The selector finds the heading only while the issue is open and not edited
-      // (otherwise its `tabIndex` is -1), so the key is offered exactly while a click opens it.
+      // Edit title's click opens the editor, and a focus does not, so the key clicks it: a
+      // button that already holds the focus - where Escape and Enter leave it - takes no new
+      // focus. The title row draws the button only while the issue is open and its title not
+      // edited (`IssueTitleRow.tsx`), so the key is offered exactly while a click opens it.
       id: "title",
       keys: "e",
       label: "Edit the title",
-      run: () => usableControl(TITLE_HEADING)?.click(),
-      when: () => usableControl(TITLE_HEADING) !== null,
+      run: () => usableControl(EDIT_TITLE_BUTTON)?.click(),
+      when: () => usableControl(EDIT_TITLE_BUTTON) !== null,
     },
     {
       id: "pin",

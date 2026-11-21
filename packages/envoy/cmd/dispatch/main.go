@@ -605,7 +605,7 @@ func main() {
 	// whose loops would each run everywhere, so it ends here.
 	//
 	// The loops come in these shapes, so that a database nobody writes costs them nothing except
-	// where GitHub gives them nothing to wake on, and the five timers of the last shape:
+	// where GitHub gives them nothing to wake on, and the seven timers of the last shape:
 	//   - woken loops, which run a pass at start and then only when a Postgres notification on the
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
@@ -641,15 +641,17 @@ func main() {
 	//     never refuses a lone process's tick. Two tickers started minutes apart almost never
 	//     meet inside a pass, so the lease alone would exclude nothing.
 	//   - timers that poll the database: the block-index reconciliation (every 30 s, 2 s while a
-	//     batch is full), the repair of closed and reopened issues' asks (api.RunIssueAskRepair,
-	//     every 10 minutes on a plain ticker, after the boot's own unleased pass), the prune of
-	//     the server process registry (processes.RunPrune, every minute, which joinRegistry starts
-	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute), the
-	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
-	//     start, with or without NATS) and the display tree fill (texttreefill.Run, every hour
-	//     from a tick at start, whose first pass of a display parser version runs until every
-	//     stored text has a tree at it), each recording its passes in duty_passes like the timers
-	//     above; each tick sends its statements whether or not anything is owed.
+	//     batch is full), the reference forms drain (docs.Service.RunRefsFormsReconciliation, at
+	//     the same pace under a lease of its own), the repair of closed and reopened issues' asks
+	//     (api.RunIssueAskRepair, every 10 minutes on a plain ticker, after the boot's own
+	//     unleased pass), the prune of the server process registry (processes.RunPrune, every
+	//     minute, which joinRegistry starts below), the keyed writes' maintenance sweep
+	//     (api.RunMaintenanceSweep, every minute), the document compaction sweep
+	//     (docs.Service.RunCompactionSweep, every hour from a tick at start, with or without NATS)
+	//     and the display tree fill (texttreefill.Run, every hour from a tick at start, whose
+	//     first pass of a display parser version runs until every stored text has a tree at it),
+	//     each recording its passes in duty_passes like the timers above; each tick sends its
+	//     statements whether or not anything is owed.
 	//
 	// The shared listener is one pglisten.Hub per process, on one held connection of the store's
 	// listener pool, carrying every woken loop's channel and the document rooms' room-sync
@@ -718,6 +720,10 @@ func main() {
 	documentCompactionLeases := reserve("document compaction")
 	editNoticesLeases := reserve("edit notices")
 	blockIndexLeases := reserve("block index")
+	// The reference forms drain's, a caller of its own beside the block index's: the two passes
+	// run on their own goroutines under their own leases, so each can hold a connection while the
+	// other does.
+	refsFormsLeases := reserve("refs forms")
 	issueAskRepairLeases := reserve("issue ask repair")
 	// The webhook redelivery sweep's and the CI reconcile pass's, reserved whether or not this
 	// configuration runs them, as every caller's here is: the count the pool is sized for is the
@@ -929,6 +935,13 @@ func main() {
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
 	// a build indexed without the block grammar.
 	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
+	// The reference forms drain: each comment, ask, issue message and document a build that
+	// predates an issue's tab addresses and a document's dashboard URLs indexed without them
+	// (refs_forms_owed). A loop of its own under a lease of its own, on the block index's
+	// interval: a period a process of the previous release served under the block index's lease
+	// would otherwise drain none of it, and a document's row is settled only by this build's own
+	// index of the document.
+	go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
 	// The asks a process older than the withdrawal leaves on an issue it closes or
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
 	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, issueAskRepairLeases)

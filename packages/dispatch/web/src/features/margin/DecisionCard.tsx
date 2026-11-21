@@ -12,14 +12,20 @@ import {
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { useDecisionHeadingWords } from "../issue/decision-heading";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { buildReferencePath, parseDispatchReference } from "../refs/routes";
+import { parseDispatchReference, referenceHref } from "../refs/routes";
+import { textSourceOf } from "../refs/text-references";
 import { regionOrigin } from "./ThreadList";
 import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
 /** One decision beside a spec block it shaped: whose decision it is, whether its maker was
  *  unsure, its heading as a link to it in `decisions.md`, and the head of its text. Selecting the
- *  card lights up the block, as selecting an anchored comment lights up its text. */
+ *  card lights up the block, as selecting an anchored comment lights up its text. The heading
+ *  names the card and words a link, neither of which holds markup, so there it is read as its
+ *  plain words; with no page to link to it is drawn by the renderer, as the passage is. Both
+ *  are the record the issue's `decisions.md` is. */
 export function DecisionCard({
   hovered = false,
   item,
@@ -33,11 +39,23 @@ export function DecisionCard({
 }): ReactNode {
   const { decision } = item;
   const route = parseDispatchReference(decision.ref);
+  // A decision names the record it was made in; one naming no page of this dashboard - a
+  // person (R5) - leaves the heading as plain words.
+  const href = route === undefined ? undefined : referenceHref(route);
   const active = selected || hovered;
+  const source = textSourceOf(
+    "artifact",
+    item.documentId,
+    route !== undefined && "key" in route ? route.key : undefined
+  );
+  // The heading's plain words name the card and word its link (the reading list's
+  // `decision-heading-words`); the heading's reading draws it where there is no link.
+  const { reads, tree: headingTree, words: heading } = useDecisionHeadingWords(decision, source);
   return (
     <article
       aria-current={selected ? "true" : undefined}
-      aria-label={`Decision: ${decision.heading}`}
+      // The card's name is its heading's plain words: the reading list's `decision-heading-words`.
+      aria-label={`Decision: ${heading}`}
       className={`rounded-xl border p-3 text-sm shadow-sm ${
         active ? `${selectedCardBorder} ${selectedCardBg}` : card
       } ${decision.unsure ? `border-l-4 ${decisionUnsureBorder}` : ""}`}
@@ -65,11 +83,19 @@ export function DecisionCard({
         ) : null}
       </p>
       <h3 className={`mt-1 font-medium ${textPrimaryOnSurface}`}>
-        {route === undefined ? (
-          decision.heading
+        {reads}
+        {href === undefined ? (
+          <MarkdownBody
+            markdown={decision.heading}
+            source={source}
+            surface="margin-decision-passage"
+            tree={headingTree}
+            variant="inline"
+          />
         ) : (
-          <Link className={`${linkText} ${linkHoverText}`} to={buildReferencePath(route)}>
-            {decision.heading}
+          <Link className={`${linkText} ${linkHoverText}`} to={href}>
+            {/* A link's words hold no markup: the reading list's `decision-heading-words`. */}
+            {heading}
           </Link>
         )}
       </h3>
@@ -77,6 +103,8 @@ export function DecisionCard({
         className={`mt-1 ${textPrimaryOnSurface}`}
         lines={3}
         markdown={decision.text}
+        source={source}
+        surface="margin-decision-passage"
         tree={decision.text_tree}
       />
     </article>
@@ -103,6 +131,10 @@ export function DecisionList({
   const region = useRef<HTMLElement>(null);
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
   const [tops, setTops] = useState<ReadonlyMap<string, number>>(() => new Map());
+  // How tall the region stands, the bottom of its lowest card, read where the tops are, so it
+  // follows a card the moment the card resizes, as the anchored comments' region does
+  // (`ThreadList.tsx`): read at render, it held a card's height from the last render.
+  const [bottom, setBottom] = useState(0);
   const measure = useCallback(() => {
     const origin = region.current === null ? undefined : regionOrigin(region.current);
     const next = new Map<string, number>();
@@ -127,6 +159,7 @@ export function DecisionList({
         ? current
         : next
     );
+    setBottom(previousBottom);
   }, [blockPlacements, decisions]);
   useLayoutEffect(() => {
     measure();
@@ -141,11 +174,6 @@ export function DecisionList({
   if (decisions.length === 0) {
     return null;
   }
-  const bottom = Math.max(
-    ...decisions.map(
-      (item) => (tops.get(item.id) ?? 0) + (cardRefs.current.get(item.id)?.offsetHeight ?? 0) + 8
-    )
-  );
   return (
     <section aria-label="Decisions" className="relative" ref={region} style={{ minHeight: bottom }}>
       {decisions.map((item) => (

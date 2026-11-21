@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -8,8 +8,15 @@ import { ApiError, api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import type { Query } from "../../api/paths";
 import type { Agent, DispatchEvent, UserIssueState, UserState } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { writesOf } from "../writes/write-store";
 import { ActivityTab } from "./ActivityTab";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // The writer of a frame is one of the kinds Dispatch writes, not the open `Actor` a route's
 // read answers with: these are `message.created` frames, so the payload's own reading of its
