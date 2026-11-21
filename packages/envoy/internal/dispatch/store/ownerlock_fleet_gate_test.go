@@ -31,6 +31,7 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 		t.Run(arrival.name, func(t *testing.T) {
 			s, owners := openFleetStore(t)
 			ctx := context.Background()
+			waitRegistrationsOut(ctx, t, s)
 			writer, err := s.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -57,7 +58,7 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			defer conn.Release()
 			arrivalPID := conn.Conn().PgConn().PID()
 			arrived := make(chan error, 1)
-			go func() { arrived <- arriveOn(ctx, conn, arrival, uuid.NewString()) }()
+			go func() { arrived <- arriveOn(ctx, t, conn, arrival, uuid.NewString()) }()
 			awaitGateWait(t, s, arrivalPID, arrived, arrival.name)
 			select {
 			case err := <-arrived:
@@ -74,13 +75,8 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			if err := writer.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case err := <-arrived:
-				if err != nil {
-					t.Fatalf("%s after the writer committed: %v", arrival.name, err)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatalf("%s did not end within 10s of the writer's commit", arrival.name)
+			if err := testwait.Receive(t, arrival.name+" to end once the writer committed", arrived); err != nil {
+				t.Fatalf("%s after the writer committed: %v", arrival.name, err)
 			}
 
 			next, err := s.Pool.Begin(ctx)
@@ -100,15 +96,19 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			if gate, _ := gateLock(t, s, next.Conn().PgConn().PID()); gate != "" {
 				t.Errorf("the writer after %s holds the gate as %q, want no gate in the mode beside an earlier build", arrival.name, gate)
 			}
+			againConn, err := s.Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer againConn.Release()
 			again := make(chan error, 1)
-			go func() { again <- arrive(ctx, s, arrival, uuid.NewString()) }()
-			select {
-			case err := <-again:
-				if err != nil {
-					t.Fatalf("a second arrival beside a writer in the mode beside an earlier build: %v", err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatalf("a second arrival waited 5s beside a writer that holds no gate")
+			go func() { again <- arriveOn(ctx, t, againConn, arrival, uuid.NewString()) }()
+			answer := awaitUnblockedAnswer(t, s, againConn.Conn().PgConn().PID(), again, "a second arrival")
+			if !answer.answered {
+				t.Fatalf("a second arrival waited for backend(s) %v beside a writer that holds no gate", answer.blockers)
+			}
+			if answer.err != nil {
+				t.Fatalf("a second arrival beside a writer in the mode beside an earlier build: %v", answer.err)
 			}
 		})
 	}
@@ -229,12 +229,12 @@ func dropRoleAfterTestDatabase(t *testing.T, s *Store, role string) {
 	}
 }
 
-// awaitFleetReadPause waits up to ten seconds for backend pid to stop at the fleet read's pause
-// (pauseFleetReadsAt), and fails the test when its owner lock answers first (done closes).
+// awaitFleetReadPause waits for backend pid to stop at the fleet read's pause (pauseFleetReadsAt),
+// and fails the test when its owner lock answers first (done closes). Its one bound is the test
+// binary's deadline less testwait's margin (testwait.Until).
 func awaitFleetReadPause(t *testing.T, s *Store, pid uint32, done <-chan struct{}) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Until(t, "the writer's fleet read to stop at the pause", func() (struct{}, bool) {
 		var waiting bool
 		if err := s.Pool.QueryRow(context.Background(), `
 			select exists (
@@ -245,18 +245,15 @@ func awaitFleetReadPause(t *testing.T, s *Store, pid uint32, done <-chan struct{
 			t.Fatalf("read the fleet read's pause: %v", err)
 		}
 		if waiting {
-			return
+			return struct{}{}, true
 		}
 		select {
 		case <-done:
 			t.Fatal("the writer's owner lock answered before its fleet read stopped at the pause")
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the writer's fleet read did not stop at the pause within 10s")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return struct{}{}, false
+	})
 }
 
 // The fleet read owner_lock_fleet makes after its try reads under a snapshot of its own, so an
@@ -317,25 +314,25 @@ func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *test
 				t.Fatalf("the writer stopped at the pause holds the gate as %q (granted %t), want no gate: the pause is in its first fleet read, before its try", gate, granted)
 			}
 			if c.arrival != nil {
+				arrivalConn, err := s.Pool.Acquire(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer arrivalConn.Release()
 				arrived := make(chan error, 1)
-				go func() { arrived <- arrive(ctx, s, *c.arrival, uuid.NewString()) }()
-				select {
-				case err := <-arrived:
-					if err != nil {
-						t.Fatalf("%s while the writer was stopped inside its first fleet read: %v", c.arrival.name, err)
-					}
-				case <-time.After(10 * time.Second):
-					t.Fatalf("%s waited 10s beside a writer stopped before its try, which holds no gate", c.arrival.name)
+				go func() { arrived <- arriveOn(ctx, t, arrivalConn, *c.arrival, uuid.NewString()) }()
+				answer := awaitUnblockedAnswer(t, s, arrivalConn.Conn().PgConn().PID(), arrived, c.arrival.name)
+				if !answer.answered {
+					t.Fatalf("%s waited for backend(s) %v beside a writer stopped before its try, which holds no gate", c.arrival.name, answer.blockers)
+				}
+				if answer.err != nil {
+					t.Fatalf("%s while the writer was stopped inside its first fleet read: %v", c.arrival.name, answer.err)
 				}
 			}
 			if err := pause.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case <-done:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the writer's owner lock did not answer within 10s of the pause's end")
-			}
+			testwait.Receive(t, "the writer's owner lock to answer once the pause ended", done)
 			if err := <-locked; err != nil {
 				t.Fatalf("the writer's owner lock: %v", err)
 			}
@@ -356,32 +353,32 @@ func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *test
 	}
 }
 
-// writerAnswer is what a writer's owner lock came to while an arrival waited for the gate: its
-// answer, or, before it answered, the backends Postgres records its backend as waiting for.
-type writerAnswer struct {
+// lockAnswer is what a transaction's lock came to: its answer, or, before it answered, the
+// backends Postgres records its backend as waiting for.
+type lockAnswer struct {
 	answered bool
 	err      error
 	blockers []int32
 }
 
-// awaitWriterAnswer waits for the owner lock running on backend pid to answer on locked, and reads
-// between its questions whom Postgres records that backend as waiting for (pg_blocking_pids): a
-// writer that queues behind another transaction is seen waiting there, and the wait ends with
-// those backends rather than at any span of the clock. Its one bound is the test binary's deadline
-// less testwait's margin (testwait.Until).
-func awaitWriterAnswer(t *testing.T, s *Store, pid uint32, locked <-chan error, what string) writerAnswer {
+// awaitUnblockedAnswer waits for what runs on backend pid - an owner lock, an arrival - to answer
+// on answered, and reads between its questions whom Postgres records that backend as waiting for
+// (pg_blocking_pids): one that queues behind another transaction is seen waiting there, and the
+// wait ends with those backends rather than at any span of the clock. Its one bound is the test
+// binary's deadline less testwait's margin (testwait.Until).
+func awaitUnblockedAnswer(t *testing.T, s *Store, pid uint32, answered <-chan error, what string) lockAnswer {
 	t.Helper()
-	return testwait.Until(t, what+" to answer or to wait for another backend", func() (writerAnswer, bool) {
+	return testwait.Until(t, what+" to answer or to wait for another backend", func() (lockAnswer, bool) {
 		select {
-		case err := <-locked:
-			return writerAnswer{answered: true, err: err}, true
+		case err := <-answered:
+			return lockAnswer{answered: true, err: err}, true
 		default:
 		}
 		var blockers []int32
 		if err := s.Pool.QueryRow(context.Background(), `select pg_blocking_pids($1)`, int32(pid)).Scan(&blockers); err != nil {
 			t.Fatalf("read whom backend %d waits for: %v", pid, err)
 		}
-		return writerAnswer{blockers: blockers}, len(blockers) != 0
+		return lockAnswer{blockers: blockers}, len(blockers) != 0
 	})
 }
 
@@ -392,7 +389,7 @@ func awaitWriterAnswer(t *testing.T, s *Store, pid uint32, locked <-chan error, 
 // earlier build, without waiting. Each read-phase owner lock - LockOwner, LockOwnersShared,
 // TryLockOwners - answers in the mode beside an earlier build, holding its owner's row and no gate,
 // and the arrival is still waiting after them. No clock decides the row: while each writer runs,
-// Postgres's record of whom its backend waits for is read (awaitWriterAnswer), and a writer seen
+// Postgres's record of whom its backend waits for is read (awaitUnblockedAnswer), and a writer seen
 // waiting for another backend fails the row naming it. With the gate waited for rather than tried,
 // the first of them queues behind the arrival until the transaction it waits for ends, and that
 // read sees it.
@@ -401,6 +398,7 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 		t.Run(arrival.name, func(t *testing.T) {
 			s, owners := openFleetStore(t)
 			ctx := context.Background()
+			waitRegistrationsOut(ctx, t, s)
 			holder, err := s.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -419,7 +417,7 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 			defer conn.Release()
 			arrivalPID := conn.Conn().PgConn().PID()
 			arrived := make(chan error, 1)
-			go func() { arrived <- arriveOn(ctx, conn, arrival, uuid.NewString()) }()
+			go func() { arrived <- arriveOn(ctx, t, conn, arrival, uuid.NewString()) }()
 			awaitGateWait(t, s, arrivalPID, arrived, arrival.name)
 
 			writers := []struct {
@@ -450,7 +448,7 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 				}
 				locked := make(chan error, 1)
 				go func() { locked <- writer.lock(tx) }()
-				answer := awaitWriterAnswer(t, s, writerPID, locked, writer.name)
+				answer := awaitUnblockedAnswer(t, s, writerPID, locked, writer.name)
 				if !answer.answered {
 					t.Errorf("%s waited for backend(s) %v while %s (backend %d) waited for the gate; want it to try the gate, not queue behind the arrival",
 						writer.name, answer.blockers, arrival.name, arrivalPID)
