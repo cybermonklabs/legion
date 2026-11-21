@@ -97,7 +97,16 @@ func TestSchemaServesTheListenerComponentWithASecretSeed(t *testing.T) {
 	listener, ok := servedSchema(t).Resources["envoy-infra:host:Listener"]
 	require.True(t, ok, "the schema lists envoy-infra:host:Listener")
 	require.True(t, listener.IsComponent)
-	require.True(t, listener.InputProperties["seed"].Secret, "seed is a secret input")
+	// The whole input set is pinned with each input's secret flag, as the hubs' are, so an input
+	// cannot reach the schema without this test deciding whether it holds a secret: one that does
+	// and lacks `provider:"secret"` is stored in plain text in state and preview output.
+	require.ElementsMatch(t, []string{
+		"adopt", "containerName", "image", "machineId", "natsUrls", "port", "seed", "senderMessageBurst",
+		"senderMessagesPerMinute", "waitForHealthy", "watchdog",
+	}, slices.Collect(maps.Keys(listener.InputProperties)))
+	for name, in := range listener.InputProperties {
+		require.Equal(t, name == "seed", in.Secret, "only seed is a secret input, not %s", name)
+	}
 
 	// Generated SDKs append Args to an object type's name for its input type, so a type named
 	// WatchdogArgs would reach consumers as WatchdogArgsArgs.
@@ -221,50 +230,52 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	dispatch, ok := s.Resources["envoy-infra:gcp:Dispatch"]
 	require.True(t, ok, "the schema lists envoy-infra:gcp:Dispatch")
 	require.True(t, dispatch.IsComponent)
-	require.True(t, dispatch.InputProperties["tailnetAuthKey"].Secret)
-	require.True(t, dispatch.InputProperties["signInClientSecret"].Secret)
-	require.Contains(t, dispatch.InputProperties, "agentSecretsAudience")
-	require.False(t, dispatch.InputProperties["agentSecretsAudience"].Secret)
-	require.NotContains(t, dispatch.InputProperties, "agentSecretsTokenSecret")
-	require.NotContains(t, dispatch.InputProperties, "agentSecretsToken")
-	require.NotContains(t, dispatch.InputProperties, "appPrivateKey")
-	for _, input := range []string{"appClientId", "appId", "appPrivateKeySecretName", "appPrivateKeySecretKey"} {
-		require.False(t, dispatch.InputProperties[input].Secret, input)
+	// The whole input set is pinned with each input's secret flag, as the hubs' are, so an input
+	// cannot reach the schema without this test deciding whether it holds a secret: one that does
+	// and lacks `provider:"secret"` is stored in plain text in state and preview output.
+	require.ElementsMatch(t, []string{
+		"agentSecretsAudience", "agentSecretsUrl", "allowedNamespaces", "appClientId", "appCpu",
+		"appEphemeralStorage", "appId", "appMemory", "appPdbMinAvailable", "appPrivateKeySecretKey",
+		"appPrivateKeySecretName", "azureChatApiVersion", "azureChatDeployment", "azureChatEndpoint",
+		"azureChatScope", "azureChatTokensPerMinute", "azureClientId", "azureEmbedDeployment",
+		"azureEmbedEndpoint", "azureEmbedKeySecret", "azureEmbedTokensPerMinute", "azureFederationAudience",
+		"azureTenantId", "chatEndpoint", "chatModel", "chatTokenSecret", "cloudSqlProxyImage", "clusterOnly",
+		"databaseAvailabilityType", "databaseTier", "databaseVersion", "databaseWaitsFor", "deletionProtection",
+		"envoyImage", "existingCluster", "existingDatabaseInstance", "existingNamespace",
+		"frontDoorPdbMinAvailable", "frontDoorReplicas", "frontDoorToolsImage", "hostname", "iapAudience",
+		"listenerPdbMinAvailable", "listenerReplicas", "loadBalancerSourceRanges", "namespace", "natsInCluster",
+		"natsReplicas", "natsSeedSecret", "natsUrl", "networkEndpointGroupName", "oidcAudience", "oidcIssuer",
+		"outsideOrigin", "pprofPort", "priorityClassName", "proxyCpu", "proxyEphemeralStorage", "proxyMemory",
+		"publicOrigin", "region", "regionalNetwork", "replicas", "senderMessageBurst", "senderMessagesPerMinute",
+		"signInClientId", "signInClientSecret", "signInDomain", "signInOutside", "signInPasskey",
+		"signInWorkspaceDomains", "signingKeyGenerations", "streamMaxBytes", "tags", "tailnetAuthKey",
+		"tailnetDnsName", "tailscaleImage",
+	}, slices.Collect(maps.Keys(dispatch.InputProperties)))
+	// chatTokenSecret names a Secret Manager secret whose value is a bearer token, so it carries
+	// provider:"secret"; the app's key and the Azure embedder's key are reached by a secret's name
+	// and key, which are plain.
+	secrets := []string{"chatTokenSecret", "signInClientSecret", "tailnetAuthKey"}
+	for name, in := range dispatch.InputProperties {
+		require.Equal(t, slices.Contains(secrets, name), in.Secret, "whether %s is a secret input", name)
 	}
 	// The Azure embedder's inputs are references and identifiers, never the key: the key form
-	// takes a Secret Manager path, the keyless form a tenant and a client id.
+	// takes a Secret Manager path, the keyless form a tenant and a client id. The answerer's are
+	// references and identifiers too, and the Azure chat form takes no key at all.
 	for _, input := range []string{
 		"azureEmbedEndpoint", "azureEmbedDeployment", "azureEmbedTokensPerMinute", "azureEmbedKeySecret",
 		"azureTenantId", "azureClientId", "azureFederationAudience",
-	} {
-		require.Contains(t, dispatch.InputProperties, input)
-		require.False(t, dispatch.InputProperties[input].Secret, input)
-		require.NotContains(t, dispatch.RequiredInputs, input)
-	}
-	require.NotContains(t, dispatch.InputProperties, "azureEmbedKey")
-	// The answerer's inputs are references and identifiers too, with one exception: chatTokenSecret
-	// names a Secret Manager secret whose value is a bearer token, so it carries provider:"secret".
-	// The Azure chat form takes no key at all.
-	for _, input := range []string{
 		"azureChatEndpoint", "azureChatDeployment", "azureChatApiVersion", "azureChatScope",
-		"azureChatTokensPerMinute", "chatEndpoint", "chatModel",
+		"azureChatTokensPerMinute", "chatEndpoint", "chatModel", "chatTokenSecret",
 	} {
-		require.Contains(t, dispatch.InputProperties, input)
-		require.False(t, dispatch.InputProperties[input].Secret, input)
 		require.NotContains(t, dispatch.RequiredInputs, input)
 	}
-	require.True(t, dispatch.InputProperties["chatTokenSecret"].Secret)
-	require.NotContains(t, dispatch.RequiredInputs, "chatTokenSecret")
-	require.NotContains(t, dispatch.InputProperties, "chatToken")
 	// The profiler's port is an optional plain integer.
 	require.Equal(t, "integer", dispatch.InputProperties["pprofPort"].Type)
-	require.False(t, dispatch.InputProperties["pprofPort"].Secret)
 	require.NotContains(t, dispatch.RequiredInputs, "pprofPort")
 	// The app pod's container sizes, envoy-dispatch's and cloud-sql-proxy's, are six optional
 	// plain strings, Kubernetes quantities.
 	for _, input := range []string{"appCpu", "appMemory", "proxyCpu", "proxyMemory", "appEphemeralStorage", "proxyEphemeralStorage"} {
 		require.Equal(t, "string", dispatch.InputProperties[input].Type, input)
-		require.False(t, dispatch.InputProperties[input].Secret, input)
 		require.NotContains(t, dispatch.RequiredInputs, input)
 	}
 	// The pods' disruption protection, the front door's and the listener's replica counts, the
@@ -282,7 +293,6 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	} {
 		require.Equal(t, typ, dispatch.InputProperties[input].Type, input)
 		require.True(t, dispatch.InputProperties[input].Plain, input)
-		require.False(t, dispatch.InputProperties[input].Secret, input)
 		require.NotContains(t, dispatch.RequiredInputs, input)
 	}
 	// clusterOnly, which builds the cluster alone, is an optional plain boolean: it decides which
@@ -290,7 +300,6 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	// sends no property at all, leaving an applied stack's inputs where they are.
 	require.Equal(t, "boolean", dispatch.InputProperties["clusterOnly"].Type)
 	require.True(t, dispatch.InputProperties["clusterOnly"].Plain)
-	require.False(t, dispatch.InputProperties["clusterOnly"].Secret)
 	// existingCluster, the GKE cluster the component runs Dispatch in rather than one of its own,
 	// is an optional object, not secret: the component looks the cluster up before it registers
 	// anything, so it is a plain Go field, which Construct refuses as another resource's output
@@ -301,7 +310,6 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	// reach consumers doubled; the type's name and location are both strings, and both required.
 	existingCluster := dispatch.InputProperties["existingCluster"]
 	require.Equal(t, "#/types/envoy-infra:gcp:DispatchCluster", existingCluster.Ref)
-	require.False(t, existingCluster.Secret)
 	require.NotContains(t, dispatch.RequiredInputs, "existingCluster")
 	cluster := s.Types["envoy-infra:gcp:DispatchCluster"]
 	require.ElementsMatch(t, []string{"name", "location"}, slices.Collect(maps.Keys(cluster.Properties)))
@@ -317,7 +325,6 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	existingDatabaseInstance := dispatch.InputProperties["existingDatabaseInstance"]
 	require.Equal(t, "string", existingDatabaseInstance.Type)
 	require.False(t, existingDatabaseInstance.Plain)
-	require.False(t, existingDatabaseInstance.Secret)
 	require.NotContains(t, dispatch.RequiredInputs, "existingDatabaseInstance")
 	// regionalNetwork, false to register no Subnetwork, Router or RouterNat beside existingCluster,
 	// is an optional plain boolean, not secret: it decides which resources register, so it is never
@@ -325,7 +332,6 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	// regional network it always had.
 	require.Equal(t, "boolean", dispatch.InputProperties["regionalNetwork"].Type)
 	require.True(t, dispatch.InputProperties["regionalNetwork"].Plain)
-	require.False(t, dispatch.InputProperties["regionalNetwork"].Secret)
 	require.NotContains(t, dispatch.RequiredInputs, "regionalNetwork")
 	// region and hostname, which name every cloud resource, are the only inputs the schema
 	// requires: every other input configures Dispatch itself, which clusterOnly does not build.
@@ -342,7 +348,17 @@ func TestSchemaServesTheNatsServiceComponentWithNoSecretInput(t *testing.T) {
 	nats, ok := s.Resources["envoy-infra:aws:NatsService"]
 	require.True(t, ok, "the schema lists envoy-infra:aws:NatsService")
 	require.True(t, nats.IsComponent)
-	// A consumer owns its secrets; the component takes references to them.
+	// A consumer owns its secrets; the component takes references to them. The whole input set is
+	// pinned, as the other components' are, so an input cannot reach the schema without this test
+	// deciding whether it holds a secret.
+	require.ElementsMatch(t, []string{
+		"adopt", "authorization", "baseTags", "cloudMapNamespaceId", "cloudMapNamespaceName",
+		"cloudMapServiceLogicalName", "cloudMapServiceName", "clusterArn", "configHeader", "configPath", "cpu",
+		"executionRoleArn", "family", "logGroupName", "logRetentionDays", "memory",
+		"metricFilterLogicalNamePrefix", "metricNamespace", "natsImage", "platformVersion", "region",
+		"securityGroupId", "serverArgs", "subnetIds", "tailnetClientSecretArn", "tailnetEphemeral",
+		"tailnetHostname", "tailnetTags", "tailscaleImage", "taskRoleArn", "vpcId", "waitForSteadyState",
+	}, slices.Collect(maps.Keys(nats.InputProperties)))
 	for name, input := range nats.InputProperties {
 		require.False(t, input.Secret, "%s is not a secret input", name)
 	}
@@ -366,7 +382,18 @@ func TestSchemaServesTheWebhookListenerComponentWithNoSecretInput(t *testing.T) 
 	listener, ok := servedSchema(t).Resources["envoy-infra:aws:WebhookListener"]
 	require.True(t, ok, "the schema lists envoy-infra:aws:WebhookListener")
 	require.True(t, listener.IsComponent)
-	// A consumer owns its secrets; the component takes references to them.
+	// A consumer owns its secrets; the component takes references to them. The whole input set is
+	// pinned, as the other components' are, so an input cannot reach the schema without this test
+	// deciding whether it holds a secret.
+	require.ElementsMatch(t, []string{
+		"adopt", "alarmTopicArn", "apiTokenSecretArn", "apiTokenSecretVersionId", "baseTags",
+		"cloudMapNamespaceId", "cloudMapNamespaceName", "cloudMapServiceLogicalName", "cloudMapServiceName",
+		"clusterArn", "cpu", "executionRoleArn", "executionRoleName", "family", "githubWebhookSecretArn", "image",
+		"listenHost", "logGroupName", "logRetentionDays", "machineId", "memory", "mentionTrigger",
+		"metricNamespace", "natsReplicas", "natsServiceArn", "natsUrls", "region", "reviewerAppId",
+		"securityGroupId", "seedSecretArn", "senderMessageBurst", "senderMessagesPerMinute",
+		"slackSigningSecretArn", "subnetIds", "targetGroupArn", "taskRoleArn", "webhooks",
+	}, slices.Collect(maps.Keys(listener.InputProperties)))
 	for name, input := range listener.InputProperties {
 		require.False(t, input.Secret, "%s is not a secret input", name)
 	}

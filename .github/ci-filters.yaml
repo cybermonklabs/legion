@@ -1734,7 +1734,6 @@ text_checks:
   - 'docs/site/src/content/docs/legion/running-legion.md'
   - 'docs/site/src/content/docs/legion/troubleshooting.md'
   - 'packages/contracts/src/legion-api.ts'
-  - 'packages/pi-legion/AGENTS.md'
   - 'packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml'
   - 'packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml'
   - 'packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml'

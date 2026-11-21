@@ -20,8 +20,8 @@
 // its own contract in its schema field, JSON having nowhere to put a comment.
 //
 // This package imports pmdoc nowhere, on purpose: pmdoc's tests are in-package, so an import of
-// pmdoc here would close a cycle. What it needs of pmdoc's bounds it carries itself, as MaxNesting,
-// and pmdoc's own test holds the two to each other.
+// pmdoc here would close a cycle. The bounds it shares with pmdoc it reads from contracts, as
+// pmdoc does.
 package heavybodies
 
 import (
@@ -39,10 +39,9 @@ import (
 const BlockCap = contracts.DispatchBlockUnits
 
 // MaxNesting is how many blocks a markdown document may open inside one another, the bound the
-// refusals below quote. It is pmdoc's own maxNesting (internal/dispatch/pmdoc/nesting.go), copied
-// because this package may not import pmdoc; pmdoc's
-// TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime holds the two to each other.
-const MaxNesting = 100
+// refusals below quote: contracts.DocumentBlockNestingMax, which pmdoc's maxNesting
+// (internal/dispatch/pmdoc/nesting.go) reads too.
+const MaxNesting = contracts.DocumentBlockNestingMax
 
 // Shape is one heavy body, at whatever length a caller asks of it.
 type Shape struct {

@@ -62,6 +62,6 @@ They override this skill, except: no deferrals; the base merged forward only as 
 - Review threads, a bot's finding: `skill://legion-worker/references/review-threads.md`.
 - A conflict, the daemon's merge-forward message, a need for the base, a retarget, a wrong pushed commit: `skill://legion-worker/references/conflicts-and-rewrites.md`.
 - A plan you write or review: `skill://legion-worker/references/plan-tests.md`.
-- Builds, tests, tools or a database in the pod: `skill://legion-worker/references/tools.md`; before you unpack or install what the image lacks: `skill://legion-worker/references/withheld-capability.md`.
+- Builds, tests, tools or a database in the pod: `skill://legion-worker/references/tools.md`; before you unpack or install what the image lacks: `skill://legion-worker/references/withheld-capability.md`; gVisor's traps: `skill://legion-worker/references/gvisor.md`.
 - A problem outside your issue, or a failed production check: `skill://legion-worker/references/findings.md`.
 - Text that reaches a person outside the company: `skill://outside-message`.

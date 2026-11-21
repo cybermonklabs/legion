@@ -1,3 +1,5 @@
+// `legion-api` is not re-exported here: it is reached as `@legion/contracts/legion-api`, so a
+// bundle that does not speak to the daemon does not carry it.
 export * from "./actor-label";
 export * from "./agent-stream";
 export * from "./block-schema.generated";

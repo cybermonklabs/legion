@@ -28,7 +28,7 @@ import (
 // Neither half alone is the guarantee: together they are the one the four tests used to give.
 // (INFRA-1413.)
 //
-// What these tests prove: that the api package's copy is every window of the seven texts
+// What these tests prove: that the api package's copy is every window of the six texts
 // that names the field's contract, in their own bytes; that every quotation of the workflow
 // package's copy is still in the file it names, in the one-line form that copy quotes it in,
 // and that no file of its list has lost its section; that the guide still carries the sample
@@ -92,7 +92,7 @@ const (
 	collapsedForm = "collapsed"
 )
 
-// The seven shipped texts outside packages/daemon that internal/api's contract test used to read
+// The six shipped texts outside packages/daemon that internal/api's contract test used to read
 // itself, in its own order: every window of these is what the committed copy must hold. A text
 // that yields no window has no section in the copy, and whether a text is in that state is this
 // check's to answer on every run rather than the list's to record: troubleshooting.md yielded
@@ -100,7 +100,6 @@ const (
 // list either way - a window it gains is one the copy must gain with it.
 var waitingLineContractTexts = []string{
 	"packages/contracts/src/legion-api.ts",
-	"packages/pi-legion/AGENTS.md",
 	runningLegionGuide,
 	"docs/site/src/content/docs/legion/troubleshooting.md",
 	"packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
@@ -129,7 +128,7 @@ type quotedText struct {
 	path, body string
 }
 
-// The api package's copy is every window the seven texts yield, in their bytes and their order.
+// The api package's copy is every window the six texts yield, in their bytes and their order.
 // An edit to a text alone fails here: the window moves, the copy stays, and the number the api
 // package scans is then one no text carries any more - a renumber correcting a guide and not the
 // copy would otherwise pass both halves. The failure prints what the texts yield, so the fix is
@@ -175,7 +174,7 @@ func TestTheWaitingLineContractExtractIsEveryWindowOfTheShippedTexts(t *testing.
 	}
 }
 
-// waitingLineContractWindows is every window the seven texts yield under the rule internal/api's
+// waitingLineContractWindows is every window the six texts yield under the rule internal/api's
 // test reads a text by: a `contract <N>` or a bare `below <N>`, on one line or wrapped onto the
 // next, whose 220 bytes on either side name the field and name neither the retired stranded
 // state nor the stranded report, which is the other contract these same texts discuss. The parse
@@ -519,7 +518,7 @@ func renderQuotedTexts(sections []quotedText) string {
 }
 
 // waitingLineContractWindowsIn is the windows one text yields under the rule
-// waitingLineContractWindows reads the seven texts by, named being waitingLineNamed compiled: the
+// waitingLineContractWindows reads the six texts by, named being waitingLineNamed compiled: the
 // text is handed in rather than read, so that a case can hold the rule to a shape of text the
 // shipped files do not carry today.
 func waitingLineContractWindowsIn(named *regexp.Regexp, name, text string) []quotedText {
@@ -540,7 +539,7 @@ func waitingLineContractWindowsIn(named *regexp.Regexp, name, text string) []quo
 // two lines, and the scan, which read only a space between the two, found no window there; that
 // run failed only because the copy had been taken from the text before the wrap, and a window
 // first written wrapped would never have reached the copy at all (INFRA-4004). Each case is a
-// shape the seven texts are written in, and each wrapped mention in it must yield its window; a
+// shape the six texts are written in, and each wrapped mention in it must yield its window; a
 // blank line between the word and a number is a paragraph break, and yields none.
 //
 // What it proves: that the rule finds a wrapped number in Markdown, in a Go or TypeScript

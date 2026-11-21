@@ -70,6 +70,13 @@ export type AskTurn = (typeof ASK_TURNS)[number];
  * Dispatch can request for a message. Every other spelling of this set —
  * `MessageDeliveryMode`, the delivery event payload schema, the envoy-client
  * targeted-frame schema — derives from this constant.
+ *
+ * A new mode joins this list before any server, adapter or UI accepts
+ * it: the readings of a bus frame parse its delivery mode against this
+ * list, the tolerant ones included, so a frame carrying a mode the
+ * reader's release does not list fails to parse. Go spells the list by
+ * hand, in the listener's `isDeliveryMode` and the Dispatch server's
+ * `validDelivery`.
  */
 export const DELIVERY_CAPABILITIES = ["aside", "btw", "steer"] as const;
 
@@ -126,6 +133,25 @@ export const MAX_BROADCAST_RECIPIENTS = 100;
  * enforces, so the server's refusal and the client's batches are one number.
  */
 export const REFERENCE_TARGETS_MAX = 256;
+
+/**
+ * How many blocks a document may open inside one another: a quote, a list, a list item, a typed
+ * block and a footnote definition each count one. Generated into Go as
+ * `contracts.DocumentBlockNestingMax`, past which the document service refuses a document, and
+ * read by the editor's parser (`@legion/proof-editor`'s `maxBlockNesting`), which reads a list or
+ * quote opener past it as the text it is, so a document the service refuses is one the editor
+ * draws as text.
+ */
+export const DOCUMENT_BLOCK_NESTING_MAX = 100;
+
+/**
+ * How many typed blocks a document may open inside one another; each also counts toward
+ * `DOCUMENT_BLOCK_NESTING_MAX`. Generated into Go as `contracts.DocumentTypedBlockNestingMax`, past
+ * which the document service refuses a typed block, and read by the editor's parser
+ * (`@legion/proof-editor`'s `maxDirectiveNesting`), which reads a `:::` opener past it as the text
+ * it is.
+ */
+export const DOCUMENT_TYPED_BLOCK_NESTING_MAX = 32;
 
 /**
  * The request header that names one write's intent: the same on every retry of that write, and

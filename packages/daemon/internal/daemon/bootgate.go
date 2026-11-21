@@ -44,7 +44,8 @@ import (
 // or `none` when no Envoy entry published; and where the pre-split @sjawhar/pi-legion-envoy loaded
 // from (`Symbol.for("legion.pi-envoy.legion-loaded")`) when a pane still loads it. The symbol
 // strings are the wire, and a change to one is a change here and in the probe
-// (packages/pi-shared/AGENTS.md). Given LEGION_PROMPT_AGENTS and LEGION_PROMPT_SKILLS (promptrefs),
+// (ENVOY_PLUGIN_INTERFACE_KEY's doc comment in packages/pi-shared/src/interface.ts). Given
+// LEGION_PROMPT_AGENTS and LEGION_PROMPT_SKILLS (promptrefs),
 // it also resolves those task agents and skills through Oh My Pi's own discovery over the launch's
 // extension roots, as the task tool resolves an agent's name and a `skill://` read a skill's, and
 // prints which it could not find; and, unless LEGION_SKIP_AGENT_MODELS is set, whether each of

@@ -92,7 +92,9 @@ export interface RelayHeaders {
   get(name: string): string | null | undefined;
 }
 
-/** A message received on the relay subject, as any NATS client hands it over. */
+/** A message received on the relay subject, as any NATS client hands it over. Hand on the
+ *  client's own object, never a copy: a nats.js `Msg` serves `data`, `headers` and `reply` from
+ *  prototype getters, which an object spread drops. */
 export interface RelayMessage {
   readonly data: Uint8Array | string;
   readonly headers?: RelayHeaders | undefined;

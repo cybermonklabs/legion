@@ -64,7 +64,9 @@ func (b *Broker) LockOwners(ctx context.Context, tx pgx.Tx, owners ...model.Even
 
 // Append assigns the next sequence of the event's owner, writes e in tx, and returns the appended
 // event with its database-assigned ID, sequence and time. Its statements go to the server as one
-// batch (QueueAppend). The caller must call Publish only after tx commits.
+// batch (QueueAppend). The caller must call Publish only after tx commits. A transaction that
+// appends events for more than one owner calls LockOwners on all of them before its first Append,
+// or two such transactions can deadlock (LockOwners).
 //
 // The transaction holds its transaction id before the insert draws e's id from events_id_seq:
 // lockEventOwner takes it with pg_current_xact_id in the statement that locks the owner row,

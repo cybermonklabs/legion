@@ -80,8 +80,8 @@ func TestEveryLiveRowHasACitation(t *testing.T) {
 	}
 }
 
-// A withheld row cites the Legion issue that withholds it, and only Legion's own keys: the root
-// AGENTS.md keeps the deployment repository's project key out of the tree.
+// A withheld row cites the Legion issue that withholds it, and only Legion's own keys:
+// .github/scripts/check-private-names.sh keeps the deployment repository's project key out of the tree.
 func TestWithheldRowsCiteALegionIssue(t *testing.T) {
 	for _, row := range Table {
 		if row.Site != SiteWithheld {

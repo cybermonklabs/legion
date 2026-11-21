@@ -89,6 +89,11 @@ function literalOfSet(api: ZodApi, values: readonly SchemaLiteral[]): ZodNode | 
   return values.every((value) => node.safeParse(value).success) ? node : undefined;
 }
 
+/**
+ * The `SchemaApi` over a host's own Zod, which every Dispatch spec's `arguments` builds its fields
+ * through. The host's Zod can be Oh My Pi's `pi.zod` facade, which differs from zod v4 (`ZodApi`'s
+ * `literal`, `ZodNode`'s `max`), so a spec never builds a field with zod itself.
+ */
 export function zodSchemaApi(zod: unknown): SchemaApi<z.ZodType> {
   const api = zod as ZodApi;
 

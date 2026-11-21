@@ -4036,9 +4036,9 @@ calls too), and its grant adds none of those calls, so the server refuses it the
 
 ## Changing the module
 
-`AGENTS.md` in this directory gives the rules every change and every component follows. Run each
-go command from `packages/envoy/infra`, whose own `go.work` binds this module and `packages/envoy`;
-`./...` from `packages/envoy` does not reach this module.
+`AGENTS.md` in this directory holds the rules a change to this module follows. Run each go command
+from `packages/envoy/infra`, whose own `go.work` binds this module and `packages/envoy`; `./...`
+from `packages/envoy` does not reach this module.
 
 ```bash
 gofmt -l .

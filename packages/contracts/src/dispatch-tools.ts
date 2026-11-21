@@ -28,7 +28,9 @@ export interface DispatchToolSpec {
   readonly example: Readonly<Record<string, unknown>>;
 }
 
-/** Builds a host-owned schema and applies any tool-level cross-field validation. */
+/** Builds a host-owned schema and applies any tool-level cross-field validation. A host validates a
+ *  call with this, over `zodSchemaApi(hostZod)`: an object built from `spec.arguments` alone skips
+ *  `validation` and `strict`. */
 export function dispatchToolSchema<E extends SchemaNode<E>>(
   spec: DispatchToolSpec,
   z: SchemaApi<E>,
@@ -744,7 +746,8 @@ export const SEARCH_QUERY_HINT = "search with a short phrase of a few words, not
 export const SEARCH_KIND_DEPTH = 100;
 
 /** A whole project key, as the Dispatch server creates them, generated into Go as
- *  `contracts.ProjectKeyPattern` (and held by the `projects.key` check constraint). */
+ *  `contracts.ProjectKeyPattern` (and held by the `projects.key` check constraint). Its length is
+ *  part of the URL budget in `SEARCH_QUERY_MAX`'s doc comment: lengthening it redoes that sum. */
 export const PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
 
 /** PROJECT_KEY_PATTERN's rule in words. Every refusal of a key that is not a project key gives
@@ -2075,6 +2078,8 @@ export const dispatchToolSpecs = [
       "so narrow the query or name a project to reach the rest. Paging is exact only while the " +
       "corpus holds still: content added, changed, or removed between two offsets can shift rows " +
       "across a page boundary, so one hit can come back twice and another never.",
+    // Every argument rides in the request's URL: a new one, or a longer bound on one, redoes the
+    // URL budget in `SEARCH_QUERY_MAX`'s doc comment.
     arguments: (z) => ({
       query: z
         .string({

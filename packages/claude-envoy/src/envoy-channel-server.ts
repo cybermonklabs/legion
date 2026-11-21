@@ -830,7 +830,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * merges each registration's topics into the entry and never removes one, so a
    * registration sent after a topic's removal or after an id's deregistration
    * writes it back for good. Queued writes run in order, and a registration reads
-   * the id and topics when it runs rather than when it was requested.
+   * the id and topics when it runs rather than when it was requested. Nothing in
+   * the chain waits without a bound: a write that never settles holds every later
+   * one, and the shutdown's deregistration waits for the chain before it goes out.
    */
   let registryWrites: Promise<unknown> = Promise.resolve()
   const serialized = <T>(write: () => Promise<T>): Promise<T> => {
@@ -2507,6 +2509,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // Envoy delivery, and the reminders and notices the phase endpoint writes.
   const inbox = inboxSocket === undefined ? undefined : createInboxNotifier(inboxSocket)
 
+  // Tools alone, and no permission relay: nothing here authenticates who sent a reply, so a relayed
+  // permission request would let any Envoy payload approve a tool call.
   const server = new Server(MCP_SERVER_INFO, {
     capabilities: { tools: {} },
     instructions: CHANNEL_INSTRUCTIONS,

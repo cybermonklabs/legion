@@ -186,9 +186,9 @@ entry names a registry other than npm's: a configured mirror writes its own addr
 entry.
 
 A package's own commands are in its `README.md` where it has one, and the `AGENTS.md` at the root
-and beside most packages holds the rules for working in that part; `skills/AGENTS.md` covers the
-skills. The documentation site's [contributing page](https://cybermonklabs.github.io/legion/contributing/)
-covers writing its pages.
+and beside some packages holds the rules for working there that the code does not show;
+`skills/AGENTS.md` covers the skills. The documentation site's
+[contributing page](https://cybermonklabs.github.io/legion/contributing/) covers writing its pages.
 
 ## License
 

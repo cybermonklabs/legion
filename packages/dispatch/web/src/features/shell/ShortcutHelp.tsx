@@ -40,34 +40,25 @@ function keyTokens(keys: string): { key: string; token: string }[] {
     }));
 }
 
+/**
+ * Each scope's heading in `?`, in the order `?` lists the sections: the shell's own scope, then
+ * page scopes outermost first, then dialogs. Registration order would do, except React runs child
+ * layout effects first, so a page that mounts straight into its Board would list `board` above
+ * `project`. The type names every scope, so tsc refuses a scope left out.
+ */
 const SCOPE_LABELS: Record<KeymapScope, string> = {
-  agents: "Agents",
+  global: "Global",
+  project: "Project",
   architecture: "Architecture",
   board: "Board",
-  dialog: "Dialog",
-  document: "Document",
-  global: "Global",
-  inbox: "Inbox",
   issue: "Issue",
-  project: "Project",
+  document: "Document",
+  inbox: "Inbox",
+  agents: "Agents",
+  dialog: "Dialog",
 };
 
-/**
- * Section order in `?`: the shell's own scope, then page scopes outermost first, then dialogs.
- * Registration order would do, except React runs child layout effects first, so a page that
- * mounts straight into its Board would list `board` above `project`.
- */
-const SCOPE_ORDER: readonly KeymapScope[] = [
-  "global",
-  "project",
-  "architecture",
-  "board",
-  "issue",
-  "document",
-  "inbox",
-  "agents",
-  "dialog",
-];
+const SCOPE_ORDER = Object.keys(SCOPE_LABELS) as KeymapScope[];
 
 /**
  * Every registered shortcut, grouped by scope and live-filtered. `snapshot` is the registry as

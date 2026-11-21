@@ -25,7 +25,7 @@ Read it before you run a build or tests in your pod, read a shared database, rea
 
 ## Reading a shared database
 
-Read a database outside your pod through the read-only login whose URL is in the file `SESSION_READER_DSN_FILE` names. Never read it through the session URL the file `OMP_SESSION_SQL_DSN_FILE` names. Keep read-only inside one transaction (`BEGIN READ ONLY; … COMMIT;`, or `psql "$URL" --single-transaction -q -X -v ON_ERROR_STOP=1 -c 'SET TRANSACTION READ ONLY' -f <file>` with no `COMMIT` in the file): a session-wide setting stays on the pooled backend and fails the next client's writes. With no reader URL, report it as a fault of the deployment.
+Read a database outside your pod only through the read-only route your deployment's instructions name, inside one read-only transaction (`BEGIN READ ONLY; … COMMIT;`, or `psql "$URL" --single-transaction -q -X -v ON_ERROR_STOP=1 -c 'SET TRANSACTION READ ONLY' -f <file>` with no `COMMIT` in the file): a session-wide setting stays on the pooled backend and fails the next client's writes. Never read it through the session URL the file `OMP_SESSION_SQL_DSN_FILE` names. When the read-only route is missing, never fall back to a login that can write: stop and report it as a fault of the deployment.
 
 ## What the image carries
 

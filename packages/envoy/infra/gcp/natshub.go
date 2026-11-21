@@ -109,7 +109,9 @@ var (
 // healthCheckRanges are the source ranges of Google Cloud's health checks.
 var healthCheckRanges = []string{"130.211.0.0/22", "35.191.0.0/16"}
 
-// NatsHubArgs are the inputs of an envoy-infra:gcp:NatsHub.
+// NatsHubArgs are the inputs of an envoy-infra:gcp:NatsHub. A new plain string field the hub
+// carries joins seededInput, with a row in TestNatsHubRefusesASeedInAnyPlainInput: no test walks
+// these fields for one.
 type NatsHubArgs struct {
 	Users          []NATSUserArgs     `pulumi:"users,optional"` // see authorization for what may be empty
 	TailnetAuthKey pulumi.StringInput `pulumi:"tailnetAuthKey" provider:"secret"`
