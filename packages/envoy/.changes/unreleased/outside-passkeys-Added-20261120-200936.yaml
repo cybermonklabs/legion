@@ -21,11 +21,10 @@ body: |-
   The owner's access answer carries `passkeys` and `invitable`. Dispatch relays a passkey member's
   approvals to the broker under the outside origin as the approving account's issuer
   (`people.sub_issuer`, migration `20261120165538`). At the outside origin `/auth/start` and
-  `/auth/callback` now answer 404 unless `DISPATCH_SIGNIN_OUTSIDE=1`, and the passkey routes answer
-  404 at `DISPATCH_SERVER_URL`. With the setting turned off, a passkey member's cookie is refused
-  `401 NO_IDENTITY` with `reason` `OUTSIDE_SIGNIN_OFF`. Boot refuses the setting beside
-  `DISPATCH_SIGNIN_OUTSIDE=1`, without `DISPATCH_SIGNIN_DOMAIN` or `DISPATCH_OUTSIDE_ORIGIN`, and
-  under IAP or header identity.
+  `/auth/callback` answer 404 with the setting on or off, and the passkey routes answer 404 at
+  `DISPATCH_SERVER_URL`. With the setting turned off, a passkey member's cookie is refused
+  `401 NO_IDENTITY` with `reason` `OUTSIDE_SIGNIN_OFF`. Boot refuses the setting without
+  `DISPATCH_SIGNIN_DOMAIN` or `DISPATCH_OUTSIDE_ORIGIN`, and under IAP or header identity.
 time: 2026-11-20T20:09:36Z
 custom:
     Issue: outside-passkeys

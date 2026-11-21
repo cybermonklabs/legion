@@ -4392,7 +4392,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Start Google sign-in at the sign-in issuer:
   the Cognito sign-in pool, or Google itself for `DISPATCH_SIGNIN_DOMAIN`, asking for offline access with `prompt=consent` and the domain as `hd`, with the sign-in's state in the signed `dispatch_oauth_state` cookie.
-  The issuer sends the browser back to the callback of the origin the request came to: `DISPATCH_OUTSIDE_ORIGIN`'s when the request's `Host` is its host, else `DISPATCH_SERVER_URL`'s.
+  The issuer sends the browser back to `DISPATCH_SERVER_URL`'s callback, the one origin that serves Google's sign-in.
   `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`;
   `503 SIGNIN_UNAVAILABLE`, and no cookie, while the issuer's discovery document has not been read.
   At `DISPATCH_OUTSIDE_ORIGIN` it answers the `404` a path no route serves answers, as `/auth/callback` does there, with passkey sign-in on or off: a person from outside signs in there with a passkey (below), or not at all.
@@ -4405,7 +4405,6 @@ Each item below names a path with its method and identity, then its purpose.
   Record the person, their member kind and the refresh token (and, under a domain, the account's `sub`, ending the address's sessions when another account, or none, held it, and revoking its personal tokens when another account did), issue the cookie.
   Any process holding a key of the set completes a sign-in another process started.
   `400` "invalid or expired state" when the state cookie is missing, does not verify, has lapsed or names another state;
-  `500 IDENTITY_ERROR` and no cookie when the access lists cannot be read;
   `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document;
   `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie.
 
