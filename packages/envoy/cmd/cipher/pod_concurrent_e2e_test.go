@@ -77,7 +77,7 @@ func TestTwoPodsOfOneAccountEnrolThemselvesAtOnce(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			p.code = cmdEnrollPod("legion-daemon", tokenFiles[i], p.out, &p.stdout, &p.stderr)
+			p.code = cmdEnrollPod("legion-daemon", tokenFiles[i], p.out, podProjects{}, &p.stdout, &p.stderr)
 		}()
 	}
 	close(start)
@@ -147,7 +147,7 @@ func TestAPodEnrolsItselfAgainstTheRealBroker(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "keys")
 
 	var stdout, stderr strings.Builder
-	if code := cmdEnrollPod("legion-daemon", tokenFile, out, &stdout, &stderr); code != 0 {
+	if code := cmdEnrollPod("legion-daemon", tokenFile, out, podProjects{}, &stdout, &stderr); code != 0 {
 		t.Fatalf("enroll --pod against the real broker = exit %d, stderr %q", code, stderr.String())
 	}
 	id := strings.TrimSpace(stdout.String())
@@ -183,7 +183,7 @@ func TestAPodEnrolsItselfAgainstTheRealBroker(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := cmdEnrollPod("legion-daemon", tokenFile, out, &stdout, &stderr); code != 0 {
+	if code := cmdEnrollPod("legion-daemon", tokenFile, out, podProjects{}, &stdout, &stderr); code != 0 {
 		t.Fatalf("the re-run = exit %d, stderr %q", code, stderr.String())
 	}
 	if again := strings.TrimSpace(stdout.String()); again != id {

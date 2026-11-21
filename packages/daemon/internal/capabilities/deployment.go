@@ -384,8 +384,8 @@ func (d Deployment) measure(name Name) (bool, Source, string) {
 // cacheRoom is the repository-cache-room row's measurement, from each cache's last health read.
 // It is satisfied while no cache that reports its room carries a failure for lack of space, and
 // its detail then counts the caches read, those among them of an earlier release, which send no
-// room figures, and those unread, neither of which opens it. A cache of a repository the mapping
-// no longer serves counts like any other while it stays. Otherwise its detail names each failing
+// room figures, and those unread, neither of which opens it. A cache of a repository the cache
+// set no longer names counts like any other while it stays. Otherwise its detail names each failing
 // cache (outOfRoom), then where room comes from: growing the claim in place gives that cache room
 // now, and runtime.kubernetes.repository_cache.volume sizes the caches the daemon makes later. The
 // tmux runtime runs no cache, and a Kubernetes deployment with none has nothing to report.

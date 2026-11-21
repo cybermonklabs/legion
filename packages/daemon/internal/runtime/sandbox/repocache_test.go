@@ -766,17 +766,17 @@ func TestCensusAcceptsACacheSandboxAndRefusesAMalformedOne(t *testing.T) {
 	}
 }
 
-// The orphan sweep makes a mapped repository's cache that is missing, keeps it, replacing a pod of
-// it that drifted, and retires an unmapped one: marked with when it left the mapping, kept while
-// that is under Retain, then deleted in the foreground with its volume; one mapped again before
-// then loses the mark and stays. The claim path's sweep never judges a cache.
-func TestReconcileOrphansKeepsAMappedCacheAndRetiresAnUnmappedOne(t *testing.T) {
-	var mapped atomic.Bool
-	mapped.Store(true)
+// The orphan sweep makes the missing cache of a repository of the cache set, keeps it, replacing a
+// pod of it that drifted, and retires one outside the set: marked with when it left the set, kept
+// while that is under Retain, then deleted in the foreground with its volume; one back in the set
+// before then loses the mark and stays. The claim path's sweep never judges a cache.
+func TestReconcileOrphansKeepsACacheInTheSetAndRetiresOneOutsideIt(t *testing.T) {
+	var inSet atomic.Bool
+	inSet.Store(true)
 	logs := &logBuffer{}
 	g := newRig(t, nil, withLog(logs), withOptions(func(o *Options) {
-		o.Mapped = func() []ghrepo.Repository {
-			if mapped.Load() {
+		o.CacheRepositories = func() []ghrepo.Repository {
+			if inSet.Load() {
 				return []ghrepo.Repository{cacheRepo}
 			}
 			return nil
@@ -797,17 +797,17 @@ func TestReconcileOrphansKeepsAMappedCacheAndRetiresAnUnmappedOne(t *testing.T) 
 			t.Fatalf("ReconcileOrphans %s: %v", what, err)
 		}
 	}
-	unmappedAt := func() string {
+	unusedAt := func() string {
 		g.t.Helper()
 		if s := g.sandbox(name); s != nil {
-			return s.Annotations[annotationCacheUnmappedAt]
+			return s.Annotations[annotationCacheUnusedAt]
 		}
 		return "gone"
 	}
 
-	sweep("with a mapped repository that has no cache")
+	sweep("with a repository of the set that has no cache")
 	if writes := g.sandboxWrites(); !slices.Contains(writes, "create sandboxes "+name) {
-		t.Fatalf("the sweep wrote %q, want the mapped repository's cache made", writes)
+		t.Fatalf("the sweep wrote %q, want the cache of the set's repository made", writes)
 	}
 	g.eventually("the cache pod", func() bool { return g.r.storedPod(name) != nil })
 	g.eventually("the Running cache in the store", func() bool {
@@ -815,38 +815,38 @@ func TestReconcileOrphansKeepsAMappedCacheAndRetiresAnUnmappedOne(t *testing.T) 
 		return s != nil && s.mode() == modeRunning
 	})
 
-	sweep("of a mapped cache")
+	sweep("of a cache in the set")
 	if writes := g.sandboxWrites(); len(writes) != 0 {
-		t.Errorf("the sweep of a mapped cache wrote %q", writes)
+		t.Errorf("the sweep of a cache in the set wrote %q", writes)
 	}
 	if strings.Contains(logs.String(), "level=WARN") {
-		t.Errorf("the sweep of a mapped cache warned:\n%s", logs)
+		t.Errorf("the sweep of a cache in the set warned:\n%s", logs)
 	}
 
-	mapped.Store(false)
-	sweep("of an unmapped cache")
-	marked := unmappedAt()
+	inSet.Store(false)
+	sweep("of a cache outside the set")
+	marked := unusedAt()
 	if at, err := time.Parse(time.RFC3339, marked); err != nil || !at.Equal(rigNow.Truncate(time.Second)) {
-		t.Fatalf("the unmapped cache is marked %q, want the sweep's time %s", marked, rigNow)
+		t.Fatalf("the cache outside the set is marked %q, want the sweep's time %s", marked, rigNow)
 	}
 	g.eventually("the mark in the store", func() bool {
 		s, _ := g.r.storedSandbox(name)
-		return s != nil && s.Annotations[annotationCacheUnmappedAt] == marked
+		return s != nil && s.Annotations[annotationCacheUnusedAt] == marked
 	})
 	g.advance(167 * time.Hour)
 	sweep("within the retention")
-	if unmappedAt() != marked || len(propagation) != 0 {
-		t.Fatalf("the cache inside its retention is %q, deleted %v; want it kept as marked", unmappedAt(), propagation)
+	if unusedAt() != marked || len(propagation) != 0 {
+		t.Fatalf("the cache inside its retention is %q, deleted %v; want it kept as marked", unusedAt(), propagation)
 	}
 
-	mapped.Store(true)
-	sweep("of a cache mapped again")
-	if got := unmappedAt(); got != "" {
-		t.Fatalf("the cache mapped again is still marked %q", got)
+	inSet.Store(true)
+	sweep("of a cache back in the set")
+	if got := unusedAt(); got != "" {
+		t.Fatalf("the cache back in the set is still marked %q", got)
 	}
 	g.eventually("the patch in the store", func() bool {
 		s, _ := g.r.storedSandbox(name)
-		return s != nil && s.Annotations[annotationCacheUnmappedAt] == ""
+		return s != nil && s.Annotations[annotationCacheUnusedAt] == ""
 	})
 
 	g.update(g.pod(name), func(p *corev1.Pod) { p.Spec.Containers[0].Image = "ghcr.io/cybermonklabs/legion-worker@sha256:0ld" })
@@ -854,7 +854,7 @@ func TestReconcileOrphansKeepsAMappedCacheAndRetiresAnUnmappedOne(t *testing.T) 
 		_, drifted := imageDrift(g.r.storedPod(name), testImage)
 		return drifted
 	})
-	sweep("of a mapped cache whose pod drifted")
+	sweep("of a cache in the set whose pod drifted")
 	var suspended, running bool
 	for _, w := range g.writes() {
 		if w.resource == "sandboxes" && w.verb == "patch" {
@@ -866,11 +866,11 @@ func TestReconcileOrphansKeepsAMappedCacheAndRetiresAnUnmappedOne(t *testing.T) 
 		t.Errorf("the sweep of a drifted cache suspended %t and set Running %t, want both", suspended, running)
 	}
 
-	mapped.Store(false)
-	sweep("of an unmapped cache again")
+	inSet.Store(false)
+	sweep("of a cache outside the set again")
 	g.eventually("the mark in the store", func() bool {
 		s, _ := g.r.storedSandbox(name)
-		return s != nil && s.Annotations[annotationCacheUnmappedAt] != ""
+		return s != nil && s.Annotations[annotationCacheUnusedAt] != ""
 	})
 	g.advance(168 * time.Hour)
 	sweep("past the retention")
@@ -882,19 +882,21 @@ func TestReconcileOrphansKeepsAMappedCacheAndRetiresAnUnmappedOne(t *testing.T) 
 	}
 }
 
-// The set the sweep judges caches against is the repositories the project works, which is the
-// mapping's and those of its live issue records (Options.Mapped), so a repository no mapping
-// names gets and keeps a cache for as long as a live record names it: one volume and one pod per
-// such repository. Once no record and no mapping names it — its last issue is done — the cache is
-// marked, kept for its retention and retired, which is the one rule the sweep has.
-func TestReconcileOrphansKeepsTheCacheOfARepositoryOnlyARecordNames(t *testing.T) {
-	// The mapping names acme/widgets; stranger/tools is named by a live issue record alone.
+// The set the sweep judges caches against is the repositories of the project's live issue records
+// and of the launches since the daemon last read them (Options.CacheRepositories), so a
+// repository gets and keeps a cache for as long as a live record names it: one volume and one pod
+// per such repository. Once no record names it — its last issue is done — the cache is marked,
+// kept for its retention and retired, which is the one rule the sweep has, and the cache of a
+// repository a live record still names is kept.
+func TestReconcileOrphansKeepsTheCacheOfARepositoryWhileARecordNamesIt(t *testing.T) {
+	// A live record names acme/widgets throughout; stranger/tools is named by a live record until
+	// its issue is done.
 	recorded := ghrepo.MustParse("stranger/tools")
 	var live atomic.Bool
 	live.Store(true)
 	logs := &logBuffer{}
 	g := newRig(t, nil, withLog(logs), withOptions(func(o *Options) {
-		o.Mapped = func() []ghrepo.Repository {
+		o.CacheRepositories = func() []ghrepo.Repository {
 			if live.Load() {
 				return []ghrepo.Repository{cacheRepo, recorded}
 			}
@@ -910,7 +912,7 @@ func TestReconcileOrphansKeepsTheCacheOfARepositoryOnlyARecordNames(t *testing.T
 		}
 	}
 
-	sweep("with a repository only a record names")
+	sweep("with a repository a record names")
 	if writes := g.sandboxWrites(); !slices.Contains(writes, "create sandboxes "+name) {
 		t.Fatalf("the sweep wrote %q, want the cache of the repository a record names made", writes)
 	}
@@ -920,15 +922,15 @@ func TestReconcileOrphansKeepsTheCacheOfARepositoryOnlyARecordNames(t *testing.T
 	if writes := g.sandboxWrites(); len(writes) != 0 {
 		t.Errorf("the sweep of a cache a live record names wrote %q, want it kept untouched", writes)
 	}
-	if s := g.sandbox(name); s == nil || s.Annotations[annotationCacheUnmappedAt] != "" {
-		t.Fatalf("the cache of %s is %v, want it kept unmarked while a record names it: no mapping names it and it is served all the same", recorded, s)
+	if s := g.sandbox(name); s == nil || s.Annotations[annotationCacheUnusedAt] != "" {
+		t.Fatalf("the cache of %s is %v, want it kept unmarked while a record names it", recorded, s)
 	}
 
 	live.Store(false)
-	sweep("once no record and no mapping names it")
+	sweep("once no record names it")
 	g.eventually("the mark in the store", func() bool {
 		s, _ := g.r.storedSandbox(name)
-		return s != nil && s.Annotations[annotationCacheUnmappedAt] != ""
+		return s != nil && s.Annotations[annotationCacheUnusedAt] != ""
 	})
 	g.advance(168 * time.Hour)
 	sweep("past the retention")
@@ -936,22 +938,22 @@ func TestReconcileOrphansKeepsTheCacheOfARepositoryOnlyARecordNames(t *testing.T
 		t.Fatalf("the cache of %s past its retention is %v, want it retired", recorded, g.sandbox(name))
 	}
 	if g.sandbox(CacheSandboxName(testProject, cacheRepo)) == nil {
-		t.Fatal("the mapped repository's cache was retired with it, want it kept")
+		t.Fatal("the cache of acme/widgets, which a live record still names, was retired with it, want it kept")
 	}
 	if !strings.Contains(logs.String(), recorded.String()) {
 		t.Errorf("the retirement was not logged with its repository:\n%s", logs)
 	}
 }
 
-// The sweep reads a cache's repository as its annotation spells it, against the repositories the
-// mapping serves, and resolves no configured rename: nothing under this package does. With the
-// pair's two names both named in the configuration and the load serving them as one entry, the
-// repository GitHub holds the pair under now, the cache of that served name is kept and the cache
-// of the recorded name is marked unmapped, to be kept for its retention and retired after it, as
-// any cache whose repository left the mapping is.
+// The sweep reads a cache's repository as its annotation spells it, against the cache set, and
+// resolves no configured rename: nothing under this package does. With the pair's two names both
+// named in the configuration and the set holding the pair's served name alone, the repository
+// GitHub holds the pair under now, the cache of that served name is kept and the cache of the
+// recorded name is marked, to be kept for its retention and retired after it, as any cache whose
+// repository left the set is.
 //
 // That is the sweep's verdict today, and resolving a rename per repository rather than per owner
-// does not move it: the sweep asks the mapping about a name, never about an owner, so neither
+// does not move it: the sweep asks the set about a name, never about an owner, so neither
 // state of the owner set changes what it keeps. While the recorded name's cache is kept it stays
 // at its own address, with a token minted for the owner serving the repository now, which is what
 // keeps the pods addressed at it fetching.
@@ -964,30 +966,211 @@ func TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes(t *testing.T) {
 		name := CacheSandboxName(testProject, repo)
 		g.eventually("the cache pod of "+repo.String(), func() bool { return g.r.storedPod(name) != nil })
 	}
-	kept, unmapped := CacheSandboxName(testProject, servingSmoke), CacheSandboxName(testProject, recordedSmoke)
+	kept, unused := CacheSandboxName(testProject, servingSmoke), CacheSandboxName(testProject, recordedSmoke)
 
 	if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
 		t.Fatalf("ReconcileOrphans over both of the pair's caches: %v", err)
 	}
 
-	g.eventually("the recorded name's cache marked unmapped", func() bool {
-		s, _ := g.r.storedSandbox(unmapped)
-		return s != nil && s.Annotations[annotationCacheUnmappedAt] != ""
+	g.eventually("the recorded name's cache marked", func() bool {
+		s, _ := g.r.storedSandbox(unused)
+		return s != nil && s.Annotations[annotationCacheUnusedAt] != ""
 	})
-	marked := g.sandbox(unmapped)
+	marked := g.sandbox(unused)
 	if marked == nil || marked.Annotations[annotationCacheRepo] != recordedSmoke.String() {
 		t.Fatalf("the cache of %s is %+v, want it kept at its own address, annotated with the repository the record names", recordedSmoke, marked)
 	}
-	if at, err := time.Parse(time.RFC3339, marked.Annotations[annotationCacheUnmappedAt]); err != nil || !at.Equal(rigNow.Truncate(time.Second)) {
-		t.Errorf("the cache of %s is marked %q, want the sweep's time %s: the mapping serves the pair as one entry, %s", recordedSmoke, marked.Annotations[annotationCacheUnmappedAt], rigNow, servingSmoke)
+	if at, err := time.Parse(time.RFC3339, marked.Annotations[annotationCacheUnusedAt]); err != nil || !at.Equal(rigNow.Truncate(time.Second)) {
+		t.Errorf("the cache of %s is marked %q, want the sweep's time %s: the set holds the pair's served name alone, %s", recordedSmoke, marked.Annotations[annotationCacheUnusedAt], rigNow, servingSmoke)
 	}
-	if s := g.sandbox(kept); s == nil || s.Annotations[annotationCacheUnmappedAt] != "" {
-		t.Errorf("the cache of %s is %+v, want the mapped cache kept and marked with nothing", servingSmoke, s)
+	if s := g.sandbox(kept); s == nil || s.Annotations[annotationCacheUnusedAt] != "" {
+		t.Errorf("the cache of %s is %+v, want the cache of the set's repository kept and marked with nothing", servingSmoke, s)
 	}
-	for name, repo := range map[string]ghrepo.Repository{kept: servingSmoke, unmapped: recordedSmoke} {
+	for name, repo := range map[string]ghrepo.Repository{kept: servingSmoke, unused: recordedSmoke} {
 		if got := string(g.secret(cacheSecretName(name)).Data[provisionTokenKey]); got != "ghs_provision_"+servingSmoke.Owner() {
 			t.Errorf("the cache of %s holds the token %q, want one minted for %s, the owner serving the repository now", repo, got, servingSmoke.Owner())
 		}
+	}
+}
+
+// A cache the sweep of a release before INFRA-4401 marked under the old annotation
+// (annotationCacheOldUnusedAt) loses it at the first pass of this release's sweep, as INFRA-4401's
+// A4 requires, and retires one retention after its first mark, the earlier of its marks that parse
+// as a time. Five caches meet one first pass:
+//  1. outside the cache set, marked under the old annotation half a retention before the sweep: it
+//     carries that time under annotationCacheUnusedAt and no old annotation, is kept at a sweep one
+//     second short of one retention from that mark, and is retired at the first sweep after, one
+//     retention from it;
+//  2. outside the set, its old mark older than one retention: it is retired at that pass;
+//  3. in the set: it loses the old annotation and carries no new one;
+//  4. outside the set, carrying both marks, the old one the earlier: it carries the old mark's time
+//     under annotationCacheUnusedAt and no old annotation;
+//  5. outside the set, its old mark not a time: it carries a mark of the sweep's time and no old
+//     annotation, and one WARN line names the cache and the value.
+//
+// Each has one INFO line naming the cache, its repository, the old annotation's value and what
+// the pass did. The old marks are written as the literal, as an earlier release left them;
+// dispatch://INFRA-3532's pull request deletes the literal and this test with
+// annotationCacheOldUnusedAt. The controls, each run in a copy of the tree: the old annotation
+// left in place (markUnused's patch without annotationCacheOldUnusedAt), which fails cases 1, 3, 4
+// and 5, each cache still carrying it; the old mark ignored (sweepOldMarkedCache never taking
+// annotationCacheOldUnusedAt as a first mark), which fails case 1, marked at the sweep's time,
+// case 4, its later mark kept, and case 2, kept and not retired; the later mark kept (the old mark
+// read only where the new one is absent or not a time), which fails case 4; and a cache none of
+// whose marks parses kept untouched, which fails case 5, still carrying the old annotation.
+func TestACacheMarkedUnderTheOldAnnotationRetiresOneRetentionAfterItsFirstMark(t *testing.T) {
+	const oldAnnotation = "legion.dev/cache-unmapped-at"
+	inSet := ghrepo.MustParse("acme/sprockets")
+	logs := &logBuffer{}
+	g := newRig(t, nil, withLog(logs), withOptions(func(o *Options) {
+		o.CacheRepositories = func() []ghrepo.Repository { return []ghrepo.Repository{inSet} }
+	}))
+	retain := g.r.cacheConfig.Retain
+	stamp := func(at time.Time) string { return at.UTC().Format(time.RFC3339) }
+	halfway, expired := rigNow.Add(-retain/2), rigNow.Add(-retain-retain/2)
+	earlier, later := rigNow.Add(-24*time.Hour), rigNow.Add(-time.Hour)
+	// caches are the five cases, in order: each one's repository, the marks an earlier release left
+	// on its cache, and the words its INFO line holds besides the cache, repository and old value.
+	caches := []struct {
+		repo  ghrepo.Repository
+		marks map[string]string
+		did   []string
+	}{
+		{cacheRepo, map[string]string{oldAnnotation: stamp(halfway)},
+			[]string{"repository cache marked at its first mark, its old annotation removed", annotationCacheUnusedAt + "=" + stamp(halfway)}},
+		{ghrepo.MustParse("acme/gadgets"), map[string]string{oldAnnotation: stamp(expired)},
+			[]string{"retired a repository cache no longer in the cache set", "kept=" + (retain + retain/2).String()}},
+		{inSet, map[string]string{oldAnnotation: stamp(halfway)},
+			[]string{"repository cache back in the cache set; its marks cleared"}},
+		{ghrepo.MustParse("acme/gizmos"), map[string]string{oldAnnotation: stamp(earlier), annotationCacheUnusedAt: stamp(later)},
+			[]string{"repository cache marked at its first mark, its old annotation removed", annotationCacheUnusedAt + "=" + stamp(earlier)}},
+		{ghrepo.MustParse("acme/doohickeys"), map[string]string{oldAnnotation: "yesterday"},
+			[]string{"repository cache no longer in the cache set; kept for its retention"}},
+	}
+	names := make([]string, len(caches))
+	for i, c := range caches {
+		name := CacheSandboxName(testProject, c.repo)
+		names[i] = name
+		if err := g.r.EnsureRepositoryCache(g.ctx, c.repo); err != nil {
+			t.Fatalf("make the cache of %s: %v", c.repo, err)
+		}
+		g.eventually("the cache pod of "+c.repo.String(), func() bool { return g.r.storedPod(name) != nil })
+		s := g.sandbox(name)
+		if s == nil {
+			t.Fatalf("the cache Sandbox %s is absent", name)
+		}
+		maps.Copy(s.Annotations, c.marks)
+		u, err := encodeSandbox(*s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := g.dyn.Tracker().Update(sandboxGVR, u, testNamespace); err != nil {
+			t.Fatal(err)
+		}
+		g.eventually("the marks of "+c.repo.String()+" in the store", func() bool {
+			stored, _ := g.r.storedSandbox(name)
+			if stored == nil {
+				return false
+			}
+			for key, value := range c.marks {
+				if stored.Annotations[key] != value {
+					return false
+				}
+			}
+			return true
+		})
+	}
+	sweep := func(what string) {
+		t.Helper()
+		if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
+			t.Fatalf("ReconcileOrphans %s: %v", what, err)
+		}
+	}
+	// marked answers case i+1's cache as the first pass left it, failing the test when it is gone
+	// or still carries the old annotation.
+	marked := func(i int) *sandbox {
+		t.Helper()
+		s := g.sandbox(names[i])
+		if s == nil {
+			t.Errorf("case %d: the first pass retired the cache of %s, want it kept", i+1, caches[i].repo)
+			return nil
+		}
+		if old, held := s.Annotations[oldAnnotation]; held {
+			t.Errorf("case %d: the cache of %s still carries %s=%q after the first pass, want it removed", i+1, caches[i].repo, oldAnnotation, old)
+		}
+		return s
+	}
+
+	before := logs.Len()
+	sweep("the first pass, over five caches marked under the old annotation")
+
+	if s := marked(0); s != nil {
+		if got := s.Annotations[annotationCacheUnusedAt]; got != stamp(halfway) {
+			t.Errorf("case 1: the cache is marked %q under %s, want its first mark's time %s: the sweep ignored the old mark", got, annotationCacheUnusedAt, stamp(halfway))
+		}
+	}
+	if s := g.sandbox(names[1]); s != nil {
+		t.Errorf("case 2: the cache whose old mark is older than one retention is %v after the first pass, want it retired at that pass: the sweep ignored the old mark", s.Annotations)
+	}
+	if s := marked(2); s != nil {
+		if got, held := s.Annotations[annotationCacheUnusedAt]; held {
+			t.Errorf("case 3: the cache in the set is marked %q under %s, want no mark", got, annotationCacheUnusedAt)
+		}
+	}
+	if s := marked(3); s != nil {
+		if got := s.Annotations[annotationCacheUnusedAt]; got != stamp(earlier) {
+			t.Errorf("case 4: the cache is marked %q under %s, want the old mark's time %s, the earlier of its two: the sweep kept the later mark", got, annotationCacheUnusedAt, stamp(earlier))
+		}
+	}
+	if s := marked(4); s != nil {
+		if got := s.Annotations[annotationCacheUnusedAt]; got != stamp(rigNow) {
+			t.Errorf("case 5: the cache whose old mark is not a time is marked %q under %s, want the sweep's time %s", got, annotationCacheUnusedAt, stamp(rigNow))
+		}
+	}
+	logged := logs.String()[before:]
+	for i, c := range caches {
+		var lines []string
+		for _, line := range linesHolding(logged, "sandbox="+names[i]+" ") {
+			if strings.Contains(line, "level=INFO") && strings.Contains(line, oldAnnotation+"="+c.marks[oldAnnotation]) {
+				lines = append(lines, line)
+			}
+		}
+		if len(lines) != 1 {
+			t.Errorf("case %d: the first pass logged %q for the cache of %s, want one INFO line naming its old annotation's value", i+1, lines, c.repo)
+			continue
+		}
+		for _, want := range append([]string{"repo=" + c.repo.String()}, c.did...) {
+			if !strings.Contains(lines[0], want) {
+				t.Errorf("case %d: the INFO line of the cache of %s is %q, want it to hold %q", i+1, c.repo, lines[0], want)
+			}
+		}
+	}
+	if warned := linesHolding(logged, "level=WARN"); len(warned) != 1 || !strings.Contains(warned[0], "sandbox="+names[4]+" ") || !strings.Contains(warned[0], "repo="+caches[4].repo.String()) || !strings.Contains(warned[0], oldAnnotation+"=yesterday") {
+		t.Errorf("the first pass warned %q, want one WARN line naming the cache of %s and its old mark, yesterday", warned, caches[4].repo)
+	}
+
+	g.eventually("case 1's first mark in the store", func() bool {
+		stored, _ := g.r.storedSandbox(names[0])
+		if stored == nil {
+			return false
+		}
+		_, old := stored.Annotations[oldAnnotation]
+		return stored.Annotations[annotationCacheUnusedAt] != "" && !old
+	})
+	g.advance(retain/2 - time.Second)
+	sweep("one second short of one retention from case 1's first mark")
+	if g.sandbox(names[0]) == nil {
+		t.Fatal("case 1: the cache was retired before one retention had passed from its first mark")
+	}
+	g.advance(time.Second)
+	sweep("one retention from case 1's first mark")
+	if s := g.sandbox(names[0]); s != nil {
+		t.Fatalf("case 1: the cache one retention from its first mark is %v, want it retired", s.Annotations)
+	}
+	if retired := linesHolding(logs.String(), "retired a repository cache no longer in the cache set"); !slices.ContainsFunc(retired, func(line string) bool {
+		return strings.Contains(line, "sandbox="+names[0]+" ") && strings.Contains(line, "kept="+retain.String())
+	}) {
+		t.Errorf("case 1: the retirement was not logged with how long the cache was kept, one retention from its first mark: %q", retired)
 	}
 }
 
@@ -1081,7 +1264,7 @@ func TestEnsureRepositoryCacheReplacesACachePodRunningAnotherServiceAccount(t *t
 	})
 }
 
-// A mapped repository whose cache cannot be made — its token cannot be minted — is logged
+// A repository of the cache set whose cache cannot be made — its token cannot be minted — is logged
 // as the sweep's warning naming the cache and tried at the next sweep; ReconcileOrphans answers
 // nil, since its error holds the claims' launches back at boot and each launch ensures its own
 // repository's cache.
@@ -1089,7 +1272,7 @@ func TestACacheThatCannotBeMadeNeverFailsTheReconciliation(t *testing.T) {
 	logs := &logBuffer{}
 	g := newRig(t, nil, withLog(logs), withOptions(func(o *Options) {
 		o.Tokens = refusingTokens{}
-		o.Mapped = func() []ghrepo.Repository { return []ghrepo.Repository{cacheRepo} }
+		o.CacheRepositories = func() []ghrepo.Repository { return []ghrepo.Repository{cacheRepo} }
 	}))
 	for range 2 {
 		if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
@@ -1264,7 +1447,8 @@ func TestAnIssuePodsFetchIsToldItsRepositorysCacheAndItsToken(t *testing.T) {
 // place — and with what its /healthz answered at the last health read (on the gh refresher's
 // tick): a Ready cache's head, bytes and last fetch, and its room on its volume with the time its
 // repack last failed for lack of space, a cache that could not be read with why, and one not Ready
-// with nothing read. A cache of a repository no longer mapped carries when the sweep retires it.
+// with nothing read. A cache of a repository the set no longer holds carries when the sweep retires
+// it.
 func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 	fetched := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
 	repackFailed := time.Date(2026, 11, 19, 2, 15, 33, 0, time.UTC)
@@ -1284,11 +1468,11 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 	t.Cleanup(served.Close)
 	network := &podNetwork{routes: map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}}
 	gadgets := ghrepo.MustParse("acme/gadgets")
-	var mapped atomic.Bool
-	mapped.Store(true)
+	var inSet atomic.Bool
+	inSet.Store(true)
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.Mapped = func() []ghrepo.Repository {
-			if mapped.Load() {
+		o.CacheRepositories = func() []ghrepo.Repository {
+			if inSet.Load() {
 				return []ghrepo.Repository{cacheRepo, gadgets}
 			}
 			return []ghrepo.Repository{cacheRepo}
@@ -1307,13 +1491,13 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 		p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
 	})
 	g.eventually("the cache ready", func() bool { status, _ := g.r.RepositoryCache(cacheRepo); return status.Ready })
-	mapped.Store(false)
+	inSet.Store(false)
 	if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
 		t.Fatal(err)
 	}
 	g.eventually("acme/gadgets marked", func() bool {
 		s, _ := g.r.storedSandbox(CacheSandboxName(testProject, gadgets))
-		return s != nil && s.Annotations[annotationCacheUnmappedAt] != ""
+		return s != nil && s.Annotations[annotationCacheUnusedAt] != ""
 	})
 
 	before := g.r.RepositoryCaches()
@@ -1338,7 +1522,7 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 		}
 	}
 	if gadgetsCache := caches[0]; gadgetsCache.Ready || gadgetsCache.Health != nil || gadgetsCache.HealthError != "" || gadgetsCache.RetainedUntil.IsZero() {
-		t.Errorf("the unmapped, not-Ready cache is %+v, want nothing read and its retention", gadgetsCache)
+		t.Errorf("the not-Ready cache outside the set is %+v, want nothing read and its retention", gadgetsCache)
 	}
 	widgets := caches[1]
 	if !widgets.Ready || widgets.Health == nil || widgets.Health.Head != "0123abcd" || widgets.Health.Bytes != 6612345678 || !widgets.Health.LastFetchAt.Equal(fetched) || widgets.HealthError != "" {

@@ -1489,11 +1489,11 @@ func TestConfigCheckNamesTheDerivedProbeBudget(t *testing.T) {
 
 // defaultCacheLine is the line `legion config check` prints under kubernetes for the repository cache at
 // its defaults, before the plugins line.
-const defaultCacheLine = "repository cache: a 20Gi volume per mapped repository, fetched from GitHub every 10 minutes, kept 168 hours after its repository leaves the mapping; its container reserves cpu 1, memory 4Gi, ephemeral storage 1Gi under 2Gi\n"
+const defaultCacheLine = "repository cache: a 20Gi volume for each repository a live record names, fetched from GitHub every 10 minutes, kept 168 hours after no live record names it; its container reserves cpu 1, memory 4Gi, ephemeral storage 1Gi under 2Gi\n"
 
-// `legion config check` names the repository cache each mapped repository gets, as the file settles it:
-// the defaults, or the file's own members over them, a raised limit alone requested in full and a
-// lower request named under its limit, as a role's.
+// `legion config check` names the repository cache each repository a live record names gets, as
+// the file settles it: the defaults, or the file's own members over them, a raised limit alone
+// requested in full and a lower request named under its limit, as a role's.
 func TestConfigCheckNamesTheRepositoryCache(t *testing.T) {
 	legionState(t)
 	secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
@@ -1501,7 +1501,7 @@ func TestConfigCheckNamesTheRepositoryCache(t *testing.T) {
 	config := kubernetesCheckConfig(t, "    repository_cache: {volume: 50Gi, refresh_minutes: 5, retain_hours: 24, resources: {cpu: \"2\", memory: 8Gi, memory_request: 4Gi}}\n")
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
-	cache := "repository cache: a 50Gi volume per mapped repository, fetched from GitHub every 5 minutes, kept 24 hours after its repository leaves the mapping; its container reserves cpu 2, memory 4Gi under 8Gi, ephemeral storage 1Gi under 2Gi\n"
+	cache := "repository cache: a 50Gi volume for each repository a live record names, fetched from GitHub every 5 minutes, kept 24 hours after no live record names it; its container reserves cpu 2, memory 4Gi under 8Gi, ephemeral storage 1Gi under 2Gi\n"
 	if want := demoCheckConfigOK + secretsGap + cache + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -2504,45 +2504,129 @@ func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 	}
 }
 
-// An operator reading plain `legion state` is told each served repository Dispatch's GitHub App is
-// not known to be installed on, one line each with why, as the daemon serves the state; with none
-// the one line says so. The body is the one contract 152 serves: a served repository carries each
-// role App's installation (`apps`) beside its `default`.
+// An operator reading plain `legion state` is told each repository a live record names that
+// Dispatch's GitHub App is not known to be installed on, one line each with why, as the daemon
+// serves the state; with none the one line says so. The body is the one this contract serves:
+// `withoutWebhookApp` lists each such repository with its reason, in contract 152's shape, and is
+// the block's one report of the webhook App, so it is the list the lines are read from. A block
+// with no such list says nothing of the webhook App and gets no line at all.
 func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
 	missing := "Dispatch's GitHub App is not installed on acme/widgets: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
+	failed := "the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"
+	both := `"apps":{"implement":true,"review":true}`
+	live := `[{"repo":"acme/tools",` + both + `},{"repo":"acme/widgets",` + both + `},{"repo":"zeta/tools",` + both + `}]`
 	for _, tc := range []struct {
-		name, gaps, want string
+		name, block, want string
 	}{
 		{
 			name: "two repositories",
-			gaps: `[{"repo":"acme/widgets","reason":"` + missing + `"},{"repo":"zeta/tools","reason":"the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"}]`,
+			block: `{"live":` + live + `,"withoutWebhookApp":[{"repo":"acme/widgets","reason":"` + missing + `"},` +
+				`{"repo":"zeta/tools","reason":"` + failed + `"}],"caches":[]}`,
 			want: "webhook App missing on acme/widgets: " + missing + "\n" +
-				"webhook App missing on zeta/tools: the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500\n",
+				"webhook App missing on zeta/tools: " + failed + "\n",
 		},
-		{name: "none", gaps: `[]`, want: "webhook App missing: none\n"},
+		{name: "none", block: `{"live":` + live + `,"withoutWebhookApp":[],"caches":[]}`, want: "webhook App missing: none\n"},
+		{name: "a block with no list", block: `{"live":` + live + `,"caches":[]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			served := "{" + daemon + `,"repositories":{"owners":["acme"],"mapped":[{"repo":"acme/widgets","default":true,"apps":{"implement":true,"review":true}}],"refused":[],"withoutWebhookApp":` + tc.gaps + `,"caches":[]}}`
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(served))
-			}))
-			defer server.Close()
-			t.Chdir(t.TempDir())
-			t.Setenv("LEGION_DAEMON_URL", server.URL)
-			t.Setenv("LEGION_ISSUE", "")
-
-			var out, errb bytes.Buffer
-			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
-				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			out := plainStateOf(t, "{"+daemon+`,"repositories":`+tc.block+"}")
+			if tc.want == "" {
+				if strings.Contains(out, "webhook App missing") {
+					t.Fatalf("legion state printed %q, want no webhook App line from a block with no withoutWebhookApp", out)
+				}
+				return
 			}
-			if !strings.Contains(out.String(), tc.want) {
-				t.Fatalf("legion state printed %q, want the lines %q", out.String(), tc.want)
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("legion state printed %q, want the lines %q", out, tc.want)
+			}
+			if strings.Contains(out, "webhook App missing on acme/tools") {
+				t.Fatalf("legion state printed %q, which names acme/tools, which withoutWebhookApp does not list", out)
 			}
 		})
 	}
+}
+
+// An operator whose `legion` is of this contract and whose daemon is of an earlier one, as during
+// a rollout, reads that daemon's state: its `repositories` block has no `live` key, but it writes
+// `withoutWebhookApp`, a key both releases write in one shape, and that list is what this CLI's
+// webhook App lines are read from (webhookAppLines). So the CLI prints the line that daemon's
+// list names, for acme/widgets here, and never says that no repository lacks the webhook App.
+// Found by the tester of dispatch://INFRA-4401 at a8076cb487b2, against a running daemon of
+// contract 152, whose own `legion state` printed `webhook App missing on sjawhar/legion-smoke: …`
+// where this CLI printed `webhook App missing: none`.
+//
+// The control is the CLI that read the gaps from the `live` block: webhookAppLines is then fed
+// nothing for this body, and the line this test reads is gone.
+func TestPlainStateDoesNotSayNoWebhookAppIsMissingFromADaemonWithNoLiveBlock(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	failed := "the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"
+	block := `{"owners":["acme"],"mapped":[{"repo":"acme/widgets","default":true,"apps":{"implement":true,"review":true}}],` +
+		`"refused":[],"withoutWebhookApp":[{"repo":"acme/widgets","reason":"` + failed + `"}],"caches":[]}`
+	out := plainStateOf(t, "{"+daemon+`,"repositories":`+block+"}")
+	if want := "webhook App missing on acme/widgets: " + failed + "\n"; !strings.Contains(out, want) {
+		t.Fatalf("legion state printed %q, want the line %q: the daemon's withoutWebhookApp names acme/widgets", out, want)
+	}
+	if strings.Contains(out, "webhook App missing: none") {
+		t.Fatalf("legion state printed %q: it says no repository lacks the webhook App, while the daemon it read names acme/widgets as one", out)
+	}
+}
+
+// An operator reading plain `legion state` is told each repository a live record names that
+// GitHub's last read did not name or a role App is not installed on, one line each with why — the
+// entry's `readError`, the Apps GitHub answered are not installed on the name it is served under,
+// or both — in the state's order, and the name its pair serves it as where the rename rule serves
+// it under the other name. A repository both Apps are installed on, and one GitHub has not yet
+// answered, have no line.
+//
+// The control is the property put back: the plain state before this contract printed no line
+// for such a repository, only the webhook App lines, and every line this test reads is then gone.
+func TestPlainStateNamesEachLiveRepositoryGitHubDidNotReadOrAnAppIsMissingFrom(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	unread := "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"
+	live := `[{"repo":"acme/fresh"},` +
+		`{"repo":"acme/gadgets","apps":{"implement":true,"review":false}},` +
+		`{"repo":"acme/widgets","apps":{"implement":true,"review":true}},` +
+		`{"repo":"sjawhar/legion","servedAs":"cybermonklabs/legion","apps":{"implement":false,"review":true}},` +
+		`{"repo":"zeta/archive","readError":"` + unread + `"},` +
+		`{"repo":"zeta/gone","readError":"GitHub answered 404 for zeta/gone","apps":{"implement":false,"review":false}}]`
+	out := plainStateOf(t, "{"+daemon+`,"repositories":{"live":`+live+`,"caches":[]}}`)
+
+	want := "repository acme/gadgets: the review App is not installed on acme/gadgets\n" +
+		"repository sjawhar/legion (served as cybermonklabs/legion): the implement App is not installed on cybermonklabs/legion\n" +
+		"repository zeta/archive: " + unread + "\n" +
+		"repository zeta/gone: GitHub answered 404 for zeta/gone; the implement and review Apps are not installed on zeta/gone\n"
+	if !strings.Contains(out, want) {
+		t.Fatalf("legion state printed %q, want the lines %q", out, want)
+	}
+	for _, repo := range []string{"acme/fresh", "acme/widgets"} {
+		if strings.Contains(out, "repository "+repo) {
+			t.Errorf("legion state printed %q, which names %s: it has no read error and no App missing", out, repo)
+		}
+	}
+}
+
+// plainStateOf is what plain `legion state` prints of served, the body a stand-in daemon answers
+// GET /legion/v1/state with, read from no pane.
+func plainStateOf(t *testing.T, served string) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	return out.String()
 }
 
 // An operator reading plain `legion state` is told, one line per durable consumer, how many

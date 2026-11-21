@@ -1067,7 +1067,7 @@ const legionAgentSecretsLoginView = z.object({
  * status since contract 21. `source` is, on a deployment row, `configuration` (what legion.yaml
  * alone decides) or `boot` (what boot measured), absent on every other row (contract 25), or, on
  * `repository-cache-room`, `caches`: what the repository caches' last health reads said of their
- * room (contract 203). A caller below 203 is served that row without `source`, since the enum it
+ * room (contract 209). A caller below 209 is served that row without `source`, since the enum it
  * was built with names two words: a value follows the contract the caller states, else its pod's
  * lowest recorded contract. A gap is reported here, never refused (contract 16). */
 const legionCapabilityState = z.object({
@@ -1093,7 +1093,8 @@ const legionSettings = z.looseObject({
  * Sandbox, its `state` (`failing` with the kubelet's `reason`, `refused` with its Service's),
  * whether its pod is Ready behind its own Service and its address then, from its last health read
  * the default branch's `head`, `lastFetchAt` and the `bytes` it serves or the read's
- * `healthError`, and, for a repository the mapping no longer names, `retainedUntil` (contract 32). */
+ * `healthError`, and, for a repository no live record names any more, `retainedUntil` (contract
+ * 32). */
 const legionCacheView = z.object({
   repo: nonEmptyString.optional(),
   sandbox: nonEmptyString.optional(),
@@ -1116,57 +1117,54 @@ const legionAppInstallations = z.object({
   review: z.boolean().optional(),
 });
 
-/** `api.RepositoriesView` — every repository the daemon works in, as it serves them (contract 152):
- * the owner accounts of the repositories Dispatch maps to the project, each repository it serves (as GitHub names it,
- * `default` the project's default in Dispatch, `apps` each role App's installation on it, `cache`
- * its repository cache under the Kubernetes runtime), each repository it leaves out with
- * `reason`, a role App not installed on it or an installation it could not read, and `apps`,
- * what GitHub answered of each App on it, each served repository Dispatch's GitHub App is not
- * known to be installed on (`withoutWebhookApp`, with
- * `reason`: not installed, the check failed, or Dispatch does not answer the check; served all
- * the same, contract 43), and the `caches` of repositories the daemon no longer serves.
+/** `api.LiveRepositoryView` — one repository a live record names (contract 202): `repo`, the name
+ * the records keep it under; `servedAs`, the other name of its configured pair
+ * (`repository_renames`) where the rename rule serves it under that one; and, from what GitHub last
+ * answered for the name it is served under, `apps`, each role App's installation on it once GitHub
+ * answered both reads; `readError`, why GitHub's last read did not name it (a refusal such as a
+ * 404, or a read that did not answer); and `cache`, its repository cache under the Kubernetes
+ * runtime. The daemon writes `repo` on every entry and each other key only once it holds
+ * something. What Dispatch answered of its webhook App is in the block's `withoutWebhookApp`
+ * alone. No plugin code reads an entry (`LEGION_ANSWER_READS`), so every key is optional. */
+const legionLiveRepository = z.object({
+  repo: nonEmptyString.optional(),
+  servedAs: nonEmptyString.optional(),
+  apps: legionAppInstallations.optional(),
+  readError: nonEmptyString.optional(),
+  cache: legionCacheView.optional(),
+});
+
+/** `api.WebhookAppGapView` — an entry of `withoutWebhookApp` (contract 43, kept in contract 152's
+ * shape by 202): a live repository Dispatch's GitHub App is not known to be installed on, under
+ * the name the records keep it under, with why (not installed, the check failed, or Dispatch does
+ * not answer the check). The daemon works it all the same. No plugin code reads it
+ * (`LEGION_ANSWER_READS`), so both keys are optional. */
+const legionWebhookAppGap = z.object({
+  repo: nonEmptyString.optional(),
+  reason: nonEmptyString.optional(),
+});
+
+/** `api.RepositoriesView` — the repositories the daemon works in (contract 202): `live`, one entry
+ * for each repository the project's live records name, read in the state's own snapshot and sorted
+ * by its lowercased `<owner>/<name>`; `withoutWebhookApp`, each of those that Dispatch's GitHub App
+ * is not known to be installed on, in `live`'s order; and `caches`, the repository caches of
+ * repositories no live record names, each kept until its `retainedUntil` (contract 32). The daemon
+ * writes all three on every body, never null, and no plugin code reads any of them
+ * (`LEGION_ANSWER_READS`), so each is optional here. A repository is served once GitHub answered
+ * that both role Apps are installed on it, whatever names it.
  *
- * The mapping decides the project's default repository and the repositories the daemon prepares
- * before an issue names one, and no longer decides where the project may work: the App
- * installation does, so `mapped` holds the repositories the project's own records name beside
- * the mapped ones and no repository is refused for want of a mapping. Every list sorted and never
- * null (contracts 31, 32).
- *
- * A served entry's `apps` is both Apps installed, since the daemon serves no repository either
- * App is missing from, so the entries where the two differ are the refused ones. A refused
- * entry carries `apps` wherever GitHub answered both Apps' reads of its `repo` (both true for one
- * left out for its default-branch read alone), and none where a read of it failed or `repo` is
- * no `<owner>/<name>`, which its `reason` then names.
- *
- * `apps` is optional on both and is written by every daemon of contract 152 and above wherever it
- * holds the answer. It is read as absent rather than refused so that a plugin of this contract
- * reading a daemon of an earlier one — the window a roll of the daemon and the worker image opens,
- * since the two ship apart — loses that one answer and keeps the rest of the state, where a
- * required key would refuse the whole body. */
+ * `withoutWebhookApp` is the block's one report of Dispatch's webhook App, and no `live` entry
+ * carries a copy of it. It keeps contract 152's shape for every caller: the operator's `legion
+ * state` states no contract and asks from no pod, so the daemon serves it this block, and a
+ * `legion state` of 152 reads its webhook App lines from that list. A plugin of an earlier
+ * contract reads the block with that contract's own schema, which also requires `owners`, `mapped`
+ * and `refused`, so the route serves a caller below 202 that older block, written from the same
+ * entries: the contract its plugin states, else the highest its pod's claims record (`api.stateFor`,
+ * `withoutRepositoriesLive`). That body is never served to a plugin of this contract, so this
+ * schema reads only this block. */
 const legionRepositories = z.object({
-  owners: z.array(nonEmptyString).optional(),
-  mapped: z
-    .array(
-      z.object({
-        repo: nonEmptyString.optional(),
-        default: z.boolean().optional(),
-        apps: legionAppInstallations.optional(),
-        cache: legionCacheView.optional(),
-      })
-    )
-    .optional(),
-  refused: z
-    .array(
-      z.object({
-        repo: nonEmptyString.optional(),
-        reason: nonEmptyString.optional(),
-        apps: legionAppInstallations.optional(),
-      })
-    )
-    .optional(),
-  withoutWebhookApp: z
-    .array(z.object({ repo: nonEmptyString.optional(), reason: nonEmptyString.optional() }))
-    .optional(),
+  live: z.array(legionLiveRepository).optional(),
+  withoutWebhookApp: z.array(legionWebhookAppGap).optional(),
   caches: z.array(legionCacheView).optional(),
 });
 
@@ -1274,10 +1272,12 @@ const legionPaused = z.object({
  * `capabilities` is the deployment's report, never null (contract 16); `strandedClaims` is every
  * claim nothing will wake, by issue and then role, never null (contract 23); `heldOutboxRows` is
  * every due lifecycle outbox row held behind its issue's running one, by when it came due and then
- * id, never null (contract 28); `repositories` is the project's repository mapping as the daemon
- * serves it (contract 31); `settings` is the daemon's resolved legion.yaml with no credential,
- * credential source or credential file path, required, and loose like `payload` above, so a
- * legion.yaml key added later is no contract change (contract 35); being `z.looseObject` it keeps
+ * id, never null (contract 28); `repositories` is the repositories the project's live records
+ * name, the ones of them Dispatch's webhook App is not known to be installed on, and the caches of
+ * the rest (contracts 31, 43, 202); `settings` is the daemon's resolved
+ * legion.yaml with no credential, credential source or credential file path, required, and loose
+ * like `payload` above, so a legion.yaml key added later is no contract change (contract 35);
+ * being `z.looseObject` it keeps
  * the keys it does not name, where the shapes around it drop theirs; `consumers` is the lag
  * of the daemon's durable consumers, never null, empty for a daemon with no workflow (contract 43);
  * `wakesWaiting` is every wake the daemon's pacing is holding until its turn, in claim order, never

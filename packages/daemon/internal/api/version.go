@@ -2925,7 +2925,60 @@ package api
 // request declares. Read the base's own number and every open pull request again at every forward
 // merge rather than from this line.)
 //
-// 203: INFRA-4036 (cybermonklabs/legion) -- the deployment's capability report on `GET
+// 202: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
+// block of `GET /legion/v1/state` becomes the repositories the project's live records name, read
+// in the state's own snapshot. The block is `{live, caches, withoutWebhookApp}`. `live` holds one
+// entry for each repository a live record names, under the name the records keep, sorted by its
+// lowercased `<owner>/<name>`: `repo`; `servedAs`, the other name of its configured pair where the
+// rename rule serves it under that one; `apps`, each role App's installation on the name it is
+// served under, once GitHub answered both reads; `readError`, why GitHub's last read did not name
+// it; and `cache`, its repository cache under the Kubernetes runtime; each but `repo` absent until
+// it holds something. `caches` is unchanged: the caches of repositories no live record names.
+// `withoutWebhookApp` is kept in 152's shape for every caller, `{repo, reason}` for each live
+// repository Dispatch's webhook App is not known to be installed on, under the name the records
+// keep, in `live`'s order and never null, and it is the block's one report of the webhook App: no
+// `live` entry carries a copy of it. The operator's `legion state` states no contract and asks from
+// no pod, so it is served the new block, and a `legion state` of 152 reads its webhook App lines
+// from this list, so without it that binary would print that no repository lacks the webhook App
+// whatever the live records hold. `owners`, `mapped` and `refused` are gone, and with them each
+// entry's `default`, which the daemon no longer knows. A plugin of 152 reads the block with a
+// schema that requires those three keys and would refuse the whole state without them, so a
+// caller below 202 is served the block in 152's shape, written from the same entries (shaping.go's
+// repositoriesLiveContract and withoutRepositoriesLive, its row of stateNarrowings): `owners` and
+// `mapped` are the entries both role Apps are installed on, under the name each is served under,
+// every `default` false; `refused` is each other entry with its `readError`, the App not installed
+// on it, or "GitHub has not answered for it yet"; and `withoutWebhookApp` is the same list as on
+// the new block. A caller below 152 is also below 202, and is served that block with no `apps` on
+// either list, as 193 serves it (withoutRepositoryApps, whose flag the older block reads). The
+// caller is placed as 193 places every caller of the state: by the contract its
+// `Legion-Plugin-Contract` header states, else by the claims of its pod, else at this contract. So
+// a plugin from 193 to 198, which states its contract, is served 193's keys and the block in 152's
+// shape; one from 199 to 201 is served 199's keys, since neither 200 nor 201 has an entry, and the
+// same block, 199's keys being 193's on this route since 199 moved no shape of an answer; a pod
+// whose claims record 178 to 192 and that states nothing is served the pause and that block; and a
+// caller that states nothing from no pod — the operator's `legion state`, `legion controller
+// start` — is served the new block. A tmux pane's plugin states its own contract, which the boot
+// gate and `legion probe-image` keep at this one.
+// The records of `contract-shapes.json` take the step as they take every band: 202's records hold
+// the new block's key paths, and every record below 202 keeps the older block's. One enumerated
+// field arrives with the block, the cache's `state` at `repositories.live.*.cache.state`, whose
+// five words answers.go records at this contract (liveCacheStates), so every record of the state
+// below 202 holds that key path's domain empty, as domainsOf writes it, and no other domain moves.
+// `packages/contracts/src/legion-api.ts` mirrors the new block, and the fixture
+// `state-narrowed-repositories.json` is the body served a caller that states 201, the contract
+// before this one, which is served at 199, the recorded contract below it: 199's keys, which are
+// 193's, the pause and the block in 152's shape.
+// (This change takes 202, the lowest number above main's 199 that no open pull request declared
+// at the census of `const DaemonAPIVersion` at refs/pull/<n>/head over the 301 open pull requests
+// of cybermonklabs/legion, taken from 2026-11-20T23:09:18Z to 23:19:17Z, which named above
+// main's 199: 200 (#4065 and #4580) and 201 (#4553 and #4611). This entry stood at 167, 169, 173,
+// 182, 189, 190, 191, 195, 196 and 200 before, each the number it took at an earlier census and no
+// head's for good. Read main's own number and every open pull request's again at the next forward
+// merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 209: INFRA-4036 (cybermonklabs/legion) -- the deployment's capability report on `GET
 // /legion/v1/state` gains a row, `repository-cache-room`, and with it a third word of a capability
 // row's `source`, `caches` (capabilities.SourceCaches): what the repository caches' last health
 // reads said of their room, which is where that row is measured from. The row is present while no
@@ -2934,7 +2987,7 @@ package api
 // comes from, and decided where `capabilities.decided.repository-cache-room` records a reason
 // (capabilities.Deployment.cacheRoom). A capability `name` is a plain non-empty string to every
 // schema already published, so the row parses there, as `claude-code` did; its `source` does
-// not. A plugin from 25 through 202 reads `source` with a `z.enum` of the two words before it,
+// not. A plugin from 25 through 208 reads `source` with a `z.enum` of the two words before it,
 // `configuration` and `boot`, which refuses a word it does not name and with it the whole state
 // body: the controller's `read_state` and, from a plugin before 193, which reads an issue's record
 // out of the whole state, every role's `read_record` and claude-envoy's own reads of the state.
@@ -2953,7 +3006,7 @@ package api
 // number, and nothing else of this change is on a surface this contract names.
 // The bump relaunches every registered claim onto the new plugin, as every bump does (the
 // stale-plugin lane, internal/daemon's refreshStalePlugins), and that relaunch reaches each claim
-// at its own time, so for the length of the wave some pods still run a plugin below 203: a
+// at its own time, so for the length of the wave some pods still run a plugin below 209: a
 // process of 193 or later states its contract in `Legion-Plugin-Contract` and is served by it,
 // and an older one is placed by the lowest contract its pod records. Those are the callers the
 // strip serves.
@@ -2968,11 +3021,17 @@ package api
 // 2026-11-20T21:53:59Z and 21:58:14Z, found 194 declared by #4030, 195 by #4590, 196 by #3993,
 // #4173, #4180, #4193, #4273, #4392, #4432, #4493, #4580, #4592 and #4596, 197 by #4578 as well as
 // by this change's own head before this merge, 198 by #4175 and #4589, 199 by #3831, #4495 and
-// #4661, 200 by #4065, and no open head declaring 201. It takes 203 at the merge that brought
+// #4661, 200 by #4065, and no open head declaring 201. It took 203 at the merge that brought
 // main in at 199 (0d3786da5367, #4495 having declared 199): a reading of `const
 // DaemonAPIVersion` at refs/pull/<n>/head for each of the 327 open pull requests, made between
 // 2026-11-21T00:43:25Z and 00:47:21Z, found 200 declared by #4049 and #4065, 201 by #4611 as well
 // as by this change's own head before this merge, 202 by #4273, #4432, #4493, #4580 and #4590,
-// and no open head declaring 203. Read the base's own number and every open pull request again
-// at the next merge rather than from this line.)
-const DaemonAPIVersion = 203
+// and no open head declaring 203. It takes 209 at the merge that brought main in at 202
+// (3c59c0cc27ab, #4493 having declared 202): a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each of the 357 open pull requests, made between 2026-11-21T05:29:23Z
+// and 05:34:35Z, found 203 declared by #2230, #4065, #4175, #4596 and #4661 as well as by this
+// change's own head before this merge, 204 by #3831, 205 by #3712, #4539 and #4573, 206 by #4540,
+// 207 by #3993, #4030, #4392, #4432, #4590 and #4592, 208 by #4611, and no open head declaring
+// 209. Read the base's own number and every open pull request again at the next merge rather than
+// from this line.)
+const DaemonAPIVersion = 209

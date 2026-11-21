@@ -1,7 +1,7 @@
-// Package repocache is the Kubernetes runtime's per-repository cache: one process per mapped
-// repository holding a bare clone on its own volume, fetched from GitHub with the implement App's
-// token on a schedule, and streaming that clone to issue pods, whose fetch container unpacks it as
-// its feed and asks GitHub only for what the cache lacks.
+// Package repocache is the Kubernetes runtime's per-repository cache: one process per repository
+// the runtime keeps a cache of, holding a bare clone on its own volume, fetched from GitHub with
+// the implement App's token on a schedule, and streaming that clone to issue pods, whose fetch
+// container unpacks it as its feed and asks GitHub only for what the cache lacks.
 package repocache
 
 import (

@@ -502,6 +502,17 @@ type stateNarrowing struct {
 // all whichever runs first, and a caller below only the higher one keeps the field with its
 // `place` and its `length`, which is what the lower band's own contract describes.
 //
+// A second pair touches one block, and one band of it writes that block in an older shape
+// rather than taking a key out: repositoriesLiveContract's band writes `repositories` as
+// contract 152 gave it, keys this daemon no longer writes among them, from the entries of that
+// block alone, and repositoryAppsContract's takes `apps` off the entries of that older block.
+// Neither depends on the other's order either, because each sets a flag on the block and reads
+// nothing another band left, and the block's marshaller reads both flags (RepositoriesView): a
+// caller below both is served the older block with no `apps` whichever runs first. A caller below
+// repositoryAppsContract is below repositoriesLiveContract too, so the first is never served
+// alone. A band that read what another left, or put back a key another takes out, would not be
+// sound on these terms, and this table would be the wrong shape for it.
+//
 // The value strips are no rows of this table: they follow restore rather than strip, and take a
 // value rather than a key a contract added, which are questions this table's one number cannot
 // ask (valueStrip). They are the rows of valueStrips, applied, recorded and described from there
@@ -545,6 +556,8 @@ var stateNarrowings = []stateNarrowing{
 	{contract: pauseContract, state: withoutPause, dropped: "paused and lastPause"},
 	{contract: shapedAnswersContract, state: withoutLowestPluginContract, issue: withoutClaimRoundReport,
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
+	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
+		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -940,7 +953,29 @@ const repositoryAppsContract = 152
 // that constant, and the contract the keys arrived at stays where it is.
 const pauseContract = 178
 
-// cachesSourceContract is the daemon contract this change lands under (version.go's 203,
+// repositoriesLiveContract is the daemon contract that made the state's `repositories` block the
+// repositories the project's live records name (version.go's 202, dispatch://INFRA-4401): `live`,
+// one entry per repository with what GitHub and Dispatch answered of it, beside `caches` and
+// `withoutWebhookApp`, which it keeps in contract 152's shape for every caller, in place of
+// `owners`, `mapped` and `refused`. A plugin before it reads the block with the schema of contract
+// 152, which requires those three keys, so the block this contract writes refuses that plugin's
+// whole state, as surely as a key a strict reader does not name. That caller is served the block in
+// contract 152's shape, written from the same entries (withoutRepositoriesLive), and every other
+// caller the block this contract writes. shapedAnswersContract stands below it with no row of
+// stateNarrowings between the two, so a caller at or above shapedAnswersContract and below this
+// contract, 193 to 201, is served the block in contract 152's shape: one from 193 to 198 is served
+// 193's keys, and one from 199 to 201 is served those of 199, the recorded contract at or below
+// it, which are the same keys on this route. The block's one enumerated field, the cache's
+// `state` at `repositories.live.*.cache.state`, arrived with it (answers.go's liveCacheStates), so
+// the band takes every value of it off with the key and no value strip is owed.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
+// moves that constant, and the contract this block arrived at stays where it is. It moves only
+// with its own change's number, and answers.go's SupportedContracts names the constant rather
+// than its number for that reason.
+const repositoriesLiveContract = 202
+
+// cachesSourceContract is the daemon contract this change lands under (version.go's 209,
 // dispatch://INFRA-4036), and the contract that added `caches` to a capability row's `source`:
 // the repository-cache-room row's, what the repository caches' last health reads said of their
 // room (capabilities.SourceCaches). A plugin from 25, the contract that added `source`, up to it
@@ -958,7 +993,7 @@ const pauseContract = 178
 // rather than its number: TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that
 // list to version.go's entry headers, so a renumber that moves this change's entry and leaves
 // this constant behind names a contract no entry declares and fails there.
-const cachesSourceContract = 203
+const cachesSourceContract = 209
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1018,36 +1053,33 @@ func withoutEntryTimes(issue Issue) (Issue, bool) {
 	return issue, moved
 }
 
-// withoutRepositoryApps is state with no `apps` on any entry of `repositories.mapped` or
-// `repositories.refused`, the key repositoryAppsContract added to both lists; nothing else of
-// that contract is a key of this route. A mapped entry writes the key whatever it holds, so the
-// key is left off by a flag rather than zeroed (MappedRepositoryView.appsHidden), as
-// Admission.MarshalJSON leaves off `held` for withoutHeld, and a mapped entry is moved wherever
-// one is served. A refused entry carries the key only where GitHub answered both Apps' reads, so
-// it is cleared there, and moved only where it held one. Both lists are the source's, so each is
-// copied before an entry of it is written, and the state the source answered is left as it was.
+// withoutRepositoryApps is state whose `repositories` block carries no `apps` on any entry of
+// `mapped` or `refused`, the key repositoryAppsContract added to both lists; nothing else of that
+// contract is a key of this route. Those two lists are the block in the shape contract 152 gave
+// it, which the daemon writes from `live` for every caller below repositoriesLiveContract
+// (withoutRepositoriesLive), and every caller below this contract is below that one too. So the
+// key is left off by a flag on the block (RepositoriesView.appsHidden), which the older block's
+// writer reads (RepositoriesView.at152), as Admission.MarshalJSON leaves off `held` for
+// withoutHeld. That block carries the key on every entry both role Apps are installed on and on
+// every other entry GitHub answered both reads of, which are the live entries that carry `apps`,
+// so the band reports a move only for a block one of whose entries does. The flag is set on a
+// value of the state's own and the entries are read and never written, so the state the source
+// answered is left as it was.
 func withoutRepositoryApps(state State) (State, bool) {
-	repositories := state.Repositories
-	moved := len(repositories.Mapped) > 0
-	if moved {
-		mapped := make([]MappedRepositoryView, len(repositories.Mapped))
-		for i, entry := range repositories.Mapped {
-			entry.Apps, entry.appsHidden = AppInstallationsView{}, true
-			mapped[i] = entry
-		}
-		repositories.Mapped = mapped
-	}
-	if slices.ContainsFunc(repositories.Refused, func(entry RefusedRepositoryView) bool { return entry.Apps != nil }) {
-		refused := make([]RefusedRepositoryView, len(repositories.Refused))
-		for i, entry := range repositories.Refused {
-			entry.Apps = nil
-			refused[i] = entry
-		}
-		repositories.Refused = refused
-		moved = true
-	}
-	state.Repositories = repositories
+	moved := slices.ContainsFunc(state.Repositories.Live, func(entry LiveRepositoryView) bool { return entry.Apps != nil })
+	state.Repositories.appsHidden = true
 	return state, moved
+}
+
+// withoutRepositoriesLive is state with its `repositories` block in the shape contract 152 gave
+// it, written from the block's own entries (RepositoriesView.at152): the one change
+// repositoriesLiveContract made to this route. The flag is set on a value of the state's own and
+// the entries are read and never written, so the state the source answered is left as it was. The
+// state writes the block on every body and the older shape replaces it whole, so the band reports
+// a move on every body it serves, as withoutTrees does.
+func withoutRepositoriesLive(state State) (State, bool) {
+	state.Repositories.narrowed = true
+	return state, true
 }
 
 // withoutWaitingLine is the issue with no `waitingLine`, the field waitingLineContract added to

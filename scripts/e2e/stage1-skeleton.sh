@@ -274,7 +274,7 @@ pane_home=(env -u OMP_PROFILE -u PI_PROFILE HOME="$work/home")
 # at the default host and port, the credential the settings must mask. The loader takes github_apps
 # as the workflow configured and then wants projects too (resolveStage3: `projects must declare at
 # least one project`, `github_apps is required`), so the two come together; a project's
-# repositories are Dispatch's mapping, so its entry is empty. The one project is not this daemon's
+# repositories are no key of legion.yaml, so its entry is empty. The one project is not this daemon's
 # own, so boot resolves no host git, jj or clone credential for it (readTmux reads tools only for
 # cfg.Projects[cfg.Project]), and with no dispatch_url there is no workflow and no App token mint
 # (openWorkflow): the proof still launches nothing and needs nothing new.
@@ -441,7 +441,7 @@ jq -e --arg p "$project" \
 # worker image carries Claude Code's pin and the Legion plugin unconditionally — the binary itself
 # a pod installs at launch — so every deployment's image is probed for the pin and the plugin,
 # this one included. The twenty-second is `repository-cache-room` (INFRA-4036): present, since
-# the tmux runtime runs no repository cache, and carrying `source` "caches" (contract 203), the
+# the tmux runtime runs no repository cache, and carrying `source` "caches" (contract 209), the
 # repository caches' health reads being where that row is measured from whatever the runtime;
 # `legion state` is read from no pod, so nothing narrows the word away here.
 jq -e '(.capabilities | length) == 22

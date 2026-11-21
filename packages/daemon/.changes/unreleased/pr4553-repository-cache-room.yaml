@@ -9,7 +9,7 @@ body: |-
   replaces it reports it until the next repack succeeds. The capability report gains the deployment
   row `repository-cache-room` with the source `caches`: open while a cache reports such a failure,
   its detail naming the cache, its volume, its claim and where room comes from, and carried by the
-  tick's `openCapabilities` to the project's controller. The daemon API contract moves to 203, and a
+  tick's `openCapabilities` to the project's controller. The daemon API contract moves to 209, and a
   plugin below it is served that row without its `source`, by the contract the plugin states, else
   its pod's lowest. `scripts/e2e/pack-memory-job.sh` measures git and jj memory in a large
   workspace under gVisor as one Kubernetes Job. Every git in an issue pod or a repository cache maps
