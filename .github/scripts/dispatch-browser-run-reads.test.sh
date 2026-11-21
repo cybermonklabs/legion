@@ -134,17 +134,19 @@ real_strace=$(type -P strace) ||
 TIMED_WAITS='/^(nanosleep|clock_nanosleep|select|pselect6|poll|ppoll|epoll_wait|epoll_pwait|epoll_pwait2|rt_sigtimedwait|futex|futex_waitv)$'
 
 # timed_waits <trace>: the calls of a strace log that waited with a timeout, one per line. A call
-# begins a line `<pid> <name>(`; one another process's call interrupted goes on in a
-# `<... name resumed>` line, which is no new call and is passed over. A futex or futex_waitv call
-# waits on a clock only where its timeout argument is a struct, `{tv_sec=`: a lock's FUTEX_WAIT
-# has NULL there and FUTEX_WAKE has no timeout at all. The drive at this file's head makes no
-# timed wait: traced on 2026-11-21, it made 0 of every listed call but futex, and 27
-# futex(FUTEX_WAKE_PRIVATE) calls, none of them timed, in each of 3 runs. A `/usr/bin/sleep 1`
-# after gh answered made clock_nanosleep, a `read -t 1` on a FIFO pselect6, and a 1 s
-# FUTEX_WAIT_PRIVATE futex with `{tv_sec=1, tv_nsec=0}`.
+# begins a line `<pid> <name>(`, where strace pads a short pid with spaces (`4     futex(`, as in
+# a fresh PID namespace or on a runner whose pids are short), so the separator is any run of
+# blanks; one another process's call interrupted goes on in a `<... name resumed>` line, which is
+# no new call and is passed over. A futex or futex_waitv call waits on a clock only where its
+# timeout argument is a struct, `{tv_sec=`: a lock's FUTEX_WAIT has NULL there and FUTEX_WAKE has
+# no timeout at all. The drive at this file's head makes no timed wait: traced on 2026-11-21, it
+# made 0 of every listed call but futex, and 27 futex(FUTEX_WAKE_PRIVATE) calls, none of them
+# timed, in each of 3 runs. A `/usr/bin/sleep 1` after gh answered made clock_nanosleep, a
+# `read -t 1` on a FIFO pselect6, and a 1 s FUTEX_WAIT_PRIVATE futex with `{tv_sec=1, tv_nsec=0}`.
 timed_waits() {
-  { grep -E '^[0-9]+ [a-z_0-9]+\(' "$1" || true; } | { grep -Ev '^[0-9]+ futex(_waitv)?\(' || true; }
-  grep -E '^[0-9]+ futex(_waitv)?\(.*\{tv_sec=' "$1" || true
+  { grep -E '^[0-9]+[[:space:]]+[a-z_0-9]+\(' "$1" || true; } |
+    { grep -Ev '^[0-9]+[[:space:]]+futex(_waitv)?\(' || true; }
+  grep -E '^[0-9]+[[:space:]]+futex(_waitv)?\(.*\{tv_sec=' "$1" || true
 }
 
 # The stand-in `timeout`, beside the stand-in `gh` and opted into per call. It records the
@@ -609,6 +611,32 @@ check "and asks sleep for no wait" "$(is "$(sleeps)" "")"
 waits=$(timed_waits "$work/waits")
 check "and makes no timed wait of any kind" "$(is "$(grep -c . <<<"$waits" || true)" 0)"
 [ -z "$waits" ] || sed 's/^/    traced: /' <<<"$waits"
+
+echo "case: timed_waits reads a trace line whatever the padding of its pid"
+# The parser of the control's trace, on lines in the shape strace 6.8 writes. The pid-4 and pid-5
+# clock_nanosleep and futex_waitv lines were written in a fresh PID namespace, where strace pads a
+# one-digit pid with blanks (`4     futex(`), and the seven-digit ones outside it, on 2026-11-21;
+# the others are those lines with the pid re-padded, or a lock's NULL-timeout wait and a resumed
+# call built in the same shape. Each `yes` line is a timed wait, each `no` line is not.
+while IFS='|' read -r want line; do
+  printf '%s\n' "$line" > "$work/trace-line"
+  got=no
+  [ -z "$(timed_waits "$work/trace-line")" ] || got=yes
+  check "$want: $line" "$(is "$got" "$want")"
+done <<'TRACE'
+yes|4     futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0}) = -1 ETIMEDOUT (Connection timed out)
+yes|3278182 futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0}) = -1 ETIMEDOUT (Connection timed out)
+yes|4     futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0} <unfinished ...>
+yes|5     clock_nanosleep(CLOCK_REALTIME, 0, {tv_sec=0, tv_nsec=10000000}, 0x7ffeea4c2ac0) = 0
+yes|3662081 clock_nanosleep(CLOCK_REALTIME, 0, {tv_sec=1, tv_nsec=0}, 0x7fff1f4bea20) = 0
+yes|27    pselect6(1, [0], NULL, NULL, {tv_sec=0, tv_nsec=999984000}, {sigmask=[CHLD], sigsetsize=8}) = 0 (Timeout)
+yes|4     futex_waitv([{val=0, uaddr=0x7fff242ac83c, flags=FUTEX2_SIZE_U32|FUTEX2_PRIVATE}], 1, 0, {tv_sec=1403474, tv_nsec=902920133}, CLOCK_MONOTONIC) = -1 ETIMEDOUT (Connection timed out)
+no|4     futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 2, NULL) = 0
+no|2256817 futex(0x76abf580572c, FUTEX_WAKE_PRIVATE, 2147483647) = 0
+no|4     futex(0x76abf580572c, FUTEX_WAKE_PRIVATE, 2147483647) = 0
+no|4     <... futex resumed>) = -1 ETIMEDOUT (Connection timed out)
+no|3662081 <... clock_nanosleep resumed>0x7fff1f4bea20) = 0
+TRACE
 
 echo "case: blobs-refused names the download step that failed and nothing beyond it"
 # What this job knows of a refused blob download is which step failed and on which attempt.
