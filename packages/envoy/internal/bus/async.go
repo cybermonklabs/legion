@@ -559,8 +559,15 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		lost := func() error {
 			return fmt.Errorf("bus: %w: the window's connection was lost or reconnected before the request to %q was answered", ErrUnavailable, subject)
 		}
-		timer := time.NewTimer(time.Until(deadline))
-		defer timer.Stop()
+		var expired <-chan time.Time
+		if expiry := w.client.requestExpiry; expiry != nil {
+			expired = expiry(deadline)
+		}
+		if expired == nil {
+			timer := time.NewTimer(time.Until(deadline))
+			defer timer.Stop()
+			expired = timer.C
+		}
 		// The record answers the request as soon as the violation is recorded too
 		// (refusalSignal), so a refusal the flush could not name is not left to the timeout. The
 		// signal was taken before the message went out, so a violation recorded since closes it,
@@ -586,7 +593,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 					return err
 				}
 				return lost()
-			case <-timer.C:
+			case <-expired:
 				// The request is out of time: its answer is the timeout's.
 				if settled, err := drained(); settled {
 					return err

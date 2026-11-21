@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -112,17 +113,26 @@ func TestARequestNobodyAnswersIsNotAcknowledgedWithinItsTimeout(t *testing.T) {
 // `failed` - and both wrap ErrNotAcknowledged, so a caller that only backs the send off is
 // unaffected.
 //
-// The confirmed Request's timeout is 5 s, as the Requests of
-// TestARequestAFullStreamRefusesIsAnsweredByThatRefusalAtOnce wait: its flush runs on a goroutine
-// of its own, bounded by the same deadline, and a timeout a loaded scheduler can outrun before that
-// goroutine runs ends the flush unconfirmed, so the first half's verdict would be the scheduler's
-// rather than the flush's.
+// The confirmed Request's flush runs on a goroutine of its own, bounded by the request's deadline,
+// and a timeout that came before that goroutine ran would end the flush unconfirmed, the verdict
+// the scheduler's rather than the flush's. So that Request runs out of time at once
+// (WithRequestExpiry) with an hour to its deadline: its timeout waits for its flush, which the hour
+// bounds, so the answer carries the flush's verdict however late the flush runs. The frozen
+// Request below keeps its timer.
 func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
-	server, _, client := requestClient(t)
+	var expiredOnce atomic.Bool
+	server, _, client := requestClient(t, bus.WithRequestExpiry(func(time.Time) <-chan time.Time {
+		if !expiredOnce.CompareAndSwap(false, true) {
+			return nil
+		}
+		expired := make(chan time.Time, 1)
+		expired <- time.Now()
+		return expired
+	}))
 	window := client.WindowUntil(nil)
 
 	err := answerOf(t, window.Request("notifications.role.request-confirmed", forwardEnvelope("confirmed"),
-		bus.RequestOptions{MsgID: bus.ForwardMsgID("confirmed", "notifications.role.request-confirmed"), Timeout: 5 * time.Second}))
+		bus.RequestOptions{MsgID: bus.ForwardMsgID("confirmed", "notifications.role.request-confirmed"), Timeout: time.Hour}))
 	if !errors.Is(err, bus.ErrNotAcknowledged) || errors.Is(err, bus.ErrPublishUnconfirmed) {
 		t.Fatalf("an unanswered Request whose publish was confirmed returned %v, want ErrNotAcknowledged and not ErrPublishUnconfirmed", err)
 	}
