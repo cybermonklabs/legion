@@ -143,6 +143,9 @@ func (d *listenerDeps) confirm(dedupeKey, sessionID string) {
 // route's deferred settle gives the take back.
 type roleSend struct {
 	w http.ResponseWriter
+	// ctx bounds the leader read edgeRoleResolution makes to confirm a holder's stored record; it
+	// is the send's own request-scoped context (sendToRole).
+	ctx context.Context
 	// r is the request, read for the projects an edge holds it to (edgeRoleResolution).
 	r      *http.Request
 	record *requestRecord
@@ -176,7 +179,10 @@ type roleSend struct {
 // it (edgeRoleResolution).
 func (s *roleSend) hold(result roles.Resolution) {
 	s.holder, s.holderState = result.Holder, result.HolderState
-	s.named = edgeRoleResolution(s.r, result).State != roles.Unclaimed
+	// A confirmation read that did not answer names no holder (fail closed): the send still forwards,
+	// and naming the holder is this answer's alone.
+	resolution, err := edgeRoleResolution(s.ctx, s.d.sessions, s.r, result)
+	s.named = err == nil && resolution.State != roles.Unclaimed
 }
 
 // answered is the holder and state this send's answers name: the holder it forwards to, and
@@ -244,7 +250,11 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 			return
 		}
 	}
-	s.record.refuseRoleHolder(s.w, s.role, edgeRoleResolution(s.r, result))
+	refusal, confErr := edgeRoleResolution(s.ctx, s.d.sessions, s.r, result)
+	if confErr != nil {
+		refusal = roles.Resolution{State: roles.Unclaimed}
+	}
+	s.record.refuseRoleHolder(s.w, s.role, refusal)
 	// The 404 is written; the refusal's own bus signal goes out behind it (publishRefusalException).
 	publishRefusalException(s.d.client, s.d.delivery.logger, s.d.delivery.edge, s.item, result)
 	outcome := sendHolderLapsed
@@ -285,7 +295,10 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	s.record.holder = s.holder
 	// At the edge a lapsed holder of none of the token's projects is named as no holder at all,
 	// as GET /v1/roles/<role> names it (edgeRoleResolution).
-	shown := edgeRoleResolution(s.r, result)
+	shown, confErr := edgeRoleResolution(s.ctx, s.d.sessions, s.r, result)
+	if confErr != nil {
+		shown = roles.Resolution{State: roles.Unclaimed}
+	}
 	answer := listenerwire.PublishResponse{
 		Envelope:     s.item,
 		ExpectsReply: s.expectsReply,
@@ -415,7 +428,7 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // its answers write (expectsReplyAnswer, api.go), the request's own dialect; the envelope this
 // send forwards and keeps carries the envelope's own value.
 func sendToRole(ctx context.Context, w http.ResponseWriter, r *http.Request, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
-	send := &roleSend{w: w, r: r, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
+	send := &roleSend{w: w, ctx: ctx, r: r, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later

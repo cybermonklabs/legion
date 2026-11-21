@@ -1636,9 +1636,19 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 					return
 				}
 			}
-			if projects, edge := heldProjects(r); edge && !sessionOfProjects(entry, state, projects) {
-				writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
-				return
+			if projects, edge := heldProjects(r); edge {
+				// A not-live entry the token's list names is answered as a stopped session only
+				// when its stored record confirms it (edgeSessionShown); a record the server wrote
+				// is a session the edge never heard of, and a read that did not answer is a 503.
+				shown, confErr := edgeSessionShown(ctx, d.sessions, entry, state, projects)
+				if confErr != nil {
+					writeBusUnavailable(w, confErr)
+					return
+				}
+				if !shown {
+					writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
+					return
+				}
 			}
 			writeJSON(w, http.StatusNotFound, noLiveSession(d.sessions, sessionID, entry, state))
 		case err != nil:
@@ -2268,7 +2278,12 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					"holder":         stale.Holder,
 					"claim_revision": stale.Actual,
 				}
-				if !edgeNamesHolder(r, d.sessions, stale.Holder) {
+				named, confErr := edgeNamesHolder(ctx, d.sessions, r, stale.Holder)
+				if confErr != nil {
+					writeBusUnavailable(w, confErr)
+					return
+				}
+				if !named {
 					delete(answer, "holder")
 				}
 				writeJSON(w, http.StatusConflict, answer)
@@ -2281,7 +2296,12 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					"role":   held.Role,
 					"holder": held.Holder,
 				}
-				if !edgeNamesHolder(r, d.sessions, held.Holder) {
+				named, confErr := edgeNamesHolder(ctx, d.sessions, r, held.Holder)
+				if confErr != nil {
+					writeBusUnavailable(w, confErr)
+					return
+				}
+				if !named {
 					answer = map[string]string{"error": fmt.Sprintf("role %s is held by another session", held.Role), "role": held.Role}
 				}
 				writeJSON(w, http.StatusConflict, answer)
@@ -2372,8 +2392,13 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 			return
 		}
 		// At the edge a holder of none of the token's projects, live or lapsed, is no holder the
-		// answer names: the role reads as one no claim holds (edgeRoleResolution).
-		result = edgeRoleResolution(r, result)
+		// answer names: the role reads as one no claim holds (edgeRoleResolution), and a read that
+		// did not answer is the bus-unavailable 503.
+		result, err = edgeRoleResolution(ctx, d.sessions, r, result)
+		if err != nil {
+			writeBusUnavailable(w, err)
+			return
+		}
 		if result.State != roles.Live {
 			writeRoleHolderError(w, role, result)
 			return
