@@ -200,6 +200,7 @@ on:
       - 'packages/envoy/internal/dispatch/text/*'
       - 'packages/envoy/internal/dispatch/texttreefill/*'
       - 'packages/envoy/internal/dispatch/texttrees/*'
+      - 'packages/envoy/internal/dispatch/textversions/*'
       - 'packages/envoy/internal/dispatch/workflowstore/*'
       - 'packages/envoy/internal/envconf/*'
       - 'packages/envoy/internal/fold/*'
