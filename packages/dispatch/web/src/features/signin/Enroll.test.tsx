@@ -16,14 +16,19 @@ import { App } from "../../app";
 const token = "q".repeat(43);
 const ana = "ana@other.example";
 
-/** Where the page is, for a test to read after a navigation. */
+/** Where the page is, for a test to read after a navigation: its path and fragment, and the state
+ *  its history entry holds, which a reload keeps. */
 function Address() {
   const location = useLocation();
-  return <output aria-label="address">{`${location.pathname}${location.hash}`}</output>;
+  return (
+    <output aria-label="address" data-state={JSON.stringify(location.state ?? null)}>
+      {`${location.pathname}${location.hash}`}
+    </output>
+  );
 }
 
 /** The app at `address`, signed in to nobody: the enrollment page needs no session. */
-function renderApp(address: string) {
+function renderApp(address: string | { readonly pathname: string; readonly state: unknown }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const whoAmI = spyOn(api, "whoAmI").mockRejectedValue(
     new ApiError(401, { code: "NO_IDENTITY", error: "unauthorized", sign_in: "passkey" })
@@ -149,6 +154,36 @@ test("a link with no code after its # asks Dispatch nothing", async () => {
     expect(screen.queryByRole("button", { name: "Create a passkey" })).not.toBeInTheDocument();
   } finally {
     app.restore();
+    browser.restore();
+    begin.mockRestore();
+  }
+});
+
+// A reload keeps the history entry, and its state, but not the page's: the token the page read
+// and took out of the address is gone. The page says to open the link again rather than calling
+// the link incomplete, which the row above keeps for a link that came with nothing after its #.
+test("a reload after the page took the token out of the address says to open the link again", async () => {
+  const browser = installFakePasskeys();
+  const begin = spyOn(api, "passkeyEnrollmentOptions").mockResolvedValue(enrollmentOptions(ana));
+  const first = renderApp(`/enroll#${token}`);
+  let state: unknown = null;
+  try {
+    await screen.findByRole("button", { name: "Create a passkey" });
+    const address = screen.getByLabelText("address");
+    await waitFor(() => expect(address).toHaveTextContent(/^\/enroll$/));
+    state = JSON.parse(address.dataset.state ?? "null");
+  } finally {
+    first.restore();
+  }
+  const reloaded = renderApp({ pathname: "/enroll", state });
+  try {
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This page no longer holds the link. Open it again from the project owner's message."
+    );
+    expect(screen.queryByRole("button", { name: "Create a passkey" })).not.toBeInTheDocument();
+    expect(begin).toHaveBeenCalledTimes(1);
+  } finally {
+    reloaded.restore();
     browser.restore();
     begin.mockRestore();
   }

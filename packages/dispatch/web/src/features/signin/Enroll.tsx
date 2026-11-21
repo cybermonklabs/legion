@@ -16,6 +16,11 @@ import { creationOptions, passkeysSupported, registrationJSON } from "./webauthn
  *  session yet. */
 export const ENROLL_PATH = "/enroll";
 
+/** The state the page leaves on its history entry when it takes the token out of the address. A
+ *  reload keeps a history entry's state, so a page loaded with no token tells a link it read
+ *  already from a link that came with nothing after its #. */
+const LINK_READ = { enrollLinkRead: true } as const;
+
 /**
  * The page the owner's link opens: it checks the link (`/auth/passkey/register/begin`, which
  * leaves it unused) and names who made it, the project it is for and the address it was made for,
@@ -26,8 +31,9 @@ export const ENROLL_PATH = "/enroll";
  *
  * The page reads the link's token once and then replaces this tab's history entry with one
  * without it, so the address bar, a copy of the address and a return to the entry hold no link
- * that still enrolls. The press opens a ceremony of its own rather than reusing the check's: the
- * check's is five minutes old at most, and a person can read the page for longer than that.
+ * that still enrolls; a reload then finds no token, and says to open the link again. The press
+ * opens a ceremony of its own rather than reusing the check's: the check's is five minutes old at
+ * most, and a person can read the page for longer than that.
  */
 export function Enroll(): ReactNode {
   useDocumentTitle("Enroll a passkey · Dispatch");
@@ -42,7 +48,10 @@ export function Enroll(): ReactNode {
     // A link opened while this page is open is read the same way, in place of the one before it.
     setToken(location.hash.replace(/^#/, ""));
     setRefused(undefined);
-    navigate({ hash: "", pathname: location.pathname, search: location.search }, { replace: true });
+    navigate(
+      { hash: "", pathname: location.pathname, search: location.search },
+      { replace: true, state: LINK_READ }
+    );
   }, [location.hash, location.pathname, location.search, navigate]);
   const supported = passkeysSupported();
   const check = useQuery({
@@ -78,7 +87,12 @@ export function Enroll(): ReactNode {
         <CeremonyAlert
           refusal={{
             message:
-              "This link is incomplete: nothing follows its #. Open the link exactly as the project's owner sent it.",
+              typeof location.state === "object" &&
+              location.state !== null &&
+              "enrollLinkRead" in location.state &&
+              location.state.enrollLinkRead === LINK_READ.enrollLinkRead
+                ? "This page no longer holds the link. Open it again from the project owner's message."
+                : "This link is incomplete: nothing follows its #. Open the link exactly as the project's owner sent it.",
             retry: false,
           }}
         />
