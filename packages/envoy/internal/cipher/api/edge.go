@@ -37,6 +37,12 @@ type Edge struct {
 	// DeviceLimit bounds the device authorizations the edge takes from every caller together, in
 	// one bucket beside each address's own; nil means DefaultEdgeDeviceLimit.
 	DeviceLimit *ratelimit.Limit
+	// DeviceLogin wraps the edge's device login, the machine-login service's LoginDevice at the
+	// edge's address (machine.Service.AtEdge), and answers the one the edge opens logins with; nil
+	// means that login as it is. cmd/cipherd leaves it nil. A test sets it to open a login the
+	// edge's pre-check refused (deviceLoginCanOpen), which happens otherwise only when a request's
+	// iat crosses a second between the two clock reads.
+	DeviceLogin func(open func(ctx context.Context, form url.Values, userCode string) error) func(ctx context.Context, form url.Values, userCode string) error
 }
 
 // edgeLoginKeyPrefix opens the key of every per-login bucket the edge spends, so a key the edge
@@ -88,6 +94,9 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 	edgeDeps.PublicURL = edge.URL
 	edgeDeps.MachineLogin = login
 	edgeDeps.DeviceLogin = login.LoginDevice
+	if edge.DeviceLogin != nil {
+		edgeDeps.DeviceLogin = edge.DeviceLogin(login.LoginDevice)
+	}
 	edgeDeps.TokenHooks = edgeTokenHooks(deps.TokenHooks, edge.WorkspaceDomains)
 	// The edge's GET /healthz is public, so it answers from the database ping through a
 	// one-second cache (cachedPing): a caller on the internet costs the database at most one

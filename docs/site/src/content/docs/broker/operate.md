@@ -1434,11 +1434,12 @@ What the edge does that the API's port does not:
     one the person uses.
   - An IPv6 caller is keyed on the `/64` that holds its address, since one host or one site holds
     a whole `/64`.
-  - A device authorization that can open a login (the device login's client, and a request
-    object that verifies for the edge) spends one more bucket that all callers share: a burst of
-    30 and one every two seconds, per pod. A request that cannot, another client's id or an object
-    that does not verify, spends nothing of it. It caps the pending edge logins a pod holds, about
-    480 at the 15-minute pending time, three rows each, however many addresses send them. Its cost:
+  - Every login the edge opens spends one token of one more bucket that all callers share: a
+    burst of 30 and one every two seconds, per pod. A request the device login would refuse
+    (another client's id, an object that does not verify, a service's login, a `dpop_jkt` that
+    is not the object's key) spends nothing of it; a replay of a valid object spends one. It caps
+    the pending edge logins a pod holds, about 480 at the 15-minute pending time, three rows each,
+    however many addresses send them. Its cost:
     a caller who sends valid device authorizations from about 15 addresses, each within its own
     address bucket, holds it empty on every pod, and every outside person's new device login at
     the edge is refused `429` until the flood stops; the burst refills in a minute after that.

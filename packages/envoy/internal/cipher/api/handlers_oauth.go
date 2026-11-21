@@ -19,17 +19,20 @@ import (
 
 // deviceAuthorization is POST /v1/oauth/device_authorization: a machine login's device
 // authorization request (RFC 8628), public. It spends its source address's launcher bucket before
-// the provider does any work, as the token login does (refuseAddress). At the edge, a request that
-// can open a login (deviceLoginCanOpen) then spends the edge's one bucket every caller shares
-// (launcherLimiter.overall); a request that cannot is left to the provider to refuse and spends
-// nothing of it. Deps.DeviceLogin then verifies the request and opens the login in the provider's
-// transaction, and only a login it opened spends the bucket of the person its login_hint names
-// (spendDeviceLoginBucket), so a request that writes nothing costs that person nothing; a refusal
-// there rolls the login back. A refused request is 429 with Retry-After. Deps.DeviceLogin's
-// refusals are OAuth errors (invalid_request) whose description names the broker's code: a
-// request object that does not verify, repeats a jti or names another key than dpop_jkt
-// REQUEST_INVALID, one naming a service SERVICE_LOGS_IN_WITH_TOKEN. The answer's verification_uri
-// is this listener's page (server.verificationURI).
+// the provider does any work, as the token login does (refuseAddress). At the edge, every login
+// it opens spends exactly one token of the edge's one bucket every caller shares
+// (launcherLimiter.overall): a request the pre-check judges able to open a login
+// (deviceLoginCanOpen) spends it before the provider does any work, and a login
+// Deps.DeviceLogin opens that the pre-check did not judge so, as one whose iat crossed a second
+// between the two clock reads does, spends it once opened, a refusal rolling the login back. A
+// request that opens no login spends nothing of it. Deps.DeviceLogin verifies the request and
+// opens the login in the provider's transaction, and only a login it opened spends the bucket of
+// the person its login_hint names (spendDeviceLoginBucket), so a request that writes nothing costs
+// that person nothing; a refusal there rolls the login back too. A refused request is 429 with
+// Retry-After. Deps.DeviceLogin's refusals are OAuth errors (invalid_request) whose description
+// names the broker's code: a request object that does not verify, repeats a jti or names another
+// key than dpop_jkt REQUEST_INVALID, one naming a service SERVICE_LOGS_IN_WITH_TOKEN. The answer's
+// verification_uri is this listener's page (server.verificationURI).
 func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 	if !s.launcherLimiter.addressAllows(r) {
 		oauth.WriteRefusal(w, rateLimitedRefusal(s.launcherLimiter.perAddress.Every()))
@@ -38,31 +41,39 @@ func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 	if !readOAuthForm(w, r) {
 		return
 	}
-	if s.launcherLimiter.overall != nil && s.deviceLoginCanOpen(r.PostForm) && !s.launcherLimiter.overallAllows() {
-		oauth.WriteRefusal(w, rateLimitedRefusal(s.launcherLimiter.overall.Every()))
-		return
+	spent := false
+	if s.launcherLimiter.overall != nil && s.deviceLoginCanOpen(r.PostForm) {
+		if !s.launcherLimiter.overallAllows() {
+			oauth.WriteRefusal(w, rateLimitedRefusal(s.launcherLimiter.overall.Every()))
+			return
+		}
+		spent = true
 	}
 	s.deps.OAuth.DeviceAuthorize(w, r, s.verificationURI, func(ctx context.Context, form url.Values, userCode string) error {
 		if err := s.deps.DeviceLogin(ctx, form, userCode); err != nil {
 			return deviceLoginRefusal(err)
+		}
+		if !spent && !s.launcherLimiter.overallAllows() {
+			return deviceLoginRefusal(rateLimitedRefusal(s.launcherLimiter.overall.Every()))
 		}
 		return deviceLoginRefusal(s.spendDeviceLoginBucket(r, form))
 	})
 }
 
 // deviceLoginCanOpen reports whether form is a device authorization the provider can open a login
-// for: the device login's own client, and a request object that verifies for this listener
-// (record.VerifyRequestObject: its signature, audience, times and fields, which cost no database
-// read). A request that fails either is refused by the provider or by Deps.DeviceLogin with
-// nothing written. A replay of an object that verifies passes here, and spends the edge's shared
+// for: the device login's own client, and a person's machine login Deps.DeviceLogin would open
+// short of its jti (machine.Service.CheckPersonLogin: the object's signature, audience, times,
+// detail and reason, no service, a person's login_hint and a dpop_jkt that is its key), none of
+// which reads the database. A request that fails either is refused by the provider or by
+// Deps.DeviceLogin with nothing written. A replay of an object that passes spends the edge's shared
 // bucket, since only Deps.DeviceLogin reads its jti; that is the accepted cost of checking without
-// the database.
+// the database. The judgment reads its own clock, so a login it refuses can still open; such a
+// login spends the bucket once open (deviceAuthorization).
 func (s *server) deviceLoginCanOpen(form url.Values) bool {
 	if form.Get("client_id") != oauthwire.ClientID {
 		return false
 	}
-	_, err := record.VerifyRequestObject(form.Get("request"), s.deps.MachineLogin.Audience, s.deps.MachineLogin.Skew, time.Now())
-	return err == nil
+	return s.deps.MachineLogin.CheckPersonLogin(form.Get("request"), form.Get("dpop_jkt"), time.Now()) == nil
 }
 
 // spendDeviceLoginBucket spends one request of the bucket of the person form's request object

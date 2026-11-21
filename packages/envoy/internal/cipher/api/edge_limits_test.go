@@ -4,6 +4,7 @@
 package api_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -12,7 +13,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -167,5 +170,80 @@ func TestTheEdgeSpendsItsSharedBucketOnlyOnALoginItCanOpen(t *testing.T) {
 	}
 	if status, body := edgeLogin(t, rig, "198.51.100.199", outsidePerson, false); status != http.StatusTooManyRequests || body["code"] != "RATE_LIMITED" {
 		t.Fatalf("a fourth valid login = %d %v, want 429 RATE_LIMITED from the shared bucket", status, body)
+	}
+}
+
+// TestEveryLoginTheEdgeOpensSpendsItsSharedBucket: the edge's pre-check reads its own clock, so
+// a login it refuses can still be opened, as one whose iat crosses a second between the two clock
+// reads is; such a login spends the shared bucket once opened. With that bucket at a burst of one
+// that does not refill within the test, one valid login spends it, and then a login the pre-check
+// refuses (a dpop_jkt that is not the object's key) but the edge's device login opens (a wrapper
+// that hands the real login the object's own key, which no clock decides) is refused 429
+// RATE_LIMITED, and the login it opened is rolled back: it writes nothing.
+//
+// The named revert: spend the shared bucket only on the pre-check's word, and the login the
+// pre-check refused is served with the bucket empty.
+func TestEveryLoginTheEdgeOpensSpendsItsSharedBucket(t *testing.T) {
+	var rig *ciphertest.Rig
+	rig = ciphertest.NewRig(t,
+		ciphertest.WithEdgeDeviceLimit(ratelimit.Limit{Every: time.Hour, Burst: 1}),
+		ciphertest.WithEdgeDeviceLogin(func(open func(context.Context, url.Values, string) error) func(context.Context, url.Values, string) error {
+			return func(ctx context.Context, form url.Values, userCode string) error {
+				obj, err := record.VerifyRequestObject(form.Get("request"), rig.EdgeURL, time.Minute, time.Now())
+				if err != nil {
+					return open(ctx, form, userCode)
+				}
+				opened := url.Values{}
+				for k, v := range form {
+					opened[k] = v
+				}
+				opened.Set("dpop_jkt", obj.Thumbprint)
+				return open(ctx, opened, userCode)
+			}
+		}))
+	if status, body := edgeLogin(t, rig, "198.51.100.201", outsidePerson, false); status != http.StatusOK {
+		t.Fatalf("the valid login that spends the shared bucket = %d %v, want 200", status, body)
+	}
+	before := loginRows(t, rig)
+	status, body := edgeLogin(t, rig, "198.51.100.202", outsidePerson, true)
+	if status != http.StatusTooManyRequests || body["code"] != "RATE_LIMITED" {
+		t.Fatalf("a login the pre-check refused and the edge opened, with the shared bucket empty = %d %v, want 429 RATE_LIMITED", status, body)
+	}
+	if after := loginRows(t, rig); after != before {
+		t.Fatalf("the refused login wrote %d rows, want none: it was not rolled back", after-before)
+	}
+}
+
+// TestARequestTheEdgeCannotOpenSpendsNoSharedToken: the edge's pre-check judges a request by every
+// check its device login makes but the jti (machine.Service.CheckPersonLogin), so a request the
+// login would refuse spends nothing of the shared bucket. With that bucket at a burst of one that
+// does not refill within the test, a dpop_jkt that is not the object's key is refused 400
+// REQUEST_INVALID and a service's login 400 SERVICE_LOGS_IN_WITH_TOKEN, and then a valid login is
+// still served; the next valid login is refused 429 RATE_LIMITED.
+//
+// The named revert: judge only the object's signature and fields (record.VerifyRequestObject), and
+// the dpop_jkt mismatch spends the one token, so the valid login is refused 429.
+func TestARequestTheEdgeCannotOpenSpendsNoSharedToken(t *testing.T) {
+	rig := ciphertest.NewRig(t, ciphertest.WithEdgeDeviceLimit(ratelimit.Limit{Every: time.Hour, Burst: 1}))
+	if status, body := edgeLogin(t, rig, "198.51.100.211", outsidePerson, true); status != http.StatusBadRequest || body["code"] != "REQUEST_INVALID" {
+		t.Fatalf("a login whose dpop_jkt is another key's = %d %v, want 400 REQUEST_INVALID", status, body)
+	}
+	key := newSigningKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := url.Values{
+		"client_id": {oauthwire.ClientID}, "scope": {oauthwire.Scope}, "dpop_jkt": {jkt},
+		"request": {signMachineLoginRequest(t, key, rig.EdgeURL, "", "example-host-devbox", "example-service")},
+	}
+	if status, body := postEdge(t, rig.EdgeURL, "/v1/oauth/device_authorization", service, map[string]string{"X-Forwarded-For": forwardedFor("", "198.51.100.212")}); status != http.StatusBadRequest || body["code"] != "SERVICE_LOGS_IN_WITH_TOKEN" {
+		t.Fatalf("a service's login = %d %v, want 400 SERVICE_LOGS_IN_WITH_TOKEN", status, body)
+	}
+	if status, body := edgeLogin(t, rig, "198.51.100.213", outsidePerson, false); status != http.StatusOK {
+		t.Fatalf("a valid login after two the edge cannot open = %d %v, want 200: a refused request spent the shared token", status, body)
+	}
+	if status, body := edgeLogin(t, rig, "198.51.100.214", outsidePerson, false); status != http.StatusTooManyRequests || body["code"] != "RATE_LIMITED" {
+		t.Fatalf("a second valid login = %d %v, want 429 RATE_LIMITED from the shared bucket", status, body)
 	}
 }

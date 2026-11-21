@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -167,6 +168,9 @@ type rigConfig struct {
 	// edgeDeviceLimit is the edge's bucket every caller of a device authorization shares
 	// (api.Edge.DeviceLimit); nil is api.DefaultEdgeDeviceLimit.
 	edgeDeviceLimit *ratelimit.Limit
+	// edgeDeviceLogin wraps the edge's device login (api.Edge.DeviceLogin); nil is the login as
+	// it is.
+	edgeDeviceLogin func(open func(context.Context, url.Values, string) error) func(context.Context, url.Values, string) error
 }
 
 // EdgeMachineLoginURL is the page a device authorization made at a Rig's edge sends its person
@@ -190,6 +194,12 @@ func WithEdge() Option {
 // authorization shares, for a test of that bucket that cannot wait for its refill.
 func WithEdgeDeviceLimit(limit ratelimit.Limit) Option {
 	return func(c *rigConfig) { c.edge, c.edgeDeviceLimit = true, &limit }
+}
+
+// WithEdgeDeviceLogin is WithEdge with wrap around the edge's device login (api.Edge.DeviceLogin),
+// for a test of what the edge does with a login its pre-check refused and its login opened.
+func WithEdgeDeviceLogin(wrap func(open func(context.Context, url.Values, string) error) func(context.Context, url.Values, string) error) Option {
+	return func(c *rigConfig) { c.edge, c.edgeDeviceLogin = true, wrap }
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -344,7 +354,8 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 	api.Register(mux, deps)
 	if config.edge {
-		api.RegisterEdge(edgeMux, deps, api.Edge{URL: edgeURL, VerificationURL: EdgeMachineLoginURL, WorkspaceDomains: []string{SignInDomain, EdgeWorkspaceDomain}, DeviceLimit: config.edgeDeviceLimit})
+		api.RegisterEdge(edgeMux, deps, api.Edge{URL: edgeURL, VerificationURL: EdgeMachineLoginURL, WorkspaceDomains: []string{SignInDomain, EdgeWorkspaceDomain},
+			DeviceLimit: config.edgeDeviceLimit, DeviceLogin: config.edgeDeviceLogin})
 	}
 
 	operatorFile := filepath.Join(t.TempDir(), "operator")
