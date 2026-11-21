@@ -192,6 +192,9 @@ jobs:
       - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
         run: bash scripts/daemon-release-gate.test.sh
         working-directory: packages/envoy
+      - name: Decision test for dispatch's project-access-bus.sh (fake checkouts and recorded messages; no stack)
+        run: bash e2e/acceptance/project-access-bus.test.sh
+        working-directory: packages/dispatch
       - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
         run: bash loadtest/run-step.test.sh
         working-directory: packages/envoy

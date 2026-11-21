@@ -3805,6 +3805,18 @@ jobs:
               # in the same step. envoy-go's unit step skips both tests, so the file is this job's
               # read alone.
               - 'packages/dispatch/web/src/features/refs/__fixtures__/display-trees.json'
+              # Dispatch's bus acceptance driver's own test (e2e/acceptance/project-access-bus.test.sh)
+              # runs here with no stack: it sources bus/decide.sh, and lays the driver, what the
+              # driver sources and the decisions in fake checkouts and runs the driver's --inputs.
+              - 'packages/dispatch/e2e/acceptance/project-access-bus.sh'
+              - 'packages/dispatch/e2e/acceptance/project-access-bus.test.sh'
+              - 'packages/dispatch/e2e/acceptance/access-lib.sh'
+              - 'packages/dispatch/e2e/acceptance/bus/decide.sh'
+              - 'scripts/e2e/lib/two-builds.sh'
+              - 'scripts/e2e/lib/rig.sh'
+              - 'scripts/e2e/lib/loopback-dsn.sh'
+              - 'scripts/e2e/lib/loopback-dsn.py'
+              - 'scripts/e2e/lib/port-file.sh'
               # Its pack step writes each archive's notices, for each target the list names.
               - 'scripts/go-third-party-notices.sh'
               - '.github/go-release-targets.json'

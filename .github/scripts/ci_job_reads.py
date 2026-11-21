@@ -2118,6 +2118,8 @@ STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
+PROJECT_ACCESS_BUS_TEST = "Decision test for dispatch's project-access-bus.sh (fake checkouts and recorded messages; no stack)"
+PROJECT_ACCESS_BUS_TEST_FILE = "packages/dispatch/e2e/acceptance/project-access-bus.test.sh"
 # The check that no migration a database may have run is edited without its replaces line: a
 # script that builds the command with `go build` and runs the binary, so pinned whole, and the Run
 # stands for the command it compiles.
@@ -3169,6 +3171,19 @@ GATES = [
         (f"{ENVOY}/loadtest/run-series.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
         (f"{ENVOY}/loadtest/common.test.sh", at("envoy-go-checks", LOADTEST_LOCK)),
         (f"{ENVOY}/loadtest/common.sh", "packages/envoy/loadtest/common.test.sh sources it; run-step.sh and run-series.sh source it"),
+        (PROJECT_ACCESS_BUS_TEST_FILE, at("envoy-go-checks", PROJECT_ACCESS_BUS_TEST)),
+        ("packages/dispatch/e2e/acceptance/bus/decide.sh",
+         f"{PROJECT_ACCESS_BUS_TEST_FILE} sources it, and copies it into each fake checkout"),
+        ("packages/dispatch/e2e/acceptance/project-access-bus.sh",
+         f"{PROJECT_ACCESS_BUS_TEST_FILE} copies it into each fake checkout and runs its --inputs and its refusal of an unknown control"),
+        ("packages/dispatch/e2e/acceptance/access-lib.sh",
+         f"{PROJECT_ACCESS_BUS_TEST_FILE} copies it into each fake checkout; project-access-bus.sh sources it"),
+        (TWO_BUILDS,
+         f"{PROJECT_ACCESS_BUS_TEST_FILE} copies it into each fake checkout; project-access-bus.sh sources it"),
+        ("scripts/e2e/lib/rig.sh", "scripts/e2e/lib/two-builds.sh sources it; project-access-bus.test.sh copies it"),
+        ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it; project-access-bus.test.sh copies it"),
+        ("scripts/e2e/lib/loopback-dsn.py", "project-access-bus.test.sh copies it beside loopback-dsn.sh, which addresses it"),
+        ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh sources it; project-access-bus.test.sh copies it"),
         # The chart archive render-nats.sh renders, vendored so that the step downloads no chart.
         (f"{ENVOY}/loadtest/cluster/nats-*.tgz",
          f"{at('envoy-go-checks', LOADTEST_CLUSTER)}: cluster.test.sh runs render-nats.sh, which checks "
