@@ -1959,7 +1959,7 @@ notice comes once per handoff commit, from whichever read finds it first.
   - `intake_consumers' sentinel records no stream identity (stream_id)`: the cutover is marked done
     but the sentinel does not say which ENVOY_NOTIFICATIONS the daemon's floors belong to, which
     the operator's `convert` and `enroll` write. The daemon tags each floor it records with that
-    identity, since it reads nothing of the stream itself, and stops at its boot until it is written.
+    identity, and stops at its boot until it is written.
   - `a durable consumer has a checkpoint and no selection record`: `consumer_positions` holds a
     position for the logical name and `intake_consumers` no row, so the record was lost; a new
     consumer at the next message would skip what the daemon had not applied. The operator gives it
