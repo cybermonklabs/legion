@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -1285,6 +1286,17 @@ func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *
 	// no event of it.
 	moved := issue(key, "acme/widgets", "todo", true, "", 1)
 	client.show(moved)
+	// GitHub answers only once no recovery pass still holds a listing read before the move. The
+	// silent apply woke one (leaveUnread), and more run on the refresher's backoff while zeta/tools
+	// is unread; a pass prepares what it listed, so one that listed the issue on zeta/tools and read
+	// GitHub after the answer would admit it there, from Dispatch's word before the move, which is
+	// the order this test does not set out to read. Every listing in this rig is the refresher's
+	// (recoverRepositories, and backfill's, which has no unfilled record to list for), and the
+	// refresher runs one job at a time, so a listing that begins after the move is made after every
+	// earlier pass has read GitHub and noted the issue silent again.
+	listed := client.listingCount()
+	testwait.WithinPolling(t, testwait.Bounded(t, math.MaxInt64, time.Second), testwait.Poll,
+		"a recovery pass that lists Dispatch after "+key+" moved", func() bool { return client.listingCount() > listed })
 	serveAndRecover(t, w, installs)
 	if got := recordedIssue(t, w, key); got == nil || got.Repo != "acme/widgets" {
 		t.Fatalf("%s = %+v once zeta/tools is recovered, want it admitted on acme/widgets, where it resolves now", key, got)
