@@ -18,6 +18,7 @@ import (
 	"html"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -1095,14 +1096,13 @@ func callbackURL(serverURL string, req *http.Request) string {
 }
 
 // publicOrigin is the origin a request came to: outsideOrigin when it is set and the request's
-// Host is its host, compared without regard to case as DevSignInOrigin's host is; otherwise
-// Dispatch's configured canonical origin, serverURL, whenever it is set. A backend request's Host
-// and TLS state make the origin only for unconfigured local deployments; forwarded headers are
+// Host is its host (sameHost: without regard to case, one trailing dot or the scheme's default
+// port, as DevSignInOrigin's host is compared without regard to case); otherwise Dispatch's
+// configured canonical origin, serverURL, whenever it is set. A backend request's Host and TLS
+// state make the origin only for unconfigured local deployments; forwarded headers are
 // deliberately ignored.
 func publicOrigin(serverURL, outsideOrigin string, req *http.Request) string {
-	// outsideOrigin is written as weborigin.Parse returns it, scheme://host[:port] and nothing
-	// more, so what follows the scheme is its Host.
-	if _, host, ok := strings.Cut(outsideOrigin, "://"); ok && strings.EqualFold(req.Host, host) {
+	if outsideOrigin != "" && sameHost(outsideOrigin, req.Host) {
 		return outsideOrigin
 	}
 	if parsed, err := url.Parse(serverURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
@@ -1113,6 +1113,32 @@ func publicOrigin(serverURL, outsideOrigin string, req *http.Request) string {
 		scheme = "https"
 	}
 	return fmt.Sprintf("%s://%s", scheme, req.Host)
+}
+
+// sameHost reports whether host, a request's Host, names the host of origin, which is written as
+// weborigin.Parse returns it (scheme://host[:port] and nothing more). The two are compared as one
+// host however a client spells it: without regard to case, with one trailing dot on the name and
+// the scheme's default port dropped on either side, so `outside.example:443` and
+// `outside.example.` reach the outside origin as `outside.example` does.
+func sameHost(origin, host string) bool {
+	scheme, own, ok := strings.Cut(origin, "://")
+	return ok && hostKey(scheme, own) == hostKey(scheme, host)
+}
+
+// hostKey is host, a Host header or an origin's host under scheme, as sameHost compares it: its
+// name lower case, with one trailing dot and an IPv6 literal's brackets taken off, and its port,
+// none for the scheme's default.
+func hostKey(scheme, host string) string {
+	name, port := host, ""
+	if split, splitPort, err := net.SplitHostPort(host); err == nil {
+		name, port = split, splitPort
+	}
+	name = strings.TrimSuffix(strings.TrimPrefix(strings.ToLower(name), "["), "]")
+	name = strings.TrimSuffix(name, ".")
+	if scheme == "https" && port == "443" || scheme == "http" && port == "80" {
+		port = ""
+	}
+	return name + " " + port
 }
 
 // enforceCookieOrigin refuses an unsafe request that presents a browser's credential, a session

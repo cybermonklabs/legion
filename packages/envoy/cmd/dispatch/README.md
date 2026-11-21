@@ -186,8 +186,8 @@ it must equal the URL humans type into their browser, and the sign-in pool's app
 With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the variable is the origin Dispatch builds its own links from and nothing more.
 
 `DISPATCH_OUTSIDE_ORIGIN` is a second origin Dispatch answers at, the one people from outside reach it at, whatever path the deployment gives them.
-A request whose `Host` is its host, compared without regard to case, is answered as that origin:
-a browser write carrying a session cookie passes the origin check only with that `Origin`, so a page on one origin cannot write as a person signed in on the other.
+A request whose `Host` is its host, compared without regard to case, one trailing dot on the name or the scheme's default port (`outside.example.`, `outside.example:443`), is answered as that origin (`routes.sameHost`).
+A browser write carrying a session cookie passes the origin check only with that origin's `Origin`, so a page on one origin cannot write as a person signed in on the other.
 Every other request is answered as `DISPATCH_SERVER_URL`'s.
 At the outside origin `GET /auth/start` and `GET /auth/callback`, Google's sign-in, answer `404`, with passkey sign-in on or off (`routes.googleSignInHere`): Google signs in the Workspace's people alone, at `DISPATCH_SERVER_URL`, so the sign-in client lists no callback of the outside origin.
 Its spelling is judged by the rule `envoy-infra:gcp:Dispatch` judges its `outsideOrigin` input by (`internal/weborigin`), and it must be `https` (`http` only with `DISPATCH_TEST_HOOKS=1`) on a host other than `DISPATCH_SERVER_URL`'s, which must be set;

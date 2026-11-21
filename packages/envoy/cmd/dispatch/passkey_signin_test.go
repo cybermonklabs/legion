@@ -547,6 +547,35 @@ func TestTheOutsideOriginServesNoGoogleSignIn(t *testing.T) {
 	}
 }
 
+// TestTheOutsideOriginIsItsHostHoweverSpelled (R5): a request whose Host is the outside origin's
+// host written with its default port (`:443`), with a trailing dot, or in capitals, is answered as
+// the outside origin: GET /auth/start is its 404, not the canonical origin's redirect to Google, and
+// a passkey sign-in begins there. The canonical origin's own host still starts Google's sign-in.
+//
+// Control: compare the Host with the outside origin's host as written (publicOrigin's
+// strings.EqualFold alone), and `/auth/start` at `outside.example.com:443` answers 302 and the row
+// fails.
+func TestTheOutsideOriginIsItsHostHoweverSpelled(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	for _, host := range []string{passkeyRPID + ":443", passkeyRPID + ".", "OUTSIDE.Example.COM", "outside.example.com.:443"} {
+		start := httptest.NewRequest(http.MethodGet, "https://"+host+"/auth/start", nil)
+		started := httptest.NewRecorder()
+		r.handler.ServeHTTP(started, start)
+		wantCode(t, "GET /auth/start with Host "+host, started, http.StatusNotFound, "NOT_FOUND")
+		begin := httptest.NewRequest(http.MethodPost, "https://"+host+"/auth/passkey/login/begin", strings.NewReader("{}"))
+		begin.Header.Set("Content-Type", "application/json")
+		begin.Header.Set("Origin", passkeyOrigin)
+		begun := httptest.NewRecorder()
+		r.handler.ServeHTTP(begun, begin)
+		if begun.Code != http.StatusOK {
+			t.Errorf("a sign-in's begin with Host %s answered %d %s, want 200, the outside origin's", host, begun.Code, begun.Body.String())
+		}
+	}
+	if started := call(r.handler, canonicalOrigin, http.MethodGet, "/auth/start", nil); started.Code != http.StatusFound {
+		t.Fatalf("GET /auth/start at the canonical origin answered %d %s, want 302 to Google", started.Code, started.Body.String())
+	}
+}
+
 // TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff (R5): with DISPATCH_SIGNIN_PASSKEY unset
 // and DISPATCH_OUTSIDE_ORIGIN still set on the same database (a rollback, or an outside origin
 // kept for agents), GET /auth/start and GET /auth/callback still answer 404 at the outside origin:
