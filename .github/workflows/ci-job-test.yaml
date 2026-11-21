@@ -577,6 +577,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.

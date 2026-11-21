@@ -99,6 +99,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-docs is a cache family of its own. This build compiles the daemon's legion command and
       # envoy's dispatch, broker and agent-secrets commands. envoy-e2e-local's go-envoy entry

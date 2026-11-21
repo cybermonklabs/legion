@@ -42,6 +42,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-envoy-test
       - id: go-cache
@@ -292,6 +294,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-restores-go-envoy-test
       - id: go-cache
@@ -368,6 +372,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy, restored only, as the multiprocess job restores it and for the same reason:
       # run-server.sh builds the Dispatch server, which the family's saving jobs do not.
@@ -436,6 +442,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-restores-go-envoy-test
       - id: go-cache

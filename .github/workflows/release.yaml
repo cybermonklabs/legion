@@ -172,6 +172,8 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # ci.yaml's go-daemon, restored and never saved: .github/workflows/ci-caches.yaml fills that
       # family on a push to main.

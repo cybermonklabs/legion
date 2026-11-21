@@ -55,6 +55,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/infra/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy-infra, under the key .github/workflows/ci-caches.yaml's envoy-infra job fills: the
       # runner's architecture, the Go version and the hash of the files that choose the module

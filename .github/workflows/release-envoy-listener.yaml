@@ -192,6 +192,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       - name: Generate Go contracts
         run: bun run gen:go
         working-directory: packages/contracts
@@ -262,6 +264,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           # The amd64 leg keeps the module cache it has always had. An arm64 entry would be one more
           # setup-go-Linux-arm64 Actions-cache entry of about 0.5–1 GB, against INFRA-490's target
           # of an Actions cache under 9 GB.
@@ -549,6 +553,8 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       # CGO_ENABLED=0 matches the existing agent-secrets builds
       # (packages/envoy/docker/Dockerfile, packages/daemon/docker/worker.Dockerfile):
       # without it, a same-arch build (amd64 here) links dynamically against the

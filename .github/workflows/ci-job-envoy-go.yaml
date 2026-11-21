@@ -79,6 +79,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy-test: this job builds and runs the test binary of every package of the envoy
       # module, a set no other job builds, so it keeps a family of its own.

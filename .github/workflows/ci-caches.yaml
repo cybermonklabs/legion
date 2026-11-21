@@ -141,6 +141,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       - id: go-daemon
@@ -207,6 +209,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       - id: go-notices
@@ -262,6 +266,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       - id: go-envoy
@@ -406,6 +412,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/infra/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       - id: go-envoy-infra

@@ -11,10 +11,23 @@
 # half-drift back toward a moving ref. .github/dependabot.yml is what keeps a passing pin current;
 # this script only refuses a pin that has already drifted or was never made.
 #
+# It holds one more rule, about one action: every step that uses actions/setup-go carries
+# `go-download-base-url: https://go.dev/dl` and `token: ''` under `with:`. Without them, setup-go
+# reads its list of Go versions through the GitHub REST API (a tree and a blob of
+# actions/go-versions, two calls) with the job's GITHUB_TOKEN. Every workflow run of this
+# repository draws on that token's one budget of 15,000 calls an hour. On 2026-11-21 CI spent all
+# of it between 16:24:15Z and 17:19:51Z, 1,712 setup-go runs made 3,424 of those calls, and the
+# steps that read the API after that, CodeQL's upload and pr-title's read of the pull request
+# among them, failed until the budget reset at 17:24:15Z (dispatch://INFRA-3904). With the base
+# URL, setup-go lists the versions and downloads Go from go.dev and makes no GitHub API call. The
+# empty token is needed too: setup-go sends its token with every download, so with the base URL
+# alone the job's GITHUB_TOKEN would go to go.dev.
+#
 # Scope: every workflow (.github/workflows/*.yml, *.yaml) and every composite action
 # (**/action.yml, **/action.yaml), read as YAML, every step's `uses:` and every job's `uses:`
-# (a reusable-workflow call). Files are discovered by walking the tree, not by asking git, so an
-# unsnapshotted change cannot read green locally.
+# (a reusable-workflow call), and the `with:` of every step that uses actions/setup-go. Files are
+# discovered by walking the tree, not by asking git, so an unsnapshotted change cannot read green
+# locally.
 #
 # Run from anywhere: .github/scripts/check-action-pins.sh
 # CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
@@ -78,6 +91,13 @@ targets = [
 ]
 
 problems: list[str] = []
+# The setup-go rule's refusals, apart from the pin refusals so the summary counts each kind, and
+# the number of setup-go steps read, so a pass says how many it held to the rule.
+setup_go_problems: list[str] = []
+setup_go_steps = 0
+# The action the second rule is about, and the two inputs it must carry, as the header says.
+SETUP_GO = "actions/setup-go"
+GO_DEV = "https://go.dev/dl"
 
 
 def is_remote(uses: str) -> bool:
@@ -99,12 +119,39 @@ def check_uses(path: Path, line: int, uses: str) -> None:
         )
 
 
+def check_setup_go(path: Path, step: Mapping) -> None:
+    """A step of actions/setup-go reads Go from go.dev and sends no token. The values are not
+    printed: a YAML value can hold a newline, which would start a workflow command of its own."""
+    global setup_go_steps
+    uses = step["uses"]
+    if not isinstance(uses, str) or uses.split("@", 1)[0] != SETUP_GO:
+        return
+    setup_go_steps += 1
+    inputs = step.get("with")
+    if not isinstance(inputs, Mapping):
+        inputs = {}
+    missing = []
+    if inputs.get("go-download-base-url") != GO_DEV:
+        missing.append(f"go-download-base-url: {GO_DEV}")
+    if inputs.get("token") != "":
+        missing.append("token: ''")
+    if missing:
+        setup_go_problems.append(
+            f"{path}:{step.lines.get('uses', 0)}: '{uses}' lacks {' and '.join(missing)} under "
+            f"with:, so it reads Go's version list through the GitHub API with the job's "
+            f"GITHUB_TOKEN, from the one budget of 15,000 calls an hour every workflow run of this "
+            f"repository draws on. With go-download-base-url: {GO_DEV} and token: '' it lists and "
+            f"downloads Go from go.dev, makes no GitHub API call and sends no token there"
+        )
+
+
 def walk_steps(path: Path, steps: object) -> None:
     if not isinstance(steps, list):
         return
     for step in steps:
         if isinstance(step, Mapping) and "uses" in step:
             check_uses(path, step.lines.get("uses", 0), step["uses"])
+            check_setup_go(path, step)
 
 
 for path in targets:
@@ -132,11 +179,23 @@ for path in targets:
             check_uses(path, job.lines.get("uses", 0), job["uses"])
         walk_steps(path, job.get("steps"))
 
-if problems:
-    for problem in problems:
+if problems or setup_go_problems:
+    for problem in problems + setup_go_problems:
         print(f"::error::{problem}")
-    print(f"{len(problems)} remote action(s) not pinned to a commit SHA", file=sys.stderr)
+    print(
+        f"{len(problems)} remote action(s) not pinned to a commit SHA, and "
+        f"{len(setup_go_problems)} of {setup_go_steps} {SETUP_GO} step(s) not reading Go from go.dev",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
-print(f"every remote action across {len(targets)} files is pinned to a commit SHA")
+setup_go_summary = (
+    f"all {setup_go_steps} {SETUP_GO} steps read Go from go.dev"
+    if setup_go_steps
+    else f"no step uses {SETUP_GO}"
+)
+print(
+    f"every remote action across {len(targets)} files is pinned to a commit SHA, and "
+    f"{setup_go_summary}"
+)
 PY

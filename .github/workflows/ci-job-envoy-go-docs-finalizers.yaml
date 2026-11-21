@@ -73,6 +73,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy, restored only: its modules are the envoy module's, but this job builds the
       # document service's test binary, not the listener and natsd of

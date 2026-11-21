@@ -59,6 +59,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy: the listener and natsd test/envoy-stack.ts builds, as envoy-e2e-local's
       # e2e-local.sh does.

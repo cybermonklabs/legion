@@ -89,7 +89,7 @@ jobs:
       - name: Check every tool asset of .github/ci-tools.yaml agrees with its pin
         run: .github/scripts/check-ci-tools.sh
 
-      - name: Check every remote action is pinned to a commit SHA
+      - name: Check every remote action is pinned to a commit SHA, and every setup-go step reads Go from go.dev
         run: .github/scripts/check-action-pins.sh
 
       - name: Check no current file names the pre-split Oh My Pi plugin
@@ -131,6 +131,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       # The skill-scenario rig's daemon-pane.go belongs to no module (it runs with `go run -overlay`
