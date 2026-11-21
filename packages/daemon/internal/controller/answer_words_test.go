@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/testreason"
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 )
 
 // TestAProbeLogsTheListenersWordsAsTheRuleReadsThem: the Envoy listener, or whatever answers in
@@ -22,9 +22,9 @@ func TestAProbeLogsTheListenersWordsAsTheRuleReadsThem(t *testing.T) {
 		status           int
 		probed           Liveness
 	}{
-		{"unresponsive", `{"reason":"holder_lapsed ` + testreason.Reason + `","holder":"ses_ctl","holder_state":"unresponsive"}`, "issuer.example/help", http.StatusNotFound, Unknown},
-		{"gone", `{"reason":"holder_lapsed","holder":"ses_ctl","holder_state":"` + testreason.Reason + `"}`, "issuer.example/help", http.StatusNotFound, Gone},
-		{"another-holder", `{"holder":"` + testreason.Reason + `","holder_state":"live","last_seen":1}`, "issuer.example/help", http.StatusOK, Gone},
+		{"unresponsive", `{"reason":"holder_lapsed ` + oauth2calltest.Reason + `","holder":"ses_ctl","holder_state":"unresponsive"}`, "issuer.example/code", http.StatusNotFound, Unknown},
+		{"gone", `{"reason":"holder_lapsed","holder":"ses_ctl","holder_state":"` + oauth2calltest.Reason + `"}`, "issuer.example/code", http.StatusNotFound, Gone},
+		{"another-holder", `{"holder":"` + oauth2calltest.Reason + `","holder_state":"live","last_seen":1}`, "issuer.example/code", http.StatusOK, Gone},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var log bytes.Buffer
@@ -32,7 +32,7 @@ func TestAProbeLogsTheListenersWordsAsTheRuleReadsThem(t *testing.T) {
 			if got := newTestProber(l.serve(t), "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != c.probed {
 				t.Fatalf("Probe = %v, want %v (log: %s)", got, c.probed, log.String())
 			}
-			testreason.RequireNone(t, "controller.answer-words/"+c.name, log.String())
+			oauth2calltest.RequireNone(t, "controller.answer-words/"+c.name, log.String())
 			if !strings.Contains(log.String(), c.want) {
 				t.Errorf("the probe logged %q, want the listener's words as the rule reads them, %q", log.String(), c.want)
 			}

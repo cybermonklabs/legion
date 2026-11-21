@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/testreason"
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 )
 
 // TestAListenerAnswerNamesItsStatusWithNoPhraseItWrote: the Envoy listener, or whatever answers in
@@ -34,11 +34,11 @@ func TestAListenerAnswerNamesItsStatusWithNoPhraseItWrote(t *testing.T) {
 		return err
 	}
 	cut := func(status int, body string) func(*testing.T) string {
-		return func(t *testing.T) string { return testreason.CutServer(t, status, body) }
+		return func(t *testing.T) string { return oauth2calltest.CutServer(t, status, body) }
 	}
 	whole := func(status int, body string) func(*testing.T) string {
 		return func(t *testing.T) string {
-			return testreason.Server(t, status, "Content-Type: application/json\r\n", body)
+			return oauth2calltest.StatusLineServer(t, status, "Content-Type: application/json\r\n", body)
 		}
 	}
 	for _, c := range []struct {
@@ -62,7 +62,7 @@ func TestAListenerAnswerNamesItsStatusWithNoPhraseItWrote(t *testing.T) {
 			if err == nil {
 				t.Fatal("the call answered no error")
 			}
-			testreason.RequireNone(t, "notify.status-line/"+c.name, err.Error())
+			oauth2calltest.RequireNone(t, "notify.status-line/"+c.name, err.Error())
 			if want := fmt.Sprintf("%d %s", c.status, http.StatusText(c.status)); !strings.Contains(err.Error(), want) {
 				t.Errorf("the error is %q, want %q in it", err, want)
 			}

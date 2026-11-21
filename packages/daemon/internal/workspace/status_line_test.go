@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/testreason"
 )
 
 // initOnly is a Runner whose every command succeeds and prints nothing: unpackCache's git init,
@@ -47,7 +47,7 @@ func TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem(t *testing.T)
 		{"token-refused", named, "answered 401 Unauthorized", http.StatusUnauthorized, func(t *testing.T, r FetchRequest) string {
 			return askedError(t, r, true)
 		}},
-		{"repository", CacheRepositoryHeader + ": " + testreason.Reason + "\r\n", "is the repository cache of see https://issuer.example/help?access_token=, not of", http.StatusOK, func(t *testing.T, r FetchRequest) string {
+		{"repository", CacheRepositoryHeader + ": " + oauth2calltest.Reason + "\r\n", "is the repository cache of see https://issuer.example/code?access_token=, not of", http.StatusOK, func(t *testing.T, r FetchRequest) string {
 			return askedError(t, r, false)
 		}},
 		{"tar-refused", named, "/tar answered 500 Internal Server Error", http.StatusInternalServerError, func(t *testing.T, r FetchRequest) string {
@@ -59,8 +59,8 @@ func TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem(t *testing.T)
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			said := c.call(t, request(testreason.Server(t, c.status, c.header, "")))
-			testreason.RequireNone(t, "workspace.status-line/"+c.name, said)
+			said := c.call(t, request(oauth2calltest.StatusLineServer(t, c.status, c.header, "")))
+			oauth2calltest.RequireNone(t, "workspace.status-line/"+c.name, said)
 			if !strings.Contains(said, c.want) {
 				t.Errorf("the line is %q, want %q in it", said, c.want)
 			}

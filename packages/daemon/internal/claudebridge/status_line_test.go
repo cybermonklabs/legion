@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/testreason"
 )
 
 // TestARefusedTurnReportNamesItsStatusWithNoPhraseItWrote: the daemon, or whatever answers in its
@@ -29,12 +29,12 @@ func TestARefusedTurnReportNamesItsStatusWithNoPhraseItWrote(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			var logged bytes.Buffer
 			reports := &turnReports{
-				url:    testreason.Server(t, c.status, "", c.body) + "/legion/v1/claims/turn-outcome",
+				url:    oauth2calltest.StatusLineServer(t, c.status, "", c.body) + "/legion/v1/claims/turn-outcome",
 				client: &http.Client{},
 				log:    log.New(&logged, "", 0),
 			}
 			reports.post(claim.TurnOutcomeRequest{Sequence: 1, Outcome: claim.TurnClean})
-			testreason.RequireNone(t, "claudebridge.status-line/"+c.name, logged.String())
+			oauth2calltest.RequireNone(t, "claudebridge.status-line/"+c.name, logged.String())
 			if !strings.Contains(logged.String(), c.want) {
 				t.Errorf("the bridge logged %q, want %q in it", logged.String(), c.want)
 			}

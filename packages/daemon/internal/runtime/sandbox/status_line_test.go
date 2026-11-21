@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/testreason"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -23,15 +23,15 @@ func TestACacheHealthNamesItsStatusAndRepositoryAsTheRuleReadsThem(t *testing.T)
 	for _, c := range []struct {
 		name, header, body, want string
 	}{
-		{"repository", workspace.CacheRepositoryHeader + ": " + testreason.Reason + "\r\n", "{}", "answered 200 OK naming the repository \"see https://issuer.example/help?access_token=\""},
+		{"repository", workspace.CacheRepositoryHeader + ": " + oauth2calltest.Reason + "\r\n", "{}", "answered 200 OK naming the repository \"see https://issuer.example/code?access_token=\""},
 		{"body", workspace.CacheRepositoryHeader + ": " + repo.String() + "\r\n", "not the health", "answered 200 OK with a body that is not the cache's health"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := cacheHealthOf(context.Background(), &http.Client{}, testreason.Server(t, http.StatusOK, c.header, c.body), repo)
+			_, err := cacheHealthOf(context.Background(), &http.Client{}, oauth2calltest.StatusLineServer(t, http.StatusOK, c.header, c.body), repo)
 			if err == nil {
 				t.Fatal("cacheHealthOf answered no error")
 			}
-			testreason.RequireNone(t, "sandbox.status-line/"+c.name, err.Error())
+			oauth2calltest.RequireNone(t, "sandbox.status-line/"+c.name, err.Error())
 			if !strings.Contains(err.Error(), c.want) {
 				t.Errorf("the error is %q, want %q in it", err, c.want)
 			}
