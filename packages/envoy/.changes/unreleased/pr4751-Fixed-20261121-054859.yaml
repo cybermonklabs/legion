@@ -1,0 +1,26 @@
+kind: Fixed
+body: |-
+  The listener starts and serves while the issuer `ENVOY_OIDC_ISSUER` names, or Google's for
+  `ENVOY_OIDC_GOOGLE_AUDIENCE`, cannot be read. It read both discovery documents before it served,
+  30 seconds each, and exited when either read failed, so a listener restarted during an outage of
+  either issuer served nobody, the shared token, the webhooks and `/healthz` included. Each issuer
+  is now read in the background from the start (at once, then again 5 to 30 seconds after each
+  failure) and when a token needs it, and a request waits for the discovery document and then the
+  key set at most 4 seconds together, inside its write deadline and below Dispatch's 5-second call
+  window; a read it started carries on and is kept for the next request. Until the issuer is read,
+  a projected service-account token or a Google identity token is answered `503` with
+  `Retry-After: 1`, never `401`, and so is one with sound claims past that wait (a token its own
+  claims refuse, such as one for another audience or expired, still gets `401`); everything else is
+  served. A
+  failed round is logged `oidc: discover the issuer; retrying in the background` at ERROR at most
+  once a minute per issuer, and the first success `oidc: discovered the issuer` once. The trade:
+  a roll now completes while an issuer cannot be read (a wrong value, an issuer that is down, a
+  pod with no egress to it), and the new pod answers every token of that issuer `503`. The new
+  gauge `envoy_listener_oidc_issuer_discovered{issuer="cluster"|"google"}` reads `0` until the
+  listener has read that issuer and `1` after, and `/healthz` carries `oidc` and `google`, `false`
+  until then, `true` after, and `null` for a pair that is not configured. Neither decides
+  `/healthz`'s status. Nothing this repository renders scrapes the listener's `/metrics`, so the
+  deployment that runs the listener adds that scrape and an alert on the gauge reading `0`.
+time: 2026-11-21T05:48:59Z
+custom:
+    Issue: pr4751

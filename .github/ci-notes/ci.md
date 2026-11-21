@@ -13,7 +13,7 @@ lines, its only comments are the lines of the blocks .github/scripts/check-ci-fi
 .github/scripts/check-ts-filters.sh write. A comment of it that said which files a job reads
 was deleted, since the filter beneath it is that record.
 In the text moved here, "this file" and "this workflow" refer to `.github/workflows/ci.yaml`,
-where every one of these comments stood before this change, the filters' comments among them.
+where every one of these comments first stood, the filters' comments among them.
 
 ## How a filter of the filters file is written
 
@@ -194,7 +194,7 @@ worker_image name it too and the image check, .github/scripts/check-image-trigge
 
 The airlock's rules, its decision and its header swap. Not the whole tree: lean/
 holds the model, which airlock-lean alone reads, and testdata/ the fuzz seeds and
-the mutant patches, which the airlock package's own tests read - the daemon
+the mutant patches, which the proxyrules package's own tests read - the daemon
 compiles that package without running them.
 
 ## daemon_envoy_deps: The daemon reads the Envoy session timings (heartbeat
@@ -700,7 +700,7 @@ that run the tests: the chat client and the router.
 
 The Lean model of the airlock and the Go code it covers (airlock-lean): `lake build`
 and the axiom print read the model's own project, and the two fuzz runs compile the
-airlock package and compare it against the model's program, so a change to either
+proxyrules package and compare it against the model's program, so a change to either
 side runs the job. Both sides live under internal/cipher/proxyrules, which one glob
 names, and the Go side also compiles internal/fold, the case fold it compares names
 in; the axiom check is a script of its own, which check k15 runs too; the Lean
@@ -980,8 +980,9 @@ envoy-go-docs-finalizers on it).
 ## private_names_port: The private-name port harness, in a job of its own: it
 
 The private-name port harness, in a job of its own: it builds the `legion` binary
-of this head (.github/scripts/check-private-names-port.test.sh:70) and holds the
-rules that binary carries to the frozen shell script's verdicts, case for case.
+of this head (.github/scripts/check-private-names-port.test.sh, its `go build` of
+./cmd/legion) and holds the rules that binary carries to the frozen shell
+script's verdicts, case for case.
 That build is why this list is as long as it is - legion_command is what the
 binary is made of, the rule file packages/daemon/internal/leakguard embeds among
 it - and why the step has a job: while it was the test job's, the whole closure
@@ -990,9 +991,9 @@ shell harnesses and the Bun suites of scripts/ with it (dispatch://INFRA-1413).
 
 ## private_names_port: test-lib.sh, which the harness sources for check/is/summary
 
-test-lib.sh, which the harness sources for check/is/summary (:63), and the
-frozen script it runs every case through beside the binary, symlinked into each
-fixture (:213,421,467,556). That script is the subject of
+test-lib.sh, which the harness sources for check/is/summary (its `source` line), and
+the frozen script it runs every case through beside the binary, symlinked into each
+fixture (its four `ln -s "$frozen_script"` lines). That script is the subject of
 the check_private_names_test filter, which gates another job's step: this job reads
 it as the engine it compares against.
 

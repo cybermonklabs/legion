@@ -52,6 +52,9 @@ export interface CodexAgentStreamOptions {
    * Claude Code live view's).
    */
   readonly admitted?: (session: string) => Promise<void>
+  /** Whether a viewer can take this session: false over the listener's relay socket, which
+   *  carries no agent stream (`ControlSubscriptionOptions.liveView`). True by default. */
+  readonly liveView?: boolean
 }
 
 /** How many expected person messages are kept for tagging. */
@@ -69,6 +72,7 @@ export function startCodexAgentStream(options: CodexAgentStreamOptions): CodexAg
     connection: options.connection,
     session: () => session,
     ...(options.admitted === undefined ? {} : { admitted: options.admitted }),
+    ...(options.liveView === undefined ? {} : { liveView: options.liveView }),
     warn,
     answer: answerControl,
   })
