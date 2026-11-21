@@ -9,7 +9,7 @@ Run, from the repository root, as the committed evidence/count.json was written:
   python3 docs/research/internet-of-cognition/coordination/count.py \
       >docs/research/internet-of-cognition/evidence/count.json
 
-It takes about eight minutes, most of them the reads of the document versions.
+It takes about twelve minutes, 721 s on 2026-11-18, most of them reading document versions.
 
 What it measures
 ----------------
@@ -247,23 +247,23 @@ def quote_matches(p):
     return out
 
 
-# What each paragraph of a text holds, keyed by the paragraph's hash, so a paragraph a
-# document carries across many versions is matched once.  No match of the three patterns can
-# cross a blank line (a reference and a commit hold no white space, and a quotation is read a
-# paragraph at a time), so a text's matches are its paragraphs' matches in order.
+# What each paragraph of a text holds, keyed by the paragraph itself, so a paragraph a
+# document carries across many versions is matched once; the key is the whole text, never its
+# hash, which two paragraphs may share.  No match of the three patterns can cross a blank
+# line (a reference and a commit hold no white space, and a quotation is read a paragraph at
+# a time), so a text's matches are its paragraphs' matches in order.
 PARA_CACHE = {}
 NO_MATCH = ((), frozenset(), frozenset())
 
 
 def paragraph_matches(p):
-    key = hash(p)
-    hit = PARA_CACHE.get(key)
+    hit = PARA_CACHE.get(p)
     if hit is None:
         refs = tuple(PAT_REF.findall(p)) if "dispatch://" in p else ()
         shas = frozenset(PAT_SHA.findall(p))
         quotes = frozenset(quote_matches(p))
         hit = (refs, shas, quotes) if (refs or shas or quotes) else NO_MATCH
-        PARA_CACHE[key] = hit
+        PARA_CACHE[p] = hit
     return hit
 
 

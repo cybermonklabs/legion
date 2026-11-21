@@ -17,7 +17,7 @@
 # check.sh's run_ending, and --self-test reads it by that record.
 # It needs what check.sh --self-test needs, which `check.sh --help` prints: the lines of
 # --self-test and of the four modes it runs over its fixture, --replay, --shape, --citations
-# and --landed. A case that needs uv, go or bun prints SKIP when that tool is missing.
+# and --landed. A case that needs uv or go prints SKIP when that tool is missing.
 
 set -u
 
@@ -1439,39 +1439,27 @@ else
     printf 'SKIP the replay of m-ctl-our-row-count with no Go module cache: go is missing\n'
 fi
 
-# 77. --landed on a fresh checkout reads a proof that cannot run as no proof of the step.
-# The committed proof of a landed step, (cd packages/pi-legion && bun test ...), needs the
-# packages `bun install` writes, which --help's list of prerequisites does not name. At
-# 9959ca5563 a checkout with no node_modules ended --landed exit 1 with "FAIL landed-proof:
-# the committed proof of the page ... exits non-zero" (bun: 'Could not resolve: "zod".
-# Maybe you need to "bun install"?'), which blames the landed step for a step of setup.
-# Test round 25 met it on a pod that had just been replaced. The case clones this checkout's
-# own history at its HEAD, with no node_modules, and runs that clone's --landed. It passes
-# when the run ends in a verdict on the step (exit 0), or in exit 2 with the reason last as a
-# mode that cannot run. The honest form beside it is the same clone after `bun install
-# --frozen-lockfile`, which passes --landed. It needs bun, git and Dispatch, and prints SKIP
-# when bun is missing.
-if command -v bun >/dev/null 2>&1; then
-    fresh_checkout="$WORK/fresh-checkout"
-    git clone --quiet --shared --no-checkout "$(git -C "$IOC_ROOT" rev-parse --path-format=absolute --git-common-dir)" "$fresh_checkout" &&
-        git -C "$fresh_checkout" checkout --quiet --detach "$(git -C "$IOC_ROOT" rev-parse HEAD)" || {
-        printf 'FAIL the fresh checkout of HEAD could not be made\n'
-        exit 1
-    }
-    out="$(IOC_ROOT="$fresh_checkout" IOC_EVIDENCE="$fresh_checkout/docs/research/internet-of-cognition" gate_run "$fresh_checkout/docs/research/internet-of-cognition/check.sh" --landed)"
-    if ! case_read "--landed on a checkout with no node_modules ends in a verdict on the step, or cannot run" "$out" '^check\.sh cannot run --landed: '; then
-        :
-    elif [ "$RUN_ENDING" = passed ] || [ "$RUN_ENDING" = cannot-run ]; then
-        case_passed "--landed on a checkout with no node_modules ends in a verdict on the step, or cannot run"
-    else
-        case_failed "--landed on a checkout with no node_modules ends in a verdict on the step, or cannot run" "exit $RUN_STATUS, $(grep '^FAIL' "$out/text" | head -1)"
-    fi
-    (cd "$fresh_checkout" && bun install --frozen-lockfile >/dev/null 2>&1)
-    out="$(IOC_ROOT="$fresh_checkout" IOC_EVIDENCE="$fresh_checkout/docs/research/internet-of-cognition" gate_run "$fresh_checkout/docs/research/internet-of-cognition/check.sh" --landed)"
-    ending_result "--landed on the same checkout after bun install passes" 0 '^all 7 assertions passed$' "$out"
-else
-    printf 'SKIP --landed on a checkout with no node_modules: bun is missing\n'
-fi
+# 77. --landed on a fresh checkout judges the step, with nothing installed. At 9959ca5563 the
+# committed proof of a landed step was (cd packages/pi-legion && bun test ...), which needs
+# the packages `bun install` writes, and a checkout with no node_modules ended --landed exit 1
+# with "FAIL landed-proof: the committed proof of the page ... exits non-zero" (bun: 'Could
+# not resolve: "zod". Maybe you need to "bun install"?'), which blamed the landed step for a
+# step of setup; test round 25 met it on a pod that had just been replaced, and --landed's
+# table then named bun and that install, so such a checkout could not run. Both proofs now
+# read fcc746a3 with git show (review 6003758567), so --landed needs nothing installed and
+# its table names neither. The case clones this checkout's own history at its HEAD, with no
+# node_modules, and runs the gate under test, its own check.sh and evidence, over that clone
+# as the root of the tree, which must pass every assertion of --landed. It needs git and
+# Dispatch.
+fresh_checkout="$WORK/fresh-checkout"
+git clone --quiet --shared --no-checkout "$(git -C "$IOC_ROOT" rev-parse --path-format=absolute --git-common-dir)" "$fresh_checkout" &&
+    git -C "$fresh_checkout" checkout --quiet --detach "$(git -C "$IOC_ROOT" rev-parse HEAD)" &&
+    [ ! -e "$fresh_checkout/node_modules" ] && [ ! -e "$fresh_checkout/packages/pi-legion/node_modules" ] || {
+    printf 'FAIL the fresh checkout of HEAD with no node_modules could not be made\n'
+    exit 1
+}
+ending_result "--landed on a checkout with no node_modules passes, its proofs installing nothing" 0 '^all 7 assertions passed$' \
+    "$(IOC_ROOT="$fresh_checkout" gate_run "$HERE/check.sh" --landed)"
 
 # 78-83 come from test round 25 and the architect's decision on it. Each mode declares what
 # it needs in one table, prerequisite_table, which one step checks before the mode reads or
@@ -1530,7 +1518,7 @@ missing_tool() {
 missing_tool replay go 'curl -fsSL https://go\.dev/dl/go1\.27\.3\.linux-amd64\.tar\.gz \| tar -xzC /usr/local, then PATH=/usr/local/go/bin:\$PATH'
 missing_tool shape dispatch 'the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH'
 missing_tool citations python3 'apt-get install python3'
-missing_tool landed bun 'curl -fsSL https://bun\.sh/install \| bash -s bun-v1\.4\.4'
+missing_tool landed dispatch 'the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH'
 missing_tool published curl 'apt-get install curl'
 missing_tool admitted python3 'apt-get install python3'
 missing_tool self-test jq 'apt-get install jq'
@@ -1555,27 +1543,19 @@ missing_result "--published whose DISPATCH_TOKEN_FILE names no file cannot run, 
 out="$(fixture_run "$dir" --replay)"
 ending_result "--replay with DISPATCH_TOKEN_FILE naming a readable file passes the fixture" 0 '^all 18 assertions passed$' "$out"
 
-# 80. --landed tells a missing install from a proof that fails. Case 77 runs this tree's
-# own --landed on a checkout with no node_modules; this case holds the rule on the fixture,
-# offline. The fixture gains packages/pi-legion/package.json naming two packages. With no
-# node_modules, and with node_modules holding one of the two, the mode cannot run and names
-# bun install --frozen-lockfile; at 533506542a the fixture's proof, `true`, passed both.
-# With both installed the mode judges the step and passes; with both installed and the
-# committed proof `false` it fails landed-proof, exit 1, because a proof that fails once
-# its install is there is the step failing.
-dir="$(fresh landed-install)"
+# 80. --landed needs nothing installed, and a proof that fails is the step failing. Until
+# round 45 --landed's table named the packages packages/pi-legion/package.json lists, so the
+# mode could not run while node_modules lacked one of them, and judged the step only once all
+# were there; both proofs now read fcc746a3 with git show (case 77), and the table names no
+# install. Case 77 runs this tree's own --landed on a checkout with no node_modules; this
+# case holds the rule on the fixture, offline. The fixture gains
+# packages/pi-legion/package.json naming two packages, with no node_modules: the mode judges
+# the step and passes; with the committed proof `false` it fails landed-proof, exit 1.
+dir="$(fresh landed-nothing-installed)"
 mkdir -p "$dir/repo/packages/pi-legion"
 printf '{"name": "@legion/pi-legion", "private": true, "devDependencies": {"typescript": "^5.3.0", "zod": "4.3.6"}}\n' >"$dir/repo/packages/pi-legion/package.json"
 out="$(fixture_run "$dir" --landed)"
-missing_result "--landed with no node_modules cannot run, naming bun install --frozen-lockfile" landed 'the packages packages/pi-legion/package\.json names are not installed \(typescript, zod\)' 'bun install --frozen-lockfile, run at the root of the repository' "$out"
-mkdir -p "$dir/repo/node_modules/typescript"
-printf '{"name": "typescript", "version": "5.9.3"}\n' >"$dir/repo/node_modules/typescript/package.json"
-out="$(fixture_run "$dir" --landed)"
-missing_result "--landed with one of two packages installed cannot run, naming the other" landed 'the packages packages/pi-legion/package\.json names are not installed \(zod\)' 'bun install --frozen-lockfile, run at the root of the repository' "$out"
-mkdir -p "$dir/repo/packages/pi-legion/node_modules/zod"
-printf '{"name": "zod", "version": "4.3.6"}\n' >"$dir/repo/packages/pi-legion/node_modules/zod/package.json"
-out="$(fixture_run "$dir" --landed)"
-ending_result "--landed with every package installed judges the step" 0 '^all 7 assertions passed$' "$out"
+ending_result "--landed over a package.json with no node_modules judges the step" 0 '^all 7 assertions passed$' "$out"
 sed -i 's/"command": "true"/"command": "false"/' "$dir/repo/docs/research/internet-of-cognition/sources.json"
 sed -i 's/^- \*\*Proven by:\*\* `true`$/- **Proven by:** `false`/' "$dir/judgement.md"
 grep -qF '"command": "false"' "$dir/repo/docs/research/internet-of-cognition/sources.json" && grep -qF '**Proven by:** `false`' "$dir/judgement.md" || {
@@ -1583,7 +1563,7 @@ grep -qF '"command": "false"' "$dir/repo/docs/research/internet-of-cognition/sou
     exit 1
 }
 out="$(fixture_run "$dir" --landed)"
-ending_result "--landed with every package installed and a proof that fails is a FAIL of the step" 1 '^1 of 7 assertions failed: landed-proof$' "$out"
+ending_result "--landed over a package.json with no node_modules and a proof that fails is a FAIL of the step" 1 '^1 of 7 assertions failed: landed-proof$' "$out"
 
 # 81. The history and the clone root. At 533506542a --shape with an IOC_HISTORY_REF that
 # names no commit failed order-of-work, blaming the deliverable for a fetch the reader had
@@ -4295,7 +4275,8 @@ case_result "a page whose Cost is about one engineer-day in words and that state
 # can write that by accident, and the page then holds neither R9's cost nor, for a step of
 # half a day, the state R12 asks of it. The case writes the fixture's Envoy page's Cost as
 # "about half a day", leaves the page with no state line, and runs --shape and then --landed:
-# one of them must fail, naming the page.
+# one of them must fail, naming the page; each run is read by its record (case_read) before
+# its text.
 dir="$(fresh cost-in-no-engineer-days)"
 sed -i '0,/^- \*\*Cost:\*\* 2 engineer-days$/s//- **Cost:** about half a day/' "$dir/judgement.md"
 awk '/^### Structured metadata on an Envoy message/{f=1; next} /^### /{f=0} f && /\*\*(Landed|Not landed|Refuted by|Proven by):\*\*/{n++} f && /^- \*\*Cost:\*\* about half a day$/{c++} END{exit !(c == 1 && n == 0)}' "$dir/judgement.md" || {
@@ -4305,10 +4286,14 @@ awk '/^### Structured metadata on an Envoy message/{f=1; next} /^### /{f=0} f &&
 no_unit_case="a page whose Cost names no engineer-days fails --shape or --landed, naming the page"
 shape_out="$(fixture_run "$dir" --shape)"
 landed_out="$(fixture_run "$dir" --landed)"
-if grep -qE '^FAIL (page-[a-z-]+|landed-[a-z-]+): .*Structured metadata on an Envoy message' "$shape_out/text" "$landed_out/text"; then
+if ! case_read "$no_unit_case" "$shape_out"; then
+    :
+elif shape_line="$RUN_LINE" && ! case_read "$no_unit_case" "$landed_out"; then
+    :
+elif grep -qE '^FAIL (page-[a-z-]+|landed-[a-z-]+): .*Structured metadata on an Envoy message' "$shape_out/text" "$landed_out/text"; then
     case_passed "$no_unit_case"
 else
-    case_failed "$no_unit_case" "the gate passed it: --shape $(tail -1 "$shape_out/text"), --landed $(tail -1 "$landed_out/text")"
+    case_failed "$no_unit_case" "no FAIL of either run names the page: --shape $shape_line, --landed $RUN_LINE"
 fi
 
 # 144. A step another pull request of this tree made and main merged stands in its commit
@@ -4626,6 +4611,83 @@ awk '/^### Structured metadata on an Envoy message/{f=1; next} /^### /{f=0} f &&
 case_result "a page whose Cost is 0,5 engineer-days fails --shape and --landed, each naming the page and its Cost line as a figure the gate cannot read" \
     "page-parts: the page .Structured metadata on an Envoy message. gives its first step a cost whose figure this gate cannot read, .0,5 engineer-days. on its Cost line: .*in digits, a whole number or one with a decimal point" "$(fixture_run "$dir" --shape)" \
     "landed-proof: the page .Structured metadata on an Envoy message. gives its first step a cost whose figure this gate cannot read, .0,5 engineer-days. on its Cost line: .*in digits, a whole number or one with a decimal point" "$(fixture_run "$dir" --landed)"
+
+# 154. A sentence that holds only citations cites the sentence before it (review 6003758567,
+# its Minor at check.sh's citation_figures). A sentence ends at a full stop before a space, so
+# in "... 6484 acts. [r-a]" the bracket was a sentence of its own: at ee5bd0b7 the figure
+# before the full stop stood in a sentence that cites no row, and the bracket in one that
+# states no figure, so a row r-a that does not print 6484 passed citation-figures. The case
+# writes after the fixture's one cited sentence 'It also counts 6484 acts. [f-figure-1]',
+# which f-figure-1 does not print, and runs --citations, which must fail citation-figures,
+# naming 6484 and that sentence with its bracket. The honest form writes the fixture's
+# sentence as 'The fixture's count reads 12,617 rows. [f-figure-1]', whose figure the row
+# prints, which passes citation-figures; at ee5bd0b7 it failed it, since the judgement then
+# stated no figure in a sentence that cites a row.
+dir="$(fresh citation-alone-fault)"
+sed -i 's/^The fixture.s count reads 12,617 rows \[f-figure-1\]\.$/& It also counts 6484 acts. [f-figure-1]/' "$dir/judgement.md"
+grep -qxF "The fixture's count reads 12,617 rows [f-figure-1]. It also counts 6484 acts. [f-figure-1]" "$dir/judgement.md" || {
+    printf 'FAIL the sentence whose citation stands alone after it could not be planted in the fixture judgement\n'
+    exit 1
+}
+case_result "a figure whose citation stands alone after its sentence is held to the row it cites" \
+    'citation-figures: line [0-9]+ of the judgement states 6484 in a sentence that cites f-figure-1, and none of them prints it in its output or its command: .It also counts 6484 acts\. \[f-figure-1\].' \
+    "$(fixture_run "$dir" --citations)"
+dir="$(fresh citation-alone-honest)"
+sed -i 's/^The fixture.s count reads 12,617 rows \[f-figure-1\]\.$/The fixture'"'"'s count reads 12,617 rows. [f-figure-1]/' "$dir/judgement.md"
+grep -qxF "The fixture's count reads 12,617 rows. [f-figure-1]" "$dir/judgement.md" || {
+    printf 'FAIL the citation could not be set alone after the fixture sentence\n'
+    exit 1
+}
+honest_result "a citation alone after a sentence whose figure its row prints passes citation-figures" citation-figures \
+    "$(fixture_run "$dir" --citations)"
+
+# 155. A predicate of one of the seven keys with a value of the wrong type is named as that
+# (review 6003758567, its Minor at check.sh's predicate_is_a_sentence). At ee5bd0b7 the FAIL
+# of predicate-form said of {"equals": true} that it 'carries a predicate that is not a
+# bound, a set membership or an exit status', though equals is one of the seven keys the
+# header's rule for expect gives: what is wrong is that its value is a JSON boolean, and
+# equals takes a string. The case plants that predicate, and --replay must fail
+# predicate-form with a line that names the predicate equals, the type its value has and the
+# type equals takes.
+dir="$(fresh op-type-named)"
+plant_behaviour "$dir" "printf 'true\\n'" '{"equals":true}'
+case_result "an equals of true fails predicate-form, named as an equals whose value is a JSON boolean and not a string" \
+    'predicate-form: f-behaviour-1 carries the predicate equals with a value of another shape than the header.s rule for expect gives it, since its equals is a JSON boolean, not a string: [{]"equals":true[}]$' \
+    "$(fixture_run "$dir" --replay)"
+
+# 156. A citing sentence that writes a number as a fraction or with a decimal comma fails
+# citation-figures (the sibling of item 3 of review 6003758567, the Cost reader that read
+# 1/2 as 2). The figure reader reads digits with an optional decimal point, or a number
+# grouped by thousands: at ee5bd0b7 it read a token holding a slash as a place, so '1/2'
+# was no figure and its row was held to none, and it read '0,5' as the figures 0 and 5, and
+# citations.py's extraction reads it as 5. The case writes after the fixture's one cited
+# sentence 'It holds 1/2 of them [f-figure-1].', and in another copy 'It reads 0,5 more
+# [f-figure-1].', and runs --citations over each, which must fail citation-figures, naming
+# the line, the form and the forms the reader reads. The honest form is the fixture as
+# built, '12,617 rows [f-figure-1]', a number grouped by thousands, which passes
+# citation-figures.
+for form in '1/2 of them' '0,5 more'; do
+    dir="$(fresh "citation-form-$(printf '%s' "$form" | tr -c 'a-z0-9' '-')")"
+    sed -i "s|^The fixture.s count reads 12,617 rows \\[f-figure-1\\]\\.\$|& It holds $form [f-figure-1].|" "$dir/judgement.md"
+    grep -qxF "The fixture's count reads 12,617 rows [f-figure-1]. It holds $form [f-figure-1]." "$dir/judgement.md" || {
+        printf 'FAIL the sentence writing %s could not be planted in the fixture judgement\n' "$form"
+        exit 1
+    }
+    case "$form" in
+    1/2*) shown='1/2' written='1/2, a fraction' ;;
+    *) shown='0,5' written='0,5, a decimal comma' ;;
+    esac
+    case_result "a sentence citing f-figure-1 that writes $shown fails citation-figures, naming the line and the form" \
+        "citation-figures: line [0-9]+ of the judgement writes $written, in a sentence that cites f-figure-1, and the gate reads a figure as digits with an optional decimal point, or as a thousands-grouped number" \
+        "$(fixture_run "$dir" --citations)"
+done
+dir="$(fresh citation-form-grouped)"
+grep -qxF "The fixture's count reads 12,617 rows [f-figure-1]." "$dir/judgement.md" || {
+    printf 'FAIL the fixture judgement does not carry its sentence of 12,617 rows\n'
+    exit 1
+}
+honest_result "a sentence citing f-figure-1 that writes 12,617, grouped by thousands, passes citation-figures" citation-figures \
+    "$(fixture_run "$dir" --citations)"
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending

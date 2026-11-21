@@ -35,22 +35,22 @@
 #
 # A run cannot run only when something outside the evidence it judges is missing or does
 # not answer, and the reason it names is of one of four kinds, which its ending record
-# (below) carries: prerequisite, a prerequisite its table declares (a tool, a variable, an
-# install, the history, the clone root) or a tool its ending is written with; gate, env.sh
-# or the install reader when it cannot load because env.sh is missing or python3 cannot
-# start it, or a mode that does not exist; environment, the environment env.sh builds from
-# the package index and the clones, or the run's own scratch and record (below); and
-# source, the GitHub budget or a live source the gate reads itself (the live-read rule
-# below). What the evidence holds is never such a reason: a line of claims.jsonl the one
-# parse cannot read is a FAIL (below), and a reader that loaded and then stopped is a
-# failure of the gate. A run that cannot run ends exit 2 with the reason as its last line,
-# which names what is missing, and for a missing prerequisite ends with what provides it;
-# for --self-test it names the run of the gate it made that could not run, ends with that
-# run's own last line, and carries that run's kind. One more kind marks an assertion that
-# was not judged without ending a run exit 2: evidence, each assertion --replay leaves
-# after it failed claim-form on a row env.sh reads a value from, since env.sh builds what
-# every recorded command reads from those rows (evidence_stops; "The one parse of
-# claims.jsonl" below); that run ends exit 1 by its FAIL.
+# (below) carries: prerequisite, a prerequisite its table declares (a tool, a variable, the
+# history, the clone root) or a tool its ending is written with; gate, env.sh or the install
+# reader when it cannot load because env.sh is missing or python3 cannot start it, or a mode
+# that does not exist; environment, the environment env.sh builds from the package index and
+# the clones, or the run's own scratch and record (below); and source, the GitHub budget or a
+# live source the gate reads itself (the live-read rule below). What the evidence holds is
+# never such a reason: a line of claims.jsonl the one parse cannot read is a FAIL (below),
+# and a reader that loaded and then stopped is a failure of the gate. A run that cannot run
+# ends exit 2 with the reason as its last line, which names what is missing, and for a
+# missing prerequisite ends with what provides it; for --self-test it names the run of the
+# gate it made that could not run, ends with that run's own last line, and carries that
+# run's kind. One more kind marks an assertion that was not judged without ending a run
+# exit 2: evidence, each assertion --replay leaves after it failed claim-form on a row
+# env.sh reads a value from, since env.sh builds what every recorded command reads from
+# those rows (evidence_stops; "The one parse of claims.jsonl" below); that run ends exit 1
+# by its FAIL.
 #
 # The ending record. Every run of a mode writes how it ended as one record beside its
 # text, a file of lines of tab-separated fields: status and its exit status; line and its
@@ -140,51 +140,53 @@
 # "document ... not found" for a reference fails citation-dispatch, for the record of a
 # step that is not landed fails landed-proof, and for the judgement or a record under
 # check leaves the text empty, which every assertion over it then fails by its floor or
-# its committed rows. The live-read rule covers the gate's own reads. A row's own failed
-# read of a live source, GitHub or Dispatch, is read by one rule of its own (source_answer),
-# since only an answer from the source judges the deliverable: a curl of GitHub's REST API or
-# of the Dispatch API, by the status the row got, curl's own error line, which the curl's
-# record holds, and by one read of the gate's own of the URL, with the header file the record
-# names, for the source's message, and for the status where the record holds none; a curl
-# inside a script a row runs, as evidence/concord-build-run.sh's two reads of GitHub are, by
-# the same record, which the script leaves; a dispatch command, by the first line it
-# printed; and a python3 of a row whose command reads DISPATCH_URL, by the last urllib or
-# transport error its output holds, where the record holds no curl of a source beside it. A
-# read that got no answer, a server error (5xx) or a rate limit the row got, whatever a later
-# read answers, and an answer about the reader's credential (a 401, or a 403 that names
-# authentication, a permission or a token rather than a rate limit, or that a read again
-# answers below 400) are no verdict on the deliverable: the row prints no FAIL and the mode
-# cannot run, of the kind source, naming the row, the source, the read and the line that
-# shows it, exit 2, or exit 1 after an earlier FAIL, by the precedence above ("The GitHub
-# tokens stand on no command line" below). Any other answer, such as a 404 or Dispatch's
-# NOT_FOUND, is the source's answer about the record, and the row fails, naming it; so does a
-# row's failed read of anything else. The one live read that is no input is the report of
-# each published page's live address, which reports an address that does not answer rather
-# than stopping, as the Verification document asks of it.
+# its committed rows. One such answer is read as no answer, on purpose: git answers the
+# fetch of a commit GitHub does not hold "upload-pack: not our ref", which live_read does not
+# take for an answer, so a merged-in step whose commit GitHub does not hold leaves --landed
+# unable to run, of the kind source, and never reaches landed-proof's FAIL that the fetch did
+# not bring that commit; check.test.sh's case 146 holds that. The live-read rule covers the
+# gate's own reads. A row's own failed read of a live source, GitHub or Dispatch, is read by
+# one rule of its own (source_answer), since only an answer from the source judges the
+# deliverable: a curl of GitHub's REST API or of the Dispatch API, by the status the row got,
+# curl's own error line, which the curl's record holds, and by one read of the gate's own of
+# the URL, with the header file the record names, for the source's message, and for the
+# status where the record holds none; a curl inside a script a row runs, as
+# evidence/concord-build-run.sh's two reads of GitHub are, by the same record, which the
+# script leaves; a dispatch command, by the first line it printed; and a python3 of a row
+# whose command reads DISPATCH_URL, by the last urllib or transport error its output holds,
+# where the record holds no curl of a source beside it. A read that got no answer, a server
+# error (5xx) or a rate limit the row got, whatever a later read answers, and an answer about
+# the reader's credential (a 401, or a 403 that names authentication, a permission or a token
+# rather than a rate limit, or that a read again answers below 400) are no verdict on the
+# deliverable: the row prints no FAIL and the mode cannot run, of the kind source, naming the
+# row, the source, the read and the line that shows it, exit 2, or exit 1 after an earlier
+# FAIL, by the precedence above ("The GitHub tokens stand on no command line" below). Any
+# other answer, such as a 404 or Dispatch's NOT_FOUND, is the source's answer about the
+# record, and the row fails, naming it; so does a row's failed read of anything else. The one
+# live read that is no input is the report of each published page's live address, which
+# reports an address that does not answer rather than stopping, as the Verification document
+# asks of it.
 #
 # Prerequisites. Nothing in CI runs this script, and a gate nobody else can start passes by
 # default, so each mode declares what it needs in one table, prerequisite_table below: the
-# tools on PATH, the installed dependencies, the history, the clones and the environment
-# variables, each with what provides it. One step, prerequisites, checks every line of the
-# mode before its first live read and its first assertion, and one that is missing ends the
-# mode exit 2, naming it and, at the end of the line, what provides it. --help prints the
-# same table after this header, from the same function, so the list a reader reads is the
-# list the mode checks. --self-test needs its own lines and every line of --replay, --shape,
-# --citations and --landed, since it runs each of them; check.test.sh checks the lines of
-# --self-test alone before its first case, since each run a case makes checks its own
-# mode's. Before any of them, every run checks the tools its ending is written with ("The
-# run's own scratch and record" above), which --help prints first.
+# tools on PATH, the history, the clones and the environment variables, each with what
+# provides it. One step, prerequisites, checks every line of the mode before its first live
+# read and its first assertion, and one that is missing ends the mode exit 2, naming it and,
+# at the end of the line, what provides it. --help prints the same table after this header,
+# from the same function, so the list a reader reads is the list the mode checks.
+# --self-test needs its own lines and every line of --replay, --shape, --citations and
+# --landed, since it runs each of them; check.test.sh checks the lines of --self-test alone
+# before its first case, since each run a case makes checks its own mode's. Before any of
+# them, every run checks the tools its ending is written with ("The run's own scratch and
+# record" above), which --help prints first.
 #
-# --landed's committed proof runs bun test in packages/pi-legion, which needs what
-# `bun install --frozen-lockfile` writes at the root of the repository. The check tells
-# "not installed" from "installed and the proof fails" by that package's own package.json:
-# when a package it names in dependencies or devDependencies has no
-# node_modules/<name>/package.json in packages/pi-legion or in a directory above it up to the
-# root, the install is missing and the mode cannot run; when every one is there, the proof
-# runs, and a proof that fails is the step failing, a FAIL of landed-proof. The check reads
-# that the install is there and not that it is the lock's, so an install of another lock
-# that breaks the proof fails the step too. A tree that holds no packages/pi-legion needs
-# nothing installed, which is how the self-test's fixture, whose proof is `true`, runs.
+# --landed runs the committed proof of each landed step, the command sources.json commits
+# for it, from the root of this tree, and a proof that exits non-zero is the step failing, a
+# FAIL of landed-proof. The proofs of the two steps the landed list commits read the files of
+# fcc746a3, the commit both name, with git show in IOC_MERGED_REPO, the scratch repository
+# the mode fetches that commit into, so --landed needs git, which its table names, and
+# nothing installed: a checkout with no node_modules judges the steps as one after bun
+# install does.
 #
 # It reaches GitHub with git and the REST API and never with gh, which in a Legion pod is
 # scoped to this project's owners and refuses ioc-project; so does every recorded command
@@ -684,7 +686,7 @@ citation-project-code|citations|every citation into one of the projects names a 
 citation-published|citations|every citation of a published document names a committed copy whose checksum is the one sources.json recorded and whose text holds the sentence quoted|a byte appended to a committed copy
 citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
 citation-kinds|citations|every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
-citation-figures|citations|every figure the judgement states in a sentence that cites a row of claims.jsonl, a date among them, is printed by the recorded output or the command of a row that sentence cites, unless its clause marks it as an estimate by our estimate|a figure no row its sentence cites prints
+citation-figures|citations|every figure the judgement states in a sentence that cites a row of claims.jsonl, a date among them, is printed by the recorded output or the command of a row that sentence cites, unless its clause marks it as an estimate by our estimate, and no such sentence writes a number as a fraction or with a decimal comma outside a code span|a figure no row its sentence cites prints
 landed-proof|landed|each step of sources.json's landed list is named once and has a page carrying the state the list commits for it, every page carrying a state is a step of the list, every page carries its Cost on one line, in engineer-days and with a figure the gate reads, in digits or in words, every page whose Cost gives its first step one engineer-day or less carries a state, and no page carries two states or a line of one twice: a landed page names the commit and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, each sentence the step published stands in its file in this tree, and the committed command passes, or, for a step merged in another pull request of this tree, the page names that pull request beside its merge commit, fetched from our repository, whose subject ends with that pull request's number and which carries each sentence the step published; a page not landed names the R12 condition and every record sources.json commits for it, and each dispatch:// record resolves|a page whose proof command differs from the committed one
 landed-refutation|landed|a page that refutes a step carries a command with output, never a search that found nothing|a refutation that rests on a search alone
 landed-order|landed|when every step of sources.json's landed list is landed, one commit of this pull request carries the subject of each of the two steps, and the commit of the shortfall rows is an ancestor of the commit of the combining rule, or the steps merged in another pull request land in one commit or in commits each an ancestor of the next on main; otherwise the order is not judged, and the line names the steps not landed|the two commits in the other order
@@ -727,10 +729,6 @@ usage() {
 # is what a reader runs to provide it, and may hold a |. How each kind is checked:
 #   tool       the program is on PATH
 #   variable   the variable is set, and one whose name ends _FILE names a readable file
-#   installed  each package the directory's package.json names in dependencies or
-#              devDependencies has its node_modules/<name>/package.json in that directory
-#              or in one above it up to the root of the repository; a tree that holds no
-#              such package.json needs nothing installed
 #   history    the history ref, IOC_HISTORY_REF or else HEAD, names a commit of this
 #              repository
 #   clone      the directory IOC_CLONES names can be made, under which the mode clones each
@@ -758,11 +756,9 @@ citations|tool|python3|runs citations.py, the one extraction rule|apt-get instal
 citations|tool|curl|reads each published page's live address|apt-get install curl
 citations|tool|dispatch|resolves each dispatch:// reference and reads the judgement|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 citations|clone|IOC_CLONES|the mode clones each repository a project-code row cites under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
-landed|tool|git|reads the commits of this pull request, and fetches the commit of each step merged in another pull request from our repository|apt-get install git
+landed|tool|git|reads the commits of this pull request, fetches the commit of each step merged in another pull request from our repository, and runs the committed proof of each landed step, git show of the files at that commit|apt-get install git
 landed|tool|jq|reads the landed list of sources.json|apt-get install jq
 landed|tool|dispatch|reads the judgement and resolves the dispatch:// records of each step not landed|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
-landed|tool|bun|runs the committed proof of a landed step, bun test in packages/pi-legion|curl -fsSL https://bun.sh/install | bash -s bun-v1.4.4
-landed|installed|packages/pi-legion|the committed proof of a landed step imports its packages|bun install --frozen-lockfile, run at the root of the repository
 landed|history|IOC_HISTORY_REF|the commits of this pull request, which the default branch holds as one squash|git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771
 published|tool|git|fetches the default branch into the run's scratch|apt-get install git
 published|tool|jq|reads sources.json|apt-get install jq
@@ -795,7 +791,7 @@ prerequisite_rows() {
 # prerequisite_missing <kind> <name>; prints what is missing and returns 0 when the
 # prerequisite is missing, and returns 1 when it is there, by the rule of its kind above.
 prerequisite_missing() {
-    local kind="$1" name="$2" value dir deps dep up missing=""
+    local kind="$1" name="$2" value
     case "$kind" in
     tool)
         command -v "$name" >/dev/null 2>&1 && return 1
@@ -810,26 +806,6 @@ prerequisite_missing() {
         else
             return 1
         fi
-        ;;
-    installed)
-        dir="$ROOT/$name"
-        [ -e "$dir/package.json" ] || return 1
-        deps="$(jq -r '(.dependencies // {}) + (.devDependencies // {}) | keys[]' "$dir/package.json" 2>/dev/null)" || {
-            printf '%s/package.json does not read, so what it needs installed is unknown' "$name"
-            return 0
-        }
-        while IFS= read -r dep; do
-            [ -n "$dep" ] || continue
-            up="$dir"
-            while :; do
-                [ -r "$up/node_modules/$dep/package.json" ] && continue 2
-                [ "$up" = "$ROOT" ] || [ "$up" = / ] && break
-                up="$(dirname "$up")"
-            done
-            missing="$missing, $dep"
-        done <<<"$deps"
-        [ -n "$missing" ] || return 1
-        printf 'the packages %s/package.json names are not installed (%s)' "$name" "${missing#, }"
         ;;
     history)
         git -C "$ROOT" rev-parse --verify --quiet "$(history_ref)^{commit}" >/dev/null && return 1
@@ -1658,15 +1634,20 @@ evaluate() {
 #
 # predicate_is_a_sentence <expect-json>; true when any key of the predicate is none of the
 # seven, or carries a value of another shape than the header's rule for expect gives that
-# key, and IOC_PREDICATE_WHY then names the key and what its value is.
+# key, and IOC_PREDICATE_WHY then says what the row carries, for the FAIL of predicate-form
+# to write after "<id> carries": a key none of the seven is a predicate that is not a bound,
+# a set membership or an exit status, and a key of the seven is that predicate with a value
+# of another shape, named with what its value is, its JSON type where the type differs, as
+# for {"equals": true}, whose value is a JSON boolean and not a string.
 predicate_is_a_sentence() {
-    local spec="$1" key type value
+    local spec="$1" key type value lead
     IOC_PREDICATE_WHY=""
     while IFS= read -r key; do
         type="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | type')"
         # The value as jq prints it raw, with every newline it holds, its last included.
         value="$(printf '%s' "$spec" | jq -j --arg k "$key" '.[$k] | tostring' && printf .)"
         value="${value%.}"
+        lead="the predicate $key with a value of another shape than the header's rule for expect gives it"
         case "$key" in
         equals)
             [ "$type" = string ] || IOC_PREDICATE_WHY="its equals is a JSON $type, not a string"
@@ -1700,9 +1681,15 @@ predicate_is_a_sentence() {
         exit)
             [[ "$value" =~ ^[0-9]+$ ]] || IOC_PREDICATE_WHY="its exit is no one whole number"
             ;;
-        *) IOC_PREDICATE_WHY="its key $key is none of the seven" ;;
+        *)
+            lead="a predicate that is not a bound, a set membership or an exit status"
+            IOC_PREDICATE_WHY="its key $key is none of the seven"
+            ;;
         esac
-        [ -z "$IOC_PREDICATE_WHY" ] || return 0
+        [ -z "$IOC_PREDICATE_WHY" ] || {
+            IOC_PREDICATE_WHY="$lead, since $IOC_PREDICATE_WHY"
+            return 0
+        }
     done < <(printf '%s' "$spec" | jq -r 'keys[]')
     return 1
 }
@@ -4411,7 +4398,7 @@ mode_replay() {
             fail predicate-form "$id carries $(printf '%s' "$expect" | jq -r 'if type == "object" then (keys | join(" and ")) else "no key" end') in one expect, and a row is held to exactly one predicate over its output, which an exit status may stand beside: $expect"
         elif [ -n "$expect" ] && predicate_is_a_sentence "$expect"; then
             bad_predicate=$((bad_predicate + 1))
-            fail predicate-form "$id carries a predicate that is not a bound, a set membership or an exit status of the shape the header's rule for expect gives it, since $IOC_PREDICATE_WHY: $expect"
+            fail predicate-form "$id carries $IOC_PREDICATE_WHY: $expect"
         fi
         if [ "$kind" = quotation ]; then
             printf '%s' "$row" | jq -e '.evidence.marked // empty' >/dev/null ||
@@ -5510,17 +5497,19 @@ report_unchecked_parts() {
 # the command of a row that sentence cites. The judgement is read line by line, as
 # citations.py reads a record, and through citations.py's own patterns, so a reference, an
 # address, a code span, a date, a commit hash, a heading and a bare line range are read by
-# one rule here and there. A sentence ends at a full stop, a question mark or an
-# exclamation mark, with any closing mark after it, before a space, outside a code span,
-# a reference and an address; its citations are its brackets whose ids name rows the one
-# parse read. A figure is a run of digits with its decimal point, its thousands separators
-# and its per-cent sign where it has them, as 12,617, 0.944, 66% and 19.6, inside a code
-# span or outside one, since a quoted command or answer states figures too; a range, 470-612
-# or 3–5, is two figures; and a date, 2026-11-12, is one, the date of an instant
-# 2026-11-16T13:00:00Z among them. It is printed when it stands in the row's text as a
-# number of its own, neither inside a longer number nor glued to a letter, with its
-# thousands separators there or not and its per-cent sign there or not, and a date also
-# when an instant's time follows it. What is not a figure, and why:
+# one rule here and there. A sentence ends at a full stop, a question mark or an exclamation
+# mark, with any closing mark after it, before a space, outside a code span, a reference and
+# an address; a sentence that holds only citations, as the [r-a] of "... 6484 acts. [r-a]",
+# is read as part of the sentence before it, whose figures it cites; a sentence's citations
+# are its brackets whose ids name rows the one parse read. A figure is a run of digits with
+# its decimal point, its thousands separators and its per-cent sign where it has them, as
+# 12,617, 0.944, 66% and 19.6, inside a code span or outside one, since a quoted command or
+# answer states figures too; a range, 470-612 or 3–5, is two figures; and a date,
+# 2026-11-12, is one, the date of an instant 2026-11-16T13:00:00Z among them. It is printed
+# when it stands in the row's text as a number of its own, neither inside a longer number
+# nor glued to a letter, with its thousands separators there or not and its per-cent sign
+# there or not, and a date also when an instant's time follows it. What is not a figure,
+# and why:
 #   the digits of a row id, as in [c-terms-3]: the bracket is the citation, which names a
 #     row, and its digits measure nothing;
 #   a commit hash, a run of seven to forty hexadecimal digits, as citations.py reads one:
@@ -5543,6 +5532,15 @@ report_unchecked_parts() {
 #     read, since a row prints digits and a word names no spelling to look for in its
 #     output, so a measured figure is written in digits, and an estimate carries "by our
 #     estimate".
+# A number written in a form this reader does not read is no figure either, and a sentence
+# that cites a row and writes one outside a code span fails, naming the line and the form:
+# a fraction, a token that is digits, a slash and digits, as 1/2, which the rule above
+# would read as a place and so as no figure, and a decimal comma, a token of digits whose
+# comma is not followed by exactly three digits, as 0,5, which it would read as 0 and 5.
+# The reader reads a figure as digits with an optional decimal point, or as a number
+# grouped by thousands, as 12,617, so the row such a sentence cites would be held to
+# another figure or to none; the form fails whether or not its clause is marked by our
+# estimate.
 # A figure marked as an estimate is exempt by name: an estimate is not a measurement, and
 # the judgement marks each one with the words "by our estimate", so no row is held to
 # print it. The words mark their clause, the stretch of their sentence between the commas
@@ -5558,7 +5556,7 @@ report_unchecked_parts() {
 # the rows its sentence cites; by the expected-set rule a judgement that states no figure in
 # a sentence that cites a row, but estimates, fails too, since then nothing is checked.
 citation_figures() {
-    local found="$RUN_SCRATCH/citation-figures" kind number figure rows sentence judged=0 checked=0 estimates=0 bad=0
+    local found="$RUN_SCRATCH/citation-figures" kind number figure rows sentence form judged=0 checked=0 estimates=0 bad=0
     claims_parsed || {
         fail citation-figures "the parse of claims.jsonl did not run to its end, so no row a sentence of the judgement cites is read"
         return
@@ -5584,6 +5582,8 @@ QUESTION = re.compile(r"\bQuestions?\s+(\d+)\b", re.IGNORECASE)
 TOKEN = re.compile(r"[^\s()\[\]{}\"'`=|<>;\u201c\u201d\u2018\u2019]+")
 PIECES = re.compile(r"[-:\u2013\u2014]|,(?!\d{3}(?!\d))")
 FIGURE = re.compile(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)*%?")
+FRACTION = re.compile(r"\d+/\d+%?")
+COMMA_NUMBER = re.compile(r"\d+(?:,\d+)+%?")
 ESTIMATE = re.compile(r"\bby our estimate\b", re.IGNORECASE)
 CLAUSE_END = re.compile(r"[,;](?=\s)")
 # What may stand before the words for them to open their sentence: a list marker and a
@@ -5613,6 +5613,22 @@ def figures(text):
             if FIGURE.fullmatch(piece) and not citations.HEX_SHORT.fullmatch(piece):
                 found.append((token.start(), piece))
     return sorted(found)
+
+
+def unread(marks, start, end):
+    # Each number of the sentence marks[start:end] written as a fraction or with a decimal
+    # comma, as (from, to, the form): the whole token as figures reads one, the marks
+    # before and after its word taken off.
+    found = []
+    for token in TOKEN.finditer(marks, start, end):
+        raw = token.group(0)
+        lead = len(re.match(r"[^\w]*", raw).group(0))
+        word = re.sub(r"[^\w%]+$", "", raw[lead:])
+        if FRACTION.fullmatch(word) or (
+            COMMA_NUMBER.fullmatch(word) and any(len(part) != 3 for part in word.rstrip("%").split(",")[1:])
+        ):
+            found.append((token.start() + lead, token.start() + lead + len(word), word))
+    return found
 
 
 def estimated(marks, start, end):
@@ -5664,20 +5680,33 @@ for number, line in enumerate(lines, 1):
     for url in citations.WEB_URL.finditer(line):
         quiet = blank(quiet, url.start(), url.start() + len(url.group(0).rstrip(".,;:)")))
     bounds = citations.CODE_SPAN.sub(lambda m: "x" * len(m.group(0)), quiet)
+    # The line with each citation covered, where a sentence that holds only citations
+    # holds no word.
+    alone = line
     cites = []
     for bracket in BRACKET.finditer(bounds):
         ids = [part.strip() for part in bracket.group(1).split(",")]
         if any(i in printed for i in ids):
             cites.append((bracket.start(), [i for i in ids if i in printed]))
             quiet = blank(quiet, bracket.start(), bracket.end())
+            alone = blank(alone, bracket.start(), bracket.end())
     if not cites:
         continue
     for covered in [LIST_NUMBER.match(quiet)] + list(QUESTION.finditer(quiet)):
         if covered:
             quiet = blank(quiet, covered.start(1), covered.end(1))
     marks = citations.CODE_SPAN.sub(lambda m: "x" * len(m.group(0)), quiet)
+    # Each sentence as (start, end); one that holds only citations, as the [r-a] of "...
+    # 6484 acts. [r-a]", is joined to the sentence before it.
+    sentences = []
     start = 0
     for end in [m.end() for m in SENTENCE_END.finditer(bounds)] + [len(line)]:
+        if sentences and not re.search(r"\w", alone[start:end]):
+            sentences[-1] = (sentences[-1][0], end)
+        else:
+            sentences.append((start, end))
+        start = end
+    for start, end in sentences:
         rows = []
         for at, ids in cites:
             if start <= at < end:
@@ -5686,14 +5715,18 @@ for number, line in enumerate(lines, 1):
             judged += 1
             text = "\n".join(printed[i] for i in rows)
             spans = estimated(marks, start, end)
-            for at, figure in figures(quiet[start:end]):
+            # A form the reader does not read fails, and its digits are read as no figure.
+            read = quiet
+            for begin, finish, form in unread(marks, start, end):
+                print("U\t%d\t%s\t%s\t%s" % (number, form, ", ".join(rows), " ".join(line[start:end].split())[:80]))
+                read = blank(read, begin, finish)
+            for at, figure in figures(read[start:end]):
                 if any(begin <= start + at < finish for begin, finish in spans):
                     estimates += 1
                     continue
                 checked += 1
                 if not prints(figure, text):
                     print("F\t%d\t%s\t%s\t%s" % (number, figure, ", ".join(rows), " ".join(line[start:end].split())[:80]))
-        start = end
 print("N\t%d\t%d\t%d" % (judged, checked, estimates))
 PY
         fail citation-figures "the reader of the figures of the judgement did not run to its end: $(tail -1 "$found.err" | head -c 240)"
@@ -5705,6 +5738,11 @@ PY
         F)
             bad=$((bad + 1))
             fail citation-figures "line $number of the judgement states $figure in a sentence that cites $rows, and none of them prints it in its output or its command: '$sentence'"
+            ;;
+        U)
+            bad=$((bad + 1))
+            case "$figure" in */*) form="a fraction" ;; *) form="a decimal comma" ;; esac
+            fail citation-figures "line $number of the judgement writes $figure, $form, in a sentence that cites $rows, and the gate reads a figure as digits with an optional decimal point, or as a thousands-grouped number, so no row it cites is held to the number it writes: '$sentence'"
             ;;
         esac
     done <"$found"
