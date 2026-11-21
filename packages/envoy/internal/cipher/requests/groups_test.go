@@ -507,11 +507,56 @@ func TestAMemberDismissesAnExpiredGroupRequest(t *testing.T) {
 			t.Fatalf("Dismiss by %s = %+v, %v; want record.ErrNotApprover", login, d, err)
 		}
 	}
+	f.directory.MarkStale(approversGroup)
+	if d, err := f.m.Dismiss(ctx, *req.RecordID, groupMember); !errors.Is(err, record.ErrNotApprover) {
+		t.Fatalf("Dismiss by a member while the group is stale = %+v, %v; want record.ErrNotApprover, as the Inbox lists it to nobody", d, err)
+	}
+	f.directory.Set(approversGroup, groupMember, secondMember)
 	if d, err := f.m.Dismiss(ctx, *req.RecordID, groupMember); err != nil || !d.Wrote || d.DismissedBy != groupMember {
 		t.Fatalf("Dismiss by a member = %+v, %v; want it written by %s", d, err, groupMember)
 	}
 	if got := listedStates(t, f.m, secondMember, bothStates); slices.Contains(got, expired) {
 		t.Fatalf("the second member's list after a member's dismissal = %v; want it gone", got)
+	}
+}
+
+// TestAJudgedGroupGrantStaysOnAMembersListWhileTheGroupIsStale: a grant the model judge approved
+// for the group's secret names the group as its approver and releases with no group read, so it
+// stays on the list of every member the group's last good read listed while the group is stale,
+// as those members may revoke it; a person outside the group does not list it, and once a fresh
+// read drops a member the grant leaves that member's list.
+func TestAJudgedGroupGrantStaysOnAMembersListWhileTheGroupIsStale(t *testing.T) {
+	f := newGroupFixture(t)
+	ctx := context.Background()
+	f.m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "TEAM_KEY", Hosts: []string{"team.example"}, Judge: new(uint32(900))}}}
+	f.m.Chain = NewChainVerifier(f.m.Store, testAudience, time.Minute, f.m.Airlock)
+	f.m.Chain.Groups = f.directory
+	f.m.Judge = func(PendingRequest) {}
+	req := pendingJudgeable(t, f.m, f.asker, f.askerKey, "ACME-12 needs the team key", 600, "TEAM_KEY")
+	dec, err := f.m.ApplyJudgeDecision(ctx, *req.RecordID, judgeModel, map[string]any{"verdict": "grant"})
+	if err != nil || dec.GrantID == "" {
+		t.Fatalf("the judge's approval of TEAM_KEY = %+v, %v; want a grant", dec, err)
+	}
+	listed := func(login string) bool {
+		t.Helper()
+		grants, err := f.m.GrantsForApprover(ctx, login)
+		if err != nil {
+			t.Fatalf("GrantsForApprover(%s): %v", login, err)
+		}
+		return slices.ContainsFunc(grants, func(g ApproverGrant) bool { return g.GrantID == dec.GrantID })
+	}
+	f.directory.MarkStale(approversGroup)
+	if _, err := f.m.Values(ctx, dec.GrantID, f.asker, nil, ReleaseCall{}); err != nil {
+		t.Fatalf("Values of the judged grant while the group is stale = %v; want it released, as no group read decides it", err)
+	}
+	for login, want := range map[string]bool{groupMember: true, secondMember: true, groupOutsider: false} {
+		if got := listed(login); got != want {
+			t.Errorf("GrantsForApprover(%s) lists the judged group grant while the group is stale: %v, want %v", login, got, want)
+		}
+	}
+	f.directory.Set(approversGroup, groupMember)
+	if listed(secondMember) {
+		t.Error("a member a fresh read dropped still lists the group's grant")
 	}
 }
 

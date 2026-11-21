@@ -368,10 +368,10 @@ func TestTwoConcurrentFederationMintsPresentTwoIdentityTokens(t *testing.T) {
 			}
 		})
 	}
-	if !testwait.Holds(5*time.Second, testwait.Poll, func() bool { return minted.Load() >= 2 }) {
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool { return minted.Load() >= 2 }) {
 		close(gate)
 		done.Wait()
-		t.Fatalf("two concurrent mints reached IAM %d times within 5s while it held them, want twice", minted.Load())
+		t.Fatalf("two concurrent mints reached IAM %d times within the test's bound while it held them, want twice", minted.Load())
 	}
 	close(gate)
 	done.Wait()

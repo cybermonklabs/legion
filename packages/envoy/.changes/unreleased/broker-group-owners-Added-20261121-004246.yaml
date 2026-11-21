@@ -4,10 +4,10 @@ body: |-
   `group:` and the group's lowercase email (`agent-secrets secret create|retag --owner
   group:<email> --requesters "group:<email>"`). Each member of an owner group decides the secret's
   requests on the approval page, finds them in Dispatch's Inbox and dismisses them there once
-  expired, and gets its agent-tier secret at once; while the group reads fresh, every member lists
-  the grants a member approved, and a member the group's last read listed may revoke them. A list,
-  revoke or dismissal that names the group itself as its approver is refused `400
-  APPROVER_IS_GROUP`. A group in `requesters` admits its members' sessions. The broker reads each
+  expired, and gets its agent-tier secret at once; a member the group's last good read listed lists
+  and revokes the grants the group approved. A list, revoke or dismissal that names the group
+  itself as its approver is refused `400 APPROVER_IS_GROUP`. A group in `requesters` admits its
+  members' sessions. The broker reads each
   group a served secret names with the Directory API's `members.list`, nested members included,
   when the five-minute policy load first names it (again at the next load while its first read
   has not succeeded) and once an hour after that, as the reader account `BROKER_DIRECTORY_ACCOUNT`

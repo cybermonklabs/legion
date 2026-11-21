@@ -200,8 +200,9 @@ func (d *turningDirectory) Membership(string, string) (listed, fresh bool) {
 	d.looks++
 	return d.looks > 1, d.looks > 1
 }
-func (d *turningDirectory) GroupsOf(string) []string { return nil }
-func (d *turningDirectory) Want([]string)            {}
+func (d *turningDirectory) GroupsOf(string) []string      { return nil }
+func (d *turningDirectory) GroupsListing(string) []string { return nil }
+func (d *turningDirectory) Want([]string)                 {}
 
 // TestARequestersGroupIsReadInOneLook: Evaluate reads a requesters group once, so a read landing
 // between two looks cannot pair the first look's stale group with the second's fresh one and deny a

@@ -1587,7 +1587,7 @@ const pendingOrExpiredForApproverQuery = pendingListFrom + `(
 // one line is the one it always wrote.
 func (m *Machine) PendingForApprover(ctx context.Context, approver string, states PendingStates) ([]PendingSummary, error) {
 	login := record.CanonicalLogin(approver)
-	query, args := pendingForApproverQuery, []any{login, record.AnyoneApprover, m.groupApprovers(login)}
+	query, args := pendingForApproverQuery, []any{login, record.AnyoneApprover, m.groupApprovers(login, false)}
 	byState := states != (PendingStates{})
 	if byState {
 		query, args = pendingOrExpiredForApproverQuery, append(args, states.Pending, states.Expired)
@@ -1980,8 +1980,9 @@ type ApproverGrant struct {
 
 // GrantsForApprover lists every live grant approver may revoke, newest first: each grant of a
 // session approver operates, approved or automatic, each grant approver approved on anyone's
-// session, and each grant a group approver approved whose group the group reader lists approver
-// in now (grantApprover records the group, mayRevoke admits its members).
+// session, and each grant a group approver approved whose group's last good read lists approver,
+// however old that read is (grantApprover records the group, and mayRevoke admits the same
+// members, so a member sees every grant they may end, a judged one of a stale group included).
 //
 // It also lists every live grant that is on no other person's page at all: one a service's machine
 // login holds, with no approver because the policy gave it without asking and no operator because
@@ -2059,7 +2060,7 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 				or (e.kind='pod' and not exists (select 1 from unnest($3::text[], $4::text[]) as mapped(account, person)
 					where mapped.account=e.subject
 					and mapped.person=translate(e.operator, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'))))))
-		order by g.created_at desc`, login, record.AnyoneApprover, mappedAccounts, mappedPersons, m.groupApprovers(login))
+		order by g.created_at desc`, login, record.AnyoneApprover, mappedAccounts, mappedPersons, m.groupApprovers(login, true))
 	if err != nil {
 		return nil, err
 	}
@@ -2133,14 +2134,22 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	return visible, nil
 }
 
-// groupApprovers is every group the group reader admits login to now, each in the group form a
-// record's and a grant's approver holds it in (record.GroupPrefix), and an empty list with no
-// reader: what PendingForApprover and GrantsForApprover match a member's records and grants by.
-func (m *Machine) groupApprovers(login string) []string {
+// groupApprovers is the groups the group reader lists login in, each in the group form a record's
+// and a grant's approver holds it in (record.GroupPrefix), and an empty list with no reader: for
+// PendingForApprover, the groups that admit login now (GroupsOf), since a member decides only
+// while the group reads fresh; for GrantsForApprover (anyAge), every group whose last good read
+// lists login however old (GroupsListing), since such a member may revoke the group's grant
+// (mayRevoke), and a grant the model judge approved for a stale group's secret still releases.
+func (m *Machine) groupApprovers(login string, anyAge bool) []string {
 	if m.Groups == nil {
 		return []string{}
 	}
-	groups := m.Groups.GroupsOf(login)
+	var groups []string
+	if anyAge {
+		groups = m.Groups.GroupsListing(login)
+	} else {
+		groups = m.Groups.GroupsOf(login)
+	}
 	approvers := make([]string, 0, len(groups))
 	for _, group := range groups {
 		approvers = append(approvers, record.GroupPrefix+group)

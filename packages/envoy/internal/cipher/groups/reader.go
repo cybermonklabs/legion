@@ -202,13 +202,20 @@ func (r *Reader) Membership(group, login string) (listed, fresh bool) {
 }
 
 // GroupsOf answers every wanted group whose last good read lists login and is fresh, sorted.
-func (r *Reader) GroupsOf(login string) []string {
+func (r *Reader) GroupsOf(login string) []string { return r.groupsListing(login, true) }
+
+// GroupsListing answers every wanted group whose last good read lists login, whatever that read's
+// age, sorted.
+func (r *Reader) GroupsListing(login string) []string { return r.groupsListing(login, false) }
+
+// groupsListing is GroupsOf when freshOnly is true, and GroupsListing otherwise.
+func (r *Reader) groupsListing(login string, freshOnly bool) []string {
 	login = record.CanonicalLogin(login)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var names []string
 	for name, g := range r.wanted {
-		if _, ok := g.members[login]; ok && r.fresh(g) {
+		if _, ok := g.members[login]; ok && login != "" && (!freshOnly || r.fresh(g)) {
 			names = append(names, name)
 		}
 	}

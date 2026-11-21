@@ -804,8 +804,8 @@ may an entry of its `requesters`. Each member of an owner group stands where the
 person's secret stands: a member's own session gets the group's agent-tier secret at once; every
 other request for it, and every request for its human-tier secret, waits for the group's
 approval, which any member gives on the broker's page, and any member dismisses once it expires;
-and while the group reads fresh, every member lists the grants a member approved, and a member
-the group's last read listed may revoke them however old that read is ([Approvals](#approvals)).
+and a member the group's last good read listed, however old that read is, lists and revokes the
+grants a member or the model judge approved ([Approvals](#approvals)).
 A member may approve a request their own session made, as a sole owner may approve their own: a
 group owner is not a second person, and no rule asks for one. A `requesters` entry naming a
 group admits a session whose person is a member. A list, revoke or dismissal that names the
@@ -1438,8 +1438,8 @@ group's secret names the group as its approver, `group:<address>`, and the page 
 approver `a member of the group <address>`: each member the broker's last read of the group lists
 may decide it, and it waits in each such member's Inbox, so a group not read for 2 hours lists it
 to nobody and lets nobody decide it ([A group's secret](#a-groups-secret)). The record names the
-member who decided it, and the grant names the group, so every member lists the grant while the
-group reads fresh, and a member its last read listed may revoke it. A request for a shared
+member who decided it, and the grant names the group, so a member the group's last good read
+listed lists and revokes the grant. A request for a shared
 human-tier secret, or for a shared agent-tier secret its session's operator withheld from it,
 names the approver `anyone`: anyone who signs in to the broker may decide it, and the
 broker records the email of whoever did. It waits in the Inbox of the person responsible for the

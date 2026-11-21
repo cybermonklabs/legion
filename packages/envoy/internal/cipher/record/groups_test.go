@@ -136,6 +136,25 @@ func TestGroupOfReadsTheGroupForm(t *testing.T) {
 	}
 }
 
+// listsEveryone is a reader that answers every login listed and fresh, the empty one included.
+type listsEveryone struct{}
+
+func (listsEveryone) Membership(string, string) (listed, fresh bool) { return true, true }
+
+// TestGroupStandingListsNoEmptyLogin: an empty login, or one of white space alone, is listed in no
+// group, whatever the reader answers for it, though the group's freshness is still answered; a
+// person's login is listed as the reader answers.
+func TestGroupStandingListsNoEmptyLogin(t *testing.T) {
+	for _, login := range []string{"", "  "} {
+		if group, listed, fresh, ok := GroupStanding(listsEveryone{}, testGroupForm, login); !ok || group != testGroup || listed || !fresh {
+			t.Errorf("GroupStanding(%q) = %q, listed %v, fresh %v, %v; want %s, not listed, fresh", login, group, listed, fresh, ok, testGroup)
+		}
+	}
+	if _, listed, _, _ := GroupStanding(listsEveryone{}, testGroupForm, testMember); !listed {
+		t.Errorf("GroupStanding(%s) is not listed, want listed", testMember)
+	}
+}
+
 // TestApproverNotAdmittedIsLapsedOnlyWhenStale: a decider a stale group cannot vouch for is a
 // lapsed grant (ErrApproverNotAdmittedNow), a decider a fresh group does not list is not, and the
 // typed error is still found inside the broken-chain error that wraps it.

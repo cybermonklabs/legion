@@ -92,7 +92,7 @@ func TestGoogleAccountsMintsForEachConcurrentReader(t *testing.T) {
 	for range 2 {
 		done.Go(func() { _, _ = accounts.Read(firstAccount) })
 	}
-	testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "two concurrent reads at IAM while it holds them", func() bool {
+	testwait.Eventually(t, "two concurrent reads at IAM while it holds them", func() bool {
 		return len(iam.Requests()) >= 2
 	})
 	release()

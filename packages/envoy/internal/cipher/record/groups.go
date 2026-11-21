@@ -33,11 +33,16 @@ type Groups interface {
 }
 
 // Directory is Groups with what the policy and the request machine ask of the reader beside it:
-// GroupsOf, every fresh group that lists a login, sorted, which the pending and grants lists of a
-// member match on; and Want, the groups a full policy load names, which the reader reads.
+// GroupsOf, every fresh group that lists a login, sorted, which the pending list of a member
+// matches on; GroupsListing, below; and Want, the groups a full policy load names, which the
+// reader reads.
 type Directory interface {
 	Groups
 	GroupsOf(login string) []string
+	// GroupsListing is every group whose last good read lists login, whatever that read's age,
+	// sorted: what the grants list of a member matches on, as a member the last read listed may
+	// revoke a group's grant (requests' mayRevoke) while the group is stale.
+	GroupsListing(login string) []string
 	Want(groups []string)
 }
 
@@ -54,8 +59,9 @@ func GroupStanding(groups Groups, approver, login string) (group string, listed,
 	if !ok || groups == nil {
 		return group, false, false, ok
 	}
-	listed, fresh = groups.Membership(group, CanonicalLogin(login))
-	return group, listed, fresh, true
+	login = CanonicalLogin(login)
+	listed, fresh = groups.Membership(group, login)
+	return group, listed && login != "", fresh, true
 }
 
 // GroupAdmits reports whether groups admits login to the group approver names (group:<address>)

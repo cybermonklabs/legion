@@ -99,6 +99,21 @@ func (d *Directory) GroupsOf(login string) []string {
 	return names
 }
 
+// GroupsListing answers every group a test set that lists login, stale or not, sorted.
+func (d *Directory) GroupsListing(login string) []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	login = canonical(login)
+	var names []string
+	for name, members := range d.groups {
+		if _, ok := members[login]; ok {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
 // Want records names. It reads nothing: a group is what the test sets.
 func (d *Directory) Want(names []string) {
 	d.mu.Lock()

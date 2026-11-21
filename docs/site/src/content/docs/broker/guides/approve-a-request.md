@@ -29,8 +29,9 @@ last 2 hours. A person added to the group may decide from the broker's next hour
 while the broker cannot read the group for longer than 2 hours, nobody may decide its requests and
 no Inbox lists them ([A group's secret](/legion/broker/concepts/#a-groups-secret)). The record
 names the group as the approver and you as the person who decided, and the grant is the group's:
-every member sees it on their Settings page and may end it. A member may approve a request their
-own session made, as the one owner of a person's secret may: a group owner is not a second person.
+every member the broker's last good read of the group lists sees it on their Settings page and may
+end it, however old that read is. A member may approve a request their own session made, as the
+one owner of a person's secret may: a group owner is not a second person.
 
 Some requests never reach you. Where the deployment configures a model judge, a request for keys
 whose airlock rules entry gives the judge seconds, none of them an administrator's or an Anthropic
@@ -152,6 +153,7 @@ The page then shows, under **What happened**, what became of each request it dec
 | `expired before anyone decided it` | It waited past its expiry. The agent asks again if it still needs the secret. |
 | `not yours to decide; only <approver> may` | The request names someone else, or a group the broker's last read of it does not list you in. |
 | `still pending; it was not decided` | The broker refused your approval though the request names you: the secret's tags now name someone else to approve it ([what an owner change does](/legion/broker/concepts/#approvals)), the session's operator withheld one of its secrets, which only that secret's owner may then approve, and no one while the broker does not serve that secret to that session (it is out of the policy, or a service's), or the secret's `max-grant` became shorter than the lifetime the request asked for, which no one may then approve. You can still deny it. |
+| `still pending; it was not decided: who may ask for it names a Google group the broker has not read in the last two hours. Approve it again once the group is read.` | The secret's `requesters` name a Google group the broker has not read for 2 hours, so it cannot say whether the session's person is on the list ([A group's secret](/legion/broker/concepts/#a-groups-secret)). The request stays pending. | Approve it again once the group is read: the broker reads every group within the hour, and at the next five-minute policy read for one whose first read failed. |
 | `unavailable: the secrets broker could not ask Dispatch whether you may see this request, …` | Dispatch did not answer whether you may see the request, so nothing was decided and it stays pending. The line names the request by its record id, not by its secrets. Decide it once Dispatch answers. |
 
 A decision is accepted only from the page itself, within an hour of opening it, while your sign-in
