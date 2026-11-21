@@ -1,28 +1,31 @@
 /** `bun outside-agent-codex-provenance.ts <command> [arguments]`: the reads of the Codex leg's row C0
  *  (`outside-agent-codex.sh`) that a shell cannot make well: the npm registry's provenance
- *  attestation of the published plugin, and the byte comparison of two builds' bundles. Each
+ *  attestation of the published plugin, its tarball, and byte comparisons of plugin trees. Each
  *  command prints one line of compact JSON whose values are plain words (no quote, backslash or
  *  control character), so the leg reads it with `json_field`, and exits 0; it prints
  *  `{"unknown": "<what it could not read>"}` and exits 2 when it read nothing. It holds no
  *  credential.
  *
  *  Commands:
- *    attestation <package> <version>
+ *    attestation <package> <version> <tarball file>
  *                     the registry's record of <package>@<version> (`OUTSIDE_NPM_REGISTRY`,
- *                     default https://registry.npmjs.org): `integrity`, the tarball's; and its SLSA
- *                     provenance attestation, which `npm publish --provenance` writes: `provenance`
- *                     true or false (a hand-published version has none), `repository` and
- *                     `workflow`, the repository and the workflow file that built it, `ref`,
- *                     `commit`, the source commit, and `subject_matches`, whether the attested
- *                     tarball's sha512 is the registry's integrity.
+ *                     default https://registry.npmjs.org): `integrity`, the tarball's; the tarball
+ *                     itself, written to <tarball file>, and `tarball_matches`, whether its sha512
+ *                     is that integrity; and its SLSA provenance attestation, which `npm publish
+ *                     --provenance` writes: `provenance` true or false (a hand-published version
+ *                     has none), `repository` and `workflow`, the repository and the workflow file
+ *                     that built it, `ref`, `commit`, the source commit, and `subject_matches`,
+ *                     whether the attested tarball's sha512 is the registry's integrity.
+ *    tree <tarball> <installed>
+ *                     the sha256 of every file of two plugin trees, by its path in the tree:
+ *                     `equal`, how many match, `differ`, `only_tarball` and `only_installed`, the
+ *                     paths of the rest, or "" for none.
  *    compare <built> <installed>
- *                     the sha256 of each `dist/*.js` of two plugin directories: `equal`, how many
- *                     match, `differ`, `only_built` and `only_installed`, the names of the rest, or
- *                     "" for none. */
+ *                     the same for each `dist/*.js` alone, with `only_built` for `only_tarball`. */
 
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 
 /** The SLSA provenance predicate's type, as npm writes it. */
 const slsa = "https://slsa.dev/provenance/v1";
@@ -91,27 +94,48 @@ function bundles(dir: string): Map<string, string> {
   const hashes = new Map<string, string>();
   for (const name of readdirSync(join(dir, "dist")).sort()) {
     if (!name.endsWith(".js")) continue;
-    hashes.set(
-      name,
-      createHash("sha256")
-        .update(readFileSync(join(dir, "dist", name)))
-        .digest("hex")
-    );
+    hashes.set(name, sha256(join(dir, "dist", name)));
   }
   return hashes;
 }
 
-/** How two plugin directories' bundles compare. Exported for the leg's tests. */
-export function compareBundles(built: string, installed: string): Record<string, string | number> {
-  const a = bundles(built);
-  const b = bundles(installed);
-  const differ = [...a.keys()].filter((name) => b.has(name) && b.get(name) !== a.get(name));
+function sha256(file: string): string {
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
+/** The sha256 of every file under `dir`, by its path relative to `dir`. */
+function files(dir: string): Map<string, string> {
+  const hashes = new Map<string, string>();
+  for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const path = join(entry.parentPath, entry.name);
+    hashes.set(relative(dir, path), sha256(path));
+  }
+  return hashes;
+}
+
+/** How two maps of file hashes compare: the count that match, and the names of the rest. */
+function compared(a: Map<string, string>, b: Map<string, string>) {
+  const names = (list: string[]) => list.sort().join(" ");
   return {
     equal: [...a.keys()].filter((name) => b.get(name) === a.get(name)).length,
-    differ: differ.join(" "),
-    only_built: [...a.keys()].filter((name) => !b.has(name)).join(" "),
-    only_installed: [...b.keys()].filter((name) => !a.has(name)).join(" "),
+    differ: names([...a.keys()].filter((name) => b.has(name) && b.get(name) !== a.get(name))),
+    only_a: names([...a.keys()].filter((name) => !b.has(name))),
+    only_b: names([...b.keys()].filter((name) => !a.has(name))),
   };
+}
+
+/** How two plugin directories' bundles compare. Exported for the leg's tests. */
+export function compareBundles(built: string, installed: string): Record<string, string | number> {
+  const { only_a, only_b, ...rest } = compared(bundles(built), bundles(installed));
+  return { ...rest, only_built: only_a, only_installed: only_b };
+}
+
+/** How a release's tarball tree and the tree Codex installed compare, file by file. Exported for
+ *  the leg's tests. */
+export function compareTrees(tarball: string, installed: string): Record<string, string | number> {
+  const { only_a, only_b, ...rest } = compared(files(tarball), files(installed));
+  return { ...rest, only_tarball: only_a, only_installed: only_b };
 }
 
 async function get(url: string): Promise<{ status: number; body: unknown }> {
@@ -125,14 +149,14 @@ async function get(url: string): Promise<{ status: number; body: unknown }> {
 }
 
 async function main(): Promise<Record<string, unknown>> {
-  const [command, first = "", second = ""] = Bun.argv.slice(2);
-  if (command === "compare") {
-    if (first === "" || second === "") return { unknown: "compare needs two directories" };
-    return compareBundles(first, second);
+  const [command, first = "", second = "", third = ""] = Bun.argv.slice(2);
+  if (command === "compare" || command === "tree") {
+    if (first === "" || second === "") return { unknown: `${command} needs two directories` };
+    return command === "tree" ? compareTrees(first, second) : compareBundles(first, second);
   }
   if (command !== "attestation") return { unknown: `unknown command ${word(command)}` };
-  if (first === "" || second === "")
-    return { unknown: "attestation needs a package and a version" };
+  if (first === "" || second === "" || third === "")
+    return { unknown: "attestation needs a package, a version and a tarball file" };
   const registry = (process.env.OUTSIDE_NPM_REGISTRY ?? "https://registry.npmjs.org").replace(
     /\/+$/,
     ""
@@ -143,14 +167,25 @@ async function main(): Promise<Record<string, unknown>> {
     return { unknown: `the registry answered ${record.status} for ${word(first)}@${word(second)}` };
   }
   const integrity = word(field(record.body, "dist", "integrity"));
+  // The tarball the registry serves for the version, and whether it is the bytes its integrity
+  // names: the tree Codex installed is compared with this one.
+  const tarballUrl = field(record.body, "dist", "tarball");
+  if (typeof tarballUrl !== "string") return { unknown: "the registry's record names no tarball" };
+  const tarball = await fetch(tarballUrl, { signal: AbortSignal.timeout(60_000) });
+  if (tarball.status !== 200) return { unknown: `the tarball answered ${tarball.status}` };
+  const bytes = Buffer.from(await tarball.arrayBuffer());
+  writeFileSync(third, bytes);
+  const tarball_matches =
+    integrity === `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+  const known = { status: record.status, integrity, tarball_matches };
   const url = field(record.body, "dist", "attestations", "url");
-  if (typeof url !== "string") return { status: record.status, integrity, provenance: false };
+  if (typeof url !== "string") return { ...known, provenance: false };
   const attestations = await get(url);
-  if (attestations.status === 404) return { status: record.status, integrity, provenance: false };
+  if (attestations.status === 404) return { ...known, provenance: false };
   if (attestations.status !== 200) {
     return { unknown: `the registry's attestations answered ${attestations.status}` };
   }
-  return { status: record.status, integrity, ...provenanceOf(attestations.body, integrity) };
+  return { ...known, ...provenanceOf(attestations.body, integrity) };
 }
 
 if (import.meta.main) {

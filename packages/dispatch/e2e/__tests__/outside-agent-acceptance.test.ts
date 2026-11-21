@@ -34,6 +34,7 @@ import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporar
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import {
   acceptance,
+  codexRows,
   copyLeg,
   type LegRun,
   publicLeg,
@@ -1058,7 +1059,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         if (control === undefined || unknown === undefined) throw new Error("two runs, want two");
         // The control: every C row PASS in the public TSV, so the gate names none of them.
         expect({ verdicts: verdictsOf(control.stdout), stdout: control.stdout }).toMatchObject({
-          verdicts: { C1: "PASS", C2: "PASS", C3: "PASS", C4: "PASS", C5: "PASS", C6: "PASS" },
+          verdicts: Object.fromEntries(codexRows.map((name) => [name, "PASS"])),
         });
         expect(rowsOf(control.stdout).get("gate")?.got).not.toContain("C2");
         // C2 UNKNOWN: copied as it is, counted, named by the gate, and the leg exits non-zero.

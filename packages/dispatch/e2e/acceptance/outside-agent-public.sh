@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck source-path=SCRIPTDIR
-# The public leg of the outside agent's acceptance, rows P1 to P10 and the Codex leg's C1 to C6:
+# The public leg of the outside agent's acceptance, rows P1 to P10 and the Codex leg's C0 to C7:
 # what an outside person's agent does and is refused from the public internet, off the private
 # network, through the three edge origins alone. A workflow on a runner on the public internet runs
 # it after its own browser has signed the test person in. outside-agent-acceptance.md, beside this

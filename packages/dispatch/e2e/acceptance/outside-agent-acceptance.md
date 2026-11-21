@@ -36,7 +36,7 @@ not run, and a verdict that is none of the three, copied from another file, coun
 Each leg exits 0 when every row passed, 1 when a row failed, and 2 otherwise.
 
 The public leg ends with a `verdict` row. The tailnet leg prints its own rows, then rows P1-P10 and
-C1-C6 as the public leg's TSV has them, then a `public` row (the public leg's own verdict,
+C0-C7 as the public leg's TSV has them, then a `public` row (the public leg's own verdict,
 revocations and end), the sweep, `pins-end` (the pins and Dispatch's serving build read again) and
 a `gate` row. The gate passes only when every row reads PASS; its `got` names each row that did not,
 with its verdict, so a C row that reads UNKNOWN holds the gate as a FAIL does.
@@ -210,7 +210,7 @@ The tailnet leg does these steps, in this order:
    `outside-agent-public`, `outside-edge-revocations` and `restricted-sweep`, stops the sweep's
    writer, and runs row T4. The wait for the T5 window to open is held to an hour alike.
 10. It judges T5 from the public leg's T5 rows and the removal's two clocks, prints rows P1-P10
-    and C1-C6, the public leg's own last word and the sweep, reads the pins and Dispatch's serving
+    and C0-C7, the public leg's own last word and the sweep, reads the pins and Dispatch's serving
     build again (row `pins-end`), and prints the gate.
 11. It stops every child it started and waits for each, stops the peer's tmux server and waits
     for the peer to exit, and removes its scratch directory.
@@ -246,7 +246,7 @@ Programs on PATH: bash, curl, tmux, bun, `omp`, git and tar, and npm (with node)
 leg installs `@openai/codex@0.171.0` and verifies the plugin's release with. The step needs about 50
 minutes: P5 waits up to 15 minutes for a GitHub event, beside P4 and P8, P8 waits for a token to
 expire (300 s), the Codex leg takes a few minutes (two npm installs, a build of the release's
-commit, and three `codex exec` runs, each bounded), and the T5 window lasts up to 20 minutes.
+commit, and three interactive Codex runs, each bounded), and the T5 window lasts up to 20 minutes.
 
 After P10 and the revocations the leg opens the T5 window. It tells the peer
 `outside-e2e t5-open <nonce> at <ms>`, starts `OUTSIDE_T5_COMMAND`, trades P2's device login afresh
@@ -291,8 +291,8 @@ After P10 the public leg runs `outside-agent-codex.sh` with its own HOME, where 
 is, so the Codex agent trades the same login and no second one is approved. The Codex leg:
 
 - installs one exact Codex release, `npm install @openai/codex@0.171.0`, into its own scratch
-  directory, and runs that native binary; `OUTSIDE_CODEX_BIN` names another binary for a local run,
-  which must print the same `codex-cli 0.171.0`, or every row reads UNKNOWN;
+  directory, checks that the integrity npm recorded for it and for its Linux x64 binary package is
+  the one the leg pins (else every row reads UNKNOWN), and runs that native binary;
 - installs the plugin as the outside person does: a local marketplace named `outside-e2e` whose
   plugin source is `{"source": "npm", "package": "@sjawhar/codex-envoy", "version":
   "<OUTSIDE_CODEX_ENVOY_VERSION>"}`, then `codex plugin marketplace add <dir>` and `codex plugin add
@@ -301,12 +301,22 @@ is, so the Codex agent trades the same login and no second one is approved. The 
   release's version there and its integrity at the registry. `OUTSIDE_CODEX_ENVOY_SOURCE=checkout`
   builds the plugin from the checkout instead (`packages/claude-envoy/scripts/build.ts
   --codex-out`), for a development run, whose C0 reads UNKNOWN, so it never passes the gate;
-- runs `codex exec --skip-git-repo-check --dangerously-bypass-hook-trust -m gpt-5.5` three times,
-  with `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`, under `env -i`, that
-  HOME, the `CODEX_HOME` and the outside person's settings alone: the main run (C1-C5), a run with
-  `ENVOY_URL` at `http://127.0.0.1:1`, a port no process but root's can listen on, read to refuse
-  a connection before and after the run (C6), and a run with `DISPATCH_URL` at
-  `OUTSIDE_INSIDE_DISPATCH_URL` (C2's control).
+- runs the command the outside person is told to run, `codex --no-daemon -m gpt-5.5 "<prompt>"`,
+  three times, each in a tmux pane of its own as P4 runs Oh My Pi, with no hook-trust bypass and
+  never `codex exec`, with `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`,
+  under `env -i`, that HOME, the `CODEX_HOME` and the outside person's settings alone: the main run
+  (C1-C5), a run with `ENVOY_URL` at `http://127.0.0.1:1`, a port no process but root's can listen
+  on, read to refuse a connection before and after the run (C6), and a run with `DISPATCH_URL` at
+  `OUTSIDE_INSIDE_DISPATCH_URL` (C2's control). It reads each screen of the interactive start and
+  answers the two first-run ones as the outside person is told to: "Hooks need review" with
+  "Trust all and continue", and "Meet GPT-6 Sol" with "Use existing model", moving down the menu
+  to the entry that reads so and taking it. Codex keeps both answers, so the later runs ask
+  neither. Any other screen that holds the start for `OUTSIDE_CODEX_START_SECONDS` (default 90)
+  makes the run's rows UNKNOWN, naming the screen's text. `OUTSIDE_CODEX_FIRST_START=no-trust` or
+  `new-model` is a control run that answers "Continue without trusting" or "Try new model" instead:
+  with the hooks untrusted no session record, registration or delivery comes, so C1, C4 and C5 do
+  not pass; with the new model the session lists no plugin tool, so C2 and C3 do not pass. Each
+  row's evidence names the screens and the answers, and a control run;
 - runs the installed release's own entry from a terminal, `bun <root>/dist/dispatch.js whoami`,
   with the host `codex` and a terminal session of its own, under that HOME and those settings (C7).
 
@@ -315,7 +325,7 @@ speaks the Responses API and plays a scripted turn, so no model credential goes 
 binds a port of the kernel's choosing and prints it, and the leg points Codex at it only once it
 answers `/_ready` with the run's nonce: a line that names another run's stand-in is never used.
 Codex 0.171.0 with `gpt-6.2-sol` runs no tool at all; with `-m gpt-5.5` it lists the plugin's tools
-behind `tool_search`, and the stand-in finds them there. `exec` runs the session in its own
+behind `tool_search`, and the stand-in finds them there. `--no-daemon` runs the session in its own
 process, outside Codex's shared app server, where the plugin registers no session. In the main run
 the model calls `dispatch whoami`, then `dispatch comment` on the scratch issue (the tailnet leg's,
 found by its title), then `sleep 2` until a request carries the probe's message (at most 60 times),
@@ -326,7 +336,7 @@ name, and the plugin's version, its integrity at the registry and the root Codex
 
 | Row | It passes when |
 | --- | --- |
-| C0 | The release's provenance holds. At the registry (`OUTSIDE_NPM_REGISTRY`, default npm's), the release has a SLSA provenance attestation, which `npm publish --provenance` writes, naming `https://github.com/cybermonklabs/legion`'s `.github/workflows/release.yaml` and `OUTSIDE_CODEX_ENVOY_COMMIT`, and attesting the tarball whose integrity the registry names; `npm audit signatures`, in a project of its own that holds the release alone, verifies that attestation; and the commit holds `OUTSIDE_DEVICE_LOGIN_COMMIT` (`git merge-base --is-ancestor`). A release with no provenance (one published by hand), or another workflow, commit or tarball, or a commit without the device login, reads FAIL. Beside the verdict it records how a build of the commit (`bun scripts/build.ts --codex-out`, after `bun install --frozen-lockfile`) compares with the installed bundles, file by file; that never decides the row, since the release sets the version before it builds. |
+| C0 | The release's provenance holds, and Codex installed the attested tarball. At the registry (`OUTSIDE_NPM_REGISTRY`, default npm's), the release has a SLSA provenance attestation, which `npm publish --provenance` writes, naming `https://github.com/cybermonklabs/legion`'s `.github/workflows/release.yaml`, the ref `refs/heads/main` and `OUTSIDE_CODEX_ENVOY_COMMIT`, and attesting the tarball whose integrity the registry names; the tarball the registry serves is the bytes that integrity names, and every file of the tree Codex installed is that tarball's, with none more or fewer; `npm audit signatures`, in a project of its own that holds the release alone, verifies that attestation; and the commit holds `OUTSIDE_DEVICE_LOGIN_COMMIT` (`git merge-base --is-ancestor`). A release with no provenance (one published by hand), another workflow, ref, commit or tarball, an installed tree that differs from the tarball (the row names each differing file), or a commit without the device login reads FAIL. Beside the verdict it records how a build of the commit (`bun scripts/build.ts --codex-out`, after `bun install --frozen-lockfile`) compares with the installed bundles, file by file; that never decides the row, since the release sets the version before it builds. |
 | C1 | The session id the plugin's SessionStart hook recorded for the Codex process is on the edge's session list within 30 s (`OUTSIDE_CODEX_LIST_SECONDS`) while Codex runs. Not listed in that time while it runs reads FAIL, and the run is stopped. |
 | C2 | `dispatch whoami` through the plugin's `dispatch` tool names the Codex session, the test person as owner and the scratch project, and no other session for the credential; and the same call with `DISPATCH_URL` at `OUTSIDE_INSIDE_DISPATCH_URL` does not name that person and project. The plugin refusing its own configuration (`dispatch config: ...`, as a release without the device login refuses `AGENT_SECRETS_MACHINE_IDENTITY=device-login`) reads FAIL. Without the input, or where the inside origin answers the same, C2 reads UNKNOWN: its PASS would not tell the edge from the inside origin. The command's whoami prints no scopes; C3 reads them on the comment the tool writes, and P3 on the same login's token. |
 | C3 | `dispatch comment` through the tool on the scratch issue exits 0, and the probe reads that comment on the issue, its author an agent of the test person, in the scratch project, as the Codex session, with no scope. A refusal (exit 1), or exit 0 with no such comment or another author, reads FAIL. |

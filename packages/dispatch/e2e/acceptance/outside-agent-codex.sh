@@ -8,18 +8,24 @@
 #
 # It is written for bash 3.2 and later, as the public leg is, and sources outside-agent-lib.sh from
 # beside it. It installs one exact Codex release, @openai/codex@0.171.0, with npm into its own
-# scratch directory and runs that binary; installs the plugin as the outside person does, from a
-# local marketplace whose plugin source is the npm release OUTSIDE_CODEX_ENVOY_VERSION names, into a
-# CODEX_HOME of its own (`codex plugin marketplace add`, `codex plugin add`); reads that release's
-# provenance (C0); and runs `codex exec --dangerously-bypass-hook-trust -m gpt-5.5` against
-# outside-agent-codex-model.ts beside this file, a keyless stand-in model that speaks the Responses
-# API and plays one scripted turn per run. Codex 0.171.0 with gpt-6.2-sol runs no tool at all,
-# which is why the model name is gpt-5.5: with it, 0.171.0 lists the plugin's tools behind
-# `tool_search`, and the stand-in finds them there. `exec` runs the session in its own process,
-# outside Codex's shared app server, where the plugin registers no session. Row C7 runs the
-# installed plugin's own `dispatch` entry from a terminal, `bun <installed plugin root>/dist/
-# dispatch.js`, the entry the outside person's install text logs in with; the root is the one
-# `codex plugin add` names ($CODEX_HOME/plugins/cache/<marketplace>/codex-envoy/<version>).
+# scratch directory, checks npm's record of its integrity against the one this file pins, and runs
+# that binary; installs the plugin as the outside person does, from a local marketplace whose
+# plugin source is the npm release OUTSIDE_CODEX_ENVOY_VERSION names, into a CODEX_HOME of its own
+# (`codex plugin marketplace add`, `codex plugin add`); reads that release's provenance and checks
+# that the tree Codex installed is the attested tarball (C0); and runs the command the outside
+# person is told to run, `codex --no-daemon -m gpt-5.5 "<prompt>"`, in a tmux pane, as the public
+# leg runs Oh My Pi, with no hook-trust bypass. It reads each screen of the interactive start and
+# answers the two first-run ones as he is told to: "Hooks need review" with "Trust all and
+# continue", "Meet GPT-6 Sol" with "Use existing model"; a screen it does not expect holds the run,
+# and the rows read UNKNOWN naming it. Codex runs against outside-agent-codex-model.ts beside this
+# file, a keyless stand-in model that speaks the Responses API and plays one scripted turn per run.
+# Codex 0.171.0 with gpt-6.2-sol runs no tool at all, which is why the model name is gpt-5.5: with
+# it, 0.171.0 lists the plugin's tools behind `tool_search`, and the stand-in finds them there.
+# `--no-daemon` keeps the session out of Codex's shared app server, where the plugin registers no
+# session. Row C7 runs the installed plugin's own `dispatch` entry from a terminal, `bun <installed
+# plugin root>/dist/dispatch.js`, the entry the outside person's install text logs in with; the
+# root is the one `codex plugin add` names ($CODEX_HOME/plugins/cache/<marketplace>/codex-envoy/
+# <version>).
 #
 # Every process it starts runs with `env -i`, the device login's HOME and these settings alone,
 # the outside person's (section (c) of the public leg):
@@ -53,12 +59,16 @@
 # git checkout C0 reads commits in and builds the release's commit from (default the one this file
 # is in); OUTSIDE_CODEX_ENVOY_SOURCE=checkout, a development run that installs the plugin built
 # from that checkout instead of the npm release (C0 then reads UNKNOWN, so such a run never passes
-# the gate); OUTSIDE_CODEX_BIN, a Codex binary to run instead of the npm install, which must print
-# the same pinned version; OUTSIDE_CODEX_LIST_SECONDS (default 30, as P4 waits for its session),
-# how long the session may take to be listed at the edge once Codex recorded it;
-# OUTSIDE_NPM_REGISTRY (default https://registry.npmjs.org), the registry C0 reads the release's
-# record and provenance from; OUTSIDE_ALLOW_HTTP=1, which lets http://127.0.0.1 origins through for
-# a local stack and this file's tests.
+# the gate); OUTSIDE_CODEX_FIRST_START=no-trust or new-model, a control run that answers the first
+# hooks screen "Continue without trusting" or the model screen "Try new model", which no row may
+# pass on (C1, C4 and C5 with the hooks untrusted; C2 and C3 with the new model), its evidence
+# naming the control; OUTSIDE_CODEX_LIST_SECONDS (default 30, as P4 waits for its session), how
+# long Codex may take to record its session once its turn began, and the edge to list it;
+# OUTSIDE_CODEX_START_SECONDS (default 90), how long an interactive start, its screens answered,
+# may take before its turn begins; OUTSIDE_NPM_REGISTRY
+# (default https://registry.npmjs.org), the registry C0 reads the release's record, tarball and
+# provenance from; OUTSIDE_ALLOW_HTTP=1, which lets http://127.0.0.1 origins through for a local
+# stack and this file's tests.
 #
 # Output: on stdout a TSV, the header `row want got verdict` and rows C0 to C7. Progress goes to
 # stderr. A row reads PASS, FAIL or UNKNOWN: UNKNOWN when it could not run, its `got` naming what it
@@ -85,21 +95,31 @@ fi
 # shellcheck source=outside-agent-lib.sh
 . "$here/outside-agent-lib.sh"
 tab=$(printf '\t')
+newline='
+'
 allow_http=${OUTSIDE_ALLOW_HTTP:-}
 
 # The one Codex release this leg runs, and the model name it runs it with.
 readonly codex_version=0.171.0
 readonly codex_model=gpt-5.5
+# The npm integrity of that release and of its Linux x64 binary package, as the registry names
+# them: npm checks each tarball it installs against the integrity it records, and the leg checks
+# that what it recorded is this, so the run's Codex is these bytes and no other.
+readonly codex_integrity=sha512-1IOFzL2Xg86tLdw6kDo3GoKbkQENgQi7TI6rlEvN132R7ngSw7SNOIQoTcnKzSZZ8kf9N9GynCweSoaFbqk2Eg==
+readonly codex_linux_x64_integrity=sha512-l66NZkQgdk2C3pbcfULDz42yEUB581MVA6I+Y43Wp4OIqEy73HCdmZ0GTjeAHY2ycuH4N00d9VsLrwT1jxshTw==
 # The local marketplace's name, which names the plugin's data directory too.
 readonly market=outside-e2e
-# How long one codex exec may run: the main run sleeps up to wait_calls times wait_seconds for
-# the probe's message; the other two make one call each.
+# How long one run may take: the main run sleeps up to wait_calls times wait_seconds for the
+# probe's message; the other two make one call each.
 readonly wait_calls=60
 readonly wait_seconds=2
 readonly main_seconds=300
 readonly short_seconds=150
 list_seconds=${OUTSIDE_CODEX_LIST_SECONDS:-30}
 case $list_seconds in '' | *[!0-9]*) list_seconds=30 ;; esac
+# How long an interactive start may take, its screens answered, before its turn begins.
+start_seconds=${OUTSIDE_CODEX_START_SECONDS:-90}
+case $start_seconds in '' | *[!0-9]*) start_seconds=90 ;; esac
 # C4: the message the probe sends is in a model request within this many seconds; C5: the
 # probe reads the session's message within this many seconds of the model's send.
 readonly inbound_bound=20
@@ -155,13 +175,34 @@ readonly release_repository=https://github.com/cybermonklabs/legion
 readonly release_workflow=.github/workflows/release.yaml
 ran="ran: @openai/codex@$codex_version, -m $codex_model on the stand-in model"
 
-# --- The scratch directory and its cleanup: every background child, stopped and waited for, then
-# the directory. ---
+# The answers to the interactive start's two first-run screens the outside person is told to give,
+# and the control runs that answer otherwise (OUTSIDE_CODEX_FIRST_START): "no-trust" leaves the
+# plugin's hooks untrusted, so no session record, registration or delivery comes (C1, C4, C5);
+# "new-model" takes GPT-6 Sol, so the session lists no plugin tool (C2, C3).
+first_start=${OUTSIDE_CODEX_FIRST_START:-op3}
+hooks_choice='Trust all and continue'
+model_choice='Use existing model'
+control_note=''
+case $first_start in
+  no-trust) hooks_choice='Continue without trusting' ;;
+  new-model) model_choice='Try new model' ;;
+esac
+[ "$first_start" = op3 ] ||
+  control_note="; a control run (OUTSIDE_CODEX_FIRST_START=$first_start): '$hooks_choice' and '$model_choice'"
+screens=''
+
+# --- The scratch directory and its cleanup: every background child and every Codex's tmux server,
+# stopped and waited for, then the directory. ---
 work=''
 background=''
+tmux_sockets=''
 # shellcheck disable=SC2329 # run by the EXIT trap below
 cleanup() {
+  local sock
   reap
+  for sock in $tmux_sockets; do
+    tmux -S "$sock" kill-server 2>/dev/null </dev/null
+  done
   [ -z "$work" ] || rm -rf "$work"
 }
 trap cleanup EXIT
@@ -171,7 +212,7 @@ nonce=$(od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
 [ -n "$nonce" ] || nonce=$$
 work=$(mktemp -d "${TMPDIR:-/tmp}/outside-agent-codex.XXXXXX") || work=''
 
-want0="$envoy_package@${envoy_version:-<OUTSIDE_CODEX_ENVOY_VERSION>} has npm provenance: built by $release_repository's $release_workflow from ${envoy_commit:-<OUTSIDE_CODEX_ENVOY_COMMIT>}, which holds ${login_commit:-<OUTSIDE_DEVICE_LOGIN_COMMIT>} (the device login); its attestation is verified (npm audit signatures) and attests the registry's tarball"
+want0="$envoy_package@${envoy_version:-<OUTSIDE_CODEX_ENVOY_VERSION>} has npm provenance: built by $release_repository's $release_workflow on refs/heads/main from ${envoy_commit:-<OUTSIDE_CODEX_ENVOY_COMMIT>}, which holds ${login_commit:-<OUTSIDE_DEVICE_LOGIN_COMMIT>} (the device login); its attestation is verified (npm audit signatures) and attests the registry's tarball, which is the tree Codex installed, file by file"
 want1="the Codex session registers at ${listener:-<OUTSIDE_LISTENER_URL>} under its own session id, the Codex thread"
 want2="dispatch whoami through the plugin's dispatch tool, in the Codex session, names that session, ${person_lower:-<OUTSIDE_PERSON>} and ${project:-<OUTSIDE_PROJECT>}; with DISPATCH_URL at ${inside:-<OUTSIDE_INSIDE_DISPATCH_URL>} the same call does not"
 want3="a comment the Codex session writes through the dispatch tool on the scratch issue lands: the probe reads it, written by ${person_lower:-<OUTSIDE_PERSON>}'s agent as the Codex session, in ${project:-<OUTSIDE_PROJECT>}, with no scope"
@@ -200,7 +241,11 @@ problem=$(lacking OUTSIDE_DISPATCH_URL OUTSIDE_BROKER_URL OUTSIDE_LISTENER_URL O
 if [ -z "$problem" ] && [ ! -f "$login_home/.config/legion/device-login.json" ]; then
   problem="no device login at $login_home/.config/legion/device-login.json"
 fi
-[ -n "$problem" ] || problem=$(tool_problem bun curl)
+[ -n "$problem" ] || problem=$(tool_problem bun curl tmux)
+case $first_start in
+  op3 | no-trust | new-model) ;;
+  *) problem="${problem:+$problem; }OUTSIDE_CODEX_FIRST_START is $first_start, not op3, no-trust or new-model" ;;
+esac
 if [ -z "$problem" ]; then
   case $source in
     npm)
@@ -222,32 +267,40 @@ if [ -n "$problem" ]; then
   finish
 fi
 
-# --- Codex, pinned: one exact release from npm, or OUTSIDE_CODEX_BIN, either printing it. ---
-real_tools "$work/tools" bun npm node git
+# --- Codex, pinned: one exact release from npm, its integrity and its binary package's checked
+# against the leg's own record of them before it runs. ---
+real_tools "$work/tools" bun npm node git tmux
 tools_path="$work/tools:$PATH"
-codex_bin=${OUTSIDE_CODEX_BIN:-}
+if [ -n "$(PATH=$tools_path tool_problem npm)" ]; then
+  all_unknown "npm not on PATH, so @openai/codex@$codex_version is not installed"
+  finish
+fi
+say "npm install @openai/codex@$codex_version"
+env -i "PATH=$tools_path" "HOME=$work/npm-home" "TMPDIR=${TMPDIR:-/tmp}" npm install \
+  --prefix "$work/codex" --no-save --no-audit --no-fund --ignore-scripts --loglevel=error \
+  "@openai/codex@$codex_version" >"$work/npm.log" 2>&1 </dev/null
+installed=$?
+# What npm recorded of the two packages it checked the tarballs against (its hidden lockfile).
+recorded=$(env -i "PATH=$tools_path" "HOME=$work/npm-home" bun -e '
+  const lock = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).packages ?? {};
+  console.log((lock["node_modules/@openai/codex"]?.integrity ?? "none") + " " +
+    (lock["node_modules/@openai/codex-linux-x64"]?.integrity ?? "none"));
+' "$work/codex/node_modules/.package-lock.json" 2>/dev/null </dev/null)
+if [ "$recorded" != "$codex_integrity $codex_linux_x64_integrity" ]; then
+  all_unknown "npm install @openai/codex@$codex_version exited $installed, and the integrity it recorded is not the pinned one (got ${recorded:-none}; want $codex_integrity $codex_linux_x64_integrity, the Linux x64 build): $(text_of "$work/npm.log")"
+  finish
+fi
+codex_bin=''
+# The native binary itself, not npm's node wrapper.
+for each in "$work"/codex/node_modules/@openai/codex-linux-x64/vendor/*/bin/codex; do
+  if [ -x "$each" ]; then
+    codex_bin=$each
+    break
+  fi
+done
 if [ -z "$codex_bin" ]; then
-  if [ -n "$(PATH=$tools_path tool_problem npm)" ]; then
-    all_unknown "npm not on PATH, so @openai/codex@$codex_version is not installed"
-    finish
-  fi
-  say "npm install @openai/codex@$codex_version"
-  env -i "PATH=$tools_path" "HOME=$work/npm-home" "TMPDIR=${TMPDIR:-/tmp}" npm install \
-    --prefix "$work/codex" --no-save --no-audit --no-fund --ignore-scripts --loglevel=error \
-    "@openai/codex@$codex_version" >"$work/npm.log" 2>&1 </dev/null
-  installed=$?
-  # The native binary itself, not npm's node wrapper, so `$!` of a run is the process Codex's
-  # hooks name as their parent, which the session record is filed under.
-  for each in "$work"/codex/node_modules/@openai/codex-*/vendor/*/bin/codex; do
-    if [ -x "$each" ]; then
-      codex_bin=$each
-      break
-    fi
-  done
-  if [ -z "$codex_bin" ]; then
-    all_unknown "npm install @openai/codex@$codex_version exited $installed and left no native codex binary: $(text_of "$work/npm.log")"
-    finish
-  fi
+  all_unknown "npm install @openai/codex@$codex_version left no native codex binary: $(text_of "$work/npm.log")"
+  finish
 fi
 version=$(env -i "PATH=$tools_path" "HOME=$work/npm-home" "$codex_bin" --version 2>/dev/null </dev/null)
 if [ "$version" != "codex-cli $codex_version" ]; then
@@ -420,7 +473,7 @@ integrity='not read'
 if [ "$source" = npm ]; then
   release=$(env -i "PATH=$tools_path" "HOME=$work/npm-home" "TMPDIR=${TMPDIR:-/tmp}" \
     ${OUTSIDE_NPM_REGISTRY:+"OUTSIDE_NPM_REGISTRY=$OUTSIDE_NPM_REGISTRY"} \
-    bun "$here/outside-agent-codex-provenance.ts" attestation "$envoy_package" "$envoy_version" \
+    bun "$here/outside-agent-codex-provenance.ts" attestation "$envoy_package" "$envoy_version" "$work/release.tgz" \
     2>>"$work/provenance.log" </dev/null)
   integrity=$(json_field integrity "$release") || integrity='not read'
   ran="ran: $version (@openai/codex@$codex_version), -m $codex_model on the stand-in model, $envoy_package@$plugin_version from npm (integrity $integrity), installed at $plugin_root"
@@ -442,14 +495,17 @@ if [ -f "$entry" ]; then
   terminal_exit=$?
 fi
 
-# --- C0's reading: the release's provenance. A release of the package is published by the
-# repository's release workflow with `npm publish --provenance`, from the release run's commit; a
-# version published by hand has no provenance. C0 reads, from the registry, that the release's
-# SLSA provenance names that workflow and OUTSIDE_CODEX_ENVOY_COMMIT and attests the registry's
-# tarball; that npm verifies the attestation (`npm audit signatures`, in a project of its own
-# holding that release alone); and that the commit holds OUTSIDE_DEVICE_LOGIN_COMMIT. It records,
-# and does not judge by, how a build of that commit's bundles compare with the installed ones: the
-# release sets the version before it builds, which a bundle can hold. ---
+# --- C0's reading: the release's provenance, and that what Codex installed is the attested tarball.
+# A release of the package is published by the repository's release workflow on main with `npm
+# publish --provenance`, from the release run's commit; a version published by hand has no
+# provenance. C0 reads, from the registry, that the release's SLSA provenance names that workflow,
+# refs/heads/main and OUTSIDE_CODEX_ENVOY_COMMIT, and attests the registry's tarball; that the
+# tarball the registry serves is the bytes its integrity names, and that every file of the tree
+# Codex installed is that tarball's; that npm verifies the attestation (`npm audit signatures`, in
+# a project of its own holding that release alone); and that the commit holds
+# OUTSIDE_DEVICE_LOGIN_COMMIT. It records, and does not judge by, how a build of that commit's
+# bundles compare with the installed ones: the release sets the version before it builds, which a
+# bundle can hold. ---
 c0_wrong=''
 c0_unread=''
 c0_read=''
@@ -482,13 +538,36 @@ if [ "$source" = npm ]; then
     attested_repository=$(json_field repository "$release")
     attested_workflow=$(json_field workflow "$release")
     attested_commit=$(json_field commit "$release")
-    c0_read="provenance: $attested_repository $attested_workflow at $(json_field ref "$release"), commit $attested_commit"
+    attested_ref=$(json_field ref "$release")
+    c0_read="provenance: $attested_repository $attested_workflow at $attested_ref, commit $attested_commit"
     [ "$attested_repository" = "$release_repository" ] && [ "$attested_workflow" = "$release_workflow" ] ||
       c0_wrong="the provenance names $attested_repository's $attested_workflow, not $release_repository's $release_workflow"
+    # The release workflow publishes from main alone; a run of it on another branch names that ref.
+    [ "$attested_ref" = refs/heads/main ] ||
+      c0_wrong="${c0_wrong:+$c0_wrong; }the provenance names the ref $attested_ref, not refs/heads/main"
     [ -n "$envoy_commit" ] && [ "$attested_commit" != "$envoy_commit" ] &&
       c0_wrong="${c0_wrong:+$c0_wrong; }the provenance names commit $attested_commit, not OUTSIDE_CODEX_ENVOY_COMMIT $envoy_commit"
     [ "$(json_field subject_matches "$release")" = true ] ||
       c0_wrong="${c0_wrong:+$c0_wrong; }the provenance attests another tarball than the registry's ($integrity)"
+  fi
+  # The tree Codex installed is the tarball whose integrity the registry and the attestation name.
+  if [ -n "$(json_field status "$release")" ] && [ -z "$(json_field unknown "$release")" ]; then
+    if [ "$(json_field tarball_matches "$release")" != true ]; then
+      c0_wrong="${c0_wrong:+$c0_wrong; }the tarball the registry serves is not the bytes its integrity ($integrity) names"
+    elif ! { mkdir -p "$work/tarball" && tar -xzf "$work/release.tgz" -C "$work/tarball" 2>/dev/null </dev/null &&
+      [ -d "$work/tarball/package" ]; }; then
+      c0_unread="${c0_unread:+$c0_unread; }the release's tarball did not extract to a package directory"
+    else
+      tree=$(env -i "PATH=$tools_path" "HOME=$work/npm-home" bun \
+        "$here/outside-agent-codex-provenance.ts" tree "$work/tarball/package" "$plugin_root" 2>/dev/null </dev/null)
+      if [ -n "$(json_field unknown "$tree")" ] || [ -z "$(json_field equal "$tree")" ]; then
+        c0_unread="${c0_unread:+$c0_unread; }the installed tree was not compared with the tarball: ${tree:0:200}"
+      elif [ -n "$(json_field differ "$tree")$(json_field only_tarball "$tree")$(json_field only_installed "$tree")" ]; then
+        c0_wrong="${c0_wrong:+$c0_wrong; }the tree Codex installed is not the tarball: differ: $(json_field differ "$tree"); only in the tarball: $(json_field only_tarball "$tree"); only installed: $(json_field only_installed "$tree")"
+      else
+        c0_read="${c0_read:+$c0_read; }the tree Codex installed is the tarball, file by file ($(json_field equal "$tree") files)"
+      fi
+    fi
   fi
   # npm's own verification of the release's registry signature and attestation.
   mkdir -p "$work/audit"
@@ -548,34 +627,121 @@ if [ "$source" = npm ]; then
   fi
 fi
 
-# codex_run RUN [NAME=VALUE...]: one `codex exec` in the session directory, whose prompt names RUN
-# for the stand-in model, with codex_env and then the settings given, which replace its own. Its
-# last word is exec, so `$!` of `codex_run ... &` is the Codex process.
-codex_run() {
+# --- The runs: `codex --no-daemon -m gpt-5.5 "<prompt>"`, the command the outside person is told to
+# run, in a tmux pane of its own, as the public leg runs Oh My Pi; never `codex exec`, which shows
+# none of the interactive start's screens and can bypass the hook trust. ---
+# codex_start RUN [NAME=VALUE...]: starts RUN's Codex in a tmux server of its own, with codex_env
+# and then the settings given, which replace its own; its prompt names RUN for the stand-in model.
+codex_start() {
   local run=$1
   shift
-  cd "$session_dir" || exit 2
-  exec env -i "${codex_env[@]}" "$@" "$codex_bin" exec --skip-git-repo-check \
-    --dangerously-bypass-hook-trust -m "$codex_model" "outside-e2e codex-run $run $nonce" \
-    >"$work/codex-$run.log" 2>&1 </dev/null
+  tmux_sockets="${tmux_sockets:+$tmux_sockets }$work/tmux-$run.sock"
+  known_records=$(ls "$data_dir/codex-sessions"/*.json 2>/dev/null)
+  env -i "${codex_env[@]}" "$@" tmux -S "$work/tmux-$run.sock" -f /dev/null new-session -d \
+    -s codex -x 200 -y 50 -c "$session_dir" "$codex_bin" --no-daemon -m "$codex_model" \
+    "outside-e2e codex-run $run $nonce" >>"$work/tmux.log" 2>&1 </dev/null
 }
-# session_of PID SECONDS: sets `session_found` to the session id in the record the plugin's
-# SessionStart hook files under Codex process PID, waited for up to SECONDS while that process
-# runs; empty when none came. It runs in this shell, not a command substitution, whose copy of
-# the job table would count a child that ended after its fork as still running.
-session_of() {
-  local file="$data_dir/codex-sessions/$1.json" deadline
-  session_found=''
-  deadline=$(($(now) + $2))
-  while [ -z "$session_found" ] && [ "$(now)" -lt "$deadline" ]; do
-    [ ! -f "$file" ] || session_found=$(json_field session_id "$(tr -d '\n' <"$file")")
-    [ -z "$session_found" ] || break
-    running_child "$1" || break
+# codex_pane RUN: what RUN's pane shows now.
+codex_pane() { tmux -S "$work/tmux-$1.sock" capture-pane -p -J -t codex 2>/dev/null </dev/null; }
+# codex_alive RUN: whether RUN's Codex still runs.
+codex_alive() { tmux -S "$work/tmux-$1.sock" has-session -t codex 2>/dev/null </dev/null; }
+# codex_stop RUN: stops RUN's tmux server and waits up to 10 s for its Codex to exit.
+codex_stop() {
+  local sock="$work/tmux-$1.sock" pane _
+  pane=$(tmux -S "$sock" display-message -p -t codex '#{pane_pid}' 2>/dev/null </dev/null)
+  tmux -S "$sock" kill-server 2>/dev/null </dev/null
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    { [ -n "$pane" ] && kill -0 "$pane" 2>/dev/null; } || break
     sleep 1
   done
-  # A record written as the process ended, after the last look and before the check that it runs.
-  [ -n "$session_found" ] || [ ! -f "$file" ] ||
-    session_found=$(json_field session_id "$(tr -d '\n' <"$file")")
+}
+# screen_text TEXT: TEXT's lines that are not blank, joined, at most 300 characters.
+screen_text() {
+  local line out=''
+  while IFS= read -r line; do
+    case $line in *[![:space:]]*) out="${out:+$out / }$line" ;; esac
+  done <<EOF
+$1
+EOF
+  out=$(cell "$out")
+  printf '%s' "${out:0:300}"
+}
+# choose RUN LABEL: on the menu RUN's pane shows, moves to the entry that reads LABEL and takes it.
+# The entry the menu has chosen is the numbered line holding `›`. False when no entry of LABEL is
+# reached.
+choose() {
+  local tries=0 line selected
+  while [ "$tries" -lt 10 ]; do
+    tries=$((tries + 1))
+    selected=''
+    while IFS= read -r line; do
+      case $line in *'›'*[0-9].' '*) selected=$line ;; esac
+    done <<EOF
+$(codex_pane "$1")
+EOF
+    case $selected in *"$2"*)
+      tmux -S "$work/tmux-$1.sock" send-keys -t codex Enter 2>/dev/null </dev/null
+      return 0
+      ;;
+    esac
+    tmux -S "$work/tmux-$1.sock" send-keys -t codex Down 2>/dev/null </dev/null
+    sleep 1
+  done
+  return 1
+}
+# drive RUN SECONDS: waits up to SECONDS for RUN's turn to begin (the stand-in model logs the tools
+# of its first request), answering the interactive start's screens as the outside person is told
+# to: "Hooks need review" with hooks_choice, "Meet GPT-6 Sol" with model_choice. Adds each screen
+# and its answer to `screens`. False, with `drive_problem` naming the screen, when another screen
+# holds the start, a screen lacks its entry, or Codex ends first.
+drive() {
+  local run=$1 deadline screen='' title choice
+  drive_problem=''
+  deadline=$(($(now) + $2))
+  while [ "$(now)" -lt "$deadline" ]; do
+    [ -z "$(logged "$run" tools)" ] || return 0
+    if ! codex_alive "$run"; then
+      drive_problem="Codex ended before its turn began; its last screen: $(screen_text "$screen")"
+      return 1
+    fi
+    screen=$(codex_pane "$run")
+    title=''
+    case $screen in
+      *'Hooks need review'*) title='Hooks need review' choice=$hooks_choice ;;
+      *'Meet GPT-6 Sol'*) title='Meet GPT-6 Sol' choice=$model_choice ;;
+    esac
+    if [ -n "$title" ]; then
+      if ! choose "$run" "$choice"; then
+        drive_problem="the screen '$title' offered no '$choice': $(screen_text "$screen")"
+        return 1
+      fi
+      screens="${screens:+$screens; }$run: $title -> $choice"
+      # The screen goes once the choice is taken; it is not answered twice.
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        case $(codex_pane "$run") in *"$title"*) sleep 1 ;; *) break ;; esac
+      done
+    fi
+    sleep 1
+  done
+  drive_problem="Codex's turn did not begin within $2 s, held by a screen this leg does not expect: $(screen_text "$screen")"
+  return 1
+}
+# session_of SECONDS: sets `session_found` to the session id of the record the plugin's
+# SessionStart hook files for the Codex started last (one not there before it started), waited
+# for up to SECONDS; empty when none came.
+session_of() {
+  local deadline each
+  session_found=''
+  deadline=$(($(now) + $1))
+  while [ -z "$session_found" ] && [ "$(now)" -lt "$deadline" ]; do
+    for each in "$data_dir/codex-sessions"/*.json; do
+      [ -f "$each" ] || continue
+      case $newline$known_records$newline in *"$newline$each$newline"*) continue ;; esac
+      session_found=$(json_field session_id "$(tr -d '\n' <"$each")")
+      [ -z "$session_found" ] || break
+    done
+    [ -n "$session_found" ] || sleep 1
+  done
 }
 # logged RUN STEP: the stand-in model's log line of RUN's STEP, or nothing.
 logged() {
@@ -588,16 +754,20 @@ logged() {
     esac
   done <"$work/model.log"
 }
-# ended RUN PID SECONDS: waits up to SECONDS for the run to end, stopping it past them; sets
-# `run_end` to how it ended.
-ended() {
-  await_child "$2" "$3" 1
-  if [ -n "$child_exit" ]; then
-    run_end="codex exec $1 exited $child_exit"
+# finish_run RUN SECONDS: waits up to SECONDS for RUN's turn to end (the stand-in model logs its
+# end), then stops its Codex, which the interactive start leaves open; sets `run_end`.
+finish_run() {
+  local deadline
+  deadline=$(($(now) + $2))
+  while [ -z "$(logged "$1" end)" ] && codex_alive "$1" && [ "$(now)" -lt "$deadline" ]; do sleep 1; done
+  if [ -n "$(logged "$1" end)" ]; then
+    run_end="the turn of $1 ended"
+  elif codex_alive "$1"; then
+    run_end="the turn of $1 had not ended within $2 s"
   else
-    stop_child "$2"
-    run_end="codex exec $1 had not ended $3 s after it started, and was stopped"
+    run_end="Codex $1 ended before its turn did"
   fi
+  codex_stop "$1"
 }
 
 # --- The main run: C1 to C5. The probe's receiver listens first, as the session C5 sends to. ---
@@ -612,19 +782,21 @@ done
 receiver_problem=''
 [ -n "$receiver_ready" ] || receiver_problem="the probe's receiver did not start: $(text_of "$work/receive.out")"
 
-say "codex exec main (codex-envoy@$market, CODEX_HOME $codex_home)"
-codex_run main &
-main_pid=$!
-background="$background $main_pid"
+say "codex --no-daemon main in tmux (codex-envoy@$market, CODEX_HOME $codex_home)"
+codex_start main
 started=$(now)
-session_of "$main_pid" 60
-session=$session_found
+main_problem=''
+drive main "$start_seconds" || main_problem=$drive_problem
+session=''
+# The SessionStart hook writes the record before the turn's first request, so once the turn began
+# it is there or never comes (hooks that did not run).
+[ -n "$main_problem" ] || { session_of "$list_seconds"; session=$session_found; }
 listed=''
 list_answer=''
 list_read=''
 if [ -n "$session" ]; then
   deadline=$(($(now) + list_seconds))
-  while [ -z "$listed" ] && [ "$(now)" -lt "$deadline" ] && running_child "$main_pid"; do
+  while [ -z "$listed" ] && [ "$(now)" -lt "$deadline" ] && codex_alive main; do
     list_answer=$(probe sessions)
     if [ -z "$(unknown_of "$list_answer")" ] && [ "$(json_field status "$list_answer")" = 200 ]; then
       list_read=yes
@@ -641,21 +813,21 @@ if [ -n "$listed" ]; then
   control_answer=$(probe send "$peer-foreign" "$control_text")
   inbound_sent_at=$(now)
   inbound_answer=$(probe send "$session" "$inbound_text")
-  ended main "$main_pid" $((main_seconds - ($(now) - started)))
+  finish_run main $((main_seconds - ($(now) - started)))
   main_end=$run_end
-elif running_child "$main_pid"; then
-  # Still running with no session to send to: never listed, or no record filed in 60 s. No message
-  # can reach the session, so its turn, which sleeps until one does, is stopped, not waited out.
+elif [ -z "$main_problem" ] && codex_alive main; then
+  # Running with no session to send to: never listed, or no record filed. No message can
+  # reach the session, so its turn, which sleeps until one does, is stopped, not waited out.
   [ -z "$session" ] || listing_ran_out=yes
-  stop_child "$main_pid"
+  codex_stop main
   if [ -n "$session" ]; then
-    main_end="codex exec main was stopped once its session had not been listed in $list_seconds s"
+    main_end="Codex main was stopped once its session had not been listed in $list_seconds s"
   else
-    main_end="codex exec main was stopped once it had filed no session record in 60 s"
+    main_end="Codex main was stopped once it had filed no session record in $list_seconds s"
   fi
 else
-  ended main "$main_pid" 0
-  main_end=$run_end
+  codex_stop main
+  main_end=${main_problem:-Codex main ended}
 fi
 if [ -n "$receiver_ready" ]; then
   await_child "$receive_pid" 15 1
@@ -674,14 +846,17 @@ refused_after=''
 refused_end="not run: $refused_origin did not refuse a connection before the run"
 if refuses "$refused_origin"; then
   refused_before=yes
-  say "codex exec edge-refused (ENVOY_URL $refused_origin)"
-  codex_run edge-refused "ENVOY_URL=$refused_origin" &
-  refused_pid=$!
-  background="$background $refused_pid"
-  session_of "$refused_pid" 60
-  refused_session=$session_found
-  ended edge-refused "$refused_pid" "$short_seconds"
-  refused_end=$run_end
+  say "codex --no-daemon edge-refused (ENVOY_URL $refused_origin)"
+  codex_start edge-refused "ENVOY_URL=$refused_origin"
+  if drive edge-refused "$start_seconds"; then
+    session_of "$list_seconds"
+    refused_session=$session_found
+    finish_run edge-refused "$short_seconds"
+    refused_end=$run_end
+  else
+    codex_stop edge-refused
+    refused_end=$drive_problem
+  fi
   if refuses "$refused_origin"; then refused_after=yes; fi
 fi
 inside_end=''
@@ -690,14 +865,18 @@ if [ -n "$inside" ]; then
   if [ -n "$problem" ]; then
     inside_end=$problem
   else
-    say "codex exec inside (DISPATCH_URL $inside)"
-    codex_run inside "DISPATCH_URL=$inside" &
-    inside_pid=$!
-    background="$background $inside_pid"
-    ended inside "$inside_pid" "$short_seconds"
-    inside_end=$run_end
+    say "codex --no-daemon inside (DISPATCH_URL $inside)"
+    codex_start inside "DISPATCH_URL=$inside"
+    if drive inside "$start_seconds"; then
+      finish_run inside "$short_seconds"
+      inside_end=$run_end
+    else
+      codex_stop inside
+      inside_end=$drive_problem
+    fi
   fi
 fi
+ran="$ran; first-start screens: ${screens:-none}${control_note}"
 
 # --- The rows. ---
 tools_line=$(logged main tools)
@@ -720,13 +899,13 @@ fi
 
 # C1: the session on the edge's session list.
 if [ -z "$session" ]; then
-  row C1 "$want1" "Codex filed no session record within 60 s ($main_end)$tools_note" UNKNOWN
+  row C1 "$want1" "Codex filed no session record within $list_seconds s of its turn's start ($main_end)$tools_note" UNKNOWN
 elif [ -n "$listed" ]; then
   row C1 "$want1" "session $session listed at $listener" PASS
 elif [ -z "$list_read" ]; then
   row C1 "$want1" "session $session: the session list was not read: ${list_answer:0:200}" UNKNOWN
 elif [ -n "$listing_ran_out" ]; then
-  row C1 "$want1" "session $session was not on $listener's session list $list_seconds s after Codex recorded it, while codex exec ran" FAIL
+  row C1 "$want1" "session $session was not on $listener's session list $list_seconds s after Codex recorded it, while Codex ran" FAIL
 else
   row C1 "$want1" "session $session was not listed before $main_end" UNKNOWN
 fi
@@ -802,7 +981,11 @@ else
   [ "$kind" = agent ] || wrong="author kind ${kind:-none}"
   [ "$owner" = "$person_lower" ] || wrong="${wrong:+$wrong, }owner ${owner:-none}"
   case $written_in in '' | null | "$project") ;; *) wrong="${wrong:+$wrong, }project $written_in" ;; esac
-  case $written_as in '' | null | "$session") ;; *) wrong="${wrong:+$wrong, }session $written_as" ;; esac
+  # The session the write proved, held to the one Codex recorded; with no record (hooks that did
+  # not run) there is none to hold it to, and C1 says so.
+  if [ -n "$session" ]; then
+    case $written_as in '' | null | "$session") ;; *) wrong="${wrong:+$wrong, }session $written_as" ;; esac
+  fi
   case $scopes in '' | null | 0) ;; *) wrong="${wrong:+$wrong, }$scopes scopes" ;; esac
   if [ -n "$(unknown_of "$read_back")" ] || [ "$(json_field status "$read_back")" != 200 ]; then
     row C3 "$want3" "dispatch comment exited 0; the probe's read of $issue's comments: ${read_back:0:200}" UNKNOWN

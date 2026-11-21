@@ -5,7 +5,7 @@
  *  port of the kernel's choosing on 127.0.0.1, prints `{"port": N}`, answers `GET /_ready` with the
  *  plan's nonce, so the leg points Codex only at its own child, and serves until it is stopped.
  *
- *  It plays one scripted turn for each `codex exec` the leg runs, named by the prompt
+ *  It plays one scripted turn for each interactive Codex run the leg starts, named by the prompt
  *  `outside-e2e codex-run <run> <nonce>`:
  *    main          finds the plugin's tools, calls `dispatch whoami` (C2), comments on the scratch
  *                  issue with `dispatch comment` (C3), runs `sleep` until a request carries the

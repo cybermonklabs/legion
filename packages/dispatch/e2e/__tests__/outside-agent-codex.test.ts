@@ -23,7 +23,11 @@ import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { findTool, nextTurn, type Plan, whoamiOf } from "../acceptance/outside-agent-codex-model";
-import { compareBundles, provenanceOf } from "../acceptance/outside-agent-codex-provenance";
+import {
+  compareBundles,
+  compareTrees,
+  provenanceOf,
+} from "../acceptance/outside-agent-codex-provenance";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import {
   codexLeg,
@@ -97,7 +101,27 @@ interface CodexScenario {
   /** The stand-in model answers /_ready with another word than the leg's nonce, as another run's
    *  stand-in on the port would. */
   readonly modelSquat?: boolean;
+  /** OUTSIDE_CODEX_FIRST_START: a control run's answers to the first-run screens. */
+  readonly firstStart?: "no-trust" | "new-model";
+  /** The interactive start shows a screen the leg does not expect (a folder trust question). */
+  readonly unexpectedScreen?: boolean;
+  /** The tree Codex installs differs from the release's tarball in one file, or the registry's
+   *  tarball is not the bytes its integrity names (C0). */
+  readonly installedDiffers?: boolean;
+  readonly tarballMismatch?: boolean;
+  /** The integrity npm records for @openai/codex is not the pinned one. */
+  readonly codexIntegrity?: "other";
+  /** OUTSIDE_CODEX_START_SECONDS (default 30): how long each start may hold before its turn. */
+  readonly startSeconds?: number;
 }
+
+/** Where the real provenance helper is: the stand-in imports its tree comparison. */
+const provenanceHelper = join(
+  import.meta.dir,
+  "..",
+  "acceptance",
+  "outside-agent-codex-provenance.ts"
+);
 
 /** The installed plugin's stand-in `dist/dispatch.js`, the terminal entry of C7: it keeps what it
  *  was run with and answers whoami as the scenario says. */
@@ -117,10 +141,15 @@ console.log("Session " + process.env.CODEX_THREAD_ID + " acts for " + owner + ":
 `;
 }
 
-/** The stand-in `codex`: a Bun script with this run's state directory written into it. */
+/** The stand-in `codex`: a Bun script with this run's state directory written into it. Its
+ *  interactive start (`--no-daemon`) runs in the stand-in tmux's pane: it shows the two first-run
+ *  screens Codex 0.171.0 shows, each a menu whose chosen entry carries `›`, takes Down and Enter
+ *  from the pane's keys, and keeps each answer as Codex does in config.toml, so a later start shows
+ *  neither. Untrusted hooks run none (no session record, no registration, no delivery into the
+ *  turn); the new model lists no plugin tool. It answers no `exec`. */
 function standInCodex(state: string): string {
   return `#!/usr/bin/env bun
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const state = ${JSON.stringify(state)};
 const scenario = JSON.parse(readFileSync(join(state, "scenario.json"), "utf8"));
@@ -132,28 +161,28 @@ if (argv[0] === "--version") {
 }
 // As Codex does, \`plugin marketplace add\` and \`plugin add\` add their tables to config.toml, and a
 // run whose config.toml lacks the plugin's table runs the plugin not at all: no hook, no tool.
-// \`plugin add\` installs the release the marketplace's npm source names (a local source as 1.0.0)
-// under the plugin cache, and names that root, as Codex 0.171.0 does.
+// \`plugin add\` installs the release (the tree the release's tarball holds) under the plugin
+// cache, at the version an npm source names (a local source as 1.0.0), and names that root.
 const config = join(home, "config.toml");
 if (argv[0] === "plugin") {
   appendFileSync(join(state, "plugin-args"), argv.join(" ") + "\\n");
   if (argv[1] === "marketplace") {
-    copyFileSync(join(argv[3], ".agents", "plugins", "marketplace.json"), join(state, "marketplace.json"));
+    cpSync(join(argv[3], ".agents", "plugins", "marketplace.json"), join(state, "marketplace.json"));
     appendFileSync(config, '\\n[marketplaces.outside-e2e]\\nsource_type = "local"\\n');
   }
   if (argv[1] === "add") {
     const source = JSON.parse(readFileSync(join(state, "marketplace.json"), "utf8")).plugins[0].source;
     const version = source.source === "npm" ? source.version : "1.0.0";
     const root = join(home, "plugins", "cache", "outside-e2e", "codex-envoy", version);
-    mkdirSync(join(root, "dist"), { recursive: true });
+    cpSync(join(state, "release", "package"), root, { recursive: true });
     writeFileSync(join(root, "package.json"), JSON.stringify({ version }));
-    if (!scenario.noEntry) copyFileSync(join(state, "entry.js"), join(root, "dist", "dispatch.js"));
+    if (scenario.installedDiffers) appendFileSync(join(root, "dist", "codex-hook.js"), "// changed\\n");
     appendFileSync(config, '\\n[plugins."codex-envoy@outside-e2e"]\\nenabled = true\\n');
     console.log("Added plugin \`codex-envoy\` from marketplace \`outside-e2e\`. Installed plugin root: " + root);
   }
   process.exit(0);
 }
-if (argv[0] !== "exec") process.exit(2);
+if (argv[0] !== "--no-daemon") process.exit(2);
 const run = /codex-run (\\S+) /.exec(argv.at(-1) ?? "")?.[1] ?? "";
 const session = "codex-thread-" + run;
 const seen = ["ENVOY_URL", "DISPATCH_URL", "HOME", "AGENT_SECRETS_MACHINE_IDENTITY", "AGENT_SECRETS_PROJECTS", "DISPATCH_TOKEN"];
@@ -162,19 +191,69 @@ writeFileSync(join(state, "exec-" + run + ".json"), JSON.stringify({
   cwd: process.cwd(),
   env: Object.fromEntries(seen.map((name) => [name, process.env[name] ?? null])),
 }));
+// The pane: what the stand-in tmux shows of it, and the keys it was sent.
+const pane = process.env.STANDIN_PANE ?? "";
+const show = (lines) => {
+  writeFileSync(join(pane, "screen.writing"), lines.join("\\n") + "\\n");
+  renameSync(join(pane, "screen.writing"), join(pane, "screen"));
+};
+let consumed = 0;
+const keys = () => {
+  const all = readFileSync(join(pane, "keys"), "utf8").split("\\n").filter((key) => key !== "");
+  const fresh = all.slice(consumed);
+  consumed = all.length;
+  return fresh;
+};
+const menu = async (title, options) => {
+  let chosen = 0;
+  for (;;) {
+    show([title, "", ...options.map((option, index) => (index === chosen ? "› " : "  ") + (index + 1) + ". " + option), "", "enter to confirm"]);
+    for (const key of keys()) {
+      if (key === "Down") chosen = Math.min(chosen + 1, options.length - 1);
+      if (key === "Up") chosen = Math.max(chosen - 1, 0);
+      if (key === "Enter") return options[chosen];
+    }
+    await Bun.sleep(25);
+  }
+};
+const forever = () => new Promise(() => {});
+if (scenario.unexpectedScreen) {
+  show(["Do you trust the files in this folder?", "", "› 1. Yes, continue", "  2. No, quit"]);
+  await forever();
+}
+let hooksRun = true;
+let newModel = false;
+if (!readFileSync(config, "utf8").includes("[hooks.state")) {
+  const answer = await menu("Hooks need review", ["Review hooks", "Trust all and continue", "Continue without trusting (hooks won't run)"]);
+  if (answer === "Review hooks") {
+    show(["Review hooks", "", "hooks/hooks.json"]);
+    await forever();
+  }
+  hooksRun = answer === "Trust all and continue";
+  if (hooksRun) appendFileSync(config, '\\n[hooks.state."codex-envoy@outside-e2e:hooks/hooks.json"]\\ntrusted_hash = "standin"\\n');
+}
+if (!readFileSync(config, "utf8").includes("[notice.model_migrations]")) {
+  newModel = (await menu("Meet GPT-6 Sol", ["Try new model", "Use existing model"])) === "Try new model";
+  appendFileSync(config, '\\n[notice.model_migrations]\\n"gpt-5.5" = "gpt-6-sol"\\n');
+}
+show(["› " + argv.at(-1), "", "• Working"]);
 const [planFile, logFile] = readFileSync(join(state, "model-argv"), "utf8").trim().split("\\n");
 const plan = JSON.parse(readFileSync(planFile, "utf8"));
 const log = (line) => appendFileSync(logFile, JSON.stringify({ run, ...line }) + "\\n");
 const configured = existsSync(config) ? readFileSync(config, "utf8") : "";
-if (!configured.includes('[plugins."codex-envoy@outside-e2e"]') || !configured.includes("model_provider = ")) {
+const plugin = configured.includes('[plugins."codex-envoy@outside-e2e"]') && configured.includes("model_provider = ");
+// The SessionStart hook records the session at the first prompt, whatever model then runs.
+if (plugin && hooksRun) {
+  const records = join(home, "plugins", "data", "codex-envoy-outside-e2e", "codex-sessions");
+  mkdirSync(records, { recursive: true });
+  writeFileSync(join(records, process.pid + ".json"), JSON.stringify({ session_id: session }));
+  if (scenario.registers !== false) appendFileSync(join(state, "sessions"), session + "\\n");
+}
+if (newModel || !plugin) {
   log({ step: "tools", dispatch: "", send: "" });
   log({ step: "end" });
-  process.exit(0);
+  await forever();
 }
-const records = join(home, "plugins", "data", "codex-envoy-outside-e2e", "codex-sessions");
-mkdirSync(records, { recursive: true });
-writeFileSync(join(records, process.pid + ".json"), JSON.stringify({ session_id: session }));
-if (scenario.registers !== false) appendFileSync(join(state, "sessions"), session + "\\n");
 const until = async (file) => { while (!existsSync(join(state, file))) await Bun.sleep(25); };
 log({ step: "tools", dispatch: "mcp__envoy.dispatch", send: "mcp__envoy.envoy_send" });
 const wanted = (scenario.whoami ?? {})[run] ?? (run === "inside" ? { exit: 2 } : { exit: 0 });
@@ -188,12 +267,16 @@ log({
   ...(wanted.exit === 0 ? {} : { detail: wanted.detail ?? "dispatch: Dispatch did not answer [exit " + wanted.exit + "]" }),
 });
 if (run === "main") {
-  if (scenario.registers === false) await new Promise(() => {});
+  if (scenario.registers === false) await forever();
   if (plan.issue !== "") {
     log({ step: "comment", exit: 0, comment_id: "3f1c2a9e-8b7d-4c11-9e2a-5d6f7a8b9c0d" });
     if (!scenario.commentLost) writeFileSync(join(state, "comment"), plan.comment);
   }
+  // With the hooks untrusted no record names the session, so nothing is sent to it, and its turn
+  // sleeps until the leg stops it.
+  if (!hooksRun) await forever();
   await until("send-attempted");
+  // The PostToolUse hook puts what reached the session into the turn: only a trusted hook runs.
   if (existsSync(join(state, "control"))) log({ step: "control", at: Date.now() });
   if (existsSync(join(state, "inbound"))) {
     log({ step: "inbound", at: Date.now(), waits: 1 });
@@ -208,6 +291,40 @@ if (run === "main") {
   writeFileSync(join(state, "main-ended"), "");
 }
 log({ step: "end" });
+// The interactive session stays open after its turn, until its tmux server is stopped.
+await forever();
+`;
+}
+
+/** The stand-in `tmux`: a pane is a directory beside the socket path, holding the pid of the
+ *  command it runs, the screen that command last showed and the keys it was sent. */
+function standInTmux(): string {
+  return `#!/usr/bin/env bash
+sock=''
+if [ "$1" = -S ]; then sock=$2; shift 2; fi
+if [ "$1" = -f ]; then shift 2; fi
+pane="$sock.d"
+command=$1
+shift
+case $command in
+  new-session)
+    cwd=.
+    while [ "$#" -gt 0 ]; do
+      case $1 in -d) shift ;; -s | -x | -y) shift 2 ;; -c) cwd=$2; shift 2 ;; *) break ;; esac
+    done
+    mkdir -p "$pane"
+    : >"$pane/keys"
+    : >"$pane/screen"
+    (cd "$cwd" && STANDIN_PANE="$pane" exec "$@") </dev/null >"$pane/out" 2>&1 &
+    echo "$!" >"$pane/pid"
+    ;;
+  capture-pane) cat "$pane/screen" 2>/dev/null ;;
+  send-keys) shift 2; for key in "$@"; do printf '%s\\n' "$key" >>"$pane/keys"; done ;;
+  has-session) kill -0 "$(cat "$pane/pid" 2>/dev/null)" 2>/dev/null ;;
+  display-message) cat "$pane/pid" 2>/dev/null ;;
+  kill-server) kill "$(cat "$pane/pid" 2>/dev/null)" 2>/dev/null; true ;;
+  *) exit 1 ;;
+esac
 `;
 }
 
@@ -322,7 +439,14 @@ async function codexStandInRun(scenario: CodexScenario): Promise<CodexRun> {
   const state = scratch("state");
   const repo = standInCheckout();
   writeFileSync(join(state, "scenario.json"), JSON.stringify(scenario));
-  writeFileSync(join(state, "entry.js"), standInEntry(state));
+  // The release's tree, which its tarball holds and Codex installs: a package.json, the bundles
+  // and, unless the scenario drops it, the terminal entry.
+  const releaseTree = join(state, "release", "package");
+  mkdirSync(join(releaseTree, "dist"), { recursive: true });
+  writeFileSync(join(releaseTree, "package.json"), JSON.stringify({ version: release }));
+  writeFileSync(join(releaseTree, "dist", "codex-hook.js"), "// the session-start hook\n");
+  if (scenario.noEntry !== true)
+    writeFileSync(join(releaseTree, "dist", "dispatch.js"), standInEntry(state));
   await Bun.write(join(legDir, "outside-agent-probe.ts"), standInProbe(state));
   // The stand-in model binds a port of its own, prints it and answers /_ready with the plan's
   // nonce, as the real one does; it answers no model request, since the stand-in codex writes the
@@ -338,23 +462,46 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => n
 console.log(JSON.stringify({ port: server.port }));
 `
   );
-  // The stand-in provenance helper: the registry's record of the release, with the provenance the
-  // release workflow writes at the release's commit unless the scenario says otherwise.
+  // The stand-in provenance helper: the registry's record of the release, its tarball (the
+  // release's tree, packed), and the provenance the release workflow writes at the release's
+  // commit, unless the scenario says otherwise; the tree comparison is the real helper's.
   await Bun.write(
     join(legDir, "outside-agent-codex-provenance.ts"),
-    `const [command] = Bun.argv.slice(2);
-if (command === "compare") console.log(JSON.stringify({ equal: 7, differ: "", only_built: "", only_installed: "" }));
-else console.log(JSON.stringify({ status: 200, integrity: "sha512-standin", provenance: true, repository: "https://github.com/cybermonklabs/legion", workflow: ".github/workflows/release.yaml", ref: "refs/heads/main", commit: ${JSON.stringify(repo.built)}, subject_matches: true, ...${JSON.stringify(scenario.provenance ?? {})} }));
+    `import { compareBundles, compareTrees } from ${JSON.stringify(provenanceHelper)};
+const [command, first, second, third] = Bun.argv.slice(2);
+const print = (value) => console.log(JSON.stringify(value));
+if (command === "compare") print(compareBundles(first, second));
+else if (command === "tree") print(compareTrees(first, second));
+else {
+  Bun.spawnSync(["tar", "-czf", third, "-C", ${JSON.stringify(join(state, "release"))}, "package"]);
+  print({ status: 200, integrity: "sha512-standin", tarball_matches: ${scenario.tarballMismatch !== true}, provenance: true, repository: "https://github.com/cybermonklabs/legion", workflow: ".github/workflows/release.yaml", ref: "refs/heads/main", commit: ${JSON.stringify(repo.built)}, subject_matches: true, ...${JSON.stringify(scenario.provenance ?? {})} });
+}
 `
   );
-  const bin = textToolPath(scratch, ["bun", "git", "tar"]);
+  const bin = textToolPath(scratch, ["bun", "git", "tar", "gzip"]);
+  script(join(bin, "tmux"), standInTmux());
   const codex = script(join(state, "codex"), standInCodex(state));
-  // npm: installs the stand-in codex for \`npm install --prefix <dir> @openai/codex@<v>\`, takes the
-  // release for the audit project, and answers \`npm audit signatures\` as the scenario says.
+  // npm: installs the stand-in codex for \`npm install --prefix <dir> @openai/codex@<v>\`, recording
+  // the integrity of the two packages as npm does in its hidden lockfile, takes the release for the
+  // audit project, and answers \`npm audit signatures\` as the scenario says.
+  const lock = {
+    packages: {
+      "node_modules/@openai/codex": {
+        integrity:
+          scenario.codexIntegrity === "other"
+            ? "sha512-another"
+            : "sha512-1IOFzL2Xg86tLdw6kDo3GoKbkQENgQi7TI6rlEvN132R7ngSw7SNOIQoTcnKzSZZ8kf9N9GynCweSoaFbqk2Eg==",
+      },
+      "node_modules/@openai/codex-linux-x64": {
+        integrity:
+          "sha512-l66NZkQgdk2C3pbcfULDz42yEUB581MVA6I+Y43Wp4OIqEy73HCdmZ0GTjeAHY2ycuH4N00d9VsLrwT1jxshTw==",
+      },
+    },
+  };
   script(
     join(bin, "npm"),
     `#!/usr/bin/env bun
-import { appendFileSync, copyFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const argv = process.argv.slice(2);
 appendFileSync(${JSON.stringify(join(state, "npm-args"))}, argv.join(" ") + "\\n");
@@ -368,6 +515,7 @@ const prefix = argv[argv.indexOf("--prefix") + 1];
 const dir = join(prefix, "node_modules", "@openai", "codex-linux-x64", "vendor", "x86_64-unknown-linux-musl", "bin");
 mkdirSync(dir, { recursive: true });
 copyFileSync(${JSON.stringify(codex)}, join(dir, "codex"));
+writeFileSync(join(prefix, "node_modules", ".package-lock.json"), ${JSON.stringify(JSON.stringify(lock))});
 `
   );
   const loginHome = scratch("login-home");
@@ -394,6 +542,10 @@ copyFileSync(${JSON.stringify(codex)}, join(dir, "codex"));
       OUTSIDE_DEVICE_LOGIN_HOME: loginHome,
       OUTSIDE_LEGION_CHECKOUT: repo.dir,
       OUTSIDE_CODEX_LIST_SECONDS: "3",
+      OUTSIDE_CODEX_START_SECONDS: String(scenario.startSeconds ?? 30),
+      ...(scenario.firstStart === undefined
+        ? {}
+        : { OUTSIDE_CODEX_FIRST_START: scenario.firstStart }),
       ...(envoyVersion === null ? {} : { OUTSIDE_CODEX_ENVOY_VERSION: envoyVersion }),
       OUTSIDE_CODEX_ENVOY_COMMIT: repo.built,
       OUTSIDE_DEVICE_LOGIN_COMMIT: scenario.loginApart === true ? repo.apart : repo.login,
@@ -479,10 +631,17 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
         "plugin add codex-envoy@outside-e2e"
       );
       expect(rows.get("C0")?.got).toContain(
-        "provenance: https://github.com/cybermonklabs/legion .github/workflows/release.yaml"
+        "provenance: https://github.com/cybermonklabs/legion .github/workflows/release.yaml at refs/heads/main"
+      );
+      expect(rows.get("C0")?.got).toContain(
+        "the tree Codex installed is the tarball, file by file (3 files)"
       );
       expect(rows.get("C0")?.got).toContain("npm audit signatures: the attestation is verified");
       expect(rows.get("C0")?.got).toContain("holds the device login");
+      // The first start answered as the outside person is told to, and no later start asked again.
+      expect(rows.get("C1")?.got).toContain(
+        "first-start screens: main: Hooks need review -> Trust all and continue; main: Meet GPT-6 Sol -> Use existing model"
+      );
       expect(rows.get("C2")?.got).toContain(`at ${run.inside} it exited 2`);
       expect(rows.get("C4")?.got).toContain("example-peer-foreign answered 404");
       expect(rows.get("C5")?.got).toContain("read it from codex-thread-main");
@@ -499,12 +658,16 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
         },
       });
       expect(terminal.env.CODEX_THREAD_ID).toMatch(/^outside-e2e-codex-terminal-/);
-      // Each run under the outside person's settings and P2's HOME, with -m gpt-5.5; C6 with the
-      // listener at a port that refuses, C2's control with Dispatch at the inside origin; no token.
+      // Each run is the interactive start in a pane, `codex --no-daemon -m gpt-5.5 <prompt>`, under
+      // the outside person's settings and P2's HOME; C6 with the listener at a port that refuses,
+      // C2's control with Dispatch at the inside origin; no token; never exec, never a bypass.
       const main = execOf(run, "main");
-      expect(main.argv).toEqual(
-        expect.arrayContaining(["exec", "--dangerously-bypass-hook-trust", "-m", "gpt-5.5"])
-      );
+      expect(main.argv).toEqual([
+        "--no-daemon",
+        "-m",
+        "gpt-5.5",
+        expect.stringMatching(/^outside-e2e codex-run main /),
+      ]);
       expect(main.env).toMatchObject({
         ENVOY_URL: run.listener,
         HOME: run.loginHome,
@@ -566,7 +729,7 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       expect(rowOf(dropped, "C5")).toMatchObject({ row: { verdict: "UNKNOWN" } });
       // C1: a session the edge never lists, while Codex runs; the run is stopped, not waited out.
       expect(rowOf(unregistered, "C1")).toMatchObject({ row: { verdict: "FAIL" } });
-      expect(rowOf(unregistered, "C1").row?.got).toContain("while codex exec ran");
+      expect(rowOf(unregistered, "C1").row?.got).toContain("while Codex ran");
       // C2: whoami names another person; C6, whose whoami then compares with nothing, is unread.
       expect(rowOf(wrongOwner, "C2")).toMatchObject({ row: { verdict: "FAIL" } });
       expect(rowOf(wrongOwner, "C2").row?.got).toContain("owner someone@example.com");
@@ -680,29 +843,106 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
   );
 
   test(
-    "nothing runs against a model that does not answer the leg's nonce, without an exact release, or on a Codex that is not the pinned release: every row reads UNKNOWN",
+    "nothing runs against a model that does not answer the leg's nonce, without an exact release, on a Codex that is not the pinned release, or one whose recorded integrity is not the pinned one: every row reads UNKNOWN",
     async () => {
-      const [squat, unset, range, otherCodex] = await Promise.all([
+      const [squat, unset, range, otherCodex, otherBytes] = await Promise.all([
         codexStandInRun({ modelSquat: true }),
         codexStandInRun({ envoyVersion: null }),
         codexStandInRun({ envoyVersion: ">=5.0.0" }),
         codexStandInRun({ version: "0.170.0" }),
+        codexStandInRun({ codexIntegrity: "other" }),
       ]);
-      for (const run of [squat, unset, range, otherCodex]) {
+      for (const run of [squat, unset, range, otherCodex, otherBytes]) {
         expect({ problems: unknownProblems(run), stdout: run.stdout }).toEqual({
           problems: [],
           stdout: run.stdout,
         });
       }
       expect(squat.stdout).toContain("did not answer this run's nonce");
-      // The squat's port was never handed to Codex: no codex exec ran.
+      // The squat's port was never handed to Codex: no Codex started.
       expect(Bun.file(join(squat.state, "exec-main.json")).size).toBe(0);
       expect(unset.stdout).toContain("OUTSIDE_CODEX_ENVOY_VERSION is unset");
       expect(range.stdout).toContain("OUTSIDE_CODEX_ENVOY_VERSION is no exact version: >=5.0.0");
       expect(otherCodex.stdout).toContain("not codex-cli 0.171.0");
+      expect(otherBytes.stdout).toContain("the integrity it recorded is not the pinned one");
     },
-    // The four runs at once, each a bounded child under the short bound.
-    rowLimit({ atOnce: ["short", "short", "short", "short"] })
+    // The five runs at once, each a bounded child under the short bound.
+    rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+  );
+
+  test(
+    "answering the first start otherwise than the outside person is told to fails the rows it breaks: hooks left untrusted, C1, C4 and C5; the new model, C2 and C3",
+    async () => {
+      const [noTrust, newModel] = await Promise.all([
+        codexStandInRun({ firstStart: "no-trust" }),
+        codexStandInRun({ firstStart: "new-model" }),
+      ]);
+      const notPass = (run: CodexRun, names: readonly string[]) =>
+        Object.fromEntries(names.map((name) => [name, rowOf(run, name).row?.verdict === "PASS"]));
+      expect({ passed: notPass(noTrust, ["C1", "C4", "C5"]), stdout: noTrust.stdout }).toEqual({
+        passed: { C1: false, C4: false, C5: false },
+        stdout: noTrust.stdout,
+      });
+      expect(rowOf(noTrust, "C1").row?.got).toContain("Codex filed no session record");
+      expect(rowOf(noTrust, "C1").row?.got).toContain(
+        "main: Hooks need review -> Continue without trusting"
+      );
+      expect(rowOf(noTrust, "C1").row?.got).toContain(
+        "a control run (OUTSIDE_CODEX_FIRST_START=no-trust)"
+      );
+      expect({ passed: notPass(newModel, ["C2", "C3"]), stdout: newModel.stdout }).toEqual({
+        passed: { C2: false, C3: false },
+        stdout: newModel.stdout,
+      });
+      expect(rowOf(newModel, "C2").row?.got).toContain(
+        "Codex listed no dispatch tool to the model"
+      );
+      expect(rowOf(newModel, "C2").row?.got).toContain("main: Meet GPT-6 Sol -> Try new model");
+      for (const run of [noTrust, newModel]) expect(run.code).not.toBe(0);
+    },
+    // The two runs at once, each a bounded child under the short bound.
+    rowLimit({ atOnce: ["short", "short"] })
+  );
+
+  test(
+    "a screen the leg does not expect holds the runs, and their rows read UNKNOWN naming it",
+    async () => {
+      // Each of the three starts waits out its window on the screen, so the window is short.
+      const run = await codexStandInRun({ unexpectedScreen: true, startSeconds: 6 });
+      for (const name of ["C1", "C2", "C3", "C4", "C5", "C6"]) {
+        expect(rowOf(run, name)).toMatchObject({ row: { verdict: "UNKNOWN" } });
+      }
+      expect(rowOf(run, "C1").row?.got).toContain(
+        "held by a screen this leg does not expect: Do you trust the files in this folder?"
+      );
+      expect(run.code).toBe(2);
+    },
+    // The run, a bounded child under the short bound.
+    rowLimit("short")
+  );
+
+  test(
+    "C0 fails where the tree Codex installed is not the attested tarball, where the registry's tarball is not its integrity, and where the provenance names another ref than main",
+    async () => {
+      const [differs, mismatch, branch] = await Promise.all([
+        codexStandInRun({ installedDiffers: true }),
+        codexStandInRun({ tarballMismatch: true }),
+        codexStandInRun({ provenance: { ref: "refs/heads/feat/edited-release" } }),
+      ]);
+      expect(rowOf(differs, "C0")).toMatchObject({ row: { verdict: "FAIL" } });
+      expect(rowOf(differs, "C0").row?.got).toContain(
+        "the tree Codex installed is not the tarball: differ: dist/codex-hook.js"
+      );
+      expect(rowOf(mismatch, "C0")).toMatchObject({ row: { verdict: "FAIL" } });
+      expect(rowOf(mismatch, "C0").row?.got).toContain("is not the bytes its integrity");
+      expect(rowOf(branch, "C0")).toMatchObject({ row: { verdict: "FAIL" } });
+      expect(rowOf(branch, "C0").row?.got).toContain(
+        "names the ref refs/heads/feat/edited-release, not refs/heads/main"
+      );
+      for (const run of [differs, mismatch, branch]) expect(run.code).toBe(1);
+    },
+    // The three runs at once, each a bounded child under the short bound.
+    rowLimit({ atOnce: ["short", "short", "short"] })
   );
 
   test(
@@ -797,6 +1037,32 @@ describe("the Codex leg's provenance reads", () => {
       subject_matches: false,
     });
     expect(provenanceOf({ attestations: [] }, integrity)).toEqual({ provenance: false });
+  });
+
+  test("it compares a tarball's tree with an installed one, every file by its path", () => {
+    const tarball = scratch("tarball");
+    const installed = scratch("installed");
+    for (const [dir, files] of [
+      [
+        tarball,
+        { "package.json": "{}", "dist/a.js": "same", "skills/x/SKILL.md": "one", "only.txt": "t" },
+      ],
+      [
+        installed,
+        { "package.json": "{}", "dist/a.js": "same", "skills/x/SKILL.md": "two", "extra.txt": "i" },
+      ],
+    ] as const) {
+      for (const [name, text] of Object.entries(files)) {
+        mkdirSync(join(dir, name, ".."), { recursive: true });
+        writeFileSync(join(dir, name), text);
+      }
+    }
+    expect(compareTrees(tarball, installed)).toEqual({
+      equal: 2,
+      differ: "skills/x/SKILL.md",
+      only_tarball: "only.txt",
+      only_installed: "extra.txt",
+    });
   });
 
   test("it compares two builds' bundles by name, naming those that differ or are on one side", () => {
