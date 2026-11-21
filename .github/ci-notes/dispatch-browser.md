@@ -1175,12 +1175,20 @@ Every leg's blob report and row count, one directory per artifact. Each artifact
 blob-report/ and a rows/ directory, so the zips land together and the counts land beside
 them rather than among them: `merge-reports` reads the zips of the directory it is given.
 
-No `merge-multiple`, so each artifact is extracted into a directory named for it
-(dispatch-browser-blob-shard-1-2/blob-report/report-shard-1.zip) and the step "Take the
-newest attempt of each leg's blob report" can
-tell the attempts apart. A run's artifact list holds every attempt's artifacts and this
-pattern matches them all; two attempts of one leg hold the same inner paths, so merging
-them into one directory let one attempt overwrite the other in an order nothing fixes.
+No `merge-multiple`, so when more than one artifact matches, each is extracted into a
+directory named for it (dispatch-browser-blob-shard-1-2/blob-report/report-shard-1.zip)
+and the step "Take the newest attempt of each leg's blob report" can tell the attempts
+apart. A run's artifact list holds every attempt's artifacts and this pattern matches
+them all; two attempts of one leg hold the same inner paths, so merging them into one
+directory let one attempt overwrite the other in an order nothing fixes.
+
+When exactly one artifact matches, the action extracts it into `path` itself, with no
+directory named for it: v8.0.1's src/download-artifact.ts, at the pinned 3e5f45b2, writes
+into `path` when `merge-multiple` is set or when `artifacts.length === 1`. blobs/ then
+holds that artifact's blob-report/ and rows/ (blobs/blob-report/report-shard-1.zip). How
+many legs uploaded a blob is the run's - a run whose other legs uploaded nothing
+downloads one - so that step reads both layouts, and takes a lone artifact whole: one
+artifact is one leg at one attempt, and there is nothing to choose.
 
 ## Why a refused blob download is reported as a refused read
 

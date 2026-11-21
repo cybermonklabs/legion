@@ -8,9 +8,10 @@
 # the real script with the stand-in first on PATH and reads the file it wrote, the arguments the
 # stand-in recorded and the lines the script printed. The ladder's waits are the case's own,
 # `retry_seconds` seconds for the first and twice that for the second, which `fixture` resets to
-# 0 so that only the three cases about the waits pay for one: two set it to 1 and read that the
-# drive took that long with bash's own SECONDS, and the control sets it to 10 and reads that the
-# drive took no time at all, which a script that slept whatever it was given would fail.
+# 0. A stand-in `sleep` records each wait the ladder asks for, and the cases read those records,
+# not how long the drive took: two cases set the knob to 1 and read the waits 1 s and 2 s, or
+# 1 s, and the control sets it to 10 and reads that the ladder asked for no wait at all, which a
+# script that slept whatever it was given would fail.
 #
 # NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `timeout` that
 # four cases opt into call by call and that otherwise execs the real one, and the script.
@@ -150,6 +151,27 @@ exit "\${answered:-124}"
 TIMEOUT
 chmod +x "$work/bin/timeout"
 
+# The real `sleep`, resolved before the stand-in below can shadow it, and refused by name where
+# there is none, in the shape of the `timeout` guard above.
+real_sleep=$(type -P sleep) ||
+  { echo "dispatch-browser-run-reads.test.sh needs sleep (GNU coreutils) on PATH" >&2
+    exit 1; }
+
+# The stand-in `sleep`, which the ladder in gh-read.sh calls between attempts. It records the
+# seconds of each call, one file per call, and then waits them with the real sleep, so the
+# ladder runs as it does on a runner. The cases about the waits read these records and not the
+# drive's wall-clock time, which a loaded host stretches. Two checks here held a drive to at
+# most 1 s of SECONDS: measured 2026-11-21 on a shared 288-CPU dev box, one of them failed in an
+# unforced run with nothing wrong in the script, and with each `cat` delayed by 0.25 s both did.
+cat > "$work/bin/sleep" <<SLEEP
+#!/usr/bin/env bash
+set -euo pipefail
+calls=\$(find "$work/sleep-calls" -maxdepth 1 -type f | wc -l)
+printf '%s\n' "\$*" > "$work/sleep-calls/call.\$calls"
+exec $real_sleep "\$@"
+SLEEP
+chmod +x "$work/bin/sleep"
+
 # page <id>|<name>|<conclusion>...: the page the stand-in answers with. `--slurp` collects the
 # pages into one array, so the answer is an array of page objects and each holds a `jobs` array.
 # `run_attempt` is in each job because the jobs API puts it there; nothing in the script reads
@@ -184,11 +206,11 @@ happy_page() {
 # and the three that do set `retry_seconds` themselves after calling it. Any per-call `stderr.<n>`
 # an earlier case wrote goes with it, so one case's faults never answer another's call, and so
 # do the stand-in `timeout`'s per-call `stub-timeout.<n>` files and its own call log, and the
-# stand-in gh's per-call `kill-wrapper.<n>` files.
+# stand-in gh's per-call `kill-wrapper.<n>` files, and the stand-in `sleep`'s call log.
 fixture() {
-  rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls"
+  rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls" "$work/sleep-calls"
   rm -f "$work"/stderr.* "$work"/stub-timeout.* "$work"/kill-wrapper.*
-  mkdir -p "$work/calls" "$work/timeout-calls"
+  mkdir -p "$work/calls" "$work/timeout-calls" "$work/sleep-calls"
   printf '%s\n' "${1:-0}" > "$work/refuse"
   printf '%s\n' "${2:-HTTP 502}" > "$work/stderr"
   retry_seconds=0
@@ -196,16 +218,13 @@ fixture() {
 }
 
 # drive <argument>...: the real script with the stand-in first on PATH. Sets `out` to its
-# combined output, `status` to its exit code and `seconds` to how long the drive took. Not a
-# subshell, so all three survive the call.
+# combined output and `status` to its exit code. Not a subshell, so both survive the call.
 drive() {
-  local started=$SECONDS
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
     GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=$retry_seconds "$read_script" "$@" 2>&1)
   status=$?
   set -e
-  seconds=$((SECONDS - started))
 }
 
 calls() { find "$work/calls" -maxdepth 1 -type f | wc -l | tr -d ' '; }
@@ -217,8 +236,16 @@ field() { jq -r --argjson id "$1" ".[] | select(.id == \$id) | $2" "$work/out.js
 errors() { grep -c '::error::' <<<"$out" || true; }
 error_line() { grep '::error::' <<<"$out" || true; }
 wrote_out_file() { [ -e "$work/out.json" ] && echo yes || echo no; }
-at_least() { [ "$1" -ge "$2" ] && echo true || echo false; }
-at_most() { [ "$1" -le "$2" ] && echo true || echo false; }
+# sleeps: the seconds of each wait the ladder asked the stand-in `sleep` for, in order and joined
+# by spaces, or nothing where it asked for none.
+sleeps() {
+  local n=0 waits=""
+  while [ -f "$work/sleep-calls/call.$n" ]; do
+    waits="$waits${waits:+ }$(cat "$work/sleep-calls/call.$n")"
+    n=$((n + 1))
+  done
+  echo "$waits"
+}
 
 echo "case: this attempt's jobs become the four fields the readings consume"
 fixture 0
@@ -282,11 +309,13 @@ check "naming the endpoint it read" \
 check "the status gh last printed" "$(contains "$(error_line)" 'HTTP 502')"
 check "the ladder's attempts and this run attempt" \
   "$(contains "$(error_line)" '3 attempts, all on run attempt 4')"
-check "and that this is a failed read and not a failed row" \
-  "$(contains "$(error_line)" 'failed read of the jobs API and not a failed browser row')"
+check "and that this error is a failed read and not a failed row" \
+  "$(contains "$(error_line)" 'This error is a failed read of the jobs API, not a failed browser row\. Re-running this job reads the list again\.$')"
+check "nor that no row failed, which this job did not read" \
+  "$(is "$(contains "$(error_line)" 'no row of the suite failed')" false)"
 check "every attempt's gh output still reaches the log" \
   "$(is "$(grep -c '^HTTP 502$' <<<"$out" || true)" 3)"
-check "and the ladder waited 1 s and then 2 s" "$(at_least "$seconds" 3)"
+check "and the ladder waited 1 s and then 2 s" "$(is "$(sleeps)" "1 2")"
 
 echo "case: a refusal gh printed no HTTP status for"
 # A resolution failure prints no status line, and a line that named one anyway would send a
@@ -357,7 +386,7 @@ check "and gh as the command it wraps" "$(is "$(cut -d' ' -f2 <<<"$(timeout_args
 check "which is this run's attempt read itself" \
   "$(contains "$(timeout_args)" '^30 gh api --paginate --slurp repos/o/r/actions/runs/41/')"
 check "so no gh call is made outside the bound" "$(is "$(calls)" 0)"
-check "and the drive waits for none of it" "$(at_most "$seconds" 1)"
+check "and the ladder's two waits are this case's 0 s" "$(is "$(sleeps)" "0 0")"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
 check "naming the bound that ended the attempt that decided the failure" \
   "$(contains "$(error_line)" 'attempt 3, which decided the failure, stopped at its 30 s bound')"
@@ -530,19 +559,18 @@ check "tried twice" "$(is "$(calls)" 2)"
 check "writes the attempt that answered" "$(is "$(entries)" 7)"
 check "with its legs" "$(is "$(field 13 .leg)" alone-webkit-alone)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
-check "and waited the ladder's first second" "$(at_least "$seconds" 1)"
+check "and waited the ladder's first second" "$(is "$(sleeps)" 1)"
 
 echo "case: the negative control, a gh that answers at once"
 # Without this, the two cases above would pass for a script that slept whatever it was given.
-# The knob is 10 here and the gh answers at once, so an unconditional sleep would take 10 s and
-# this drive takes none; the bound is an upper one because SECONDS counts whole seconds and a
-# drive that straddles a tick reads 1 however short it was.
+# The knob is 10 here and the gh answers at once, so the ladder has no wait to ask for, and an
+# unconditional sleep would be one the stand-in records.
 fixture 0
 retry_seconds=10
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
 check "calls gh once" "$(is "$(calls)" 1)"
-check "and waits not at all" "$(at_most "$seconds" 1)"
+check "and waits not at all" "$(is "$(sleeps)" "")"
 
 echo "case: blobs-refused names the download step that failed and nothing beyond it"
 # What this job knows of a refused blob download is which step failed and on which attempt.
@@ -555,7 +583,7 @@ echo "case: blobs-refused names the download step that failed and nothing beyond
 # repository nor the run id, which it no longer reads.
 fixture 0
 set +e
-out=$(PATH="$work/bin:$PATH" GITHUB_REPOSITORY= GITHUB_RUN_ID= \
+out=$(PATH="$work/bin:$PATH" GITHUB_REPOSITORY='' GITHUB_RUN_ID='' \
   GITHUB_RUN_ATTEMPT=$run_attempt "$read_script" blobs-refused 2>&1)
 status=$?
 set -e
@@ -567,8 +595,10 @@ check "naming the step that failed" \
 check "the run attempt it failed on" "$(contains "$(error_line)" 'on run attempt 4')"
 check "and that step's own error line as where the reason is" \
   "$(contains "$(error_line)" "that step's own error line in this job's log")"
-check "and that this is a failed read and not a failed row" \
-  "$(contains "$(error_line)" "failed read of the run's artifacts and not a failed browser row")"
+check "and that this error is a failed read and not a failed row" \
+  "$(contains "$(error_line)" "This error is a failed read of the run's artifacts, not a failed browser row\.$")"
+check "nor that no row failed, which this job did not read" \
+  "$(is "$(contains "$(error_line)" 'no row of the suite failed')" false)"
 check "while naming no GET route at all" "$(is "$(contains "$(error_line)" 'GET ')" false)"
 check "no retry count this job cannot see" \
   "$(is "$(contains "$(error_line)" 'retr')" false)"
@@ -579,7 +609,7 @@ echo "case: an environment variable the step did not set"
 fixture 0
 set +e
 out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-  GITHUB_RUN_ATTEMPT= "$read_script" jobs "$work/out.json" 2>&1)
+  GITHUB_RUN_ATTEMPT='' "$read_script" jobs "$work/out.json" 2>&1)
 status=$?
 set -e
 check "fails the step" "$(is "$status" 1)"
@@ -590,7 +620,7 @@ check "and writes no out-file" "$(is "$(wrote_out_file)" no)"
 
 fixture 0
 set +e
-out=$(PATH="$work/bin:$PATH" GH_TOKEN= GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
+out=$(PATH="$work/bin:$PATH" GH_TOKEN='' GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
   GITHUB_RUN_ATTEMPT=$run_attempt "$read_script" jobs "$work/out.json" 2>&1)
 status=$?
 set -e
