@@ -141,11 +141,33 @@ func serveStacks() int {
 	return strings.Count(stacks, "(*mentionSender).serve(")
 }
 
+// parkedReadEvery and parkedFirstWait are the pace the cost requirement allows a parked lane,
+// written here rather than read from mentionOrderRetryMax and mentionOrderRetryFirst, so that a
+// change to the sender's schedule fails these tests rather than moving their bound with it. Once
+// its waits reach their longest value, a parked lane reads the order rule at most once each 2 s:
+// N parked lanes and M waiting fallback rows read it at most N + M times each 2 s. Its first wait
+// is 50 ms, and each park of the same send doubles it up to that bound.
+const (
+	parkedReadEvery = 2 * time.Second
+	parkedFirstWait = 50 * time.Millisecond
+)
+
+// parkedWait is the wait the cost requirement allows before a parked send's next try, the
+// parks'th time it waited: parkedFirstWait doubled for each park before it, at most
+// parkedReadEvery.
+func parkedWait(parks int) time.Duration {
+	wait := parkedFirstWait
+	for park := 1; park < parks && wait < parkedReadEvery; park++ {
+		wait *= 2
+	}
+	return min(wait, parkedReadEvery)
+}
+
 // A send that waits for an earlier event of its comment's owner parks its lane: no goroutine is
 // on that lane, so no goroutine holds a connection for it, while it waits, however long - here
-// six seconds, past the point where its tries come at mentionOrderRetryMax - and its tries come
-// after waits that double from mentionOrderRetryFirst to that cap. The lane keeps its order:
-// the send behind it waits behind it. The parked sends still count among the
+// six seconds, past the point where its tries come each parkedReadEvery - and its tries come
+// after waits that double from parkedFirstWait to that bound (parkedWait). The lane keeps its
+// order: the send behind it waits behind it. The parked sends still count among the
 // maxQueuedMentionSends the queue holds: with a capacity of two, the two parked sends fill it and
 // a third recipient's send is refused and its claim given back, whenever it comes. Every other
 // recipient's sends go meanwhile, at most mentionSendLanes at once, and the parked sends' claims
@@ -215,17 +237,16 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 	}
 	t.Logf("the parked send's tries: %d, the waits between them %v; the most sends at once %d; queued sends written again: first %d times, second %d times",
 		len(tries), gaps, most, writtenFirst, writtenSecond)
-	// A wait shorter than its mentionOrderRetry would read the rule more often than the cost bound
-	// says; a longer one only reads it less, so it is bounded loosely, for a loaded machine's late
-	// timers.
+	// A wait shorter than parkedWait would read the rule more often than the cost bound says; a
+	// longer one only reads it less, so it is bounded loosely, for a loaded machine's late timers.
 	for index, gap := range gaps {
-		want := mentionOrderRetry(index + 1)
+		want := parkedWait(index + 1)
 		if gap < want-10*time.Millisecond || gap > want+2*time.Second {
-			t.Errorf("wait %d before the parked send's next try is %v, want about %v (mentionOrderRetry)", index+1, gap, want)
+			t.Errorf("wait %d before the parked send's next try is %v, want about %v (parkedWait)", index+1, gap, want)
 		}
 	}
-	if len(gaps) == 0 || gaps[len(gaps)-1] < mentionOrderRetryMax-10*time.Millisecond {
-		t.Errorf("the waits %v never reached mentionOrderRetryMax (%v)", gaps, mentionOrderRetryMax)
+	if len(gaps) == 0 || gaps[len(gaps)-1] < parkedReadEvery-10*time.Millisecond {
+		t.Errorf("the waits %v never reached the cost bound's %v (parkedReadEvery)", gaps, parkedReadEvery)
 	}
 	if most > mentionSendLanes {
 		t.Errorf("%d sends ran at once, want at most mentionSendLanes (%d)", most, mentionSendLanes)
@@ -254,12 +275,12 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 	}
 }
 
-// triesWithin is how many tries a send that waits behind an earlier event makes within elapsed of
-// its first: the first, and one each time a park's wait (mentionOrderRetry) runs out.
+// triesWithin is how many tries a send that waits behind an earlier event may make within elapsed
+// of its first: the first, and one each time a park's wait (parkedWait) runs out.
 func triesWithin(elapsed time.Duration) int {
 	tries, waited := 1, time.Duration(0)
 	for parks := 1; ; parks++ {
-		waited += mentionOrderRetry(parks)
+		waited += parkedWait(parks)
 		if waited > elapsed {
 			return tries
 		}
@@ -267,11 +288,11 @@ func triesWithin(elapsed time.Duration) int {
 	}
 }
 
-// The read load of many parked lanes: each parked lane tries once per mentionOrderRetry, and a try
-// of a held send reads the rule alone (TestAHeldMentionSendIsCountedAndReportedOnce counts that on
-// the database), so N lanes held behind a stuck topic family read the rule at most N times each
-// mentionOrderRetryMax once their waits have ramped up - here 200 lanes over eight seconds, every
-// try counted, against the bound triesWithin sets for each lane.
+// The read load of many parked lanes: each parked lane tries once per parkedWait at most, and a
+// try of a held send reads the rule alone (TestAHeldMentionSendIsCountedAndReportedOnce counts
+// that on the database), so N lanes held behind a stuck topic family read the rule at most N
+// times each parkedReadEvery once their waits have ramped up - here 200 lanes over eight seconds,
+// every try counted, against the bound triesWithin sets for each lane.
 func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
 	const lanes = 200
 	const window = 8 * time.Second
@@ -302,12 +323,12 @@ func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
 	bound := triesWithin(elapsed)
 	t.Logf("%d lanes parked for %v: %d tries (%.1f a second, %.2f a lane a second at the end's 1 per %v), at most %d on one lane (bound %d); %d goroutines serving, %d sends queued",
 		lanes, elapsed.Round(time.Millisecond), total, float64(total)/elapsed.Seconds(),
-		float64(total)/elapsed.Seconds()/lanes, mentionOrderRetryMax, most, bound, serving, queued)
+		float64(total)/elapsed.Seconds()/lanes, parkedReadEvery, most, bound, serving, queued)
 	if laneCount != lanes {
 		t.Fatalf("%d lanes were tried, want all %d", laneCount, lanes)
 	}
 	if most > bound {
-		t.Fatalf("a lane was tried %d times in %v, want at most %d (mentionOrderRetry)", most, elapsed, bound)
+		t.Fatalf("a lane was tried %d times in %v, want at most %d (parkedWait)", most, elapsed, bound)
 	}
 	if queued != lanes {
 		t.Fatalf("%d sends are queued, want the %d parked ones still among them", queued, lanes)

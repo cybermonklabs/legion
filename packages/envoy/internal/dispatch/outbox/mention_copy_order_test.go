@@ -332,15 +332,19 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	}
 }
 
-// The read load of fallback copies held behind an earlier event is bounded by mentionPendingDelay:
-// a waiting row is released for that long after each pass that decides it, and a pass claims only
-// the rows that are due, so the rule is read at most once per row per delay, whatever wakes the
-// holder meanwhile. Measured with the outbox running for eight seconds over 50 rows held behind
-// one event whose topic send the stream keeps refusing, the holder woken every 100 ms beside its
-// own timers: the rule's reads are counted on a traced pool, and so is every statement.
+// The read load of fallback copies held behind an earlier event is bounded by the cost
+// requirement: M waiting rows read the order rule at most M times each 2 s (readEvery, written here
+// rather than read from mentionPendingDelay, so that a change to the outbox's wait fails this test
+// rather than moving its bound with it). A waiting row is released for mentionPendingDelay after
+// each pass that decides it, and a pass claims only the rows that are due, so the rule is read at
+// most once per row per delay, whatever wakes the holder meanwhile. Measured with the outbox
+// running for eight seconds over 50 rows held behind one event whose topic send the stream keeps
+// refusing, the holder woken every 100 ms beside its own timers: the rule's reads are counted on a
+// traced pool, and so is every statement.
 func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 	const rows = 50
 	const window = 8 * time.Second
+	const readEvery = 2 * time.Second
 	ctx := context.Background()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -401,7 +405,7 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 			reads++
 		}
 	}
-	bound := rows * (int(elapsed/mentionPendingDelay) + 1)
+	bound := rows * (int(elapsed/readEvery) + 1)
 	t.Logf("%d rows held for %v: %d reads of the rule (%.1f a second, %.2f a row a second), %d statements in all (%.1f a second); bound %d reads",
 		rows, elapsed.Round(time.Millisecond), reads, float64(reads)/elapsed.Seconds(), float64(reads)/elapsed.Seconds()/rows,
 		len(statements), float64(len(statements))/elapsed.Seconds(), bound)
@@ -409,7 +413,7 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 		t.Fatal("the rule was never read: the rows were not decided, so this measures nothing")
 	}
 	if reads > bound {
-		t.Fatalf("%d reads of the rule for %d rows over %v, want at most %d: one a row each %v", reads, rows, elapsed, bound, mentionPendingDelay)
+		t.Fatalf("%d reads of the rule for %d rows over %v, want at most %d: one a row each %v", reads, rows, elapsed, bound, readEvery)
 	}
 	var settled int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from comment_fallback_copies where settled_at is not null`).Scan(&settled); err != nil {
