@@ -39,13 +39,14 @@ const ghPinnedCheckPortSHA256 = "b1dc67a3bfc1bebf6347f06c9197a27a72b7c8e593bd370
 // among the arguments after the first such word, as `gh alias list` lists them for GH_CONFIG_DIR
 // and for each directory under LEGION_GH_OWNERS_DIR that holds a config.yml. This reads every
 // call as if gh lists no alias. `legion gh` refuses such a call itself, before the guard, only
-// where the alias is one word that its parent's help lists, so a key of several words reaches the
-// check. The check exits 2 where it cannot read gh's aliases: no gh to run, a working directory
-// that is gone, a LEGION_GH_OWNERS_DIR it cannot list, or a `gh alias list` that fails or does
-// not answer within its bound (read_gh_aliases). And the check exits 2 on a missing or unreadable
-// file an argument names (file_ok), which this never looks for, so `api --input f --input=
-// repos/acme/widgets/pulls` with no file f is a read here. No call these tests count as a read
-// meets any of the five.
+// where a word of the command path it walks is an alias that its parent's help lists (`pr pv2`
+// for the key `pr pv2`), so a call that the check matches more widely, such as `pr view pv2` for
+// that key, reaches the check. The check exits 2 where it cannot read gh's aliases: no gh to run,
+// a working directory that is gone, a LEGION_GH_OWNERS_DIR it cannot list, or a `gh alias list`
+// that fails or does not answer within its bound (read_gh_aliases). And the check exits 2 on a
+// missing or unreadable file an argument names (file_ok), which this never looks for, so
+// `api --input f --input= repos/acme/widgets/pulls` with no file f is a read here. No call these
+// tests count as a read meets any of the five.
 func ghPinnedCheckReads(argv []string) bool {
 	first := ""
 	if len(argv) > 0 {
