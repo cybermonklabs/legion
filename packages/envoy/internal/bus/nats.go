@@ -1304,7 +1304,8 @@ func (c *Client) CoreSubOK() bool {
 // refused attempt in another group left in its place would move the lane to that group for good.
 // The mark stays set until the server has accepted a send, so CoreSubOK never reads true for a
 // subscription the server refuses. A send whose answer does not come back leaves the refused
-// subscription in place.
+// subscription in place, and so does one a reconnect overtook (sendCore, errSendSuperseded): the
+// reconnect sent that subscription again, and the new server's answer to it decides.
 //
 // It sends nothing in four cases. While a bind of the registration is in flight, that bind sends
 // the subscription again itself. While the refused subscription still holds messages that the
@@ -1368,7 +1369,11 @@ func (c *Client) ResendRefusedCore() error {
 		sub, err = nil, errNoQueueAccepted
 	}
 	if err := c.endBind(subscription, sub, err, false); err != nil {
-		if errors.Is(err, errNoQueueAccepted) {
+		// No group accepted it, or a reconnect overtook the send (errSendSuperseded): the refused
+		// subscription the client held stays in place, and so does its mark. After a reconnect,
+		// nats.go has sent that subscription again and onReconnect has cleared the mark, so the
+		// new server's answer to it decides, as for any reconnect.
+		if errors.Is(err, errNoQueueAccepted) || errors.Is(err, errSendSuperseded) {
 			return nil
 		}
 		// A send that failed leaves the refused subscription as the one the client holds, still
@@ -1407,6 +1412,11 @@ const coreSendAnswerWait = 2 * time.Second
 // nothing, so the refused subscription the client held stays in place. It never leaves that method.
 var errNoQueueAccepted = errors.New("bus: the server accepted the core subscription in no queue group")
 
+// errSendSuperseded is sendCore's error for a send its connection's reconnect overtook: the
+// connection was not connected as the send began, or reconnected before the server's answer was
+// read. It never leaves ResendRefusedCore.
+var errSendSuperseded = errors.New("bus: the connection reconnected during the core subscription's send")
+
 // sendCore binds registration on conn and waits, within coreSendAnswerWait, until the server has
 // read the subscription, and reports whether it accepted it. The server answers a flush only after
 // every line the client sent before it, and nats.go records a refusal as the connection's last
@@ -1414,7 +1424,23 @@ var errNoQueueAccepted = errors.New("bus: the server accepted the core subscript
 // server accepted the subscription when that error is still the one the connection held before
 // the bind (sameError); any other error, a refusal among them, counts as not accepted. A flush
 // that fails leaves the answer unknown: the subscription is unsubscribed and the failure returned.
+//
+// That comparison holds only within one session of the connection, since a reconnect sets the
+// last error back to nil (nats.go's processConnectInit): a refusal read before a reconnect and nil
+// after it would count a subscription the new server accepted as refused. nats.go sends a
+// subscription made while the connection reconnects once it has reconnected, and a flush begun
+// then waits in the reconnect buffer and succeeds on the new server, so the flush alone does not
+// catch it. So the send begins only on a connection that is connected, and its session is the
+// reconnect count read after that status (the order ResendRefusedCore reads them in): nats.go
+// counts a reconnect as soon as it dials, before it reads CONNECTED again or sets the error back.
+// A count that changed by the time the answer is read ends the send with errSendSuperseded, the
+// subscription unsubscribed, and leaves the subscription the client held, which the reconnect sent
+// again, to the new server's answer.
 func sendCore(registration recoverableSubscription, conn *nats.Conn, js nats.JetStreamContext) (*nats.Subscription, bool, error) {
+	if conn.Status() != nats.CONNECTED {
+		return nil, false, errSendSuperseded
+	}
+	reconnects := reconnectsOf(conn)
 	before := conn.LastError()
 	sub, err := bind(registration, conn, js)
 	if err != nil {
@@ -1424,7 +1450,12 @@ func sendCore(registration recoverableSubscription, conn *nats.Conn, js nats.Jet
 		_ = sub.Unsubscribe()
 		return nil, false, err
 	}
-	return sub, sameError(conn.LastError(), before), nil
+	after := conn.LastError()
+	if reconnectsOf(conn) != reconnects {
+		_ = sub.Unsubscribe()
+		return nil, false, errSendSuperseded
+	}
+	return sub, sameError(after, before), nil
 }
 
 // reconnectsOf is conn's reconnect count, 0 for no connection: the session of a subscription's
