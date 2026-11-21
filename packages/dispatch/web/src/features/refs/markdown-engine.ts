@@ -542,8 +542,9 @@ export const markdownClassName =
  *  target's current name, or undefined where Dispatch answered that its target does not exist or
  *  exists with no name of its own, where it reads as the words its author wrote (R8) - and
  *  `mention`, what a party's mention of it reads as, undefined where the mention keeps its
- *  author's words. An issue's name is its title alone, which the projection writes after its key
- *  (`standingName`), so a surface that sets the key apart reads the title alone. A reference the
+ *  author's words. An issue's name is its title, which the projection never writes: once its
+ *  issue is read, an issue reference reads as its key alone (`standingName`), as a rendered body
+ *  draws the key beside the issue's status mark (`RefLink`, INFRA-4009 R6). A reference the
  *  lookup does not answer has not been read yet. */
 export interface ReferenceName {
   readonly name: string | undefined;
@@ -557,15 +558,15 @@ export interface ReferenceNameLookup {
   get(reference: string): ReferenceName | undefined;
 }
 
-/** The words `answer` names a reference to `route` by standing on its own: an issue's key and
- *  then its title, as a link to an issue reads (`RefLink`), and any other target's name.
- *  Undefined where it names none. */
+/** The words `answer` names a reference to `route` by standing on its own: an issue's key alone,
+ *  once its issue is read, with no status and no title, as a link to an issue reads in plain
+ *  words (INFRA-4009 R6), and any other target's name. Undefined where it names none. */
 function standingName(
   route: DispatchReferenceRoute,
   answer: ReferenceName | undefined
 ): string | undefined {
   const name = answer?.name;
-  return name === undefined || route.kind !== "issue" ? name : `${route.key} ${name}`;
+  return name === undefined || route.kind !== "issue" ? name : route.key;
 }
 
 /** What a caller knows of the references a projected text writes: what each one resolved to

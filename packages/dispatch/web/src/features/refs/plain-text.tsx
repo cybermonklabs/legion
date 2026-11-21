@@ -32,14 +32,14 @@ const NO_ADDRESSES: readonly string[] = [];
 
 /** What a reference reads as in plain words once its target has answered (`ReferenceName`): the
  *  name the painted link reads for it (`RefLink`), which for an issue is its title, which the
- *  projection writes after the issue's key as a project's issue list writes a key beside one
- *  (`markdown-engine.ts`'s `standingName`), and for a party's mention what the painted mention
- *  draws (`@legion/contracts`'s `mentionDrawn`): the mention sign and that name, or the sign and
- *  the party's short form where it exists with no name. A target Dispatch answered does not
- *  exist, or exists with no name of its own, has no name, and reads as the words its author
- *  wrote (R8). Undefined while the target has not answered, and for one the reader may not see,
- *  where the projection keeps the words written, as the painted link does until its title
- *  resolves. */
+ *  projection never writes: an issue reads as its key alone, with no status mark and no title
+ *  (`markdown-engine.ts`'s `standingName`, INFRA-4009 R6), and for a party's mention what the
+ *  painted mention draws (`@legion/contracts`'s `mentionDrawn`): the mention sign and that name,
+ *  or the sign and the party's short form where it exists with no name. A target Dispatch
+ *  answered does not exist, or exists with no name of its own, has no name, and reads as the
+ *  words its author wrote (R8). Undefined while the target has not answered, and for one the
+ *  reader may not see, where the projection keeps the words written, as the painted link does
+ *  until its title resolves. */
 function referenceAnswer(
   route: DispatchReferenceRoute,
   { known, missing, title }: { known: boolean; missing: boolean; title: string | undefined }
@@ -86,8 +86,8 @@ function OwnNameRead({
  * What the page published answers for one reference (`reference-names.tsx`), by the one rule R8
  * is everywhere:
  *
- * - **A name the page's batched read gave it**: that name, which an issue's key is written before
- *   as a link to an issue reads (`standingName`).
+ * - **A name the page's batched read gave it**: that name, which an issue reads by its key
+ *   alone, as a link to an issue reads in plain words (`standingName`).
  * - **Gone, or one the reader may not see, and ambiguous**: `null`, the words its author wrote,
  *   and no read of its own.
  * - **Asked for and not answered yet**, or answered with a reading the store has not projected
