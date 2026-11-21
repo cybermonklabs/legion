@@ -155,6 +155,14 @@ The page then shows, under **What happened**, what became of each request it dec
 | `still pending; it was not decided` | The broker refused your approval though the request names you: the secret's tags now name someone else to approve it ([what an owner change does](/legion/broker/concepts/#approvals)), the session's operator withheld one of its secrets, which only that secret's owner may then approve, and no one while the broker does not serve that secret to that session (it is out of the policy, or a service's), or the secret's `max-grant` became shorter than the lifetime the request asked for, which no one may then approve. You can still deny it. |
 | `still pending; it was not decided: who may ask for it names a Google group the broker has not read in the last two hours. Approve it again once the group is read.` | The secret's `requesters` name a Google group the broker has not read for 2 hours, so it cannot say whether the session's person is on the list ([A group's secret](/legion/broker/concepts/#a-groups-secret)). The request stays pending. Approve it again once the group is read: the broker reads every group within the hour, and at the next five-minute policy read for one whose first read failed. |
 | `unavailable: the secrets broker could not ask Dispatch whether you may see this request, …` | Dispatch did not answer whether you may see the request, so nothing was decided and it stays pending. The line names the request by its record id, not by its secrets. Decide it once Dispatch answers. |
+| `still pending; it was not decided: Dispatch called you a restricted member, who decides no secret request.` | Dispatch called you a restricted member when you decided: someone an access list admitted from outside the deployment's sign-in domain, who is no approver of a secret ([Machine login](/legion/broker/concepts/#machine-login)). Nothing was decided. |
+
+The page shows no request at all to a person Dispatch calls a restricted member: it answers
+`Dispatch calls you a restricted member, who decides no secret request, so this page shows you
+none.` (`403`), whatever request it names. While the broker cannot learn from Dispatch what kind of
+member you are, it answers `The secrets broker could not ask Dispatch whether you may decide secret
+requests, so it shows you none and decides none. Try again shortly.` (`503`). Either page lets you
+sign in as someone else.
 
 A decision is accepted only from the page itself, within an hour of opening it, while your sign-in
 lasts, and only for the requests that page printed: a page more than an hour old, or a form from

@@ -10,27 +10,30 @@ body: |-
   dismiss those expired requests and logins, and deny such a service's login. Where
   `BROKER_PROJECT_ACCESS_URL` is set, the broker now asks Dispatch what kind of member the person
   is before it acts on one of those arms: a restricted member's Inbox lists no secret request and
-  no service's login, their Live grants list only the grants of the sessions that act for them,
-  their machine-login list holds only their own machines' and pods' logins, and their revoke,
-  dismissal or deny of anything else is refused, `403 NOT_APPROVER` saying why, or `404 NOT_FOUND`
+  no service's login, even one an older broker opened naming them, their Live grants list only the
+  grants of the sessions that act for them, their machine-login list holds only their own
+  machines' and pods' logins, and their revoke, dismissal or deny of anything else is refused,
+  `403 NOT_APPROVER` in words that open by saying they are a restricted member, or `404 NOT_FOUND`
   for a service's machine login. The broker's approval page, which signs in only the deployment's
-  domain, now also asks the deciding person's kind and refuses a restricted member. Their own
-  machine logins, and the grants of their own sessions, which they end as the session's operator,
-  stay theirs, asking Dispatch nothing. While Dispatch cannot say what kind of member a person is,
-  their lists leave those rows out, logged once per person per 30 seconds (`an approver's list
-  leaves out every row it holds the person as an approver of`), their dismissal, deny,
-  machine-login list or machine-login revoke is refused `503 MEMBER_KIND_UNCHECKABLE`, with nothing
-  written, and their decision on the approval page decides nothing. A revoke of a grant as its
-  approver goes ahead while Dispatch does not answer, logged at WARN (`a revoke as the grant's
-  approver goes ahead though Dispatch could not
-  say whether the person is a restricted member`), since a revoke only takes access away and one
-  refused through an outage would delay ending a grant that leaks; it helps only someone who
-  already holds the grant's id, since the lists hide such a grant then. While Dispatch refuses the
-  broker's own account, or answers a member kind this broker does not know, that revoke is refused
-  `503 MEMBER_KIND_UNCHECKABLE` too. Every member-kind read a route Dispatch relays makes ends
-  within 2 seconds, so a Dispatch that does not answer leaves the route its answer rather than
-  holding it past the 5 seconds Dispatch waits. With `BROKER_PROJECT_ACCESS_URL` unset the broker
-  asks nothing and behaves as before.
+  domain, now shows a restricted member no request (`403`) and refuses their decision, saying why.
+  Their own machine logins, and the grants of their own sessions, which they end as the session's
+  operator, stay theirs whatever Dispatch answers. While Dispatch cannot say what kind of member a
+  person is, their lists leave those rows out, logged once per person per 30 seconds (`an
+  approver's list leaves out every row it holds the person as an approver of`), their
+  machine-login list and revoke hold them to their own logins, logged at WARN (`a machine-login
+  route holds the person to their own logins`), so anyone can still end a lost machine's login,
+  their dismissal or deny is refused `503 MEMBER_KIND_UNCHECKABLE`, with nothing written, and the
+  approval page shows them no request (`503`). The revoke of a grant by the person it names as its
+  approver goes ahead while Dispatch does not answer at all (a timeout, a failed connection, or a
+  `502`, `503` or `504`), logged at WARN (`a revoke as the grant's approver goes ahead though
+  Dispatch could not say whether the person is a restricted member`), since a revoke only takes
+  access away and one refused through an outage would delay ending a grant that leaks; every other
+  revoke as an approver then, as a member of the grant's group or as anyone, and every revoke while
+  Dispatch answers what the broker cannot read (a refused account, a kind this broker does not
+  know, another status, a body that does not decode), is refused `503 MEMBER_KIND_UNCHECKABLE`.
+  Every member-kind read a route Dispatch relays makes ends within 2 seconds, so a Dispatch that
+  does not answer leaves the route its answer rather than holding it past the 5 seconds Dispatch
+  waits. With `BROKER_PROJECT_ACCESS_URL` unset the broker asks nothing and behaves as before.
 time: 2026-11-21T14:07:07Z
 custom:
     Issue: restricted-member-approver
