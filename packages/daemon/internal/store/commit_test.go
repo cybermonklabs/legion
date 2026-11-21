@@ -494,6 +494,55 @@ func TestARetryWhoseOutcomeIsUnknownEndsWhenThePoolCloses(t *testing.T) {
 	}
 }
 
+// transactUntilCommitted runs a write again only after a failure that passes: a definite error of
+// the write, such as a refused nested acquire or a constraint the write breaks, is answered at
+// once and run once, as main answered it, and a serialization failure runs again until a run
+// commits.
+func TestARetryRunsAgainOnlyAfterAFailureThatPasses(t *testing.T) {
+	rig := newCommitRig(t)
+	for _, row := range []struct {
+		name string
+		fail error
+		runs int
+		want error
+	}{
+		{"a refused nested acquire", ErrNestedAcquire, 1, ErrNestedAcquire},
+		{"a unique violation", &pgconn.PgError{Severity: "ERROR", SeverityUnlocalized: "ERROR", Code: "23505"}, 1, &pgconn.PgError{}},
+		{"a serialization failure, once", &pgconn.PgError{Severity: "ERROR", SeverityUnlocalized: "ERROR", Code: "40001"}, 2, nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(WithTransactionTracking(context.Background()), time.Minute)
+			defer cancel()
+			runs := 0
+			started := time.Now()
+			err := transactUntilCommitted(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+				runs++
+				if runs == 1 {
+					return row.fail
+				}
+				return nil
+			})
+			switch want := row.want.(type) {
+			case nil:
+				if err != nil {
+					t.Fatalf("transactUntilCommitted = %v, want nil once a later run commits", err)
+				}
+			case *pgconn.PgError:
+				if !errors.As(err, &want) {
+					t.Fatalf("transactUntilCommitted = %v, want the write's own error", err)
+				}
+			default:
+				if !errors.Is(err, want) {
+					t.Fatalf("transactUntilCommitted = %v, want %v", err, want)
+				}
+			}
+			if runs != row.runs {
+				t.Fatalf("the write ran %d times in %s, want %d", runs, time.Since(started).Round(time.Millisecond), row.runs)
+			}
+		})
+	}
+}
+
 // The body's own cancel: the id read already refuses the ended context.
 func TestAContextEndedBeforeTheCommitCommitsNothing(t *testing.T) {
 	rig := newCommitRig(t)
