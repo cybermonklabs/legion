@@ -131,7 +131,7 @@ func recordSuite(s *Store, owner, repo, number, sha, suiteID, status, conclusion
 // cache) so assertions are deterministic right after a write.
 func getState(t *testing.T, s *Store, owner, repo, number, sha string) State {
 	t.Helper()
-	entry, err := s.watcher.KV().Get(Key(owner, repo, number, sha))
+	entry, err := s.watcher.KV().Get(t.Context(), Key(owner, repo, number, sha))
 	if err != nil {
 		t.Fatalf("kv get: %v", err)
 	}
@@ -535,7 +535,7 @@ func TestWatchEvictsMalformedState(t *testing.T) {
 		t.Fatalf("record valid state: %v", err)
 	}
 	waitCacheChecks(t, s, owner, repo, number, sha, 1)
-	if _, err := s.watcher.KV().Put(Key(owner, repo, number, sha), []byte("{")); err != nil {
+	if _, err := s.watcher.KV().Put(t.Context(), Key(owner, repo, number, sha), []byte("{")); err != nil {
 		t.Fatalf("put malformed state: %v", err)
 	}
 
@@ -564,7 +564,7 @@ func TestWatchSkipsARetiredHeadRecord(t *testing.T) {
 		number = "42"
 		sha    = "abcdef1234567890abcdef1234567890abcdef12"
 	)
-	if _, err := s.watcher.KV().Put("head."+owner+"."+repo+"."+number,
+	if _, err := s.watcher.KV().Put(t.Context(), "head."+owner+"."+repo+"."+number,
 		[]byte(`{"kind":"head","sha":"`+sha+`","updated_at":"2026-09-07T03:00:00Z","generation":0}`)); err != nil {
 		t.Fatalf("put a retired head record: %v", err)
 	}
@@ -623,14 +623,14 @@ func TestARecordUnderAnOldKeySpellingIsNotCached(t *testing.T) {
 	}
 	waitCacheChecks(t, s, owner, "example.repo", number, sha, 1)
 	kv := s.watcher.KV()
-	entry, err := kv.Get(Key(owner, "example.repo", number, sha))
+	entry, err := kv.Get(t.Context(), Key(owner, "example.repo", number, sha))
 	if err != nil {
 		t.Fatalf("get the record: %v", err)
 	}
-	if _, err := kv.Put(owner+".example.repo.pr"+number+"."+sha, entry.Value()); err != nil {
+	if _, err := kv.Put(t.Context(), owner+".example.repo.pr"+number+"."+sha, entry.Value()); err != nil {
 		t.Fatalf("write the record under its old key: %v", err)
 	}
-	if err := kv.Delete(Key(owner, "example.repo", number, sha)); err != nil {
+	if err := kv.Delete(t.Context(), Key(owner, "example.repo", number, sha)); err != nil {
 		t.Fatalf("delete the record's current key: %v", err)
 	}
 	// The watch delivers in order, so a later record reaching the cache means the two writes did.
@@ -804,7 +804,7 @@ func TestClaimSettlementStampsClaimAtCASTime(t *testing.T) {
 		t.Fatalf("record terminal check: %v", err)
 	}
 	key := Key(owner, repo, pr, sha)
-	entry, err := s.watcher.KV().Get(key)
+	entry, err := s.watcher.KV().Get(t.Context(), key)
 	if err != nil {
 		t.Fatalf("get state: %v", err)
 	}
@@ -817,7 +817,7 @@ func TestClaimSettlementStampsClaimAtCASTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode old state: %v", err)
 	}
-	if _, err := s.watcher.KV().Update(key, raw, entry.Revision()); err != nil {
+	if _, err := s.watcher.KV().Update(t.Context(), key, raw, entry.Revision()); err != nil {
 		t.Fatalf("write old state: %v", err)
 	}
 
@@ -916,7 +916,7 @@ func TestMarkSettledCacheWriteDoesNotOverwriteNewerWatcherRevision(t *testing.T)
 	useKV(t, s, &interleavingKV{
 		KeyValue: originalKV.Legacy(),
 		afterUpdate: func(key string, _ []byte, _ uint64) {
-			entry, err := originalKV.Get(key)
+			entry, err := originalKV.Get(t.Context(), key)
 			if err != nil {
 				t.Fatalf("get marked state: %v", err)
 			}
@@ -930,7 +930,7 @@ func TestMarkSettledCacheWriteDoesNotOverwriteNewerWatcherRevision(t *testing.T)
 			if err != nil {
 				t.Fatalf("encode newer watcher state: %v", err)
 			}
-			watcherRevision, err = originalKV.Update(key, raw, entry.Revision())
+			watcherRevision, err = originalKV.Update(t.Context(), key, raw, entry.Revision())
 			if err != nil {
 				t.Fatalf("write newer watcher state: %v", err)
 			}

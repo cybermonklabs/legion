@@ -79,7 +79,7 @@ func (c *Client) WriteTakeoverRecord(ctx context.Context, subject string, record
 	if err != nil {
 		return err
 	}
-	if _, err := c.publishStoredRaw(ctx, subject, data, nil); err != nil {
+	if _, err := c.publishStoredRaw(ctx, subject, data, "", nil); err != nil {
 		return fmt.Errorf("bus: write the takeover record %s: %w", subject, err)
 	}
 	return nil
@@ -91,7 +91,7 @@ func (c *Client) WriteTakeoverRecord(ctx context.Context, subject string, record
 // read can decode is left out, since no pass can act on it. Its errors are the stream's own, named
 // with the lane.
 func (c *Client) TakeoverRecords(ctx context.Context, role string) ([]StoredTakeoverRecord, error) {
-	if err := c.ensureConnWithContext(ctx); err != nil {
+	if err := c.connForCall(ctx); err != nil {
 		return nil, err
 	}
 	filter := TakeoverSubjectPrefix + ">"

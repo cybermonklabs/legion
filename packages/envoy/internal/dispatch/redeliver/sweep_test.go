@@ -213,7 +213,7 @@ func (h *harness) keys() []string {
 // written one.
 func (h *harness) cursor() time.Time {
 	h.t.Helper()
-	entry, err := h.state.Get("cursor")
+	entry, err := h.state.Get(context.Background(), "cursor")
 	if errors.Is(err, natsgo.ErrKeyNotFound) {
 		return time.Time{}
 	}
@@ -246,7 +246,7 @@ func (h *harness) indexEntries(guid string) int {
 // bucket holds no record for it at all.
 func (h *harness) pendingOf(guid string) string {
 	h.t.Helper()
-	entry, err := h.state.Get("guid." + guid)
+	entry, err := h.state.Get(context.Background(), "guid."+guid)
 	if errors.Is(err, natsgo.ErrKeyNotFound) {
 		return ""
 	}
@@ -474,7 +474,7 @@ func TestSweepAsksAgainForALegacyTerminalOrExhaustedRecord(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			failed := h.fail("guid-legacy", tc.status, 30*time.Minute)
-			if _, err := h.state.Create("guid.guid-legacy", []byte(tc.record(failed, h.clock.Now().Add(-10*time.Minute)))); err != nil {
+			if _, err := h.state.Create(t.Context(), "guid.guid-legacy", []byte(tc.record(failed, h.clock.Now().Add(-10*time.Minute)))); err != nil {
 				t.Fatalf("write the legacy record: %v", err)
 			}
 			if got := outcome(h.sweep(redeliver.Options{}), "guid-legacy"); got != redeliver.Redelivered {
@@ -1490,7 +1490,7 @@ func TestAContinuousDryRunLeavesAStrayIndexEntry(t *testing.T) {
 	// older than the margin the repair leaves an entry another sweeper may be about to name
 	// (cursorOverlap), and a GUID the bucket holds no record for.
 	stray := redeliver.PendingKey(h.clock.Now().Add(-5*time.Minute), "guid-gone")
-	if _, err := h.state.Put(stray, nil); err != nil {
+	if _, err := h.state.Put(t.Context(), stray, nil); err != nil {
 		t.Fatalf("write the stray index entry: %v", err)
 	}
 	h.fail("guid-backlog", http.StatusServiceUnavailable, time.Minute)
@@ -1596,7 +1596,7 @@ func TestAFailedIndexWriteLeavesTheDeliveryForTheNextSweep(t *testing.T) {
 	if report.Complete {
 		t.Fatalf("the sweep reported itself complete: %+v", report)
 	}
-	if _, err := h.state.Get("guid.guid-unwritten"); !errors.Is(err, natsgo.ErrKeyNotFound) {
+	if _, err := h.state.Get(t.Context(), "guid.guid-unwritten"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("reading the record of guid-unwritten gave %v, want %v: it was written over an entry that was not", err, natsgo.ErrKeyNotFound)
 	}
 	if got := h.cursor(); !got.Equal(cursor) {
@@ -1658,10 +1658,10 @@ func TestARefusedRecordWriteLeavesTheDeliveryForTheNextSweep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the record the index brings back: %v", err)
 	}
-	if _, err := h.state.Create("guid.guid-unwritten", stored); err != nil {
+	if _, err := h.state.Create(t.Context(), "guid.guid-unwritten", stored); err != nil {
 		t.Fatalf("write the record the index brings back: %v", err)
 	}
-	if _, err := h.state.Put(entry, nil); err != nil {
+	if _, err := h.state.Put(t.Context(), entry, nil); err != nil {
 		t.Fatalf("write the index entry that names it: %v", err)
 	}
 
@@ -1723,7 +1723,7 @@ func TestAStaleIndexEntryIsDeletedAndTheDeliveryIsNotLost(t *testing.T) {
 		redeliver.PendingKey(h.clock.Now().Add(-5*time.Minute), "guid-waiting"),
 	}
 	for _, stray := range strays {
-		if _, err := h.state.Put(stray, nil); err != nil {
+		if _, err := h.state.Put(t.Context(), stray, nil); err != nil {
 			t.Fatalf("write the stray index entry %s: %v", stray, err)
 		}
 	}
@@ -1789,7 +1789,7 @@ func TestAStrayIndexEntryIsDeletedOnlyPastTheMargin(t *testing.T) {
 	edge := redeliver.PendingKey(h.clock.Now().Truncate(time.Minute).Add(-redeliver.CursorOverlap), "guid-waiting")
 	old := redeliver.PendingKey(h.clock.Now().Add(-5*time.Minute), "guid-waiting")
 	for _, stray := range []string{fresh, edge, old} {
-		if _, err := h.state.Put(stray, nil); err != nil {
+		if _, err := h.state.Put(t.Context(), stray, nil); err != nil {
 			t.Fatalf("write the stray index entry %s: %v", stray, err)
 		}
 	}
@@ -1854,7 +1854,7 @@ func TestARecordWithNoIndexEntryIsBackfilledOnTheFirstSweep(t *testing.T) {
 	// The bucket as an older build left it: its cursor, and an open record that names no index
 	// entry, whose failed attempt is two hours old and so outside every window these sweeps list.
 	now := h.clock.Now().UTC()
-	if _, err := h.state.Put("cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
+	if _, err := h.state.Put(t.Context(), "cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
 		t.Fatalf("write the cursor an older build left: %v", err)
 	}
 	failed := h.fail("guid-unindexed", http.StatusServiceUnavailable, 2*time.Hour)
@@ -1866,7 +1866,7 @@ func TestARecordWithNoIndexEntryIsBackfilledOnTheFirstSweep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the record an older build wrote: %v", err)
 	}
-	if _, err := h.state.Create("guid.guid-unindexed", stored); err != nil {
+	if _, err := h.state.Create(t.Context(), "guid.guid-unindexed", stored); err != nil {
 		t.Fatalf("write the record an older build wrote: %v", err)
 	}
 
@@ -1888,7 +1888,7 @@ func TestARecordWithNoIndexEntryIsBackfilledOnTheFirstSweep(t *testing.T) {
 	if got, want := h.requests(), []int64{failed.ID}; !slices.Equal(got, want) {
 		t.Fatalf("redelivery requests %v, want %v", got, want)
 	}
-	if _, err := h.state.Get("index"); err != nil {
+	if _, err := h.state.Get(t.Context(), "index"); err != nil {
 		t.Fatalf("read the index marker the back-fill writes: %v", err)
 	}
 	if entries := h.indexEntries("guid-unindexed"); entries != 1 {
@@ -1935,11 +1935,11 @@ func TestABackfillWhoseRecordWriteIsRefusedLeavesTheIndexUnmarked(t *testing.T) 
 	// no index entry, whose failed attempt is two hours old and so outside the window this sweep
 	// lists.
 	now := h.clock.Now().UTC()
-	if _, err := h.state.Put("cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
+	if _, err := h.state.Put(t.Context(), "cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
 		t.Fatalf("write the cursor a build without the index left: %v", err)
 	}
 	failed := h.fail("guid-unindexed", http.StatusServiceUnavailable, 2*time.Hour)
-	if _, err := h.state.Create("guid.guid-unindexed", recordWithoutPending(t, now, failed)); err != nil {
+	if _, err := h.state.Create(t.Context(), "guid.guid-unindexed", recordWithoutPending(t, now, failed)); err != nil {
 		t.Fatalf("write the record a build without the index wrote: %v", err)
 	}
 
@@ -1956,7 +1956,7 @@ func TestABackfillWhoseRecordWriteIsRefusedLeavesTheIndexUnmarked(t *testing.T) 
 	if report.Listed != 0 {
 		t.Fatalf("the sweep listed %d failed attempts, so the back-fill is not what read the record", report.Listed)
 	}
-	if _, err := h.state.Get("index"); !errors.Is(err, natsgo.ErrKeyNotFound) {
+	if _, err := h.state.Get(t.Context(), "index"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("reading the index marker gave %v, want %v: a back-fill that indexed no record marked the bucket, and nothing reads that record again for about 68 minutes", err, natsgo.ErrKeyNotFound)
 	}
 	if report.Complete {
@@ -1991,11 +1991,11 @@ func TestABackfillThatLosesItsRecordRaceLeavesTheIndexUnmarked(t *testing.T) {
 	// no index entry, whose failed attempt is two hours old and so outside the window this sweep
 	// lists.
 	now := h.clock.Now().UTC()
-	if _, err := h.state.Put("cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
+	if _, err := h.state.Put(t.Context(), "cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
 		t.Fatalf("write the cursor a build without the index left: %v", err)
 	}
 	failed := h.fail("guid-unindexed", http.StatusServiceUnavailable, 2*time.Hour)
-	if _, err := h.state.Create("guid.guid-unindexed", recordWithoutPending(t, now, failed)); err != nil {
+	if _, err := h.state.Create(t.Context(), "guid.guid-unindexed", recordWithoutPending(t, now, failed)); err != nil {
 		t.Fatalf("write the record a build without the index wrote: %v", err)
 	}
 
@@ -2010,7 +2010,7 @@ func TestABackfillThatLosesItsRecordRaceLeavesTheIndexUnmarked(t *testing.T) {
 	if report.Listed != 0 {
 		t.Fatalf("the sweep listed %d failed attempts, so the back-fill is not what read the record", report.Listed)
 	}
-	if _, err := h.state.Get("index"); !errors.Is(err, natsgo.ErrKeyNotFound) {
+	if _, err := h.state.Get(t.Context(), "index"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("reading the index marker gave %v, want %v: a back-fill whose write another writer won marked the bucket, and nothing reads that record again for about 68 minutes", err, natsgo.ErrKeyNotFound)
 	}
 	if report.Complete {
@@ -2033,14 +2033,14 @@ func TestABackfillRunsUnderAnOlderBuildsCursorWhateverTheMarkerSays(t *testing.T
 	// index entry, whose failed attempt is two hours old and so outside the window this sweep
 	// lists.
 	now := h.clock.Now().UTC()
-	if _, err := h.state.Put("index", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
+	if _, err := h.state.Put(t.Context(), "index", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
 		t.Fatalf("write the index marker a sweep of this build left: %v", err)
 	}
-	if _, err := h.state.Put("cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
+	if _, err := h.state.Put(t.Context(), "cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
 		t.Fatalf("write the cursor the older build left: %v", err)
 	}
 	failed := h.fail("guid-unindexed", http.StatusServiceUnavailable, 2*time.Hour)
-	if _, err := h.state.Create("guid.guid-unindexed", recordWithoutPending(t, now, failed)); err != nil {
+	if _, err := h.state.Create(t.Context(), "guid.guid-unindexed", recordWithoutPending(t, now, failed)); err != nil {
 		t.Fatalf("write the record the older build created: %v", err)
 	}
 
@@ -2069,18 +2069,18 @@ func TestABackfillRunsUnderAnOlderBuildsCursorWhateverTheMarkerSays(t *testing.T
 func TestAnIndexEntryWhoseRecordNamesNoneIsAdopted(t *testing.T) {
 	h := newHarness(t)
 	h.sweep(redeliver.Options{}) // the cursor, and the marker that says every open record is indexed
-	if _, err := h.state.Get("index"); err != nil {
+	if _, err := h.state.Get(t.Context(), "index"); err != nil {
 		t.Fatalf("read the index marker the first sweep writes: %v", err)
 	}
 	// The delivery's failed attempt is two hours old, so no window this sweep lists returns it:
 	// its index entry is all that brings it back.
 	now := h.clock.Now().UTC()
 	failed := h.fail("guid-rewritten", http.StatusServiceUnavailable, 2*time.Hour)
-	if _, err := h.state.Create("guid.guid-rewritten", recordWithoutPending(t, now, failed)); err != nil {
+	if _, err := h.state.Create(t.Context(), "guid.guid-rewritten", recordWithoutPending(t, now, failed)); err != nil {
 		t.Fatalf("write the record the other build rewrote: %v", err)
 	}
 	entry := redeliver.PendingKey(now.Add(-time.Minute), "guid-rewritten")
-	if _, err := h.state.Put(entry, nil); err != nil {
+	if _, err := h.state.Put(t.Context(), entry, nil); err != nil {
 		t.Fatalf("write the index entry that names it: %v", err)
 	}
 
@@ -2132,11 +2132,11 @@ func TestALiveClaimOverARecordNamingNoIndexEntryIsIndexedAtItsClaimEnd(t *testin
 	if err != nil {
 		t.Fatalf("encode the record the older build claimed: %v", err)
 	}
-	if _, err := h.state.Create("guid.guid-claimed", claimed); err != nil {
+	if _, err := h.state.Create(t.Context(), "guid.guid-claimed", claimed); err != nil {
 		t.Fatalf("write the record the older build claimed: %v", err)
 	}
 	entry := redeliver.PendingKey(now.Add(-3*time.Minute), "guid-claimed")
-	if _, err := h.state.Put(entry, nil); err != nil {
+	if _, err := h.state.Put(t.Context(), entry, nil); err != nil {
 		t.Fatalf("write the index entry that names it: %v", err)
 	}
 
@@ -2198,7 +2198,7 @@ func (r refusingPending) Put(key string, value []byte) (uint64, error) {
 func TestABackfillLeavesALiveClaimToItsClaimant(t *testing.T) {
 	h := newHarness(t)
 	now := h.clock.Now().UTC()
-	if _, err := h.state.Put("cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
+	if _, err := h.state.Put(t.Context(), "cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
 		t.Fatalf("write the cursor the older build left: %v", err)
 	}
 	failed := h.fail("guid-claimed", http.StatusServiceUnavailable, 2*time.Hour)
@@ -2210,7 +2210,7 @@ func TestABackfillLeavesALiveClaimToItsClaimant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the record the older build claimed: %v", err)
 	}
-	claimRevision, err := h.state.Create("guid.guid-claimed", claimed)
+	claimRevision, err := h.state.Create(t.Context(), "guid.guid-claimed", claimed)
 	if err != nil {
 		t.Fatalf("write the record the older build claimed: %v", err)
 	}
@@ -2224,7 +2224,7 @@ func TestABackfillLeavesALiveClaimToItsClaimant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the sweep whose entry for the live claim was refused: %v", err)
 	}
-	if _, err := h.state.Get("index"); !errors.Is(err, natsgo.ErrKeyNotFound) {
+	if _, err := h.state.Get(t.Context(), "index"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("reading the index marker gave %v, want %v: a back-fill whose entry for a live claim was refused marked the bucket, and nothing reads that record again for about 68 minutes", err, natsgo.ErrKeyNotFound)
 	}
 	if refused.Complete {
@@ -2238,7 +2238,7 @@ func TestABackfillLeavesALiveClaimToItsClaimant(t *testing.T) {
 	if got := h.requests(); len(got) != 0 {
 		t.Fatalf("the sweep asked GitHub for a delivery the older build's claim holds: %v", got)
 	}
-	entry, err := h.state.Get("guid.guid-claimed")
+	entry, err := h.state.Get(t.Context(), "guid.guid-claimed")
 	if err != nil {
 		t.Fatalf("read the claimed record after the back-fill: %v", err)
 	}
@@ -2260,7 +2260,7 @@ func TestABackfillLeavesALiveClaimToItsClaimant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the claimant's outcome: %v", err)
 	}
-	if _, err := h.state.Update("guid.guid-claimed", answered, claimRevision); err != nil {
+	if _, err := h.state.Update(t.Context(), "guid.guid-claimed", answered, claimRevision); err != nil {
 		t.Fatalf("the claimant's outcome write over the revision it claimed at: %v: GitHub's answer is lost and the delivery is asked for again", err)
 	}
 
@@ -2290,11 +2290,11 @@ func TestABackfillLeavesALiveClaimToItsClaimant(t *testing.T) {
 func TestAMarkerOlderThanTheLookbackIsBackfilledAgain(t *testing.T) {
 	h := newHarness(t)
 	now := h.clock.Now().UTC()
-	if _, err := h.state.Put("cursor", fmt.Appendf(nil, `{"at":%q,"indexed":true}`, now.Format(time.RFC3339))); err != nil {
+	if _, err := h.state.Put(t.Context(), "cursor", fmt.Appendf(nil, `{"at":%q,"indexed":true}`, now.Format(time.RFC3339))); err != nil {
 		t.Fatalf("write this build's cursor: %v", err)
 	}
 	stale := now.Add(-redeliver.Lookback - 4*time.Minute)
-	if _, err := h.state.Put("index", fmt.Appendf(nil, `{"at":%q}`, stale.Format(time.RFC3339))); err != nil {
+	if _, err := h.state.Put(t.Context(), "index", fmt.Appendf(nil, `{"at":%q}`, stale.Format(time.RFC3339))); err != nil {
 		t.Fatalf("write the marker of the last back-fill: %v", err)
 	}
 	ago := redeliver.Lookback + 4*time.Minute
@@ -2309,7 +2309,7 @@ func TestAMarkerOlderThanTheLookbackIsBackfilledAgain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the record the older build wrote: %v", err)
 	}
-	if _, err := h.state.Create("guid.guid-unlisted", refused); err != nil {
+	if _, err := h.state.Create(t.Context(), "guid.guid-unlisted", refused); err != nil {
 		t.Fatalf("write the record the older build wrote: %v", err)
 	}
 
@@ -2448,10 +2448,10 @@ func BenchmarkSweepWithLongPendingRecords(b *testing.B) {
 				if err != nil {
 					b.Fatalf("encode record: %v", err)
 				}
-				if _, err := state.Create("guid."+delivery.GUID, data); err != nil {
+				if _, err := state.Create(b.Context(), "guid."+delivery.GUID, data); err != nil {
 					b.Fatalf("write record %d: %v", i, err)
 				}
-				if _, err := state.Put(entry, nil); err != nil {
+				if _, err := state.Put(b.Context(), entry, nil); err != nil {
 					b.Fatalf("write index entry %d: %v", i, err)
 				}
 			}

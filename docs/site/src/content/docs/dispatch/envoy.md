@@ -719,15 +719,15 @@ A counted message costs one when the listener stores it, may have stored it or r
 it, whatever the answer is. A role send answered `504` costs one whether or not a forward went
 out, also when the window ended before the first forward. The listener does not tell a `504` that
 forwarded nothing from one whose forward the stream may hold. A `503` after the listener sent the
-message to the stream, such as a write whose acknowledgement did not arrive in time, costs one
-too, since the stream may hold it. A message the listener refuses before any store or wake report
-costs nothing, such as a `400`, a `403`, a `413` or a `503` before the listener sent anything,
-one while it waits for NATS to reconnect among them. A repeat that the listener recognises costs
-nothing too: one the stream answers as a `duplicate`, a repeat of a role message kept for the
-role's next holder, and a repeat of a role forward the route made in the last 10 minutes. So does
-an echo, a role message from the session that holds the role. A `duplicate` that answers the
-listener's own second send, made after its connection to NATS closed under the first, costs one,
-since the first may have stored the message. A role send's echo, repeat or `403` costs nothing
+message to the stream, such as a write whose acknowledgement did not arrive in time or a lost
+connection took, costs one too, since the stream may hold it. A message the listener refuses
+before any store or wake report costs nothing, such as a `400`, a `403`, a `413` or a `503` before
+the listener sent anything, one while it waits for NATS to reconnect among them. A repeat that the
+listener recognises costs nothing too: one the stream answers as a `duplicate`, a repeat of a role
+message kept for the role's next holder, and a repeat of a role forward the route made in the last
+10 minutes. So does an echo, a role message from the session that holds the role. The listener
+sends such a publish once, so its `duplicate` never names the copy an earlier send of the same
+publish stored. A role send's echo, repeat or `403` costs nothing
 only while the send has made no forward. After an earlier forward of the same send it costs one,
 as any answer then does, since that forward may have stored the message. A repeat that finds the
 count at 0 is refused as a new message is, because the listener reads the count first.

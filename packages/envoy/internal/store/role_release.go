@@ -210,7 +210,7 @@ func (r *Registry) releaseReadRoleClaim(ctx context.Context, sessionID, role str
 		attempts: roleClaimReleaseAttempts,
 		writes:   func(claim RoleClaim) bool { return release.frees(claim, sessionID) },
 		send: func(claim RoleClaim) (uint64, error) {
-			return 0, r.roles().Delete(role, nats.LastRevision(claim.Revision))
+			return 0, r.roles().Delete(ctx, role, nats.LastRevision(claim.Revision))
 		},
 		landed: func(claim RoleClaim, _, epoch uint64) { r.forgetRoleHolder(role, claim.Revision, epoch) },
 	})
@@ -285,7 +285,7 @@ func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role 
 			if err != nil {
 				return 0, err
 			}
-			return r.roles().Update(role, data, claim.Revision)
+			return r.roles().Update(ctx, role, data, claim.Revision)
 		},
 		landed: func(_ RoleClaim, revision, epoch uint64) { r.setOwnRoleHolder(role, sessionID, revision, epoch) },
 	})
@@ -352,7 +352,7 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 	epoch := r.roleViewEpoch()
 	roles := r.roles()
 	_, _, err := bus.Bounded(ctx, func() (struct{}, error) {
-		return struct{}{}, roles.Delete(role, nats.LastRevision(claim.Revision))
+		return struct{}{}, roles.Delete(ctx, role, nats.LastRevision(claim.Revision))
 	})
 	switch {
 	case err == nil:

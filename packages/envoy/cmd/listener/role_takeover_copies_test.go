@@ -471,12 +471,12 @@ func (rig *copiesRig) holdRoleLaneForward(t *testing.T, eventID string) copiesHe
 	forward := cfg.forwardRole
 	started, released := make(chan struct{}), make(chan struct{})
 	var start, release sync.Once
-	cfg.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	cfg.forwardRole = func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
 		if item.EventID == eventID {
 			start.Do(func() { close(started) })
 			<-released
 		}
-		return forward(subject, item, msgID, timeout)
+		return forward(ctx, subject, item, msgID, timeout)
 	}
 	cfg = wireTestRoleForwarder(t, cfg)
 	releaseForward := func() { release.Do(func() { close(released) }) }

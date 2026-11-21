@@ -175,7 +175,7 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 			if err := w.Err(); err != nil {
 				t.Fatalf("the cache's watcher ended: %v", err)
 			}
-			if _, err := kv.Put("after-the-discarded-watch", []byte("1")); err != nil {
+			if _, err := kv.Put(t.Context(), "after-the-discarded-watch", []byte("1")); err != nil {
 				t.Fatalf("put: %v", err)
 			}
 			eventually(t, "the cache's own watcher's delivery", func() bool { return into.has("after-the-discarded-watch") })

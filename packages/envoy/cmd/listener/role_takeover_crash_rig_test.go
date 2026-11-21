@@ -71,11 +71,11 @@ func newCrashRig(t *testing.T) *crashRig {
 	cfg := &rig.harness.config
 	cfg.now = rig.clock.Now
 	forward := cfg.forwardRole
-	cfg.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	cfg.forwardRole = func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
 		if hold := rig.hold.Load(); hold != nil {
 			(*hold)(item)
 		}
-		return forward(subject, item, msgID, timeout)
+		return forward(ctx, subject, item, msgID, timeout)
 	}
 	*cfg = wireTestRoleForwarder(t, *cfg)
 	delivery, err := connectSessionDelivery([]string{url},

@@ -133,6 +133,14 @@ type KeptRoleCursor struct {
 	// it reads only Kept and Claiming; an earlier listener's struct has no such field, and
 	// encoding/json drops it when that listener decodes the body.
 	DeadLetter string `json:"dead_letter,omitempty"`
+	// Confirm is a token of the write's own on a walk's confirm, the last write of a copy it
+	// claimed (cmd/listener/role_keep.go: roleKeepLaneCursor.confirm), empty on every other write.
+	// A walk that could not read its confirm back reads the first cursor written after its claim
+	// and takes the confirm as landed only when that cursor carries this token: another walk's
+	// write after the same claim can carry the same Kept and Claiming, and never the token. Like
+	// DeadLetter it is left out of the body when empty, Dispatch's outbox does not read it, and an
+	// earlier listener drops it when it decodes the body.
+	Confirm string `json:"confirm,omitempty"`
 }
 
 // ClaimOutstanding reports whether the copy this cursor claims is still one walk's to forward: a
@@ -198,9 +206,11 @@ func (c *Client) ReadKeptRoleCursor(ctx context.Context, role string) (StoredKep
 // answers an empty list: the state carries a subject only while a message is stored on it.
 //
 // Its errors are the stream's own: nats.ErrStreamNotFound when the stream is gone,
-// nats.ErrNoResponders when no JetStream answers, and ctx's error when ctx ends first.
+// nats.ErrNoResponders when no JetStream answers, ctx's error when ctx ends first, and
+// ErrConnectionLost when the connection is lost first (the client's JetStream context is bound to
+// its life, boundJetStream).
 func (c *Client) KeptRoleLanes(ctx context.Context) ([]string, error) {
-	if err := c.ensureConnWithContext(ctx); err != nil {
+	if err := c.connForCall(ctx); err != nil {
 		return nil, err
 	}
 	info, err := c.JS().StreamInfo(Stream,
@@ -276,38 +286,47 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 // connection's publish permissions returns ErrPublishDenied at once; a plain request would wait
 // out its whole deadline, since core NATS answers a denied publish to no one but the async error
 // callback. One publishConfirmed cannot confirm for another reason still waits for its reply, and
-// returns that reason if ctx ends first. A no-responders status reply is nats.ErrNoResponders.
+// returns that reason if ctx ends first. A no-responders status reply is nats.ErrNoResponders. The
+// request is bound to the life of the connection it is sent on (Request), so one the connection's
+// loss cut off answers ErrConnectionLost the moment nats.go reports the loss. One made while the
+// connection is down waits for it first for a caller that holds nothing, and answers
+// ErrConnectionLost at once, unsent, for one that holds a lock across it - every caller on the
+// session consumers' client, and one that marks its context so (WithLockHeld): the handover's
+// reads of a role's kept lane under the role's guard - which releases what it holds before it
+// waits (connForRequest).
 func (c *Client) requestConfirmed(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
 		defer cancel()
 	}
-	if err := c.ensureConnWithContext(ctx); err != nil {
+	if err := c.connForRequest(ctx); err != nil {
 		return nil, err
 	}
-	conn := c.Connection()
-	inbox := conn.NewInbox()
-	replies, err := conn.SubscribeSync(inbox)
-	if err != nil {
-		return nil, err
-	}
-	defer replies.Unsubscribe()
-	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Data: data}, conn.PublishMsg)
-	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
-		return nil, err
-	}
-	reply, waitErr := replies.NextMsgWithContext(ctx)
-	if waitErr != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, cmp.Or(err, ctxErr)
+	return Request(ctx, c, func(ctx context.Context) (*nats.Msg, error) {
+		conn := c.Connection()
+		inbox := conn.NewInbox()
+		replies, err := conn.SubscribeSync(inbox)
+		if err != nil {
+			return nil, err
 		}
-		return nil, waitErr
-	}
-	if len(reply.Data) == 0 && reply.Header.Get("Status") == "503" {
-		return nil, nats.ErrNoResponders
-	}
-	return reply, nil
+		defer replies.Unsubscribe()
+		err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Data: data}, conn.PublishMsg)
+		if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
+			return nil, err
+		}
+		reply, waitErr := replies.NextMsgWithContext(ctx)
+		if waitErr != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, cmp.Or(err, ctxErr)
+			}
+			return nil, waitErr
+		}
+		if len(reply.Data) == 0 && reply.Header.Get("Status") == "503" {
+			return nil, nats.ErrNoResponders
+		}
+		return reply, nil
+	})
 }
 
 // RequestCore sends a core NATS request on subject carrying header and no body, and returns its
@@ -334,40 +353,42 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 // relay subject), which a one-slot channel would drop as a slow consumer and record on the whole
 // connection, failing another goroutine's publish as unconfirmed.
 //
-// The one error this shape cannot give is the connection's own: nats.go closes a sync
-// subscription's channel when the connection closes and leaves a channel subscription's open, so
-// a request whose connection is closed or drained under it waits out ctx and returns ctx's error,
-// where requestConfirmed returns nats.ErrConnectionClosed at once. The probe counts both as
-// connected, and the case is a shutdown race.
+// The one error this shape cannot give from nats.go is the connection's own: nats.go closes a
+// sync subscription's channel when the connection closes and leaves a channel subscription's open.
+// The request is bound to the connection's life instead (Request), so one whose connection is lost,
+// closed or drained under it answers ErrConnectionLost once nats.go reports the loss. The probe
+// counts that as connected, as it counts a reply that did not come in time.
 func (c *Client) RequestCore(ctx context.Context, subject, reply string, header nats.Header) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
 		defer cancel()
 	}
-	if err := c.ensureConnWithContext(ctx); err != nil {
+	if err := c.connForCall(ctx); err != nil {
 		return nil, err
 	}
-	conn := c.Connection()
-	replies := make(chan *nats.Msg, nats.RequestChanLen)
-	subscription, err := conn.ChanSubscribe(reply, replies)
-	if err != nil {
-		return nil, err
-	}
-	defer subscription.Unsubscribe()
-	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: reply, Header: header}, conn.PublishMsg)
-	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
-		return nil, err
-	}
-	select {
-	case answer := <-replies:
-		if len(answer.Data) == 0 && answer.Header.Get("Status") == "503" {
-			return nil, nats.ErrNoResponders
+	return Request(ctx, c, func(ctx context.Context) (*nats.Msg, error) {
+		conn := c.Connection()
+		replies := make(chan *nats.Msg, nats.RequestChanLen)
+		subscription, err := conn.ChanSubscribe(reply, replies)
+		if err != nil {
+			return nil, err
 		}
-		return answer, nil
-	case <-ctx.Done():
-		return nil, cmp.Or(err, ctx.Err())
-	}
+		defer subscription.Unsubscribe()
+		err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: reply, Header: header}, conn.PublishMsg)
+		if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
+			return nil, err
+		}
+		select {
+		case answer := <-replies:
+			if len(answer.Data) == 0 && answer.Header.Get("Status") == "503" {
+				return nil, nats.ErrNoResponders
+			}
+			return answer, nil
+		case <-ctx.Done():
+			return nil, cmp.Or(err, ctx.Err())
+		}
+	})
 }
 
 // CheckFilterSubject refuses a subject a stored-message read cannot filter on: one NATS does not

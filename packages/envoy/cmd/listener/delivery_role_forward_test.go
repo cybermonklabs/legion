@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -59,9 +60,9 @@ func TestARoleForwardIsStoredOncePerMessageAndTwoUnderOneChosenKeyTwice(t *testi
 				t.Cleanup(cfg.attemptCache.Stop)
 				var forwardErr error
 				forwards := 0
-				cfg.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+				cfg.forwardRole = func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
 					forwards++
-					wait, err := forwardThrough(subject, item, msgID, timeout)
+					wait, err := forwardThrough(ctx, subject, item, msgID, timeout)
 					if err != nil {
 						forwardErr = err
 						return nil, err

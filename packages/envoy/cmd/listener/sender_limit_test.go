@@ -373,9 +373,9 @@ func (rig *senderLimitRig) interceptForwards(intercept func(n int, forward func(
 	forwards := 0
 	delivery := *rig.deps.delivery
 	forwardRole := delivery.forwardRole
-	delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	delivery.forwardRole = func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
 		forwards++
-		return intercept(forwards, func() (func() error, error) { return forwardRole(subject, item, msgID, timeout) })
+		return intercept(forwards, func() (func() error, error) { return forwardRole(ctx, subject, item, msgID, timeout) })
 	}
 	rig.deps.delivery = &delivery
 	return &forwards

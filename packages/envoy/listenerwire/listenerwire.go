@@ -128,10 +128,10 @@ type PublishRequest struct {
 // true for a send whose dedupe key names the upstream event
 // (contracts.DedupeKeyNamesTheUpstreamEvent): one of Dispatch's, and an agent's send under a key
 // minted once for its message, which @legion/envoy-client mints for every send that names none,
-// so a repeat of either gets it. The listener's sender limit reads the same verdict and charges
-// such a repeat nothing (its senderCharge.published), unless the verdict answers the bus's resend
-// after a closed connection (bus.StoredAck.Resent). Absent means false, which is what an older
-// listener's answer reads as.
+// so a repeat of either gets it. The listener's bus sends the publish once
+// (bus.Client.PublishAckWithin), so it never names the copy an earlier send of this one stored.
+// The listener's sender limit reads the same verdict and charges such a repeat nothing (its
+// senderCharge.published). Absent means false, which is what an older listener's answer reads as.
 type SendResponse struct {
 	Envelope
 	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke

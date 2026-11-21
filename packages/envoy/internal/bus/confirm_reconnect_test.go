@@ -272,7 +272,7 @@ func TestAnUnconfirmedForwardTheStreamStoredIsDelivered(t *testing.T) {
 	conn := answeringServer(t, "notifications.other", true)
 	client := &Client{Conn: conn}
 
-	forward, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 2*time.Second)
+	forward, err := client.StartRequestStoredTo(t.Context(), "notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 2*time.Second)
 	if err != nil {
 		t.Fatalf("an unconfirmed forward was refused outright: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestAnUnconfirmedForwardWithoutTheStreamsAcknowledgementIsNotStored(t *test
 	conn := answeringServer(t, "notifications.other", false)
 	client := &Client{Conn: conn}
 
-	forward, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 300*time.Millisecond)
+	forward, err := client.StartRequestStoredTo(t.Context(), "notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 300*time.Millisecond)
 	if err != nil {
 		t.Fatalf("an unconfirmed forward was refused outright: %v", err)
 	}

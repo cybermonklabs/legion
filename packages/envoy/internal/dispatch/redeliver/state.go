@@ -160,9 +160,12 @@ func (s *Sweeper) scanOpenRecords(listed map[string][]githubapp.Delivery) ([]ope
 
 // readState reads key's JSON value and its revision; an absent key is the zero value at revision
 // zero. what names the value in an error, and holds a GUID only as githubapp.ShownBody shows it.
-func readState[T any](kv bus.KeyValue, key, what string) (T, uint64, error) {
+// The sweep holds no lock across its reads and writes of the state, and its callers pass
+// context.Background(): a request waits for nats.go's own answer within the request's own bound
+// (bus.RequestTimeout).
+func readState[T any](ctx context.Context, kv bus.KeyValue, key, what string) (T, uint64, error) {
 	var value T
-	entry, err := kv.Get(key)
+	entry, err := kv.Get(ctx, key)
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return value, 0, nil
 	}
@@ -179,15 +182,15 @@ func readState[T any](kv bus.KeyValue, key, what string) (T, uint64, error) {
 // a conflict (bus.IsCASConflict), and returns the new revision. The error is the bucket's own, so
 // that its caller can ask bus.IsCASConflict of it; the caller shows it through bucketErr once it
 // has.
-func writeState(kv bus.KeyValue, key string, value any, revision uint64) (uint64, error) {
+func writeState(ctx context.Context, kv bus.KeyValue, key string, value any, revision uint64) (uint64, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return 0, err
 	}
 	if revision == 0 {
-		return kv.Create(key, data)
+		return kv.Create(ctx, key, data)
 	}
-	return kv.Update(key, data, revision)
+	return kv.Update(ctx, key, data, revision)
 }
 
 // openState opens the state with Open, under ctx, the sweep's context, unless a sweep already
@@ -208,19 +211,19 @@ func (s *Sweeper) openState(ctx context.Context) error {
 // readCursor reads the cursor whole, since what wrote it matters as much as where it is
 // (cursorRecord). A bucket with no cursor answers the zero value at revision zero.
 func (s *Sweeper) readCursor() (cursorRecord, uint64, error) {
-	return readState[cursorRecord](s.state, cursorKey, "cursor")
+	return readState[cursorRecord](context.Background(), s.state, cursorKey, "cursor")
 }
 
 // writeCursor records the sweep's start, marked as this build's (cursorRecord). A lost race means
 // another sweeper wrote a cursor at the same moment; either value serves.
 func (s *Sweeper) writeCursor(at time.Time, revision uint64) {
-	if _, err := writeState(s.state, cursorKey, cursorRecord{At: at, Indexed: true}, revision); err != nil && !bus.IsCASConflict(err) {
+	if _, err := writeState(context.Background(), s.state, cursorKey, cursorRecord{At: at, Indexed: true}, revision); err != nil && !bus.IsCASConflict(err) {
 		s.Logger.Warn("webhook redelivery cursor not written", "error", bucketErr(err))
 	}
 }
 
 func (s *Sweeper) readRecord(guid string) (record, uint64, error) {
-	return readState[record](s.state, recordPrefix+guid, "record of "+githubapp.ShownBody(guid))
+	return readState[record](context.Background(), s.state, recordPrefix+guid, "record of "+githubapp.ShownBody(guid))
 }
 
 // putRecord writes next only if the record is still at revision (absent when zero), so two
@@ -233,7 +236,7 @@ func (s *Sweeper) readRecord(guid string) (record, uint64, error) {
 // carries nothing on at all: the record still holds what it held, so its caller is what keeps the
 // delivery from being lost (writeRecord, undoClaim).
 func (s *Sweeper) putRecord(guid string, next record, revision uint64) (uint64, bool, error) {
-	written, err := writeState(s.state, recordPrefix+guid, next, revision)
+	written, err := writeState(context.Background(), s.state, recordPrefix+guid, next, revision)
 	switch {
 	case err == nil:
 		return written, true, nil

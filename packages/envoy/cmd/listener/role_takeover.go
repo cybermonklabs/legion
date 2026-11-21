@@ -215,6 +215,9 @@ type takeoverFaultSet struct {
 	// claimRecordWrite, when it returns an error, is the answer of the claim route's write of a
 	// takeover record in place of the write.
 	claimRecordWrite func(role, previous string) error
+	// recordsRead, when it returns an error, is the answer of a handover's read of the role's
+	// takeover records under the role's guard (readTakenRecords) in place of the read.
+	recordsRead func(role string) error
 }
 
 // takeoverFaultHooks is one listener's takeover-copy seam set (listenerDeliveryHandlerConfig's
@@ -285,51 +288,103 @@ func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, rol
 }
 
 // runTakenRoleDrain is runKeptRoleDrain for a role the claim route has just granted: under the
-// role's guard and the handover's window, it runs the passes of the role's takeover records and
-// then hands its kept lane over (handOverTakenRole).
-func runTakenRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
+// role's guard and the handover's window, within ctx, which the listener's shutdown ends
+// (roleKeepGuards.end), it runs the passes of the role's takeover records and then hands its kept
+// lane over (handOverTakenRole). As drainKeptRole does, it reads under the guard with a context
+// marked so (bus.WithLockHeld), gives the guard back to wait for a lost connection
+// (bus.Reconnected) and runs again once it is back, settles what the handover owes after each
+// release of the guard (keptRoleOwed), and runs again after a settled confirm. A read of the
+// takeover records that fails otherwise is logged, and that pass hands the lane over with none.
+func runTakenRoleDrain(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) {
 	if skip := cfg.takeoverFaults.faults().skipClaimHandover; skip != nil && skip(role) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), roleKeepHandoverWindow)
+	ctx, cancel := context.WithTimeout(ctx, roleKeepHandoverWindow)
 	defer cancel()
-	release, taken := cfg.roleKeepDrains.hold(ctx, role)
-	if !taken {
+	owed := newKeptRoleOwed(ctx, cfg, role)
+	for {
+		release, taken := cfg.roleKeepDrains.hold(ctx, role)
+		if !taken {
+			return
+		}
+		records, err := readTakenRecords(ctx, cfg, role)
+		warnTakenRecordsUnread(cfg, role, err)
+		if !errors.Is(err, bus.ErrConnectionLost) {
+			_, err = handOverTakenRole(ctx, cfg, role, records, owed)
+		}
+		release()
+		again := bus.Reconnected(ctx, err)
+		if owed.settle(cfg) && ctx.Err() == nil {
+			again = true
+		}
+		if !again {
+			reportKeptRoleDrain(cfg, role, err)
+			return
+		}
+	}
+}
+
+// readTakenRecords reads role's takeover records for a handover that holds the role's guard, under
+// a context marked so (bus.WithLockHeld), or answers the fault recordsRead gives in place of the
+// read.
+func readTakenRecords(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) ([]bus.StoredTakeoverRecord, error) {
+	if refuse := cfg.takeoverFaults.faults().recordsRead; refuse != nil {
+		if err := refuse(role); err != nil {
+			return nil, err
+		}
+	}
+	return cfg.client.TakeoverRecords(bus.WithLockHeld(ctx), role)
+}
+
+// warnTakenRecordsUnread logs, at WARN, a read of role's takeover records that failed other than
+// by the loss of the connection, which its caller retries once the connection is back.
+func warnTakenRecordsUnread(cfg listenerDeliveryHandlerConfig, role string, err error) {
+	if err == nil || errors.Is(err, bus.ErrConnectionLost) {
 		return
 	}
-	defer release()
-	records, err := cfg.client.TakeoverRecords(ctx, role)
-	if err != nil {
-		cfg.logger.Warn("listener takeover copy could not read the role's takeover records",
-			slog.String("role", role),
-			slog.String("error", err.Error()))
-	}
-	_, err = handOverTakenRole(ctx, cfg, role, records)
-	reportKeptRoleDrain(cfg, role, err)
+	cfg.logger.Warn("listener takeover copy could not read the role's takeover records",
+		slog.String("role", role),
+		slog.String("error", err.Error()))
+}
+
+// startTakenRoleDrain runs role's takeover drain (runTakenRoleDrain) on a goroutine of its own,
+// counted for the shutdown (roleKeepGuards.start).
+func startTakenRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
+	cfg.roleKeepDrains.start(func(ctx context.Context) { runTakenRoleDrain(ctx, cfg, role) })
 }
 
 // handOverTakenRole runs the passes of each of records, role's takeover records, that is not
 // finished (runTakeoverPasses), so the role messages each previous holder did not read are on the
 // role's kept lane, and then hands the lane over (handOverKeptRole), for a caller holding role's
-// guard. A pass that failed is logged and leaves its record to the next pass; the lane is handed
-// over whatever the passes did.
-func handOverTakenRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, records []bus.StoredTakeoverRecord) (keptRoleHandover, error) {
-	runTakeoverPasses(ctx, cfg, records)
-	return handOverKeptRole(ctx, cfg, role, cfg.now)
+// guard, which settles owed once it has given the guard back. The passes run under the guard, so
+// their calls are made under a context marked so (bus.WithLockHeld); a pass that answers the
+// connection's loss ends the handover with it, and its caller waits for the connection with the
+// guard given back and runs it again. A pass that failed otherwise is logged and leaves its record
+// to the next pass; the lane is handed over whatever the passes did.
+func handOverTakenRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, records []bus.StoredTakeoverRecord, owed *keptRoleOwed) (keptRoleHandover, error) {
+	if err := runTakeoverPasses(bus.WithLockHeld(ctx), cfg, records); err != nil {
+		return keptRoleHandover{}, err
+	}
+	return handOverKeptRole(ctx, cfg, role, cfg.now, owed)
 }
 
 // runTakeoverPasses runs passes of each of records that is not finished, each record's until one
 // reads to the end of the previous holder's subject or copies nothing for the reason a pass gives
 // (runTakeoverPass), fails, or ctx ends. A pass reads at most roleKeepScanMax messages and writes
 // the record with the sequence it reached, so the next goes on from there, here or on any
-// listener. A failed pass is logged at WARN, except a read of the previous holder's floor that this
-// listener's NATS user may not make (bus.ErrConsumerNotGranted, as Dispatch's listener and the host
-// listeners hold no CONSUMER.INFO on session consumers), which is logged at debug: the record is
-// left to the listeners that hold the grant, and the line would repeat at every sweep.
-func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, records []bus.StoredTakeoverRecord) {
+// listener. A pass that answers the connection's loss (bus.ErrConnectionLost) ends the passes and is
+// returned, for its caller to wait for the connection with the role's guard given back. Any other
+// failed pass is logged at WARN, except a read of the previous holder's floor that this listener's
+// NATS user may not make (bus.ErrConsumerNotGranted, as Dispatch's listener and the host listeners
+// hold no CONSUMER.INFO on session consumers), which is logged at debug: the record is left to the
+// listeners that hold the grant, and the line would repeat at every sweep.
+func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, records []bus.StoredTakeoverRecord) error {
 	for _, stored := range records {
 		for !stored.Record.Finished && ctx.Err() == nil {
 			next, done, err := runTakeoverPass(ctx, cfg, stored)
+			if errors.Is(err, bus.ErrConnectionLost) {
+				return err
+			}
 			if err != nil {
 				level := slog.LevelWarn
 				if errors.Is(err, bus.ErrConsumerNotGranted) {
@@ -348,6 +403,7 @@ func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 			}
 		}
 	}
+	return nil
 }
 
 // takeoverRecordRefresh is how old a takeover record's last write may be before a pass that
@@ -683,7 +739,7 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 		slog.String("holder", holder),
 		slog.String("event_id", mark.EventID),
 		slog.Uint64("stream_seq", msg.StreamSeq))
-	go runKeptRoleDrain(m.cfg, role)
+	startKeptRoleDrain(m.cfg, role)
 	return true
 }
 

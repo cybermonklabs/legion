@@ -63,10 +63,12 @@ func unavailableStatus(code int, err error) error {
 	return err
 }
 
-// ErrReceiptTimeout reports a send the listener never answered within the client's window. It
-// is the one failure that says nothing about whether the message landed: the listener publishes
-// the envelope before it answers (cmd/listener/api.go), so the agent may already hold it. Only
-// the send path returns it; a resolution lookup that times out sent nothing.
+// ErrReceiptTimeout reports a send the listener never answered within the client's window. The
+// message may have landed: the listener publishes the envelope before it answers
+// (cmd/listener/api.go), so the agent may already hold it. It is not the only such failure: a 503
+// the listener answers after it sent the message to the stream and no acknowledgement came, or a
+// lost connection took it, says the same (ErrUnavailable, marked ErrUnreachable). Only the send
+// path returns it; a resolution lookup that times out sent nothing.
 var ErrReceiptTimeout = errors.New("envoy listener did not answer the send in time")
 
 // ErrNotFound reports that the listener has no record of the requested session.

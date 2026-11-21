@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 )
@@ -120,6 +121,12 @@ func startSessionConsumerSweep(ctx context.Context, sweep *sessionConsumerSweep,
 //
 // One line a pass names what it found, and a pass that lists no consumer at all writes none: a
 // box whose listener holds no session costs no log line every interval.
+//
+// A list whose connection was lost (bus.ErrConnectionLost) is made again once the connection is
+// back, inside the list's budget (bus.Reconnected); the pass holds nothing while it waits. The
+// session consumers' client answers a request made while its connection is down, reconnecting or
+// closed, with that error at once (bus's withLossAtOnce), so without this a pass made during a
+// reconnect, or before a closed connection's replacement, would be skipped.
 func (s *sessionConsumerSweep) pass(ctx context.Context) {
 	if !s.trusted() || s.delivery.grantRefused() {
 		return
@@ -127,6 +134,9 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 	started := time.Now()
 	listCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	listed, err := s.delivery.consumers.ListSessionConsumers(listCtx)
+	for bus.Reconnected(listCtx, err) {
+		listed, err = s.delivery.consumers.ListSessionConsumers(listCtx)
+	}
 	cancel()
 	if err != nil {
 		if ctx.Err() == nil && !s.delivery.grantRefusal("list the session consumers", "", err) {

@@ -132,7 +132,7 @@ func fillCIBucket(b *testing.B, conn *natsgo.Conn, kv bus.KeyValue, keys int) {
 	case <-time.After(rewatchBenchWait):
 		b.Fatalf("%d publishes not acknowledged within %s", js.PublishAsyncPending(), rewatchBenchWait)
 	}
-	status, err := kv.Status()
+	status, err := kv.Status(b.Context())
 	if err != nil {
 		b.Fatalf("bucket status: %v", err)
 	}

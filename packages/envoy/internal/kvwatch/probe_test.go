@@ -183,7 +183,7 @@ func TestAProbeOfTheSameStreamOnlyConfirmsIt(t *testing.T) {
 			w.Following(), len(into.reads()), len(timers.armed(rereadNow)), len(timers.armed(probeEvery)))
 	}
 
-	if _, err := kv.Put("after-the-probe", []byte("1")); err != nil {
+	if _, err := kv.Put(t.Context(), "after-the-probe", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	eventually(t, "the record written after the probe", func() bool { return into.has("after-the-probe") })
@@ -221,7 +221,7 @@ func TestARecordOnAnOldConfirmationWaitsForAReadOfTheStream(t *testing.T) {
 
 	put := func(key string) {
 		t.Helper()
-		if _, err := kv.Put(key, []byte("1")); err != nil {
+		if _, err := kv.Put(t.Context(), key, []byte("1")); err != nil {
 			t.Fatalf("put %s: %v", key, err)
 		}
 		eventually(t, key+" to be applied", func() bool { return into.has(key) })
@@ -248,7 +248,7 @@ func TestARecordOnAnOldConfirmationWaitsForAReadOfTheStream(t *testing.T) {
 func TestARecordFromARecreatedBucketIsAppliedOnlyOnceTheCopyStoppedFollowing(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
-	if _, err := kv.Put("ghost", []byte("old")); err != nil {
+	if _, err := kv.Put(t.Context(), "ghost", []byte("old")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	records := make(chan jetstream.KeyValueEntry)
@@ -298,7 +298,7 @@ func TestARecordFromARecreatedBucketIsAppliedOnlyOnceTheCopyStoppedFollowing(t *
 func TestAProbeThatFindsANewStreamReadsTheNewBucketInANewEpoch(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
-	if _, err := kv.Put("ghost", []byte("old")); err != nil {
+	if _, err := kv.Put(t.Context(), "ghost", []byte("old")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	into := newSeen()
@@ -333,7 +333,7 @@ func TestAProbeThatFindsANewStreamReadsTheNewBucketInANewEpoch(t *testing.T) {
 func TestAProbeReadsABucketDeletedThenCreatedAgainOnceItIsBack(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
-	if _, err := kv.Put("ghost", []byte("old")); err != nil {
+	if _, err := kv.Put(t.Context(), "ghost", []byte("old")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	into := newSeen()
@@ -413,7 +413,7 @@ func TestStopAndANewerWatchDisarmTheProbe(t *testing.T) {
 func TestACompletionWhoseStreamChangedUnderTheScanSweepsNothing(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
-	if _, err := kv.Put("ghost", []byte("old")); err != nil {
+	if _, err := kv.Put(t.Context(), "ghost", []byte("old")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	into := newSeen()
@@ -540,7 +540,7 @@ func TestRecordsShareOneStalledReadOfTheStream(t *testing.T) {
 	base := streams.reads()
 	put := func(key string) {
 		t.Helper()
-		if _, err := kv.Put(key, []byte("1")); err != nil {
+		if _, err := kv.Put(t.Context(), key, []byte("1")); err != nil {
 			t.Fatalf("put %s: %v", key, err)
 		}
 	}
@@ -601,7 +601,7 @@ func TestAFailedReadOfTheStreamIsNotRetriedPerRecord(t *testing.T) {
 	base := streams.reads()
 	put := func(key string) {
 		t.Helper()
-		if _, err := kv.Put(key, []byte("1")); err != nil {
+		if _, err := kv.Put(t.Context(), key, []byte("1")); err != nil {
 			t.Fatalf("put %s: %v", key, err)
 		}
 		eventually(t, key+" to be applied", func() bool { return into.has(key) })
@@ -629,7 +629,7 @@ func TestAFailedReadOfTheStreamIsNotRetriedPerRecord(t *testing.T) {
 func TestARecordWaitsForTheProbesReadInFlight(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
-	if _, err := kv.Put("ghost", []byte("old")); err != nil {
+	if _, err := kv.Put(t.Context(), "ghost", []byte("old")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	records := make(chan jetstream.KeyValueEntry)

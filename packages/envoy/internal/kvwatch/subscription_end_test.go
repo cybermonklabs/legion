@@ -35,7 +35,7 @@ func TestASubscriptionEndingMidScanNeverPanics(t *testing.T) {
 	uri := testnats.URL(t)
 	_, seed := bucket(t, uri)
 	for i := range records {
-		if _, err := seed.Put(fmt.Sprintf("k%04d", i), []byte("v")); err != nil {
+		if _, err := seed.Put(t.Context(), fmt.Sprintf("k%04d", i), []byte("v")); err != nil {
 			t.Fatalf("put: %v", err)
 		}
 	}

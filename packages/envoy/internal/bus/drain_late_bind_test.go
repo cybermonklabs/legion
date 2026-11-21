@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -55,7 +56,7 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 				if tc.late {
 					return
 				}
-				forward, err := client.StartRequestStoredTo(holderSubject, contracts.Envelope{EventID: "drain-late-bind"}, ForwardMsgID("drain-late-bind", holderSubject), 2*time.Second)
+				forward, err := client.StartRequestStoredTo(context.Background(), holderSubject, contracts.Envelope{EventID: "drain-late-bind"}, ForwardMsgID("drain-late-bind", holderSubject), 2*time.Second)
 				if err == nil {
 					err = forward.Wait()
 				}

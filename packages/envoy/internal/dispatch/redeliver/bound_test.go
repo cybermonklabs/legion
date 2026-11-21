@@ -392,7 +392,7 @@ func TestARecordNamingAnotherDeliveryShowsBothGUIDsToABound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the record: %v", err)
 	}
-	if _, err := h.state.Create("guid."+stored.guid, record); err != nil {
+	if _, err := h.state.Create(t.Context(), "guid."+stored.guid, record); err != nil {
 		t.Fatalf("store the record under the other GUID: %v", err)
 	}
 
@@ -455,7 +455,7 @@ func TestEveryOtherSweepLineNamingADeliveryShowsItToABound(t *testing.T) {
 			if got := outcome(report, texts.guid); got != redeliver.RateLimited {
 				t.Fatalf("the sweep's outcome %q, want %q", got, redeliver.RateLimited)
 			}
-			_, refused := kv.Update("guid."+texts.guid, []byte(`{}`), 1)
+			_, refused := kv.Update(t.Context(), "guid."+texts.guid, []byte(`{}`), 1)
 			if refused == nil || !strings.Contains(refused.Error(), texts.guid) {
 				t.Fatalf("the bucket's refusal of the record's update is %.80v; want one that quotes the key", refused)
 			}
@@ -468,7 +468,7 @@ func TestEveryOtherSweepLineNamingADeliveryShowsItToABound(t *testing.T) {
 			// back-fill runs, and a record that build claimed with no index entry, whose failed
 			// attempt is outside the window, so the back-fill is what reads it.
 			now := h.clock.Now().UTC()
-			if _, err := h.state.Put("cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
+			if _, err := h.state.Put(t.Context(), "cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
 				t.Fatalf("write the cursor the older build left: %v", err)
 			}
 			failed := h.failText(texts, http.StatusServiceUnavailable, 2*time.Hour)
@@ -480,7 +480,7 @@ func TestEveryOtherSweepLineNamingADeliveryShowsItToABound(t *testing.T) {
 			if err != nil {
 				t.Fatalf("encode the claimed record: %v", err)
 			}
-			if _, err := h.state.Create("guid."+texts.guid, claimed); err != nil {
+			if _, err := h.state.Create(t.Context(), "guid."+texts.guid, claimed); err != nil {
 				t.Fatalf("write the claimed record: %v", err)
 			}
 			sweeper, _ := h.sweeperOver(refusingPending{KeyValue: h.state.Legacy(), refused: errors.New("nats: no responders available for request")})
@@ -498,11 +498,11 @@ func TestEveryOtherSweepLineNamingADeliveryShowsItToABound(t *testing.T) {
 		}},
 		{"a record the back-fill could not index", func(t *testing.T, h *harness, texts gitHubTexts) []sighting {
 			now := h.clock.Now().UTC()
-			if _, err := h.state.Put("cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
+			if _, err := h.state.Put(t.Context(), "cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
 				t.Fatalf("write the cursor an older build left: %v", err)
 			}
 			failed := h.failText(texts, http.StatusServiceUnavailable, 2*time.Hour)
-			if _, err := h.state.Create("guid."+texts.guid, recordWithoutPending(t, now, failed)); err != nil {
+			if _, err := h.state.Create(t.Context(), "guid."+texts.guid, recordWithoutPending(t, now, failed)); err != nil {
 				t.Fatalf("write the record an older build wrote: %v", err)
 			}
 			sweeper, _ := h.sweeperOver(refusingRecord{KeyValue: h.state.Legacy(), refused: errors.New("nats: no responders available for request")})
@@ -519,14 +519,14 @@ func TestEveryOtherSweepLineNamingADeliveryShowsItToABound(t *testing.T) {
 			// A stray entry naming a record that is gone, keyed before the margin the repair leaves,
 			// inside the first sweep's window of three days.
 			stray := redeliver.PendingKey(h.clock.Now().Add(-5*time.Minute), texts.guid)
-			if _, err := h.state.Put(stray, nil); err != nil {
+			if _, err := h.state.Put(t.Context(), stray, nil); err != nil {
 				t.Fatalf("write the stray index entry: %v", err)
 			}
 			sweeper, kv := h.sweeperOver(refusingCall{KeyValue: h.state.Legacy(), call: "Delete", prefix: redeliver.PendingPrefix})
 			if _, err := sweeper.Sweep(context.Background(), redeliver.Options{}); err != nil {
 				t.Fatalf("the sweep whose delete of a stray entry was refused: %.200v", err)
 			}
-			refused := kv.Delete(stray)
+			refused := kv.Delete(t.Context(), stray)
 			if refused == nil || !strings.Contains(refused.Error(), texts.guid) {
 				t.Fatalf("the bucket's refusal of the entry's delete is %.80v; want one that quotes the key", refused)
 			}
@@ -537,7 +537,7 @@ func TestEveryOtherSweepLineNamingADeliveryShowsItToABound(t *testing.T) {
 			}
 		}},
 		{"a record that does not decode, read in a window of the sweep's own", func(t *testing.T, h *harness, texts gitHubTexts) []sighting {
-			if _, err := h.state.Create("guid."+texts.guid, notJSON); err != nil {
+			if _, err := h.state.Create(t.Context(), "guid."+texts.guid, notJSON); err != nil {
 				t.Fatalf("write the record: %v", err)
 			}
 			_, err := h.sweeper().Sweep(context.Background(), redeliver.Options{Since: h.clock.Now().Add(-time.Hour)})
@@ -548,7 +548,7 @@ func TestEveryOtherSweepLineNamingADeliveryShowsItToABound(t *testing.T) {
 		}},
 		{"a listed delivery whose record does not decode", func(t *testing.T, h *harness, texts gitHubTexts) []sighting {
 			h.failText(texts, http.StatusServiceUnavailable, time.Minute)
-			if _, err := h.state.Create("guid."+texts.guid, notJSON); err != nil {
+			if _, err := h.state.Create(t.Context(), "guid."+texts.guid, notJSON); err != nil {
 				t.Fatalf("write the record: %v", err)
 			}
 			_, err := h.sweeper().Sweep(context.Background(), redeliver.Options{})
@@ -568,7 +568,7 @@ func TestEveryOtherSweepLineNamingADeliveryShowsItToABound(t *testing.T) {
 			if !errors.Is(err, bus.ErrInvalidKey) || !errors.Is(err, natsgo.ErrInvalidKey) {
 				t.Fatalf("the error the sweep answered, %.200v, is not a bus.ErrInvalidKey and a nats.ErrInvalidKey", err)
 			}
-			_, refused := kv.Get("guid." + texts.guid)
+			_, refused := kv.Get(t.Context(), "guid."+texts.guid)
 			if refused == nil || !strings.Contains(refused.Error(), texts.guid) {
 				t.Fatalf("the bucket's refusal of the record's read is %.80v; want one that quotes the key", refused)
 			}
@@ -614,7 +614,7 @@ func TestASweepLeavesOutADeliveryWhoseGUIDTheBucketCannotKey(t *testing.T) {
 			if err := h.state.RefusesRead("guid." + guid); err != nil {
 				t.Fatalf("a read of the record's key is refused with %.80v; the case needs a key a read takes", err)
 			}
-			if _, err := h.state.Put(redeliver.PendingKey(h.clock.Now(), guid), nil); !errors.Is(err, bus.ErrTooLarge) {
+			if _, err := h.state.Put(t.Context(), redeliver.PendingKey(h.clock.Now(), guid), nil); !errors.Is(err, bus.ErrTooLarge) {
 				t.Fatalf("a write of the index entry's key answered %.80v; the case needs a key the bucket refuses as too long", err)
 			}
 		}},

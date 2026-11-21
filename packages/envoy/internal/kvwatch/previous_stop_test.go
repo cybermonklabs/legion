@@ -134,7 +134,7 @@ func TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete(t *testing.T) {
 			if err := w.Err(); err != nil {
 				t.Fatalf("the replacement watcher ended: %v", err)
 			}
-			if _, err := w.KV().Put("after-the-rewatch", []byte("1")); err != nil {
+			if _, err := w.KV().Put(t.Context(), "after-the-rewatch", []byte("1")); err != nil {
 				t.Fatalf("put: %v", err)
 			}
 			eventually(t, "the replacement watcher's delivery", func() bool { return into.has("after-the-rewatch") })

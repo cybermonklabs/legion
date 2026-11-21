@@ -165,7 +165,7 @@ type storedRecord struct {
 // getRecord reads key from the bucket through the handle the store writes through.
 func getRecord(t *testing.T, s *Store, key string) storedRecord {
 	t.Helper()
-	entry, err := s.watcher.KV().Get(key)
+	entry, err := s.watcher.KV().Get(t.Context(), key)
 	if err != nil {
 		t.Fatalf("kv get: %v", err)
 	}

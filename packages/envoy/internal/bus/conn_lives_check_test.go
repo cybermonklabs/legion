@@ -11,10 +11,10 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// A connection life ends as soon as its status listener receives a drop report. nats.go removes a
-// listener after one unread report, so the connection watch compares the reconnect count the first
-// window pinned in that life read after CONNECTED. A later count ends the life even when the report
-// was missed.
+// A connection life ends as soon as its status listener receives a drop report. nats.go v1.55.0
+// drops a report its listener's full buffer cannot take, so the connection watch compares the
+// reconnect count the first window pinned in that life read after CONNECTED. A later count ends the
+// life even when the report was missed.
 //
 // The row drives the watch itself (lifeCheckEvery is set past the row) and decides by events:
 //   - one missed report: a listener removed before one drop leaves the old life current until one
@@ -39,7 +39,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 		if err := old.pinToSend(); err != nil {
 			t.Fatalf("control: pin the old window: %v", err)
 		}
-		life := lifeOf(conn)
+		life := windowLifeOf(t, client)
 		conn.RemoveStatusListener(life.reports)
 		stale := dropAndPin(t, client, conn, hold)
 		life.check()
@@ -50,9 +50,8 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 
 	t.Run("a drop between life and connected reads", func(t *testing.T) {
 		client, hold := heldHandshakeClient(t)
-		conn := client.Connection()
 		w := client.WindowUntil(nil).(*window)
-		original := lifeOf(conn).current()
+		original := windowLifeOf(t, client).current()
 		var once sync.Once
 		var held <-chan struct{}
 		startDrop := func() {
@@ -79,7 +78,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 		if err := w.pinToSend(); err != nil {
 			t.Fatalf("a window whose life read the drop before connected answered %v, want nil", err)
 		}
-		life := lifeOf(conn)
+		life := windowLifeOf(t, client)
 		life.check()
 		life.check()
 		if err := w.pinToSend(); err != nil {
@@ -94,7 +93,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 		if err := old.pinToSend(); err != nil {
 			t.Fatalf("control: pin the old window: %v", err)
 		}
-		life := lifeOf(conn)
+		life := windowLifeOf(t, client)
 		before := conn.Stats().Reconnects
 		oldLife := old.life
 		hold.Cut()
@@ -108,6 +107,21 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 		}
 		requireStale(t, old, "the old window after the reported drop")
 	})
+}
+
+// windowLifeOf is client's window life (Client.windowLife) for its current connection, once its
+// status listener is registered, failing the test when it is not by the test's deadline.
+func windowLifeOf(t *testing.T, client *Client) *connLife {
+	t.Helper()
+	client.mu.Lock()
+	life := client.windowLifeLocked()
+	client.mu.Unlock()
+	select {
+	case <-life.registered:
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("the window life's status listener was not registered by the test's deadline")
+	}
+	return life
 }
 
 // dropAndPin cuts conn through hold, lets it reconnect, and returns a window pinned before the

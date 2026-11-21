@@ -26,6 +26,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/sjawhar/envoy/internal/bus"
 )
 
 // awaitDeletes stops starting consumer deletes off a handler's goroutine and waits, within ctx,
@@ -155,6 +157,10 @@ func (m *sessionDelivery) deleteAfterAnswer(ctx context.Context, d *listenerDeps
 //
 // One budget covers the record read, the delete and the resume record it writes first, and the
 // record read and create that may follow them, as one budget covers a registration's whole pass.
+// A record read or a delete whose connection was lost (bus.ErrConnectionLost) is made again once
+// the connection is back, inside that budget, with the session's lock released while it waits
+// (bus.Reconnected), so a registration or a relay restart of the session is not held behind the
+// outage.
 //
 // A listener whose NATS user may not manage session consumers deletes nothing while its refusal
 // episode stands (grantRefused): the delete would be refused, and the episode's one warning has
@@ -170,33 +176,48 @@ func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, s
 	// read below would then fail for a delay that cost the server nothing, leaving the consumer
 	// to the sweep.
 	unlock := m.locks.lock(sessionID)
-	defer unlock()
+	defer func() { unlock() }()
 	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
-	switch _, err := d.sessions.RefreshFromLeader(ctx, sessionID); {
-	case errors.Is(err, nats.ErrKeyNotFound):
-	case err != nil:
-		m.logger.Warn("session consumer kept: the session's record could not be read",
-			slog.String("session_id", sessionID), slog.String("error", err.Error()))
-		return false
-	default:
-		m.logger.LogEvent(slog.LevelDebug, "session consumer kept: the session bucket holds a registration for it",
-			slog.String("session_id", sessionID))
-		return false
-	}
-	floor, err := m.consumers.Delete(ctx, sessionID, listed)
-	if err != nil {
-		if !m.grantRefusal("delete a session consumer", sessionID, err) {
-			m.logger.Warn("session consumer delete failed", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	// Every call made under the lock is made under a context marked so (bus.WithLockHeld); the
+	// wait for a lost connection, made with the lock released, is not.
+	locked := bus.WithLockHeld(ctx)
+	for {
+		switch _, err := m.recordFromLeader(locked, d, sessionID); {
+		case errors.Is(err, nats.ErrKeyNotFound):
+		case m.relockAfterReconnect(ctx, sessionID, &unlock, err):
+			continue
+		case err != nil:
+			m.logger.Warn("session consumer kept: the session's record could not be read",
+				slog.String("session_id", sessionID), slog.String("error", err.Error()))
+			return false
+		default:
+			m.logger.LogEvent(slog.LevelDebug, "session consumer kept: the session bucket holds a registration for it",
+				slog.String("session_id", sessionID))
+			return false
 		}
-		return false
+		floor, err := m.consumers.Delete(locked, sessionID, listed)
+		if m.relockAfterReconnect(ctx, sessionID, &unlock, err) {
+			continue
+		}
+		if err != nil {
+			if !m.grantRefusal("delete a session consumer", sessionID, err) {
+				m.logger.Warn("session consumer delete failed", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+			}
+			return false
+		}
+		m.granted()
+		// The repair. A record the bucket holds now that this session's consumer is gone was
+		// written by a registration that landed between the read above and this delete, and that
+		// registration was answered 200 with consumer delivery, so the consumer comes back on the
+		// filter and the start the record and the bucket's newest row ask for (registeredTarget),
+		// at the floor the delete recorded. A repair whose connection was lost is made again on
+		// the new connection, and the delete is not: the consumer is gone already.
+		for {
+			lost := m.repairRegistered(locked, d, sessionID, floor, repairAfterDelete)
+			if !m.relockAfterReconnect(ctx, sessionID, &unlock, lost) {
+				return true
+			}
+		}
 	}
-	m.granted()
-	// The repair. A record the bucket holds now that this session's consumer is gone was
-	// written by a registration that landed between the read above and this delete, and that
-	// registration was answered 200 with consumer delivery, so the consumer comes back on the
-	// filter and the start the record and the bucket's newest row ask for (registeredTarget),
-	// at the floor the delete recorded.
-	m.repairRegistered(ctx, d, sessionID, floor, repairAfterDelete)
-	return true
 }

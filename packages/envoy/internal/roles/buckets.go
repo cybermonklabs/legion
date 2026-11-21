@@ -65,8 +65,8 @@ func NewBuckets(client JetStream, windows Windows) *Buckets {
 // openBucketHook, when set, runs before each bucket open (bucket). It is nil outside tests.
 var openBucketHook atomic.Pointer[func()]
 
-// bucket returns the handle of bucket on the client's current connection, opening it within ctx
-// when it is not open on that connection yet.
+// bucket returns the handle of bucket on the client's current connection, opening it under ctx, the
+// read's, when it is not open on that connection yet.
 //
 // b.mu guards the handles alone, and the open is made with it released: the open sends a
 // STREAM.INFO, which waits for nats.go's connection lock, and nats.go holds that lock through a
@@ -108,16 +108,25 @@ func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error)
 	return kv, nil
 }
 
-// within runs read, waiting for it no longer than ctx and at most readTimeout (bus.Bounded). A
-// read that did not answer in time is named by what.
-func within[T any](ctx context.Context, what string, read func() (T, error)) (T, error) {
+// within runs read under ctx bounded at readTimeout, waiting for it no longer than that bound
+// (bus.Bounded), and hands read that bounded context, which its requests are made under. A read
+// that did not answer in time is named by what. A read whose connection was lost
+// (bus.ErrConnectionLost) - the bucket open, which bucket makes with b.mu released, or the key read
+// - is read again once the connection is back, inside the same bound (bus.Reconnected); no read
+// holds b.mu across a request, so none waits for the reconnect with it held.
+func within[T any](ctx context.Context, what string, read func(context.Context) (T, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
-	value, answered, err := bus.Bounded(ctx, read)
-	if !answered {
-		return value, fmt.Errorf("%s: %w", what, err)
+	for {
+		value, answered, err := bus.Bounded(ctx, func() (T, error) { return read(ctx) })
+		if !answered {
+			return value, fmt.Errorf("%s: %w", what, err)
+		}
+		if bus.Reconnected(ctx, err) {
+			continue
+		}
+		return value, err
 	}
-	return value, err
 }
 
 // RoleClaim reads role's claim from the role bucket within ctx, decoded as store.Registry decodes
@@ -125,7 +134,7 @@ func within[T any](ctx context.Context, what string, read func() (T, error)) (T,
 // claim without an error when there is no role bucket and when the bucket holds no claim for the
 // role.
 func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
-	return within(ctx, "read role "+role+"'s claim", func() (store.RoleClaim, error) {
+	return within(ctx, "read role "+role+"'s claim", func(ctx context.Context) (store.RoleClaim, error) {
 		kv, err := b.bucket(ctx, bus.RoleClaimBucket)
 		if errors.Is(err, nats.ErrBucketNotFound) {
 			return store.RoleClaim{}, nil
@@ -133,7 +142,7 @@ func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, 
 		if err != nil {
 			return store.RoleClaim{}, err
 		}
-		entry, err := kv.Get(role)
+		entry, err := kv.Get(ctx, role)
 		if errors.Is(err, nats.ErrKeyNotFound) {
 			return store.RoleClaim{}, nil
 		}
@@ -155,12 +164,12 @@ func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, 
 // read may name (bus.ErrRefused) and a value that does not decode are nats.ErrKeyNotFound: no
 // record stands for the session. Any other error is a read that did not answer.
 func (b *Buckets) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
-	entry, err := within(ctx, "read session "+sessionID, func() (nats.KeyValueEntry, error) {
+	entry, err := within(ctx, "read session "+sessionID, func(ctx context.Context) (nats.KeyValueEntry, error) {
 		kv, err := b.bucket(ctx, bus.SessionBucket)
 		if err != nil {
 			return nil, err
 		}
-		return kv.Get(sessionID)
+		return kv.Get(ctx, sessionID)
 	})
 	if errors.Is(err, bus.ErrRefused) {
 		return session.SessionEntry{}, fmt.Errorf("%w: %w", nats.ErrKeyNotFound, err)

@@ -208,7 +208,7 @@ func TestWaitCompleteReturnsWhenStopRetiresTheWatcher(t *testing.T) {
 func TestWaitCompleteReturnsWhenTheWatchersOwnReReadCompletes(t *testing.T) {
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
-	if _, err := kv.Put("key", []byte("1")); err != nil {
+	if _, err := kv.Put(t.Context(), "key", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	w, arm := refillingWatcher(t, kv)

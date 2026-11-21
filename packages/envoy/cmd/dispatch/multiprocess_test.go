@@ -7631,7 +7631,7 @@ func backDateRedeliveryClaim(t *testing.T, natsURL, guid string, by time.Duratio
 		t.Fatalf("open the redelivery bucket: %v", err)
 	}
 	key := "guid." + guid
-	entry, err := state.Get(key)
+	entry, err := state.Get(t.Context(), key)
 	if err != nil {
 		t.Fatalf("read the redelivery record of %s: %v", guid, err)
 	}
@@ -7644,7 +7644,7 @@ func backDateRedeliveryClaim(t *testing.T, natsURL, guid string, by time.Duratio
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := state.Update(key, data, entry.Revision()); err != nil {
+	if _, err := state.Update(t.Context(), key, data, entry.Revision()); err != nil {
 		t.Fatalf("back-date the redelivery claim of %s: %v", guid, err)
 	}
 }

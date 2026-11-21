@@ -415,7 +415,7 @@ func Open(ctx context.Context, nc *nats.Conn, logger *logging.Logger, opts ...Op
 	for _, f := range opts {
 		f(&o)
 	}
-	js, err := nc.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := bus.JetStream(nc, nats.MaxWait(10*time.Second))
 	if err != nil {
 		return nil, err
 	}
@@ -523,9 +523,11 @@ func (w *Writer) HasRecord(owner, repo, number, sha string) (bool, error) {
 // that remembers what it last wrote cannot answer this from memory: the bucket's TTL expires a
 // key under an unchanged head, and a record may be deleted, after which the head must be read in
 // full again. It reads the bucket and never a cache, so on the listener's store it answers from
-// what the bucket holds rather than from this process's own writes.
+// what the bucket holds rather than from this process's own writes. Its caller holds no lock and
+// names no context, so the read waits for nats.go's own answer within the request's own bound
+// (bus.RequestTimeout).
 func (s *Store) HasRecord(owner, repo, number, sha string) (bool, error) {
-	if _, err := s.kv().Get(Key(owner, repo, number, sha)); err != nil {
+	if _, err := s.kv().Get(context.Background(), Key(owner, repo, number, sha)); err != nil {
 		if errors.Is(err, nats.ErrKeyNotFound) {
 			return false, nil
 		}
@@ -969,11 +971,13 @@ func casBackoff(attempt int) time.Duration {
 // while the bucket the write went to is the one the watcher reads (kvwatch.Watcher.Handle): a
 // revision of a bucket since recreated would fence out the new bucket's, which number from 1
 // again.
+// Its callers (the summarizer's settle) hold no lock and name no context, so each request waits for
+// nats.go's own answer within the request's own bound (bus.RequestTimeout).
 func (s *Store) casState(key string, apply func(st *State) (ok bool, err error)) (State, bool, error) {
 	kv, epoch := s.watcher.Handle()
 	deadline := time.Now().Add(recordBudget)
 	for attempt := 0; ; attempt++ {
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(context.Background(), key)
 		if err != nil {
 			return State{}, false, err
 		}
@@ -992,7 +996,7 @@ func (s *Store) casState(key string, apply func(st *State) (ok bool, err error))
 		if err != nil {
 			return State{}, false, err
 		}
-		revision, err := kv.Update(key, buf, entry.Revision())
+		revision, err := kv.Update(context.Background(), key, buf, entry.Revision())
 		if err == nil {
 			s.mu.Lock()
 			moved := s.movedLocked(epoch, key, revision)
@@ -1038,10 +1042,11 @@ func (s *Store) ClaimSettlement(key, expectedHash string, expectedGeneration uin
 }
 
 // ClaimStillHeld verifies from durable KV that this exact snapshot retains the
-// settlement right immediately before an external publication.
+// settlement right immediately before an external publication. Its caller (the summarizer's
+// settle) holds no lock and names no context.
 func (s *Store) ClaimStillHeld(key string, generation uint64, hash string) (bool, error) {
 	kv := s.kv()
-	entry, err := kv.Get(key)
+	entry, err := kv.Get(context.Background(), key)
 	if err != nil {
 		return false, err
 	}

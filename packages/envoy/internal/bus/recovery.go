@@ -12,10 +12,12 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// onClosed is wired as the ClosedCB callback. It reports the connection event (ConnectionChanged)
-// and launches recovery in a background goroutine so the NATS library callback returns
-// immediately.
+// onClosed is wired as the ClosedCB callback. It ends the life of a connection the client has
+// since replaced (endLifeIfDown), reports the connection event (ConnectionChanged), which wakes the
+// life of the closed connection to end itself (requestLife), and launches recovery in a background
+// goroutine so the NATS library callback returns immediately.
 func (c *Client) onClosed() {
+	c.endLifeIfDown()
 	c.connectionChanged()
 	go c.recover()
 }
@@ -132,18 +134,24 @@ func (c *Client) afterReconnect(nc *nats.Conn) {
 // closeStopped closes nc, the connection a reconnect callback reports once the client has stopped:
 // nats.go has re-sent the subscriptions a drain is draining, and nothing will drain them now, so
 // the connection is closed rather than hand deliveries to a process that is exiting. A reconnect
-// that came before Drain stopped the client is the drain's: nats.go can run its callback only once
-// the drain is under way, and by then the drain itself is draining what nats.go re-sent, so closing
-// there would cut off the deliveries still in their handlers.
+// the drain counted when it stopped the client is the drain's: nats.go can run its callback only
+// once the drain is under way, and by then the drain itself is draining what nats.go re-sent, so
+// closing there would cut off the deliveries still in their handlers. A client Close stopped
+// closes at once. nats.go's Stats waits for its connection lock, so it is read with c.mu let go.
 func (c *Client) closeStopped(nc *nats.Conn) {
 	c.mu.Lock()
-	// A callback reports at least one reconnect, and a client stopped by Close alone leaves the
-	// count at 0, so only a reconnect Drain counted at its stop matches.
-	reconnectedBeforeTheDrain := nc == c.Conn && nc.Stats().Reconnects == c.drainedReconnects
+	counted, current := c.drainCounted, nc == c.Conn
 	c.mu.Unlock()
-	if !reconnectedBeforeTheDrain {
-		nc.Close()
+	if counted != nil && current {
+		<-counted
+		c.mu.Lock()
+		drained := c.drainedReconnects
+		c.mu.Unlock()
+		if nc.Stats().Reconnects == drained {
+			return
+		}
 	}
+	nc.Close()
 }
 
 // AddReconnectHook registers recovery for state that is attached to NATS but not represented by
@@ -188,10 +196,12 @@ func (c *Client) AddDisconnectHook(hook func()) {
 	c.reconnectHooksMu.Unlock()
 }
 
-// onDisconnect is wired as the DisconnectedErrCB callback, after its log line: it reports the
-// connection event (ConnectionChanged), so that a publish waiting for the connection reads it
-// again, and then runs the disconnect hooks.
+// onDisconnect is wired as the DisconnectedErrCB callback, after its log line: it ends the life of
+// a connection the client has since replaced (endLifeIfDown), reports the connection event
+// (ConnectionChanged), which wakes the life of the dropped connection to end itself (requestLife)
+// and a publish waiting for the connection to read it again, and then runs the disconnect hooks.
 func (c *Client) onDisconnect() {
+	c.endLifeIfDown()
 	c.connectionChanged()
 	c.reconnectHooksMu.Lock()
 	hooks := slices.Clone(c.disconnectHooks)
@@ -223,15 +233,12 @@ func (c *Client) AddDrainHook(hook func(ctx context.Context)) {
 	c.reconnectHooksMu.Unlock()
 }
 
-// ErrConnectionLost is the cause of a drain hook's context (context.Cause) when the connection
-// was lost while the hooks ran. nats.go then refuses a request with the reconnect buffer off
-// ("outbound buffer limit exceeded"), and a request already sent gets no answer, so what a hook
+// runDrainHooks runs the drain hooks one after another on conn, each bounded by deadline and by
+// conn staying connected: ErrConnectionLost is the cause of their context (context.Cause) when the
+// connection was lost while the hooks ran. nats.go then refuses a request with the reconnect buffer
+// off ("outbound buffer limit exceeded"), and a request already sent gets no answer, so what a hook
 // had still to ask the server is left to the server: an ordered consumer whose interest is gone is
 // deleted by its inactive threshold.
-var ErrConnectionLost = errors.New("bus: the connection was lost during the drain")
-
-// runDrainHooks runs the drain hooks one after another on conn, each bounded by deadline and by
-// conn staying connected.
 func (c *Client) runDrainHooks(conn *nats.Conn, deadline time.Time) {
 	c.reconnectHooksMu.Lock()
 	hooks := slices.Clone(c.drainHooks)
@@ -544,9 +551,8 @@ func (c *Client) recoverUntilHealthy() {
 }
 
 func (c *Client) subscriptionsHealthy() bool {
-	c.mu.Lock()
-	connOK := c.Conn != nil && c.Conn.Status() != nats.CLOSED
-	c.mu.Unlock()
+	conn := c.Connection()
+	connOK := conn != nil && conn.Status() != nats.CLOSED
 	c.subscriptionsMu.Lock()
 	defer c.subscriptionsMu.Unlock()
 	for _, subscription := range c.subscriptions {

@@ -129,7 +129,7 @@ func waitCacheStateMissing(t *testing.T, s *Store, owner, repo, number, sha stri
 func setLastEventAt(t *testing.T, store *Store, owner, repo, number, sha string, at int64) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	entry, err := store.watcher.KV().Get(key)
+	entry, err := store.watcher.KV().Get(t.Context(), key)
 	if err != nil {
 		t.Fatalf("get state: %v", err)
 	}
@@ -142,7 +142,7 @@ func setLastEventAt(t *testing.T, store *Store, owner, repo, number, sha string,
 	if err != nil {
 		t.Fatalf("encode state: %v", err)
 	}
-	if _, err := store.watcher.KV().Update(key, raw, entry.Revision()); err != nil {
+	if _, err := store.watcher.KV().Update(t.Context(), key, raw, entry.Revision()); err != nil {
 		t.Fatalf("set last event at: %v", err)
 	}
 	deadline := time.After(5 * time.Second)
@@ -166,7 +166,7 @@ func setLastEventAt(t *testing.T, store *Store, owner, repo, number, sha string,
 func setClaim(t *testing.T, store *Store, owner, repo, number, sha string, claim *SettlementClaim) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	entry, err := store.watcher.KV().Get(key)
+	entry, err := store.watcher.KV().Get(t.Context(), key)
 	if err != nil {
 		t.Fatalf("get state: %v", err)
 	}
@@ -179,7 +179,7 @@ func setClaim(t *testing.T, store *Store, owner, repo, number, sha string, claim
 	if err != nil {
 		t.Fatalf("encode state: %v", err)
 	}
-	if _, err := store.watcher.KV().Update(key, raw, entry.Revision()); err != nil {
+	if _, err := store.watcher.KV().Update(t.Context(), key, raw, entry.Revision()); err != nil {
 		t.Fatalf("set claim: %v", err)
 	}
 	deadline := time.After(5 * time.Second)
@@ -470,7 +470,7 @@ func TestSummaryTickKeepsLegacyFailureAfterFreshCheckArrives(t *testing.T) {
 
 	legacy := []byte(`{"owner":"example-org","repo":"example-repo","number":"42","sha":"abcdef1234567890abcdef1234567890abcdef12",` +
 		`"checks":{"build":{"status":"completed","conclusion":"failure"},"lint":{"status":"in_progress"}}}`)
-	if _, err := store.watcher.KV().Create(Key(owner, repo, number, sha), legacy); err != nil {
+	if _, err := store.watcher.KV().Create(t.Context(), Key(owner, repo, number, sha), legacy); err != nil {
 		t.Fatalf("write deployed-listener state: %v", err)
 	}
 	if err := recordCheck(store, owner, repo, number, sha, "lint", "901", "https://example.test/901", "completed", "success", "2026-09-07T03:01:00Z"); err != nil {
@@ -761,7 +761,7 @@ func TestSummaryTickUsesLatestCheckRunIDAfterStateExpiration(t *testing.T) {
 	}
 
 	key := Key(owner, repo, number, sha)
-	if err := store.watcher.KV().Delete(key); err != nil {
+	if err := store.watcher.KV().Delete(t.Context(), key); err != nil {
 		t.Fatalf("delete expired state: %v", err)
 	}
 	waitCacheStateMissing(t, store, owner, repo, number, sha)
@@ -1316,7 +1316,7 @@ func TestSummaryTickPublishesLegacyResettledRecordWithoutTimestamps(t *testing.T
 		"resettled":true,
 		"last_event_at":` + strconv.FormatInt(time.Now().UnixMilli(), 10) + `
 	}`)
-	if _, err := store.watcher.KV().Put(Key(owner, repo, number, sha), legacy); err != nil {
+	if _, err := store.watcher.KV().Put(t.Context(), Key(owner, repo, number, sha), legacy); err != nil {
 		t.Fatalf("store legacy state: %v", err)
 	}
 	waitCacheChecks(t, store, owner, repo, number, sha, 1)

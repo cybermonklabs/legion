@@ -147,7 +147,7 @@ func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) 
 	if b == nil {
 		return nil
 	}
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := bus.JetStream(conn, nats.MaxWait(10*time.Second))
 	if err != nil {
 		return fmt.Errorf("%s needs JetStream for the spent-proof bucket %s: %w", EnvBrokerURL, bus.DPoPProofBucket, err)
 	}
@@ -264,7 +264,7 @@ func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _,
 	// does; the abandoned create may still land, which is the right way round for a record whose
 	// whole purpose is to be there.
 	_, _, err := bus.Bounded(ctx, func() (uint64, error) {
-		return s.kv.Create(hex.EncodeToString(key[:]), nil)
+		return s.kv.Create(ctx, hex.EncodeToString(key[:]), nil)
 	})
 	if errors.Is(err, nats.ErrKeyExists) {
 		return true, nil

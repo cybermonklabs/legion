@@ -1031,7 +1031,7 @@ func TestAKeptCopyReachesTheHolderThatClaimedTheRoleUnderTheKeep(t *testing.T) {
 	}
 
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-under-claim-1")
-	if !keepRoleLaneMessage(cfg, role, item, roleKeptUnclaimed, "") {
+	if !keepRoleLaneMessage(t.Context(), cfg, role, item, roleKeptUnclaimed, "") {
 		t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 	}
 	select {

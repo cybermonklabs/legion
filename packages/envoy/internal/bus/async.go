@@ -168,12 +168,11 @@ type window struct {
 	connectionWaitEntered atomic.Pointer[func()]
 }
 
+// PublishAsync sends item on its own topic under envelopeMsgID's Nats-Msg-Id, the one a publish of
+// it through the client carries, so the stream keeps one copy of it however often the window's
+// caller sends it again.
 func (w *window) PublishAsync(item contracts.Envelope) <-chan error {
-	msgID := ""
-	if contracts.DedupeKeyNamesTheUpstreamEvent(item) {
-		msgID = ForwardMsgID(item.DedupeKey, item.Topic)
-	}
-	return outcomeOf(w.send(item.Topic, item, msgID))
+	return outcomeOf(w.send(item.Topic, item, envelopeMsgID(item)))
 }
 
 func (w *window) PublishStoredAsync(subject string, item contracts.Envelope, msgID string) <-chan error {
@@ -240,10 +239,11 @@ func (w *window) pin(wait time.Duration) error {
 }
 
 // pinFirst waits up to wait for the client to have a connection, with pinning released, and pins
-// the window to its current life (connLife), unless another send pinned it first. It takes that
-// life before it reads connected; a report of its end after either read closes the channel and the
-// loop tries the connection again. The reconnect count records a life only while that same channel
-// is still current and unpinned.
+// the window to its current life (the client's windowLife), unless another send pinned it first. It
+// takes that life with the connection, under the client's lock, and once the life's status listener
+// is registered (awaitRegistered) takes its current channel before it reads connected; a report of
+// its end after either read closes the channel and the loop tries the connection again. The
+// reconnect count records a life only while that same channel is still current and unpinned.
 func (w *window) pinFirst(wait time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
@@ -262,8 +262,11 @@ func (w *window) pinFirst(wait time.Duration) error {
 			}
 			w.client.mu.Lock()
 			pinned := connection{conn: w.client.Conn, js: w.client.js}
+			life := w.client.windowLifeLocked()
 			w.client.mu.Unlock()
-			life := lifeOf(pinned.conn)
+			if err := life.awaitRegistered(ctx); err != nil {
+				return connection{}, err
+			}
 			ch := life.current()
 			if !pinned.conn.IsConnected() {
 				continue
@@ -320,17 +323,6 @@ func (w *window) pinToSend() error {
 	}
 	return pinned
 }
-
-// ConnLockWait is how long a caller that holds a lock of its own, or that something holding one
-// waits for, waits for a call to NATS before it takes nats.go's connection lock as held by a
-// reconnect. nats.go holds that lock for microseconds to write or read a frame, and for a whole
-// reconnect attempt, the dial and the handshake (v1.53.1 doReconnect, nats.go:3458-3485), up to the
-// attempt's connect timeout (connectTimeout), or the hub's authorization timeout while its auth
-// service holds the CONNECT. A call kept waiting longer is answered as a reconnect in progress: an
-// intake's stop goes on without it (internal/dispatch/delivery). On a box loaded enough to keep such
-// a call waiting this long, the caller answers a loss it need not have, which costs it what a loss
-// costs and holds it no longer.
-const ConnLockWait = 100 * time.Millisecond
 
 // current reports whether the window's connection is still in the life the window pinned: nats.go
 // has reported it neither reconnecting, disconnected nor closed since (connLife). It reads no state

@@ -77,7 +77,7 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 	const key = "ses_live"
 	stream := "KV_" + bucket
 	uri, kv := leaderReadBucket(t, bucket)
-	if _, err := kv.Put(key, []byte("live")); err != nil {
+	if _, err := kv.Put(t.Context(), key, []byte("live")); err != nil {
 		t.Fatalf("put %s: %v", key, err)
 	}
 
@@ -98,7 +98,7 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 
-	if _, err := kv.Get(key); err != nil {
+	if _, err := kv.Get(t.Context(), key); err != nil {
 		t.Fatalf("Get(%s): %v", key, err)
 	}
 	direct := requestFor(t, directGets, stream, 5*time.Second)
@@ -142,7 +142,7 @@ func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	revision, err := kv.Put("ses_live", []byte("live"))
+	revision, err := kv.Put(ctx, "ses_live", []byte("live"))
 	if err != nil {
 		t.Fatalf("put ses_live: %v", err)
 	}
@@ -157,34 +157,34 @@ func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
 		t.Errorf("GetFromLeader(ses_live) = revision %d, operation %v, created %s; want revision %d, a put, and the time the stream stored it",
 			entry.Revision(), entry.Operation(), entry.Created(), revision)
 	}
-	got, err := kv.Get("ses_live")
+	got, err := kv.Get(ctx, "ses_live")
 	if err != nil || got.Revision() != entry.Revision() || string(got.Value()) != string(entry.Value()) {
 		t.Errorf("Get(ses_live) = revision %d, %q, %v; want the leader read's revision %d and %q", got.Revision(), got.Value(), err, entry.Revision(), entry.Value())
 	}
 
-	if _, err := kv.Put("ses_deleted", []byte("gone")); err != nil {
+	if _, err := kv.Put(ctx, "ses_deleted", []byte("gone")); err != nil {
 		t.Fatalf("put ses_deleted: %v", err)
 	}
-	if err := kv.Delete("ses_deleted"); err != nil {
+	if err := kv.Delete(ctx, "ses_deleted"); err != nil {
 		t.Fatalf("delete ses_deleted: %v", err)
 	}
-	if _, err := kv.Put("ses_purged", []byte("gone")); err != nil {
+	if _, err := kv.Put(ctx, "ses_purged", []byte("gone")); err != nil {
 		t.Fatalf("put ses_purged: %v", err)
 	}
-	if err := kv.Purge("ses_purged"); err != nil {
+	if err := kv.Purge(ctx, "ses_purged"); err != nil {
 		t.Fatalf("purge ses_purged: %v", err)
 	}
 	for _, key := range []string{"ses_missing", "ses_deleted", "ses_purged"} {
 		if _, err := kv.GetFromLeader(ctx, key); !errors.Is(err, nats.ErrKeyNotFound) {
 			t.Errorf("GetFromLeader(%s) = %v, want %v", key, err, nats.ErrKeyNotFound)
 		}
-		if _, err := kv.Get(key); !errors.Is(err, nats.ErrKeyNotFound) {
+		if _, err := kv.Get(ctx, key); !errors.Is(err, nats.ErrKeyNotFound) {
 			t.Errorf("Get(%s) = %v, want %v: the two answer a key with no value alike", key, err, nats.ErrKeyNotFound)
 		}
 	}
 
 	_, leaderErr := kv.GetFromLeader(ctx, "ses:bad")
-	_, getErr := kv.Get("ses:bad")
+	_, getErr := kv.Get(ctx, "ses:bad")
 	if !errors.Is(leaderErr, ErrInvalidKey) || !errors.Is(leaderErr, ErrRefused) || !errors.Is(leaderErr, nats.ErrInvalidKey) {
 		t.Errorf("GetFromLeader(ses:bad) = %v, want an ErrRefused naming ErrInvalidKey and nats.ErrInvalidKey", leaderErr)
 	}

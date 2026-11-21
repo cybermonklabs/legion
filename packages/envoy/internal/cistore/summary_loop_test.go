@@ -378,7 +378,7 @@ func TestTheSummaryLoopSleepsWhileNothingChanges(t *testing.T) {
 	// record is never cached, so it changes nothing for the loop. Once its revision is applied, the
 	// replay has been.
 	marker := head{"example-org", "example-repo", "64", "ead000000000000000000000000000000000beef"}.key()
-	revision, err := store.watcher.KV().Put(marker, []byte(`{"kind":"`+retiredHeadKind+`"}`))
+	revision, err := store.watcher.KV().Put(ctx, marker, []byte(`{"kind":"`+retiredHeadKind+`"}`))
 	if err != nil {
 		t.Fatalf("store the marker: %v", err)
 	}

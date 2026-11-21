@@ -60,19 +60,30 @@ func TestPublishReportingDuplicateReportsTheStreamsVerdict(t *testing.T) {
 		t.Fatalf("a different dedupe key must not report a duplicate")
 	}
 
-	// An agent-sourced envelope under a key its caller chose carries no MsgId at all, because
-	// that key names no event (contracts.DedupeKeyNamesTheUpstreamEvent), so the stream cannot
-	// recognise a repeat and never reports one.
+	// An agent-sourced envelope under a key its caller chose is stored under its own event id
+	// (envelopeMsgID), because that key names no event (contracts.DedupeKeyNamesTheUpstreamEvent)
+	// and two distinct envelopes can share it: a second envelope under the same key is no
+	// duplicate, and a repeat of the same envelope, the same event id, is.
 	agent := envelope("fourth")
 	agent.Source = "agent"
 	agent.Topic = "notifications.agent.ses_dup"
-	for range 2 {
-		duplicate, err = client.PublishReportingDuplicate(agent)
+	another := agent
+	another.EventID = "fifth"
+	for _, publish := range []struct {
+		what      string
+		item      contracts.Envelope
+		duplicate bool
+	}{
+		{"an agent-sourced publish", agent, false},
+		{"another envelope under the same key its caller chose", another, false},
+		{"a repeat of the first envelope", agent, true},
+	} {
+		duplicate, err = client.PublishReportingDuplicate(publish.item)
 		if err != nil {
-			t.Fatalf("agent-sourced publish: %v", err)
+			t.Fatalf("%s: %v", publish.what, err)
 		}
-		if duplicate {
-			t.Fatalf("an agent-sourced publish carries no MsgId and cannot be a duplicate")
+		if duplicate != publish.duplicate {
+			t.Fatalf("%s reported duplicate %t, want %t", publish.what, duplicate, publish.duplicate)
 		}
 	}
 }

@@ -89,7 +89,7 @@ func awaitKeptValue(t *testing.T, kv KeyValue, key, want string) {
 	t.Helper()
 	deadline := time.Now().Add(keptValueWait)
 	for {
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(t.Context(), key)
 		if err == nil && string(entry.Value()) == want {
 			return
 		}

@@ -504,8 +504,8 @@ func knownOverGrant(t *testing.T, first, longest time.Duration, extra ...KnownSe
 
 // repairRunning reports whether the store's one background repair is running.
 func repairRunning(known *KnownSessions) bool {
-	known.repairMu.Lock()
-	defer known.repairMu.Unlock()
+	known.repairStateMu.Lock()
+	defer known.repairStateMu.Unlock()
 	return known.repairing
 }
 

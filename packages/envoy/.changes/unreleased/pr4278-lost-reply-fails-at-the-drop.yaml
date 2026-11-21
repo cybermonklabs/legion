@@ -1,0 +1,66 @@
+kind: Fixed
+body: |-
+  A NATS request whose reply a dropped connection lost no longer waits for its whole timeout: it
+  fails within the moment nats.go reports the loss, with `bus.ErrConnectionLost`, where it waited
+  5 s to 10 s. Nearly every request of the listener and its relays goes
+  through one helper bound to the connection's life (`bus.Request`): the stream read the session
+  consumers share, every session consumer call and pull, the connection probe, forwards, KV reads
+  and writes, and the JetStream calls of every context the listener opens. A registration, a relay
+  restart, a consumer delete, a filter write and a consumer repair that lose a request release the
+  session's lock while they wait for the connection, take it again within their own budget, and
+  make the request again once it is back. So a session registration sent after a reconnect is
+  answered 200 rather than 503: the shared stream read and the relay restart that held the
+  session's lock no longer wait out a reply the drop took. A stored write that a second send would
+  find refused or answered as a duplicate of itself, a kept-lane cursor write or a publish whose
+  caller reads the duplicate verdict, is sent once and answers the loss, so the kept lane reads its
+  cursor back instead of taking its own landed write for another listener's. A call the bus makes
+  directly on a running client's connection - the dial that replaces a closed one and finds no
+  server, a core publish and its flush, a subscribe and the end of one, a KV watch's create, and a
+  pull's request, detach and acknowledgements - answers that connection's close with
+  `bus.ErrConnectionLost` too, rather than nats.go's `connection closed`, which its callers read as
+  lasting; a call on a connection the client has replaced keeps nats.go's error. A request on a
+  client that was stopped answers `nats.ErrConnectionClosed`, as before. An envelope whose dedupe
+  key names no event, which had no `Nats-Msg-Id`, is now stored under its own `event_id` and topic,
+  through the client and a publish window alike, so a second send of it after a lost answer is
+  stored once rather than twice; two envelopes under one such key are still two messages. A stored
+  write with no `Nats-Msg-Id` at all, an envelope with no `event_id` among them, is sent once and
+  answers the loss. The session resume record now carries a `Nats-Msg-Id` drawn for each write, so
+  one whose connection closed under it is sent again on the new connection when that is already
+  up, and stored once; while the new connection is still reconnecting or has closed in turn, and
+  when the connection was lost, it answers the loss at once rather than waiting with the session's
+  lock held, the consumer delete deletes nothing, and the delete's retry or the sweep's next pass
+  writes it. Every request of the session consumers' connection made while it is closed - the
+  stream read, a consumer call, the resume record and a pull - answers the loss at once too, as one
+  made while it reconnects does, so the dial that replaces it is made by the caller's retry with the
+  session's lock released, not under it. The same holds while the hub holds a reconnect's
+  handshake, as it does while its auth service has not answered the CONNECT: since nats.go holds
+  its connection lock through the whole handshake, whether a connection is up is read from nats.go
+  on a goroutine of its own and waited for at most 100 ms. A read kept waiting longer is "unknown":
+  a caller that holds a lock across its call (every call of the session consumers' connection, and
+  the listener's calls under a session's lock or a role's keep guard) takes it as the connection
+  down, and one that holds none waits for nats.go's own answer within its own deadline, as it did
+  before, so a slow read on a busy box costs it nothing. The listener's main client is also asked
+  first before the calls it makes under such a lock. A request's connection life ends at a drop
+  that comes before its listener has registered, without waiting for the attempt that holds
+  nats.go's lock, and a slow read ends no life that hears nats.go's own reports. A caller that reads
+  down gives the lock or the guard up, waits for the connection, and makes its call again, so a
+  handover the keep sweep started hands the lane over after a slow read as one the claim route
+  started does. A Close or a Drain of a client while its handshake is held leaves the client's own
+  lock free, and the known-session store's background repair lets its lock go 30 s into an attempt
+  whose requests get no answer, so a reconnect hook and an arm of the repair never wait on that
+  attempt. A request that a forced reconnect cut off, as the keeper of a service's token makes to
+  present a new token, answers the loss even when its answer is read once the connection is back,
+  rather than nats.go's `connection closed`. A start that waits for a stream's leader or copies and
+  loses its connection waits for the reconnect and then reads the stream again, as its other
+  requests do, and a read the loss cut off leaves the start's read limit as it was. A kept role
+  message's handover reports each copy it ends without a forward - a refusal's `delivery_failed`
+  exception, a dead letter's line and count, an expiry's count - as soon as the copy's cursor write
+  lands, off the role's guard, so a slow read of the connection or a drop no longer drops the
+  exception; a confirm it could not read back is settled once the guard is given back, by a token
+  of its own, and reported once, and the handover then goes on with the lane's later copies rather
+  than leaving them to the next sweep. The listener's stop ends the handovers it started and waits
+  for them, within its existing stop budget, before it drains NATS; a report still owed when that
+  wait ends is dropped with a warning rather than published into the draining connection.
+time: 2026-11-17T05:19:00Z
+custom:
+    Issue: pr4278

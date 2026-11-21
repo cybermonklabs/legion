@@ -69,16 +69,16 @@ func TestAWarmUpLogsWhatItStreamedAndThatItCompleted(t *testing.T) {
 		markers = 4
 	)
 	for i := range live {
-		if _, err := kv.Put(fmt.Sprintf("live-%d", i), []byte("1")); err != nil {
+		if _, err := kv.Put(t.Context(), fmt.Sprintf("live-%d", i), []byte("1")); err != nil {
 			t.Fatalf("put: %v", err)
 		}
 	}
 	for i := range markers {
 		key := fmt.Sprintf("gone-%d", i)
-		if _, err := kv.Put(key, []byte("1")); err != nil {
+		if _, err := kv.Put(t.Context(), key, []byte("1")); err != nil {
 			t.Fatalf("put %s: %v", key, err)
 		}
-		if err := kv.Delete(key); err != nil {
+		if err := kv.Delete(t.Context(), key); err != nil {
 			t.Fatalf("delete %s: %v", key, err)
 		}
 	}
@@ -121,7 +121,7 @@ func TestATimedOutWarmUpSaysSoAndIsReadAgainByTheWatcher(t *testing.T) {
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	for _, key := range []string{"one", "two", "three"} {
-		if _, err := kv.Put(key, []byte("1")); err != nil {
+		if _, err := kv.Put(t.Context(), key, []byte("1")); err != nil {
 			t.Fatalf("put %s: %v", key, err)
 		}
 	}
@@ -158,7 +158,7 @@ func TestATimedOutWarmUpSaysSoAndIsReadAgainByTheWatcher(t *testing.T) {
 		t.Fatalf("after the timed-out warm-up: Servable %v, %d reads completed; want %v and none", err, len(into.completions()), kvwatch.ErrRefilling)
 	}
 	// The watcher is live: a key written after the timeout still reaches the cache.
-	if _, err := kv.Put("after-the-timeout", []byte("1")); err != nil {
+	if _, err := kv.Put(ctx, "after-the-timeout", []byte("1")); err != nil {
 		t.Fatalf("put after-the-timeout: %v", err)
 	}
 	eventually(t, "a key written after the timed-out scan", func() bool { return into.has("after-the-timeout") })

@@ -468,7 +468,7 @@ func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
 	}
 	// The bucket keeps a spent proof for its whole window and no longer, so a listener that has
 	// been up for days holds only the last few minutes of them.
-	status, err := first.kv.Status()
+	status, err := first.kv.Status(ctx)
 	if err != nil {
 		t.Fatalf("read the bucket's status: %v", err)
 	}

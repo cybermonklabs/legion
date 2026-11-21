@@ -242,14 +242,14 @@ func TestARaisedBucketServesItsKeysAtOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
-	if _, err := created.Put("key", []byte("value")); err != nil {
+	if _, err := created.Put(t.Context(), "key", []byte("value")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
 	if err != nil {
 		t.Fatalf("raise the bucket to three copies: %v", err)
 	}
-	entry, err := kv.Get("key")
+	entry, err := kv.Get(t.Context(), "key")
 	if err != nil || string(entry.Value()) != "value" {
 		t.Fatalf("get after the raise = %v, %v; want value", entry, err)
 	}

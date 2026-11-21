@@ -132,8 +132,9 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 	create := stream + " create"
 	// Every request of this call, the lookup, the create, the read of a found bucket's stream, its
 	// raise and the reads of the waits below, goes through js read for the server's refusal
-	// (readsRefusals), so a request the grant refuses ends its step at once naming the refusal.
-	js = readsRefusals(conn, js)
+	// (readsRefusals), so a request the grant refuses ends its step at once naming the refusal; the
+	// lookup and the create are bound under ctx (openWithin), as every other request here is.
+	js = openWithin(ctx, readsRefusals(conn, js))
 	// lookUpBucket is the one lookup this call makes, here and again while it waits a member out,
 	// so the two are the same request, and it names its own error rather than leave each caller
 	// to name it. The name wraps the server's answer with %w (namedRequest), so awaitBucketApplied

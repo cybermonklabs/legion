@@ -343,9 +343,11 @@ func (w *Watcher) Start() {
 // watcher's create are made under it, and the legacy lookup and the previous watcher's consumer
 // delete, which nats.go gives no context, are waited for only until it ends (bus.OpenKeyValue,
 // watch). So a move on a connection that drops ends at the drop; the watcher a move installs does
-// not end with ctx (watch).
+// not end with ctx (watch). The JetStream context is opened bound to the life of conn's client
+// (bus.JetStream), so a request of the move that the connection's loss cut off is
+// bus.ErrConnectionLost.
 func (w *Watcher) Rewatch(ctx context.Context, conn *nats.Conn) error {
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := bus.JetStream(conn, nats.MaxWait(10*time.Second))
 	if err != nil {
 		return fmt.Errorf("open %s JetStream: %w", w.name, err)
 	}

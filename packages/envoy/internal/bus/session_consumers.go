@@ -167,7 +167,7 @@ type SessionConsumers struct {
 	// logger is the logger the connection was opened with (ConnectSessionConsumers),
 	// slog.Default() where that was nil: where create and recordResumeFloorAt write their lines.
 	logger *slog.Logger
-	// pendingMu guards pending and createFault.
+	// pendingMu guards pending, createFault and recordFault.
 	pendingMu sync.Mutex
 	// pending holds, by consumer name, the start of each consumer a restart (RestartAtFloor) read
 	// the floor of and may have deleted, until a create at that start is confirmed: the position
@@ -176,6 +176,11 @@ type SessionConsumers struct {
 	// createFault, when not nil, runs before each consumer create is sent, and an error it returns
 	// fails the create unsent. It is nil outside tests (SetCreateFault).
 	createFault func(consumer string) error
+	// recordFault, when not nil, runs before each resume record of a session is published
+	// (recordResumeFloorAt), and an error it returns fails that write unsent. It is nil outside
+	// tests (session_resume_closed_test.go), which fail a delete's record while the consumer API
+	// still answers.
+	recordFault func(sessionID string) error
 
 	// streamMu guards streamNext and streamReading (streamState).
 	streamMu sync.Mutex
@@ -218,8 +223,16 @@ type SessionConsumers struct {
 // notifications.agent.*.<session>, and on such a server it would lose the session's old-form
 // messages behind other sessions' traffic with no error. The listener calls this at its start and
 // ends the process on the error, so it refuses to start against such a server.
+//
+// Its client answers a request made while its connection is down - nats.go reconnecting it, or
+// nats.go having closed it - with ErrConnectionLost at once, rather than waiting for the reconnect
+// or dialling a replacement first (withLossAtOnce, connForRequest): every caller of a
+// SessionConsumers call that holds something - a session's lock, the shared stream read, a relay's
+// restart turn - retries the loss itself, releasing what it holds while it waits, and that wait
+// dials a closed connection's replacement (Reconnected); a wait made before the request would be
+// made with all of it held.
 func ConnectSessionConsumers(urls []string, inactiveThreshold time.Duration, logger *slog.Logger, options ...ConnectOption) (*SessionConsumers, error) {
-	client, err := Connect(urls, append([]ConnectOption{WithName("envoy-session-consumers")}, options...)...)
+	client, err := Connect(urls, append([]ConnectOption{WithName("envoy-session-consumers"), withLossAtOnce()}, options...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -256,29 +269,41 @@ func (s *SessionConsumers) SetCreateFault(fault func(consumer string) error) {
 	s.createFault = fault
 }
 
+// CloseConnection closes the client's connection as nats.go closes one it gives up on, with the
+// client still running, so the client's recovery and its callers' retries (Reconnected) dial its
+// replacement. It is a seam for tests, which put a session consumer call in front of a closed
+// connection; nothing else calls it.
+func (s *SessionConsumers) CloseConnection() { s.client.Connection().Close() }
+
 // Drain drains the connection, letting acks already sent reach the server, within timeout.
 func (s *SessionConsumers) Drain(timeout time.Duration) error { return s.client.Drain(timeout) }
 
 // Publish publishes msg over core NATS on the connection, waiting for a connection nats.go is
 // replacing until ctx ends: a relay frame on a session's DeliverSubject, which the stream does not
-// store, so it travels on the connection the frame's message was pulled and is answered on.
+// store, so it travels on the connection the frame's message was pulled and is answered on. A
+// publish nats.go refused for that connection's close, which it refuses before writing anything
+// (nats.go v1.55.0 nats.go:4738-4745), answers ErrConnectionLost, unsent, on a client still running
+// (lostIfClosed).
 func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
-	if err := s.client.ensureConnWithContext(ctx); err != nil {
+	if err := s.client.connForCall(ctx); err != nil {
 		return err
 	}
-	return s.client.Connection().PublishMsg(msg)
+	conn := s.client.Connection()
+	return s.client.lostIfClosed(conn.PublishMsg(msg), conn, true)
 }
 
 // SubscribeReplies subscribes handler over core NATS to subject, typically a reply-inbox wildcard,
 // on the connection, and keeps the subscription across a reconnect and on a connection dialled to
 // replace a closed one (Client.SubscribeCore). It is the connection's one core subscription: a
 // second call on another subject is refused with ErrSubscriptionHeld. It returns once the server
-// holds the subscription.
+// holds the subscription. A subscribe or a flush nats.go answered with the connection's close
+// answers ErrConnectionLost on a client still running (registerSubscription, lostIfClosed).
 func (s *SessionConsumers) SubscribeReplies(subject string, handler nats.MsgHandler) error {
 	if _, err := s.client.SubscribeCore(subject, handler); err != nil {
 		return err
 	}
-	return s.client.Connection().Flush()
+	conn := s.client.Connection()
+	return s.client.lostIfClosed(conn.Flush(), conn, false)
 }
 
 // SessionConsumerStart is what Ensure or RestartAtFloor did to a session's consumer.

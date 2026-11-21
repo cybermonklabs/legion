@@ -351,7 +351,7 @@ func TestARecreatedRecordSettlesAStatusChangeWithItsCreatedAt(t *testing.T) {
 		t.Fatalf("before the recreation the head settled naming statuses %+v, want %+v", before.Statuses, want)
 	}
 
-	if err := s.watcher.KV().Delete(h.key()); err != nil {
+	if err := s.watcher.KV().Delete(t.Context(), h.key()); err != nil {
 		t.Fatalf("delete the record as its TTL would: %v", err)
 	}
 	waitCacheStateMissing(t, s, h.owner, h.repo, h.number, h.sha)

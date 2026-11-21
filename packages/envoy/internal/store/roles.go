@@ -572,7 +572,7 @@ func (e *ErrRoleClaimRevisionMismatch) Error() string {
 // claim.Revision, as releaseReadRoleClaim already does.
 func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error) {
 	roles := r.roles()
-	entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return roles.Get(role) })
+	entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return roles.Get(ctx, role) })
 	if !answered {
 		return RoleClaim{}, fmt.Errorf("read role %s's claim: %w", role, err)
 	}

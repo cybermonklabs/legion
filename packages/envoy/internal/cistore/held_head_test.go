@@ -500,7 +500,7 @@ func TestARecordedSuiteKeepsItsRunCountUntilItCompletes(t *testing.T) {
 	// storedRunCounts reads each suite's run_count from the bucket's bytes, absent ones left out.
 	storedRunCounts := func() (map[string]any, uint64) {
 		t.Helper()
-		entry, err := s.watcher.KV().Get(h.key())
+		entry, err := s.watcher.KV().Get(t.Context(), h.key())
 		if err != nil {
 			t.Fatalf("kv get: %v", err)
 		}

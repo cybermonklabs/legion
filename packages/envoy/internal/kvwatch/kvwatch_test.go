@@ -374,7 +374,7 @@ func eventually(t *testing.T, what string, cond func() bool) {
 func TestTheCacheIsReadyAfterTheFirstScan(t *testing.T) {
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
-	if _, err := kv.Put("before-start", []byte("1")); err != nil {
+	if _, err := kv.Put(t.Context(), "before-start", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	into := newSeen()
@@ -503,7 +503,7 @@ func TestAFirstStartFailingAfterARewatchLeavesTheLiveWatcherHealthy(t *testing.T
 	if err := w.Err(); err != nil {
 		t.Fatalf("the failed first start marked the live watcher dead: %v", err)
 	}
-	if _, err := live.Put("after-start", []byte("1")); err != nil {
+	if _, err := live.Put(ctx, "after-start", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	eventually(t, "the live watcher's delivery", func() bool { return into.has("after-start") })
@@ -562,7 +562,7 @@ func TestAFailedFirstStartLogsItsErrorOnlyWhileItIsTheLiveWatch(t *testing.T) {
 		}
 		// The replacement is the cache's watcher still, and it delivers what the bucket takes.
 		live := w.KV()
-		if _, err := live.Put("after-start", []byte("1")); err != nil {
+		if _, err := live.Put(t.Context(), "after-start", []byte("1")); err != nil {
 			t.Fatalf("put: %v", err)
 		}
 		eventually(t, "the live watcher's delivery", func() bool { return into.has("after-start") })
@@ -594,7 +594,7 @@ func TestAFirstStartFailingDuringARewatchScanWaitsForThatScan(t *testing.T) {
 	_, uri := testnats.Start(t)
 	firstConn, first := bucket(t, uri)
 	liveConn, live := bucket(t, uri)
-	if _, err := live.Put("held", []byte("1")); err != nil {
+	if _, err := live.Put(t.Context(), "held", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	firstConn.Close()
@@ -656,7 +656,7 @@ func TestAWatcherThatEndsOnItsOwnRecordsItsError(t *testing.T) {
 	if err := w.Err(); err != nil {
 		t.Fatalf("a replacement watcher kept the old one's error: %v", err)
 	}
-	if _, err := live.Put("after-rewatch", []byte("1")); err != nil {
+	if _, err := live.Put(t.Context(), "after-rewatch", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	eventually(t, "the replacement watcher's delivery", func() bool { return into.has("after-rewatch") })
@@ -697,7 +697,7 @@ func TestARewatchOntoARecreatedBucketKeepsTheCopyUntilTheReadCompletes(t *testin
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	for _, key := range []string{"ghost", "both"} {
-		if _, err := kv.Put(key, []byte("old")); err != nil {
+		if _, err := kv.Put(t.Context(), key, []byte("old")); err != nil {
 			t.Fatalf("put %s: %v", key, err)
 		}
 	}
@@ -762,7 +762,7 @@ func TestARewatchOntoARecreatedBucketKeepsTheCopyUntilTheReadCompletes(t *testin
 func TestCheckReportsABucketRecreatedUnderALiveWatcher(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
-	if _, err := kv.Put("ghost", []byte("1")); err != nil {
+	if _, err := kv.Put(t.Context(), "ghost", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	into := newSeen()
@@ -825,7 +825,7 @@ func TestStopMakesTheEndSilentAndRewatchANoOp(t *testing.T) {
 		t.Fatalf("a Rewatch after Stop returned an error: %v", err)
 	}
 	live := w.KV()
-	if _, err := live.Put("after-stop", []byte("1")); err != nil {
+	if _, err := live.Put(t.Context(), "after-stop", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	time.Sleep(500 * time.Millisecond)
@@ -899,7 +899,7 @@ func TestAHeldReadReleasedTooLateNeitherCompletesNorRestoresServing(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			uri := testnats.URL(t)
 			conn, kv := bucket(t, uri)
-			if _, err := kv.Put("kept", []byte("1")); err != nil {
+			if _, err := kv.Put(t.Context(), "kept", []byte("1")); err != nil {
 				t.Fatalf("put: %v", err)
 			}
 			into := newSeen()
@@ -947,7 +947,7 @@ func TestAHeldReadReleasedTooLateNeitherCompletesNorRestoresServing(t *testing.T
 func TestAStaleEpisodeOutlastsFailedReadsUntilOneCompletes(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
-	if _, err := kv.Put("kept", []byte("1")); err != nil {
+	if _, err := kv.Put(t.Context(), "kept", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	into := newSeen()
@@ -1034,7 +1034,7 @@ func TestATimedOutReadIsReadAgainByTheWatcher(t *testing.T) {
 		uri := testnats.URL(t)
 		conn, kv := bucket(t, uri)
 		for _, key := range []string{"one", "two", "three"} {
-			if _, err := kv.Put(key, []byte("1")); err != nil {
+			if _, err := kv.Put(t.Context(), key, []byte("1")); err != nil {
 				t.Fatalf("put %s: %v", key, err)
 			}
 		}
@@ -1120,7 +1120,7 @@ func TestAReadThatEndsEarlyCompletesNothing(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	for _, key := range []string{"one", "two"} {
-		if _, err := kv.Put(key, []byte("1")); err != nil {
+		if _, err := kv.Put(t.Context(), key, []byte("1")); err != nil {
 			t.Fatalf("put %s: %v", key, err)
 		}
 	}
@@ -1204,7 +1204,7 @@ func TestADisconnectStartsAStaleEpisodeThatTheReadAfterTheReconnectEnds(t *testi
 	if err != nil {
 		t.Fatalf("bucket: %v", err)
 	}
-	if _, err := kv.Put("kept", []byte("1")); err != nil {
+	if _, err := kv.Put(t.Context(), "kept", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	into := newSeen()
@@ -1296,7 +1296,7 @@ func TestAReplacedWatchersBufferedEntryIsDropped(t *testing.T) {
 	if err := w.WaitReady(ctx); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
-	if _, err := kv.Put("late1", []byte("1")); err != nil {
+	if _, err := kv.Put(ctx, "late1", []byte("1")); err != nil {
 		t.Fatalf("put late1: %v", err)
 	}
 	select {
@@ -1309,7 +1309,7 @@ func TestAReplacedWatchersBufferedEntryIsDropped(t *testing.T) {
 	for i := range queued {
 		key := fmt.Sprintf("late%d", i+2)
 		keys = append(keys, key)
-		if _, err := kv.Put(key, []byte("1")); err != nil {
+		if _, err := kv.Put(ctx, key, []byte("1")); err != nil {
 			t.Fatalf("put %s: %v", key, err)
 		}
 	}
@@ -1394,7 +1394,7 @@ func (w *slowStopWatcher) Stop() error {
 func TestConcurrentRewatchesOntoARecreatedBucketKeepTheNewKeys(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
-	if _, err := kv.Put("ghost", []byte("1")); err != nil {
+	if _, err := kv.Put(t.Context(), "ghost", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	slow := &slowStopKV{KeyValue: kv.WatchHandle(), entered: make(chan struct{}), release: make(chan struct{})}
@@ -1496,7 +1496,7 @@ func (k *heldWatchKV) handle() bus.KeyValue { return bus.NewKeyValue(k.legacy, k
 func TestAWatchOfTheOldStreamDoesNotReplaceANewerOne(t *testing.T) {
 	_, uri := testnats.Start(t)
 	conn, first := bucket(t, uri)
-	if _, err := first.Put("ghost", []byte("1")); err != nil {
+	if _, err := first.Put(t.Context(), "ghost", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	held := holdWatch(first)
@@ -1542,7 +1542,7 @@ func TestAWatchOfTheOldStreamDoesNotReplaceANewerOne(t *testing.T) {
 	if err := w.Check(); err != nil || w.Err() != nil {
 		t.Fatalf("Check = %v, Err %v; want the newer watcher current and healthy", err, w.Err())
 	}
-	if _, err := w.KV().Put("after", []byte("1")); err != nil {
+	if _, err := w.KV().Put(t.Context(), "after", []byte("1")); err != nil {
 		t.Fatalf("put through the handle: %v", err)
 	}
 	eventually(t, "a write through the current handle", func() bool { return into.has("after") })
@@ -1556,7 +1556,7 @@ func TestADiscardedWatchOfTheOldStreamIsDrainedUntilItEnds(t *testing.T) {
 	_, uri := testnats.Start(t)
 	conn, first := bucket(t, uri)
 	for i := range 400 {
-		if _, err := first.Put(fmt.Sprintf("old-%d", i), []byte("1")); err != nil {
+		if _, err := first.Put(t.Context(), fmt.Sprintf("old-%d", i), []byte("1")); err != nil {
 			t.Fatalf("put: %v", err)
 		}
 	}
@@ -1607,7 +1607,7 @@ func TestAReplacedWatchersSentinelDoesNotReleaseReadiness(t *testing.T) {
 	uri := testnats.URL(t)
 	_, first := bucket(t, uri)
 	for i := range 10 {
-		if _, err := first.Put(fmt.Sprintf("k%03d", i), []byte("1")); err != nil {
+		if _, err := first.Put(t.Context(), fmt.Sprintf("k%03d", i), []byte("1")); err != nil {
 			t.Fatalf("put: %v", err)
 		}
 	}
@@ -1646,7 +1646,7 @@ func TestAReplacedWatchersSentinelDoesNotReleaseReadiness(t *testing.T) {
 	// sentinel. The Rewatch's scan sees 200 keys. The first watcher is released only once the
 	// Rewatch is parked on applyMu, so the switch comes before the first watcher's sentinel.
 	for i := 10; i < 200; i++ {
-		if _, err := first.Put(fmt.Sprintf("k%03d", i), []byte("1")); err != nil {
+		if _, err := first.Put(t.Context(), fmt.Sprintf("k%03d", i), []byte("1")); err != nil {
 			t.Fatalf("put: %v", err)
 		}
 	}

@@ -52,7 +52,7 @@ func TestADeleteAtReadKeepsTheRowWrittenAfterItsReadFoundNone(t *testing.T) {
 
 	const key = "ses_raced"
 	racing := &writingOnMissingGet{KeyValue: kv.Legacy(), value: []byte("registered")}
-	revision, err := NewKeyValue(racing, kv.WatchHandle(), kv.Streams()).DeleteAtRead(key)
+	revision, err := NewKeyValue(racing, kv.WatchHandle(), kv.Streams()).DeleteAtRead(t.Context(), key)
 	if err != nil {
 		t.Fatalf("delete %s at the revision its read answered: %v", key, err)
 	}
@@ -63,7 +63,7 @@ func TestADeleteAtReadKeepsTheRowWrittenAfterItsReadFoundNone(t *testing.T) {
 		t.Fatalf("the delete read revision %d, want 0: its read found the key absent", revision)
 	}
 
-	entry, err := kv.Get(key)
+	entry, err := kv.Get(t.Context(), key)
 	if err != nil {
 		t.Fatalf("%s after the delete: %v, want the row written under its read kept", key, err)
 	}

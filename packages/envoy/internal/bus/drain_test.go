@@ -114,7 +114,7 @@ func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
 	if _, err := client.SubscribeCore("notifications.role.drain-test", func(message *natsgo.Msg) {
 		started <- struct{}{}
 		time.Sleep(150 * time.Millisecond)
-		forward, err := client.StartRequestStoredTo(holderSubject, contracts.Envelope{
+		forward, err := client.StartRequestStoredTo(t.Context(), holderSubject, contracts.Envelope{
 			EventID:       "evt-" + string(message.Data),
 			Source:        "agent",
 			SourceEventID: "source-" + string(message.Data),

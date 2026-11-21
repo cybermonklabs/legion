@@ -241,9 +241,9 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		var answered bool
 		revision, answered, err = bus.Bounded(tries, func() (uint64, error) {
 			if oldClaim.Revision == 0 {
-				return roles.Create(req.Role, data)
+				return roles.Create(tries, req.Role, data)
 			}
-			return roles.Update(req.Role, data, oldClaim.Revision)
+			return roles.Update(tries, req.Role, data, oldClaim.Revision)
 		})
 		if !answered {
 			err = fmt.Errorf("write role %s's claim: %w", req.Role, err)

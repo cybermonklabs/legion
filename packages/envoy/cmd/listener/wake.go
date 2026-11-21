@@ -132,11 +132,11 @@ func wakeReportEnvelope(logger *logging.Logger, report wakeReport, eventID, dedu
 // is answered whatever the bus does, and is answered without waiting for it (reportRoleWake).
 //
 // Every attempt publishes the one envelope built below (wakeReportEnvelope), under the one event
-// id and dedupe key, as the stream keeps no duplicate window for these: an attempt the stream
-// stored and failed to acknowledge is reported twice, and a wake the daemon has taken already is
-// taken no second time (its mark's key is the report's event id, which every attempt of one report
-// carries, and the role and agent reports of one message carry the same name whichever attempt the
-// daemon reads).
+// id and dedupe key. The stream stores the report under its event id and topic
+// (bus.envelopeMsgID), so it keeps one copy however many attempts reach it within its duplicate
+// window. A wake the daemon has taken already is taken no second time (its mark's key is the
+// report's event id, which every attempt of one report carries, and the role and agent reports of
+// one message carry the same name whichever attempt the daemon reads).
 func publishWakeReport(lifetime context.Context, client *bus.Client, logger *logging.Logger, report wakeReport) {
 	if client == nil {
 		return

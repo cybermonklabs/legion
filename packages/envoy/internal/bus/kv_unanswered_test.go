@@ -263,10 +263,10 @@ func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 		t.Fatalf("a start whose first bucket lookup drew no answer = %v, want it to go on", err)
 	}
 
-	if _, err := handle.Put("key", []byte("value")); err != nil {
+	if _, err := handle.Put(t.Context(), "key", []byte("value")); err != nil {
 		t.Fatalf("write a key through the handle the start was given: %v", err)
 	}
-	entry, err := handle.Get("key")
+	entry, err := handle.Get(t.Context(), "key")
 	if err != nil {
 		t.Fatalf("read the key back through the handle the start was given: %v", err)
 	}

@@ -27,7 +27,7 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	kv, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(sessionID) })
+	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(ctx, sessionID) })
 	if !answered {
 		return fmt.Errorf("delete %s's interest record: %w", sessionID, err)
 	}
@@ -56,7 +56,7 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 	}
 	kv, epoch := r.watcher.Handle()
 	_, answered, err := bus.Bounded(ctx, func() (struct{}, error) {
-		return struct{}{}, kv.Delete(sessionID, nats.LastRevision(revision))
+		return struct{}{}, kv.Delete(ctx, sessionID, nats.LastRevision(revision))
 	})
 	if !answered {
 		return false, fmt.Errorf("delete %s's interest record at revision %d: %w", sessionID, revision, err)
@@ -355,9 +355,9 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []
 	kv, epoch := r.watcher.Handle()
 	written, answered, err := bus.Bounded(ctx, func() (uint64, error) {
 		if revision == 0 {
-			return kv.Create(sessionID, value)
+			return kv.Create(ctx, sessionID, value)
 		}
-		return kv.Update(sessionID, value, revision)
+		return kv.Update(ctx, sessionID, value, revision)
 	})
 	if !answered {
 		return 0, epoch, false, fmt.Errorf("write %s's interest record at revision %d: %w", sessionID, revision, err)

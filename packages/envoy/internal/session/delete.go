@@ -31,7 +31,7 @@ func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
 	kv, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(sessionID) })
+	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(ctx, sessionID) })
 	if !answered {
 		return fmt.Errorf("delete session %s from the bucket: %w", sessionID, err)
 	}
@@ -150,7 +150,7 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 	fence := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
 	for attempt := 0; ; attempt++ {
-		entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+		entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(ctx, sessionID) })
 		if !answered {
 			return EntryUnanswered, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 		}
@@ -182,7 +182,7 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 			return kept, nil
 		}
 		_, answered, err = bus.Bounded(ctx, func() (struct{}, error) {
-			return struct{}{}, kv.Delete(sessionID, nats.LastRevision(revision))
+			return struct{}{}, kv.Delete(ctx, sessionID, nats.LastRevision(revision))
 		})
 		if !answered {
 			return EntryUnanswered, fmt.Errorf("delete session %s from the bucket at revision %d: %w", sessionID, revision, err)

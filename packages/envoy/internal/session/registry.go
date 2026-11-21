@@ -395,7 +395,7 @@ func OpenSessionRegistry(ctx context.Context, conn *nats.Conn, options ...Sessio
 	for _, o := range options {
 		o(&opts)
 	}
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := bus.JetStream(conn, nats.MaxWait(10*time.Second))
 	if err != nil {
 		return nil, err
 	}
@@ -422,7 +422,7 @@ func OpenSessionRegistry(ctx context.Context, conn *nats.Conn, options ...Sessio
 	// configured ttl if it fails or reports no TTL. Every read of the bucket adopts its MaxAge
 	// again (sessionCache.BeginRead), so a bucket recreated with another TTL expires by its own.
 	ttl := opts.ttl
-	if status, statusErr := kv.Status(); statusErr == nil {
+	if status, statusErr := kv.Status(ctx); statusErr == nil {
 		if bucketTTL := status.TTL(); bucketTTL > 0 {
 			ttl = bucketTTL
 		}
@@ -698,7 +698,7 @@ func (r *SessionRegistry) applyMaxAge(ctx context.Context) error {
 		return nil
 	}
 	kv, _ := r.watcher.Handle()
-	status, err := kv.Status()
+	status, err := kv.Status(ctx)
 	if err != nil {
 		return fmt.Errorf("read the %s bucket's maximum age: %w", bus.SessionBucket, err)
 	}
@@ -783,7 +783,7 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 		return err
 	}
 	kv, epoch := r.watcher.Handle()
-	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Put(sessionID, buf) })
+	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Put(ctx, sessionID, buf) })
 	if !answered {
 		return fmt.Errorf("write session %s to the bucket: %w", sessionID, err)
 	}
@@ -878,7 +878,7 @@ func (r *SessionRegistry) Lookup(sessionID string) (SessionEntry, State) {
 // marker, a value that does not decode and a row past its TTL are not found.
 func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (SessionEntry, error) {
 	kv, epoch := r.watcher.Handle()
-	got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(ctx, sessionID) })
 	if !answered {
 		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}

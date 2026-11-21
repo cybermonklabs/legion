@@ -11,6 +11,8 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // lockHeldWait is how long a read of a connection's status may take before RequireLockHeld and
@@ -23,9 +25,10 @@ const lockHeldWait = 200 * time.Millisecond
 // the server's answer to the CONNECT of each connection made meanwhile. The server's INFO reaches
 // the client and the client's CONNECT reaches the server; nothing more the server sends does, as at
 // a hub whose auth service has not answered the CONNECT. nats.go holds its connection lock through a
-// reconnect attempt's dial and handshake (v1.53.1 doReconnect, nats.go:3458-3485), so while a
+// reconnect attempt's dial and handshake (nats.go v1.55.0 doReconnect, :3554-3581), so while a
 // handshake is held every read of the connection's state waits, until the client's connect timeout
-// ends the attempt; the next attempt is held in turn.
+// ends the attempt; the next attempt is held in turn. Each connection is held on its own, until
+// Release or its own end, never until another connection's end; Ended reports a held one's end.
 //
 // The proxy (Cut, Freeze, Restore) carries the client's connections, and the hold's own relay sits
 // between it and the server. Restore ends a Cut or a Freeze and leaves a hold in force; Release
@@ -39,29 +42,35 @@ type HandshakeHold struct {
 	mu sync.Mutex
 	// release is nil while connections are relayed as they are, and open from Hold until Release.
 	release chan struct{}
-	// held is closed once a CONNECT has reached the server under the hold Hold began.
-	held     chan struct{}
-	heldOnce *sync.Once
+	// held is closed once a CONNECT has reached the server under the hold Hold or HoldNext began,
+	// and ended once a connection whose CONNECT did has closed.
+	held, ended         chan struct{}
+	heldOnce, endedOnce *sync.Once
 	// attempts counts the CONNECTs that have reached the server under a hold: each is one handshake
 	// attempt whose answer the hold keeps.
 	attempts atomic.Int64
+	// waiting gets a token each time a held connection's answer starts to wait for Release, and
+	// passed the reason each such wait ended ("release", "own end"), for the package's own rows; a
+	// token a full channel has no room for is dropped.
+	waiting chan struct{}
+	passed  chan string
 }
 
 // StartHandshakeHold relays to the NATS server at target, a client URL such as Start returns,
-// through a proxy and the hold's own relay, on loopback ports of their own, until the test ends. URL
-// is the same server through both.
+// through a proxy and the hold's own relay, on loopback ports and addresses of their own
+// (testport.LoopbackIP), until the test ends. URL is the same server through both.
 func StartHandshakeHold(t testing.TB, target string) *HandshakeHold {
 	t.Helper()
 	server, err := url.Parse(target)
 	if err != nil || server.Host == "" {
 		t.Fatalf("read the NATS URL %q the handshake hold relays to: %v", target, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the handshake hold: %v", err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	h := &HandshakeHold{target: server.Host, listener: listener}
+	h := &HandshakeHold{target: server.Host, listener: listener, waiting: make(chan struct{}, 64), passed: make(chan string, 64)}
 	go h.serve()
 	relayed := *server
 	relayed.Host = listener.Addr().String()
@@ -70,19 +79,39 @@ func StartHandshakeHold(t testing.TB, target string) *HandshakeHold {
 }
 
 // Hold drops every connection the proxy relays (Cut, then Restore) and holds the answer to the
-// CONNECT of each connection made from now until Release. The channel it returns is closed once a
-// client's CONNECT has reached the server through the hold, so that client's handshake is waiting
-// for the answer the hold keeps.
+// CONNECT of each connection made from now until Release (HoldNext). The channel it returns is
+// closed once a client's CONNECT has reached the server through the hold, so that client's
+// handshake is waiting for the answer the hold keeps.
 func (h *HandshakeHold) Hold() <-chan struct{} {
-	h.mu.Lock()
-	if h.release == nil {
-		h.release, h.held, h.heldOnce = make(chan struct{}), make(chan struct{}), new(sync.Once)
-	}
-	held := h.held
-	h.mu.Unlock()
+	held := h.HoldNext()
 	h.Cut()
 	h.Restore()
 	return held
+}
+
+// HoldNext holds the answer to the CONNECT of each connection made from now until Release, as Hold
+// does, and drops no connection: a client connected through the hold keeps its connection, and the
+// next one it makes, a forced reconnect's (nats.go's ForceReconnect) among them, is held. The
+// channel it returns is Hold's.
+func (h *HandshakeHold) HoldNext() <-chan struct{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.release == nil {
+		h.release = make(chan struct{})
+		h.held, h.heldOnce = make(chan struct{}), new(sync.Once)
+		h.ended, h.endedOnce = make(chan struct{}), new(sync.Once)
+	}
+	return h.held
+}
+
+// Ended is closed once a connection whose CONNECT reached the server under the hold Hold or
+// HoldNext began last has closed: its client gave the handshake up at its connect timeout, or the
+// proxy cut it. A connection made after that one is still held, until Release or its own end. It
+// is nil before the first hold.
+func (h *HandshakeHold) Ended() <-chan struct{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.ended
 }
 
 // HoldReconnect holds (Hold) and waits until conn's reconnect handshake is held: a client's
@@ -264,8 +293,17 @@ func (h *HandshakeHold) serve() {
 // join relays client, a connection the proxy made for one of its clients, to the server, under the
 // hold when one is in force as client arrives, until either side ends; then it closes both. The
 // client's stream is read as NATS protocol (protocolStream) to find its CONNECT, which may come in
-// pieces.
+// pieces. Under a hold the server's bytes after its INFO line wait for Release or this
+// connection's own end (wait), never for another connection's.
 func (h *HandshakeHold) join(client net.Conn) {
+	// endHeld is set once this connection's CONNECT has reached the server under a hold, and runs
+	// once both of the connection's sides are closed, so that hold reads it ended (Ended).
+	var endHeld func()
+	defer func() {
+		if endHeld != nil {
+			endHeld()
+		}
+	}()
 	defer client.Close()
 	server, err := net.DialTimeout("tcp", h.target, dialTimeout)
 	if err != nil {
@@ -273,7 +311,7 @@ func (h *HandshakeHold) join(client net.Conn) {
 	}
 	defer server.Close()
 	h.mu.Lock()
-	release, held, heldOnce := h.release, h.held, h.heldOnce
+	release, held, heldOnce, ended, endedOnce := h.release, h.held, h.heldOnce, h.ended, h.endedOnce
 	h.mu.Unlock()
 	gone := make(chan struct{})
 	defer close(gone)
@@ -289,9 +327,7 @@ func (h *HandshakeHold) join(client net.Conn) {
 			if _, err := client.Write(info); err != nil {
 				return
 			}
-			select {
-			case <-release:
-			case <-gone:
+			if !h.wait(answers, release, gone) {
 				return
 			}
 		}
@@ -310,6 +346,7 @@ func (h *HandshakeHold) join(client net.Conn) {
 				if stream.connected {
 					h.attempts.Add(1)
 					heldOnce.Do(func() { close(held) })
+					endHeld = func() { endedOnce.Do(func() { close(ended) }) }
 				}
 			}
 		}
@@ -317,4 +354,39 @@ func (h *HandshakeHold) join(client net.Conn) {
 			return
 		}
 	}
+}
+
+// wait keeps a held connection's answer, the server's bytes after its INFO line, until the hold's
+// release or the connection's own end (gone), and reports whether the hold released it. It reads
+// the answer's first byte before it waits (Peek), so a wait that blocks with that byte read keeps
+// an answer the client has not had: such a wait reports so before it blocks (waiting), and why it
+// ended once it has (passed). An end already there passes at once, with no report.
+func (h *HandshakeHold) wait(answers *bufio.Reader, release, gone <-chan struct{}) bool {
+	_, err := answers.Peek(1)
+	select {
+	case <-release:
+		return true
+	case <-gone:
+		return false
+	default:
+	}
+	if err == nil {
+		select {
+		case h.waiting <- struct{}{}:
+		default:
+		}
+	}
+	released, reason := false, "own end"
+	select {
+	case <-release:
+		released, reason = true, "release"
+	case <-gone:
+	}
+	if err == nil {
+		select {
+		case h.passed <- reason:
+		default:
+		}
+	}
+	return released
 }

@@ -253,7 +253,7 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 			if err != nil {
 				return 0, err
 			}
-			return r.roles().Update(role, data, claim.Revision)
+			return r.roles().Update(ctx, role, data, claim.Revision)
 		},
 		landed: func(_ RoleClaim, revision, epoch uint64) { r.setOwnRoleHolder(role, sessionID, revision, epoch) },
 	})
