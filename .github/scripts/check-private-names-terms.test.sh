@@ -346,12 +346,25 @@ run_check_as pull_request - "$root"
 check "a hit of the rules the script spells still fails" "$(is "$status" 1)"
 check "and still warns" "$(contains "$out" "$unset_warning")"
 check "names the hit" "$(contains "$out" 'docs/notes.md:1: names the private deployment repository')"
+# A review on a fork's pull request runs with no secret, as the pull request's own events do, so a
+# review event warns the same way and keeps the committed rules' result.
+root=$(fixture terms-unset-review)
+run_check_as pull_request_review - "$root"
+check "pull_request_review, unset: exits 0 and warns" "$(is "$status:$(contains "$out" "$unset_warning")" 0:true)"
+run_check_as pull_request_review "" "$root"
+check "pull_request_review, empty: exits 0 and warns" "$(is "$status:$(contains "$out" "$unset_warning")" 0:true)"
+printf 'line one\n%s\n' "$key-7" > "$root/docs/notes.md"
+run_check_as pull_request_review - "$root"
+check "pull_request_review, unset, a hit of the rules the script spells: fails" "$(is "$status" 1)"
+check "and still warns" "$(contains "$out" "$unset_warning")"
+check "names the hit's file and line" "$(contains "$out" 'docs/notes.md:2: names the private deployment repository')"
+run_check_as pull_request_review "" "$root"
+check "pull_request_review, empty, the same hit: fails, at its line" \
+  "$(is "$status:$(contains "$out" 'docs/notes.md:2: names the private deployment repository')" 1:true)"
 
-echo "case: an unset list on the merge queue, a push, a dispatched run or a review fails before it scans"
+echo "case: an unset list on the merge queue, a push or a dispatched run fails before it scans"
 root=$(fixture terms-unset-queue)
-# A review starts no run of any workflow, so a pull_request_review run is no fork's pull request
-# to warn for: it fails like the other events.
-for event in merge_group push workflow_dispatch pull_request_review; do
+for event in merge_group push workflow_dispatch; do
   run_check_as "$event" - "$root"
   check "$event, unset: exits 2" "$(is "$status" 2)"
   check "$event, unset: says the list is missing" \

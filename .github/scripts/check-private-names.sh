@@ -65,13 +65,12 @@
 # The jobs that run this script with that secret run no dependency code: each checks out the
 # repository, or downloads what another job built, and runs this script and system tools alone.
 # With the variable unset or empty (no term left after the dropping above) the fifth rule cannot
-# run, and GITHUB_EVENT_NAME decides what follows. On a pull_request event, which GitHub runs with
-# no secret for a fork's pull request, and with no event at all (a run outside Actions), the check
-# prints a warning that only the first four rules ran and keeps their exit; a keys run with no
-# `key:` line left checks nothing, and its warning and its last line say so, with exit 0. On any
-# other event (a merge_group, a push, a workflow_dispatch, and a pull_request_review, which no
-# workflow runs this check on), where a job can always map the secret, it fails with exit 2 before
-# it scans anything.
+# run, and GITHUB_EVENT_NAME decides what follows. On a pull_request or a pull_request_review event,
+# which GitHub runs with no secret for a fork's pull request, and with no event at all (a run
+# outside Actions), the check prints a warning that only the first four rules ran and keeps their
+# exit; a keys run with no `key:` line left checks nothing, and its warning and its last line say
+# so, with exit 0. On any other event (a merge_group, a push, a workflow_dispatch), where a job can
+# always map the secret, it fails with exit 2 before it scans anything.
 #
 # With no arguments it scans the repository: every file git tracks, a file under an ignored path
 # included, plus every untracked file git does not ignore (git ls-files -z), so a new file is
@@ -396,7 +395,7 @@ done
 
 if [ ${#terms[@]} -eq 0 ]; then
   case ${GITHUB_EVENT_NAME:-} in
-    '' | pull_request)
+    '' | pull_request | pull_request_review)
       if [ "$rules" = names ]; then
         echo "::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so only the" \
           "rules this script spells ran, and no term of the deployment's own list was checked" >&2
