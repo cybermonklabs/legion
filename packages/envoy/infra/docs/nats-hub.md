@@ -328,15 +328,22 @@ nothing to refuse.
 `server_tags: ["envoy-private-projects"]` after the ping lines (the README's
 [NATS authorization](../README.md#nats-authorization)). nats-server copies it into every
 authorization request, and the auth service admits Dispatch's hub-admission proof only on a request
-that carries it, and there admits a listener only in required privacy mode. What `privateProjects`
-demands (the callout, no session user, no client user beside the auth service's) and its tag reach
-a running server only when that server restarts. On `gcp:ClusteredNatsHub` each pod takes them as
-the pod roll restarts that pod (below), and until then it keeps its old `no_auth_user`, seeded
-users and tags. On `gcp:NatsHub` the VM takes them when the group replaces the VM. So the order
-holds both ways. Turn
-on Dispatch's `DISPATCH_PRIVATE_PROJECTS` only after the hub's update has completed on every server:
-every pod of the clustered hub has restarted, or the VM hub's new VM is up. Turn the hub's
-`privateProjects` off only after no project is private.
+that carries it, and there admits a listener only in required privacy mode. A change that brings
+the hub to what `privateProjects` demands (the callout, no session user, no client user beside the
+auth service's) reaches a running server only when that server restarts: it changes `auth_callout`,
+its `auth_users` or `no_auth_user`, and nats-server 2.15.1 refuses that whole reload, the tag that
+comes with it included. On `gcp:ClusteredNatsHub` each pod takes such a change as the pod roll
+restarts that pod (below), and until then it keeps its old `no_auth_user`, seeded users and tags.
+The tag alone arrives sooner. When it is the only change in `auth.conf`, as when `privateProjects`
+is set or removed on a hub that already has the callout and the auth service's user alone, the
+reloader's reload adds it to (or removes it from) a pod before the roll restarts that pod, and that
+reload closes each client the auth service named, which reconnects through the callout
+([A reload, not a replacement](#a-reload-not-a-replacement)). Beside `privateProjects` the chart
+waits on the hub pods' NetworkPolicy, so no pod takes the tag, by reload or by restart, before the
+policy that closes 8222 is applied. On `gcp:NatsHub` the VM takes the demands and the tag when the
+group replaces the VM. Turn on Dispatch's `DISPATCH_PRIVATE_PROJECTS` only after the hub's
+update has completed on every server: every pod of the clustered hub has restarted, or the VM hub's
+new VM is up. Turn the hub's `privateProjects` off only after no project is private.
 
 ## The hub's listener
 
@@ -1005,11 +1012,18 @@ A users change replaces the VM of a `gcp:NatsHub` (see [Updating a hub](#updatin
 clustered hub it rewrites `auth.conf` in place, since the hub's own provider updates ConfigMaps
 rather than replacing them, and the chart's config reloader beside each server, which watches
 `nats.conf` and `auth.conf`, signals nats-server to reload once the kubelet has updated the mounted
-file. No server restarts and no client reconnects: on three local nats-server 2.15.1 processes with
-the real reloader 0.24.0, a client kept its connection id with zero reconnects while a user was
-added (it could then connect) and removed (it was then refused), and every server's PID stayed the
-same. The chart's own checksum annotation, which would restart the pods on any change to the
-ConfigMap, is off.
+file. No server restarts: on three local nats-server 2.15.1 processes with the real reloader
+0.24.0, a client kept its connection id with zero reconnects while a user was added (it could then
+connect) and removed (it was then refused), and every server's PID stayed the same. That client
+was a static user. Beside a callout, every reload, whatever it changes, also decides each callout
+connection again (`server/reload.go:1651-1654`, `:1706-1707`, `:2091-2093`): a client the auth
+service named, which Envoy's auth service does for every client it admits, names no configured
+user, so the reload closes it and it reconnects through the callout
+(`server/auth_callout.go:326-333`; `server/reload.go:2291-2299`, `:2349-2352`, `:2398-2432`), and
+an unnamed client that presented no user name or nkey goes through the callout again on its live
+connection (`server/reload.go:2354-2358`). Static users, the auth service's own among them, keep
+their connections. The chart's own checksum annotation, which would restart the pods on any change
+to the ConfigMap, is off.
 
 The session user is the exception. nats-server 2.15.1 refuses a whole reload that changes
 `no_auth_user`, logging `config reload not supported for NoAuthUser`, and keeps the users it had,
@@ -1059,11 +1073,13 @@ callout lines, `core.Authorization.CalloutLines()` (the `auth_callout` block, wh
 annotation `envoy-infra.sjawhar.dev/auth-callout` (absent without `authCallout`), which rolls the
 pods, by the same depends-on order as the session user's roll, on a change of any of them: a pod
 restarted on the old `auth.conf` would keep the old callout, and the reload that later brings the
-new one would be refused. nats-server would reload `server_tags` (`server/reload.go:360-366`), but
-a reload of the tags alone decides no connection again, so the roll is what decides every
-connection under the tag the server now carries. The ping lines are in the digest so that every
-server applies an edit of them at one known moment, its pod's restart, with every connection's
-timer started fresh. The routes' own ping in
+new one would be refused. nats-server also reloads `server_tags` (`server/reload.go:360-366`,
+`:1698-1699`), so a change of the tag alone reaches a pod by its reloader before the roll restarts
+it, and that reload, like every reload, decides each callout connection again (above). The roll
+is there so that every server takes a change of these lines at one known moment, its pod's restart,
+after the ConfigMap is applied; a reload comes when the kubelet updates the mounted file, which
+nothing orders. The ping lines are in the digest so that every server applies an edit of them at
+that moment, with every connection's timer started fresh. The routes' own ping in
 `nats.conf`'s `cluster` block
 ([below](#two-ports-guarded-by-the-networkpolicy-alone)) appears and goes with the callout, so it
 always arrives with a roll. A change of a user's grant or name alone leaves the lines and the pods

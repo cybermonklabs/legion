@@ -306,8 +306,11 @@ type clusteredHubSettings struct {
 	// without authCallout: the hub pods' auth-callout annotation, which rolls them when it changes
 	// (clusteredHubAuthCalloutAnnotation).
 	calloutDigest string
-	tailnet       *clusteredHubTailnet
-	listener      *clusteredHubListener
+	// privateProjects is the input of that name: the chart waits on the hub pods' NetworkPolicy
+	// beside it (newClusteredHubKubernetes).
+	privateProjects bool
+	tailnet         *clusteredHubTailnet
+	listener        *clusteredHubListener
 }
 
 // clusteredHubSize is each hub pod's volume, JetStream's file store within it, nats-server's
@@ -475,6 +478,7 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	if args.PrivateProjects && len(s.monitorNamespaces) > 0 {
 		return clusteredHubSettings{}, monitorBesidePrivateProjects(s.monitorNamespaces)
 	}
+	s.privateProjects = args.PrivateProjects
 	listenerArgs, listenerPath, err := clusteredHubListenerArgs(args)
 	if err != nil {
 		return clusteredHubSettings{}, err

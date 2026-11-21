@@ -98,8 +98,8 @@ func refuseClusteredHubSecret(value pulumi.StringInput, name, input string) pulu
 }
 
 // newClusteredHubKubernetes registers the hub's Kubernetes children, each the component's child
-// on the Kubernetes provider it builds from kubeconfig: the priority class read, the nats chart,
-// the hub pods' NetworkPolicy and their PodMonitoring, with tailnet the tailnet hosts
+// on the Kubernetes provider it builds from kubeconfig: the priority class read, the hub pods'
+// NetworkPolicy, the nats chart and the pods' PodMonitoring, with tailnet the tailnet hosts
 // (newClusteredHubTailnetHosts), and with a session listener that listener
 // (newClusteredHubListener).
 func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name string, args *ClusteredNatsHubArgs, s clusteredHubSettings) error {
@@ -131,6 +131,21 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 		classRead = []pulumi.Resource{class}
 		chartOpts = append(chartOpts, pulumi.DependsOn(classRead))
 	}
+	// With privateProjects the chart also waits on the hub pods' NetworkPolicy: it is registered,
+	// and so renders and applies its ConfigMap and StatefulSet, only once the policy's own update
+	// has completed, and not at all when that update fails. Setting privateProjects closes the
+	// monitoring port, 8222, to every namespace (monitorBesidePrivateProjects refuses
+	// monitorNamespaces beside it) and adds the server tag to auth.conf, which a pod takes from the
+	// ConfigMap by its reloader or at its restart. So no server takes the tag before the policy
+	// that closes 8222 is applied.
+	hubPods := clusteredHubSelector(s.name)
+	policy, err := newNetworkPolicy(ctx, s.name, s.namespace, hubPods, clusteredHubIngress(s), child...)
+	if err != nil {
+		return err
+	}
+	if s.privateProjects {
+		chartOpts = append(chartOpts, pulumi.DependsOn([]pulumi.Resource{policy}))
+	}
 	if _, err := helmv4.NewChart(ctx, s.name, &helmv4.ChartArgs{
 		Chart:          pulumi.String(clusteredHubChart),
 		Version:        pulumi.String(clusteredHubChartVersion),
@@ -142,10 +157,6 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 		return err
 	}
 
-	hubPods := clusteredHubSelector(s.name)
-	if err := networkPolicy(ctx, s.name, s.namespace, hubPods, clusteredHubIngress(s), child...); err != nil {
-		return err
-	}
 	_, err = apiextensions.NewCustomResource(ctx, s.name, &apiextensions.CustomResourceArgs{
 		ApiVersion: pulumi.String("monitoring.googleapis.com/v1"), Kind: pulumi.String("PodMonitoring"),
 		Metadata: objectMeta(s.name, s.namespace),

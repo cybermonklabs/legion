@@ -195,9 +195,9 @@ func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 	require.Equal(t, before, annotation(t, args), "a grant change alone leaves the callout's lines, and the pods, as they were")
 
 	// The server tag is a callout line, so setting privateProjects rolls every pod and removing it
-	// rolls them back: nats-server reloads server_tags, but a reload of the tags alone decides no
-	// connection again, so a server kept by a reload would keep each connection the tag's absence or
-	// presence admitted.
+	// rolls them back: nats-server also reloads server_tags, and each reload decides every callout
+	// connection again, but the roll is what brings a change of these lines to every server at one
+	// known moment, its restart, after the ConfigMap is applied.
 	public := privateClusteredHub()
 	public.PrivateProjects = false
 	untagged := annotation(t, public)

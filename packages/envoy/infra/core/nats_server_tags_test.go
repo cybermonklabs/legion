@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -95,8 +96,8 @@ func TestTheServerTagReachesTheAuthorizationRequest(t *testing.T) {
 
 // authorizationRequestTags starts nats-server in this process on the rendered text of an
 // authorization whose only user is the auth service's, with privateProjects as private, connects
-// a stub auth service as that user, connects one client with a token, and returns the server
-// tags of the authorization request the server sent the service for it.
+// a stub auth service (refuseEachClient) as that user, connects one client with a token, and
+// returns the server tags of the authorization request the server sent the service for it.
 func authorizationRequestTags(t *testing.T, private bool) jwt.TagList {
 	t.Helper()
 	serviceSeed, serviceKey := testnats.User(t)
@@ -136,38 +137,7 @@ func authorizationRequestTags(t *testing.T, private bool) jwt.TagList {
 	require.NoError(t, err, "the auth service's user, in auth_users, connects without a callout")
 	t.Cleanup(service.Close)
 	requests := make(chan *jwt.AuthorizationRequestClaims, 1)
-	_, err = service.Subscribe("$SYS.REQ.USER.AUTH", func(m *natsgo.Msg) {
-		opened, err := curve.Open(m.Data, m.Header.Get("Nats-Server-Xkey"))
-		if err != nil {
-			t.Errorf("open the sealed authorization request: %v", err)
-			return
-		}
-		claims, err := jwt.DecodeAuthorizationRequestClaims(string(opened))
-		if err != nil {
-			t.Errorf("decode the authorization request: %v", err)
-			return
-		}
-		select {
-		case requests <- claims:
-		default:
-		}
-		response := jwt.NewAuthorizationResponseClaims(claims.UserNkey)
-		response.Audience = claims.Server.ID
-		response.Error = "example: this stub admits no client"
-		token, err := response.Encode(issuer)
-		if err != nil {
-			t.Errorf("sign the refusal: %v", err)
-			return
-		}
-		sealed, err := curve.Seal([]byte(token), claims.Server.XKey)
-		if err != nil {
-			t.Errorf("seal the refusal: %v", err)
-			return
-		}
-		if err := m.Respond(sealed); err != nil {
-			t.Errorf("answer the authorization request: %v", err)
-		}
-	})
+	_, err = service.Subscribe("$SYS.REQ.USER.AUTH", refuseEachClient(curve, issuer, requests, t.Errorf))
 	require.NoError(t, err)
 	require.NoError(t, service.Flush())
 
@@ -183,4 +153,94 @@ func authorizationRequestTags(t *testing.T, private bool) jwt.TagList {
 		t.Fatal("the server sent the auth service no authorization request for the client")
 		return nil
 	}
+}
+
+// refuseEachClient is the stub auth service: it opens each sealed authorization request, answers
+// it with a refusal signed by issuer and sealed to the server's xkey, and only once the answer is
+// sent hands the request's claims to requests, if it has room. Each failure goes to report, and no
+// claims follow it. So a test that has read the claims has also seen the stub's last report, and
+// the stub cannot report after the test has ended, which panics the test binary ("Log in goroutine
+// after … has completed"): the server's authorization timeout can end Connect before the stub
+// answers, and nats.go's Close does not wait for a running handler.
+func refuseEachClient(curve, issuer nkeys.KeyPair, requests chan<- *jwt.AuthorizationRequestClaims, report func(format string, args ...any)) natsgo.MsgHandler {
+	return func(m *natsgo.Msg) {
+		opened, err := curve.Open(m.Data, m.Header.Get("Nats-Server-Xkey"))
+		if err != nil {
+			report("open the sealed authorization request: %v", err)
+			return
+		}
+		claims, err := jwt.DecodeAuthorizationRequestClaims(string(opened))
+		if err != nil {
+			report("decode the authorization request: %v", err)
+			return
+		}
+		response := jwt.NewAuthorizationResponseClaims(claims.UserNkey)
+		response.Audience = claims.Server.ID
+		response.Error = "example: this stub admits no client"
+		token, err := response.Encode(issuer)
+		if err != nil {
+			report("sign the refusal: %v", err)
+			return
+		}
+		sealed, err := curve.Seal([]byte(token), claims.Server.XKey)
+		if err != nil {
+			report("seal the refusal: %v", err)
+			return
+		}
+		if err := m.Respond(sealed); err != nil {
+			report("answer the authorization request: %v", err)
+			return
+		}
+		select {
+		case requests <- claims:
+		default:
+		}
+	}
+}
+
+// TestTheStubHandsOverTheClaimsOnlyAfterItsAnswer: refuseEachClient hands a request's claims to
+// the test only after its answer is sent, so its last report comes before the test can read them.
+// The row gives it a well-formed sealed request whose answer cannot be sent, a message bound to no
+// subscription (nats.go's Msg.Respond refuses it with ErrMsgNotBound): the stub reports that
+// failure, and hands over nothing.
+//
+// Control: hand the claims over before m.Respond; the row fails with "the stub handed over the
+// claims of a request it did not answer".
+func TestTheStubHandsOverTheClaimsOnlyAfterItsAnswer(t *testing.T) {
+	newKey := func(create func() (nkeys.KeyPair, error)) (nkeys.KeyPair, string) {
+		t.Helper()
+		pair, err := create()
+		require.NoError(t, err)
+		key, err := pair.PublicKey()
+		require.NoError(t, err)
+		return pair, key
+	}
+	curve, curveKey := newKey(nkeys.CreateCurveKeys)
+	issuer, issuerKey := newKey(nkeys.CreateAccount)
+	server, serverKey := newKey(nkeys.CreateServer)
+	serverCurve, serverCurveKey := newKey(nkeys.CreateCurveKeys)
+	_, userKey := newKey(nkeys.CreateUser)
+
+	request := jwt.NewAuthorizationRequestClaims(issuerKey)
+	request.UserNkey = userKey
+	request.Server = jwt.ServerID{ID: serverKey, XKey: serverCurveKey}
+	token, err := request.Encode(server)
+	require.NoError(t, err)
+	sealed, err := serverCurve.Seal([]byte(token), curveKey)
+	require.NoError(t, err)
+
+	var reports []string
+	requests := make(chan *jwt.AuthorizationRequestClaims, 1)
+	refuseEachClient(curve, issuer, requests, func(format string, args ...any) {
+		reports = append(reports, fmt.Sprintf(format, args...))
+	})(&natsgo.Msg{
+		Subject: "$SYS.REQ.USER.AUTH",
+		Reply:   "$SYS._INBOX.example",
+		Header:  natsgo.Header{"Nats-Server-Xkey": []string{serverCurveKey}},
+		Data:    sealed,
+	})
+
+	require.Equal(t, []string{"answer the authorization request: " + natsgo.ErrMsgNotBound.Error()}, reports,
+		"the stub opened, decoded, signed and sealed the request, and reported only the answer it could not send")
+	require.Empty(t, requests, "the stub handed over the claims of a request it did not answer")
 }

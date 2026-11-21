@@ -83,18 +83,23 @@ const calloutPingLines = "# a replica of the auth service that answers nothing i
 // PrivateProjects: the server tag natsgrant.PrivateProjectsServerTag. nats-server v2.15.1 reads
 // server_tags (server/opts.go:1803) and copies the server's tags into each authorization request
 // it sends the auth service (claim.Server.Tags = s.getOpts().Tags, server/auth_callout.go:377). The
-// auth service knows a server only by its id and curve key, so the tag is how a request proves
-// that its hub was rendered with PrivateProjects: there, and only there, the auth service admits
-// Dispatch's hub-admission proof and holds every listener to required privacy mode
-// (natsgrant.HubAdmissionAudience, natsgrant.PrivacyRequiredSuffix). A hub rendered without
+// request's server claim also carries the server's name, host, id, version, cluster and xkey
+// (auth_callout.go:367-373, :383), and none of those says how the hub was rendered, so the tag is
+// how a request proves that its hub was rendered with PrivateProjects: there, and only there, the
+// auth service admits Dispatch's hub-admission proof and holds every listener to required privacy
+// mode (natsgrant.HubAdmissionAudience, natsgrant.PrivacyRequiredSuffix). A hub rendered without
 // PrivateProjects carries no tag, so its requests prove nothing.
 //
 // The lines are part of CalloutLines, so the clustered hub rolls its pods when the tag comes or
-// goes. nats-server would reload server_tags without a restart (server/reload.go:360-366,
-// :1698-1699), but a reload of the tags alone decides no connection again, so a server that took
-// the tag by a reload would keep every connection the auth service admitted while the tag was
-// absent, and one that lost it every connection admitted under it. Each restart decides every
-// connection again.
+// goes (CalloutLines says why). nats-server also reloads server_tags (server/reload.go:360-366,
+// :1698-1699), so a change of the tag alone reaches a running server whose file is reloaded, as
+// the clustered hub's reloader does, before any restart. Each reload, whatever it changes, decides
+// every callout connection again: it always reloads the users (reload.go:1651-1654, :1706-1707,
+// :2091-2093). A client the auth service named carries that name and no nkey
+// (auth_callout.go:326-333), so it names no configured user, and the reload closes it; it
+// reconnects through the callout (reload.go:2291-2299, :2349-2352, :2398-2432). Envoy's auth
+// service names each client it admits. An unnamed client that presented no user name or nkey goes
+// through the callout again on its live connection (reload.go:2354-2358).
 const privateProjectsTagLines = "# this hub is rendered with privateProjects: the auth service admits Dispatch's hub-admission proof only on a request that carries this tag, and there admits a listener only in required privacy mode\n" +
 	"server_tags: [\"" + natsgrant.PrivateProjectsServerTag + "\"]\n"
 
@@ -213,13 +218,15 @@ func serviceGrantRefusal(u User) (field, entry string, wide bool) {
 // for it), so a server takes a changed block only when it restarts. The ping lines come and go
 // only with that block, so the one reload of them the server would take is an edit of
 // calloutPingLines itself (reload.go:1751-1754), which each connection applies when its timer next
-// re-arms, within one interval of 20 s (reload.go:670-672 only logs; client.go:6037-6050). The
-// server tag would reload, but a reload of it decides no connection again (privateProjectsTagLines).
-// A component that reloads its servers rolls them when this text changes, so every server takes a
-// change at one known moment, its restart, with each connection's timer started fresh and each
-// connection decided again; the clustered hub's pin of its routes' ping (gcp clusteredHubCluster)
-// appears and goes with the callout, so it always arrives with such a roll. auth_users is in it, so
-// a keyed user added or removed changes it.
+// re-arms, within one interval of 20 s (reload.go:670-672 only logs; client.go:6037-6050). A change
+// of the server tag alone does reload, and each reload decides every callout connection again
+// (privateProjectsTagLines). A component that reloads its servers rolls them when this text
+// changes, so every server takes a change at one known moment, its restart, after the component
+// has written the new text (the clustered hub's ConfigMap), with each connection's timer started
+// fresh; a reload of the tag comes whenever the file on a server changes (the kubelet's update of
+// a mounted ConfigMap), which nothing orders. The clustered hub's pin of its routes' ping (gcp
+// clusteredHubCluster) appears and goes with the callout, so it always arrives with such a roll.
+// auth_users is in it, so a keyed user added or removed changes it.
 func (a Authorization) CalloutLines() string {
 	block, tail := a.calloutParts()
 	return block + tail
