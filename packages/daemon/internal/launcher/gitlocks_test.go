@@ -1425,7 +1425,7 @@ func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
 	for _, row := range []struct {
 		name string
 		// plant makes gitdir what the row is about; unstick lets go a read of it that is
-		// waiting, for a row that has already failed.
+		// waiting, called as the row ends, so a read the row's guard left waiting returns.
 		plant   func(t *testing.T, c *lockClone, gitdir string)
 		unstick func(gitdir string)
 	}{
@@ -1544,24 +1544,10 @@ func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
 				s.proc, s.recheck = proc, time.Millisecond
 				s.pass(context.Background(), false)
 			}()
-			bound := testwait.Bounded(t, 10*time.Second, time.Second)
-			select {
-			case <-done:
-			case <-time.After(bound):
-				// A read the fifo holds is let go as often as it is held — the derivation's,
-				// then the pass's — so the goroutine returns with the row.
-			unstuck:
-				for range 1000 {
-					row.unstick(gitdir)
-					select {
-					case <-done:
-						break unstuck
-					case <-time.After(10 * time.Millisecond):
-					}
-				}
-				close(stop)
-				t.Fatalf("the derivation and a clock pass did not return within %s; the sweep's log:\n%s", bound, log.String())
-			}
+			// A read that waits on gitdir fails the row by name at the test binary's deadline
+			// (testwait.Answer); a slow derivation and pass are waited for.
+			t.Cleanup(func() { row.unstick(gitdir) })
+			testwait.Answer(t, "the derivation and a clock pass over "+gitdir, done)
 			close(stop)
 			if ended := <-ranAway; ended > 0 {
 				t.Fatalf("the sweep read %s past where any gitdir ends, and %d such read(s) had to be ended at end of file; the sweep's log:\n%s", gitdir, ended, log.String())
@@ -1983,10 +1969,11 @@ func (c *lockClone) breakPointer(t *testing.T, plant func(*testing.T, *lockClone
 	return plant(t, c, pointer)
 }
 
-// withinBound runs fn in a goroutine of its own and fails the row unless it returns within a
-// bound, or if a read of /dev/zero, or of watched past a mebibyte, had to be ended
-// (endRunawayReads). A read unstick can let go is let go once the row has failed, as often as it
-// waits, so the goroutine returns with the row. fn calls nothing that fails the row.
+// withinBound runs fn in a goroutine of its own and fails the row unless it returns by the test
+// binary's deadline less a second (testwait.Answer), the only bound on the wait, or if a read of
+// /dev/zero, or of watched past a mebibyte, had to be ended (endRunawayReads). A read unstick can
+// let go is let go as the row ends, so a goroutine the guard left waiting returns. fn calls nothing
+// that fails the row.
 func withinBound(t *testing.T, log *lockedBuffer, watched string, unstick func(), fn func()) {
 	t.Helper()
 	stop := make(chan struct{})
@@ -1996,22 +1983,8 @@ func withinBound(t *testing.T, log *lockedBuffer, watched string, unstick func()
 		defer close(done)
 		fn()
 	}()
-	bound := testwait.Bounded(t, 10*time.Second, time.Second)
-	select {
-	case <-done:
-	case <-time.After(bound):
-	unstuck:
-		for range 1000 {
-			unstick()
-			select {
-			case <-done:
-				break unstuck
-			case <-time.After(10 * time.Millisecond):
-			}
-		}
-		close(stop)
-		t.Fatalf("the sweep did not return within %s; its log:\n%s", bound, log.String())
-	}
+	t.Cleanup(unstick)
+	testwait.Answer(t, "the sweep over "+watched, done)
 	close(stop)
 	if ended := <-ranAway; ended > 0 {
 		t.Fatalf("the sweep read past where any pointer ends, and %d such read(s) had to be ended at end of file; its log:\n%s", ended, log.String())
@@ -2066,7 +2039,7 @@ func TestTheDerivationRefusesAPointerThatNamesNoEntryItCanRead(t *testing.T) {
 // Case B of the table while the pod runs: a role breaks this workspace's .git and its own entry's
 // gitdir after the derivation. Each pass still sweeps the clone's git directory, its stale lock
 // gone each time, leaves the entry's locks, and names the .git's error once rather than once a
-// minute. Each pass is bounded, for the reasons the derivation's row above is.
+// minute. Each pass is waited for as the derivation's row above waits (withinBound).
 func TestTheSweepNamesAPointerThatNamesNoEntryOnceAndSweepsTheGitDirectory(t *testing.T) {
 	for _, bad := range unusablePointers {
 		t.Run(bad.name, func(t *testing.T) {
