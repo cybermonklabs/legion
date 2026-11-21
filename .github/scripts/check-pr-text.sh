@@ -14,8 +14,8 @@
 #
 # Then it holds the pull request's new text to check-private-names.sh's rule 6 (an issue key of the
 # deployment's own projects), from a cutoff it derives at each run: the section "THE ISSUE-KEY
-# RULE" below says how, and which text. A Dispatch link is no private name and passes; a key it
-# holds does not. A hit there is reported as
+# RULE" below says how, and which text. No rule refuses a Dispatch link for being one; a name,
+# term or issue key in it is still refused. A hit there is reported as
 # `title:<line>`, `body:<line>`, `<kind>:<id>:<line>`, `commit:<sha>:<line>` for a
 # commit's message, `commit:<sha>:<path>:<line>` for a line a commit adds, or
 # `files:<path>:<line>` for a line of the pull request's net diff, which is read in place of a

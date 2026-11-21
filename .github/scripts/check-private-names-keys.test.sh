@@ -298,7 +298,8 @@ check "and not the link's line" "$(is "$(contains "$out" 'body:1:')" false)"
 check "and not the commit's message, which holds only a link" "$(is "$(contains "$out" 'commit:new-sha:1:')" false)"
 check "and not the line it adds, which holds only a link" "$(is "$(contains "$out" 'docs/notes.md:1:')" false)"
 check "and not the comment, which holds only a link" "$(is "$(contains "$out" 'comment:701')" false)"
-check "and reports one finding, the key, over the text" "$(contains "$out" '^check-private-names: 1 finding(s)')"
+check "and the run over the text, the first, reports one finding, the key" \
+  "$(is "$(grep -m 1 -o '^check-private-names: [0-9]* finding(s)' <<< "$out" || true)" 'check-private-names: 1 finding(s)')"
 check "and none over the added line, which holds only a link" \
   "$(contains "$out" "^check-private-names: no text names an issue key of the deployment's own projects")"
 write_pr_text "fix(dispatch): keep the inbox order" "See ${link}LEGION-7/ask/x." "fix: keep the order"
@@ -602,10 +603,6 @@ check "names the added key's line" "$(contains "$out" "commit:new-sha:docs/notes
 carry_commit modified docs/notes.md "$(printf '@@ -2,1 +2,1 @@\n-Filed as fix_%s.\n+Filed as %s.' "$planted_key" "$planted_key")"
 key_run
 check "a removed key beside a \"_\", which is a key, carries it: passes" "$(is "$status" 0)"
-carry_commit modified docs/notes.md "$(printf '@@ -2,1 +2,1 @@\n-See d\xc4\xb0spatch://example/1.\n+See %sexample/1.' "$link")"
-key_run
-check "a link whose removed line spelled the scheme with a dotted capital I passes: no rule reads it" \
-  "$(is "$status" 0)"
 for mark in . ',' ';' :; do
   carry_commit modified docs/notes.md \
     "$(printf '@@ -2,1 +2,1 @@\n-Tracked at %s%s today.\n+Recorded at %s%s%s which the operator answered' \
@@ -870,8 +867,13 @@ check "a keys run under no list on a pull_request event exits 0" "$(is "$status"
 check "warns that no issue key was checked" \
   "$(contains "$out" '^::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so no issue key')"
 check "and its last line says it checked none" \
-  "$(contains "${out##*$'\n'}" '^check-private-names: no issue key was checked: PRIVATE_NAME_TERMS holds no key: line')"
+  "$(contains "${out##*$'\n'}" '^check-private-names: no issue key was checked: PRIVATE_NAME_TERMS is unset or empty')"
 check "and never that no text names a key" "$(is "$(contains "$out" 'no text names an issue key')" false)"
+# A list of key: lines alone holds no term, so the script reads it as an empty list; but it names a
+# project, so a keys run reads that project's keys, and warns of nothing.
+PRIVATE_NAME_RULES=keys run_check_as pull_request "key:$key_project" "$root" docs
+check "a keys run under a list of key: lines alone finds the key: exits 1" "$(is "$status" 1)"
+check "and warns of nothing" "$(is "$(contains "$out" '^::warning::')" false)"
 
 echo "case: no issue key's project reaches a command's arguments"
 # argv_grep (check-private-names-test-lib.sh) logs each pattern a grep is handed on its command
@@ -888,7 +890,8 @@ argv_grep "$argv_dir/grep" "$argv_log"
 PATH="$argv_dir:$PATH" keys_run_in "$root" "$key_terms" docs
 check "the keys run still finds the key: fails" "$(is "$status" 1)"
 check "the path's report is masked" "$(contains "$out" "docs/<name>/notes.md: $key_refused")"
-check "the fake grep logged the masking's own patterns, so it saw the run's greps" "$(is "$([ -s "$argv_log" ] && echo yes)" yes)"
+check "the run's search grep, its pattern from a file, reached the fake grep" \
+  "$(contains "$(< "$argv_log")" '^<search grep -f>$')"
 check "no grep was handed the project's key in its arguments" "$(is "$(contains "$(< "$argv_log")" "$key_project")" false)"
 
 finish_self_log

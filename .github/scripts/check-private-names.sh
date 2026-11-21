@@ -49,7 +49,8 @@
 #      refused). `LEGION` is never such a project, so Legion's own `LEGION-<n>` keys always pass.
 #      A run that reads this rule with terms in the list and no `key:` line fails with exit 2, since
 #      it would report a clean result over no project at all. A Dispatch link is no private name
-#      (the operator decided so), so no rule refuses one, but a key it holds is still refused here.
+#      (the operator decided so): no rule refuses a link for being one; a name, term or issue key
+#      in it is still refused.
 #
 # Rule 6 reads new text only: the tree keeps the keys from before it, which the operator's rule
 # ("Stop new leaks only") leaves in place. PRIVATE_NAME_RULES picks the rules a run reads: `names`
@@ -605,7 +606,7 @@ fi
 
 if [ "$rules" = keys ]; then
   if [ ${#keys[@]} -eq 0 ]; then
-    echo "check-private-names: no issue key was checked: PRIVATE_NAME_TERMS holds no key: line" \
+    echo "check-private-names: no issue key was checked: PRIVATE_NAME_TERMS is unset or empty" \
       "($scanned)"
   else
     echo "check-private-names: no text names an issue key of the deployment's own projects" \

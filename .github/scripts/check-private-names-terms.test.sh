@@ -455,8 +455,8 @@ argv_grep "$argv_dir/grep" "$argv_log"
 PATH="$argv_dir:$PATH" run_check_as merge_group "$planted_terms" "$root"
 check "the run still finds the term, in the file and in the path: fails" "$(is "$status" 1)"
 check "the path's report is masked" "$(contains "$out" 'docs/<name>/notes.md: names a term')"
-check "the fake grep logged the committed rules' patterns, so it saw the run's greps" \
-  "$(is "$([ -s "$argv_log" ] && echo yes)" yes)"
+check "the run's term search, its patterns from a file, reached the fake grep" \
+  "$(contains "$(< "$argv_log")" '^<search grep -f>$')"
 check "no grep was handed a term in its arguments" "$(is "$(names_planted "$(< "$argv_log")")" false)"
 
 finish_self_log
