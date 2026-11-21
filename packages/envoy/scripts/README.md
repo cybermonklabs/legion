@@ -925,8 +925,8 @@ The first reading shuts on no old-form name. The stream keeps the old-form messa
 before every producer moved for its whole retention, and interest records and consumer filters may
 still be in an old form, so the first reading names each it finds (`FOUND`) and records the
 stream's last sequence, the newest old-form message and every old-form counter. The second reading,
-at least the retention later, shuts on an old-form message published after the first reading's
-last stream sequence (an old-form subject whose last message is later); a listener whose count rose
+at least the retention later, shuts on any old-form message the stream still holds (one published
+after the first reading's last stream sequence named apart); a listener whose count rose
 under any kind; a consumer one of whose filters only an old-form name matches and whose new form
 the same consumer does not also filter (a Legion daemon's `legion-go-<project>-<kind>` or any
 other; a session consumer filters both forms of its topics until the old form is refused, so its

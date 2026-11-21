@@ -45,8 +45,9 @@
 # last sequence, the newest old-form message and every old-form counter. What holds the gate shut at
 # the second reading, at least the stream's retention later:
 #
-#   - an old-form message the stream holds that was published after the first reading's last
-#     stream sequence (its subject's last message, read by last_by_subj, is later);
+#   - any old-form message the stream still holds: the stream keeps the window, so a clean second
+#     reading says it is wholly new-form; one published after the first reading's last stream
+#     sequence (its subject's last message, read by last_by_subj, is later) is named apart;
 #   - a listener whose count rose since the first reading, under any kind;
 #   - a consumer one of whose filters only an old-form name matches, and whose new form the same
 #     consumer does not also filter (a session consumer filters both forms of each topic until the
@@ -416,7 +417,7 @@ case "$verdict" in
     again=$(jq -r '.again | todate' "$work/judgement.json")
     found=$(jq -r .found "$work/judgement.json")
     last_seq=$(jq -r .last_seq "$work/judgement.json")
-    echo "FIRST READING: $record holds a first reading of every surface, with $found FOUND line(s) naming old-form names still in use; read again at or after $again with --since $record: that reading opens only if no old-form message follows stream sequence $last_seq, no listener's count moved, and no interest record or consumer filter holds an old form"
+    echo "FIRST READING: $record holds a first reading of every surface, with $found FOUND line(s) naming old-form names still in use; read again at or after $again with --since $record: that reading opens only if the stream then holds no old-form message (none after stream sequence $last_seq), no listener's count moved, and no interest record or consumer filter holds an old form"
     exit 4
     ;;
 esac

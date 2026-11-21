@@ -11,8 +11,9 @@
 # Each surface the gate exists to read has a case that shuts the gate or makes it UNKNOWN for that
 # reason alone, beside the clean fleet that is the only case that opens it: at the second reading, a
 # listener's count that rose between the readings, under any kind, a Legion daemon's consumer still
-# on an old filter, an old-form message published after the first reading's last stream sequence,
-# and an interest record holding an old-form topic; at either, a consumer list that cannot be read
+# on an old filter, an old-form message still on the stream, named apart when it came after the
+# first reading's last stream sequence, and an interest record holding an old-form topic; at
+# either, a consumer list that cannot be read
 # at all, a listener whose counter cannot be read, a listener whose restart only its start-time
 # gauge shows, a listener offline at the reading, a list that moved between its pages, a stream that
 # is not the first reading's or does not hold the whole window, and an answer that is no JSON
@@ -446,7 +447,7 @@ done_case
 new_case "a clean fleet's first reading is a first reading, never GATE OPEN"
 reading
 expect_status 4
-expect_last "FIRST READING: $FAKE/record.json holds a first reading of every surface, with 0 FOUND line(s) naming old-form names still in use; read again at or after $(jq -r '(.finished_at + 259200 + 180) | todate' "$FAKE/record.json") with --since $FAKE/record.json: that reading opens only if no old-form message follows stream sequence 900, no listener's count moved, and no interest record or consumer filter holds an old form"
+expect_last "FIRST READING: $FAKE/record.json holds a first reading of every surface, with 0 FOUND line(s) naming old-form names still in use; read again at or after $(jq -r '(.finished_at + 259200 + 180) | todate' "$FAKE/record.json") with --since $FAKE/record.json: that reading opens only if the stream then holds no old-form message (none after stream sequence 900), no listener's count moved, and no interest record or consumer filter holds an old form"
 expect_no_line "GATE OPEN"
 expect_line "PASS: the stream holds 2 subject(s) under notifications.dispatch.issue.>, none in an old form"
 expect_line "PASS: no consumer of the stream's 7 filters a name only the old form matches (3 of them are Legion daemons')"
@@ -599,7 +600,7 @@ expect_line "FOUND: the newest old-form message on the stream is notifications.d
 expect_line "FOUND: consumer legion-go-ZED-dispatch filters notifications.dispatch.issue.ZED-7.>, which only an old-form name matches"
 expect_line "FOUND: the interest record of session ses_b holds notifications.role.lead-reviewer, in an old form"
 expect_line "with 4 FOUND line(s) naming old-form names still in use"
-expect_line "no old-form message follows stream sequence 900"
+expect_line "none after stream sequence 900"
 expect_no_line "GATE SHUT"
 [ "$(jq -r '.verdict, .stream.last_seq, .stream.newest_old.seq' "$FAKE/record.json" | paste -sd, -)" = "complete,900,812" ] ||
   fail "the record holds $(jq -c '{verdict, stream}' "$FAKE/record.json"), want a complete reading at last sequence 900 whose newest old-form message is 812"
@@ -727,26 +728,33 @@ replace_row subjects "notifications.dispatch.issue.> 0" \
 reading --since "$FAKE/earlier.json"
 expect_status 1
 expect_line "GATE SHUT: the stream holds 1 old-form subject(s) under notifications.dispatch.issue.> with a message published after the first reading's last stream sequence 900: notifications.dispatch.issue.ACME-13.comment.created (sequence 950 at 2026-11-20T10:00:00Z)"
+expect_no_line "GATE SHUT: the stream still holds"
 [ "$(jq -c .subjects_old "$FAKE/record.json")" = '["notifications.dispatch.issue.ACME-13.comment.created"]' ] ||
   fail "the record names $(jq -c .subjects_old "$FAKE/record.json") as old subjects"
 done_case
 
-new_case "an old-form message from before the first reading, still on the stream, does not shut the second"
+# The second reading opens only on a stream that holds no old-form message at all: with the stream
+# keeping the window, a clean second reading says the stream is wholly new-form when the code that
+# reads the old form goes. An old-form message still stored at the second reading shuts it, though
+# it came before the first reading's last sequence.
+new_case "a stream still holding an old-form subject at the second reading shuts it, though its message came before the first reading"
 first_reading_of 73
 replace_row subjects "notifications.dispatch.issue.> 0" \
   "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ACME-13.comment.created)" "")" \
   "$(last_message notifications.dispatch.issue.ACME-13.comment.created 850)"
 reading --since "$FAKE/earlier.json"
-expect_status 0
-expect_line "PASS: the stream holds no old-form message under notifications.dispatch.issue.> published after the first reading's last stream sequence 900; 1 old-form subject(s) hold only messages from before it"
-expect_last "GATE OPEN"
+expect_status 1
+expect_line "GATE SHUT: the stream still holds 1 old-form subject(s) under notifications.dispatch.issue.> at this second reading, whose last message is not after the first reading's last stream sequence 900: notifications.dispatch.issue.ACME-13.comment.created (sequence 850 at 2026-11-20T10:00:00Z)"
+expect_no_line "with a message published after the first reading's last stream sequence"
+expect_last "GATE SHUT"
 done_case
 
+# A first reading records the newest old-form message on the stream, so an old-form subject whose
+# last message it could not read leaves the reading incomplete.
 new_case "an old-form subject whose last message was not read is UNKNOWN"
-first_reading_of 73
 replace_row subjects "notifications.dispatch.issue.> 0" \
   "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ACME-13.comment.created)" "")"
-reading --since "$FAKE/earlier.json"
+reading
 expect_status 3
 expect_line "UNKNOWN: the stream's subjects under notifications.dispatch.issue.>: the last message of 1 old-form subject(s) could not be read: notifications.dispatch.issue.ACME-13.comment.created (the Job printed no read of it)"
 done_case
