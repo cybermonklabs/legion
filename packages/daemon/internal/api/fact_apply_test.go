@@ -109,15 +109,18 @@ type agentRoute struct {
 // an issue where the record names that agent the agent of a run that is not ended waits for the
 // agent's stream before its fact applies: the tester's completion, a phase worker's and the
 // architect's moves back, the architect's sign-off and its park of a child in accepting, each
-// ending its own step, and the architect's retry of an issue its own failure held in accepting
-// and its gate registration on a root in accepting. So the record of a step an agent's request
-// ends names the model whose answer its stream read ahead of the request. The routes are read
-// from the server's own table (routes), so a route added later fails here by name until it is
-// put in this one.
+// ending its own step, the architect's retry of an issue its own failure held in accepting and
+// its gate registration on a root in accepting, and the architect's retry and fresh session of a
+// worker it owns, each of which starts the worker's phase again through a fact on the worker's
+// issue. So the record of a step an agent's request ends names the model whose answer its stream
+// read ahead of the request. The routes are read from the server's own table (routes), so a route
+// added later fails here by name until it is put in this one. A request goes through with 200, or
+// with 202 where the claim door's retry answers a phase start the workflow runs after it.
 func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *testing.T) {
 	noFact := "it applies no fact"
 	noRequester := "the operator's bearer redeems no grant, so no requester is noted and a fact it applies waits for nothing (TestAFactNoAgentRequestedWaitsForNothing)"
 	controller := "the controller's grant notes no requester (redeem): the controller runs no step"
+	machineEvent := "it applies no fact: it posts one event to the named claim's machine (claimEventOperation), so the requester an architect's grant notes (claimDoor's redeem) has no fact to wait before"
 	table := map[string]agentRoute{
 		"GET /legion/v1/state":                         {none: "a read of the daemon's state; " + noFact},
 		"GET /legion/v1/issues/{key}/record":           {none: "a read of one issue's record; " + noFact},
@@ -134,10 +137,44 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/controller/secret":            {none: "the controller's secret; " + noFact},
 		"POST /legion/v1/controller/github-credential": {none: "the controller's GitHub credential; " + noFact},
 		"POST /legion/v1/issues/status":                {none: controller},
-		"POST /legion/v1/claims/fresh-session":         {none: controller},
-		"POST /legion/v1/claims/compact":               {none: controller},
-		"POST /legion/v1/project/pause":                {none: controller},
-		"POST /legion/v1/project/resume":               {none: controller},
+		"POST /legion/v1/issues/pod-update":            {none: "it applies no fact: it posts the update round of the issue's pod to that issue's claims' machines (Options.RequestPodUpdate), and " + controller},
+		"POST /legion/v1/claims/compact":               {none: "it applies no fact: it asks the claim's machine and its agent for a compaction (claimCompact), so the requester an architect's grant notes (claimDoor's redeem) has no fact to wait before"},
+		"POST /legion/v1/claims/stop":                  {none: machineEvent},
+		"POST /legion/v1/claims/suspend":               {none: machineEvent},
+		"POST /legion/v1/claims/resume":                {none: machineEvent},
+		"POST /legion/v1/claims/retry": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
+			// An architect's retry of the worker it owns that a stop retired starts the worker's
+			// phase again through a fact on the worker's issue (retryStart, restartWorkedPhase), and
+			// the architect's grant notes it the requester (claimDoor's redeem). apply reads every
+			// run the record holds not ended on that issue, whatever phase it stands in
+			// (record.RunsAStepOn), and here one names the architect.
+			architect := treeArchitect(t, r.h)
+			worker := readyImplementer(t, r.h)
+			if stop := r.h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(worker)+"/stop", nil); stop.Code != http.StatusOK {
+				t.Fatalf("stop = %d: %s", stop.Code, stop.Body)
+			}
+			r.runs(t, "LEGION-209", acceptingPlace, architect.token)
+			return []agentRequest{{architect.token, func() *httptest.ResponseRecorder {
+				return askAsArchitect(t, r.h, architect, "/legion/v1/claims/retry", "LEGION-209", claim.RoleImplementer)
+			}}}
+		}},
+		"POST /legion/v1/claims/fresh-session": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
+			// The fresh session of a worker a stop retired forgets its session and starts its phase
+			// again through the same fact the retry applies (freshSession, retryStart), and the
+			// controller's grant notes no requester (redeem), so the request that waits is an
+			// architect's, whose grant notes it (claimDoor's redeem).
+			architect := treeArchitect(t, r.h)
+			worker := readyImplementer(t, r.h)
+			if stop := r.h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(worker)+"/stop", nil); stop.Code != http.StatusOK {
+				t.Fatalf("stop = %d: %s", stop.Code, stop.Body)
+			}
+			r.runs(t, "LEGION-209", acceptingPlace, architect.token)
+			return []agentRequest{{architect.token, func() *httptest.ResponseRecorder {
+				return askAsArchitect(t, r.h, architect, "/legion/v1/claims/fresh-session", "LEGION-209", claim.RoleImplementer)
+			}}}
+		}},
+		"POST /legion/v1/project/pause":  {none: controller},
+		"POST /legion/v1/project/resume": {none: controller},
 		"POST /legion/v1/waves/release": {none: "its own status writes name children not in the workflow yet, which no run is on, so they wait for nothing; " +
 			"its adoption of children recorded in other trees names no one issue (intake.IssueOf), so apply asks RunsAStep, the read TestTheRecordNamesTheAgentOfARunThatIsNotEnded holds, and this table drives no adoption"},
 		"POST /legion/v1/roots/close":    {none: "its root has started no phase: admitted and awaiting a person run no step (workflow's stepOf)"},
@@ -252,7 +289,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 			r := newAwaitRig(t)
 			for i, request := range entry.waits(t, r) {
 				applied, waited := len(r.facts.recorded()), len(r.made())
-				if recorder := request.send(); recorder.Code != http.StatusOK {
+				if recorder := request.send(); recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
 					t.Fatalf("request %d of %s = %d: %s", i+1, pattern, recorder.Code, recorder.Body)
 				}
 				if len(r.facts.recorded()) == applied {

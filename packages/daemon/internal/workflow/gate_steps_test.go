@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -126,20 +125,11 @@ func noticesOfKind(t *testing.T, pool *pgxpool.Pool, issue string, kind record.N
 	return notices
 }
 
-// awaitingNotices is the reason of every awaiting-person notice the outbox holds for issue: the
-// row that tells the controller the root waits on a person.
-func awaitingNotices(t *testing.T, pool *pgxpool.Pool, issue string) []string {
+// controllerNoticesOn is the kind of every controller notice the outbox holds for issue, in the
+// order the outbox wrote them.
+func controllerNoticesOn(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select payload->>'reason' from outbox where kind = 'controller_notice' and issue = $1
-		and payload->>'kind' = $2 order by id`, issue, string(record.AwaitingPersonNotice))
-	if err != nil {
-		t.Fatalf("read the awaiting-person notices of %s: %v", issue, err)
-	}
-	reasons, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("scan the awaiting-person notices of %s: %v", issue, err)
-	}
-	return reasons
+	return outboxStrings(t, pool, `select payload->>'kind' from outbox where kind = 'controller_notice' and issue = $1 order by id`, issue)
 }
 
 // reconcileAwaiting runs one admission pass of engine over the project's records as they stand,
@@ -343,8 +333,8 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 	// The step the root hands to a person is the first gated step that is closed, and it moves on
 	// as each step is approved: with one step approved and the other's approval request still with
 	// the person, the root enters the wait once, keeping the row it took at its admission, and
-	// the pass after it finds nothing more to do. No member of this tree is in a phase, because a
-	// member that is keeps the root where it stands.
+	// the pass after it finds nothing more to do. The wait wakes no controller, at either pass. No
+	// member of this tree is in a phase, because a member that is keeps the root where it stands.
 	for _, tc := range orders {
 		t.Run(tc.name+", the wait on the person", func(t *testing.T) {
 			pool := migratedPool(t)
@@ -369,16 +359,15 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 				waiting.Awaiting.GateVersion != tc.closedVersion || waiting.Answered() {
 				t.Fatalf("the root = %#v, want it waiting unanswered on %s version %d", waiting.Awaiting, tc.closedDoc, tc.closedVersion)
 			}
-			reasons := awaitingNotices(t, pool, gatedRoot)
-			if len(reasons) != 1 || !strings.Contains(reasons[0], "keeps its admission slot") {
-				t.Fatalf("awaiting-person notices = %q, want one saying the root keeps its admission slot", reasons)
+			if told := controllerNoticesOn(t, pool, gatedRoot); len(told) != 0 {
+				t.Fatalf("the controller was told %q of the root's wait, want nothing: its skill does nothing for a root that waits on a person", told)
 			}
 
 			if entered := reconcileAwaiting(t, pool, engine); len(entered) != 0 {
 				t.Fatalf("a second pass returned %v, want nothing: the root waits once", entered)
 			}
-			if got := awaitingNotices(t, pool, gatedRoot); len(got) != 1 {
-				t.Fatalf("awaiting-person notices after a second pass = %q, want still the one", got)
+			if told := controllerNoticesOn(t, pool, gatedRoot); len(told) != 0 {
+				t.Fatalf("the controller was told %q after a second pass, want still nothing", told)
 			}
 		})
 	}
@@ -524,10 +513,10 @@ func TestGatedStepsNameEachStepsOwnDocumentOnItsDecision(t *testing.T) {
 }
 
 // A step the deployment gates that nobody has registered holds the tree's work and asks nobody:
-// the root starts no phase, and no awaiting-person notice is written for it, because the record
-// knows no document to ask a person about. The same root with that step registered and closed
-// does wait, which is what tells the two apart, and it starts once that step is registered and
-// approved.
+// the root starts no phase and does not enter the wait on a person, because the record knows no
+// document to ask a person about. The same root with that step registered and closed does wait,
+// which is what tells the two apart, and it starts once that step is registered and approved.
+// Neither root tells the controller anything.
 func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 	steps := []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}
 	t.Run("the step nobody registered", func(t *testing.T) {
@@ -549,8 +538,8 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 		if got := recordedRoot(t, pool).Phase; got != phase.Admitted {
 			t.Fatalf("the root = %s after an admission pass, want it admitted: an unregistered step asks nobody", got)
 		}
-		if got := awaitingNotices(t, pool, gatedRoot); len(got) != 0 {
-			t.Fatalf("awaiting-person notices = %q, want none for a step nobody registered", got)
+		if told := controllerNoticesOn(t, pool, gatedRoot); len(told) != 0 {
+			t.Fatalf("the controller was told %q, want nothing for a step nobody registered", told)
 		}
 
 		bindStep(t, pool, record.DesignStepDecisions, decisionsDoc)
@@ -585,8 +574,8 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 		if waiting.Phase != phase.AwaitingPerson || waiting.Awaiting == nil || waiting.Awaiting.Artifact != decisionsDoc {
 			t.Fatalf("the root = %#v, want it waiting on the decisions document", waiting.Awaiting)
 		}
-		if got := awaitingNotices(t, pool, gatedRoot); len(got) != 1 {
-			t.Fatalf("awaiting-person notices = %q, want the one a registered closed step raises", got)
+		if told := controllerNoticesOn(t, pool, gatedRoot); len(told) != 0 {
+			t.Fatalf("the controller was told %q of the wait a registered closed step raises, want nothing", told)
 		}
 	})
 }
@@ -594,9 +583,9 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 // A step nobody has registered holds the work, and that is all it does: the wait a registered
 // step after it raised still reaches the person. Under the decisions step and the spec, with the
 // decisions step unregistered and the spec registered, unapproved and its approval request with
-// the person, the root enters the wait on its primary document and the controller is told.
-// Reading the unregistered step as the step the person has would leave the root with nothing to
-// answer the wait that never began, while the person holds its request.
+// the person, the root enters the wait on its primary document, and the controller is told
+// nothing of it. Reading the unregistered step as the step the person has would leave the root
+// with nothing to answer the wait that never began, while the person holds its request.
 func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
 	pool := migratedPool(t)
 	engine := stepsEngine([]record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}, nil)
@@ -614,8 +603,8 @@ func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
 		waiting.Awaiting.GateVersion != 4 {
 		t.Fatalf("the root = %#v, want it waiting on the primary document at version 4", waiting.Awaiting)
 	}
-	if got := awaitingNotices(t, pool, gatedRoot); len(got) != 1 {
-		t.Fatalf("awaiting-person notices = %q, want the one the registered closed step raises", got)
+	if told := controllerNoticesOn(t, pool, gatedRoot); len(told) != 0 {
+		t.Fatalf("the controller was told %q of the wait, want nothing", told)
 	}
 }
 

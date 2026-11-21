@@ -250,7 +250,7 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 			t.Errorf("the %s notice's failure detail says %q, want the provider's refusal in it", notice.kind, notice.detail)
 		}
 	}
-	if want := []string{"held", "held (controller)", "worker-died"}; !slices.Equal(kinds, want) {
+	if want := []string{"held", "worker-died"}; !slices.Equal(kinds, want) {
 		t.Fatalf("the failure queued %v, want %v", kinds, want)
 	}
 

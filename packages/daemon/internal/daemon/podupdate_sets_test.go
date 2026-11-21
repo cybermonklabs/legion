@@ -41,8 +41,9 @@ type roundShape struct {
 // in the wait set and not in the ask set holds the pod until the round's bound for an answer
 // nobody asked for: that is how a claim the daemon suspended held BET-1182's, OSSV-300's and
 // OSSV-313's pods to their bounds. A claim the daemon suspended (daemon, exit, released, unknown)
-// is in neither set, because it runs no process and no turn in the pod (R1). An operator's
-// suspension is in both, as dispatch://INFRA-2981 R5 made it.
+// is in neither set, because it runs no process and no turn in the pod (R1). A suspension that
+// holds (the operator's, the controller's or an architect's) is in both, as dispatch://INFRA-2981
+// R5 made the operator's.
 //
 // A claim a project's pause stopped is suspended released, and it is the pause's, not R1's,
 // while the pause still owes its role a launch: the pause kept the pod for the work on its disk
@@ -58,7 +59,7 @@ type roundShape struct {
 // clock over the pause's holds the row names. The ask side is roundAsks: a claim the round asks,
 // or asks once its agent is ready (askRound reads it through unaskedClaims and SaidReady). The
 // wait side is the readings that hold the replacement for a claim before the bound:
-// waitingClaims, heldByOperator and readRoundEnd's holding. The replacement's hold (holding) also
+// waitingClaims, heldClaims and readRoundEnd's holding. The replacement's hold (holding) also
 // holds a claim that a project's pause still keeps and that the round does not ask (R8,
 // unansweredClaims). That claim is in neither of the round's two sets, and this table's wait side
 // would read it as waited for. No row of this table has that shape:
@@ -125,6 +126,8 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 		{name: "failed", claim: member(supervise.StateFailed), want: inNeither},
 		{name: "retired", claim: member(supervise.StateRetired), want: inNeither},
 		{name: "suspended by operator", claim: suspendedBy(supervise.SuspendedByOperator), want: inBoth},
+		{name: "suspended by controller", claim: suspendedBy(supervise.SuspendedByController), want: inBoth},
+		{name: "suspended by architect", claim: suspendedBy(supervise.SuspendedByArchitect), want: inBoth},
 		{name: "suspended by daemon", claim: suspendedBy(supervise.SuspendedByDaemon), want: inNeither},
 		{name: "suspended by exit", claim: suspendedBy(supervise.SuspendedByExit), want: inNeither},
 		{name: "suspended by released", claim: suspendedBy(supervise.SuspendedByReleased), want: inNeither},
@@ -190,8 +193,8 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 			// The background hold is a wait on the pod's processes, not on an answer, and it never
 			// names a suspended or failed claim (backgroundClaims): the answer side is what R2 sets.
 			unanswered, _, _ := readRoundEnd(group, round, clock).holding()
-			waiting, held, holding := named(waitingClaims(group, round, clock)), named(heldByOperator(group, round, clock)), named(unanswered)
-			t.Logf("over %d claims: waitingClaims %t, heldByOperator %t, holding %t", len(group), waiting, held, holding)
+			waiting, held, holding := named(waitingClaims(group, round, clock)), named(heldClaims(group, round, clock)), named(unanswered)
+			t.Logf("over %d claims: waitingClaims %t, heldClaims %t, holding %t", len(group), waiting, held, holding)
 			read = append(read, waiting || held || holding)
 		}
 		if read[0] != read[1] {
@@ -281,7 +284,7 @@ type owedLaunchState struct {
 // wait.
 //
 // The keep is read from the reason that each reading answers (a project's pause owes the
-// implementer a launch), because an operator's suspension holds the pod for a reason of its own.
+// implementer a launch), because a suspension that holds holds the pod for a reason of its own.
 //
 // The last check walks supervise.States() and supervise.SuspendSources(). A state or a source
 // added to supervise without a row here fails it.
@@ -316,8 +319,11 @@ func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) 
 		{state: supervise.StateSuspended, by: supervise.SuspendedByDaemon},
 		{state: supervise.StateSuspended, by: supervise.SuspendedByExit},
 		{state: supervise.StateSuspended, by: supervise.SuspendedByUnknown},
-		// An operator's suspension holds the pod for the operator, never for the pause.
+		// A suspension that holds (the operator's, the controller's or an architect's) holds the
+		// pod for its holder, never for the pause.
 		{state: supervise.StateSuspended, by: supervise.SuspendedByOperator, sets: true, answeredAsked: true},
+		{state: supervise.StateSuspended, by: supervise.SuspendedByController, sets: true, answeredAsked: true},
+		{state: supervise.StateSuspended, by: supervise.SuspendedByArchitect, sets: true, answeredAsked: true},
 		{state: supervise.StateFailed},
 		{state: supervise.StateRetired},
 	}

@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The plugin speaks daemon API contract 212, the contract of the claim operations that the
+  controller and a tree's architect hold.
+time: 2026-11-20T16:00:00.000000000Z
+custom:
+    Issue: pr4065

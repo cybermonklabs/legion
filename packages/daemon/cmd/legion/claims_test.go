@@ -1122,12 +1122,16 @@ func TestClaimsForgetSessionRequiresTheRecordedSession(t *testing.T) {
 }
 
 // INFRA-945 R6: the one line a claim prints as says when the claim's idle pod was released, so an
-// operator reading `legion claims list` does not read it as a suspension someone must lift. Every
-// other claim prints the state it is in, suspended by an operator among them. None of the three
-// is in an update round, in a tool call or refused by the leak check, so each line ends in the
-// round, head, call and leak-check cause columns' `-`, and none carries a failure record — the
-// failed one is a claim served by a daemon older than that record — so each prints `-` for the
-// cause beside its state as well (TestTheClaimsListPrintsTheCause reads a line that carries one).
+// operator reading `legion claims list` does not read it as a suspension someone must lift. A
+// claim the project's controller suspended says so too (#4065), so the operator
+// tells it from its own suspension: the controller's resume_claim lifts it, where the operator's
+// own is the operator's alone to lift. So does a claim an architect suspended, which an
+// architect's resume_claim lifts as well as the controller's and the operator's resume. Every other claim prints the state
+// it is in, suspended by an operator among them. None of the five is in an update round, in a tool
+// call or refused by the leak check, so each line ends in the round, head, call and leak-check
+// cause columns' `-`, and none carries a failure record — the failed one is a claim served by a
+// daemon older than that record — so each prints `-` for the cause beside its state as well
+// (TestTheClaimsListPrintsTheCause reads a line that carries one).
 func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -1145,6 +1149,18 @@ func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing
 			claim: api.OperatorClaim{Token: "legion-legion-legion-209-tester", Role: "tester", Issue: "LEGION-209",
 				State: "suspended", SuspendedBy: "operator", Generation: 1, PluginContract: api.DaemonAPIVersion},
 			want: "legion-legion-legion-209-tester tester LEGION-209 suspended - 1 " + thisBinarysContract + " - - - -\n",
+		},
+		{
+			name: "suspended by the controller",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-211-merger", Role: "merger", Issue: "LEGION-211",
+				State: "suspended", SuspendedBy: "controller", Generation: 4, PluginContract: api.DaemonAPIVersion},
+			want: "legion-legion-legion-211-merger merger LEGION-211 suspended:controller - 4 " + thisBinarysContract + " - - - -\n",
+		},
+		{
+			name: "suspended by an architect",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-212-tester", Role: "tester", Issue: "LEGION-212",
+				State: "suspended", SuspendedBy: "architect", Generation: 5, PluginContract: api.DaemonAPIVersion},
+			want: "legion-legion-legion-212-tester tester LEGION-212 suspended:architect - 5 " + thisBinarysContract + " - - - -\n",
 		},
 		{
 			name: "failed",

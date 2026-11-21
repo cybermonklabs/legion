@@ -362,7 +362,7 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 				v.Claims[2].SuspendedBy = supervise.SuspendedByOperator
 				return v
 			}(),
-			sandbox: true, want: IdleHoldUnownedOperatorSuspended,
+			sandbox: true, want: IdleHoldUnownedSuspensionHolds,
 		},
 		{
 			name: "the issue's Sandbox is gone", view: unownedIssue(), sandbox: false,

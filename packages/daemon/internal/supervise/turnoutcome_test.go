@@ -207,9 +207,9 @@ func TestARetryStartsANewSessionWhenItAsksAndResumesTheRecordedOneWhenItDoesNot(
 		retry Event
 	}{
 		{"the workflow's retry asking for a new session", queuedClaim(), RequestRetry{Claim: testToken, FreshSession: true}},
-		{"the operator's retry asking for a new session", rootClaim(), RequestOperatorRetry{Claim: rootToken, FreshSession: true}},
+		{"the operator's retry asking for a new session", rootClaim(), RequestAskedRetry{Claim: rootToken, FreshSession: true, By: SuspendedByOperator}},
 		{"the workflow's retry asking for nothing", queuedClaim(), RequestRetry{Claim: testToken}},
-		{"the operator's retry asking for nothing", rootClaim(), RequestOperatorRetry{Claim: rootToken}},
+		{"the operator's retry asking for nothing", rootClaim(), RequestAskedRetry{Claim: rootToken, By: SuspendedByOperator}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarnessOf(t, tc.claim)

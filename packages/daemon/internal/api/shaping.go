@@ -289,14 +289,16 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		}
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume:
+		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
+		AnswerClaimOperation, AnswerPodUpdate:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
-		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract, and
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, so no older
-		// contract records any of the three at all.
+		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
+		// AnswerClaimOperation and AnswerPodUpdate arrived whole at claimOperationsContract, so
+		// no older contract records any of the five at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -859,6 +861,19 @@ const quietTimeContract = 111
 // (answers.go's AnswerIssueRecord and AnswerHealth).
 const shapedAnswersContract = 193
 
+// claimOperationsContract is the daemon contract the claim door's four operations and the
+// controller's pod update arrived at (version.go's 212): `POST /legion/v1/claims/stop`, `retry`,
+// `suspend` and `resume`, which answer ClaimOperationResponse (AnswerClaimOperation), and
+// `POST /legion/v1/issues/pod-update`, which answers PodUpdateResponse (AnswerPodUpdate). Each
+// answer arrived whole with its routes, so no contract below this one records either, no caller
+// below it is served one, and neither is ever shaped: shapeAnswer's row for each is the
+// identity. No key and no value of any other answer moved at this contract.
+//
+// It is a literal of its own and never DaemonAPIVersion, as shapedAnswersContract is: a later
+// contract moves that constant, and the contract these answers arrived at stays where it is. It
+// moves only with the number of the change that added the routes (#4065).
+const claimOperationsContract = 212
+
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on
 // another issue (record.LineWaitingOnIssue). A plugin from 85 up to it reads `kind` with a
@@ -971,8 +986,8 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with this change's own number, and it is the last number of answers.go's SupportedContracts,
-// which names the constant rather than its number for that reason.
+// with this change's own number, and it is a number of answers.go's SupportedContracts, just
+// below claimOperationsContract, which names the constant rather than its number for that reason.
 const repositoriesLiveContract = 202
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the

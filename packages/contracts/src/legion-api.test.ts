@@ -12,6 +12,7 @@ import {
   LegionActivityRequest,
   LegionCapabilityReport,
   LegionChildRequest,
+  LegionClaimOperationResponse,
   LegionClaimRequest,
   LegionCompactResponse,
   LegionControllerCredentialResponse,
@@ -37,6 +38,8 @@ import {
   LegionPauseFailureResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionPodUpdateRequest,
+  LegionPodUpdateResponse,
   LegionProjectPauseRequest,
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
@@ -160,6 +163,15 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
+  // The four claim operations of the controller and of an architect (contract 212): the claim as
+  // each left it, and who holds a suspension over it.
+  "claim-stop.json": LegionClaimOperationResponse,
+  "claim-retry.json": LegionClaimOperationResponse,
+  "claim-suspend.json": LegionClaimOperationResponse,
+  "claim-resume.json": LegionClaimOperationResponse,
+  // The controller's request for the replacement of one issue's pod (contract 212): the update
+  // round over it, its reasons, and whether the request opened it.
+  "issue-pod-update.json": LegionPodUpdateResponse,
   "gate-register.json": LegionEmptyResponse,
   "wave-release.json": LegionWaveReleaseResponse,
   "phase-backward.json": LegionEmptyResponse,
@@ -422,11 +434,14 @@ interface EnumeratedFieldRow {
 
 /** The answer schema this module parses each answer of the daemon's table with, by the id the
  * table writes it under (`internal/api/answers.go`). An answer whose id no entry here names
- * fails the case below, so an enumerated field of a fourth answer is read rather than skipped. */
+ * fails the case below, so an enumerated field of a fifth answer is read rather than skipped. */
 const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   state: LegionStateResponse,
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
+  // The four claim operations of the controller and of an architect (contract 212): the claim's
+  // `state`, and who holds a suspension over it.
+  "claim-operation": LegionClaimOperationResponse,
 };
 
 /** One step of a path from a schema's root to a node below it: the field `key` of an object,
@@ -1786,6 +1801,7 @@ test("every request the plugin sends parses and names its required fields", () =
       LegionClaimRequest,
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
     ],
+    ["pod update", LegionPodUpdateRequest, { grantId: "grant-208", issue: "LEGION-209" }],
     [
       "gate register",
       LegionGateRegisterRequest,
@@ -2600,10 +2616,33 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   ]);
 });
 
-/** The responses an operator's bearer opens, the only ones that may name a suspension. */
+/** The responses an operator's bearer opens, the only ones of the operator's that may name a
+ * suspension. */
 const operatorSchemas: Record<string, true> = {
   LegionOperatorClaimResponse: true,
   LegionOperatorClaimsResponse: true,
+};
+
+/** The one session-facing exception: the four claim operations of the controller and of an
+ * architect (`POST /legion/v1/claims/stop|retry|suspend|resume`) answer who holds a suspension,
+ * because those routes are where the caller reads whether its own resume lifts it. The reason the
+ * guard exists does not reach them: they arrived with contract 212, so only a plugin at that
+ * contract or later calls them, and no reader of these bodies predates the key. The schema and the
+ * four fixtures it pins are named here, and nothing else; a new session-facing body that names a
+ * suspender still fails the walk below. */
+const claimOperationSchemas: Record<string, true> = { LegionClaimOperationResponse: true };
+const claimOperationFixtures: Record<string, true> = {
+  "claim-stop.json": true,
+  "claim-retry.json": true,
+  "claim-suspend.json": true,
+  "claim-resume.json": true,
+};
+
+/** The daemon's tables of every answer's shape, one row per answer (and per contract), which
+ * name the claim operations' `suspendedBy` in that answer's rows alone. */
+const shapeTables: Record<string, true> = {
+  "contract-shapes.json": true,
+  "enumerated-fields.json": true,
 };
 
 /** Every key `schema` can carry, at any depth, through objects, arrays, unions, records, optional
@@ -2639,24 +2678,66 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and nowhere else, and this holds that for every
-// schema the module exports, present and future.
+// `suspendedBy` is served to the operator's bearer and, from contract 212, to the four claim
+// operations of the controller and of an architect (claimOperationSchemas), and nowhere else; this
+// holds that for every schema the module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {
   let walked = 0;
   for (const [name, schema] of Object.entries(legionApi)) {
-    if (!isSchema(schema) || operatorSchemas[name] === true) continue;
+    if (!isSchema(schema) || operatorSchemas[name] === true || claimOperationSchemas[name] === true)
+      continue;
     walked += 1;
     expect([...schemaKeys(schema)], `${name} carries suspendedBy`).not.toContain("suspendedBy");
   }
   expect(walked).toBeGreaterThan(20);
   // The walk finds the key where it does live, so an empty walk cannot pass for a clean one.
   expect([...schemaKeys(LegionOperatorClaimResponse)]).toContain("suspendedBy");
+  expect([...schemaKeys(LegionClaimOperationResponse)]).toContain("suspendedBy");
 
-  // And no body the daemon writes carries it outside the operator's own.
-  for (const name of readdirSync(fixtureDir).filter((entry) => entry.endsWith(".json"))) {
-    if (name.startsWith("operator-")) continue;
+  // And no body the daemon writes carries it outside the operator's own and the four routes'.
+  // The daemon's own tables of the answers' shapes (`contract-shapes.json`,
+  // `enumerated-fields.json`) are no body a route writes: they record each answer's key paths and
+  // value domains, so they name `suspendedBy` at the four routes' answer, `claim-operation`, and
+  // must name it at no other answer.
+  const fixtures = readdirSync(fixtureDir);
+  for (const name of fixtures.filter((entry) => entry.endsWith(".json"))) {
+    if (name.startsWith("operator-") || claimOperationFixtures[name] === true) continue;
+    if (shapeTables[name] === true) {
+      const rows = JSON.parse(readFileSync(path.join(fixtureDir, name), "utf8")) as {
+        readonly answer: string;
+      }[];
+      for (const row of rows.filter((entry) => entry.answer !== "claim-operation")) {
+        expect(JSON.stringify(row), `${name}: the ${row.answer} answer`).not.toContain(
+          "suspendedBy"
+        );
+      }
+      continue;
+    }
     expect(readFileSync(path.join(fixtureDir, name), "utf8"), name).not.toContain("suspendedBy");
   }
+  // The exception is the four routes' and no wider: each of their fixtures exists.
+  for (const name of Object.keys(claimOperationFixtures)) {
+    expect(fixtures, name).toContain(name);
+  }
+});
+
+// An architect's suspension is a source of its own (contract 212, #4065): the
+// claim operations' answer names it, landed or held, while the state, which the walk above holds
+// to no suspender at all, still names none.
+test("the claim operations name an architect's suspension", () => {
+  expect(
+    LegionClaimOperationResponse.parse({ state: "suspended", suspendedBy: "architect" })
+  ).toEqual({ state: "suspended", suspendedBy: "architect" });
+  expect(
+    LegionClaimOperationResponse.parse({
+      state: "working",
+      suspensionHeld: true,
+      suspensionHeldBy: "architect",
+    }).suspensionHeldBy
+  ).toBe("architect");
+  expect(
+    LegionClaimOperationResponse.safeParse({ state: "suspended", suspendedBy: "tree" }).success
+  ).toBeFalse();
 });
 
 test("the state golden shows a claim's capability report beside its locator", () => {

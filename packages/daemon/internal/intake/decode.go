@@ -110,7 +110,8 @@ type envoyEnvelope struct {
 }
 
 // decodeMessage decodes the Envoy envelope first, then the subject's source-specific payload.
-// project is the daemon's Dispatch project: another project's issue event is a nil Fact.
+// project is the daemon's Dispatch project: another project's issue or document event is a nil
+// Fact.
 // repositories are its configured repositories: a GitHub event whose payload names another
 // repository is a nil Fact, whatever subject carried it.
 func decodeMessage(subject, project string, repositories []ghrepo.Repository, data []byte) (decodedMessage, error) {
@@ -138,6 +139,11 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
 		}
 		fact, unread, legacy, err = decodeDispatchFact(subject, project, envelope.Payload)
+	case strings.HasPrefix(subject, dispatchDocumentPrefix):
+		if envelope.Source != "dispatch" {
+			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
+		}
+		fact, err = decodeDispatchDocumentFact(subject, project, envelope.factID(), envelope.Payload)
 	case strings.HasPrefix(subject, "notifications.github."):
 		if envelope.Source != "github" {
 			return decodedMessage{}, fmt.Errorf("GitHub subject has envelope source %q", envelope.Source)

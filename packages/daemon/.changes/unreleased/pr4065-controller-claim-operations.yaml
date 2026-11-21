@@ -1,0 +1,33 @@
+kind: Added
+body: |-
+  The daemon serves the controller four claim operations, `POST /legion/v1/claims/stop`,
+  `retry`, `suspend` and `resume`, behind the controller's grant and refused for the controller's
+  own claim. A controller's suspension is recorded under its own source, `controller`: it holds
+  against every daemon rule, the controller's `resume_claim` or the operator's resume lifts it,
+  and `legion claims list` prints it as `suspended:controller`. While the operator's own
+  suspension holds a claim, the controller's `stop`, `retry`, `suspend`, `resume_claim` and
+  `fresh_session` are refused `409 SUSPENDED_BY_OPERATOR` and nothing of the claim changes; before
+  this, the controller's `fresh_session` resumed such a claim. The same six claim routes (these
+  four, `claims/fresh-session` and `claims/compact`) also take a tree architect's grant, for the
+  claims of the issues it owns alone: the daemon refuses an architect a claim of another tree
+  (`403 ISSUE_OUTSIDE_TREE`), a claim of an issue of its tree that it does not own
+  (`403 ISSUE_NOT_OWNED`) and its own claim (`403 OWN_CLAIM`). An architect's suspension is
+  recorded under a source of its own, `architect`, which ranks under the controller's: an
+  architect's `resume_claim` lifts it, and so do the controller's and the operator's. Each of an
+  architect's operations is refused `409 SUSPENDED_BY_OPERATOR` or `409 SUSPENDED_BY_CONTROLLER`
+  for a claim the operator's or the controller's suspension holds; its `resume_claim`, `suspend`,
+  `stop` and `fresh_session` are refused `409 SUSPENDED_BY_DAEMON` for a claim the daemon
+  suspended; and its `retry` and `fresh_session` of a claim that failed or that a stop retired are
+  refused `409 ISSUE_OUT_OF_WORKFLOW` while the claim's issue or its tree's root is out of the
+  workflow. Two store migrations widen `claims_suspended_by_check`, for `controller` and then for
+  `architect`. While the project is paused, the controller's and an architect's
+  `claims/retry` and `claims/resume` are refused `409 PROJECT_PAUSED`, as their `fresh-session`
+  and `compact` are, and nothing of the claim changes; their `claims/stop` and `claims/suspend`
+  still run. Every `PROJECT_PAUSED` refusal now ends by naming what lifts the pause: the
+  controller's `resume` operation, which names no issue, or the operator's `legion project resume`.
+  A pause stops no claim that a suspension of the controller's, an architect's or the operator's
+  already holds, and such a suspension that takes a stopped claim over holds it through the
+  project's resume.
+time: 2026-11-20T16:00:00.000000000Z
+custom:
+    Issue: pr4065

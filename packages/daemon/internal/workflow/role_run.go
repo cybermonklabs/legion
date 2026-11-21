@@ -83,11 +83,11 @@ func lastStartRow(run record.RoleRun) int64 {
 // delivered is the outbox executor's decision when the start runs: not to a claim that holds a task
 // for the same generation and phase by then (record.SuperviseRequest's ResumeTask).
 //
-// Stranded reads the same rule for a failed claim, and for a suspended one no operator suspended: a
-// claim for which StartFor is true has no queued start that will wake it. A
-// suspension that holds for the operator (supervise's RuleHolds) is woken by no start, queued or
-// not, since each waits for the operator's resume, so Stranded lists it without asking. The
-// architect's start names no phase, so its current is "".
+// Stranded reads the same rule for a failed claim, and for a suspended one that no holding
+// suspension holds: a claim for which StartFor is true has no queued start that will wake it. A
+// suspension that holds — the operator's, the controller's or an architect's (supervise's
+// RuleHolds) — is woken by no start, queued or not, since each waits for a resume to lift it, so
+// Stranded lists it without asking. The architect's start names no phase, so its current is "".
 //
 // Its reading of run.Queued is queuedStartActs, which unpromptedPhaseWorker and catch_up.go's
 // queuedRowCovers share.
@@ -149,7 +149,7 @@ func startActs(queued record.QueuedSupervise, stop int64, current phase.Phase) b
 // Where StartFor asks what a re-admitted tree's promotion must start, and so weighs whether the
 // claim may already have a process, this reads nothing of the claim's state: a registered, ready
 // or idle claim holding none of entry's work is the very claim this exists to close the
-// difference for. The states no start may reach — an operator's suspension, a retirement — are
+// difference for. The states no start may reach — a suspension that holds, a retirement — are
 // the caller's own skips.
 func OwedEntry(run record.RoleRun, root record.Issue, entry int64) bool {
 	if GivenEntry(run) >= entry {

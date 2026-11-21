@@ -1,6 +1,7 @@
 import {
   type LegionActivityRequest,
   LegionChildRequest,
+  LegionClaimOperationResponse,
   LegionClaimRequest,
   LegionCompactResponse,
   LegionControllerGrantRequest,
@@ -21,6 +22,8 @@ import {
   LegionIssueStatusRequest,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionPodUpdateRequest,
+  LegionPodUpdateResponse,
   LegionProjectPauseRequest,
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
@@ -154,8 +157,8 @@ export interface LegionDaemonClient {
   readonly issueStatus: (
     input: z.input<typeof LegionIssueStatusRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
-  /** The controller's `fresh_session`: the claim on `role` of `issue` leaves its recorded
-   * session behind and starts again in a new one, the effect
+  /** The controller's or an architect's `fresh_session`: the claim on `role` of `issue` leaves
+   * its recorded session behind and starts again in a new one, the effect
    * `legion claims retry --fresh-session` runs for an operator. The answer is empty wherever
    * the claim came back and its start ran. `phaseNotRestarted` carries the workflow's refusal
    * of the phase restart, where the claim came back owing no task, or the machine's refusal of
@@ -168,13 +171,76 @@ export interface LegionDaemonClient {
   readonly gateRegister: (
     input: z.input<typeof LegionGateRegisterRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
-  /** The controller's `compact`: the claim on `role` of `issue` has its Oh My Pi session
-   * compacted and is then sent the task it owes again, the effect `legion claims compact` runs
-   * for an operator. The answer says whether the session was compacted and, when it was not,
-   * why; the claim came back and whatever task it owes went again either way. */
+  /** The controller's or an architect's `compact`: the claim on `role` of `issue` has its Oh My
+   * Pi session compacted and is then sent the task it owes again, the effect
+   * `legion claims compact` runs for an operator. The answer says whether the session was
+   * compacted and, when it was not, why; the claim came back and whatever task it owes went again
+   * either way. */
   readonly compact: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionCompactResponse>>;
+  /** The controller's or an architect's `stop`: the claim on `role` of `issue` is released and
+   * retired, the effect `legion claims stop` runs for an operator; a turn it is in is cut off with
+   * it. Refused for a claim the operator's own suspension holds (`SUSPENDED_BY_OPERATOR`). The
+   * answer is the claim as the stop left it. */
+  readonly stopClaim: (
+    input: z.input<typeof LegionClaimRequest>
+  ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
+  /** The controller's or an architect's `retry`: a claim that failed, or that a stop retired,
+   * starts again in the session it recorded, the effect a plain `legion claims retry` runs for an
+   * operator; a phase worker is started through its issue's phase. Refused for a claim stored
+   * working (`CLAIM_IN_A_TURN`), for a claim the operator's own suspension holds
+   * (`SUSPENDED_BY_OPERATOR`), and for every claim while the project is paused
+   * (`PROJECT_PAUSED`, with the pause that stands; its resume lifts that refusal). The answer is
+   * the claim as the retry left it. */
+  readonly retryClaim: (
+    input: z.input<typeof LegionClaimRequest>
+  ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
+  /** The controller's or an architect's `suspend`: the claim's process stops and its session is
+   * kept, the effect `legion claims suspend` runs for an operator, held for a turn's end; the
+   * suspension is the caller's (`controller` or `architect`), which holds against the daemon's
+   * rules and which the caller's own `resume_claim` lifts. Refused for a claim the operator's own
+   * suspension holds (`SUSPENDED_BY_OPERATOR`). The answer is the claim as the suspension left it,
+   * with who holds the suspension. */
+  readonly suspendClaim: (
+    input: z.input<typeof LegionClaimRequest>
+  ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
+  /** The controller's or an architect's `resume_claim`: a suspended claim's session is relaunched,
+   * the effect `legion claims resume` runs for an operator, but never over the operator's own
+   * suspension (`SUSPENDED_BY_OPERATOR`); a claim stored working is refused (`CLAIM_IN_A_TURN`),
+   * and so is every claim while the project is paused (`PROJECT_PAUSED`): a claim the pause
+   * stopped is the project's resume's to bring back. A stop and a suspension still run while the
+   * project is paused. The answer is the claim as the resume left it.
+   *
+   * An architect's grant reaches the claims of the issues it owns alone, through all six of these
+   * claim operations: another tree's claim is refused (`ISSUE_OUTSIDE_TREE`), and so is a claim of
+   * an issue of its tree it does not own (`ISSUE_NOT_OWNED`), the architect's own (`OWN_CLAIM`), a
+   * claim the controller's suspension holds (`SUSPENDED_BY_CONTROLLER`), for its `resume_claim`,
+   * suspend, stop and `fresh_session` a claim the daemon suspended (`SUSPENDED_BY_DAEMON`), and,
+   * for its retry and `fresh_session`, a failed or retired claim whose issue is out of the
+   * workflow or whose tree lingers (`ISSUE_OUT_OF_WORKFLOW`). */
+  readonly resumeClaim: (
+    input: z.input<typeof LegionClaimRequest>
+  ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
+  /** The controller's `replace_pod`: the daemon opens its update round over the pod `issue` runs
+   * in, as a drift opens one. Each role of the pod is asked to push its work and answer
+   * `ready_for_update`, and the pod is replaced once each has answered, no turn runs and each
+   * role's report since its last turn names no running background work, or at the round's bound.
+   * The answer is the round, its reasons, and whether this request opened it, false for a round
+   * already open over the pod. Refused for an issue of another project or with no claim the
+   * daemon supervises (`NO_CLAIM`), one whose claims run no worker in a pod (`NO_POD`), one whose
+   * pod is being replaced already (`POD_CHANGING`), an opening a limit of the project holds back
+   * (`POD_UPDATE_LIMITED`, naming the limit), and a round no claim recorded within the daemon's
+   * wait (`POD_UPDATE_NOT_RECORDED`, 503): a 200 is only ever a round a claim records. A request
+   * that waits more than the daemon's bound (30 s) for a sweep's walk over the project's issues
+   * opens nothing (`POD_UPDATE_BUSY`, 503), and its sentence names when to ask again; this client
+   * reads no response header. While the project is paused it is refused (`PROJECT_PAUSED`, with
+   * the pause that stands), and so is a pod a pause holds (`POD_HELD_BY_PAUSE`): the hold of a
+   * pause that began after the daemon read the project as running, or a hold the resume left on a
+   * pod none of whose roles is live yet. */
+  readonly issuePodUpdate: (
+    input: z.input<typeof LegionPodUpdateRequest>
+  ) => Promise<z.output<typeof LegionPodUpdateResponse>>;
   /** The controller's `pause`: the daemon pauses its own project for `reason`, the effect
    * `legion project pause` runs for an operator. Every role but the controller stops, one in a
    * turn when that turn ends, and every start waits for the resume. The answer is the pause it
@@ -683,6 +749,16 @@ export function createLegionDaemonClient(
       ),
     compact: (input) =>
       post("/legion/v1/claims/compact", LegionClaimRequest, LegionCompactResponse, input),
+    stopClaim: (input) =>
+      post("/legion/v1/claims/stop", LegionClaimRequest, LegionClaimOperationResponse, input),
+    retryClaim: (input) =>
+      post("/legion/v1/claims/retry", LegionClaimRequest, LegionClaimOperationResponse, input),
+    suspendClaim: (input) =>
+      post("/legion/v1/claims/suspend", LegionClaimRequest, LegionClaimOperationResponse, input),
+    resumeClaim: (input) =>
+      post("/legion/v1/claims/resume", LegionClaimRequest, LegionClaimOperationResponse, input),
+    issuePodUpdate: (input) =>
+      post("/legion/v1/issues/pod-update", LegionPodUpdateRequest, LegionPodUpdateResponse, input),
     projectPause: (input) =>
       post(
         "/legion/v1/project/pause",

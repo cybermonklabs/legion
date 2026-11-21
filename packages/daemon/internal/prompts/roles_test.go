@@ -164,16 +164,19 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 	}
 }
 
-// A finding outside the tree takes one of two paths (skill://legion-worker/references/findings.md):
-// a clear defect goes to the controller, and a finding that needs a decision is an ask. The headless
-// fragment composed into the same planner prompt says the same, so the core may not say "always an ask".
+// A finding outside the tree takes the paths of skill://legion-worker/references/findings.md: the
+// tree fixes a clear defect itself, writes it to its owner only when the fix would collide or the
+// repository is out of reach, and to the project's coordinator to file only when nobody owns it;
+// a finding that needs a decision is an ask. The headless fragment composed into the same planner
+// prompt says the same, so the core may not say "always an ask".
 func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T) {
 	planner := rolePart(t, "core/planner.md")
 	for _, rule := range []string{
 		"Read the repository's `STRATEGY.md` when it has one",
 		"A finding outside the tree is never an issue you file.",
-		"A clear defect in code this tree touches or depends on is fixed in this tree's own pull request.",
-		"Any other clear defect goes to whoever coordinates the project's work, with its evidence, and a finding that needs a decision is an ask.",
+		"A clear defect is this tree's to fix, in its own pull request or a separate one of the tree, in whichever repository it is.",
+		"It goes to the owner of that code, with its evidence, only when the fix would collide with the owner's open work or your access does not reach that repository, and to whoever coordinates the project's work, to file, only when nobody owns that code.",
+		"A defect that needs a person's decision, a deploy window or work much larger than your own, and any other finding that needs a decision, is an ask.",
 		"A to-do only a person can do is always an ask.",
 	} {
 		if !strings.Contains(planner, rule) {
@@ -182,6 +185,9 @@ func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T
 	}
 	if strings.Contains(planner, "A finding outside the tree, and a to-do only a person can do, is always an ask.") {
 		t.Error("core/planner.md still makes every finding outside the tree an ask, which contradicts the headless fragment's clear-defect path")
+	}
+	if strings.Contains(planner, "Any other clear defect goes to whoever coordinates the project's work") {
+		t.Error("core/planner.md still sends a clear defect to the project's coordinator to pass on, which #4065 removes")
 	}
 }
 

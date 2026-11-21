@@ -2827,7 +2827,7 @@ READS = (
     ("pi_legion", "packages/dispatch/e2e/harness-real-broker.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-signin.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/claude-envoy/scripts/build.ts",
-     "packages/pi-legion/src/skills-guard.test.ts:29,318, which spawns that builder and asserts an "
+     "packages/pi-legion/src/skills-guard.test.ts:29,343, which spawns that builder and asserts an "
      "exact file list over what it writes"),
     ("pi_legion", "packages/claude-envoy/bin/envoy-channel.ts",
      "that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:39-44), bundled into "

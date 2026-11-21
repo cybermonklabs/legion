@@ -12,8 +12,8 @@ Read it before you run a build or tests in your pod, read a shared database, rea
 
 - One volume at `/legion` holds the clone, every workspace, `$TMPDIR` and the caches, shared by the issue's roles. Your home and `/tmp` are on the node's small disk, whose limit evicts the pod. Read free space with `df -h /legion`.
 - A cache trimmer sweeps at 85 per cent used toward 70 (the defaults), oldest first. It deletes only `$TMPDIR/go-build<digits>` directories, `-a` and `-d` entries of `/legion/go/build`, directories directly under `/legion/scratch/cache` but `ms-playwright` and `legion-claude-code`, and directories directly under `/legion/scratch/bun/install/cache`. It skips anything open or changed in the last fifteen minutes, and deletes nothing a role put anywhere else.
-- `$TMPDIR` is yours to clean: nothing else deletes what you leave there, and it fills the volume for every role. Delete the paths you made, each by its exact path.
-- Chain a command that enters a scratch directory with `&&` (`cd -- "$TMPDIR/probe" && ./run.sh`): after a failed `cd`, `;` runs the command where the shell last stood, often the shared workspace.
+- `$TMPDIR` is yours to clean: nothing else deletes what you leave there, and it fills the volume for every role.
+- Chain a command that enters a scratch directory with `&&`: after a failed `cd`, `;` runs the command where the shell last stood, often the shared workspace.
 
 ## The database your tests use
 
@@ -25,7 +25,11 @@ Read it before you run a build or tests in your pod, read a shared database, rea
 
 ## Reading a shared database
 
-Read a database outside your pod through the read-only login whose URL is in the file `SESSION_READER_DSN_FILE` names. Never read it through the session URL the file `OMP_SESSION_SQL_DSN_FILE` names. Keep read-only inside one transaction (`BEGIN READ ONLY; … COMMIT;`, or `psql "$URL" --single-transaction -q -X -v ON_ERROR_STOP=1 -c 'SET TRANSACTION READ ONLY' -f <file>` with no `COMMIT` in the file): a session-wide setting stays on the pooled backend and fails the next client's writes. With no reader URL, report it as a fault of the deployment.
+Read a database outside your pod through the read-only login whose URL is in the file `SESSION_READER_DSN_FILE` names. Never read it through the session URL the file `OMP_SESSION_SQL_DSN_FILE` names. Put no URL on a command line, which any process of the pod can read: this command pipes its parts to psql as a service file. Put no `COMMIT` in `<file>`, so the read stays in one read-only transaction: a session-wide setting stays on the pooled backend and fails the next client's writes. With no reader URL, report it as a fault of the deployment.
+
+```sh
+PGSERVICEFILE=<(python3 -c 'from urllib.parse import*;u=urlsplit(input());q=unquote;print(f"[r]\nhost={u.hostname}\nport={u.port or 5432}\ndbname={q(u.path[1:])}\nuser={q(u.username)}\npassword={q(u.password)}",*map("=".join,parse_qsl(u.query)),sep="\n")' <"$SESSION_READER_DSN_FILE" 2>/dev/null) PGSERVICE=r psql -1qX -v ON_ERROR_STOP=1 -c 'SET TRANSACTION READ ONLY' -f <file>
+```
 
 ## What the image carries
 

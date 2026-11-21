@@ -1970,5 +1970,123 @@
         "since": 46
       }
     ]
+  },
+  {
+    "answer": "claim-operation",
+    "keyPath": "state",
+    "values": [
+      {
+        "value": "failed",
+        "since": 212
+      },
+      {
+        "value": "idle",
+        "since": 212
+      },
+      {
+        "value": "launch_uncertain",
+        "since": 212
+      },
+      {
+        "value": "launching",
+        "since": 212
+      },
+      {
+        "value": "queued",
+        "since": 212
+      },
+      {
+        "value": "ready",
+        "since": 212
+      },
+      {
+        "value": "registered",
+        "since": 212
+      },
+      {
+        "value": "retired",
+        "since": 212
+      },
+      {
+        "value": "shim_connected",
+        "since": 212
+      },
+      {
+        "value": "suspended",
+        "since": 212
+      },
+      {
+        "value": "working",
+        "since": 212
+      }
+    ]
+  },
+  {
+    "answer": "claim-operation",
+    "keyPath": "suspendedBy",
+    "values": [
+      {
+        "value": "architect",
+        "since": 212
+      },
+      {
+        "value": "controller",
+        "since": 212
+      },
+      {
+        "value": "daemon",
+        "since": 212
+      },
+      {
+        "value": "exit",
+        "since": 212
+      },
+      {
+        "value": "operator",
+        "since": 212
+      },
+      {
+        "value": "released",
+        "since": 212
+      },
+      {
+        "value": "unknown",
+        "since": 212
+      }
+    ]
+  },
+  {
+    "answer": "claim-operation",
+    "keyPath": "suspensionHeldBy",
+    "values": [
+      {
+        "value": "architect",
+        "since": 212
+      },
+      {
+        "value": "controller",
+        "since": 212
+      },
+      {
+        "value": "daemon",
+        "since": 212
+      },
+      {
+        "value": "exit",
+        "since": 212
+      },
+      {
+        "value": "operator",
+        "since": 212
+      },
+      {
+        "value": "released",
+        "since": 212
+      },
+      {
+        "value": "unknown",
+        "since": 212
+      }
+    ]
   }
 ]

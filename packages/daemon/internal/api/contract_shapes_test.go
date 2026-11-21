@@ -676,7 +676,37 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
 			Pause: ended, Released: 3,
 		}}},
+		// The claim operations' answer, one body per state a claim can be left in, each naming a
+		// suspension landed and one held, so every value the table declares at the answer's three
+		// enumerated fields is carried by some body (claimOperationBodies). The goldens
+		// (`claim-*.json`) pin real answers, which name a suspender only where one holds; a
+		// fixture body is maximal.
+		AnswerClaimOperation: {roots: typesOf(ClaimOperationResponse{}), bodies: claimOperationBodies()},
+		// The pod update's golden own value (`issue-pod-update.json`): the three keys this answer
+		// always writes, none of them omitempty.
+		AnswerPodUpdate: {roots: typesOf(PodUpdateResponse{}), bodies: []any{PodUpdateResponse{
+			Round:   "pod:9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22",
+			Reasons: "the project's controller asked for the replacement of this pod",
+			Opened:  true,
+		}}},
 	}
+}
+
+// claimOperationBodies is one ClaimOperationResponse per state of answers.go's
+// claimOperationStates, the sources of suspendSources taken in turn for `suspendedBy` and, one
+// further on, for `suspensionHeldBy`: there are more states than sources, so every source is
+// carried at both keys.
+func claimOperationBodies() []any {
+	bodies := make([]any, 0, len(claimOperationStates))
+	for i, state := range claimOperationStates {
+		bodies = append(bodies, ClaimOperationResponse{
+			State:            state.Value,
+			SuspendedBy:      suspendSources[i%len(suspendSources)].Value,
+			SuspensionHeld:   true,
+			SuspensionHeldBy: suspendSources[(i+1)%len(suspendSources)].Value,
+		})
+	}
+	return bodies
 }
 
 // controllerPause is the goldens' pause (goldenPause) begun by the controller from its session

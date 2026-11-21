@@ -2379,16 +2379,16 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 }
 
 // sessionLost applies the fact that a claim forgot its recorded session, for cause (supervise's
-// Deps.SessionLost): the workflow tells the issue, its architect and the controller. The machine
-// tells it at the forget, before it spawns the fresh agent that takes the session's place, with
-// the claim as the forget left it, so c.Abandoned.Session is the session forgotten, which the fact
-// carries. The event id names that session, so one forget of a session is one fact, however many
-// launches forget it: the forget is in memory alone until the fresh agent's launch writes the
-// claim, and a daemon stop between the two — a fresh spawn waiting on its pod, say — leaves the
-// claim recording the session, which the next boot's launch forgets again at a generation of its
-// own. That second fact is marked applied already (intake.ApplyFact), so nobody is told twice.
-// Telling only after the claim is written would not do: the fact commits on a goroutine of its
-// own (applySessionFact), so a stop between the write and the tell would tell nobody at all.
+// Deps.SessionLost): the workflow tells the issue and its architect. The machine tells it at the
+// forget, before it spawns the fresh agent that takes the session's place, with the claim as the
+// forget left it, so c.Abandoned.Session is the session forgotten, which the fact carries. The
+// event id names that session, so one forget of a session is one fact, however many launches
+// forget it: the forget is in memory alone until the fresh agent's launch writes the claim, and a
+// daemon stop between the two — a fresh spawn waiting on its pod, say — leaves the claim recording
+// the session, which the next boot's launch forgets again at a generation of its own. That second
+// fact is marked applied already (intake.ApplyFact), so nobody is told twice. Telling only after
+// the claim is written would not do: the fact commits on a goroutine of its own
+// (applySessionFact), so a stop between the write and the tell would tell nobody at all.
 func (w *workflowRuntime) sessionLost(c supervise.Claim, cause supervise.SessionLoss, detail string) {
 	w.applySessionFact(c, fmt.Sprintf("session-lost:%s:%s", c.Token, c.Abandoned.Session),
 		intake.SessionLost{Issue: c.Issue, Role: c.Role, Detail: detail, Cause: cause, Session: c.Abandoned.Session},
@@ -2424,30 +2424,55 @@ func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact in
 	}()
 }
 
-// providerErrorRunReached tells the project's controller that a role's turns keep ending in a
-// provider error (supervise's Deps.ProviderErrorRunReached): the machine counts the run and
-// decides when to tell, and this names the notice kind, since supervise records nothing of
-// internal/record. Admission's own check stops a second notice while one still waits in the
-// outbox (TellController). The machine calls it inside its own decision, so the notice is
-// queued on a goroutine of its own, bounded by readyReleaseTimeout; a failure is logged and is
-// not the daemon's end, since the run goes on and the task is sent again either way.
+// providerErrorRunReached tells the issue's architect and the project's controller that a role's
+// turns keep ending in a provider error (supervise's Deps.ProviderErrorRunReached): the machine
+// counts the run and decides when to tell, and this names the notice kind, since supervise
+// records nothing of internal/record. The architect is told in a notice row, which the notice
+// executor delivers to the architect that owns the issue, waking it where its pod was released
+// (deliverNotice, wakeForDelivery): narrowing the work the provider keeps refusing is the
+// architect's. The controller is told in a row of its own, since compacting or refreshing the
+// claim's session is the controller's; admission's own check stops a second controller notice
+// while one still waits in the outbox (TellController). The two rows are one transaction. A run of
+// the tree root's architect's own claim writes the controller's row alone (tellsArchitect), and a
+// run of a child's own architect's claim writes its notice row for the architect above that child
+// (record.NoticeStartsAtParent). The
+// machine calls it inside its own decision, so the notices are queued on a goroutine of their
+// own, bounded by readyReleaseTimeout; a failure is logged and is not the daemon's end, since the
+// run goes on and the task is sent again either way.
 func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason string) {
 	if c.Issue == "" || w.admission == nil {
 		return
 	}
-	notice := record.ControllerNotice{Kind: record.ProviderErrorsNotice, Role: c.Role, Reason: reason}
+	notice := record.Notice{Kind: record.ProviderErrorsNotice, Role: c.Role, Reason: reason}
+	// The tree root's architect's own run tells no architect. The architect copy would reach the
+	// failing claim itself, since no architect stands above the root (OwningIssue's walk from the
+	// root ends at the root). Waking a session whose provider keeps refusing it adds one more
+	// failing turn, and compacting or refreshing that session is the controller's work, which the
+	// controller's notice already carries. A child's own architect's run does tell an architect:
+	// the notice's walk starts at the child's parent (record.NoticeStartsAtParent), so the
+	// architect above the child hears it, which is who can narrow that child's work.
+	tellsArchitect := !claim.IsTreeArchitect(c.Role, c.Issue, c.Tree)
 	go func() {
 		// This goroutine runs beside the machine that started it and every other, so it takes a
-		// hold mark of its own (store.ForConcurrentWorker). The notice is its own transaction, so
-		// it owns the commit hook its write registers (projectRecords, intake.OnCommit), as
-		// ApplyFact does for a fact's rows: the controller's lane is woken once the notice commits.
+		// hold mark of its own (store.ForConcurrentWorker). The notices are their own transaction,
+		// so it owns the commit hook their writes register (projectRecords, intake.OnCommit), as
+		// ApplyFact does for a fact's rows: each row's lane is woken once the two commit.
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		scoped, committed := intake.WithCommitHooks(ctx)
 		if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-			return w.admission.TellController(scoped, tx, notice, c.Issue)
+			if tellsArchitect {
+				row, err := record.NewOutboxRow(c.Issue, notice, time.Now().UTC())
+				if err != nil {
+					return err
+				}
+				if err := w.records.Enqueue(scoped, tx, row); err != nil {
+					return err
+				}
+			}
+			return w.admission.TellController(scoped, tx, record.ControllerNotice(notice), c.Issue)
 		}); err != nil {
-			w.log.Warn("tell the controller of a run of provider errors", "claim", c.Token, "error", err)
+			w.log.Warn("tell the architect and the controller of a run of provider errors", "claim", c.Token, "error", err)
 			return
 		}
 		committed()

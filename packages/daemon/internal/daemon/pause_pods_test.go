@@ -453,7 +453,7 @@ func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing
 		const sibling = claim.RoleTester
 		rig := firstRanSecondWaits(t)
 		rig.intoRoundPod(sibling)
-		rig.handle(sibling, supervise.RequestResume{Claim: rig.tokens[sibling]})
+		rig.handle(sibling, supervise.RequestResume{Claim: rig.tokens[sibling], By: supervise.SuspendedByOperator})
 		rig.launchedIntoRoundPod(sibling)
 		rig.wantLaunchKeptForOwed(sibling, second)
 		rig.registerInto(sibling, podUpdatePod)

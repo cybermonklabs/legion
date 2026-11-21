@@ -964,6 +964,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.mergeQueueRead(ctx, row, value)
 	case record.MergeQueueRemoval:
 		return r.mergeQueueRemoval(ctx, row, value)
+	case record.MergeHoldsChanged:
+		return r.mergeHoldsChanged(ctx, row, value)
 	case record.ConflictConfirm:
 		return r.conflictConfirm(ctx, row, value)
 	case record.MergeForwardMessage:
@@ -1736,17 +1738,22 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // told in the order the notices were written: on its backoff (errNoticeWaits), or, when the
 // earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). A role
 // topic with no live holder refuses the publish (notify.ErrNoHolder): while the architect's claim
-// can hold its role again — relaunching, a root the operator suspended and can resume, or the
+// can hold its role again — relaunching, a suspended root whoever suspended it (the operator's or
+// the controller's suspension until that holder's resume, or the operator's, lifts it), or the
 // architect of a catch-up's own issue suspended while that issue is in the workflow, which its
-// next start resumes — the row is held for it; once nobody will hold that role for this notice —
-// the claim has failed or retired, or its tree lingers or has closed — the row finishes
+// next start, or the resume that lifts a hold over it, starts again — the row is held for it; once
+// nobody will hold that role for this notice — the claim has failed or retired, or its tree lingers
+// or has closed — the row finishes
 // undelivered with one log line. So does a row whose architect cannot be resolved from the record
 // (errNoticeUnroutable), which holds back no later notice either, and, before any publish, a row
 // whose architect stopped with its finished tree (stoppedWithTree), and a child's catch-up while
 // the child is out of the workflow by its status or its phase (record.InWorkflow), whose next
 // launch writes a fresh one. A person's spec decision in either of the two cases a notice finishes
 // undelivered because nobody will hold the role (its architect stopped with its finished tree, or
-// will not hold its role again) goes to the controller instead (parkDecision).
+// will not hold its role again) goes to the controller instead (parkDecision), and so does an
+// update round held past its bound, in a tree that does not linger, whose architect's claim has
+// ended, whose notice the listener refuses on every attempt, or whose notice was queued again the
+// most times a notice is, whatever re-held it, as the answers below (relayUpdateStalled).
 // What the listener's answer to the publish then decides — a delivery the architect's session did
 // not confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
 // denies, a holder only unresponsive, a role nobody holds — is the re-hold policy's
@@ -2136,8 +2143,8 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // the round replaces the pod. It rides the role-message lane (record.LaneRoleMessage), so it
 // waits behind no architect notice of its issue.
 //
-// It wakes nothing, where hookPrompt, mergeQueueRemoval and mergeForwardMessage call
-// wakeForDelivery first. The round does not ask a claim the daemon suspended (its own rule, a
+// It wakes nothing, where hookPrompt, mergeQueueRemoval, mergeHoldsChanged and mergeForwardMessage
+// call wakeForDelivery first. The round does not ask a claim the daemon suspended (its own rule, a
 // root's exit, an idle release, or an unknown source), and does not wait for it
 // (dispatch://INFRA-4109 R1, the sweep's roundAsks). A claim a project's pause stopped is the one
 // exception while the pause still keeps it (the sweep's podHolds.owes, roundClock.passesOver): the
@@ -2290,24 +2297,25 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // registered, or one that failed — holds no row either: the row ends, and the kept copy is
 // dropped once its hour ends.
 //
-// Five other executors publish to a role's topic, each with its own rules for what the publisher
+// Six other executors publish to a role's topic, each with its own rules for what the publisher
 // answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries
 // every other failure; deliverNotice, an architect's notice, holds the row for
 // a topic with no holder while the owning architect can hold its role again (noticeAnswered);
 // roleMessage ends the row for a topic with no holder, waits for a holder the listener calls
 // unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder that refuses the
 // delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied); mergeQueueRemoval, the merger's message of a removal from the
-// merge queue, holds the row for a topic with no holder and for an unresponsive holder while the
-// merger's claim has neither failed nor retired, and retries every other failure
-// (merge_queue_removal.go); and mergeForwardMessage, a message of a merge forward, holds its row
-// the same way while the role's claim has neither failed nor retired and the merge forward still
-// stands at the row's head (merge_forward.go). Each of those five publishes with keep: false:
-// deliverNotice, mergeQueueRemoval and mergeForwardMessage hold their own row, and a kept copy
-// beside it would be a second keeper of one message; roleMessage's message is stale by the time a
-// role nobody holds is claimed; and updateAsk's round ends at its bound whether or not the role
-// answers. So whoever changes the rule for a topic with no holder must read all six executors, not
-// this function alone.
+// (notify.ErrPublishDenied); mergeQueueRemoval and mergeHoldsChanged, the merger's message of a
+// removal from the merge queue and of a change of the merge holds, hold the row for a topic with
+// no holder and for an unresponsive holder while the merger's claim has neither failed nor
+// retired, and retry every other failure (merge_queue_removal.go, merge_holds.go); and
+// mergeForwardMessage, a message of a merge forward, holds its row the same way while the role's
+// claim has neither failed nor retired and the merge forward still stands at the row's head
+// (merge_forward.go). Those three publish through the deliverHeld they share. Each of those six
+// publishes with keep: false: deliverNotice and the three through deliverHeld hold their own row,
+// and a kept copy beside it would be a second keeper of one message; roleMessage's message is
+// stale by the time a role nobody holds is claimed; and updateAsk's round ends at its bound
+// whether or not the role answers. So whoever changes the rule for a topic with no holder must
+// read all seven executors, not this function alone.
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message string, fields ...any) error {
 	keeps, err := r.publishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
 	switch {
@@ -2502,21 +2510,22 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// A child of a closed tree re-admitted as a root of its own keeps its roles' claims, which
 		// still name the tree it left; each is re-pointed before anything else here, so it binds this
 		// tree's lifecycle and launches in this tree's resources, and so does whatever resumes it
-		// while this start waits (an operator's resume of a claim the operator suspended). The issue
-		// the supervisor keeps beside the machine (volumeLost) never moves with it: a claim's issue is
-		// fixed for its life.
+		// while this start waits (the resume that lifts a suspension the operator, the controller
+		// or an architect holds over it). The issue the supervisor keeps beside the machine
+		// (volumeLost) never moves with it: a claim's issue is fixed for its life.
 		if found && machine.Claim().Tree != issue.Tree {
 			if err := machine.Retree(ctx, issue.Tree); err != nil {
 				return err
 			}
 		}
-		// An operator's suspension holds its claim until the operator resumes it: the start, and the
-		// task it gives, wait on the row's backoff. StartedBy refuses the same in the claim's own
-		// decision. A check start does not wait: its look cannot run, and ends (checkLookHeld).
+		// A suspension that holds — the operator's, the controller's or an architect's — holds its
+		// claim until a resume lifts it: the start, and the task it gives, wait on the row's
+		// backoff. StartedBy refuses the same in the claim's own decision. A check start does not
+		// wait: its look cannot run, and ends, its cause naming the holder (checkLookHeld).
 		if found {
 			if held := machine.Claim(); held.RuleHolds() {
 				if payload.CheckLook > 0 {
-					return r.checkLookHeld(ctx, row, payload, *check)
+					return r.checkLookHeld(ctx, row, payload, *check, held.Holder())
 				}
 				return fmt.Errorf("start %s of %s: %w", payload.Role, issue.Key, held.RuleHoldError())
 			}
@@ -2593,10 +2602,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return fmt.Errorf("start claim %s: %w", token, err)
 			}
 		case supervise.StateSuspended:
-			// The role owns the issue's phase this start is for: the rule resumes it, unless an
-			// operator suspended it meanwhile, when the task's delivery below waits instead. A check
-			// start resumes the role the check records the close or the linger suspended, in a Sandbox the
-			// resume relaunches (runtime/sandbox's relaunch).
+			// The role owns the issue's phase this start is for: the rule resumes it, unless the
+			// operator, the controller or an architect suspended it meanwhile (supervise's
+			// Claim.RuleHolds), when the task's delivery below waits instead. A check start resumes
+			// the role the check records the close or the linger suspended, in a Sandbox the resume
+			// relaunches (runtime/sandbox's relaunch).
 			reason := fmt.Sprintf("start row %d of %s (phase %q)", row.ID, issue.Key, payload.Phase)
 			if payload.CheckLook > 0 {
 				reason = fmt.Sprintf("start row %d of %s (production check look %d)", row.ID, issue.Key, payload.CheckLook)
@@ -2741,7 +2751,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				"row", row.ID, "issue", issue.Key, "role", payload.Role, "phase", issue.Phase, "start-row", last)
 			return nil
 		}
-		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByDaemon}); err != nil {
+		// A production check's suspend between looks keeps a hold it meets (KeepsHold): a role the
+		// operator, the controller or an architect suspended stays theirs, and a released claim is
+		// still taken over below (supervise's suspendedAgain).
+		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByDaemon,
+			KeepsHold: payload.KeepsHold}); err != nil {
 			return fmt.Errorf("suspend claim %s: %w", token, err)
 		}
 		// A linger, a park, a hand-over and a close all stop a claim through this one row, and
@@ -3795,19 +3809,22 @@ func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, paylo
 	return nil, nil
 }
 
-// checkLookHeld is a check start that met an operator's suspension of the check's own role
-// (supervise.Claim.RuleHolds): a phase start waits for the operator's resume, but a look cannot
-// run while the operator holds that role, and its bound would end it anyway, so the look
-// ends now as one nobody reported (intake.CheckLookEnded, cause `operator hold`, of check, the
-// one checkLookHolds read) and the row finishes without acting. The event is the issue, the check
-// (record.ProductionCheck.ID) and the look: the same look held twice is one fact, and a later
-// check's look 1 another than the replaced check's.
-func (r *outbox) checkLookHeld(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, check record.ProductionCheck) error {
+// checkLookHeld is a check start that met a hold of the check's own role: a suspension of the
+// operator's, the controller's or an architect's (supervise.Claim.RuleHolds), holds naming whose
+// (supervise.Claim.Holder). A phase start waits for the resume that lifts it, but a look cannot
+// run while the role is held, and its bound would end it anyway, so the look ends now as one
+// nobody reported (intake.CheckLookEnded, of check, the one checkLookHolds read) and the row
+// finishes without acting. Its cause names the holder — `operator hold`, `controller hold` or
+// `architect hold` — so the retry the look names says whose resume it waited on. The event is the
+// issue, the check (record.ProductionCheck.ID) and the look: the same look held twice is one
+// fact, and a later check's look 1 another than the replaced check's.
+func (r *outbox) checkLookHeld(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, check record.ProductionCheck,
+	holds supervise.SuspendSource) error {
 	r.log.Info("production check start finishes without acting", "row", row.ID, "issue", row.Issue, "look", payload.CheckLook,
-		"why", "the operator suspended the check's role; the look ends")
+		"why", fmt.Sprintf("the %s suspended the check's role; the look ends", holds))
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("check-look-hold:%s:%s:%d", row.Issue, check.ID(), payload.CheckLook),
-		intake.CheckLookEnded{Issue: row.Issue, Look: payload.CheckLook, Cause: "operator hold", OpenedAt: check.OpenedAt}, r.handlers...); err != nil {
-		return fmt.Errorf("end look %d of %s's production check on the operator's hold: %w", payload.CheckLook, row.Issue, err)
+		intake.CheckLookEnded{Issue: row.Issue, Look: payload.CheckLook, Cause: string(holds) + " hold", OpenedAt: check.OpenedAt}, r.handlers...); err != nil {
+		return fmt.Errorf("end look %d of %s's production check on the %s's hold: %w", payload.CheckLook, row.Issue, holds, err)
 	}
 	return nil
 }

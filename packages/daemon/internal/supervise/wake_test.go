@@ -259,7 +259,7 @@ func TestAWakeDroppedBeforeItsTurnLaunchesNothingAndTheNextKeepsItsMoment(t *tes
 	h.must(RequestSpawn{Claim: h.token})
 	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
 	h.mustPostTo(third, RequestSpawn{Claim: thirdToken})
-	h.mustPostTo(second, RequestStop{Claim: secondToken})
+	h.mustPostTo(second, RequestStop{Claim: secondToken, By: SuspendedByOperator})
 
 	h.clock.Advance(2*wakeInterval + 2*wakePart)
 	second.Wait()
@@ -325,7 +325,7 @@ func TestAnExemptResumeOfAWaitingClaimLaunchesAtOnce(t *testing.T) {
 	h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
 	h.wantStarts(secondToken, 0)
 
-	h.mustPostTo(second, RequestResume{Claim: secondToken})
+	h.mustPostTo(second, RequestResume{Claim: secondToken, By: SuspendedByOperator})
 
 	h.wantStarts(secondToken, 1)
 	if state := second.Claim().State; state != StateLaunching {
@@ -349,7 +349,7 @@ func TestAnOperatorsForgetSessionOfAWaitingClaimIsDecidedAndTheWakeKeepsItsTurn(
 
 	h.must(RequestSpawn{Claim: h.token})
 	h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
-	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: second.Claim().Session})
+	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: second.Claim().Session, By: SuspendedByOperator})
 
 	if got := second.Claim(); got.Session != "" || got.SessionFile != "" {
 		t.Fatalf("the claim records session %q at %q, want neither", got.Session, got.SessionFile)
@@ -385,7 +385,7 @@ func TestAnOperatorsRetryRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing.
 	h.clock.Advance(wakeInterval / 4)
 	second.Wait()
 
-	err := h.postTo(second, RequestOperatorRetry{Claim: secondToken})
+	err := h.postTo(second, RequestAskedRetry{Claim: secondToken, By: SuspendedByOperator})
 
 	var refused *RefusedError
 	if !errors.As(err, &refused) || refused.State != StateSuspended {
@@ -400,6 +400,65 @@ func TestAnOperatorsRetryRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing.
 
 	h.wantStarts(secondToken, 1)
 	h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
+}
+
+// Only the operator's own resume and retry are let past the wake pacing, because a person is
+// waiting on each. The controller's and an architect's come through the claim door, which an
+// agent asks of as many claims at once as it decides to — a controller lifting its own holds
+// after a deploy asks it of every claim it held — so each takes its turn behind the wake ahead of
+// it, as every launch the pacing holds does, and launches at that turn.
+//
+// The negative control is exemptWake letting every RequestResume and RequestAskedRetry
+// through whoever names it, as it did: the controller's and the architects' rows then launch at
+// once, and this test reads that at the runtime's starts.
+func TestOnlyTheOperatorsResumeAndRetryAreLetPastThePacing(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		state       ClaimState
+		suspendedBy SuspendSource
+		ask         Event
+		paced       bool
+	}{
+		{"the operator's resume", StateSuspended, SuspendedByDaemon, RequestResume{Claim: secondToken, By: SuspendedByOperator}, false},
+		{"the controller's resume", StateSuspended, SuspendedByDaemon, RequestResume{Claim: secondToken, By: SuspendedByController}, true},
+		{"an architect's resume", StateSuspended, SuspendedByArchitect, RequestResume{Claim: secondToken, By: SuspendedByArchitect}, true},
+		{"the operator's retry", StateFailed, "", RequestAskedRetry{Claim: secondToken, By: SuspendedByOperator}, false},
+		{"the controller's retry", StateFailed, "", RequestAskedRetry{Claim: secondToken, By: SuspendedByController}, true},
+		{"an architect's retry", StateFailed, "", RequestAskedRetry{Claim: secondToken, By: SuspendedByArchitect}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := pacedHarness(t, wakeRate)
+			c := wakeClaim(secondToken, tc.state)
+			c.SuspendedBy = tc.suspendedBy
+			if tc.state == StateFailed {
+				c.Failure = "launch failures ran out"
+			}
+			second := h.machineFor(c)
+			// The harness's own claim takes the one token of the burst, so a paced wake behind it
+			// waits an interval and the part the jitter draws.
+			h.must(RequestSpawn{Claim: h.token})
+
+			h.mustPostTo(second, tc.ask)
+
+			if !tc.paced {
+				h.wantStarts(secondToken, 1)
+				h.wantWakeLine(secondToken, "waited=false", "paced=false")
+				return
+			}
+			h.wantStarts(secondToken, 0)
+			if got := second.View(); got.State != StateLaunching || got.WakeWaiting == nil || got.WakeWaiting.Kind != WakeLaunch {
+				t.Fatalf("the claim is %s waiting on %+v, want it launching under a launch wake the pacing holds", got.State, got.WakeWaiting)
+			}
+			h.clock.Advance(wakeInterval + wakePart - time.Nanosecond)
+			second.Wait()
+			h.wantStarts(secondToken, 0)
+
+			h.clock.Advance(time.Nanosecond)
+			second.Wait()
+			h.wantStarts(secondToken, 1)
+			h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval+wakePart).String(), "paced=true")
+		})
+	}
 }
 
 // A wake over a claim whose process still runs leaves the claim exactly as it was — its state and

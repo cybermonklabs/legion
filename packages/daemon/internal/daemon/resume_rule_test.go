@@ -233,7 +233,7 @@ func TestAStartWaitsForTheOperatorToResumeAClaimItSuspended(t *testing.T) {
 		t.Fatalf("the waiting start logged %q, want one Info line naming the operator's suspension", logged.String())
 	}
 
-	if err := machine.Handle(ctx, supervise.RequestResume{Claim: tester}); err != nil {
+	if err := machine.Handle(ctx, supervise.RequestResume{Claim: tester, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("the operator's resume: %v", err)
 	}
 	clock = clock.Add(2 * time.Minute)
@@ -443,7 +443,7 @@ func TestReadmissionSpawnsAFreshArchitectAfterForgettingItsSession(t *testing.T)
 		t.Fatalf("parked architect = %+v, want failed with its session still recorded", failed)
 	}
 	if err := architectMachine.Handle(context.Background(), supervise.RequestForgetSession{
-		Claim: architect, Session: architectMachine.Claim().Session,
+		Claim: architect, Session: architectMachine.Claim().Session, By: supervise.SuspendedByOperator,
 	}); err != nil {
 		t.Fatalf("forget the architect session: %v", err)
 	}
@@ -483,7 +483,7 @@ func TestReadmissionWaitsForTheOperatorToResumeTheClaimsItSuspended(t *testing.T
 	}
 	for _, token := range []claim.Token{architect, implementer} {
 		machine, _ := sup.Machine(token)
-		if err := machine.Handle(context.Background(), supervise.RequestResume{Claim: token}); err != nil {
+		if err := machine.Handle(context.Background(), supervise.RequestResume{Claim: token, By: supervise.SuspendedByOperator}); err != nil {
 			t.Fatalf("the operator's resume of %s: %v", token, err)
 		}
 	}

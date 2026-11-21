@@ -29,10 +29,10 @@ const (
 )
 
 // A step the deployment gates that nobody has registered holds the tree's work and asks nobody:
-// the root keeps its slot, no awaiting-person notice reaches the controller, and no phase starts,
-// because the record knows no document of that step to hand to a person. The same root with that
-// step registered and still closed enters awaiting_person and its notice does reach the
-// controller, which is what tells the two apart; it keeps its row through either, since a started
+// the root keeps its slot, it does not enter awaiting_person, and no phase starts, because the
+// record knows no document of that step to hand to a person. The same root with that step
+// registered and still closed enters awaiting_person, which is what tells the two apart. Neither
+// tells the controller anything (#4065). It keeps its row through either, since a started
 // issue holds one of the cap's slots until its work is past its review (record.KeepsSlot), and
 // this root stands in admitted with a gate that has never opened, or in awaiting_person,
 // throughout: those are two of the three roots that keep their row even while they wait on
@@ -86,14 +86,8 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 			t.Fatalf("the root = %#v, want it waiting on the decisions document at version 2", waiting.Awaiting)
 		}
 		assertSlots(t, pool, []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: fixedNow}})
-		told := false
-		for _, effect := range effects(t, pool) {
-			if payload, ok := effect.payload.(record.ControllerNotice); ok && effect.issue == "LEGION-100" && payload.Kind == record.AwaitingPersonNotice {
-				told = true
-			}
-		}
-		if !told {
-			t.Fatalf("outbox effects = %#v, want the awaiting-person notice a registered closed step raises", effects(t, pool))
+		if notices := controllerNotices(t, pool); len(notices) != 0 {
+			t.Fatalf("controller notices = %#v, want none: the controller's skill does nothing for a root that waits on a person", notices)
 		}
 	})
 }

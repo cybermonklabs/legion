@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  The response schema of the claim operations the controller and a tree's architect hold (`stop`,
+  `retry`, `suspend`, `resume_claim`): the claim's state, and who suspended it or holds a
+  suspension for its turn. `suspendedBy` and `suspensionHeldBy` take `architect` as well as
+  `controller`. Every field of it is optional, since no plugin code reads one: the `legion` tool
+  hands the answer on whole. The daemon's table of answers (`answers.json`) names it
+  `claim-operation`, and its `state`, `suspendedBy` and `suspensionHeldBy` are rows of
+  `enumerated-fields.json`. The daemon API contract moves to 212.
+time: 2026-11-20T16:00:00.000000000Z
+custom:
+    Issue: pr4065

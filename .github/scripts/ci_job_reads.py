@@ -553,7 +553,7 @@ RULES = {
         Read(path, "internal/api/reachstates_test.go:50 lists ../supervise and :60 parses each .go file of it but the test files (:57)")
         for path in files_but_tests(f"{DAEMON}/internal/supervise")],
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
-    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1391 (path from goldenPath at :1380, declared :38)")),
+    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1416 (path from goldenPath at :1405, declared :38)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
         (f"{FIX}/capability-redaction-plugin-report.json", "internal/capabilities/capabilities_test.go:236 readFixture")),
@@ -569,7 +569,7 @@ RULES = {
     f"{DAEMON}/internal/config/stalldefaults_test.go": reads(
         (f"{FIX}/daemon-api/*", "internal/config/stalldefaults_test.go:72 (the :67 write is under -update, which CI never passes)")),
     f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:318")),
-    f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1331")),
+    f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1856")),
     # The harness main's #2780 added under the e2e tag for the two agent proofs it brought
     # (claim_compaction_live_test.go and provider_error_retry_live_test.go): it builds the
     # `legion` their panes run and packs both Oh My Pi plugins into the run's own profile. No job
@@ -585,8 +585,8 @@ RULES = {
           for g in PACK_READS],
     ],
     f"{DAEMON}/internal/daemon/nats_permissions_test.go": reads(
-        (f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/nats_permissions_test.go:77"),
-        (f"{DAEMON}/internal/intake/testdata/github/pr-opened.json", "internal/daemon/nats_permissions_test.go:78")),
+        (f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/nats_permissions_test.go:79"),
+        (f"{DAEMON}/internal/intake/testdata/github/pr-opened.json", "internal/daemon/nats_permissions_test.go:80")),
     f"{DAEMON}/internal/daemon/outbox_scratch_dispatch_test.go": [
         run(ENVOY, ["./cmd/dispatch"], "internal/daemon/outbox_scratch_dispatch_test.go:354 testbuild.EnvoyBinary, which runs go build ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/daemon/supervision_test.go": [
@@ -596,11 +596,11 @@ RULES = {
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/checks_skipped_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_skipped_test.go:32")),
     f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:139")),
-    f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
+    f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:1037 globs it and reads each file; :1141 reads one")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
-        ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
-        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:762-763")),
+        ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:267 stats agents/<name>.md for each task agent"),
+        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:770-771")),
     f"{DAEMON}/internal/runtime/sandbox/operatorpod_test.go": reads(
         ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/operatorpod_test.go:28"),
         (f"{FIX}/dispatch-public-url.json", "internal/runtime/sandbox/operatorpod_test.go:236"),
@@ -657,33 +657,33 @@ RULES = {
     # copy to the page, in the text-check job (dispatch://INFRA-1413).
     f"{DAEMON}/internal/textcheck/troubleshooting_refusals_doc_test.go": reads(
         ("docs/site/src/content/docs/legion/troubleshooting.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+         "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.. "
          "for troubleshooting_refusals_doc_test.go:48 (shippedText)"),
         (f"{DAEMON}/cmd/legion/troubleshooting_refusals_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../../cmd/legion/troubleshooting_refusals_extract.txt "
+         "internal/textcheck/waiting_line_texts_test.go:472 reads it as ../../cmd/legion/troubleshooting_refusals_extract.txt "
          "for troubleshooting_refusals_doc_test.go:41, the committed copy it holds the page's refusal table to (quotedBody)")),
     # internal/daemon/upgrade_phase_entry_way_back_test.go reads no text outside its own package
     # any more and has no row: upgrade_way_back_extract.txt and
     # upgrade_architect_entry_way_back_extract.txt stand in its own directory, and this row is what
     # holds those copies to the guide, in the text-check job (dispatch://INFRA-1413).
     f"{DAEMON}/internal/textcheck/way_back_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.. "
                                "for way_back_doc_test.go:181 (shippedText)"),
         (f"{DAEMON}/internal/daemon/upgrade_way_back_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../daemon/upgrade_way_back_extract.txt for "
+         "internal/textcheck/waiting_line_texts_test.go:472 reads it as ../daemon/upgrade_way_back_extract.txt for "
          "way_back_doc_test.go:129, the committed copy it holds the guide's block to (quotedBody)"),
         (f"{DAEMON}/internal/daemon/upgrade_architect_entry_way_back_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../daemon/upgrade_architect_entry_way_back_extract.txt "
+         "internal/textcheck/waiting_line_texts_test.go:472 reads it as ../daemon/upgrade_architect_entry_way_back_extract.txt "
          "for way_back_doc_test.go:129, the committed copy it holds the guide's contract 146 block to (quotedBody)")),
     # This test reads the store's migrations through migrations.All: its import puts their embed
     # in the go list closure of the text-check run, which needs no row, so the guide is its one row.
     f"{DAEMON}/internal/textcheck/phase_entry_migrations_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.. "
                                "for phase_entry_migrations_doc_test.go:252 (shippedText)")),
     # This test reads the roll forward's header through migrations.WayBack, whose embed is in the
     # go list closure of the text-check run, as the row above says, so the guide is its one row.
     f"{DAEMON}/internal/textcheck/step_records_way_back_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.. "
                                "for step_records_way_back_doc_test.go:59 (shippedText) and :41 "
                                "(wayBackBlockOfTheGuide, way_back_doc_test.go:132)")),
     # This test reads the plan record's migration through migrations.WayBack, which reads the
@@ -691,43 +691,41 @@ RULES = {
     # which runs that migration's way back, reads no text outside its package, so the guide is this
     # one's one row.
     f"{DAEMON}/internal/textcheck/plan_ratings_way_back_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.. "
                                "for plan_ratings_way_back_doc_test.go:35 (assertIsTheGuidesBlock, way_back_doc_test.go:165, "
                                "through wayBackBlockOfTheGuide, :181) and :49 (entryLinkIn of shippedText)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.
         (f"{DAEMON}/internal/api/waiting_line_contract_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../api/waiting_line_contract_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:472 reads it as ../api/waiting_line_contract_extract.txt"),
         (f"{DAEMON}/internal/workflow/waiting_line_words_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../workflow/waiting_line_words_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:472 reads it as ../workflow/waiting_line_words_extract.txt"),
         (f"{DAEMON}/cmd/legion/awaiting_summary_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../../cmd/legion/awaiting_summary_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:472 reads it as ../../cmd/legion/awaiting_summary_extract.txt"),
         (f"{DAEMON}/cmd/legion/waiting_line_block_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../../cmd/legion/waiting_line_block_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:472 reads it as ../../cmd/legion/waiting_line_block_extract.txt"),
         # The texts those copies are held to, each read under ../../../.. by shippedText: the
-        # seven the contract windows are recomputed from, the six the band list names, and
-        # those six again read whole for the ban.
+        # seven the contract windows are recomputed from, the five the band list names, and
+        # those five again read whole for the ban.
         ("docs/site/src/content/docs/legion/concepts.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/running-legion.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/troubleshooting.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.."),
         ("packages/contracts/src/legion-api.ts",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.."),
         ("packages/pi-legion/AGENTS.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.."),
         ("packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads that one fragment under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads that one fragment under ../../../.."),
         ("packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads that one fragment under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads that one fragment under ../../../.."),
         ("packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads that one fragment under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads that one fragment under ../../../.."),
         ("skills/legion-controller/references/admission.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
-        ("skills/legion-controller/references/wakes.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../..")),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../..")),
     # The three checks main's #2989 put under packages/daemon, and the waiting-line block check
     # main's #3718 brought, read no text outside it any more: each is held to a copy committed
     # beside its own package, and the row above is what holds those copies to the texts, in the
@@ -2921,7 +2919,7 @@ GATES = [
         (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),
         (f"{ENVOY}/internal/dispatch/api/testdata/**", "packages/envoy-client/src/__tests__/askgate-new-asks.test.ts:23-30 reads the Dispatch server's table of decision-block inserts, which packages/envoy/internal/dispatch/api's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads too"),
         ("skills/**", "packages/envoy-client/src/__tests__/dispatch-advice.test.ts:2244 reads skills/<skill>/SKILL.md for every skill a notice cites"),
-        ("packages/*/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-asked-of.test.ts:298-302 reads every package's AGENTS.md, so a line there that tells an agent to hand an ask on fails that test"),
+        ("packages/*/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-asked-of.test.ts:287-291 reads every package's AGENTS.md, so a line there that tells an agent to hand an ask on fails that test"),
         ("packages/envoy/internal/dispatch/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:510-518,651-669,729-737 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
         ("packages/dispatch/web/src/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:510-518,651-669,729-737 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
         ("packages/dispatch/e2e/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:510-518,651-669,729-737 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
@@ -2940,9 +2938,9 @@ GATES = [
         (CONTRACTS_SRC, "pi-shared and envoy-client import @legion/contracts (contracts exports.bun -> src)"),
         (TEST_FIXTURES_SRC, "packages/pi-shared's src and test suites import @legion/test-fixtures"),
         (f"{FIX}/daemon-api/**", "packages/pi-shared/src/daemon-client.test.ts:23, legion-claim-core.test.ts:17, legion-phase-ops.test.ts:32"),
-        ("packages/pi-legion/src/**", "packages/pi-shared/src/daemon-client.test.ts:1426-1431,1577-1588 walks every .ts of it that is no test, holding LEGION_ANSWER_READS to the fields a read in it names"),
-        ("packages/pi-legion/extensions/**", "packages/pi-shared/src/daemon-client.test.ts:1426-1431,1577-1588 walks every .ts of it that is no test, as above"),
-        ("packages/claude-envoy/src/**", "packages/pi-shared/src/daemon-client.test.ts:1426-1431,1577-1588 walks every .ts of it that is no test, as above"),
+        ("packages/pi-legion/src/**", "packages/pi-shared/src/daemon-client.test.ts:1465-1470,1616-1627 walks every .ts of it that is no test, holding LEGION_ANSWER_READS to the fields a read in it names"),
+        ("packages/pi-legion/extensions/**", "packages/pi-shared/src/daemon-client.test.ts:1465-1470,1616-1627 walks every .ts of it that is no test, as above"),
+        ("packages/claude-envoy/src/**", "packages/pi-shared/src/daemon-client.test.ts:1465-1470,1616-1627 walks every .ts of it that is no test, as above"),
         ("skills/**", "packages/pi-shared/test/skills-partition.test.ts:22,33-36,53-54 reads every skills/ directory and stages both partitions"),
         ("scripts/pi-plugin-prepack.sh", "packages/pi-shared/test/skills-guard.ts:17,34 runs scripts/pi-plugin-prepack.sh --stage-skills"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-shared/test/skills-partition.test.ts:70-76 reads every .md under packages/daemon/internal/prompts"),
@@ -2981,7 +2979,7 @@ GATES = [
     ], reads=reads(
         ("packages/pi-legion/**", f"{at('pi-legion', 'Typecheck pi-legion')}, test and pack in packages/pi-legion"),
         ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:77,319 and legion-role-claim.test.ts:14,100 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:1072"),
-        ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:318 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :29) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:39-44 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
+        ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:343 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :29) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:39-44 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
         ("packages/envoy-client/bin/dispatch.ts", "the fourth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:43), outside the package it builds"),
         ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts"),
         ("packages/pi-shared/test/**", "packages/pi-legion/extensions/legion-phase-stall-omp.test.ts:14, legion-role-tools-omp.test.ts:13, src/skills-guard.test.ts:20, scripts/prepack.test.ts:4"),
@@ -2992,21 +2990,21 @@ GATES = [
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
         (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),
-        (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1440,4080, legion-role-claim.test.ts:21, src/daemon-api-version.test.ts:14"),
+        (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1445,4083, legion-role-claim.test.ts:21, src/daemon-api-version.test.ts:14"),
         (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:848"),
         (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:968 (PLUGIN_REPORT :854)"),
         ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/seed.ts:111 imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
         ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:20"),
         ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:8-19 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),
-        ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:44 stages them and :204-208 reads the roots at :194-202; scripts/skill-scenarios/rig.test.ts:954,1170; prepack stages skills"),
+        ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:44 stages them and :229-233 reads the roots at :219-227; scripts/skill-scenarios/rig.test.ts:954,1170; prepack stages skills"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion', 'Pack pi-legion')}); packages/pi-shared/test/skills-guard.ts:17,34"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100"),
-        (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:204-208 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of the list at :197"),
-        ("docs/kubernetes.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :196"),
-        ("docs/site/src/content/docs/**", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :198"),
-        ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :199"),
-        ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :200"),
-        ("README.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :201"),
+        (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:229-233 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of the list at :222"),
+        ("docs/kubernetes.md", "packages/pi-legion/src/skills-guard.test.ts:229-233, a root of the list at :221"),
+        ("docs/site/src/content/docs/**", "packages/pi-legion/src/skills-guard.test.ts:229-233, a root of the list at :223"),
+        ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:229-233, a root of the list at :224"),
+        ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:229-233, a root of the list at :225"),
+        ("README.md", "packages/pi-legion/src/skills-guard.test.ts:229-233, a root of the list at :226"),
         ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:275 sources scripts/e2e/lib/rig.sh"),
         (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1168-1170 copies .omp-pin"),
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:29-30)"),

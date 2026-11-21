@@ -1696,10 +1696,10 @@ func TestForgetSessionRechecksItsSessionInsideTheMachine(t *testing.T) {
 	}
 
 	machine, _ := h.supervisor.Machine(architectToken)
-	if err := machine.Handle(h.ctx, supervise.RequestForgetSession{Claim: architectToken, Session: "ses_architect"}); err != nil {
+	if err := machine.Handle(h.ctx, supervise.RequestForgetSession{Claim: architectToken, Session: "ses_architect", By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("first forget after snapshot: %v", err)
 	}
-	if err := machine.Handle(h.ctx, supervise.RequestResume{Claim: architectToken}); err != nil {
+	if err := machine.Handle(h.ctx, supervise.RequestResume{Claim: architectToken, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("resume after first forget: %v", err)
 	}
 	generation := machine.Claim().Generation

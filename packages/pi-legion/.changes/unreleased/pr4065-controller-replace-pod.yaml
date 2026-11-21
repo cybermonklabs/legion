@@ -1,0 +1,23 @@
+kind: Added
+body: |-
+  The controller's `legion` tool gets `replace_pod (issue)`. The daemon opens its update round over
+  the pod that issue runs in, asks each role of the pod to push its work and answer
+  `ready_for_update`, and replaces the pod once each role has answered, no turn runs and each
+  role's report since its last turn names no running background work, or at the round's bound. A
+  suspension by the operator, the controller or an architect over a role the round asks keeps the
+  pod past the bound until a resume lifts it. The controller's own suspension counts too, so a
+  controller that suspended a role and then asks `replace_pod` waits on itself, and the round comes
+  back as `update-stalled`. The answer is the round, its reasons and whether the request opened it.
+  It is the one way the controller removes an issue pod whose workspace may hold work. The daemon
+  refuses it for an issue of another project or with no claim (`NO_CLAIM`), an issue whose claims
+  run no worker in a pod (`NO_POD`), an issue whose pod is being replaced already
+  (`POD_CHANGING`), and while a limit of the project holds the opening back (`POD_UPDATE_LIMITED`,
+  which names the limit). It answers only once a claim of the issue records the round, and refuses
+  a round no claim records in time (`POD_UPDATE_NOT_RECORDED`), and a request that a sweep of the
+  update rounds keeps waiting past its bound (`POD_UPDATE_BUSY`, whose sentence says when to ask
+  again). It refuses `replace_pod` while the project is paused (`PROJECT_PAUSED`), and for a pod a
+  pause holds (`POD_HELD_BY_PAUSE`): the hold of a pause that began after the daemon read the
+  project as running, or a hold the resume left on a pod until a role of that pod runs again.
+time: 2026-11-20T16:00:00.000000000Z
+custom:
+    Issue: pr4065

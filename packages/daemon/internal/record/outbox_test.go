@@ -49,6 +49,12 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Reasons: "image ghcr.io/cybermonklabs/legion-worker:v1, now ghcr.io/cybermonklabs/legion-worker:v2",
 			Waiting: []UpdateWaiting{{Claim: "legion-LEGION-208-implementer", Role: claim.RoleImplementer, State: "failed"}},
 		}},
+		// An architect's hold over a round held past its bound is told to the architect that
+		// owns the held claim, in a notice row of the same kind as the controller's.
+		Notice{Kind: UpdateStalledNotice, Reason: "An architect suspended implementer (suspended). An architect that owns the issue, or the controller, can resume it.", Update: &UpdateStalled{
+			Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Reasons: "image ghcr.io/cybermonklabs/legion-worker:v1, now ghcr.io/cybermonklabs/legion-worker:v2",
+			Waiting: []UpdateWaiting{{Claim: "legion-LEGION-208-implementer", Role: claim.RoleImplementer, State: "suspended"}},
+		}},
 		ControllerNotice{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
 			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
 		ControllerNotice{Kind: TreeStalledNotice, Reason: "LEGION-208 has stopped. The tree has been quiet for 7.0 hours."},
@@ -88,6 +94,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeQueueRead{Number: 42, Head: "c0de"},
 		MergeQueueRemoval{Number: 42, Head: "c0de"},
 		MergeQueueRemoval{Number: 42, Head: "c0de", Unread: true},
+		MergeHoldsChanged{Project: "LEGION"},
 		ConflictConfirm{Number: 42, Head: "c0de", FirstReadAt: now.Add(-time.Minute)},
 		MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Implementing, PullRequest: 42, Why: ConflictCheckNotGreen},
 		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
@@ -267,8 +274,8 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
-		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord, OutboxKindConflictConfirm,
-		OutboxKindMergeForward, OutboxKindPlanRecord}
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindMergeHoldsChanged, OutboxKindStepRecord,
+		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -313,6 +320,10 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		OutboxKindRoleMessage:       "every row",
 		OutboxKindUpdateAsk:         "every row",
 		OutboxKindMergeQueueRemoval: "every row",
+		// The merger's message that the project's merge holds changed goes to the merger's own
+		// role topic and wakes a released merger, as the merge-queue removal's message does
+		// (#4065).
+		OutboxKindMergeHoldsChanged: "every row",
 		// A merge forward's message goes to one role of the issue and wakes a released one, as a
 		// hook prompt does (main's dispatch://INFRA-4374).
 		OutboxKindMergeForward:       "every row",
@@ -395,6 +406,10 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a tick notice for an architect", payload: Notice{Kind: TickNotice}, reason: "unknown notice kind"},
 		{name: "a parked-decision notice for an architect", payload: Notice{Kind: ParkedDecisionNotice}, reason: "unknown notice kind"},
 		{name: "a tree-stalled notice for an architect", payload: Notice{Kind: TreeStalledNotice}, reason: "unknown notice kind"},
+		// The two wakes the controller's skill said to do nothing on (#4065):
+		// the daemon writes neither kind any more, to anyone.
+		{name: "an unslotted notice to the controller", payload: ControllerNotice{Kind: "unslotted", Reason: "LEGION-208 was in_progress"}, reason: "unknown controller notice kind"},
+		{name: "an awaiting-person notice to the controller", payload: ControllerNotice{Kind: "awaiting-person", Reason: "LEGION-208 waits on a person"}, reason: "unknown controller notice kind"},
 		{name: "an architect-stalled notice for an architect", payload: Notice{Kind: ArchitectStalledNotice}, reason: "unknown notice kind"},
 		{name: "an architect-stalled notice naming no arm", payload: ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect}, reason: "carries the reason that names its arm"},
 		{name: "an actor on a phase-finished notice", payload: Notice{Kind: "phase-finished", Actor: "user:a"}, reason: "only a spec decision's does"},
@@ -410,8 +425,9 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a decision on a slot-free wake", payload: ControllerNotice{Kind: SlotFreeNotice, Decision: DecisionAskAnswered}, reason: "only a parked-decision does"},
 		{name: "an actor on a tick", payload: ControllerNotice{Kind: TickNotice, Actor: "user:a"}, reason: "only a parked-decision does"},
 		{name: "a root on a held notice to the controller", payload: ControllerNotice{Kind: "held", Root: "LEGION-1"}, reason: "only a parked-decision does"},
-		{name: "an update-stalled notice for an architect", payload: Notice{Kind: UpdateStalledNotice}, reason: "unknown notice kind"},
-		{name: "an architect's notice carrying an update round", payload: Notice{Kind: "held", Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "only the controller's update-stalled notice does"},
+		{name: "an update-stalled notice for an architect carrying no update round", payload: Notice{Kind: UpdateStalledNotice}, reason: "carries an update round only when it is one"},
+		{name: "an update-stalled notice for an architect with no claims", payload: Notice{Kind: UpdateStalledNotice, Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "requires its round and the claims it waits on"},
+		{name: "an architect's notice carrying an update round", payload: Notice{Kind: "held", Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "carries an update round only when it is one"},
 		{name: "a failure record on a phase-finished notice", payload: Notice{Kind: "phase-finished", Failure: &NoticeFailure{Cause: "died"}}, reason: "only a held or a worker-died notice does"},
 		{name: "a failure record on a tick", payload: ControllerNotice{Kind: TickNotice, Failure: &NoticeFailure{Cause: "died"}}, reason: "only a held or a worker-died notice does"},
 		{name: "a failure record on a held notice to the controller naming no cause", payload: ControllerNotice{Kind: "held", Failure: &NoticeFailure{Detail: "the pod did not start"}}, reason: "names the cause it failed under"},
@@ -481,6 +497,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-queue read with no head", payload: MergeQueueRead{Number: 42}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue removal of no pull request", payload: MergeQueueRemoval{Head: "c0de"}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a merge-queue removal with no head", payload: MergeQueueRemoval{Number: 42, Unread: true}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
+		{name: "a merge-holds change of no project", payload: MergeHoldsChanged{}, reason: "a merge-holds change names the project"},
 		{name: "a conflict confirm of no pull request", payload: ConflictConfirm{Head: "c0de", FirstReadAt: now}, reason: "a conflict confirm names the pull request it reads again and the head"},
 		{name: "a conflict confirm with no head", payload: ConflictConfirm{Number: 42, FirstReadAt: now}, reason: "a conflict confirm names the pull request it reads again and the head"},
 		{name: "a conflict confirm with no time of the first read", payload: ConflictConfirm{Number: 42, Head: "c0de"}, reason: "a conflict confirm names when the first read it reads again was made"},
@@ -652,6 +669,8 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a merge-queue read of no pull request", row: OutboxRow{ID: 59, Kind: OutboxKindMergeQueueRead, Payload: json.RawMessage(`{"number":0,"head":"c0de"}`)}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue removal of no pull request", row: OutboxRow{ID: 60, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"head":"c0de"}`)}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a merge-queue removal naming a role", row: OutboxRow{ID: 61, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"role":"merger","number":42,"head":"c0de"}`)}, reason: "unknown field"},
+		{name: "a merge-holds change of no project", row: OutboxRow{ID: 62, Kind: OutboxKindMergeHoldsChanged, Payload: json.RawMessage(`{}`)}, reason: "a merge-holds change names the project"},
+		{name: "a merge-holds change naming a role", row: OutboxRow{ID: 63, Kind: OutboxKindMergeHoldsChanged, Payload: json.RawMessage(`{"project":"LEGION","role":"merger"}`)}, reason: "unknown field"},
 		{name: "a conflict confirm with no head", row: OutboxRow{ID: 62, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"firstReadAt":"2026-09-23T00:59:00Z"}`)}, reason: "a conflict confirm names the pull request it reads again and the head"},
 		{name: "a conflict confirm with no time of the first read", row: OutboxRow{ID: 66, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"head":"c0de"}`)}, reason: "a conflict confirm names when the first read it reads again was made"},
 		{name: "a conflict confirm with an unknown field", row: OutboxRow{ID: 63, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"head":"c0de","firstReadAt":"2026-09-23T00:59:00Z","base":"main"}`)}, reason: "unknown field"},
@@ -1067,7 +1086,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "worker-stalled", Role: claim.RoleImplementer,
 			Reason: "the daemon ended the implementer's turn and started a replacement in its place: its agent last stepped at 2026-11-08T08:00:00Z, past the bound this deployment gives the role, and its session was brought back on the replacement the daemon started"},
 		{Kind: "worker-silent", Role: claim.RoleTester, Phase: phase.Testing,
-			Reason: "LEGION-208's tester is a phase worker nothing will prompt: its process is up and between turns, it holds no task of testing, and its agent last stepped at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so the daemon wrote the start row that sends the phase's task again, on phase entry 2 its phase row names and its claim was already given. A suspension an operator holds over the claim refuses that start when the outbox runs it."},
+			Reason: "LEGION-208's tester is a phase worker nothing will prompt: its process is up and between turns, it holds no task of testing, and its agent last stepped at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so the daemon wrote the start row that sends the phase's task again, on phase entry 2 its phase row names and its claim was already given. A suspension the operator, the controller or an architect holds over the claim refuses that start when the outbox runs it."},
 		{Kind: "worker-background-stalled", Role: claim.RoleTester, Phase: phase.Testing,
 			Reason: "LEGION-208's tester is waiting on background work of its own that has stood too long: its session reports async-job running and last said so at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment sets (worker_background_hours). Nothing was sent to it and nothing will be: the daemon cannot tell a background job that hung from a long one, so this is yours to read."},
 		{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: string(HoldEscalated)},
@@ -1099,6 +1118,13 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
+		{Kind: "merge-holds-changed", Role: claim.RoleArchitect, Reason: MergeHoldsChangedReason("LEGION")},
+		{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
+			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
+		{Kind: UpdateStalledNotice, Role: claim.RoleArchitect,
+			Reason: "An architect suspended architect (suspended). An architect that owns the issue, or the controller, can resume it.",
+			Update: &UpdateStalled{Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Reasons: "image legion-worker:v1, now legion-worker:v2",
+				Waiting: []UpdateWaiting{{Claim: "legion-LEGION-208-architect", Role: claim.RoleArchitect, State: "suspended"}}}},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

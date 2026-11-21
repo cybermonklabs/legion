@@ -181,7 +181,7 @@ func sentenceNaming(t *testing.T, refusal, needle string) string {
 // suspends where the request arrives and starts again, and which the compaction refuses, since
 // it has no agent to ask for a compaction at all.
 type reachDoor struct {
-	op               controllerOp
+	op               claimOp
 	live             func(supervise.ClaimState) bool
 	stopped          func(supervise.ClaimState) bool
 	overADeadProcess func(supervise.ClaimState) bool
@@ -203,8 +203,8 @@ func (d reachDoor) reaches(state supervise.ClaimState) bool {
 
 // Each door's words for the states it reaches are the states its own predicates admit, over
 // every state a claim can be in: the sentence every refusal that ends in askAgainLater carries
-// (controllerOp.reaches), and the live half the held suspension's refusal writes its own
-// sentence around (controllerOp.liveStates). A door that named the other door's set, or a set
+// (claimOp.reaches), and the live half the held suspension's refusal writes its own
+// sentence around (claimOp.liveStates). A door that named the other door's set, or a set
 // that had gone stale against the predicate, fails here whatever the surrounding wording is.
 func TestEachDoorNamesTheStatesItsOwnPredicatesReach(t *testing.T) {
 	all := claimStates(t)
@@ -254,7 +254,7 @@ func TestTheHeldSuspensionRefusalNamesEachDoorsOwnLiveStates(t *testing.T) {
 			for _, state := range all {
 				t.Run(door.op.name+" over a "+string(role)+" that is "+string(state), func(t *testing.T) {
 					recorder := httptest.NewRecorder()
-					if refusalServer().refuseHeldSuspension(recorder, refusalRequest(), token, state, role, door.op) {
+					if refusalServer().refuseHeldSuspension(recorder, refusalRequest(), token, state, role, door.op, nil) {
 						t.Fatal("the refusal reported true, want the false every caller returns as its own answer")
 					}
 					wantCode := claimUnsettled
@@ -299,7 +299,7 @@ func TestTheHeldSuspensionRefusalNamesEachDoorsOwnLiveStates(t *testing.T) {
 func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 	for _, row := range []struct {
 		name  string
-		op    controllerOp
+		op    claimOp
 		token claim.Token
 		state supervise.ClaimState
 		role  claim.Role
@@ -344,7 +344,7 @@ func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			refusalServer().refuseHeldSuspension(recorder, refusalRequest(), row.token, row.state, row.role, row.op)
+			refusalServer().refuseHeldSuspension(recorder, refusalRequest(), row.token, row.state, row.role, row.op, nil)
 			var failure Failure
 			decodeInto(t, recorder, &failure)
 			if failure.Error != row.want {

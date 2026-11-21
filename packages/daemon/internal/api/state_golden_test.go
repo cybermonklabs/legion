@@ -390,7 +390,7 @@ func populatedState(t *testing.T) State {
 							// asks each role, and the daemon replaces the pod once every asked role has
 							// answered, no turn runs and no claim's activity report holds it
 							// (internal/daemon's roundEnd.holding), or at the round's bound
-							// (pod_update_grace_minutes) whatever the roles answered, an operator's
+							// (pod_update_grace_minutes) whatever the roles answered, a holding
 							// suspension excepted. This one has answered, and reported the head it
 							// pushed. The reasons are the round's own, so every claim of the pod
 							// carries the same text: what the worker answering is told to act on.
@@ -1155,8 +1155,9 @@ func TestHealthGolden(t *testing.T) {
 // to a session-facing body refuses the whole of it at every plugin whose answer side predates
 // INFRA-1048, and is dropped at every plugin after it, which loses the field rather than the
 // state. `suspendedBy` is the key this change was tempted to add, and it belongs to the
-// operator claim routes alone; the guard beside `legion-api.test.ts`'s schema tests holds the
-// same property on the schema side.
+// operator claim routes and to the controller's four claim operations alone
+// (ClaimOperationResponse), which no plugin below the contract that added them calls; the guard
+// beside `legion-api.test.ts`'s schema tests holds the same property on the schema side.
 func TestNoSessionFacingBodyCarriesSuspendedBy(t *testing.T) {
 	// The body where the key does live, so a guard over nothing cannot pass for a clean one.
 	operator, err := json.Marshal(OperatorClaims{Claims: []OperatorClaim{
@@ -1748,8 +1749,19 @@ func TestTask310RouteGoldens(t *testing.T) {
 	})
 	golden(t, "handoff-complete.json", HandoffCompleteResponse{})
 	golden(t, "issue-status.json", IssueStatusResponse{})
+	golden(t, "issue-pod-update.json", PodUpdateResponse{
+		Round:   "pod:9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22",
+		Reasons: "the project's controller asked for the replacement of this pod",
+		Opened:  true,
+	})
 	golden(t, "fresh-session.json", FreshSessionResponse{})
 	golden(t, "compact.json", CompactResponse{Reason: "Nothing to compact (session too small)"})
+	golden(t, "claim-stop.json", ClaimOperationResponse{State: string(supervise.StateRetired)})
+	golden(t, "claim-retry.json", ClaimOperationResponse{State: string(supervise.StateLaunching)})
+	golden(t, "claim-suspend.json", ClaimOperationResponse{
+		State: string(supervise.StateSuspended), SuspendedBy: string(supervise.SuspendedByController),
+	})
+	golden(t, "claim-resume.json", ClaimOperationResponse{State: string(supervise.StateLaunching)})
 	golden(t, "gate-register.json", GateRegisterResponse{})
 	golden(t, "wave-release.json", WaveReleaseResponse{Released: []string{"LEGION-209"}})
 	golden(t, "phase-backward.json", PhaseBackwardResponse{})

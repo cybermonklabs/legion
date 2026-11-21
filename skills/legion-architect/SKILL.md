@@ -59,7 +59,7 @@ skill the procedures. Where it disagrees with the code or a `--help`, follow tho
 - Set a child's dependencies in one call: `dispatch issue-update --issue <child> --blocked-by <a>
   --blocked-by <b>`. It replaces the whole list, so read the existing links first (`dispatch read`).
 - Release each child once it is filed:
-  `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`. Legion holds a child
+  `legion({ op: "release_children", issues: ["ACME-41", "ACME-42"] })`. Legion holds a child
   whose blockers are not `done`. Never hold a release back for a close: a child released after the
   root's merge runs as an orphan root. Never block a child on its own parent, which merges last.
 - On each `child-closed`, read the child's handoff, edit the specs of open children it changes,
@@ -102,8 +102,10 @@ Run the `goal-red-team` read your role prompt names. Accept only when a pass sta
 narrower than written: post a `dispatch comment` naming each check and its result, then
 `legion({ op: "sign_off", issue: "<KEY>" })`. Otherwise `request_backward_move` with `to`
 (`implementing` or `testing`) and a `reason` naming the check's block id. Wait for a `ci_check` run
-still going; a name no run answers is yours to correct in the check. Finding asks, refusals and
-what follows: `skill://legion-architect/references/acceptance.md`.
+still going; a name no run answers is yours to correct in the check. A line of the project's
+`merge-holds-md` that names the pull request's repository, or `all`, holds the sign-off until its
+end. Merge holds, finding asks, refusals and what follows:
+`skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
 
@@ -117,10 +119,15 @@ Handle each delivered wake by its row in `skill://legion-architect/references/wa
 ## Escalation judgment
 
 - Send the controller (its topic is on your addressing line) a child that serves no criterion of
-  the root, a need for admission slots, and two trees changing the same code.
-- A clear defect the controller gives you is this tree's work: an open pull request, or a child
-  after the red-team check; reply under its evidence comment with the issue that carries it. It
-  changes the root spec only where it changes the Summary, a requirement, a check or the scope
+  the root and a need for admission slots. Two trees changing the same code go to the other
+  tree's architect by a mention on its issue (`skill://legion-worker/references/findings.md#write-to-the-owner`).
+- A clear defect another role writes to you (a comment that mentions your role, first line
+  `Clear defect from <role>`) is this tree's work: an open pull request, or a child after the
+  red-team check; reply under its evidence comment with the issue that carries it. It changes the
+  root spec only where it changes the Summary, a requirement, a check or the scope
   (`skill://legion-architect/references/design-gate.md`, "After approval").
+- Your tree's claims that need action, its failed CI runs and its pull requests that no merger
+  merges are yours, never a request to another session:
+  `skill://legion-architect/references/operations.md`.
 - A tool a worker cannot get is a pull request to the worker image
   (`skill://legion-worker/references/tools.md`).

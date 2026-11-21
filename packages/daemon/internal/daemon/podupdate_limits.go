@@ -22,8 +22,9 @@ import (
 )
 
 // podUpdateOpeningGap is how soon after its last opening this daemon opens nothing at all. The
-// limit the operator sets is a number of rounds a minute, and a sweep is the only thing that
-// opens one: the gap is therefore the minute less what a sweep's own arrival wanders by, so two
+// limit the operator sets is a number of rounds a minute, and a sweep opens one once a minute at
+// most, as does the controller's request (requestPodUpdate), which this gap holds back too: the
+// gap is therefore the minute less what a sweep's own arrival wanders by, so two
 // sweeps a minute apart that arrive a little early or a little late open their round each,
 // while two sweeps of one burst — a sweep that ran long, and the one the ticker fires straight
 // after it — do not open two minutes' worth of rounds between them.
@@ -79,26 +80,38 @@ func (a *podUpdateAllowance) take() {
 type podUpdateSweep struct {
 	slots    podUpdateAllowance
 	budget   podUpdateAllowance
-	inFlight map[string]string
+	inFlight map[string]podUpdateOpening
 	ended    map[string]string
 	waiting  []podUpdateHeld
 	inRound  []string
 }
 
-// holds is whether a limit of the project holds this issue's opening back, and records the issue
-// as waiting under the limit that did. Where both hold it back the limit on open rounds is the
+// podUpdateOpening is one opening of this daemon's own that the claims of its issue have not
+// recorded yet: the round it opened and the reasons its post carries, which a claim records when
+// its machine takes the post (supervise's openPodUpdate). The reasons are kept for the
+// controller's request (requestPodUpdate), which answers such an opening as the round open over
+// the issue's pod before any claim can say so.
+type podUpdateOpening struct {
+	round   string
+	reasons string
+}
+
+// holds is whether a limit of the project holds this issue's opening back, and which limit, and
+// records the issue as waiting under the limit that did. Where both hold it back the limit on open rounds is the
 // one recorded: it is the one that will still hold the issue back at the next sweep, and the
 // one an operator reading the record has to weigh.
-func (sweep *podUpdateSweep) holds(issue string) bool {
+func (sweep *podUpdateSweep) holds(issue string) (podUpdateLimit, bool) {
+	var limit podUpdateLimit
 	switch {
 	case sweep.slots.exhausted():
-		sweep.waiting = append(sweep.waiting, podUpdateHeld{issue: issue, limit: limitPodUpdateOpenRounds})
+		limit = limitPodUpdateOpenRounds
 	case sweep.budget.exhausted():
-		sweep.waiting = append(sweep.waiting, podUpdateHeld{issue: issue, limit: limitPodUpdateRoundsPerMinute})
+		limit = limitPodUpdateRoundsPerMinute
 	default:
-		return false
+		return "", false
 	}
-	return true
+	sweep.waiting = append(sweep.waiting, podUpdateHeld{issue: issue, limit: limit})
+	return limit, true
 }
 
 // charge takes one opening that reached a worker from both limits, and names the issue it was
@@ -113,8 +126,9 @@ func (sweep *podUpdateSweep) charge(issue string) {
 
 // reposts is whether this issue's round is an opening of this daemon's own that is still in
 // flight — the sweep that made it charged a slot for it, and the machine it was posted to has
-// not recorded it yet — and records the issue as being in a round where it is. The post this
-// sweep makes of such a round is the opening's own post again, and it records the same round.
+// not recorded it yet — and records the issue as being in a round where it is. It answers that
+// opening, whose reasons the post again carries: the post this sweep makes of such a round is the
+// opening's own post again, and it records the same round with the same reasons.
 //
 // Such a post is that opening again rather than a second one, and it is a round for both of the
 // sweep's readings. No limit holds it back: the slot it is held behind is the one it is itself
@@ -128,12 +142,13 @@ func (sweep *podUpdateSweep) charge(issue string) {
 // claim records a process in is dropped before the walk (podUpdateOpenings), and the walk passes
 // over an issue whose claims run in two pods. So false here means no opening of this daemon's
 // own is in flight for the issue.
-func (sweep *podUpdateSweep) reposts(issue, round string) bool {
-	if sweep.inFlight[issue] != round {
-		return false
+func (sweep *podUpdateSweep) reposts(issue, round string) (podUpdateOpening, bool) {
+	opening := sweep.inFlight[issue]
+	if opening.round != round {
+		return podUpdateOpening{}, false
 	}
 	sweep.inRound = append(sweep.inRound, issue)
-	return true
+	return opening, true
 }
 
 // held names every issue a limit held back at this sweep, with the limit that held it, for the
@@ -224,12 +239,12 @@ func (s *supervision) beginPodUpdateSweep(now time.Time, byIssue map[string][]su
 // the slots they hold over the whole project, and once at the issue each was made for, whose
 // round they say is this daemon's own ask still in flight (beginPodUpdateSweep). What is
 // answered is a copy of the sweep's own, so the walk reads it without this mutex.
-func (s *supervision) podUpdateOpenings(byIssue map[string][]supervise.Claim) (time.Time, map[string]string) {
+func (s *supervision) podUpdateOpenings(byIssue map[string][]supervise.Claim) (time.Time, map[string]podUpdateOpening) {
 	s.podUpdateMu.Lock()
 	defer s.podUpdateMu.Unlock()
-	for issue, round := range s.podUpdateOpened {
+	for issue, opening := range s.podUpdateOpened {
 		group := byIssue[issue]
-		if _, inItsPod := podProcess(group, round); recordsRound(group, round) || !inItsPod {
+		if _, inItsPod := podProcess(group, opening.round); recordsRound(group, opening.round) || !inItsPod {
 			delete(s.podUpdateOpened, issue)
 		}
 	}
@@ -237,18 +252,20 @@ func (s *supervision) podUpdateOpenings(byIssue map[string][]supervise.Claim) (t
 }
 
 // recordPodUpdateOpening charges one opening that reached a worker to this sweep and to this
-// daemon's record of its own openings. The time written is the sweep's own now, the one every
-// opening of the sweep shares: the per-minute limit is a budget for a sweep, not a gap between
-// the openings inside one, and the sweep that follows measures its gap from the sweep that
-// opened rather than from whatever the openings' own replacements took afterwards.
-func (s *supervision) recordPodUpdateOpening(sweep *podUpdateSweep, issue, round string, now time.Time) {
+// daemon's record of its own openings, with the reasons its post carries. The time written is
+// the sweep's own now, the one every opening of the sweep shares: the per-minute limit is a
+// budget for a sweep, not a gap between the openings inside one, and the sweep that follows
+// measures its gap from the sweep that opened rather than from whatever the openings' own
+// replacements took afterwards. An opening the controller asked for is charged the same way,
+// against a sweep read for that one request (requestPodUpdate).
+func (s *supervision) recordPodUpdateOpening(sweep *podUpdateSweep, issue, round, reasons string, now time.Time) {
 	sweep.charge(issue)
 	s.podUpdateMu.Lock()
 	defer s.podUpdateMu.Unlock()
 	if s.podUpdateOpened == nil {
-		s.podUpdateOpened = map[string]string{}
+		s.podUpdateOpened = map[string]podUpdateOpening{}
 	}
-	s.podUpdateOpened[issue] = round
+	s.podUpdateOpened[issue] = podUpdateOpening{round: round, reasons: reasons}
 	s.podUpdateOpenedAt = now
 }
 

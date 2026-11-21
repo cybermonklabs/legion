@@ -48,11 +48,12 @@ const ServingFloor = 46
 //
 // 193 is the constant rather than its number, because the entry that added the shaped answers
 // names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares. The last is
-// repositoriesLiveContract rather than its number for the same reason: it is this daemon's own
-// contract, dispatch://INFRA-4401's, and a renumber of that change moves the constant and this
-// list with it.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract}
+// one of the two alone would describe a shape at a contract no entry declares. The last two are
+// constants rather than their numbers for the same reason. repositoriesLiveContract is
+// dispatch://INFRA-4401's contract, and a renumber of that change moves the constant and this list
+// with it. claimOperationsContract is the last: its entry is the newest, the one a forward merge
+// renumbers, and a renumber of it moves claimOperationsContract and this list with it.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, claimOperationsContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -78,6 +79,8 @@ const (
 	AnswerRefusal            AnswerID = "refusal"
 	AnswerProjectPause       AnswerID = "project-pause"
 	AnswerProjectResume      AnswerID = "project-resume"
+	AnswerClaimOperation     AnswerID = "claim-operation"
+	AnswerPodUpdate          AnswerID = "pod-update"
 )
 
 // Answer is one response schema a plugin parses, with every route that answers it and the
@@ -135,7 +138,9 @@ var typedSettings = []TypedSetting{
 
 // Answers is one row per answer a plugin parses. The operator's claim answers, the operator's
 // pause and resume answers (`legion project pause|resume`) and the controller's secret and
-// credential answers are no rows: no plugin parses them.
+// credential answers are no rows: no plugin parses them. The claim operations the controller and
+// an architect ask for through the `legion` tool, and the controller's pod update, are rows: the
+// plugin parses their answers.
 var Answers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
 	{ID: AnswerState, Routes: []string{"GET /legion/v1/state"}, Since: ServingFloor, TypedSettings: typedSettings},
@@ -198,6 +203,19 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
+	// version.go's 212: the claim as one of the four claim operations of the controller and of an
+	// architect left it (`api.ClaimOperationResponse`). The routes arrive with the answer, so no
+	// contract below 212 records either.
+	{ID: AnswerClaimOperation, Routes: []string{
+		"POST /legion/v1/claims/stop",
+		"POST /legion/v1/claims/retry",
+		"POST /legion/v1/claims/suspend",
+		"POST /legion/v1/claims/resume",
+	}, Since: claimOperationsContract},
+	// version.go's 212: the update round the controller's pod update opened or found open over
+	// the issue's pod (`api.PodUpdateResponse`), arrived with its route as the claim operations'
+	// answer did.
+	{ID: AnswerPodUpdate, Routes: []string{"POST /legion/v1/issues/pod-update"}, Since: claimOperationsContract},
 }
 
 // EnumeratedField is one field of one answer that a plugin parses with a strict enumeration,
@@ -255,12 +273,13 @@ type EnumeratedValue struct {
 // every `z.enum` diffed. The lists below that ever grew are `answeredBy`, which gained
 // `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56, and
 // `waitingLine.kind`, which gained `waiting_on_issue` at 132, so every other list is recorded
-// whole at its own field's arrival. (`suspendedBy` gained `released` at 48 and is no row here:
-// the operator claim answers carry it and no plugin parses them.)
+// whole at its own field's arrival. (`suspendedBy` gained `released` at 48 on the operator claim
+// answers, which carry it and which no plugin parses; the claim operations' `suspendedBy` arrived
+// at claimOperationsContract with every value it has, and is recorded whole there.)
 var EnumeratedFields = enumeratedFields()
 
 // enumeratedFields is every row the table holds: the state's own, the record's taken from them,
-// and the registration's, in that order.
+// the registration's and the claim operations', in that order.
 //
 // The record's rows are taken rather than written, because the record route answers the very
 // value the whole-project body holds under `issues.<key>` (shaping.go's shapeIssue): every
@@ -279,7 +298,14 @@ func enumeratedFields() []EnumeratedField {
 	}
 	// `role` of the claim a registration issued (claim.RegisterResponse.Role). The controller's
 	// registration answers `controller` under a `z.literal` and is no row.
-	return append(fields, EnumeratedField{Answer: AnswerRegister, KeyPath: "role", Values: claimRoles})
+	fields = append(fields, EnumeratedField{Answer: AnswerRegister, KeyPath: "role", Values: claimRoles})
+	// `state`, `suspendedBy` and `suspensionHeldBy` of what the four claim operations answer
+	// (ClaimOperationResponse). All three arrived with that answer at claimOperationsContract,
+	// so no value of any of them is served down. `suspensionHeld` is a `z.literal` and no row.
+	return append(fields,
+		EnumeratedField{Answer: AnswerClaimOperation, KeyPath: "state", Values: claimOperationStates},
+		EnumeratedField{Answer: AnswerClaimOperation, KeyPath: "suspendedBy", Values: suspendSources},
+		EnumeratedField{Answer: AnswerClaimOperation, KeyPath: "suspensionHeldBy", Values: suspendSources})
 }
 
 // issueKeyPath is the path the whole-project body writes one issue's fields under. The record
@@ -548,6 +574,26 @@ var wakeRoles = valuesFrom(wakesWaitingContract, floorRoles...)
 // each claim the open pause waits on takes (api.PauseStopView.Role): no `paused` is served below
 // that contract at all (shaping.go's withoutPause).
 var pauseStopRoles = valuesFrom(pauseContract, floorRoles...)
+
+// claimOperationStates is every value of the claim operations' `state` (ClaimOperationResponse,
+// AnswerClaimOperation): the claim view's states, recorded at claimOperationsContract, the
+// contract the answer arrived at with its four routes, since no reader below it parses that
+// answer at all.
+var claimOperationStates = valuesFrom(claimOperationsContract,
+	supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
+	supervise.StateShimConnected, supervise.StateRegistered, supervise.StateReady,
+	supervise.StateWorking, supervise.StateIdle, supervise.StateSuspended, supervise.StateFailed,
+	supervise.StateRetired)
+
+// suspendSources is every source a suspension can be recorded under (supervise.SuspendSource),
+// which the claim operations' `suspendedBy` and `suspensionHeldBy` share. Both arrived with that
+// answer at claimOperationsContract, so the list is recorded there whole, `controller` and
+// `architect` among it. It names each constant rather than reading a roster, as failureCauses
+// does its causes, because a source added later arrives at its own contract.
+var suspendSources = valuesFrom(claimOperationsContract,
+	supervise.SuspendedByUnknown, supervise.SuspendedByOperator, supervise.SuspendedByController,
+	supervise.SuspendedByArchitect, supervise.SuspendedByDaemon, supervise.SuspendedByExit,
+	supervise.SuspendedByReleased)
 
 // updateStates is every value of a claim view's `updateState`, recorded at the contract this
 // change adds the key under. The words are the four the package declares (updatestate.go), so a

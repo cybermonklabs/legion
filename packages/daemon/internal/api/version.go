@@ -2192,7 +2192,7 @@ package api
 // brought main in at 85, and then 86, which five other open heads declared as well, and then 88,
 // which the forward merge that brought main in at 86 left standing, and then 102 at the forward
 // merge of 2026-11-13 that brought main in at 94 — main stood at 104 after the merge of 17:3xZ
-// that day, which was then the entry right above this one, where 144 is now — since 88 is
+// that day, which was then the entry right above this one, where 151 is now — since 88 is
 // below that base, which the gate refuses (.github/scripts/check-daemon-api-contract.sh), and
 // since the two keys contract 94 added are served to a caller at the declared number alone
 // (api's phaseEntriesContract). It took 106 at the merge after that, because
@@ -2978,4 +2978,179 @@ package api
 // merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 202
+//
+// 212: #4065 -- the project's controller gets the four claim operations the
+// operator already has, as controller routes beside `claims/fresh-session` and `claims/compact`,
+// each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and the same door
+// (claimDoor: a controller grant, or an architect grant for a claim of an issue it owns, or `403
+// CONTROLLER_REQUIRED`, a claim the daemon supervises or `404 NO_CLAIM`, built from the daemon's
+// own project, so another project's claim cannot be named): `POST /legion/v1/claims/stop` runs
+// `legion claims stop`'s effect, `POST /legion/v1/claims/retry` the plain `legion claims retry`
+// (no fresh session), `POST /legion/v1/claims/suspend` `legion claims suspend`'s, and
+// `POST /legion/v1/claims/resume` `legion claims resume`'s. Each answers
+// `api.ClaimOperationResponse`: the claim's `state` after the request and, where a suspension is
+// over it, `suspendedBy`, `suspensionHeld` and
+// `suspensionHeldBy`, which these routes alone of the session-facing ones carry, since no plugin
+// below this contract calls them (the state still names no suspender, StrandedClaim); a
+// suspension held for the agent's turn, and a retry whose start the issue's phase queued, answer
+// 202. The controller's suspension is recorded as its own, `controller`, a new
+// supervise.SuspendSource that `claims.suspended_by` admits from
+// migration 20261115060739: it holds against the daemon's rules as the operator's does, its own
+// resume lifts it, and the operator's suspension outranks it. So the operator claim routes'
+// `suspendedBy` and `suspensionHeldBy` gain the value `controller`, which only the operator's
+// bearer reads. The controller's resume_claim, suspend, stop and retry, and its fresh session,
+// are refused a claim the operator's own suspension holds, held for a turn or landed, with `409
+// SUSPENDED_BY_OPERATOR`, nothing of the claim changed; its compaction is not, and answers such a
+// claim in its own codes. Its retry and resume of a claim stored working that no such suspension
+// holds are refused `409 CLAIM_IN_A_TURN`. An architect gets the same six operations — these
+// four, `fresh-session` and `compact` — for the claims of the issues it owns alone (#4065), as
+// sign_off and retry_or_escalate take an issue: an issue the daemon does not record is `404
+// ISSUE_NOT_FOUND`, one of another tree `403 ISSUE_OUTSIDE_TREE`, one of its own tree it does not
+// own — for a sub-architect its tree's root and a sibling's subtree — `403 ISSUE_NOT_OWNED`, and
+// the architect's own claim `403 OWN_CLAIM`. Its suspension is recorded as `architect`, a
+// further supervise.SuspendSource that `claims.suspended_by` admits from migration
+// 20261115083448, which holds as the controller's does and ranks under it: an architect's resume
+// lifts it, and so do the controller's and the operator's. Each of an architect's operations is
+// refused a claim the operator's own suspension holds (`409 SUSPENDED_BY_OPERATOR`) and one the
+// controller's holds (`409 SUSPENDED_BY_CONTROLLER`), held or landed, and its resume, suspend, stop
+// and fresh session a claim the daemon suspended (`409 SUSPENDED_BY_DAEMON`; its suspend and stop
+// reach a released claim). Its retry and fresh session of a claim that failed or that a stop
+// retired are refused `409 ISSUE_OUT_OF_WORKFLOW` while the claim's issue is out of the workflow
+// or its tree lingers (refuseStartOfStoppedWork), nothing of the claim changed, since the daemon's
+// own rules start that work again. The operator claim routes'
+// and the four routes' `suspendedBy` and `suspensionHeldBy` gain the value `architect`; no shape
+// moves. The controller gets one more route of its own beside these (#4065):
+// `POST /legion/v1/issues/pod-update` takes `api.PodUpdateRequest` (`grantId`, `issue`) and
+// opens the daemon's update round over that issue's pod as a drift opens one: each role of the
+// pod is asked to push its work and answer ready_for_update, and the pod is replaced once each
+// has answered, no turn runs and each role's report since its last turn names no running
+// background work, or at the round's bound (`pod_update_grace_minutes`), whatever the pod's
+// drift. The round's reasons say the project's controller asked for the replacement, and the
+// opening is held to the project's limits on openings as a drift's is (`409 POD_UPDATE_LIMITED`,
+// naming `pod_update_max_open_rounds` or `pod_update_rounds_per_minute`). It answers
+// `api.PodUpdateResponse`: the `round`, its `reasons`, and whether this request `opened` it, false
+// for a round already open over the pod, which it leaves as it stands. It takes a controller
+// grant alone (`403 CONTROLLER_REQUIRED`) and an issue key (`400 INVALID_ISSUE`); an issue of
+// another project, or one with no claim the daemon supervises that has not retired, is `404
+// NO_CLAIM`, one whose claims run no worker in a pod `404 NO_POD`, and one whose pod is being
+// replaced already — its claims in two pods, or the round over the pod before it still ending —
+// `409 POD_CHANGING`. It is the one route by which the controller removes an issue pod whose
+// workspace may hold work. It answers 200 only once a claim of the issue records the round in
+// the store, which a restart restores and the sweeps carry to the pod's replacement; a round no
+// claim records within its wait is `503 POD_UPDATE_NOT_RECORDED`, and may still open. A request
+// waits for the turn a sweep's walk over the project's issues holds while its own context lives
+// and at most the bound of its wait for the record (30 seconds); one whose context ends first, or
+// that waits out that bound, reads nothing and opens nothing, and is `503 POD_UPDATE_BUSY` with a
+// `Retry-After` of the sweep's interval in seconds (60), its sentence naming which of the two
+// ended the wait, and the bound.
+// While the project is paused (178), the controller's and an architect's `claims/resume` and
+// `claims/retry` answer 409 `PROJECT_PAUSED`, with the `pause` that stands, for every claim, as
+// their `claims/fresh-session` and `claims/compact` do, and change nothing: a claim the pause
+// stopped is the pause's to bring back at the project's resume, and no claim operation undoes
+// the pause. Their `claims/stop` and `claims/suspend` start nothing and still
+// run. A suspension of the controller's, an architect's or the operator's and the pause's stop
+// each keep their own source: the pause stops no claim such a suspension already holds, a
+// claim the pause stopped that such a suspension then takes over stays suspended by it at the
+// resume, and the resume brings back only what the pause stopped. `issues/pod-update` answers
+// 409 `PROJECT_PAUSED` while the project is paused, before the daemon is asked anything, and 409
+// `POD_HELD_BY_PAUSE` for a pod a pause holds: the hold of a pause that began after that
+// `PROJECT_PAUSED` check read the project as running, or a hold the resume left on a pod until a
+// role of the pod is live again; neither opens a round. Every `PROJECT_PAUSED` sentence, those of
+// 178's routes included, now ends by naming what lifts the pause (server.go's pauseLifts): the
+// project's resume, as the controller's `resume` operation of its `legion` tool, which names no
+// issue, and the operator's `legion project resume`; the fixture `project-paused.json` carries it.
+// The notice of a forgotten session that entry 189 adds, `session-forgotten`, goes to the issue's
+// architect alone, as `session-lost` does: the controller is told of neither (#4065), and no
+// shape moves.
+// Contract 212 is served down by 193's rule (#3659): every answer goes through one writer, which
+// shapes it to the contract its caller reads. The claim operations' answer and the pod update's
+// are two rows of answers.go's table, `claim-operation` on the four routes and `pod-update` on
+// `issues/pod-update`, each arrived whole with its routes at this contract
+// (claimOperationsContract), so no contract below records either, and shapeAnswer serves each as
+// written. The claim operations' `state`, `suspendedBy` and `suspensionHeldBy` are enumerated
+// fields of the table, each recorded whole at this contract, so no value of them is held back,
+// and the plugin reads every field of both answers as optional, since its code hands each answer
+// on whole and reads none of them (`LEGION_ANSWER_READS`). Every refusal of the five routes is the
+// refusal answer: `PROJECT_PAUSED` is an `api.PauseFailure`, placed by the caller's pod where it
+// states no contract and served without its `pause` below 178, and every other code, from
+// `CONTROLLER_REQUIRED` to `POD_HELD_BY_PAUSE`, is an `api.Failure`, which no contract shapes. The
+// five routes' request records start at this contract
+// (`packages/contracts/fixtures/daemon-api/request-shapes.json`). No key and no value of any
+// other answer moved, so this contract's records of every other answer are 202's, under its own
+// number. claimOperationsContract is now the last number of answers.go's SupportedContracts,
+// after shapedAnswersContract, 199 and repositoriesLiveContract, and a renumber of this entry
+// moves that constant with it.
+// (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
+// every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
+// 2026-11-15T06:21:19Z over the 148 open pull requests on main d7dce730: main declared 133, and the
+// open heads above it declared 134 (#4021), 135 (#3659), 137 (#4046), 138 (#4017), 139 (#2731,
+// #3711 and #3993), 140 (#3519), 141 (#3575 and #3730) and 142 (#3712), so 136 was the lowest
+// number above the base's that no open head declared. At the forward merge that brought main in
+// at b2e42742, which declares 144, the number moved to 150, the lowest number above 144 that no
+// open pull request declared, as .github/scripts/check-daemon-api-contract.sh named it. At the
+// forward merge that brought main in at 467e5371, which declares 146, it moved to 156, which that
+// check named at 2026-11-17T07:04:26Z as the lowest number above 146 that no open pull request
+// declared: 147 (#4017), 148 (#3519), 149 (#2230), 150 (#4049 and this change's own #4065), 151
+// (#4106), 152 (#3730), 153 (#4115), 154 (#3659) and 155 (#4273). It keeps 156 at the forward
+// merge of 2026-11-17 that brought main in at d9299f7a, which carries #4106 at 151, and at the
+// forward merge of 2026-11-18 that brought main in at 0b2769e5, which carries #3730 as entry
+// 152, the number that base carried: 156 is still above it. Read the base's own number and every
+// open head again at the next merge rather than from this entry.)
+// (At the forward merge of 2026-11-19, which brought in 708ca88c, main had moved to 160 (#3519,
+// entry 160), above this entry's earlier 156, and a reading of `const DaemonAPIVersion` at
+// the head of every one of the 233 open pull requests, which ended at 2026-11-19T09:00:35Z, found
+// 161 (#4173, #4180, #4193 and #4259), 162 (#3712), 163 (#4049), 164 (#4017), 165 (#4392), 166
+// (#4432), 167 (#3831, #4030, #4485 and #4493) and 168 (#2230 and #4488) declared above main's
+// 160, so 169 is the lowest number above it that no open head declares, and this entry takes it.)
+// (At the forward merge of 2026-11-19 that brought main in at 5f3d552e, which declares 168
+// (entry 168), a reading of `const DaemonAPIVersion` at the head of every one of the 242 open
+// pull requests, made between 2026-11-19T18:25:20Z and 18:28:46Z, found 169 declared by #3831 as
+// well as by this change's own head, 170 by #2230, #4173, #4180 and #4193, and 172 to 176 by
+// others, so this entry moved to 171, the lowest number above main's 168 that no other open head
+// declares. Read the base's own number and every open head again at the next merge rather than
+// from this line.)
+// (At the forward merge of 2026-11-20 that brought main in at c3b75c69, which declares 178
+// (entry 178), .github/scripts/check-daemon-api-contract.sh named 184 as the lowest number above
+// main's 178 that no open pull request declares: 179 (#4392 and #4540), 180 (#4049 and #4175),
+// 181 (#4273 and #4553), 182 (#4173 and #4495) and 183 (#3712) were declared, so this entry moved
+// from 171 to 184. Read the base's own number and every open head again at the next merge rather
+// than from this line.)
+// (At the forward merge of 2026-11-20 that brought main in at 1c7c8253, which declares 188
+// (entry 188), .github/scripts/check-daemon-api-contract.sh named 193 at 2026-11-20T10:47Z as the
+// lowest number above main's 188 that no open pull request declares: 189 (#3831 and #4596), 190
+// (#4493 and #4578), 191 (#4495, #4573 and #4592) and 192 (#4611) were declared, so this entry
+// moved from 184 to 193. Read the base's own number and every open head again at the next merge
+// rather than from this line.)
+// (At the forward merge of 2026-11-20 that brought main in at f21107b285c7, which declares 189
+// (entry 189), .github/scripts/check-daemon-api-contract.sh named 197 at 2026-11-20T17:10Z as the
+// lowest number above main's 189 that no open pull request declares: 190 (#4578), 191 (#2230,
+// #4049 and #4573), 192 (#4173, #4175, #4182, #4193 and #4392), 193 (#3659, #3712 and #4553, as
+// well as this change's own head), 194 (#3831 and #4030), 195 (#4590) and 196 (#3993, #4273,
+// #4432, #4493, #4495, #4580 and #4592) were declared, so this entry moved from 193 to 197. Read
+// the base's own number and every open head again at the next merge rather than from this line.)
+// (At the forward merge of 2026-11-20 that brought main in at fcc746a38394, which declares 193
+// (entry 193, #3659), .github/scripts/check-daemon-api-contract.sh passed 197 as above the base's
+// 193 and, passing, read no open pull request; its own reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head of every open pull request, made between 2026-11-20T21:04:39Z and
+// 21:07:32Z, found 194 (#4030), 195 (#4590), 196 (#3993, #4173, #4193, #4273, #4392, #4432,
+// #4493, #4495, #4580, #4592 and #4596), 197 (#4553 and #4578, as well as this change's own
+// head), 198 (#4175 and #4589) and 199 (#3831) declared above main's 193, so this entry moved
+// from 197 to 200, the lowest number above it that no other open head declares. Read the base's
+// own number and every open head again at the next merge rather than from this line.)
+// (At the forward merge of 2026-11-21 that brought main in at 5f2bf9afeaff, which declares 199
+// (entry 199, #4495), a reading of `const DaemonAPIVersion` at refs/pull/<n>/head of every one
+// of the 314 open pull requests, made between 2026-11-20T23:57:31Z and 2026-11-21T00:00:34Z,
+// found 200 declared by #4493 as well as by this change's own head, 201 by #4553 and #4611, and
+// 202 by #4580, so this entry moved from 200 to 203, the lowest number above main's 199 that no
+// other open head declares. Read the base's own number and every open head again at the next
+// merge rather than from this line.)
+// (At the forward merge of 2026-11-21 that brought main in at 1cdf5b9ceba6, which declares 202
+// (entry 202, #4493), a reading of `const DaemonAPIVersion` at refs/pull/<n>/head of every one
+// of the 346 open pull requests, made between 2026-11-21T04:01:42Z and 04:04:55Z, found 203
+// declared by #2230, #3993, #4175, #4553, #4592, #4596 and #4661 as well as by this change's own
+// head, 204 by #3831 and #4030, 205 by #4573 and 206 by #4540, so this entry moved from 203 to
+// 207, the lowest number above main's 202 that no other open head declares. The merge of main
+// `7009f289` moves it from 207 to 212: 207 to 211 are other open pull requests' (read at
+// refs/pull/<n>/head of all 395 open pull requests, 2026-11-21T11:08:11Z to 11:12:19Z). Read the
+// base's own number and every open head again at the next merge rather than from this line.)
+const DaemonAPIVersion = 212

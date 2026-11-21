@@ -1747,7 +1747,6 @@ text_checks:
   - 'packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml'
   - 'packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml'
   - 'skills/legion-controller/references/admission.md'
-  - 'skills/legion-controller/references/wakes.md'
   - 'scripts/e2e/README.md'
   - 'scripts/e2e/stage3-devbox-workflow.sh'
   - 'scripts/e2e/stage4b-sandbox-tree.sh'

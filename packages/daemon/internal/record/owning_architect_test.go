@@ -87,6 +87,31 @@ func TestAWalkFromAnIssueWhoseKeyMakesNoClaimTokenEndsAtTheTreeRoot(t *testing.T
 	}
 }
 
+// An update-stalled notice about an architect's hold over an issue's own architect claim is about
+// that architect, so its walk starts at the issue's parent and reaches the architect above it,
+// which can resume the hold; the issue's own architect, suspended under the hold, could read
+// nothing. The same notice about the holds over the issue's phase workers names no role, or a
+// worker's, and goes to the issue's own architect while it holds its role (the daemon's
+// tellUpdateStalled).
+func TestAnUpdateStalledNoticeAboutAnArchitectsHoldOverAnArchitectStartsAtItsParent(t *testing.T) {
+	root, parent, child := "LEGION-1", "LEGION-2", "LEGION-3"
+	tree := TreeByKey([]Issue{{Key: root, Tree: root}, {Key: parent, Tree: root, Parent: &root}, {Key: child, Tree: root, Parent: &parent}})
+	runs := func(claim.Token) bool { return true }
+	for _, tc := range []struct {
+		role  claim.Role
+		owner string
+	}{
+		{role: claim.RoleArchitect, owner: parent},
+		{role: "", owner: child},
+		{role: claim.RoleImplementer, owner: child},
+	} {
+		got, err := OwningArchitect("legion", tree, tree[child], NoticeStartsAtParent(UpdateStalledNotice, tc.role), runs)
+		if want := architectToken(t, tc.owner); err != nil || got != want {
+			t.Errorf("an update-stalled notice about %q's hold on %s goes to %s, %v; want %s", tc.role, child, got, err, want)
+		}
+	}
+}
+
 // architectToken is the claim token of issue's architect in project legion.
 func architectToken(t *testing.T, issue string) claim.Token {
 	t.Helper()

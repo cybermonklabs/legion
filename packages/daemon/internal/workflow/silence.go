@@ -176,7 +176,7 @@ func workerSilentDid(behind bool, entry, given int64) string {
 	default:
 		did = "the daemon wrote the start row that sends the phase's task again"
 	}
-	return did + ". A suspension an operator holds over the claim refuses that start when the outbox runs it"
+	return did + ". A suspension the operator, the controller or an architect holds over the claim refuses that start when the outbox runs it"
 }
 
 // workerSilentRecord is the notice's and the log line's text: what the daemon read, then did,

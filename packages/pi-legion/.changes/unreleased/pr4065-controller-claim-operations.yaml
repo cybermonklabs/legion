@@ -1,0 +1,27 @@
+kind: Added
+body: |-
+  The controller's `legion` tool gets four claim operations beside `compact` and `fresh_session`:
+  `stop`, `retry`, `suspend` and `resume_claim`, each naming the claim by `issue` and `role`. A
+  tree's architect gets all six for the claims of the issues it owns. Each answers the claim's
+  state and who holds a suspension over it. The claim's resume is `resume_claim` because `resume`
+  is the project's resume, which ends a pause and names no claim.
+  While the operator's own suspension holds a claim, five of the six (`stop`, `retry`, `suspend`,
+  `resume_claim` and `fresh_session`) are refused to the controller with `SUSPENDED_BY_OPERATOR`,
+  which names the `legion claims resume` command the operator runs. `compact` is refused there as
+  for any claim that runs no agent or that a suspension is held over: `CLAIM_NOT_RUNNING`,
+  `CLAIM_IN_A_TURN` or `CLAIM_UNSETTLED`.
+  An architect's suspension is recorded under a new source, `architect`: its own `resume_claim`
+  lifts it, and so do the controller's `resume_claim` and the operator's resume. The daemon refuses
+  an architect a claim of another tree (`ISSUE_OUTSIDE_TREE`), a claim of an issue of its tree that
+  it does not own (`ISSUE_NOT_OWNED`) and its own claim (`OWN_CLAIM`). It refuses each of the six
+  to an architect for a claim the operator's suspension holds (`SUSPENDED_BY_OPERATOR`) or the
+  controller's holds (`SUSPENDED_BY_CONTROLLER`), and its `resume_claim`, `suspend`, `stop` and
+  `fresh_session` for a claim the daemon suspended (`SUSPENDED_BY_DAEMON`). It refuses an
+  architect's `retry` and `fresh_session` of a claim that failed or that a stop retired while the
+  claim's issue or its tree's root is out of the workflow (`ISSUE_OUT_OF_WORKFLOW`).
+  While the project is paused, `retry`, `resume_claim`, `fresh_session` and `compact` are refused
+  to the controller and to an architect with `PROJECT_PAUSED`, whose sentence names the
+  controller's `resume` as what lifts the pause; `stop` and `suspend` still run.
+time: 2026-11-20T16:00:00.000000000Z
+custom:
+    Issue: pr4065

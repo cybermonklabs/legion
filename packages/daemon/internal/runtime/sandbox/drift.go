@@ -24,7 +24,7 @@ var _ runtime.IssuePodReplacer = (*Runtime)(nil)
 // (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the pod once
 // every asked role has answered, no turn runs and no claim's activity report holds it
 // (internal/daemon's roundEnd.holding), or at the round's bound (pod_update_grace_minutes)
-// whatever the roles answered and whatever runs, an operator's suspension excepted. PodDrift is
+// whatever the roles answered and whatever runs, a holding suspension excepted. PodDrift is
 // what the round is opened on, and ReplacePod what ends the round, or ReplaceIssuePod where no
 // role process is left in the pod to name it through; the round itself, its ask and its sweep
 // are the daemon's (internal/daemon).

@@ -422,8 +422,9 @@ type RequestReady struct {
 // RequestSuspend stops the claim's process and keeps its session. Reason is why, for the line the
 // suspension logs; By is who asks, which the suspended claim records (Claim.SuspendedBy) and every
 // suspension must name. For a daemon suspension, Deadline, when set, stops a hold at that moment
-// when its turn has not ended (holdSuspension); without one, the hold waits for the turn's end. An
-// operator suspension always uses the stop timeout from its arrival, whatever Deadline says.
+// when its turn has not ended (holdSuspension); without one, the hold waits for the turn's end. A
+// suspension that holds (By.Holds: the operator's, the controller's or an architect's) always uses
+// the stop timeout from its arrival, whatever Deadline says.
 //
 // NeverHold is a suspension that may not be held: one a caller posts only because it read the
 // claim in no turn, and whose refusal it reports to its own caller as nothing having happened. A
@@ -434,6 +435,13 @@ type RequestReady struct {
 // Every other suspension leaves it false and is held as above: the outbox retries its rows until
 // the claim answers nil, and `legion claims suspend` waits the hold out.
 //
+// KeepsHold is a suspension that never takes over a suspension that holds (SuspendSource.Holds),
+// landed (suspendedAgain) or held for a turn (suspendRequest), and leaves the claim to that
+// holder: the daemon's suspend of a production check's role between looks
+// (record.SuperviseRequest.KeepsHold), which stops the process and keeps the session for the
+// next look's start, so a hold it took over would buy it nothing and be lost. It takes a released
+// claim over as any daemon suspension does. Every other suspension leaves it false.
+//
 // Pause is the project pause this suspension stops the claim for (store.Pause.ID, decision 4 of
 // dispatch://INFRA-3759's plan), 0 for a suspension of no pause. It is set by the daemon's
 // `pause_stop` row and by the gate's own stop of a launch it held (pauseStopDue), only with By
@@ -442,19 +450,33 @@ type RequestReady struct {
 // the plain claim write (Deps.PauseStopped, suspendedFor), and a hold of one is the pause's: kept
 // across a start while its pause is open (StartedBy), and dropped at the start of the claim's next
 // decision once that pause has ended (dropEndedPauseHold), the resume's event (ResumePause) among
-// them.
+// them. A request of the operator, the controller or an architect that takes a pause's hold over
+// clears its Pause (holdSuspension).
 type RequestSuspend struct {
 	Claim     claim.Token
 	Reason    string
 	By        SuspendSource
 	Deadline  time.Time
 	NeverHold bool
+	KeepsHold bool
 	Pause     int64
 }
 
-// RequestResume is the operator's resume: it relaunches a suspended claim's session, whoever
-// suspended it.
-type RequestResume struct{ Claim claim.Token }
+// RequestResume relaunches a suspended claim's session. By is who asks, and every resume names
+// it (askedBy): SuspendedByOperator for the operator, through its own resume and its fresh
+// session (api's resumeEvent, freshSession), whose resume lifts every suspension, whoever placed
+// it; SuspendedByController for the project's controller, through its own `legion` tool (api's
+// claimResume), whose resume lifts every suspension but the operator's own; and
+// SuspendedByArchitect for an architect that owns the claim's issue, through the same tool, whose
+// resume lifts an architect's suspension alone. Each is refused what it may not lift
+// (Claim.ResumeRefusal: ErrOperatorHolds, ErrControllerHolds, ErrNotTheArchitectsSuspension),
+// since no agent undoes a decision of one that outranks it. The wake pacing reads it too: the
+// operator's resume is one a person waits on and is let through unpaced, and the controller's and
+// an architect's take their turn in it (exemptWake).
+type RequestResume struct {
+	Claim claim.Token
+	By    SuspendSource
+}
 
 // ResumePause is the daemon's word, posted to every machine of its project once a resume of the
 // project has committed (decision 22 of dispatch://INFRA-3759's plan), that pause Pause is over.
@@ -475,8 +497,8 @@ type ResumePause struct {
 }
 
 // RequestRuleResume is the daemon's own resume, by rule: it relaunches a suspended claim's session
-// unless an operator suspended it (Claim.RuleMayResume): that suspension holds until the operator
-// resumes the claim. The daemon asks it of
+// unless an operator, the controller or an architect suspended it (Claim.RuleMayResume): that
+// suspension holds until a resume lifts it. The daemon asks it of
 // a claim that owns its issue's current phase (the outbox's start of that phase, the boot's
 // included) and of its own controller. It resumes nothing that is not suspended — a failed claim's
 // launch budget is spent, and only the workflow's retry relaunches it — so it is asked again as
@@ -489,12 +511,25 @@ type RequestRuleResume struct {
 
 // RequestStop ends one claim. The tree's root claim is not one it can end: a root ends only with
 // its tree, so any other stop of it is refused, and suspending it is how its process is stopped.
+// By is who asks, and every stop names it (askedBy): SuspendedByOperator for the operator's own
+// stop, the stop of a tree's other claims its close makes (api's stopEvent, closeTree), and the
+// stop of a controller an earlier boot launched on a daemon that leaves the controller to its
+// operator (the daemon's stopLaunchedController); SuspendedByController for the project's
+// controller and SuspendedByArchitect for an architect that owns the claim's issue, each through
+// its own `legion` tool (api's claimStop). Either of those two is refused for a claim a suspension
+// outranking it holds, held or landed — the operator's for either, the controller's for an
+// architect's — and an architect's for a claim the daemon's own suspension holds
+// (Claim.StopOrSuspendRefusal), since a stop retires the claim and a retry then relaunches it,
+// which would get past that hold.
 //
 // A close is its own event rather than a flag here, and there are two of them, because who decided
 // the close is what says whether TreeClosable is asked. A flag has an unsafe default, and the
 // caller that never thought about it gets that default; these two make a new caller name which
 // close it is making, and the table holds a row for each.
-type RequestStop struct{ Claim claim.Token }
+type RequestStop struct {
+	Claim claim.Token
+	By    SuspendSource
+}
 
 // RequestTreeClose is the workflow closing a tree: every claim of a tree whose linger expired,
 // the root's included. It is the workflow's own decision and is not put to TreeClosable — the
@@ -531,11 +566,18 @@ type RequestRetry struct {
 	FreshSession bool
 }
 
-// RequestOperatorRetry is the operator relaunching a claim through the API: the retry RequestRetry
+// RequestAskedRetry is a caller relaunching a claim through the API: the retry RequestRetry
 // makes, fresh budgets and the session that retry relaunches, for an architect and for a phase
-// worker (operatorRetry). It is its own event, as the closes are, so the table answers each
+// worker (askedRetry). It is its own event, as the closes are, so the table answers each
 // caller's retry its own way. FreshSession is `legion claims retry --fresh-session`, as
 // RequestRetry takes it.
+//
+// By is who asks, and every retry names it (askedBy): SuspendedByOperator for the operator's own
+// retry and its fresh session's (api's retryClaim), and SuspendedByController or
+// SuspendedByArchitect for the retry and the fresh session of the controller or an architect
+// through the claim door (api's claimRetry, claimFreshSession). The wake pacing reads it: the
+// operator's retry is one a person waits on and is let through unpaced, and every other caller's
+// takes its turn (exemptWake).
 //
 // It reaches a retired claim as well as a failed one. `legion claims stop` retires a claim, and
 // while the operator's retry refused that state an operator who stopped a worker could start it
@@ -543,9 +585,10 @@ type RequestRetry struct {
 // dispatch://INFRA-956 R3 asked to be made of `legion` commands alone. The claim's tree lifecycle
 // still decides whether the relaunch runs at all: a tree whose cleanup is reserved refuses the
 // launch (revive, Store.AdmitClaim), as it refuses the workflow's own retry of a retired claim.
-type RequestOperatorRetry struct {
+type RequestAskedRetry struct {
 	Claim        claim.Token
 	FreshSession bool
+	By           SuspendSource
 }
 
 // RequestForgetSession drops the named recorded session of a claim that runs nothing — queued,
@@ -556,6 +599,15 @@ type RequestOperatorRetry struct {
 // the operator means, and a claim recording another is refused, so a decision that changed the
 // claim since it was read cannot clear a session nobody asked about.
 //
+// By is who asks, and every forget names it (askedBy): SuspendedByOperator for the operator's own
+// forget and its fresh session's, and SuspendedByController or SuspendedByArchitect for the fresh
+// session of the controller or an architect (api's claimFreshSession). The fresh session forgets
+// the session in order to start the claim in a new one, and between its own suspension and this
+// forget a suspension that outranks its caller can take the claim over (suspendedAgain). So the
+// forget is refused, with the session kept, for a claim whose resume its caller may not run
+// (Claim.ResumeRefusal): dropped, the session would be gone from a claim that caller could then
+// not start again, under a hold it cannot lift.
+//
 // It launches nothing, which is what makes it its own event rather than another retry: a phase
 // worker is relaunched by the workflow's start of its phase, so the two halves of that retry have
 // different owners — which session the claim starts on is the operator's to say, and when it
@@ -563,6 +615,7 @@ type RequestOperatorRetry struct {
 type RequestForgetSession struct {
 	Claim   claim.Token
 	Session string
+	By      SuspendSource
 }
 
 // RequestDeliver gives the claim a task. ID is a durable outbox delivery id when an outbox row
@@ -686,7 +739,7 @@ func (RequestTreeClose) isEvent()     {}
 func (RequestIssueClose) isEvent()    {}
 func (RequestOperatorClose) isEvent() {}
 func (RequestRetry) isEvent()         {}
-func (RequestOperatorRetry) isEvent() {}
+func (RequestAskedRetry) isEvent()    {}
 func (RequestForgetSession) isEvent() {}
 func (RequestDeliver) isEvent()       {}
 func (RequestExit) isEvent()          {}
@@ -735,7 +788,7 @@ const (
 	onIssueClose    eventKind = "request_issue_close"
 	onOperatorClose eventKind = "request_operator_close"
 	onRetry         eventKind = "request_retry"
-	onOperatorRetry eventKind = "request_operator_retry"
+	onAskedRetry    eventKind = "request_asked_retry"
 	onForgetSession eventKind = "request_forget_session"
 	onDeliver       eventKind = "request_deliver"
 	onExit          eventKind = "request_exit"
@@ -816,8 +869,8 @@ func kindOf(ev Event) eventKind {
 		return onOperatorClose
 	case RequestRetry:
 		return onRetry
-	case RequestOperatorRetry:
-		return onOperatorRetry
+	case RequestAskedRetry:
+		return onAskedRetry
 	case RequestForgetSession:
 		return onForgetSession
 	case RequestDeliver:
@@ -853,7 +906,7 @@ func requestName(ev Event) (string, bool) {
 		return "stop", true
 	case RequestTreeClose, RequestOperatorClose, RequestIssueClose:
 		return "close", true
-	case RequestRetry, RequestOperatorRetry:
+	case RequestRetry, RequestAskedRetry:
 		return "retry", true
 	case RequestForgetSession:
 		return "forget-session", true
@@ -1175,7 +1228,7 @@ func fillTable(t *builder) {
 	t.ignore(onResume, failedClaim, StateFailed)
 	t.ignore(onResume, retiredClaim, StateRetired)
 
-	t.row(onRuleResume, "resume the same session by rule, unless the operator suspended it", resumeByRule,
+	t.row(onRuleResume, "resume the same session by rule, unless a suspension that holds is over it", resumeByRule,
 		[]ClaimState{StateLaunching, StateFailed}, StateSuspended)
 	t.row(onRuleResume, "the claim runs: nothing to resume", nothingToDo, nil, live...)
 	t.row(onRuleResume, "a queued claim is spawned by its start, not resumed", nothingToDo, nil, StateQueued)
@@ -1211,12 +1264,12 @@ func fillTable(t *builder) {
 	// A retired claim is retried here as the workflow's own retry retries one: `legion claims stop`
 	// retires a claim, and while this row refused that state the only way to start a stopped worker
 	// again was an edit of the claims store with the daemon stopped (dispatch://INFRA-956 R3).
-	t.row(onOperatorRetry, "the operator's retry of an architect or a phase worker, failed or stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one, the provider refused it out of the launch budget, or no store holds it", operatorRetry,
+	t.row(onAskedRetry, "the retry an operator, the controller or an architect asks of an architect or a phase worker, failed or stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one, the provider refused it out of the launch budget, or no store holds it", askedRetry,
 		[]ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
-	t.ignore(onOperatorRetry, "a queued claim is spawned, not retried", StateQueued)
-	t.ignore(onOperatorRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
-	t.ignore(onOperatorRetry, "the claim has not failed", live...)
-	t.ignore(onOperatorRetry, "a suspended claim is resumed, not retried", StateSuspended)
+	t.ignore(onAskedRetry, "a queued claim is spawned, not retried", StateQueued)
+	t.ignore(onAskedRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
+	t.ignore(onAskedRetry, "the claim has not failed", live...)
+	t.ignore(onAskedRetry, "a suspended claim is resumed, not retried", StateSuspended)
 
 	t.row(onForgetSession, "drop the session so the next launch is fresh", forgetSession, nil,
 		StateQueued, StateSuspended, StateFailed, StateRetired)
@@ -2389,11 +2442,12 @@ func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 // ready — it never registered, or registered and never said it was ready. Without a held
 // suspension, it is retired, counted and relaunched. A relaunch the tree lifecycle refuses is
 // checked before the retirement, so the process is kept and the deadline tried again at the probe
-// interval, as one whose stop fails is. An operator suspension retained through a rule-resuming
-// launch instead completes here: no ready will arrive to run it, and relaunching would drop the
-// operator's hold. The retirement's stop records what it ended as the deadline's (endNeverReady,
-// letGo) — what its agent never did is no turn, so a record comes only of background work the
-// process reported — and the relaunch that follows lets nothing more go.
+// interval, as one whose stop fails is. A suspension that holds (an operator's, the controller's
+// or an architect's) retained through a rule-resuming launch instead completes here: no ready
+// will arrive to run it, and relaunching would drop that hold. The retirement's stop records what
+// it ended as the deadline's (endNeverReady, letGo) — what its agent never did is no turn, so a
+// record comes only of background work the process reported — and the relaunch that follows lets
+// nothing more go.
 //
 // The deadline of a process of a claim that records a session and no file is charged nothing
 // where endUncharged says so: a process an earlier release started, whose registration the fence
@@ -2402,7 +2456,7 @@ func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 // failure and waits no backoff, in place of relaunchAfterFailure. An agent that registered as the
 // session records its file, so its deadline is charged as every other one is.
 func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
-	if m.held != nil && m.held.By == SuspendedByOperator {
+	if m.held != nil && m.held.By.Holds() {
 		return m.suspendHeld(ctx)
 	}
 	never := "never registered"
@@ -2573,7 +2627,17 @@ func reready(m *Machine, ctx context.Context, _ Event) error {
 	return finishReady(m, ctx)
 }
 
+// resume relaunches a suspended claim's session: the operator's whoever suspended it, the
+// controller's for every suspension but the operator's own, and an architect's for an
+// architect's suspension alone (RequestResume.By, askedBy, Claim.ResumeRefusal).
 func resume(m *Machine, ctx context.Context, ev Event) error {
+	by := ev.(RequestResume).By
+	if err := askedBy(m, "resume", by); err != nil {
+		return err
+	}
+	if err := m.current().ResumeRefusal(by); err != nil {
+		return &RefusedError{State: m.claim.State, Request: "resume", Err: err}
+	}
 	if err := m.resumeRefusal(ctx, "resume"); err != nil {
 		return err
 	}
@@ -2587,13 +2651,14 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 // fails the claim within it (acceptance of #4220). It asks the names a resume of the recorded
 // session runs under: those the record gives (holdRecorded), and for every claim that records a
 // session and no file those a resume by the id runs under (holdByID). For an Oh My Pi claim those
-// are the names start holds, so an operator's resume is refused where the launch would be. A
-// Claude Code claim that records a session and no file is asked them too, which is stricter than
-// its launch: start sends that claim straight to the forget (startFresh) and asks no hold. Its
-// remedy is a new session, `legion claims forget-session`, then the resume. A store that does not
-// answer is no refusal: the resume goes on, and start asks again at the probe interval, charging
-// nothing, as before. A claim recording no session resumes as before, and so does one holding its
-// session, which costs no store call once admitted (R9).
+// are the names start holds, so a resume is refused where the launch would be. A Claude Code claim
+// that records a session and no file is asked them too, which is stricter than its launch: start
+// sends that claim straight to the forget (startFresh) and asks no hold. Its remedy is a new
+// session: the operator's `legion claims forget-session`, then the resume, or the `fresh_session`
+// of the controller's or an architect's `legion` tool, which gives the claim a new session and
+// starts it. A store that does not answer is no refusal: the resume goes on, and start asks again
+// at the probe interval, charging nothing, as before. A claim recording no session resumes as
+// before, and so does one holding its session, which costs no store call once admitted (R9).
 func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 	if m.claim.Session == "" {
 		return nil
@@ -2609,21 +2674,21 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 		return nil
 	}
 	return &RefusedError{State: m.claim.State, Request: request, Err: fmt.Errorf(
-		"%s records session %s, which it does not hold (%w), so a relaunch that resumed it would be refused at every try until the claim failed; give it a new session first (`legion claims forget-session --claim %s --session %s`), then ask the %s again",
+		"%s records session %s, which it does not hold (%w), so a relaunch that resumed it would be refused at every try until the claim failed; give it a new session first (the operator's `legion claims forget-session --claim %s --session %s`), then ask the %s again, or use the `fresh_session` of the controller's or an architect's `legion` tool, which gives it a new session and starts it",
 		m.claim.Token, m.claim.Session, err, m.claim.Token, m.claim.Session, request)}
 }
 
 // resumeByRule is the daemon's own resume of a suspended claim (RequestRuleResume): the same
-// session relaunched, as the operator's resume relaunches it, unless an operator suspended the
-// claim: that suspension holds until
-// the operator resumes the claim. A launch that fails is charged to the claim's launch budget like
+// session relaunched, as the operator's resume relaunches it, unless an operator, the
+// controller or an architect suspended the claim: that suspension holds until a resume lifts it
+// (Claim.RuleMayResume). A launch that fails is charged to the claim's launch budget like
 // any other, so a claim the rule resumes that keeps failing fails once the budget is spent, and a
 // failed claim is never resumed by rule. A claim recording a session it does not hold is not
 // resumed by rule either (resumeRefusal): it stays suspended, and the line says why.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	rule := ev.(RequestRuleResume).Reason
 	if !m.claim.RuleMayResume() {
-		m.log.Info("supervise: not resumed by rule: its suspension holds until the operator resumes it", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
+		m.log.Info("supervise: not resumed by rule: its suspension holds until a resume lifts it", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
 		return nil
 	}
 	if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
@@ -2637,7 +2702,8 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
 // when it has one, is relaunched after the process the claim last ran is gone. A pending delivery
 // the claim kept goes once the agent is ready. Its event is the workflow's retry or the
-// operator's own (operatorRetry), and the pacing reads each its own way (exemptWake).
+// asked one, the operator's, the controller's or an architect's (askedRetry), and the pacing
+// reads each its own way (exemptWake).
 //
 // A retry that asks for a new session, and one of a claim whose provider refused the recorded
 // session out of its budget, forgets that session instead, so the launch spawns a fresh agent
@@ -2687,22 +2753,27 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 	})
 }
 
-// operatorRetry is the operator's retry of a claim that runs nothing: retry, for an architect —
-// its tree's root, which no phase start relaunches (admission starts it with its tree, and a
-// person's answer resumes it: workflow's StartArchitect and ResumeAwaitedRoot), or a child's own
-// architect, which a start of the workflow's can also bring back (workflow's StartFirstPhase and
-// reviveArchitect, for example) — and for a phase worker whose issue works no phase of its role,
-// which the route has already established before it reaches the machine (api's retryStart starts
-// the phase itself for every other one).
+// askedRetry is the retry an operator, the controller or an architect asks of a claim that runs
+// nothing (RequestAskedRetry): retry, for an architect — its tree's root, which no phase start
+// relaunches (admission starts it with its tree, and a person's answer resumes it: workflow's
+// StartArchitect and ResumeAwaitedRoot), or a child's own architect, which a start of the
+// workflow's can also bring back (workflow's StartFirstPhase and reviveArchitect, for example) —
+// and for a phase worker whose issue works no phase of its role, which the route has already
+// established before it reaches the machine (api's retryStart starts the phase itself for every
+// other one).
 // The daemon's controller has a retry of its own, its keeper, so it alone is refused. A claim's
-// role never changes, so the refusal cannot race the decision it guards.
+// role never changes, so the refusal cannot race the decision it guards. The retry names who asks
+// (RequestAskedRetry.By, askedBy), which is what the wake pacing reads (exemptWake).
 //
 // It relaunches the session the claim records, unless the retry asks for a new one
-// (RequestOperatorRetry.FreshSession) or the provider refused that session out of the claim's
+// (RequestAskedRetry.FreshSession) or the provider refused that session out of the claim's
 // launch budget: retry forgets the session in either case, so the launch spawns a fresh agent,
 // because resuming a session whose turns the provider refused would be refused again. A launch
 // whose session no session store holds any more starts a fresh agent too (startFresh).
-func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
+func askedRetry(m *Machine, ctx context.Context, ev Event) error {
+	if err := askedBy(m, "retry", ev.(RequestAskedRetry).By); err != nil {
+		return err
+	}
 	if m.claim.Role == claim.RoleController {
 		return &RefusedError{State: m.claim.State, Request: "retry",
 			Err: fmt.Errorf("%w; the daemon's controller keeper retries the controller", ErrRetryNotTheController)}
@@ -2718,7 +2789,17 @@ func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
 // sweep's known set, which would then take whatever the runtime holds for the root issue — under a
 // sandbox, its Sandbox, and with it the pod and the disk that pod owns. Any other stop of it is
 // refused, naming the operator's close when it is that close which ends the tree.
-func stop(m *Machine, ctx context.Context, _ Event) error {
+// The controller's or an architect's stop of a claim a suspension outranking it holds, and an
+// architect's of a claim the daemon's own suspension holds, is refused before any of that
+// (RequestStop.By, askedBy, Claim.StopOrSuspendRefusal).
+func stop(m *Machine, ctx context.Context, ev Event) error {
+	by := ev.(RequestStop).By
+	if err := askedBy(m, "stop", by); err != nil {
+		return err
+	}
+	if err := m.current().StopOrSuspendRefusal(by); err != nil {
+		return &RefusedError{State: m.claim.State, Request: "stop", Err: err}
+	}
 	if !m.claim.treeRoot() {
 		return m.end(ctx, endStopped)
 	}
@@ -2766,27 +2847,77 @@ func issueClose(m *Machine, ctx context.Context, _ Event) error {
 }
 
 // forgetSession drops the named session record from a processless claim: the operator's
-// `legion claims forget-session`, and the half of `legion claims retry --fresh-session` that is
-// the claim's rather than the workflow's (api's retryClaim). It launches nothing — whatever starts
+// `legion claims forget-session`, and the half of a fresh session that is the claim's rather than
+// the workflow's (api's retryClaim, claimFreshSession). It launches nothing — whatever starts
 // the claim next, for a phase worker the workflow's own start of its phase, spawns a fresh agent
-// rather than resuming the turns the operator asked to leave behind. The comparison runs under
+// rather than resuming the turns the asker meant to leave behind. The comparison runs under
 // the machine lock, so a decision that changed the claim since an operator saw it cannot clear a
-// later session. A session the claim records but does not hold is cleared only once the Envoy
-// listener no longer names it as the claim's role holder (mayForget).
+// later session, and so does the read of a hold the asker may not lift, which refuses the forget
+// with the session kept (RequestForgetSession.By, askedBy, Claim.ResumeRefusal). A session the
+// claim records but does not hold is cleared only once the Envoy listener no longer names it as
+// the claim's role holder (mayForget). The log line and the reason the claim records name who
+// asked (forgottenBy).
 func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	request := ev.(RequestForgetSession)
+	if err := askedBy(m, "forget-session", request.By); err != nil {
+		return err
+	}
+	if err := m.current().ResumeRefusal(request.By); err != nil {
+		return &RefusedError{State: m.claim.State, Request: "forget-session", Err: err}
+	}
 	if !m.claim.HoldsSession(request.Session) {
 		return &RefusedError{Request: "forget-session", Err: fmt.Errorf(
 			"%s records session %s; pass --session %s to start fresh", m.claim.Token, m.claim.Session, m.claim.Session,
 		)}
 	}
+	reason, err := forgottenBy(request.By)
+	if err != nil {
+		return &RefusedError{State: m.claim.State, Request: "forget-session", Err: err}
+	}
 	if err := m.mayForget(ctx, "forget-session"); err != nil {
 		return err
 	}
-	m.log.Info("supervise: forgetting the recorded session at the operator's ask", "session", m.claim.Session,
-		"sessionFile", m.claim.SessionFile, "state", string(m.claim.State))
-	m.forgetSession("an operator cleared it with `legion claims forget-session`, so this claim starts fresh")
+	m.log.Info("supervise: forgetting the recorded session at the asker's request", "by", string(request.By),
+		"session", m.claim.Session, "sessionFile", m.claim.SessionFile, "state", string(m.claim.State))
+	m.forgetSession(reason)
 	return m.persist(ctx)
+}
+
+// forgottenBy is why a forget left the claim's session behind, as the claim records it
+// (Claim.Abandoned), naming who asked and the route the forget came through. The operator's
+// forget comes from two commands, its `legion claims forget-session` and its `legion claims retry
+// --fresh-session`, and names the operator alone, so the sentence names both; the controller's
+// and an architect's come from their fresh session alone. The sentence reaches the first prompt
+// of the agent that replaces the session (abandonedTask), where a worker whose controller asked
+// for its fresh session must not read that an operator cleared it. askedBy has refused every
+// other source before this is read; a source it let through that has no sentence here is an
+// error naming that source, rather than a sentence naming some other asker.
+func forgottenBy(by SuspendSource) (string, error) {
+	switch by {
+	case SuspendedByOperator:
+		return "an operator cleared it with `legion claims forget-session` or `legion claims retry --fresh-session`, so this claim starts fresh", nil
+	case SuspendedByController:
+		return "the project's controller asked for a fresh session of this claim, so this claim starts fresh", nil
+	case SuspendedByArchitect:
+		return "an architect asked for a fresh session of this claim, so this claim starts fresh", nil
+	}
+	return "", fmt.Errorf("the forget names source %q, and no sentence says why a forget of that source left the session", by)
+}
+
+// askedBy refuses a resume, a stop, a forget of the session or a caller's retry
+// (RequestResume.By, RequestStop.By, RequestForgetSession.By, RequestAskedRetry.By) that names a
+// source other than the ones that ask one, the sources whose suspension holds
+// (SuspendSource.Holds): the operator, the controller and an architect. The source decides which
+// suspensions refuse the request (Claim.ResumeRefusal, Claim.StopOrSuspendRefusal) and whether
+// the wake pacing lets its launch through (exemptWake), so a request naming none, or one of the
+// daemon's own, is a wiring error: it is refused before anything is asked, rather than read as
+// the operator's, whom nothing refuses, as suspendRequest refuses a suspension that names no
+// source.
+func askedBy(m *Machine, request string, by SuspendSource) error {
+	if by.Holds() {
+		return nil
+	}
+	return fmt.Errorf("%s %s: the request names source %q, not operator, controller or architect", request, m.claim.Token, by)
 }
 
 // operatorClose is the operator's own close, asked of a claim through the API. TreeClosable is
@@ -2880,10 +3011,10 @@ func deliverNow(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // deliverResuming queues a task on a suspended claim and resumes it for that task. The workflow's
-// task (an outbox delivery, which carries a durable id) resumes a claim unless an operator
-// suspended it: an operator's suspension answers ErrHeldByOperator, queuing
-// nothing, and its start waits for the operator's resume. The operator's own delivery resumes the
-// claim whoever suspended it.
+// task (an outbox delivery, which carries a durable id) resumes a claim unless a suspension that
+// holds is over it: the operator's, the controller's or an architect's answers that holder's wait
+// (RuleHoldError), queuing nothing, and its start waits for a resume to lift it. The operator's
+// own delivery resumes the claim whoever suspended it.
 //
 // Which of the two it is decides the pacing too, and the id is what says which (RequestDeliver.ID,
 // which the API's deliver route leaves empty). The workflow's own task is a wake of the daemon's
@@ -2955,9 +3086,10 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // itself (Claim.PassedOverByRound) takes the claim out of the round's ask and out of its wait: the
 // sweep asks it nothing and the round does not wait for its answer (internal/daemon's roundAsks,
 // dispatch://INFRA-4109 R1). The one exception is a claim a project's pause stopped, while the
-// daemon's podHolds.owes in internal/daemon holds (internal/daemon's roundClock.passesOver). An
-// operator's suspension leaves the claim in both: if no ask has reached it, the sweep asks it once
-// its agent is ready again, and the round waits for the operator whatever its bound
+// daemon's podHolds.owes in internal/daemon holds (internal/daemon's roundClock.passesOver). A
+// suspension that holds (the operator's, the controller's or an architect's, Claim.RuleHolds)
+// leaves the claim in both: if no ask has reached it, the sweep asks it once its agent is ready
+// again, and the round stays open whatever its bound until a resume lifts that suspension
 // (dispatch://INFRA-2981 R5).
 //
 // A round replaces another the moment the daemon opens it, whatever the claim's worker is doing.

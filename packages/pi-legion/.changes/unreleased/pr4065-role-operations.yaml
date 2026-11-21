@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  A tree's architect does the operations of its own work and asks no other session for them. It
+  enqueues a pull request of its tree that no merger merges, once a review approves its head and
+  after it reads the project's merge holds: with the implement App token the secrets broker lends,
+  narrowed to the one repository, it calls GraphQL `enqueuePullRequest` with `expectedHeadOid` on
+  a merge-queue base, and `enablePullRequestAutoMerge` with the same head elsewhere, then reads
+  the pull request's `mergeQueueEntry` or `autoMergeRequest`. It re-runs the failed jobs of its
+  own tree's CI run with the controller's command and rules. The controller holds no enqueue: it
+  writes a request to merge or queue a pull request to the owning tree's architect by a mention.
+  A phase worker makes a GitHub write that its own `gh` cannot make with the same lent token,
+  opens a `dispatch ask` for a deploy that only a person may make, and reports a fault of Legion's
+  own machinery as a finding rather than as a request to change its claim or its session.

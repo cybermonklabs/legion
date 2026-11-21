@@ -317,7 +317,7 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 // taken out is one the close is stopping, and a deployment that sees it every tick is seeing a
 // close that is stuck.
 //
-// The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedOperatorSuspended
+// The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedSuspensionHolds
 // and IdleHoldUnownedDelivery — are recorded for the same reason, and it is the sharpest one
 // here: each names a pod that stands, past the quiet period, with no live claim in it, and such
 // a pod holds 3 CPU and 19 GiB for as long as it stands. A deployment that sees one of the three

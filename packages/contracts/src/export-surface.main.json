@@ -764,6 +764,7 @@
     "LegionCapabilityReportBody": "type",
     "LegionCapabilityRow": "type",
     "LegionChildRequest": "schema:strict",
+    "LegionClaimOperationResponse": "schema:tolerant",
     "LegionClaimRequest": "schema:strict",
     "LegionClaimState": "type",
     "LegionCompactResponse": "schema:tolerant",

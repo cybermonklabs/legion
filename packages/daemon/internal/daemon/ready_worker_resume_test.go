@@ -208,7 +208,7 @@ var comeBacks = map[string]func(*readyWorkerRig){
 		r.t.Helper()
 		ctx := context.Background()
 		operatorSuspend(r.t, r.sup, r.token)
-		if err := r.machine.Handle(ctx, supervise.RequestResume{Claim: r.token}); err != nil {
+		if err := r.machine.Handle(ctx, supervise.RequestResume{Claim: r.token, By: supervise.SuspendedByOperator}); err != nil {
 			r.t.Fatalf("the operator's resume: %v", err)
 		}
 		r.machine.Wait()

@@ -193,7 +193,7 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 		}
 	}
 
-	if err := machine.Handle(ctx, supervise.RequestStop{Claim: token}); err != nil {
+	if err := machine.Handle(ctx, supervise.RequestStop{Claim: token, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("stop %s: %v", token, err)
 	}
 	for range 30 {

@@ -38,7 +38,7 @@ type requestShape struct {
 
 // pluginRequests is every route that decodes a body a plugin sends, with the Go type its handler
 // decodes that body into. The grants route takes the claim form and the controller form in one
-// type, and the controller's two recoveries share one type, so each of those is one row. The
+// type, and the claim door's six operations share one type, so each of those is one row. The
 // register route decodes its body leniently (readRegisterBody) and refuses no member at all,
 // and it is recorded all the same: a field it stops reading is a field an older plugin's
 // registration means something by.
@@ -69,6 +69,11 @@ var pluginRequests = map[string]reflect.Type{
 	"POST /legion/v1/children/rerun":          reflect.TypeFor[ChildRequest](),
 	"POST /legion/v1/project/pause":           reflect.TypeFor[ProjectPauseRequest](),
 	"POST /legion/v1/project/resume":          reflect.TypeFor[ProjectResumeRequest](),
+	"POST /legion/v1/claims/stop":             reflect.TypeFor[ClaimRequest](),
+	"POST /legion/v1/claims/retry":            reflect.TypeFor[ClaimRequest](),
+	"POST /legion/v1/claims/suspend":          reflect.TypeFor[ClaimRequest](),
+	"POST /legion/v1/claims/resume":           reflect.TypeFor[ClaimRequest](),
+	"POST /legion/v1/issues/pod-update":       reflect.TypeFor[PodUpdateRequest](),
 }
 
 // sameBuild is why a route whose body the `legion` command sends needs no record: the command is

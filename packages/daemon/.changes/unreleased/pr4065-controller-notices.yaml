@@ -1,0 +1,27 @@
+kind: Changed
+body: |-
+  The daemon sends the project's controller no notice that its skill does nothing for, and no copy
+  of a notice that the issue's architect already gets. It no longer sends `awaiting-person` or
+  `unslotted`. The controller reads a root that waits on a person, or that left the workflow, with
+  its `legion` tool's `read_state`. It no longer copies to the controller a `held` whose budget ran
+  out, a `session-lost` or `session-forgotten` (copies legion-v22.17.2 added, #4581), or the
+  `worker-died` of a tree's architect whose root is `done`. It copies
+  the `worker-stalled` of a tree's architect only where the stall failed that architect's claim
+  and the runtime did not confirm the stop of the stalled process. A failed claim whose stop the
+  runtime confirmed reaches the controller as its `worker-died` alone. An escalated `held`, the
+  `worker-died` of a tree's architect whose root is not `done`, and `session-store-fault` still
+  reach the controller. A `provider-errors` notice now goes to the issue's architect as well, as a
+  notice that wakes an architect whose pod was released; a run of a child's own architect's claim
+  goes to the architect above that child, and a run of the tree root's architect's claim to the
+  controller alone. An `update-stalled` notice of a round an architect's suspension holds goes to
+  the architect that owns the held claim, and to the controller only where that architect's
+  claim has failed or been retired, where there is none, where the hold is over the tree root's
+  own architect, or where the notice to that architect ends undelivered in a tree that does not
+  linger: its claim ended before the delivery, its session does not advertise the delivery mode,
+  the listener's NATS grant denies the forward, or the notice was queued again the most times a
+  notice is. Every other `update-stalled` still reaches the controller.
+  A store migration deletes the queued controller notices of the two
+  kinds that no release writes now. Before you roll back to an
+  earlier release, stop the daemon and run the steps of `docs/kubernetes.md`, "Rolling back the
+  release whose controller and architects hold claims and whose daemon tells a held role of a
+  merge hold".

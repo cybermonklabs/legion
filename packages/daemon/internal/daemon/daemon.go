@@ -854,9 +854,11 @@ type plan struct {
 	// ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
 	// missing or not checked out (workflowRuntime.ensureWorkspace); nil without a workflow.
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
-	// owner is the architect that owns a claim on an issue that is not its tree's root, read from
-	// the claims the store records at each launch (workflowRuntime.owningArchitect), which the
-	// launch's addressing names; nil without a workflow.
+	// owner is the architect that owns a claim, read from the claims the store records now
+	// (workflowRuntime.owningArchitect): at each launch for a claim on an issue that is not its
+	// tree's root, which the launch's addressing names, and for the claim an architect's hold is
+	// over in an update round held past its bound, on the root or not, where an answer that is
+	// the claim itself names no architect above it (architectHears); nil without a workflow.
 	owner func(ctx context.Context, project string, c supervise.Claim) (claim.Token, error)
 	// repositories is the repository state the workflow fills, empty until its preparations read
 	// GitHub: the rename rule every gh bundle resolves a configured pair against
@@ -1497,15 +1499,33 @@ type supervision struct {
 	reports      map[claim.Token]capabilities.Report
 	// podUpdateMu guards podUpdateOpenedAt and podUpdateOpened, what the update-round sweep keeps
 	// between ticks to pace its openings (reconcilePodUpdates): when this daemon last opened a pod
-	// round, and the rounds it has opened whose claims have not recorded one yet, by issue. The two
-	// pace the sweep's openings under `pod_update_rounds_per_minute` and
-	// `pod_update_max_open_rounds`; nothing of either is in the store, because neither decides a
-	// round, and a daemon that has just booted opens its first round at its first sweep. The sweep
-	// is one goroutine, and the mutex is what makes that a fact of this code rather than of its
-	// caller.
+	// round, and the rounds it has opened whose claims have not recorded one yet, by issue, each
+	// with the reasons it posted. The two pace the sweep's openings, and the controller's
+	// (requestPodUpdate), under `pod_update_rounds_per_minute` and `pod_update_max_open_rounds`;
+	// nothing of either is in the store, because neither decides a round, and a daemon that has
+	// just booted opens its first round at its first sweep. The sweep runs on one goroutine and the
+	// controller's request on an API one, and the mutex is what keeps their reads whole.
 	podUpdateMu       sync.Mutex
 	podUpdateOpenedAt time.Time
-	podUpdateOpened   map[string]string
+	podUpdateOpened   map[string]podUpdateOpening
+	// podUpdateWalk is the turn the sweep's walk over the issues (walkPodUpdates) and the
+	// controller's request for one issue's round (requestPodUpdate) each hold, from its read of the
+	// project's limits to the last opening it makes on them. The request comes on an API
+	// goroutine, and an opening weighed against limits another opening has moved since they were
+	// read would take the project over them: two openings each reading the one slot left. The
+	// sweep's replacements run after the walk, outside it, since a replacement waits its pod out.
+	// It is a one-slot semaphore rather than a mutex so the request waits for it only as long as
+	// its own context lives (postRequestedPodUpdate), as stream.Conn's negotiation is; the walk
+	// waits for it as long as it takes. podUpdateWalkOnce makes it at its first use
+	// (podUpdateWalkTurn), so a supervision a test builds by hand needs none of its own.
+	podUpdateWalkOnce sync.Once
+	podUpdateWalk     chan struct{}
+	// podRoundRecordBound is how long the controller's request for a pod's round waits for a claim
+	// to record the round it posted (awaitPodRoundRecorded), and at most how long it waits for the
+	// sweep's walk to give it the turn (postRequestedPodUpdate), both read through roundRecordBound;
+	// zero is defaultPodRoundRecordBound, the value the daemon runs. A test sets a shorter one so it
+	// need not wait out the default.
+	podRoundRecordBound time.Duration
 	// podUpdateRoundsMu guards podUpdateRounds, what the last sweep decided under those two limits
 	// as the operator's claim listing serves it (api.PodUpdateRounds, podUpdateRoundsView): the
 	// issues that held an open round and the issues each limit held back. It is the sweep's own
@@ -1566,10 +1586,11 @@ type supervision struct {
 	// enqueue (workflowRuntime.enqueueOutbox); nil in a deployment with no workflow, which has no
 	// outbox to write to and no Dispatch issue to write on. It is the whole of the record the
 	// update-round sweep and the stall backstop need (reconcilePodUpdates, tellStallBackstopped):
-	// the notices they publish, the asks and the message written on the issue are all outbox
-	// rows, and threading the workflow engine into supervision to post them would tie every
-	// claim decision to the workflow. Rows that must land together go in one call, since a stall
-	// told the controller but not the issue would be told again at every tick
+	// the late-round notices they publish, to the controller or to the architect that owns a
+	// claim an architect's suspension holds, the asks and the message written on the issue are
+	// all outbox rows, and threading the workflow engine into supervision to post them would tie
+	// every claim decision to the workflow. Rows that must land together go in one call, since a
+	// stall told one reader but not another would be told again at every tick
 	// (tellUpdateStalled). It answers whether it wrote them: it writes none of a claim of another
 	// project's issue, whose rows only that project's daemon runs, and each caller says so rather
 	// than report a row it did not write. The workflow sets it where it attaches, before
@@ -2825,6 +2846,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Supervisor:         s.supervisor,
 		AwaitStream:        s.awaitStream,
 		PodUpdateRounds:    s.podUpdateRoundsView,
+		RequestPodUpdate:   s.requestPodUpdate,
 		BootTokens:         s.tokens,
 		Project:            p.project,
 		DispatchProject:    cfg.Project,

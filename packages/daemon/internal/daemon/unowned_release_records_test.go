@@ -138,7 +138,7 @@ func (r *idleRig) savedBundleBytes(t *testing.T) (int, bool) {
 // suspended by the operator, holding no process, and backdated with the rest of the pod. It is
 // the one suspension no daemon rule undoes (supervise.Claim.RuleMayResume), and the operator's
 // resume brings that role back into this very pod, so the rule keeps the pod for it
-// (workflow.IdleHoldUnownedOperatorSuspended).
+// (workflow.IdleHoldUnownedSuspensionHolds).
 func (r *idleRig) suspendedByOperator(t *testing.T) {
 	t.Helper()
 	if _, err := r.pool.Exec(context.Background(), `update claims set state = $2, suspended_by = $3,
@@ -304,7 +304,7 @@ func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
 			},
 			{
 				name: "an operator's own suspension holds a claim of the pod",
-				hold: workflow.IdleHoldUnownedOperatorSuspended, recorded: true,
+				hold: workflow.IdleHoldUnownedSuspensionHolds, recorded: true,
 				seed: func(t *testing.T, rig *idleRig) { rig.suspendedByOperator(t) },
 			},
 			{

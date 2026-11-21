@@ -1090,20 +1090,26 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // 20261114031356, the role-holders publication's 20261116165926 and dispatch://INFRA-4374's
 // 20261119003157 (conflict_confirm and merge_forward) do: the case of a database main
 // migrated applies a version left out of the list before the list's own rewrites of that check,
-// which do not name the later kind, so the row seeded of that kind fails the upgrade. So does one
+// which do not name the later kind, so the row seeded of that kind fails the upgrade. The step
+// record's 20261117000528 and this change's 20261119211852 (merge_holds_changed) are in it for
+// the same reason. A migration belongs in it too
 // that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
 // claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
 // column. Any other version left out makes the cases below weaker, never red, which is why the
-// comment says where the list comes from.
+// comment says where the list comes from. The project pause's 20261115194357 is in it as well,
+// though it rewrites no kind list: a database migrated before the pause takes it in the upgrade,
+// over a row of every kind the schema admits, and its held_by_pause column on the outbox must
+// take them all.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
 	20261029120900: true, 20261029121000: true, 20261029121100: true, 20261029121200: true,
 	20261102003600: true, 20261105081500: true, 20261105183200: true, 20261107095842: true,
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
-	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
+	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261115060739: true,
+	20261115083448: true, 20261115121838: true, 20261115194357: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
-	20261117064152: true, 20261119003157: true,
+	20261117064152: true, 20261119003157: true, 20261119211852: true,
 }
 
 const idleRelease = 20261101222956

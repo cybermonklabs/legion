@@ -146,7 +146,7 @@ func freshSession(ev Event, c Claim, limit int) (bool, string) {
 	switch ev := ev.(type) {
 	case RequestRetry:
 		asked = ev.FreshSession
-	case RequestOperatorRetry:
+	case RequestAskedRetry:
 		asked = ev.FreshSession
 	}
 	switch {

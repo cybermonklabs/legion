@@ -288,7 +288,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 			t.Fatalf("the operator-held implementer while its start waits = %s in tree %s, resumed %d times; want suspended, re-pointed to %s and not resumed",
 				got.State, got.Tree, len(launchesOf("Resume", implementer)), childKey)
 		}
-		if err := machine.Handle(ctx, supervise.RequestResume{Claim: implementer}); err != nil {
+		if err := machine.Handle(ctx, supervise.RequestResume{Claim: implementer, By: supervise.SuspendedByOperator}); err != nil {
 			t.Fatalf("the operator's resume: %v", err)
 		}
 	}

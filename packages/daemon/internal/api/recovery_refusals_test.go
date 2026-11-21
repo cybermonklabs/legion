@@ -583,7 +583,7 @@ func processReads(h *harness) int {
 
 // recoveryDoor is one of the four doors the two recoveries have, with the words its own
 // operation writes into the refusals both of its doors give (freshSessionDoors, compactDoors,
-// controllerOp). The rows whose answer is the same at every door run through all four.
+// claimOp). The rows whose answer is the same at every door run through all four.
 type recoveryDoor struct {
 	name        string
 	ask         func(t *testing.T, h *harness, issue string, role claim.Role) *httptest.ResponseRecorder
@@ -1155,7 +1155,7 @@ func routeServer(h *harness) *server {
 func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *testing.T) {
 	for _, door := range []struct {
 		name    string
-		op      controllerOp
+		op      claimOp
 		reaches string
 	}{
 		{"the fresh session", freshSessionOp, wantFreshSessionReaches},
@@ -1211,7 +1211,8 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 		m, _ := h.supervisor.Machine(token)
 		recorder := httptest.NewRecorder()
 
-		suspended := routeServer(h).suspendForFreshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token)
+		suspended := routeServer(h).suspendForFreshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token,
+			supervise.SuspendedByOperator)
 
 		if suspended {
 			t.Fatal("the suspension landed, want it refused for the parked relaunch")
@@ -1275,7 +1276,8 @@ func TestAFreshSessionsSuspensionRefusedAsWorkingIsAnsweredByASecondRead(t *test
 			before := h.stored(token)
 			recorder := httptest.NewRecorder()
 
-			suspended := routeServer(h).suspendForFreshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token)
+			suspended := routeServer(h).suspendForFreshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token,
+				supervise.SuspendedByOperator)
 
 			if suspended {
 				t.Fatal("the suspension landed, want it refused for the claim in a turn")
@@ -1306,7 +1308,7 @@ func TestAFreshSessionsSuspensionRefusedAsWorkingIsAnsweredByASecondRead(t *test
 func TestARecoveryStepRefusesAWorkingClaimThatRecordsNoProcessAsUnsettled(t *testing.T) {
 	for _, door := range []struct {
 		name    string
-		op      controllerOp
+		op      claimOp
 		reaches string
 	}{
 		{"the fresh session", freshSessionOp, wantFreshSessionReaches},
@@ -1360,10 +1362,10 @@ func TestARecoveryRefusedAsWorkingWhoseLaterViewIsNotWorkingAnswersThatTheClaimM
 		refuse  func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView)
 	}{
 		{"the fresh session", wantFreshSessionReaches, func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView) {
-			s.refuseSuspensionRefusedAsWorking(w, r, m, token, view)
+			s.refuseSuspensionRefusedAsWorking(w, r, m, token, view, supervise.SuspendedByOperator)
 		}},
 		{"the compaction", wantCompactionReaches, func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView) {
-			s.refuseState(w, r, m, token, supervise.StateWorking, view)
+			s.refuseState(w, r, m, token, supervise.StateWorking, view, supervise.SuspendedByOperator)
 		}},
 	} {
 		t.Run(door.name, func(t *testing.T) {
@@ -1581,7 +1583,7 @@ func heldSuspensionCases() []heldSuspensionCase {
 // role's — the fresh session for a workflow role, and the daemon's controller keeper for the
 // project's own controller — and the asking operation is what reaches a live one, in the
 // states that operation's own set holds (api's refuseHeldSuspension, startsAgainName,
-// controllerOp.liveStates).
+// claimOp.liveStates).
 //
 // The second sentence is of the claims nothing is held over, because the claim in hand is
 // held: a hold over a ready agent is reached by neither door while it stands, and a sentence
@@ -1604,30 +1606,37 @@ func heldSuspensionRefusal(token claim.Token, startsAgain, operation, liveStates
 // operation reaches instead, of the claims nothing is held over, and both recoveries say so
 // of every row (api's refuseHeldSuspension). The code each row takes is the claim's own, so
 // the answer a state was refused with before either door read the hold is the answer it is
-// refused with now.
+// refused with now. The one exception is the hold's own: the controller's fresh session of a
+// claim the operator's suspension is held over is refused that hold first, while the
+// controller's compaction is let past it (compactOp.controllerPassesHold) and named the
+// operator's resume as what starts the claim rather than the fresh session the door refuses it
+// (wantHeldRefusal).
 func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing.T) {
 	for _, held := range heldSuspensionCases() {
 		for _, door := range compactDoors() {
 			t.Run(held.name+": "+door.name, func(t *testing.T) {
 				h := compactHarness(t, nil)
 				token := held.start(t, h)
+				m, _ := h.supervisor.Machine(token)
+				heldBy := m.View().SuspensionHeldBy
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-				refusedSaying(t, recorder, http.StatusConflict, held.code,
-					heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive))
+				door.wantHeldRefusal(t, recorder, token, heldBy, held.code)
 			})
 		}
 		for _, door := range freshSessionDoors() {
 			t.Run(held.name+": "+door.name, func(t *testing.T) {
 				h := compactHarness(t, nil)
 				token := held.start(t, h)
+				m, _ := h.supervisor.Machine(token)
+				heldBy := m.View().SuspensionHeldBy
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
-				refusedSaying(t, recorder, http.StatusConflict, held.code,
+				door.wantHeldRefusal(t, recorder, token, heldBy, held.code,
 					heldSuspensionRefusal(token, freshSessionName, "a fresh session", wantFreshSessionLive))
-				if m, _ := h.supervisor.Machine(token); !m.View().SuspensionHeld {
+				if !m.View().SuspensionHeld {
 					t.Errorf("the refused claim holds no suspension, want the one the refusal left held")
 				}
 			})

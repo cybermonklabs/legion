@@ -108,21 +108,29 @@ func TestTheFreshSessionsFirstTaskNamesTheSessionItReplacedAndWhatOutlivedIt(t *
 }
 
 // Whoever abandons a session, the claim records which one and why in that one's own words: an
-// operator's `legion claims forget-session`, and an operator's retry in a new session, which fails
-// nothing and so has no failure to name.
+// operator's forget, from `legion claims forget-session` or its retry --fresh-session, the forget
+// of the controller's or an architect's fresh session, which no operator asked for, and an
+// operator's retry in a new session, which fails nothing and so has no failure to name.
+//
+// The negative control is forgottenBy answering the operator's sentence for every asker: the
+// controller's and the architect's rows then record that an operator cleared the session.
 func TestEveryAbandonmentIsRecordedWithItsOwnReason(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		event Event
 		why   string
 	}{
-		{"the operator forgetting the session", RequestForgetSession{Claim: testToken, Session: session}, "forget-session"},
+		{"the operator forgetting the session", RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByOperator}, "forget-session"},
+		{"the controller's fresh session", RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByController},
+			"the project's controller asked for a fresh session of this claim"},
+		{"an architect's fresh session", RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByArchitect},
+			"an architect asked for a fresh session of this claim"},
 		{"a retry asking for a new session", RequestRetry{Claim: testToken, FreshSession: true}, "the retry asked for a new session"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateIdle)
-			h.must(RequestStop{Claim: h.token})
+			h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 			h.wantState(StateRetired)
 
 			h.must(tc.event)

@@ -239,7 +239,7 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 		"worker":            {spec: workerSpec(t)},
 		"claude-worker":     {spec: claudeWorkerSpec(t)},
 		"resume":            {spec: resume},
-		"controller":        {spec: controllerSpec(t)},
+		"controller":        {spec: controllerSpec(t), controllerAccount: goldenControllerAccount},
 		"controller-resume": {spec: controllerResume},
 		"root-enrolled": {spec: rootSpec(t), agentSecrets: &AgentSecrets{
 			URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour,
@@ -255,21 +255,29 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 	}
 }
 
+// goldenControllerAccount is the controller golden's runtime.kubernetes.pod.controller_service_account.
+const goldenControllerAccount = "legion-controller"
+
 // manifestCase is one Sandbox the goldens pin: its launch's spec, and what the case sets on the
 // runtime beside goldenOptions — agentSecrets, the enrollment, for root-enrolled and
-// root-exchange-identity alone, and sandbox, the sandbox block, for root-microvm and
-// root-microvm-kept alone. The tests that build every case's manifest on one shared runtime apply
-// each case to it first (apply), so every other case runs unenrolled and in gVisor.
+// root-exchange-identity alone, sandbox, the sandbox block, for root-microvm and root-microvm-kept
+// alone, and controllerAccount, the runtime's runtime.kubernetes.pod.controller_service_account,
+// for controller alone. The tests that build every case's manifest on one shared runtime apply each
+// case to it first (apply), so every other case runs unenrolled and in gVisor, and
+// controller-resume keeps the pods' own service_account (none in these settings) where controller's
+// golden pins the account its pod runs as when the key is set.
 type manifestCase struct {
-	spec         runtime.SpawnSpec
-	agentSecrets *AgentSecrets
-	sandbox      SandboxConfig
+	spec              runtime.SpawnSpec
+	agentSecrets      *AgentSecrets
+	sandbox           SandboxConfig
+	controllerAccount string
 }
 
 // apply sets on r what the case configures beside goldenOptions, and the pod shapes that sandbox
 // block gives r, which configure encodes once from the block it is built with (podShapes).
 func (c manifestCase) apply(r *Runtime) {
 	r.agentSecrets, r.sandboxConfig = c.agentSecrets, c.sandbox
+	r.pod.ControllerServiceAccount = c.controllerAccount
 	r.podShapes = podShapes(r)
 }
 
@@ -1944,6 +1952,49 @@ func TestTheOperatorsPodReachesEveryPodLegionRuns(t *testing.T) {
 	}
 }
 
+// The controller's pod runs as runtime.kubernetes.pod.controller_service_account where the
+// operator names one, fresh and resuming alike, and as pod.service_account where not, so a
+// deployment that names no controller account runs its controller exactly as before. Every other
+// pod Legion runs — an issue pod, whichever role's launch builds it, the image probe's and a
+// repository cache's — keeps pod.service_account whatever the controller's key says: the key moves
+// the controller alone.
+func TestTheControllersPodAloneRunsAsTheControllersServiceAccount(t *testing.T) {
+	resume := controllerSpec(t)
+	resume.Generation, resume.BootToken, resume.ResumeSessionFile = 2, "boot-g2", controllerSession
+	for name, tc := range map[string]struct{ pods, controller, wantController string }{
+		"both named":                              {"operator-worker", "legion-controller", "legion-controller"},
+		"the controller's alone named":            {"", "legion-controller", "legion-controller"},
+		"the pods' alone named":                   {"operator-worker", "", "operator-worker"},
+		"neither named, every pod on the default": {"", "", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := goldenOptions()
+			opts.Pod.ServiceAccount, opts.Pod.ControllerServiceAccount = tc.pods, tc.controller
+			r, err := configure(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for pod, spec := range map[string]runtime.SpawnSpec{"controller": controllerSpec(t), "resuming controller": resume} {
+				if got := podOf(t, r, spec).ServiceAccountName; got != tc.wantController {
+					t.Errorf("the %s's pod runs as %q, want %q", pod, got, tc.wantController)
+				}
+			}
+			others := map[string]corev1.PodSpec{
+				"root":             podOf(t, r, rootSpec(t)),
+				"worker":           podOf(t, r, workerSpec(t)),
+				"implementer":      podOf(t, r, childSpec(t)),
+				"image probe":      r.probeManifest(probeSandboxName, ImageProbe{Contract: 5}, time.Time{}).Spec.PodTemplate.Spec,
+				"repository cache": r.cachePodTemplate(CacheSandboxName(testProject, cacheRepo), cacheRepo).Spec,
+			}
+			for pod, spec := range others {
+				if spec.ServiceAccountName != tc.pods {
+					t.Errorf("the %s pod runs as %q, want pod.service_account %q", pod, spec.ServiceAccountName, tc.pods)
+				}
+			}
+		})
+	}
+}
+
 // The providers Secret — the TypeScript runtime's legion-<project token>-providers — reaches every
 // pod Legion runs, a worker's and the image probe's alike, as exactly its configured keys, read-only
 // at ProvidersDir in the agent's container alone: each provider key as a file named for the variable
@@ -2227,6 +2278,11 @@ func TestEveryLegionPodAsksNothingOfItsPlacementBeyondThePool(t *testing.T) {
 			expected := want
 			if tc.spec.Role == claim.RoleController {
 				expected = slices.DeleteFunc(slices.Clone(want), func(key string) bool { return key == "initContainers" })
+				if tc.controllerAccount != "" {
+					// The case's controller_service_account names the controller pod's account.
+					expected = append(expected, "serviceAccountName")
+					slices.Sort(expected)
+				}
 			}
 			if got := slices.Sorted(maps.Keys(pod)); !slices.Equal(got, expected) {
 				t.Errorf("the pod spec sent carries %v, want exactly %v", got, expected)
@@ -2476,8 +2532,9 @@ func TestAGVisorProjectRendersTodaysIssuePod(t *testing.T) {
 					continue
 				}
 				t.Run(name, func(t *testing.T) {
-					// The case's enrollment alone: its sandbox, gVisor's, is the block's here.
-					r.agentSecrets = tc.agentSecrets
+					// The case's enrollment and controller account alone: its sandbox, gVisor's, is
+					// the block's here.
+					r.agentSecrets, r.pod.ControllerServiceAccount = tc.agentSecrets, tc.controllerAccount
 					checkGolden(t, name, manifestOf(t, r, tc.spec))
 					template := r.podTemplate(launchOf(t, r, tc.spec))
 					if got := renderedSandbox(t, template); got != SandboxGVisor {
@@ -2792,6 +2849,8 @@ func TestOnlyAMicroVMPodKeepsItsVolume(t *testing.T) {
 			if len(tc.block.CanaryIssues) == 0 {
 				checkGolden(t, "root", manifestOf(t, r, rootSpec(t)))
 			}
+			// The controller golden's controller_service_account, as its manifest case sets it.
+			r.pod.ControllerServiceAccount = goldenControllerAccount
 			checkGolden(t, "controller", manifestOf(t, r, controllerSpec(t)))
 			if decoded, stored := keptReadings(t, r.sandboxManifest(launchOf(t, r, controllerSpec(t)))); decoded || stored {
 				t.Errorf("the controller's Sandbox reads as kept %v decoded and %v stored, want neither", decoded, stored)
@@ -2920,6 +2979,8 @@ func TestOnlyAMicroVMPodCarriesTheSandboxLabel(t *testing.T) {
 // sandbox block renders, byte for byte.
 func TestTheControllerPodStaysGVisorInAMicroVMProject(t *testing.T) {
 	r := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()})
+	// The controller golden's controller_service_account, as its manifest case sets it.
+	r.pod.ControllerServiceAccount = goldenControllerAccount
 	l := launchOf(t, r, controllerSpec(t))
 	template := r.podTemplate(l)
 	if got := renderedSandbox(t, template); got != SandboxGVisor {

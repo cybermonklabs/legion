@@ -45,13 +45,17 @@ decides whether to admit it or leave it for you, and parks it only when a person
 its work is done, folded into another issue or no longer needed.
 
 The controller never takes an issue on its own, whatever slots are free: Legion works what a person
-hands it, and the clear defects its own agents report. You can also ask the controller to hand an
-issue over for you, in a message or in Slack. An agent that finds a defect outside its own issue
-whose fix needs no choice of yours fixes it in its own tree's pull request when that tree touches
-or depends on the code. Otherwise the controller gives it to the tree that owns the code, and files it labelled
-`legion` only when no tree does. When the problem
-needs a decision, the agent asks you in a Dispatch ask whether to file one, rather than filing it.
-Answer with `File it for Legion` and the controller files it labelled `legion`.
+hands it, and the clear defects its own agents report that no tree owns. You can also ask the
+controller to hand an issue over for you, in a message or in Slack. An agent that finds a defect
+outside its own issue whose fix needs no choice of yours fixes it itself, in its own pull request
+or a separate pull request of its tree, in whichever repository the defect is. It writes the
+defect to the architect of the tree that owns the code, as a Dispatch comment that mentions that
+architect's role, only when its fix would collide with that tree's open pull request or its token
+does not reach the repository. The controller files the defect labelled `legion` only when no tree
+owns the code, and it passes no defect on to a tree. When the problem needs a decision, a deploy
+window or work much larger than the agent's own, the agent asks you in a Dispatch ask whether to
+file one, rather than filing it. Answer with `File it for Legion` and the controller files it
+labelled `legion`.
 
 Do not label child issues: a child runs under its tree once the root is admitted. The children do
 the work first: an issue starts no phase of its own while Dispatch shows an open child under it,

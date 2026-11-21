@@ -273,17 +273,16 @@ func (s specs) ownerOf(ctx context.Context, c supervise.Claim) (claim.Token, err
 	return s.owner(ctx, s.project, c)
 }
 
-// owningArchitect is specs.owner: the architect that owns c, a claim on an issue that is not its
-// tree's root, as the store records the architect claims of the issue's tree now
-// (record.ReadOwnerWalk). It is where a worker-died about c's role goes, so the architect the
-// daemon tells when this claim fails is the one it answers to. For a phase worker the walk starts
-// at its issue, so it is the issue's own architect while that claim holds its role, else the
-// nearest one above it that does, else the tree root's; for the issue's own architect it starts
-// at the issue's parent (record.NoticeStartsAtParent), which is the architect above it. An issue
-// the workflow does not record, such as an operator's claim, has no tree to walk, so its claim is
-// its tree's architect's. project is the claim project token every token of the launch is spelled
-// in. It reads in a read-only transaction of its own, as the supervisor's predicates read a
-// record.
+// owningArchitect is specs.owner: the architect that owns c, as the store records the architect
+// claims of the issue's tree now (record.ReadOwnerWalk). It is where a worker-died about c's role
+// goes, so the architect the daemon tells when this claim fails is the one it answers to. For a
+// phase worker the walk starts at its issue, so it is the issue's own architect while that claim
+// holds its role, else the nearest one above it that does, else the tree root's; for the issue's
+// own architect it starts at the issue's parent (record.NoticeStartsAtParent), which is the
+// architect above it. An issue the workflow does not record, such as an operator's claim, has no
+// tree to walk, so its claim is its tree's architect's. project is the claim project token every
+// token of the launch is spelled in. It reads in a read-only transaction of its own, as the
+// supervisor's predicates read a record.
 func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c supervise.Claim) (claim.Token, error) {
 	owner, err := claim.NewToken(project, c.Tree, claim.RoleArchitect)
 	if err != nil {

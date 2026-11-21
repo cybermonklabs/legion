@@ -120,7 +120,6 @@ var waitingLineBandTexts = []string{
 	"packages/contracts/src/legion-api.ts",
 	"skills/legion-controller/references/admission.md",
 	"docs/site/src/content/docs/legion/concepts.md",
-	"skills/legion-controller/references/wakes.md",
 }
 
 // quotedText is one section of a committed copy: the repository-relative path it was taken from

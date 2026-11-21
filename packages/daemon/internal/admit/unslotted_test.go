@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -22,10 +21,12 @@ import (
 // A root waiting for its slot that a person or an outside session moves to a status only a running
 // tree has (in_progress, testing, needs_review, retro) leaves the line, and no slot would ever reach
 // it again. It leaves the workflow as a parked root does: its phase is done and its tree
-// lingers, the controller is told, and Legion starts nothing for it, so a slot that frees later goes
-// elsewhere and never starts a second copy of someone else's work. Set back to todo with the label,
-// it is queued again and takes the next slot. A root a hand-over carried into a phase past admitted
-// waits in the line the same way, and leaves it the same way.
+// lingers, and Legion starts nothing for it, so a slot that frees later goes elsewhere and never
+// starts a second copy of someone else's work. The controller is told nothing: its skill
+// re-admits nothing for such a root, and it reads the root from the state, at phase done beside a
+// status only a running tree has (#4065). Set back to todo with the label,
+// it is queued again and takes the next slot. A root a hand-over carried into a phase past
+// admitted waits in the line the same way, and leaves it the same way.
 func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {
 	for _, tc := range []struct {
 		name, actor, status string
@@ -58,13 +59,8 @@ func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {
 			}
 			assertWaiting(t, pool, nil)
 			assertSlots(t, pool, []record.Slot{{Issue: "LEGION-1", Index: 0, AdmittedAt: fixedNow}})
-			notices := controllerNotices(t, pool)
-			if len(notices) != 1 || notices[0].issue != "LEGION-5" {
-				t.Fatalf("controller notices = %#v, want one on LEGION-5", notices)
-			}
-			told := notices[0].payload.(record.ControllerNotice)
-			if told.Kind != record.UnslottedNotice || !strings.Contains(told.Reason, tc.status) {
-				t.Fatalf("controller notice = %#v, want kind %s naming the status %s", told, record.UnslottedNotice, tc.status)
+			if notices := controllerNotices(t, pool); len(notices) != 0 {
+				t.Fatalf("controller notices = %#v, want none: the root's phase done beside its %s is what the controller reads", notices, tc.status)
 			}
 
 			// The running tree finishes: its slot frees, and the released root does not take it.
@@ -89,13 +85,12 @@ func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {
 
 // A root recorded in the workflow at a status only a running tree has, whose tree nothing will
 // open again — the state dispatch://INFRA-129 reported, which an earlier release left — is
-// released at the boot read, even with a slot free: the controller is told, and nothing starts
-// for it. Its tree holds no lifecycle, which is what says a tree runs now: a root of a tree that
-// does run can hold no slot while it waits on another issue (it gave its slot back,
-// releaseSlotsForWaits), and the net must leave every one of those alone. A running root, one
-// taken out of the line by
-// its label (a pause the label ends), and another project's root in the same store are left as
-// they are.
+// released at the boot read, even with a slot free: nothing starts for it, and the controller is
+// told nothing, since it reads the released root from the state. Its tree holds no lifecycle,
+// which is what says a tree runs now: a root of a tree that does run can hold no slot while it
+// waits on another issue (it gave its slot back, releaseSlotsForWaits), and the net must leave
+// every one of those alone. A running root, one taken out of the line by its label (a pause the
+// label ends), and another project's root in the same store are left as they are.
 func TestTheBootReadReleasesARootThatHeldNoSlotAndWaitedForNone(t *testing.T) {
 	for _, status := range []string{"in_progress", "testing", "needs_review", "retro"} {
 		t.Run(status, func(t *testing.T) {
@@ -132,9 +127,8 @@ func TestTheBootReadReleasesARootThatHeldNoSlotAndWaitedForNone(t *testing.T) {
 			if started := architectStarts(t, pool, "LEGION-81"); started != 0 {
 				t.Fatalf("architect starts for LEGION-81 = %d, want none", started)
 			}
-			notices := controllerNotices(t, pool)
-			if len(notices) != 1 || notices[0].issue != "LEGION-81" || notices[0].payload.(record.ControllerNotice).Kind != record.UnslottedNotice {
-				t.Fatalf("controller notices = %#v, want one %s notice on LEGION-81", notices, record.UnslottedNotice)
+			if notices := controllerNotices(t, pool); len(notices) != 0 {
+				t.Fatalf("controller notices = %#v, want none: the released LEGION-81 is read from the state", notices)
 			}
 		})
 	}
@@ -174,9 +168,8 @@ func TestReleaseAppliesAHeldRunningStatusBeforeUnslottedRepair(t *testing.T) {
 	if started := architectStarts(t, pool, waiting.Key); started != 0 {
 		t.Fatalf("architect starts after held release = %d, want none", started)
 	}
-	notices := controllerNotices(t, pool)
-	if len(notices) != 1 || notices[0].issue != waiting.Key || notices[0].payload.(record.ControllerNotice).Kind != record.UnslottedNotice {
-		t.Fatalf("controller notices after release = %#v, want one unslotted notice", notices)
+	if notices := controllerNotices(t, pool); len(notices) != 0 {
+		t.Fatalf("controller notices after release = %#v, want none: the released root is read from the state", notices)
 	}
 }
 

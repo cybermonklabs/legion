@@ -13,7 +13,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 2. Before the turn's first `jj new`, list `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only` and `jj -R "$LEGION_WORKSPACE" diff --from "legion/<issue>@origin" --to @ --name-only`. A path you did not write in either list: read `skill://legion-worker/references/foreign-path.md`.
 3. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 4. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work: the working copy is the next role's first commit.
-5. Every role writes the one workspace, so a file can change under your check. Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) where you can, and run `git diff --quiet <head> -- <files the check reads>` before you record a result. A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after. A run whose output you did not capture can be neither confirmed nor cleared.
+5. Every role writes the one workspace, so a file can change under your check. Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) where you can, and run `git diff --quiet <head> -- <files the check reads>` before you record a result. A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged before and after. A run whose output you did not capture can be neither confirmed nor cleared.
 6. A codebase-wide rename or deletion leaves historical records (transcripts, test snapshots, changelog entries) unchanged.
 
 ## Stop rules
@@ -21,11 +21,11 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - A refused completion is information, not a retry loop. Quote the answer verbatim to the architect.
   - `HANDOFF_STALE_GENERATION` or `HANDOFF_NO_RUN`: push nothing more and end the turn without completing. When the task then arrives with its work and handoff done, call `handoff_complete` again in its turn; never redo the work.
   - `HANDOFF_STALE_ENTRY`: end the turn without completing; the daemon sends the new entry's task by itself. Do what it asks at the head it names, with a handoff of its own.
-  - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or your completion names no head; nothing was recorded. Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head with a handoff that names it.
+  - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or it names no head; nothing was recorded. Read the merge, then complete again at the new head with a handoff that names it.
   - `HANDOFF_NOT_CURRENT_PHASE`: report it; never complete again. `HANDOFF_ALREADY_RECORDED`: the first answer stands.
-- These waits stand rather than proceed, each ending the turn with a `WAITING` line naming what it waits on:
+- Wait in these cases, and end the turn with a `WAITING` line that names what you wait on:
   - a planner on a decision the plan itself needs, because a plan completed around an open decision carries that gap into every later phase;
-  - a reviewer on a half of the round that has no review, on a required check with no run at the head, or on the architect's rewrite of a check whose `run` is a whole test suite (`skill://legion-worker/references/merge-gate.md`);
+  - a reviewer on a half of the round that has no review, on a required check with no run at the head, or on the architect's rewrite of a check whose `run` is a whole test suite;
   - retro on the architect's answer to a defect it reported;
   - a pushing role whose second push still did not carry the pull request onto its commit.
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
@@ -35,24 +35,24 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 ## Commits and pushes
 
-- Before a push, run the trailer check in `skill://legion-worker/references/default-branch-check.md`. Then, with the `$default` it set, read your branch's full commit messages: `jj -R "$LEGION_WORKSPACE" log -r "${default}@origin..@" -T 'description ++ "\n"'`. Earlier phases' commits in it are expected; `description.first_line()` shows no trailer.
-- Write no trailer yourself. The pane's jj adds `Omp-Session:` and `Legion-Role:`, and `Dispatch: <KEY>` in a repository the deployment names; the git wrapper adds the first two to a `git commit`. A merge, revert, cherry-pick or rebase that git makes gets none. Cure a commit that lacks a line by describing it again in the pane's shell; where that adds no issue line and `LEGION_ISSUE_TRAILER` is set, add the trailer line `Dispatch: $LEGION_ISSUE_TRAILER` yourself.
+- Before a push, run the trailer check in `skill://legion-worker/references/default-branch-check.md`. Then, with the `$default` it set, read your branch's full commit messages: `jj -R "$LEGION_WORKSPACE" log -r "${default}@origin..@" -T 'description ++ "\n"'`. Earlier phases' commits in it are expected.
+- Write no trailer yourself. The pane's jj adds `Omp-Session:` and `Legion-Role:`, and `Dispatch: <KEY>` in a repository the deployment names; the git wrapper adds the first two to a `git commit`. A merge, revert, cherry-pick or rebase that git makes gets none. Cure a commit that lacks a line by describing it again in the pane's shell; where that adds no issue line and `LEGION_ISSUE_TRAILER` is set, add the line `Dispatch: $LEGION_ISSUE_TRAILER` yourself.
 - A repository you clone under `$LEGION_WORKSPACE` is stamped with this issue's key: clone one you will push elsewhere outside it.
 - A planner whose issue moved back from implementing starts on the remote tip: `jj -R "$LEGION_WORKSPACE" new legion/<KEY>@origin`.
 
 ## Pull request and merge gate
 
 - The implementer opens the pull request with the line `Dispatch: <KEY>` in its body. Later phases push to that branch and edit that pull request.
-- No deferrals. A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request. So is a wording nit or any clear fix in a file it touches: a later round costs a CI pass and a review. `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
+- No deferrals. A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request. So is a wording nit or any clear fix in a file it touches. `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 - The merge gate, in order: the tester's evidence green → the reviewer's approval of the head → the architect's acceptance → retro, which commits nothing → the merger's merge of the head it read, which closes the issue → the production check after the close, the tester's unless the project's `production_check` is `off`. Only the merger runs `gh pr merge`; nobody turns auto-merge on.
-- End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
-- A Dispatch comment or message never carries the `<!-- legion: … -->` footer. Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
+- End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`, and no Dispatch comment or message: Dispatch records the session that wrote it.
 - Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset: a set variable outranks the gh directory the daemon refreshes.
 - Before you report a resource unreachable, or read a GitHub `404` as no access, try the call through `skill://agent-secrets` and read the profiles in `AWS_CONFIG_FILE`. Request a secret only for your issue's work.
+- A comment on a pull request in a repository the implement App is installed on and your App is not takes the broker's implement App token, narrowed to that repository (`skill://legion-architect/references/operations.md#the-token-the-secrets-broker-lends`). It is the one write the token is lent to you for. A branch that your App cannot create is the implementer's work: send it to the architect as a cross-phase decision. Any other write your `gh` cannot make is a finding. A denial is final: ask no other session to make the write.
 
 ## Deployment instructions
 
-They override this skill, except: no deferrals; the base merged forward only as `skill://legion-worker/references/conflicts-and-rewrites.md#reintegrating-the-base` allows; the implementer's own result for every `before_merge` check with no `ci_check` (`skill://legion-worker/references/pr-body.md#what-a-result-is`); and the production check after the close (`skill://legion-worker/references/merge-gate.md#the-production-check-after-the-close`).
+They override this skill, except: no deferrals; the base merged forward only as `skill://legion-worker/references/conflicts-and-rewrites.md#reintegrating-the-base` allows; the implementer's own result for every `before_merge` check with no `ci_check`; and the production check after the close.
 
 ## References
 
@@ -63,5 +63,5 @@ They override this skill, except: no deferrals; the base merged forward only as 
 - A conflict, the daemon's merge-forward message, a need for the base, a retarget, a wrong pushed commit: `skill://legion-worker/references/conflicts-and-rewrites.md`.
 - A plan you write or review: `skill://legion-worker/references/plan-tests.md`.
 - Builds, tests, tools or a database in the pod: `skill://legion-worker/references/tools.md`; before you unpack or install what the image lacks: `skill://legion-worker/references/withheld-capability.md`.
-- A problem outside your issue, or a failed production check: `skill://legion-worker/references/findings.md`.
+- A problem outside your issue, a to-do only a person may do, or a failed production check: `skill://legion-worker/references/findings.md`.
 - Text that reaches a person outside the company: `skill://outside-message`.

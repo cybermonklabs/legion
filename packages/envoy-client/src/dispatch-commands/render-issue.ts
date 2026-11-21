@@ -76,11 +76,15 @@ function advancesLine(issue: { readonly advances?: readonly IssueAdvance[] | nul
  * "· unresponsive since <last seen>, takeable at <time>". An agent deciding whether to take the
  * issue reads exactly that - wait until the second time, or pick it up now - so both times are
  * named, and the second is `claimTakeableAt`, the moment the server's own refusal names.
+ *
+ * `name` prints the holder's label: a one-line row passes the guard it prints a title through,
+ * since an agent writes a session's title and the label is that title.
  */
 export function claimText(
   claim: IssueClaim,
   agents: LiveAgents | undefined,
-  read: ClaimHolderLiveness = {}
+  read: ClaimHolderLiveness = {},
+  name: (label: string) => string = (label) => label
 ): string {
   const titles = agents?.titles;
   const liveness = holderLiveness(claim, agents, read);
@@ -98,7 +102,7 @@ export function claimText(
         : holding === "unresponsive"
           ? unresponsive
           : "";
-  return `${actorLabel(claim.actor, titles)} since ${claim.at}${marker}`;
+  return `${name(actorLabel(claim.actor, titles))} since ${claim.at}${marker}`;
 }
 
 /**
@@ -211,18 +215,20 @@ export function routeHeldBySession(issue: RoutedIssue): boolean {
  * - so it names the state rather than reading as unreachable. An `unknown` route says why from
  * `route_status_reason`: a listener whose agent list is refilling did answer and will judge it
  * in a moment, while one that is unreachable (or a server too old to give a reason) did not
- * answer at all.
+ * answer at all. `name` prints the holder's label, as `claimText`'s does.
  */
-export function routeText(issue: RoutedIssue, titles?: ReadonlyMap<string, string>): string {
+export function routeText(
+  issue: RoutedIssue,
+  titles?: ReadonlyMap<string, string>,
+  name: (label: string) => string = (label) => label
+): string {
   if (issue.route === null) return "none";
   const holder = issue.route_holder ?? null;
+  const holderLabel = holder === null ? null : name(titles?.get(holder) ?? holder);
   const reach: Record<IssueRouteStatus, string> = {
-    live:
-      routeHeldBySession(issue) && holder !== null
-        ? ` (held by ${titles?.get(holder) ?? holder})`
-        : "",
+    live: routeHeldBySession(issue) && holder !== null ? ` (held by ${holderLabel})` : "",
     holder_unresponsive: issue.route.startsWith("role:")
-      ? ` (its holder${holder === null ? "" : ` ${titles?.get(holder) ?? holder}`} is unresponsive: messages wait for it)`
+      ? ` (its holder${holderLabel === null ? "" : ` ${holderLabel}`} is unresponsive: messages wait for it)`
       : " (that session is unresponsive: messages wait for it)",
     no_holder: issue.route.startsWith("role:")
       ? " (nobody holds it right now)"

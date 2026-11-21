@@ -44,25 +44,43 @@ func compactHarnessLogging(t *testing.T, backend func(claim.Role) runtime.Backen
 // compactDoor is one of the two ways a compaction is asked for: `legion claims compact`, which
 // names the claim by its token and carries the operator's bearer, and the controller's compact,
 // which names it by its issue and role and carries a controller grant. One effect stands behind
-// both (api's compact), so every case runs through both.
+// both (api's compact), so every case runs through both. by is who asks through the door, which
+// decides the suspensions that outrank it (wantHeldRefusal).
 type compactDoor struct {
 	name string
+	by   supervise.SuspendSource
 	ask  func(t *testing.T, h *harness, issue string, role claim.Role) *httptest.ResponseRecorder
 }
 
 func compactDoors() []compactDoor {
 	return []compactDoor{
-		{"the operator's claims compact", func(t *testing.T, h *harness, issue string, role claim.Role) *httptest.ResponseRecorder {
+		{"the operator's claims compact", supervise.SuspendedByOperator, func(t *testing.T, h *harness, issue string, role claim.Role) *httptest.ResponseRecorder {
 			t.Helper()
 			return h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(freshSessionToken(t, issue, role))+"/compact", nil)
 		}},
-		{"the controller's compact", func(t *testing.T, h *harness, issue string, role claim.Role) *httptest.ResponseRecorder {
+		{"the controller's compact", supervise.SuspendedByController, func(t *testing.T, h *harness, issue string, role claim.Role) *httptest.ResponseRecorder {
 			t.Helper()
 			grant := controllerGrant(t, h)
 			return h.request(http.MethodPost, "/legion/v1/claims/compact",
 				ClaimRequest{GrantID: grant.GrantID, Issue: issue, Role: string(role)}, nil)
 		}},
 	}
+}
+
+// wantHeldRefusal holds the answer this door gave the compaction of token, a claim a suspension
+// by heldBy is held over, to the held suspension's refusal in code: the sentence every held claim
+// takes (heldSuspensionRefusal), except where the suspension outranks the door's caller. The
+// operator's outranks the controller, whose compaction the claim door lets past it but whose
+// fresh session it refuses, so that answer names the operator's resume rather than the fresh
+// session (api's refuseHeldSuspension, holdSentences); nothing outranks the operator.
+func (d compactDoor) wantHeldRefusal(t *testing.T, recorder *httptest.ResponseRecorder, token claim.Token,
+	heldBy supervise.SuspendSource, code string) {
+	t.Helper()
+	message := heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive)
+	if d.by == supervise.SuspendedByController && heldBy == supervise.SuspendedByOperator {
+		message = operatorHeldCompactionRefusal(token)
+	}
+	refusedSaying(t, recorder, http.StatusConflict, code, message)
 }
 
 // connected gives the claim a connection to Oh My Pi, which a compaction and a send both need;
@@ -352,7 +370,8 @@ func TestACompactionRefusedForAClaimInATurnNamesTheCompaction(t *testing.T) {
 // while, which tells an operator the worker is back and its owed task has gone. The machine
 // refuses it in the state the hold found, as it refuses every other held claim (supervise's
 // compactStart), so the answer is the one sentence both recoveries give such a claim rather
-// than a second copy written for this door alone (api's refuseHeldSuspension).
+// than a second copy written for this door alone (api's refuseHeldSuspension). The hold is the
+// operator's, so the controller's door names the operator's resume in it (wantHeldRefusal).
 func TestACompactionOfAReadyClaimUnderAHeldSuspensionIsNotTaken(t *testing.T) {
 	for _, door := range compactDoors() {
 		t.Run(door.name, func(t *testing.T) {
@@ -362,8 +381,7 @@ func TestACompactionOfAReadyClaimUnderAHeldSuspensionIsNotTaken(t *testing.T) {
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-			refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
-				heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive))
+			door.wantHeldRefusal(t, recorder, token, supervise.SuspendedByOperator, claimUnsettled)
 			if asked := conn.Compactions(); len(asked) != 0 {
 				t.Fatalf("Oh My Pi was asked %+v, want nothing: the claim was never taken", asked)
 			}

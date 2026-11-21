@@ -14,11 +14,48 @@ import { LEGION_ROLES } from "./legion-roles";
 
 const nonEmptyString = z.string().min(1);
 
-/** `api.ClaimRequest`, what either of the controller's two claim recoveries names: the claim on
- * `role` of `issue`, under the caller's controller grant. The project's controller is no role
- * here, so no body can name its claim (`INVALID_ROLE`); `NOT_THE_CONTROLLER`, the daemon's
- * refusal of the controller's own claim, belongs to the operator's door, and this one never
- * gives it.
+/** `api.ClaimRequest`, what either of the two claim recoveries names: the claim on `role` of
+ * `issue`, under the caller's grant, the project controller's or an architect's for the claims of
+ * the issues it owns (below). The controller's four claim operations
+ * (`POST /legion/v1/claims/stop|retry|suspend|resume`, contract 212) take the same body and the
+ * same door, and answer `LegionClaimOperationResponse` (`legion-api.ts`). The project's controller
+ * is no role here, so no body can name its claim (`INVALID_ROLE`); `NOT_THE_CONTROLLER`, the
+ * daemon's refusal of the controller's own claim, belongs to the operator's door, and this one
+ * never gives it. Nor can a body name another project's claim: the daemon builds the token from
+ * its own project, so such a claim is one it does not supervise (`NO_CLAIM`).
+ *
+ * The controller's door gives `SUSPENDED_BY_OPERATOR` (409) to every request that would get past
+ * a suspension the operator holds, held for the claim's turn or landed, before it reads anything
+ * else of the claim: a resume of it, a suspension of a claim it holds, and a stop, a retry or a
+ * `fresh_session` of one. Only the operator lifts the operator's suspension. Nothing of the claim
+ * changes but where `fresh_session` went further before that suspension took the claim over: its
+ * own suspension of the claim ran, which that suspension then took over, and the claim keeps the
+ * session it recorded; or it left behind the session the claim recorded, so the claim starts in a
+ * new session once it is started. `compact` alone is let past the operator's suspension, since a
+ * compaction lifts nothing: a claim that suspension holds takes the compaction's own refusal
+ * below, whose sentence names the operator's `legion claims resume` as what starts the claim.
+ *
+ * The same six operations take an architect's grant for the claims of the issues it owns alone
+ * (contract 212): an issue the daemon does not record is `ISSUE_NOT_FOUND` (404), one of another
+ * tree `ISSUE_OUTSIDE_TREE` (403), one of its own tree it does not own (for a sub-architect, its
+ * tree's root and a sibling's issues) `ISSUE_NOT_OWNED` (403), and the architect's own claim
+ * `OWN_CLAIM` (403). Each is refused `SUSPENDED_BY_OPERATOR` (409) for a claim the operator's
+ * suspension holds and `SUSPENDED_BY_CONTROLLER` (409) for one the controller's holds, held or
+ * landed, and the architect's resume, suspend, stop and `fresh_session` are refused
+ * `SUSPENDED_BY_DAEMON` (409) for a claim the daemon suspended: an architect's resume lifts an
+ * architect's suspension alone, and its suspend and stop reach a released claim and no other
+ * suspension of the daemon's. The architect's retry and `fresh_session` of a claim that failed or
+ * that a stop retired are refused `ISSUE_OUT_OF_WORKFLOW` (409) while the claim's issue is out of
+ * the workflow or its tree lingers, since the daemon's own rules start that work again. Its
+ * suspension is recorded as `architect`, which the controller's `resume_claim` lifts too.
+ *
+ * While the project is paused, every operation of the door that would start a turn of a claim —
+ * `resume_claim`, `retry` and `fresh_session`, which start its session again, and `compact`,
+ * whose end sends its task again — is refused `PROJECT_PAUSED` (409, contract 212) with the
+ * `pause` that stands, for the controller and an architect alike, and nothing of the claim
+ * changes: a claim the pause stopped is the project's resume's to bring back. A suspension above
+ * the caller is refused in its own code first, bar under the controller's `compact`, which the
+ * door lets past it. `stop` and `suspend` start nothing and still run.
  *
  * `fresh_session` has that claim leave the session it recorded behind and start again in a new
  * one, the effect `legion claims retry --fresh-session` runs for an operator. It reaches a claim
@@ -44,28 +81,33 @@ const nonEmptyString = z.string().min(1);
  * since cutting a running turn off would lose the turn that may be the one ending the run of
  * provider errors. Two claims take it: one stored working whose process the read at the request
  * finds running, and one whose session is being compacted, which is not read at all. A claim
- * stored working that a suspension is held over takes that code too, in the words of the hold.
- * No claim with no process behind it takes it at either door, and nor does a claim whose
- * process nobody read. Both give `CLAIM_UNSETTLED` for a claim with no settled state to act on:
- * one queued, one with a launch in flight, one a suspension is held over in any state but
- * working, and three claims stored working that take this code rather than the turn's — one
- * left working under a relaunch the daemon is pacing, one whose process the runtime would not
- * answer for, and one that records no process to read. The last two are left exactly as the
- * request found them and told which read did not happen; `fresh_session` gives the same code,
- * with nothing changed, for a claim that moved under the request and that a second read finds
- * no longer working or gone once more; a claim that moved is otherwise answered as that second
- * read finds it, and the compaction gives it for a claim that moved out of working while the
- * request was made. The compaction adds
- * three refusals of its own:
- * `CLAIM_NOT_RUNNING` for a suspended, failed or retired claim, and for one stored working that
- * no process stands behind, which has no agent to ask either; all four run no session at all
- * and `fresh_session` reaches them. `CLAIM_NOT_ON_OMP` is for a role running on Claude Code,
- * which has no Oh My Pi session; and `COMPACTION_FAILED` for an ask that did not happen, an end
- * the daemon could not write, a claim that lost its process while its session was being
- * compacted, and an end a suspension held over the claim took, which suspends the claim
- * instead. None of those four gave the claim back, so none sent the task it owes. A registered
- * claim no suspension is held over is the compaction's `CLAIM_UNSETTLED` and no refusal at all
- * for `fresh_session`. */
+ * stored working that a suspension is held over takes that code too, in the words of the hold,
+ * except where the door refuses that suspension first, held or landed, because it outranks the
+ * caller: the operator's for the controller's `fresh_session` (`SUSPENDED_BY_OPERATOR`), and the
+ * operator's or the controller's for an architect's `fresh_session` and `compact`
+ * (`SUSPENDED_BY_OPERATOR`, `SUSPENDED_BY_CONTROLLER`). No claim with no process behind it takes
+ * it at either door, and nor does a claim whose process nobody read. Both give `CLAIM_UNSETTLED`
+ * for a claim with no settled state to act on: one queued, one with a launch in flight, one a
+ * suspension is held over in any state but working (a suspension the door refuses first again
+ * excepted), and three claims stored working that take this
+ * code rather than the turn's — one left working under a relaunch the daemon is pacing, one
+ * whose process the runtime would not answer for, and one that records no process to read. The
+ * last two are left exactly as the request found them and told which read did not happen;
+ * `fresh_session` gives the same code, with nothing changed, for a claim that moved under the
+ * request and that a second read finds no longer working or gone once more; a claim that moved
+ * is otherwise answered as that second read finds it, and the compaction gives it for a claim
+ * that moved out of working while the request was made. The compaction adds three refusals of
+ * its own: `CLAIM_NOT_RUNNING` for a suspended, failed or retired claim, and for one stored
+ * working that no process stands behind, which has no agent to ask either; all four run no
+ * session at all and `fresh_session` reaches them, bar a claim a suspension that outranks the
+ * caller holds, which `fresh_session` would be refused and whose sentence names that
+ * suspension's resume instead. `CLAIM_NOT_ON_OMP` is for a role running on Claude Code, which
+ * has no Oh My Pi session; and `COMPACTION_FAILED` for an ask that did not happen, an end the
+ * daemon could not write, a claim that lost its process while its session was being compacted,
+ * and an end a suspension held over the claim took, which suspends the claim instead. None of
+ * those four gave the claim back, so none sent the task it owes. A registered claim no
+ * suspension is held over is the compaction's `CLAIM_UNSETTLED` and no refusal at all for
+ * `fresh_session`. */
 export const LegionClaimRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

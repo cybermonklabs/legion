@@ -157,5 +157,24 @@
     ],
     "since": 178,
     "noBody": false
+  },
+  {
+    "id": "claim-operation",
+    "routes": [
+      "POST /legion/v1/claims/stop",
+      "POST /legion/v1/claims/retry",
+      "POST /legion/v1/claims/suspend",
+      "POST /legion/v1/claims/resume"
+    ],
+    "since": 212,
+    "noBody": false
+  },
+  {
+    "id": "pod-update",
+    "routes": [
+      "POST /legion/v1/issues/pod-update"
+    ],
+    "since": 212,
+    "noBody": false
   }
 ]

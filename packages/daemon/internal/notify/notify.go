@@ -131,36 +131,45 @@ const RoleTopicPrefix = "notifications.role."
 // ControllerTopic is the topic of project's controller, the one notice topic the daemon publishes
 // to; a workflow notice goes to the role topic of the architect that owns its issue instead (the
 // daemon's notice executor), since every issue's topic is a subject its phase workers subscribe
-// to. It carries the controller notices (record.ControllerNotice), each an outbox row of its own:
-// every hold and a tree architect's own failed claim (workflow's noticeWithController), a root in
-// triage handed to Legion (admission), a root that keeps its admission slot while its architect
-// waits on a person (`awaiting-person`, workflow's enterAwaiting), a root admission took out of
-// the workflow because no tree of it runs and nothing would ever start it (`unslotted`, admit's
-// releaseUnslotted), a person's decision on a tree Legion is not running (`parked-decision`, the
-// outbox's parkDecision and workflow's relayParkedDecision), an issue whose pod an update round
-// cannot replace (`update-stalled`, the daemon's reconcilePodUpdates), a claim whose turns keep
-// ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors), a
-// tree of the project that has stopped (`tree-stalled`, admit's tellStalledTrees, once for each
-// stall), a root whose own architect is not taking the work the daemon states it is owed
-// (`architect-stalled`, admit's wakeStalledArchitects, once for each arm and run of its tree), and
-// the slot wakes admission sends through wakeController, `slot-free`, `todo` and `tick`
+// to. It carries the controller notices (record.ControllerNotice), each an outbox row of its own,
+// and only the kinds the controller acts on (#4065; skill://legion-controller,
+// "Wakes"): a root in triage handed to Legion (`triage`, admission); the slot wakes admission
+// sends through wakeController, `slot-free` and `todo`, on which the controller runs its
+// prioritization pass and its deployment's intake, and `tick`, its periodic wake
 // (admit.Admission.wakeController and its callers say when; the tick alone carries
 // `openCapabilities`, the deployment capabilities with no decision,
-// admit.Admission.ReportCapabilities). The controller takes no issue for `slot-free`,
-// `todo` or `awaiting-person`: it names the free slots in its summary and report, and work reaches
-// Legion only when a person hands it over or a role reports a clear defect the controller files
-// (skill://legion-controller, "Free slots"). It sits among the issue topics, where no
-// issue key (`[A-Z][A-Z0-9]*-[0-9]+`) can be `controller`, and the plugin's controller registers it
-// as an interest while it holds the controller role (legionControllerNoticeSubject,
-// packages/contracts/src/subject.ts). project is the project token panes are told as LEGION_PROJECT
-// (packages/pi-legion/src/controller-session.ts), never the Dispatch project key. The stream
-// retains it and the controller's session receives it from its own JetStream consumer, whose
-// filter that registration carries the lane into (Envoy's bus.ReachesPrivateStreamSubject lets
-// the project's controller role holder register it, and no other session), so a notice published
-// while that session was away is delivered when it registers again, its consumer keeping the
-// place it acknowledged. A session new to the lane is given a consumer at the stream's end, so a
-// freshly started controller is handed none of what came before it and learns that from `legion
-// state` and Dispatch.
+// admit.Admission.ReportCapabilities); a tree of the project that has stopped (`tree-stalled`,
+// admit's tellStalledTrees, once for each stall); a root whose own architect is not taking the
+// work the daemon states it is owed (`architect-stalled`, admit's wakeStalledArchitects, once for
+// each arm and run of its tree); a person's decision on a tree Legion is not
+// running (`parked-decision`, the outbox's parkDecision and workflow's relayParkedDecision); a
+// hold the tree's architect escalated (`held` with reason `escalated`, workflow's retryOrEscalate);
+// a tree architect's own failed claim while its root is not done (`worker-died`, workflow's
+// claimFailed), and the stall of that architect whose replacement failed its claim over a stop
+// the runtime did not confirm (`worker-stalled`, the daemon's enqueueStallNotice), both because
+// every other notice of the tree reaches that architect; an issue whose pod an update round
+// cannot replace (`update-stalled`, the daemon's reconcilePodUpdates), but for a hold an
+// architect placed, which the architect that owns the held claim is told unless no architect can
+// act on it; a start the session store could not answer (`session-store-fault`, workflow's
+// sessionStoreFault); a claim whose turns keep ending in a provider error (`provider-errors`,
+// supervise's tellOfProviderErrors), which the issue's architect is told as well, unless the run
+// is the tree root's architect's own, and a child's own architect's run is told to the architect
+// above that child; and the operator's pause and resume of the project (`project-paused` and
+// `project-resumed`, record.ProjectPause, queued in the store's Pause and Resume), of which the
+// controller's own pause or resume tells it nothing. A free slot alone is no reason for the
+// controller to take an issue: work reaches Legion only when a person hands it over or a role
+// reports a clear defect the controller files (skill://legion-controller, "Free slots"). It sits
+// among the issue topics, where no issue key (`[A-Z][A-Z0-9]*-[0-9]+`) can be `controller`, and
+// the plugin's controller registers it as an interest while it holds the controller role
+// (legionControllerNoticeSubject, packages/contracts/src/subject.ts). project is the project
+// token panes are told as LEGION_PROJECT (packages/pi-legion/src/controller-session.ts), never
+// the Dispatch project key. The stream retains it and the controller's session receives it from
+// its own JetStream consumer, whose filter that registration carries the lane into (Envoy's
+// bus.ReachesPrivateStreamSubject lets the project's controller role holder register it, and no
+// other session), so a notice published while that session was away is delivered when it
+// registers again, its consumer keeping the place it acknowledged. A session new to the lane is
+// given a consumer at the stream's end, so a freshly started controller is handed none of what
+// came before it and learns that from `legion state` and Dispatch.
 func ControllerTopic(project string) string {
 	return "notifications.legion." + project + ".controller"
 }

@@ -12,17 +12,13 @@ The daemon runs you in a pod. When the pod dies, it relaunches it and resumes th
 
 ## The `legion` tool
 
-- `read_state`: the daemon's whole state: `issues.<KEY>` (`phase`, `holdReason`, `heldFrom`, `architect`, `workers`, `tree`, `waitingOn`), `admission` (`cap`, `active`, `waiting`, `trees`, `blocked`, `held`), `capabilities`, `daemon.project`, and `settings`, the resolved `legion.yaml`.
+- `read_state` with no field: a summary in lines, its first line naming what the others are (the project and its pause, the admission lines, one `<KEY> <phase> <status>` line for every issue the daemon records, and under each issue Legion still runs its slot, hold, gate and claims). With `issue`, `issues`, `phase` or `settings: true`: the full records it names, such as `issues.<KEY>` (`phase`, `holdReason`, `heldFrom`, `architect`, `workers`, `tree`, `waitingOn`) and `settings`, the resolved `legion.yaml`. The tool's output reaches you cut at about 41 KB, so read records ten keys at a time.
 - `set_status` (`issue`, `status`: `todo`, `backlog` or `icebox`). Each call mints its grant from the secret the session registered with. You cannot set `done`.
-- `compact` (`issue`, `role`): the daemon shortens that claim's session to a summary and sends it its task again; the claim keeps its session and workspace. It refuses a claim with no process (`CLAIM_NOT_RUNNING`).
-- `fresh_session` (`issue`, `role`): starts the claim again with its task in a new session; the old session, and all it knew, is left behind. It is the one door that brings back a dead role.
-- Both refuse `CLAIM_IN_A_TURN` (a process in a turn, or a compaction) and `CLAIM_UNSETTLED` (the runtime did not answer, or the claim moved): ask again later. For a root with no architect claim both answer `NO_CLAIM`.
+- `stop`, `retry`, `suspend`, `resume_claim`, `compact` and `fresh_session` (`issue`, `role`): the claim operations, and `replace_pod` (`issue`): the update round over one issue's pod (`skill://legion-controller/references/operations.md`).
 
 ## `gh`
 
 `gh` acts as the review App's bot account (`gh api graphql -f query='{viewer{login}}'` names it). It reads with the token of the owner a command names (`-R owner/repo`, `repos/owner/repo`, a GitHub URL), so always name the repository.
-
-End every pull-request comment or review you post with `<!-- legion: {"session":"<session-id>","phase":"controller"} -->`: the daemon reads that footer to tell your review from the reviewer's verdict.
 
 ## Reading a pull request
 

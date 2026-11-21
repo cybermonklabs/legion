@@ -44,7 +44,8 @@ func runningReport(c supervise.Claim, kinds ...string) supervise.Claim {
 	return c
 }
 
-// inState is c in state; a suspended claim is the daemon's suspension, which no operator holds.
+// inState is c in state; a suspended claim is the daemon's suspension, which is no hold
+// (supervise.SuspendSource.Holds).
 func inState(c supervise.Claim, state supervise.ClaimState) supervise.Claim {
 	c.State = state
 	if state == supervise.StateSuspended {
@@ -60,12 +61,12 @@ func reportedAt(c supervise.Claim, at time.Time) supervise.Claim {
 }
 
 // Each row is one group of the round podUpdateRound and one moment. Every claim the round asks
-// has answered and no claim is an operator's, so the rows read R1's hold beside the holds of
-// today. named and unreported are the hold as the round's end reads it, at the bound too, which
-// is what the bound's line names; wait is the walk's reading; bounded is whether the bound is what
-// let a replacement through; unsettled is a claim the round asks that has not answered or a turn
-// that runs, which alone stops the read of the workspace (roundEnd.settled, dispatch://INFRA-4109
-// R1): a running report the bound stepped over does not stop it.
+// has answered and no suspension that holds is over any claim, so the rows read R1's hold beside
+// the holds of today. named and unreported are the hold as the round's end reads it, at the bound
+// too, which is what the bound's line names; wait is the walk's reading; bounded is whether the
+// bound is what let a replacement through; unsettled is a claim the round asks that has not
+// answered or a turn that runs, which alone stops the read of the workspace (roundEnd.settled,
+// dispatch://INFRA-4109 R1): a running report the bound stepped over does not stop it.
 func TestPodUpdateBackgroundReadingOfEachClaimOfTheRound(t *testing.T) {
 	before := podUpdateStart.Add(time.Minute)
 	tests := []struct {

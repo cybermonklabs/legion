@@ -32,10 +32,27 @@ Read, against the goal, every check and every requirement:
 - A finding ask holds the acceptance: one a worker sent you, or one `dispatch read` lists under
   `Open asks:` whose question opens `Finding from ` or `Clear defect from `. Follow it
   (`dispatch follow --ask <id> --action follow`) and publish its reference to the controller topic.
-  Accept only once it is resolved, or carries the controller's reply
-  (`Filed dispatch://`, `Handed dispatch://` or `Not filed:`): a closed issue hides its open
-  questions from the controller.
+  Accept only once it is resolved, or carries the controller's reply (`Filed dispatch://` or
+  `Not filed:`): a closed issue hides its open questions from the controller.
 - No `after_merge` result is asked here; the production check records it after the close.
+
+## A merge hold
+
+Before every `sign_off`, read the project's merge holds:
+`dispatch doc-read --project <PROJECT> --artifact merge-holds-md`, `<PROJECT>` the project of the
+issue's key. A line under `Holds` reads `- <repositories> | <reason> | <end>`. It holds the
+sign-off when it names the pull request's repository, or `all`, and its end is not past: an end is
+past only when it is an RFC 3339 time before now, so `until the controller lifts it` and an end of
+any other form never are. `not found by slug` is no hold. Any other failed read decides nothing:
+sign off nothing, and end the turn with a WAITING line that names the failed read.
+
+1. While a line holds the sign-off, end the turn with a WAITING line that names the hold, and
+   subscribe to nothing for it.
+2. On a `merge-holds-changed` notice, read the document again: wait again while a line holds,
+   else accept.
+3. Read the document again before you sign off on any wake.
+
+The controller lifts a hold by deleting its line; send it no message about a hold.
 
 ## The last round
 
@@ -104,8 +121,7 @@ complete while it is open.
 
 The merge closes the issue (`done`). One whose merge lands while an issue beneath it is still in
 the workflow stays in `merging` until the last of them is done or parked; one `pr-merged` notice
-names what it waits for. The production check after the close is not yours. A root's close
-lingers the tree for `linger_hours`.
+names what it waits for. A root's close lingers the tree for `linger_hours`.
 
 ## Hand-over at a root's linger
 
