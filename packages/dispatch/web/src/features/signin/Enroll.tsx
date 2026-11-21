@@ -8,7 +8,7 @@ import { ShellMessagePage } from "../shell/ShellMessagePage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { CeremonyAlert } from "./CeremonyAlert";
 import { type CeremonyRefusal, ceremonyRefusal } from "./refusals";
-import { creationOptions, passkeysSupported, registrationJSON } from "./webauthn";
+import { makePasskey, passkeysSupported } from "./webauthn";
 
 /** The state the page leaves on its history entry when it takes the token out of the address. A
  *  reload keeps a history entry's state, so a page loaded with no token tells a link it read
@@ -62,9 +62,7 @@ export function Enroll(): ReactNode {
     setRefused(undefined);
     try {
       const options = await api.passkeyEnrollmentOptions(token);
-      const passkey = await navigator.credentials.create({ publicKey: creationOptions(options) });
-      if (passkey === null) throw new DOMException("no passkey was made", "NotAllowedError");
-      await api.passkeyEnroll(registrationJSON(passkey as PublicKeyCredential));
+      await api.passkeyEnroll(await makePasskey(options));
       // The session is the enrolled person's: nothing read for anyone before it may stand.
       queryClient.removeQueries();
       navigate("/", { replace: true });

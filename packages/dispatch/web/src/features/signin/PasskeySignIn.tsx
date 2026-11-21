@@ -5,7 +5,7 @@ import { api } from "../../api/client";
 import { primaryButtonBg, primaryButtonHoverBg, textSecondaryOnSurface } from "../../theme/classes";
 import { CeremonyAlert } from "./CeremonyAlert";
 import { type CeremonyRefusal, ceremonyRefusal } from "./refusals";
-import { assertionJSON, passkeysSupported, requestOptions } from "./webauthn";
+import { passkeysSupported, signWithPasskey } from "./webauthn";
 
 /**
  * The sign-in page's own part where the origin's one sign-in is a passkey (Dispatch's outside
@@ -38,9 +38,7 @@ export function PasskeySignIn(): ReactNode {
     setRefused(undefined);
     try {
       const options = await api.passkeySignInOptions();
-      const signature = await navigator.credentials.get({ publicKey: requestOptions(options) });
-      if (signature === null) throw new DOMException("no passkey was used", "NotAllowedError");
-      await api.passkeySignIn(assertionJSON(signature as PublicKeyCredential));
+      await api.passkeySignIn(await signWithPasskey(options));
       await queryClient.resetQueries({ queryKey: ["whoami"] });
     } catch (error) {
       setRefused(ceremonyRefusal(error, "get"));

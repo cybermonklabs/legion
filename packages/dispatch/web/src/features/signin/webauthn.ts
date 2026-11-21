@@ -8,15 +8,34 @@ import type {
 
 /**
  * The browser's half of the passkey ceremonies (`@legion/contracts`' `PasskeyCreationOptions` and
- * its neighbours): Dispatch writes every buffer of the WebAuthn options as base64url without
- * padding, and takes the credential the browser made in the same form. The conversion is written
- * here rather than read from `PublicKeyCredential.parseCreationOptionsFromJSON` and `toJSON`,
- * because a person from outside brings whatever browser they have, and those two are newer than
- * WebAuthn itself in every engine.
+ * its neighbours): `makePasskey` and `signWithPasskey` take a begin's answer, run the browser's
+ * ceremony, and answer the finish's body. Dispatch writes every buffer of the WebAuthn options as
+ * base64url without padding, and takes the credential the browser made in the same form. The
+ * conversion is written here rather than read from
+ * `PublicKeyCredential.parseCreationOptionsFromJSON` and `toJSON`, because a person from outside
+ * brings whatever browser they have, and those two are newer than WebAuthn itself in every engine.
  */
 
+/** Makes a passkey with the browser from `/auth/passkey/register/begin`'s answer, and answers
+ *  `/auth/passkey/register/finish`'s body. A browser that makes none (`null`) is refused as a
+ *  cancel is, with a `NotAllowedError`. */
+export async function makePasskey(options: PasskeyCreationOptions): Promise<PasskeyRegistration> {
+  const passkey = await navigator.credentials.create({ publicKey: creationOptions(options) });
+  if (passkey === null) throw new DOMException("no passkey was made", "NotAllowedError");
+  return registrationJSON(passkey as PublicKeyCredential);
+}
+
+/** Signs with a passkey the device holds, from `/auth/passkey/login/begin`'s answer, and answers
+ *  `/auth/passkey/login/finish`'s body. A browser that signs with none (`null`) is refused as a
+ *  cancel is, with a `NotAllowedError`. */
+export async function signWithPasskey(options: PasskeyRequestOptions): Promise<PasskeyAssertion> {
+  const signature = await navigator.credentials.get({ publicKey: requestOptions(options) });
+  if (signature === null) throw new DOMException("no passkey was used", "NotAllowedError");
+  return assertionJSON(signature as PublicKeyCredential);
+}
+
 /** The bytes a base64url text names, padded or not; text that is not base64url throws. */
-export function fromBase64url(text: string): ArrayBuffer {
+function fromBase64url(text: string): ArrayBuffer {
   const base64 = text.replaceAll("-", "+").replaceAll("_", "/");
   const binary = atob(base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "="));
   const bytes = new Uint8Array(binary.length);
@@ -27,7 +46,7 @@ export function fromBase64url(text: string): ArrayBuffer {
 }
 
 /** `buffer` as base64url without padding, as Dispatch reads it. */
-export function toBase64url(buffer: ArrayBuffer | ArrayBufferView): string {
+function toBase64url(buffer: ArrayBuffer | ArrayBufferView): string {
   const bytes =
     buffer instanceof ArrayBuffer
       ? new Uint8Array(buffer)
@@ -53,7 +72,7 @@ function descriptors(
 
 /** `navigator.credentials.create`'s `publicKey` from `/auth/passkey/register/begin`'s answer.
  *  The enumerations are WebAuthn's own words, which the server writes as they are. */
-export function creationOptions({
+function creationOptions({
   publicKey,
 }: PasskeyCreationOptions): PublicKeyCredentialCreationOptions {
   return {
@@ -82,9 +101,7 @@ export function creationOptions({
 }
 
 /** `navigator.credentials.get`'s `publicKey` from `/auth/passkey/login/begin`'s answer. */
-export function requestOptions({
-  publicKey,
-}: PasskeyRequestOptions): PublicKeyCredentialRequestOptions {
+function requestOptions({ publicKey }: PasskeyRequestOptions): PublicKeyCredentialRequestOptions {
   return {
     challenge: fromBase64url(publicKey.challenge),
     ...(publicKey.timeout === undefined ? {} : { timeout: publicKey.timeout }),
@@ -116,7 +133,7 @@ function credentialJSON(credential: PublicKeyCredential) {
 }
 
 /** `/auth/passkey/register/finish`'s body from the passkey `navigator.credentials.create` made. */
-export function registrationJSON(credential: PublicKeyCredential): PasskeyRegistration {
+function registrationJSON(credential: PublicKeyCredential): PasskeyRegistration {
   const response = credential.response as AuthenticatorAttestationResponse;
   return {
     ...credentialJSON(credential),
@@ -132,7 +149,7 @@ export function registrationJSON(credential: PublicKeyCredential): PasskeyRegist
 }
 
 /** `/auth/passkey/login/finish`'s body from the signature `navigator.credentials.get` made. */
-export function assertionJSON(credential: PublicKeyCredential): PasskeyAssertion {
+function assertionJSON(credential: PublicKeyCredential): PasskeyAssertion {
   const response = credential.response as AuthenticatorAssertionResponse;
   return {
     ...credentialJSON(credential),
@@ -152,21 +169,4 @@ export function passkeysSupported(): boolean {
     typeof window.PublicKeyCredential === "function" &&
     typeof navigator.credentials?.create === "function"
   );
-}
-
-/** What the person reads when their browser refused the ceremony itself (`create` makes a
- *  passkey, `get` signs with one), before anything reached Dispatch. A browser names its refusal
- *  with a `DOMException`: `NotAllowedError` for a cancel, a timeout or no passkey to offer, and
- *  `InvalidStateError` for a device that holds a passkey of this address already. */
-export function ceremonyFailure(error: unknown, ceremony: "create" | "get"): string {
-  const name = error instanceof Error ? error.name : "an unknown error";
-  if (name === "NotAllowedError") {
-    return ceremony === "create"
-      ? "No passkey was made: the request was cancelled or timed out. Press the button to try again."
-      : "No passkey was used: the request was cancelled or timed out, or this device holds no passkey for Dispatch. Try again.";
-  }
-  if (name === "InvalidStateError" && ceremony === "create") {
-    return "This device holds a passkey for this address already. Sign in with it instead.";
-  }
-  return `Your browser refused the passkey (${name}). Try again, or use another browser.`;
 }

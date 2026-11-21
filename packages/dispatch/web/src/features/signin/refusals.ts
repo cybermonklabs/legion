@@ -1,7 +1,6 @@
 import type { PasskeyRefusal } from "@legion/contracts";
 
 import { ApiError, NetworkError, RequestTimeoutError } from "../../api/client";
-import { ceremonyFailure } from "./webauthn";
 
 /** What a person reads when a passkey ceremony did not sign them in, whether pressing the
  *  ceremony's button again can get past it, and whether a passkey the person made already may
@@ -140,4 +139,21 @@ export function ceremonyRefusal(error: unknown, ceremony: Ceremony): CeremonyRef
     return { message: "Dispatch could not be reached. Try again.", retry: true };
   }
   return { message: ceremonyFailure(error, ceremony), retry: true };
+}
+
+/** What the person reads when their browser refused the ceremony itself (`create` makes a
+ *  passkey, `get` signs with one), before anything reached Dispatch. A browser names its refusal
+ *  with a `DOMException`: `NotAllowedError` for a cancel, a timeout or no passkey to offer, and
+ *  `InvalidStateError` for a device that holds a passkey of this address already. */
+function ceremonyFailure(error: unknown, ceremony: Ceremony): string {
+  const name = error instanceof Error ? error.name : "an unknown error";
+  if (name === "NotAllowedError") {
+    return ceremony === "create"
+      ? "No passkey was made: the request was cancelled or timed out. Press the button to try again."
+      : "No passkey was used: the request was cancelled or timed out, or this device holds no passkey for Dispatch. Try again.";
+  }
+  if (name === "InvalidStateError" && ceremony === "create") {
+    return "This device holds a passkey for this address already. Sign in with it instead.";
+  }
+  return `Your browser refused the passkey (${name}). Try again, or use another browser.`;
 }
