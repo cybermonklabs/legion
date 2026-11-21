@@ -2,46 +2,24 @@ package routes
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 )
 
-// TestTheGitHubProxyHidesARepositoryAHiddenProjectHolds: a repository a private project holds is
-// hidden from alice, who does not see that project, however she names it, and GitHub is asked
-// nothing about it. Over seedProxyGate's rows PRIV maps acme/privmapped and acme/privonlymapped,
-// and alice writes a PUB issue naming acme/privmapped through the API, as any full member may: an
-// issue's own repository is any owner/name. She then reads, through a pull request path, each
-// hidden repository: acme/privmapped, which her own issue names; acme/privonlymapped, which no
-// issue resolves to; and acme/newname, PRIV's acme/oldname under the new name its mapping records.
-// Each answers, in status and bytes, what acme/uninstalled answers, and GitHub sees no request for
-// it at all: no installation lookup, no token mint, no read. carol, who sees PRIV, reads each as
-// GitHub's answer, so the hidden answer is the gate's.
+// TestTheGitHubProxyHidesARepositoryAHiddenProjectHolds: a repository only a private project's
+// issues resolve to is hidden from alice, who does not see that project, however she spells it, and
+// GitHub is asked nothing about it. Over seedProxyGate's rows she reads, through a pull request
+// path, acme/priv, which PRIV-1 names, ACME/Priv, the same in another case, acme/privdefault, PRIV's
+// default, and acme/oldname, which PRIV-6 names. Each answers, in status and bytes, what
+// acme/uninstalled answers, and GitHub sees no request for it at all: no installation lookup, no
+// token mint, no read. carol, who sees PRIV, reads each as GitHub's
+// answer, so the hidden answer is the gate's.
 func TestTheGitHubProxyHidesARepositoryAHiddenProjectHolds(t *testing.T) {
 	database := seedProxyGate(t)
-	if _, err := database.Pool.Exec(context.Background(), `
-		insert into repo_projects (repo, project, is_default, renamed_to, created_by) values
-			('acme/privmapped', 'PRIV', false, null, '{"kind":"user","id":"olga@example.com"}'),
-			('acme/privonlymapped', 'PRIV', false, null, '{"kind":"user","id":"olga@example.com"}');
-		update projects set next_number = 3 where key = 'PUB';
-	`); err != nil {
-		t.Fatalf("map PRIV's repositories: %v", err)
-	}
-	hidden := []string{"acme/privmapped", "acme/privonlymapped", "acme/newname"}
+	hidden := []string{"acme/priv", "ACME/Priv", "acme/privdefault", "acme/oldname"}
 	fake := &gateGitHub{installed: slices.Concat(proxiedRepositories, hidden)}
 	handler := gateRouter(t, database, fake)
-
-	create := httptest.NewRequest(http.MethodPost, "http://dispatch.test/api/v1/issues",
-		strings.NewReader(`{"project":"PUB","title":"Work in acme/privmapped","repo":"acme/privmapped"}`))
-	create.Header.Set("X-Dispatch-User", "alice@example.com")
-	create.Header.Set("Content-Type", "application/json")
-	created := httptest.NewRecorder()
-	handler.ServeHTTP(created, create)
-	if created.Code != http.StatusCreated {
-		t.Fatalf("alice creates a PUB issue naming acme/privmapped: %d %s, want 201", created.Code, created.Body.String())
-	}
 
 	uninstalled := proxyAnswer(t, handler, "alice@example.com", uninstalledRepository, "pulls/1")
 	if !strings.HasPrefix(uninstalled, `503 "" `) || !strings.Contains(uninstalled, "is not installed on <repo>") {
@@ -51,7 +29,7 @@ func TestTheGitHubProxyHidesARepositoryAHiddenProjectHolds(t *testing.T) {
 		before := len(fake.requests())
 		got := proxyAnswer(t, handler, "alice@example.com", repository, "pulls/1")
 		if asked := fake.requests()[before:]; got != uninstalled || len(asked) != 0 {
-			t.Errorf("alice reads %s, which PRIV holds, as\n\t%s\nGitHub asked %q\nwant what %s answers, with GitHub asked nothing:\n\t%s",
+			t.Errorf("alice reads %s, which only PRIV's issues resolve to, as\n\t%s\nGitHub asked %q\nwant what %s answers, with GitHub asked nothing:\n\t%s",
 				repository, got, asked, uninstalledRepository, uninstalled)
 		}
 		if seen := proxyAnswer(t, handler, "carol@example.com", repository, "pulls/1"); seen != `200 "" {"repository":"<repo>"}` {

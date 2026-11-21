@@ -18,46 +18,60 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
-
-// projectOwnedTables are the tables whose rows belong to a project, to an issue or document of
-// one, or to a conversation: a statement that reads one answers a caller only through the
-// project clause (access.Marker) or the registry's visibility predicate (refs.VisibilityMarker).
-// priority_tuples is one of them: a priority belongs to no project, but every `advances` tuple
-// names the issue that states it, which does.
-var projectOwnedTables = []string{
-	"issues", "artifacts", "artifact_versions", "asks", "comments", "messages", "events", "check_results",
-	"handoffs", "components", "document_blocks", "user_issue_state", "projects", "embeddings", "repo_projects",
-	"architecture_sources", "priority_tuples",
-}
-
-// projectOwnedRead matches a statement whose FROM or JOIN names one of projectOwnedTables, and
-// captures the table.
-var projectOwnedRead = regexp.MustCompile(`(?i)\b(?:from|join)\s+(` + strings.Join(projectOwnedTables, "|") + `)\b`)
 
 // readsOfNoProject names each statement a project read makes that names a project-owned table yet
 // reads no project's rows, and so binds neither fragment, by a passage of its SQL no other
 // statement holds, with why it reads none. A statement that reads rows of a project binds the
 // fragment instead, even where an earlier statement of its read already chose those rows. An
-// entry no statement of the walk matches fails the census, so the list holds only statements the
-// server still makes.
+// entry no statement of the walk matches, or whose statement binds every read without it, fails
+// the census, so the list holds only statements the server still makes and needs it for.
 var readsOfNoProject = map[string]string{
 	// events.Horizon's statement, whose FROM clause stands on a line of its own (horizon.go).
 	"from (select coalesce(max(id), 0) as id from events) m\n\tleft join events e on e.id = m.id": "the event log's " +
 		"horizon (events.Horizon): the newest event id and the time it was written, beside the snapshot's xmin, the " +
 		"bound below which every reader's page of the log is final. It answers no event's owner, type or payload, and " +
 		"a horizon read for one viewer would let a page pass an event a transaction still holds back",
-	// userAgentStatesQuery (GET /api/v1/me/agents/state), the one statement that reads it.
-	"select session_id, pinned_at from user_agent_pin": "the caller's own direct conversations " +
-		"(unreadDirectRepliesCTE): roots on no issue (`issue_key is null`) that the caller's own person sent a " +
-		"session, and the replies under them, rows of no project that the caller reads as their party",
+}
+
+// keyedRead is a statement that reads a project's rows by a key another statement of the same
+// transaction binds under the clause: the parameters that hold the key, what the key is, and the
+// statement that binds it.
+type keyedRead struct {
+	parameters []int
+	key        string
+	checkedBy  string
+}
+
+// readsKeyedByTheirTransaction names, by a passage of its SQL no other statement holds, each
+// statement whose reads are bound only by a key another statement of its own transaction binds
+// under the clause. The census reads the statement again with those parameters bound, and every
+// read must bind then. A statement keyed by a check in another transaction - another statement on
+// the pool, an earlier batch - is no entry: the project may turn private between the two. An entry
+// no statement of the walk matches, or whose statement binds every read without it, fails the
+// census.
+var readsKeyedByTheirTransaction = map[string]keyedRead{
+	// refs.BlockEmbeddingStates (refs/blocks.go:956).
+	"bool_and(e.embedded_hash is not distinct from e.content_hash)": {
+		parameters: []int{2}, key: "the windows' owner: a document's uuid, or an item's `<kind>/<uuid>`",
+		checkedBy: "the statement itself (refs/blocks.go:950-955): its own predicate binds the same owner as $3, the document's uuid or the item's uuid",
+	},
+}
+
+// readKeyedByTheirTransaction is the passage of readsKeyedByTheirTransaction a statement holds,
+// if it holds one.
+func readKeyedByTheirTransaction(statement string) (string, bool) {
+	for passage := range readsKeyedByTheirTransaction {
+		if strings.Contains(statement, passage) {
+			return passage, true
+		}
+	}
+	return "", false
 }
 
 // readsProjectRows reports whether a GET row of class answers rows a project, the graph, a person
@@ -76,13 +90,17 @@ func readsProjectRows(class readclass.Class) bool {
 // the private project's, which she does not, so it runs every statement of its refusal. Each
 // row's wildcards are filled by its Probe (read_classes.go), so a row added later is walked with
 // no edit here. A traced pool records each statement of each read, batched ones each on its own,
-// and every statement whose FROM or JOIN names a project-owned table must carry access.Marker or
-// refs.VisibilityMarker, unless readsOfNoProject names it with its reason.
+// and every one is read as Postgres reads it (m19_statement_binding_test.go): every project-owned
+// table it names - in a FROM list, a comma join, a JOIN, a subselect or the body of a function it
+// calls - is bound by a clause on that table's own alias, or joined by that table's own owner
+// column to a table that is, unless readsOfNoProject names the statement with its reason, or
+// readsKeyedByTheirTransaction names the key another statement of its transaction binds.
 //
 // The walk is a read: the events the seed wrote are held, and the count must be what it was.
 func TestEveryProjectReadBindsTheFragmentPerStatement(t *testing.T) {
 	census := &fragmentCensus{}
 	fixture := seedFragmentCensus(t, census)
+	schema := m19ProjectSchema(t, fixture.database)
 	held := censusEventCount(t, fixture)
 	if held == 0 {
 		t.Fatal("the seed holds no event, so the event reads read nothing")
@@ -90,7 +108,7 @@ func TestEveryProjectReadBindsTheFragmentPerStatement(t *testing.T) {
 
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	unbound := map[string]*unboundStatement{}
-	matched := map[string]bool{}
+	matched, needed, bodies, judged := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]*judgedStatement{}
 	walked, queried := 0, map[string]bool{}
 	for _, objects := range []censusObjects{fixture.public, fixture.private} {
 		for _, route := range routes {
@@ -118,17 +136,40 @@ func TestEveryProjectReadBindsTheFragmentPerStatement(t *testing.T) {
 					at, target)
 			}
 			for _, statement := range own {
-				if passage, named := readOfNoProject(statement); named {
-					matched[passage] = true
+				read, seen := judged[statement]
+				if !seen {
+					reads, functions, err := m19UnboundReads(schema, statement)
+					read = &judgedStatement{reads: reads, err: err}
+					if passage, keyed := readKeyedByTheirTransaction(statement); keyed && err == nil && len(reads) > 0 {
+						read.keyed, _, read.err = m19UnboundReads(schema, statement, readsKeyedByTheirTransaction[passage].parameters...)
+					}
+					judged[statement] = read
+					for _, function := range functions {
+						bodies[function] = true
+					}
+				}
+				if read.err != nil {
+					t.Errorf("%s: the census cannot read a statement of GET %s, so it judges none of what it reads: %v\n%s",
+						at, target, read.err, oneLine(statement))
 					continue
 				}
-				table := projectOwnedTableOf(statement)
-				if table == "" || bindsAFragment(statement) {
+				if passage, named := readOfNoProject(statement); named {
+					matched[passage] = true
+					needed[passage] = needed[passage] || len(read.reads) > 0
+					continue
+				}
+				reads := read.reads
+				if passage, keyed := readKeyedByTheirTransaction(statement); keyed {
+					matched[passage] = true
+					needed[passage] = needed[passage] || len(read.reads) > 0
+					reads = read.keyed
+				}
+				if len(reads) == 0 {
 					continue
 				}
 				found, seen := unbound[statement]
 				if !seen {
-					found = &unboundStatement{table: table}
+					found = &unboundStatement{reads: reads}
 					unbound[statement] = found
 				}
 				if !slices.Contains(found.rows, at) {
@@ -142,12 +183,26 @@ func TestEveryProjectReadBindsTheFragmentPerStatement(t *testing.T) {
 	}
 	for _, statement := range slices.Sorted(maps.Keys(unbound)) {
 		found := unbound[statement]
-		t.Errorf("%s reads %s and binds no project clause (access.Marker) or visibility predicate (refs.VisibilityMarker), and readsOfNoProject does not name it:\n%s",
-			strings.Join(found.rows, ", "), found.table, oneLine(statement))
+		named := make([]string, 0, len(found.reads))
+		for _, read := range found.reads {
+			named = append(named, read.String())
+		}
+		t.Errorf("%s reads %s and binds it on no clause of its own alias, and no list names the statement:\n%s",
+			strings.Join(found.rows, ", "), strings.Join(named, ", "), oneLine(statement))
 	}
-	for _, passage := range slices.Sorted(maps.Keys(readsOfNoProject)) {
-		if !matched[passage] {
-			t.Errorf("readsOfNoProject names %q, which no statement of the walk holds: take it off the list", passage)
+	// The census reads the body of every function a statement calls. session_clause_visible is
+	// the one every SessionClause calls, so a walk that read no body read no function at all.
+	if !bodies["session_clause_visible"] {
+		t.Errorf("the census read the bodies of %v: it read none of session_clause_visible, which every SessionClause calls, so it judged no function's reads",
+			slices.Sorted(maps.Keys(bodies)))
+	}
+	passages := append(slices.Sorted(maps.Keys(readsOfNoProject)), slices.Sorted(maps.Keys(readsKeyedByTheirTransaction))...)
+	for _, passage := range passages {
+		switch {
+		case !matched[passage]:
+			t.Errorf("the census names %q, which no statement of the walk holds: take it off its list", passage)
+		case !needed[passage]:
+			t.Errorf("the census names %q, whose statement binds every read it makes without it: take it off its list", passage)
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(censusQueries)) {
@@ -158,29 +213,23 @@ func TestEveryProjectReadBindsTheFragmentPerStatement(t *testing.T) {
 	if after := censusEventCount(t, fixture); after != held {
 		t.Errorf("the walk wrote events: the seed held %d, and %d after the reads", held, after)
 	}
-	t.Logf("%d reads walked, %d statement(s) unbound", walked, len(unbound))
+	t.Logf("%d reads walked, %d statement(s) read, %d unbound; the bodies of %v read",
+		walked, len(judged), len(unbound), slices.Sorted(maps.Keys(bodies)))
 }
 
-// unboundStatement is a statement of the walk that reads a project-owned table and binds neither
-// fragment: the table it names, and every read that made it.
+// judgedStatement is what the census made of one statement, kept so a statement several reads
+// make is read once: its unbound reads, and, for one readsKeyedByTheirTransaction names, those
+// left with the parameters its transaction binds bound.
+type judgedStatement struct {
+	reads, keyed []m19Unbound
+	err          error
+}
+
+// unboundStatement is a statement of the walk that reads project-owned tables it binds nothing
+// on: those reads, and every row of the route table that made the statement.
 type unboundStatement struct {
-	table string
+	reads []m19Unbound
 	rows  []string
-}
-
-// projectOwnedTableOf is the first project-owned table a statement reads, or empty for none.
-func projectOwnedTableOf(statement string) string {
-	match := projectOwnedRead.FindStringSubmatch(statement)
-	if match == nil {
-		return ""
-	}
-	return strings.ToLower(match[1])
-}
-
-// bindsAFragment reports whether a statement carries the project clause or the registry's
-// visibility predicate.
-func bindsAFragment(statement string) bool {
-	return strings.Contains(statement, access.Marker) || strings.Contains(statement, refs.VisibilityMarker)
 }
 
 // readOfNoProject is the passage of readsOfNoProject a statement holds, if it holds one.

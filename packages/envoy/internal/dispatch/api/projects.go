@@ -121,7 +121,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if kind == model.MemberRestricted {
-			writeError(w, "RESTRICTED_MEMBER", http.StatusForbidden, "a restricted member cannot create a project")
+			writeError(w, codeRestrictedMember, http.StatusForbidden, "a restricted member cannot create a project")
 			return
 		}
 		owns = kind == model.MemberFull

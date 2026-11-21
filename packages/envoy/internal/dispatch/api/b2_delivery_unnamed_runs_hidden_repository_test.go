@@ -11,15 +11,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 )
 
-// mapDeployRepositoryToPRIV records PRIV's mapping of the deploy repository, acme/widgets, which
-// makes PRIV, private, an owner of it (refs.ProjectRepositoriesSQL).
+// mapDeployRepositoryToPRIV makes PRIV an owner of the deploy repository, acme/widgets
+// (refs.ProjectRepositoriesSQL): PRIV's issue names it.
 func mapDeployRepositoryToPRIV(t *testing.T, seed privateSeed) {
 	t.Helper()
-	if _, err := seed.database.Pool.Exec(t.Context(), `
-		insert into repo_projects (repo, project, is_default, renamed_to, created_by)
-		values ('acme/widgets', 'PRIV', false, null, '{"kind":"user","id":"carol@example.com"}')
-	`); err != nil {
-		t.Fatalf("map acme/widgets to PRIV: %v", err)
+	if _, err := seed.database.Pool.Exec(t.Context(), `update issues set repo = 'acme/widgets' where key = $1`, seed.issue[seedPrivate]); err != nil {
+		t.Fatalf("name acme/widgets on PRIV's issue: %v", err)
 	}
 }
 

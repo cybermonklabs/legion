@@ -269,13 +269,14 @@ type legionBoardIssue struct {
 // as an issue's own blocked_by leaves it out (leaveOutHiddenIssueReferences).
 func (s *server) readLegionBoard(ctx context.Context, who model.Actor, project string) (*legionBoardPopulation, error) {
 	pool := s.deps.Store.Pool
-	if _, err := legion.GetSettings(ctx, pool, project); err != nil {
+	viewer := refs.VisibilityArg(who)
+	if _, err := legion.GetSettings(ctx, pool, project, viewer); err != nil {
 		return nil, err
 	}
 	population := &legionBoardPopulation{
 		project: project, issues: map[string]*legionBoardIssue{}, parents: map[string]string{},
 	}
-	if err := population.readSampled(ctx, pool); err != nil {
+	if err := population.readSampled(ctx, pool, viewer); err != nil {
 		return nil, err
 	}
 	if err := population.leaveOutHiddenBlockers(ctx, pool, who); err != nil {
@@ -328,32 +329,35 @@ func (p *legionBoardPopulation) leaveOutHiddenBlockers(ctx context.Context, q qu
 // header's (readDaemonRead), and its legion_current, the cards' and the walk's (readCurrent) — in
 // one repeatable-read, read-only transaction, so the two answer one moment. RecordRead commits a
 // read's row and its observations together, and two reads at two moments would still let a commit
-// between them put the header of one read of the daemon over the cards of another.
-func (p *legionBoardPopulation) readSampled(ctx context.Context, pool *store.Pool) error {
+// between them put the header of one read of the daemon over the cards of another. Each statement
+// binds the project's clause for the board's reader (viewer, refs.VisibilityArg), so it holds on
+// its own rather than on legionProject's earlier read of the project.
+func (p *legionBoardPopulation) readSampled(ctx context.Context, pool *store.Pool, viewer any) error {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if err := p.readDaemonRead(ctx, tx); err != nil {
+	if err := p.readDaemonRead(ctx, tx, viewer); err != nil {
 		return err
 	}
-	if err := p.readCurrent(ctx, tx); err != nil {
+	if err := p.readCurrent(ctx, tx, viewer); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
-// readDaemonRead reads the newest read of the project's daemon, the freshness the header shows.
-func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, tx pgx.Tx) error {
+// readDaemonRead reads the newest read of the project's daemon, the freshness the header shows, of
+// a project the reader sees (access.ProjectClause).
+func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, tx pgx.Tx, viewer any) error {
 	var read legionBoardDaemonRead
 	err := tx.QueryRow(ctx, `
 		select read_at, ok, error
 		from legion_reads
-		where project = $1
+		where project = $1 and `+access.ProjectClause("$1", "$2")+`
 		order by read_at desc, id desc
 		limit 1
-	`, p.project).Scan(&read.at, &read.ok, &read.failure)
+	`, p.project, viewer).Scan(&read.at, &read.ok, &read.failure)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -368,8 +372,8 @@ func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, tx pgx.Tx) e
 // transaction, so the cards and the tree walk answer the snapshot the header does. Its Newest are
 // the cards, and the project's own rows under legion.AdmissionKey (observeProject); its Reported
 // is the walk's (treeNode).
-func (p *legionBoardPopulation) readCurrent(ctx context.Context, tx pgx.Tx) error {
-	current, err := legion.ReadCurrent(ctx, tx, p.project)
+func (p *legionBoardPopulation) readCurrent(ctx context.Context, tx pgx.Tx, viewer any) error {
+	current, err := legion.ReadCurrent(ctx, tx, p.project, viewer)
 	if err != nil {
 		return err
 	}

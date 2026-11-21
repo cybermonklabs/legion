@@ -143,9 +143,11 @@ var readableDocument = access.ItemOwnerClause("null::text", "$1", "$2")
 //
 // What the room holds is weighed after the version is read, the narrower order: an update a room
 // took between the two either reached the store, which moved the stamp this read already holds,
-// or is still owed here. The version, and whether who may read the document, are read before the
-// room is looked for, so a document no room holds costs this read one statement before it goes the
-// way it always went.
+// or is still owed here. That the room is there at all is read first, as it was before a read was
+// made for a reader: a document no room holds costs a reader that sees every document
+// (readsEveryDocument) nothing before it goes the way it always went, and any other reader the one
+// statement that reads the rule of the document's row, which refuses a document it may not read
+// whether a room holds it or not.
 func (s *Service) storedText(ctx context.Context, who model.Actor, artifactID string) (string, string, bool, error) {
 	if _, joined := txFromContext(ctx); joined {
 		return "", "", false, nil
@@ -155,6 +157,10 @@ func (s *Service) storedText(ctx context.Context, who model.Actor, artifactID st
 	// from a version written before the failure.
 	if err := s.awaitRoomRecovery(ctx, artifactID); err != nil {
 		return "", "", false, err
+	}
+	live := s.srv.GetDoc(artifactID)
+	if live == nil && readsEveryDocument(who) {
+		return "", "", false, nil
 	}
 	var markdown, token, row *string
 	var head *int64
@@ -169,7 +175,6 @@ func (s *Service) storedText(ctx context.Context, who model.Actor, artifactID st
 	if !readable {
 		return "", "", false, pgx.ErrNoRows
 	}
-	live := s.srv.GetDoc(artifactID)
 	if live == nil {
 		return "", "", false, nil
 	}
@@ -191,4 +196,13 @@ func (s *Service) storedText(ctx context.Context, who model.Actor, artifactID st
 		return "", "", false, nil
 	}
 	return *markdown, *token, true, nil
+}
+
+// readsEveryDocument reports whether who reads every document, so that no rule of a document's row
+// can refuse it one: the server's own reader, and an open viewer of a deployment that holds no
+// private project, which sees every project and every conversation, as every reader did before a
+// project could be private. It is the api package's seesEveryObject, read for the documents alone.
+func readsEveryDocument(who model.Actor) bool {
+	viewer := who.Viewer
+	return viewer != nil && (viewer.All || (viewer.Open && !viewer.AnyPrivate))
 }

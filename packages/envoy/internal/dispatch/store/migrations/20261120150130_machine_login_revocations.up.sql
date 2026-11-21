@@ -7,10 +7,11 @@
 -- cache; the logins themselves, and the tokens already traded from them, are the broker's, which
 -- Dispatch can end only by calling the broker after the removal commits. So the removal records the
 -- debt here, in its own transaction, and the server's revocation loop (api: revokeOwedMachineLogins)
--- pays it after the commit by revoking every machine login the member approved for their own
--- machines, again and again until the broker confirms: a broker that does not answer, or a process
--- that dies between the commit and the call, leaves the row for the next pass of any process. The
--- removal does not wait on the broker, so an owner removes a person while the broker is down.
+-- pays it after the commit by revoking the machine logins the member approved for their own
+-- machines before `recorded_at`, again and again until the broker confirms: a broker that does not
+-- answer, or a process that dies between the commit and the call, leaves the row for the next pass
+-- of any process. The removal does not wait on the broker, so an owner removes a person while the
+-- broker is down; a login the member approves after the owner puts them back survives the pass.
 --
 -- One row per address (`email`, as people.email holds it). A removal recorded again before or after
 -- the row is paid owes it again: `generation` counts the removals recorded, so a pass that read an

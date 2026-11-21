@@ -275,7 +275,7 @@ func (side *equivalenceSide) run(t *testing.T, document *equivalenceDocument, fl
 	} else {
 		observed.Text = token + "\n" + markdown
 	}
-	if blocks, err := side.service.Blocks(ctx, ids.artifact); err != nil {
+	if blocks, err := side.service.Blocks(ctx, serverReader, ids.artifact); err != nil {
 		observed.Blocks = "error: " + err.Error()
 	} else {
 		observed.Blocks = encodeObserved(blocks)

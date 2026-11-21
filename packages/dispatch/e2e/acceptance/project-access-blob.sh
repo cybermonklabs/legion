@@ -212,8 +212,9 @@ pass
 two_builds_identity
 
 # Both builds run with the test hooks on and the dev embedder, which calls no model service, so
-# search answers its meaning leg beside its keyword leg, each read once neither build owes a vector
-# (indexed). Each is given no port, so start_server holds one and sets base_port and head_port.
+# search answers its meaning leg beside its keyword leg, each read once both builds have settled
+# their meaning index (await_index_settled). Each is given no port, so start_server holds one and
+# sets base_port and head_port.
 begin servers
 database_url=$base_database_url start_server base "$work/bin/dispatch-base" '' \
   DISPATCH_TEST_HOOKS=1 DISPATCH_DEV_EMBEDDER=1
@@ -586,34 +587,21 @@ no_difference
 note "every caller's project answer is the same at both builds"
 pass
 
-# spec_blocks_windowed BUILD PROJECT: every block of PROJECT's spec on BUILD, as carol reads it, is
-# in a window of the meaning index: its embedding reads other than "none", which is a block no
-# window covers yet (refs.BlockEmbeddingStates). A block inside another one, as the question of
-# the spec's ask block is, is indexed as a part of that block and in no window of its own, so it
-# reads "none" at both builds and is not waited on.
-spec_blocks_windowed() {
-  send "$1" carol GET "$(resolve "$1" "/api/v1/artifacts/{$2 spec}/blocks")"
-  [ "$status" = 200 ] && jq -e 'length > 0 and (. as $all | all(.[]; . as $b | .embedding != "none"
-    or any($all[]; .id != $b.id and .from <= $b.from and .to >= $b.to)))' "$work/body" >/dev/null
-}
-
 begin reads
 # A build pages its event log only up to its safe horizon (listEventLog, sinceHorizon), and a
 # build can answer a read before that horizon has passed what the seed wrote: one run read [] from
 # the merge base's log where this build listed the seed's events. So each build is read only once
 # its log, as carol reads it, holds the newest event its database holds after the projects above,
-# the project.created of a public project. Likewise the windows of each spec's blocks, and the
-# vectors of everything meaning search ranks, are written behind the write, in each build's own
-# time: two runs in five read `"embedding":"pending"` at the merge base where this build still
-# read `"none"`. So each spec is read only once every one of its blocks is in a window on that
-# build, and each build once it owes no vector. A build that never writes them fails the wait,
-# naming it. The seed settled every delivery before it wrote on, so the newest event is read after
-# them.
+# the project.created of a public project. Likewise the windows of every document, comment,
+# message and ask, and the vectors of everything meaning search ranks, are written behind the
+# write, in each build's own time: two runs in five read `"embedding":"pending"` at the merge base
+# where this build still read `"none"`. So both builds are read only once each has settled its
+# meaning index: no item owed its windows, and nothing its coverage counts lacking or failed
+# (access-lib.sh's await_index_settled). A build that never settles fails the wait, naming it and
+# what it still waits on. The seed settled every delivery before it wrote on, so the newest event
+# is read after them.
+await_index_settled "$index_settle_seconds" base head
 for build in base head; do
-  for project in PUB PRIV; do
-    until_true 120 "the $build build to window every block of $project-1's spec" spec_blocks_windowed "$build" "$project"
-  done
-  until_true 120 "the $build build to owe no vector" indexed "$build"
   url_var=${build}_database_url
   newest=$(psql "${!url_var}" -X -tAc 'select coalesce(max(id), 0) from events') ||
     fail "$build: could not read the newest event of its database"
@@ -721,8 +709,15 @@ for caller in "${callers[@]}"; do
       remember "$build" "live $project comment for $caller" "$(jq -r .id "$work/body")"
     done
   done
+  # The written file names both comments, which every caller is sent with every project public,
+  # PRIV-1's last: the probe reads until the feed has sent every event its log lets the caller
+  # read of them (socket-access.ts), however long an open transaction holds the feed back, and the
+  # feed sends in id order, so anything it sends of the writes before the last comment has come by
+  # then. The file is written whole and then moved into place, so the probe reads no part of it.
   for build in base head; do
-    : >"$work/live-written-$build"
+    printf '%s\n' "$(recalled "$build" "live PUB comment for $caller")" "$(recalled "$build" "live PRIV comment for $caller")" \
+      >"$work/live-written-$build.part"
+    mv "$work/live-written-$build.part" "$work/live-written-$build"
   done
   for build in base head; do
     status=socket

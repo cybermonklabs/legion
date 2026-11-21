@@ -682,19 +682,24 @@ so Dispatch leaves that revocation owed, logs it at ERROR and counts it
 Reset or restore the broker's database and Dispatch's together, never one alone, for the reason
 [the Dispatch runbook](/legion/dispatch/running-dispatch/#signing-people-in) gives, which also
 gives the recovery when one was: for Dispatch's database alone, a reset that ends every person's
-browser sessions, personal tokens and credentials at the broker, then lifts a refusal at the broker
-only for the account the Workspace directory names as an address's holder, and records its own start
-and end in Dispatch's `deployment_resets`; for the broker's database alone, telling the broker again
-every revocation Dispatch settled at or after the broker's backup less an hour and after the last
-reset's start (the reset settled the revocations it chose not to pay), which nothing else finds —
-the broker holds those replaced accounts' credentials live again, and Dispatch, which settled each,
-owes nothing and raises no alarm. Then the Dispatch runbook's read of the last reset's end says
-whether the backup may predate it, by the same hour's margin; when it may, run [the Dispatch
-runbook's credentials and directory blocks](/legion/dispatch/running-dispatch/#signing-people-in)
-again after record-again and before starting Dispatch, and when the deployment ever moved from the
-Cognito pool to a domain, that move's sweep of machine logins recording no approving account too.
-A broker database made again, which has no backup moment, takes the record-again step and that
-read with `-infinity`, so it takes the reset's blocks again whenever a reset ran.
+browser sessions, personal tokens and credentials at the broker, at once and again an hour and ten
+minutes later, lifts a refusal at the broker only for the account the Workspace directory names as
+an address's holder, and records its own start and end in Dispatch's `deployment_resets`; for the
+broker's database alone, telling the broker again every revocation Dispatch settled at or after
+the broker's backup less an hour and after the last reset's start (the reset settled the
+revocations it chose not to pay), which nothing else finds — the broker holds those replaced
+accounts' credentials live again, and Dispatch, which settled each, owes nothing and raises no
+alarm. Then the Dispatch runbook's read of the last reset's end says whether the backup may
+predate it, by the same hour's margin; when it may, run [the Dispatch runbook's credentials and
+directory blocks](/legion/dispatch/running-dispatch/#signing-people-in) again after record-again
+and before starting Dispatch, and when the deployment ever moved from the Cognito pool to a domain,
+that move's sweep of machine logins recording no approving account too. A refusal an operator
+lifted by hand comes back with the restore and nothing records it: that runbook's block finds each
+refusal of the account Dispatch records for its address, which is cleared again before Dispatch
+starts. Where the last reset is still open, Dispatch is still stopped: finish that reset rather
+than starting Dispatch. A broker database made again, which has no backup moment, takes the
+record-again step and that read with `-infinity`, so it takes the reset's blocks again whenever a
+reset ran.
 
 The broker's database holds the record of replaced accounts to the revoke's own writes, and
 refuses any other with SQLSTATE 23514: a row's address, account and recording time never change,

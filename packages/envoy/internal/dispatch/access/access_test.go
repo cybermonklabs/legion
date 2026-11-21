@@ -246,19 +246,21 @@ func TestARestrictedMemberIsNeverAdmittedByAGroup(t *testing.T) {
 // statement that binds one says so in pg_stat_statements and in every census that reads SQL.
 func TestEverySQLFragmentStartsWithTheMarker(t *testing.T) {
 	for name, fragment := range map[string]string{
-		"PersonSeesProjectSQL": PersonSeesProjectSQL("$1", "$2", "p"),
-		"VisibleProjectsSQL":   VisibleProjectsSQL(),
-		"ProjectClause":        ProjectClause("p.key", "$1"),
-		"OpenClause":           OpenClause("$1"),
-		"ListsClause":          ListsClause("p.key", "$1"),
-		"IssueProjectClause":   IssueProjectClause("i.key", "$1"),
-		"ItemOwnerClause":      ItemOwnerClause("c.issue_key", "c.artifact_id", "$1"),
-		"MessageClause":        MessageClause("m", "$1"),
-		"BroadcastClause":      BroadcastClause("b.id", "$1"),
-		"PersonClause":         PersonClause("u.email", "$1"),
-		"SessionClause":        SessionClause("s.id", "$1"),
-		"RoleClause":           RoleClause("r.id", "$1"),
-		"PartyClause":          PartyClause("n.parties", "$1"),
+		"PersonSeesProjectSQL":       PersonSeesProjectSQL("$1", "$2", "p"),
+		"VisibleProjectsSQL":         VisibleProjectsSQL(),
+		"ProjectClause":              ProjectClause("p.key", "$1"),
+		"OpenClause":                 OpenClause("$1"),
+		"ListsClause":                ListsClause("p.key", "$1"),
+		"IssueProjectClause":         IssueProjectClause("i.key", "$1"),
+		"ItemOwnerClause":            ItemOwnerClause("c.issue_key", "c.artifact_id", "$1"),
+		"MessageClause":              MessageClause("m", "$1"),
+		"BroadcastClause":            BroadcastClause("b.id", "$1"),
+		"PersonClause":               PersonClause("u.email", "$1"),
+		"SessionClause":              SessionClause("s.id", "$1"),
+		"RoleClause":                 RoleClause("r.id", "$1"),
+		"RoleProjectClause":          RoleProjectClause("p.key", "$1"),
+		"HiddenPrivateProjectClause": HiddenPrivateProjectClause("p.key", "$1"),
+		"PartyClause":                PartyClause("n.parties", "$1"),
 	} {
 		if !strings.HasPrefix(fragment, Marker+name+" */") {
 			t.Errorf("%s = %q, want it to start with %q", name, fragment[:min(len(fragment), 60)], Marker+name+" */")

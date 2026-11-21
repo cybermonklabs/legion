@@ -122,11 +122,13 @@ func signInSettingNames() string {
 // test hooks put the dev OIDC issuer in Google's place (DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER); a
 // domain that is not a lowercase DNS name; an entry of the Workspace's other domains that is empty
 // or not a lowercase domain name IDNA lookup takes (workspaceDomainALabel), named by its position;
-// under Google's issuer, an outside origin whose host Google refuses in an OAuth redirect URI,
-// since the Google client must list `<origin>/auth/callback` (weborigin.GoogleRedirectHost, the
-// rule gcp:Dispatch holds its outsideOrigin input to with sign-in on); a group under Google's
-// issuer, whose tokens carry no `cognito:groups`. A deployment with the issuer, client ID, client
-// secret and group of a Cognito pool reaches none of them.
+// under Google's issuer, an outside origin whose host Google refuses in an OAuth redirect URI
+// (weborigin.GoogleRedirectHost, the rule gcp:Dispatch holds its outsideOrigin input to with
+// sign-in on, and so the rule here for every Google deployment alike), though the Google client
+// lists `<origin>/auth/callback` only with DISPATCH_SIGNIN_OUTSIDE=1, the one sign-in Google serves
+// at the outside origin (routes.googleSignInHere); a group under Google's issuer, whose tokens
+// carry no `cognito:groups`. A deployment with the issuer, client ID, client secret and group of a
+// Cognito pool reaches none of them.
 func checkSignInSettings(boot bootConfig, identityMode string) error {
 	var set []string
 	for _, setting := range signInSettings(boot) {

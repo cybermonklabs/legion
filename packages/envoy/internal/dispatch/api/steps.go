@@ -142,8 +142,15 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 // writeIssueStep is the one write of a step record behind both routes, by actor to the issue key:
 // the issue is read and its writer judged (lockRecordedIssue), a write the rating route sends with
 // no rating is refused (rated), write (its ID, Issue and Project filled here from the path and the
-// issue row) is written, and the record is answered as the read lists it.
+// issue row) is written, and the record is answered as the read lists it. The request's reader is
+// resolved once, before the transaction opens, and handed on in the request's context
+// (withReader), so the issue's read and the read of its runs bind the one viewer.
 func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, actor model.Actor, key string, rated bool) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	r = r.WithContext(withReader(r.Context(), who))
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -175,7 +182,7 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 	// The attempt is the run's place among the issue's runs, which no write stores, so the
 	// answer reads the issue's runs in the write's own transaction, as GET would after it. That
 	// read lists the run: the write made it part of the issue, or found it part of the issue.
-	steps, err := workflowstore.IssueSteps(r.Context(), tx, key)
+	steps, err := workflowstore.IssueSteps(r.Context(), tx, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -282,7 +289,7 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, pgx.ErrNoRows)
 		return
 	}
-	steps, err := workflowstore.IssueSteps(r.Context(), s.deps.Store.Pool, key)
+	steps, err := workflowstore.IssueSteps(r.Context(), s.deps.Store.Pool, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

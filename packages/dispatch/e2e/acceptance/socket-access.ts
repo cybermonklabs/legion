@@ -13,14 +13,20 @@
  *    for a socket closed before either.
  *  - `live` subscribes to the event feed from now, with no resume, writes the ready file once the
  *    feed's `events_start` frame has come, waits for the driver to make the written file (its
- *    writes have committed), and prints the `events_start` frame and then every frame the server
- *    sent, one per line, until no frame has come for `quietMs`: what this caller is sent live of
- *    the writes the driver made. Each event's id, in the frame and in the event, is printed as
- *    `<event>`: two servers number their events apart, and which events a caller is sent is the
- *    answer, not their numbers.
+ *    writes have committed; it names, one a line, the comments this caller must be sent), and
+ *    prints the `events_start` frame and then every frame the server sent, one per line, until
+ *    the feed has sent every event GET /api/v1/events/log lets this caller read after the
+ *    `events_start` (readableEventIds): what this caller is sent live of the writes the driver
+ *    made. The feed sends an event only once the server's event horizon has passed it, which any
+ *    transaction open on the Postgres instance holds back, so no quiet period can say the feed has
+ *    sent everything; the log, read by the same rule, says what it owes. Each event's id, in the
+ *    frame and in the event, is printed as `<event>`: two servers number their events apart, and
+ *    which events a caller is sent is the answer, not their numbers.
  *
- *  Exit 0 for any answer, a refusal included; 1 when the server could not be reached or gave no
- *  answer within ten seconds; 2 for a wrong call. e2e/acceptance/project-access.sh runs it. */
+ *  Exit 0 for any answer, a refusal included; 1 when the server could not be reached, gave no
+ *  answer within ten seconds, or (live) did not send what its log owes within three minutes of
+ *  the `events_start`; 2 for a wrong call. e2e/acceptance/project-access.sh and
+ *  project-access-blob.sh run it. */
 import { createDecoder, readVarString, readVarUint } from "lib0/decoding";
 import { createEncoder, toUint8Array, writeVarString, writeVarUint } from "lib0/encoding";
 
@@ -37,8 +43,14 @@ const permissionDeniedSubtype = 1;
 const authenticatedSubtype = 2;
 
 const answerWithinMs = 10_000;
-/** How long the event feed must be quiet before its replay is taken as whole. */
-const quietMs = 1_500;
+/** How long the event feed has, from its `events_start`, to send what its log owes the caller.
+ *  Only a failure ends on it: an open transaction anywhere on the instance holds the feed back,
+ *  and the probe waits that out rather than taking a silence as the end. */
+const settleWithinMs = 180_000;
+/** How soon the event log is read again while it does not yet hold every comment the driver
+ *  named: its read is capped at the server's safe horizon, which an open transaction holds below
+ *  the driver's writes. A pause between reads, never what decides the answer. */
+const logPollMs = 200;
 
 function usage(): never {
   console.error(
@@ -164,18 +176,63 @@ function documentAnswer(socket: WebSocket): Promise<string> {
   return answer.promise;
 }
 
+/** The ids of the events GET /api/v1/events/log lets this caller read after `since`, as decimal
+ *  strings, read once the log holds the `comment.created` event of every comment in `comments`:
+ *  the log answers by the rule the event feed sends by (eventReadableSQL), capped at the safe
+ *  horizon, so once it holds the driver's last writes it holds every event of theirs the feed owes
+ *  this caller. While an open transaction holds the horizon below those writes the log answers
+ *  without them, and it is read again. Any answer but 200 fails the probe. */
+async function readableEventIds(since: string, comments: readonly string[]): Promise<Set<string>> {
+  for (;;) {
+    const ids = new Set<string>();
+    const created = new Set<string>();
+    let after = since;
+    for (;;) {
+      const response = await fetch(
+        `${origin}/api/v1/events/log?after=${encodeURIComponent(after)}`,
+        {
+          headers,
+        }
+      );
+      const body = await response.text();
+      if (response.status !== 200) {
+        throw new Error(
+          `GET /api/v1/events/log?after=${after} answered ${response.status} ${body}`
+        );
+      }
+      const page = JSON.parse(body) as {
+        id: number | string;
+        type?: string;
+        payload?: { id?: unknown };
+      }[];
+      for (const event of page) {
+        ids.add(String(event.id));
+        if (event.type === "comment.created" && typeof event.payload?.id === "string") {
+          created.add(event.payload.id);
+        }
+      }
+      const last = page.at(-1);
+      if (page.length < 1000 || last === undefined) break;
+      after = String(last.id);
+    }
+    if (comments.every((comment) => created.has(comment))) return ids;
+    await Bun.sleep(logPollMs);
+  }
+}
+
 /** What the event feed sends this caller of the driver's writes, as the lines it printed: the
- *  feed starts with no resume, the ready file says it has, and the frames are read until the feed
- *  has been quiet for `quietMs` after the written file appeared. */
-function liveAnswer(socket: WebSocket): Promise<string> {
+ *  feed starts with no resume, the ready file says it has, and once the written file has appeared
+ *  the frames are read until the feed has sent every event readableEventIds lists, or the
+ *  subscription ends. `settling` is told when the feed has started, so the caller's bound on the
+ *  answer becomes the feed's (settleWithinMs). */
+function liveAnswer(socket: WebSocket, settling: () => void): Promise<string> {
   const answer = Promise.withResolvers<string>();
   const lines: string[] = [];
-  let quiet: Timer | undefined;
-  let written = false;
+  const sent = new Set<string>();
+  let owed: Set<string> | undefined;
   const settled = () => answer.resolve(lines.join("\n"));
-  const awaitQuiet = () => {
-    clearTimeout(quiet);
-    if (written) quiet = setTimeout(settled, quietMs);
+  const settledIfPaid = () => {
+    if (owed !== undefined && [...owed].every((id) => sent.has(id))) settled();
   };
   socket.addEventListener("open", () =>
     socket.send(JSON.stringify({ type: "subscribe", sub: "e", view: { kind: "events" } }))
@@ -184,24 +241,33 @@ function liveAnswer(socket: WebSocket): Promise<string> {
     if (typeof event.data !== "string") return;
     const frame = JSON.parse(event.data) as {
       type?: string;
+      sub?: string;
       id?: string;
+      since?: string;
       event?: { id?: unknown };
     };
     if (frame.type === "heartbeat") return;
     if (frame.type === "event") {
+      if (frame.id !== undefined) sent.add(String(frame.id));
       frame.id = "<event>";
       if (frame.event !== undefined) frame.event.id = "<event>";
     }
     lines.push(JSON.stringify(frame));
     if (frame.type === "events_start") {
+      settling();
+      const since = frame.since ?? "0";
       void (async () => {
         await Bun.write(readyFile ?? "", "ready\n");
         while (!(await Bun.file(writtenFile ?? "").exists())) await Bun.sleep(50);
-        written = true;
-        awaitQuiet();
-      })();
+        const comments = (await Bun.file(writtenFile ?? "").text())
+          .split("\n")
+          .filter((line) => line !== "");
+        owed = await readableEventIds(since, comments);
+        settledIfPaid();
+      })().catch(answer.reject);
     }
-    awaitQuiet();
+    if (frame.type === "ended" && frame.sub === "e") settled();
+    settledIfPaid();
   });
   socket.addEventListener("close", (event) => {
     lines.push(`closed ${event.code} ${event.reason}`);
@@ -217,16 +283,26 @@ try {
   } else {
     const socket = new BunWebSocket(`${origin.replace(/^http/, "ws")}${path}`, { headers });
     socket.binaryType = "arraybuffer";
-    const timer = setTimeout(() => {
+    let timer = setTimeout(() => {
       console.error(`no answer on ${path} within ${answerWithinMs / 1000} s`);
       process.exit(1);
     }, answerWithinMs);
-    const answer = await (mode === "doc" ? documentAnswer(socket) : liveAnswer(socket));
+    const settling = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        console.error(
+          `${path} did not send what GET /api/v1/events/log owes within ${settleWithinMs / 1000} s`
+        );
+        process.exit(1);
+      }, settleWithinMs);
+    };
+    const answer = await (mode === "doc" ? documentAnswer(socket) : liveAnswer(socket, settling));
     clearTimeout(timer);
     console.log(answer);
     socket.close();
   }
 } catch (error) {
+  // An error can come with the socket still open and its bound still set: exit, not wait them out.
   console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
+  process.exit(1);
 }

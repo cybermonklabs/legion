@@ -14,7 +14,9 @@ import (
 // SignInSubject and ConfirmSubject, when the kind they write is not the one the row held). It
 // carries no payload: a listener reads what it needs afresh. The document service closes on it
 // each socket whose person no longer reads its room (docs: Service.recheckAccess), and the live
-// delivery hub resolves each subscriber's reader again (api: deliveryHub.recheckStaleReaders).
+// delivery hub resolves each subscriber's reader again (api: deliveryHub.recheckStaleReaders). A
+// change made without it, by SQL alone, is found on the document sockets' heartbeat instead (docs:
+// Service.RunAccessRecheck).
 const AccessChangedChannel = "dispatch_access_changed"
 
 // AnnounceAccessChange notifies AccessChangedChannel in tx, which Postgres delivers if tx commits.

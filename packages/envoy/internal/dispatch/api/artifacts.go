@@ -994,7 +994,7 @@ func (s *server) artifactTextBody(r *http.Request, who model.Actor, artifactID s
 		markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), who, artifactID)
 		return markdown, token, nil, err
 	}
-	markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(r.Context(), artifactID)
+	markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(r.Context(), who, artifactID)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -1023,9 +1023,9 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
-	blocks, err := s.deps.Docs.Blocks(r.Context(), artifact.ID)
+	blocks, err := s.deps.Docs.Blocks(r.Context(), who, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, missingArtifactIfNoRows(err))
 		return
 	}
 	if err := s.describeBlocks(r.Context(), who, artifact.ID, blocks); err != nil {
@@ -1077,9 +1077,9 @@ func (s *server) getArtifactBlockPath(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
-	path, err := s.deps.Docs.BlockPath(r.Context(), artifact.ID, r.PathValue("block_id"))
+	path, err := s.deps.Docs.BlockPath(r.Context(), who, artifact.ID, r.PathValue("block_id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, missingArtifactIfNoRows(err))
 		return
 	}
 	WriteJSON(w, http.StatusOK, path)
@@ -1090,7 +1090,10 @@ func (s *server) getArtifactBlockPath(w http.ResponseWriter, r *http.Request) {
 // table block. The predicate is two conjuncts (is not null, then not the empty
 // string) rather than nullif(...) is not null so the planner can use the partial
 // comments_/asks_anchor_block_id_idx indexes. The rows are counted only where who may read the
-// document (documentVisible), one test of the document for the whole statement.
+// document (documentVisible), one test of the document for the whole statement, and each comment
+// and ask only where who may read it (access.ItemOwnerClause over its own owner): a stored anchor
+// that names this document from a comment or an ask of a project who does not see counts as one no
+// row holds.
 func (s *server) blockReferences(ctx context.Context, who model.Actor, artifactID string) (map[string]model.BlockReferences, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select anchor_block_id,
@@ -1100,10 +1103,12 @@ func (s *server) blockReferences(ctx context.Context, who model.Actor, artifactI
 			select anchor->>'block_id' as anchor_block_id, 'comment' as kind
 			from comments
 			where anchor->>'artifact_id' = $1 and anchor->>'block_id' is not null and anchor->>'block_id' <> ''
+			  and `+access.ItemOwnerClause("comments.issue_key", "comments.artifact_id", "$2")+`
 			union all
 			select anchor->>'block_id' as anchor_block_id, 'ask' as kind
 			from asks
 			where anchor->>'artifact_id' = $1 and anchor->>'block_id' is not null and anchor->>'block_id' <> ''
+			  and `+access.ItemOwnerClause("asks.issue_key", "asks.artifact_id", "$2")+`
 		) anchored
 		where `+documentVisible("$1::uuid", "$2")+`
 		group by anchor_block_id
@@ -1994,13 +1999,21 @@ func (s *server) loadArtifactRow(ctx context.Context, q queryer, who model.Actor
 // (loadArtifactRow) and the one that takes the row alone (loadArtifactRowByID).
 func scanArtifactOrNotFound(row pgx.Row) (model.Artifact, error) {
 	artifact, err := scanArtifact(row)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return model.Artifact{}, errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
-	}
 	if err != nil {
-		return model.Artifact{}, err
+		return model.Artifact{}, missingArtifactIfNoRows(err)
 	}
 	return artifact, nil
+}
+
+// missingArtifactIfNoRows is err with pgx.ErrNoRows answered as the 404 an artifact no row holds
+// answers: a read of an artifact's row that finds none (scanArtifactOrNotFound), and a document
+// read that finds its reader may not read the document (docs' readStoredHead), which answers as
+// the id nobody holds the route's first read of the row would have answered.
+func missingArtifactIfNoRows(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
+	}
+	return err
 }
 
 // loadArtifactRowByID reads one artifact's own row by id, without the versions and the approval

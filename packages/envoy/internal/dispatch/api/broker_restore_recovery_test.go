@@ -346,9 +346,9 @@ func TestABrokerBackupWrittenWithinTheHourAfterTheResetRepeatsItsBlocks(t *testi
 }
 
 // TestABrokerBackupTakenDuringTheResetRepeatsItsBlocks: a broker backup taken while the reset runs,
-// after its first credentials run and more than an hour after its start, but before its second
-// run, holds a sign-in A traded during that hour with a Google ID token issued before B replaced
-// it. The second run ends it and the reset closes. Restored to that backup, the broker serves the
+// after its first credentials run and past the close's wait since its start, but before its second
+// run, holds a sign-in A traded during the wait with a Google ID token issued before B replaced it.
+// The second run ends it and the reset closes. Restored to that backup, the broker serves the
 // sign-in again. The read compares the backup with the reset's end, not its start, so it says the
 // backup may predate the end, and the credentials block run again ends the sign-in.
 //
@@ -371,8 +371,8 @@ func TestABrokerBackupTakenDuringTheResetRepeatsItsBlocks(t *testing.T) {
 	if output, err := r.clearHoldersRefusals(t, directory); err != nil {
 		t.Fatalf("the reset's directory block: %v\n%s", err, output)
 	}
-	r.ageReset(t, time.Hour+time.Minute)
 	traded := r.signInMachine(t, email, "a-during", strings.Repeat("u", 43))
+	r.ageReset(t, resetWait+time.Minute)
 	backup := time.Now()
 	if left := r.endBrokerCredentials(t); len(left) != 0 || r.machineSignInLive(t, traded) {
 		t.Fatalf("the reset's second credentials run leaves %v and the traded sign-in live %t; want nothing", left, r.machineSignInLive(t, traded))
@@ -390,6 +390,25 @@ func TestABrokerBackupTakenDuringTheResetRepeatsItsBlocks(t *testing.T) {
 	}
 	if r.machineSignInLive(t, traded) {
 		t.Error("after the broker-alone recovery, the sign-in traded during the reset is live; want it ended before Dispatch starts")
+	}
+}
+
+// TestABrokerBackupAfterAnUnclosedResetRepeatsItsBlocks is the same-family review's R27-1 row: a
+// reset was started and never closed, so it is still running, and a broker backup of any moment
+// may hold what its broker steps ended or have yet to end. The read answers `run the reset's blocks
+// again` for a backup taken two hours after the start.
+//
+// Control in the runbook: an unclosed reset counted as closed long ago (`'-infinity'` for its end)
+// answers `the backup holds the last reset`.
+func TestABrokerBackupAfterAnUnclosedResetRepeatsItsBlocks(t *testing.T) {
+	r := newRecoveryRig(t)
+	r.resetSessions(t)
+	starts := r.resetMarks(t, "start")
+	if len(starts) != 1 || len(r.resetMarks(t, "end")) != 0 {
+		t.Fatalf("after step 1 deployment_resets holds starts %v and ends %v; want one start and no end", starts, r.resetMarks(t, "end"))
+	}
+	if answer := r.resetBlocksAgain(t, starts[0].Add(2*time.Hour), nil); answer != "run the reset's blocks again" {
+		t.Errorf("the read for a backup two hours after an unclosed reset's start answered %q; want the reset's blocks run again", answer)
 	}
 }
 
@@ -629,9 +648,10 @@ func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
 		t.Fatalf("after the pass, %s owes %+v, %v; want the revocation settled", email, owing, err)
 	}
 	block := runbookBlockAfter(t, brokerRestoredLead)
-	if len(block.statements) != 4 || block.statements[0] != "begin" || block.statements[3] != "commit" ||
-		!strings.HasPrefix(block.statements[1], "select u.generation from user_sessions u ") {
-		t.Fatalf("the runbook's block for a broker restored alone is %q; want begin, a read of the addresses' session rows, the record-again and commit", block.statements)
+	if len(block.statements) != 5 || block.statements[0] != "begin" || block.statements[4] != "commit" ||
+		!strings.HasPrefix(block.statements[1], "select u.generation from user_sessions u ") ||
+		!strings.HasPrefix(block.statements[3], "update machine_login_revocations ") {
+		t.Fatalf("the runbook's block for a broker restored alone is %q; want begin, a read of the addresses' session rows, the record-again, the machine-login revocations owed again and commit", block.statements)
 	}
 	tx, err := r.dispatch.Pool.Begin(ctx)
 	if err != nil {
@@ -668,5 +688,64 @@ func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
 	}
 	if owing, err := r.revocations.Owing(ctx, email); err != nil || len(owing) != 1 {
 		t.Errorf("after the block, %s owes %+v, %v; want the revocation recorded again", email, owing, err)
+	}
+}
+
+// TestABrokerRestoredAloneOwesAgainTheMachineLoginRevocationsSettledSince: the block for a broker
+// restored alone owes again each revocation of a restricted member's machine logins that Dispatch
+// settled at or after the backup's moment less an hour, at its next generation and with its
+// recorded_at kept, so the next pass again revokes only the logins approved before that removal.
+// One settled before then, which the restored broker's backup already holds revoked, stays settled.
+//
+// Control: drop the block's machine_login_revocations statement, and the revocation settled since
+// the backup stays settled, named.
+func TestABrokerRestoredAloneOwesAgainTheMachineLoginRevocationsSettledSince(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	revocations := store.NewMachineLoginRevocations(database.Pool)
+	const since, before = "since@other.example", "before@other.example"
+	for _, email := range []string{since, before} {
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.RecordMachineLoginRevocation(ctx, tx, email); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claimed, err := revocations.Claim(ctx, time.Minute, 5)
+	if err != nil || len(claimed) != 2 {
+		t.Fatalf("Claim = %+v, %v; want both revocations", claimed, err)
+	}
+	generations := map[string]int64{}
+	for _, owed := range claimed {
+		if settled, err := revocations.Settle(ctx, owed); err != nil || !settled {
+			t.Fatalf("Settle(%s) = %t, %v; want it settled", owed.Email, settled, err)
+		}
+		generations[owed.Email] = owed.Generation
+	}
+	// The one settled three hours ago is older than the backup's moment less its hour.
+	if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set done_at = now() - interval '3 hours' where email = $1`, before); err != nil {
+		t.Fatal(err)
+	}
+	var recordedAt time.Time
+	if err := database.Pool.QueryRow(ctx, `select recorded_at from machine_login_revocations where email = $1`, since).Scan(&recordedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	runStatements(t, database.Pool, runbookBlockAfter(t, brokerRestoredLead).statements, pgx.NamedArgs{"backup": time.Now().Add(-30 * time.Minute)})
+
+	if owed, generation, err := revocations.Owing(ctx, since); err != nil || !owed || generation != generations[since]+1 {
+		t.Errorf("the revocation settled since the backup is owed %t at generation %d (%v) after the block, want owed at %d", owed, generation, err, generations[since]+1)
+	}
+	var after time.Time
+	if err := database.Pool.QueryRow(ctx, `select recorded_at from machine_login_revocations where email = $1`, since).Scan(&after); err != nil || !after.Equal(recordedAt) {
+		t.Errorf("the revocation owed again records %s (%v), want its removal's recorded_at %s kept", after, err, recordedAt)
+	}
+	if owed, _, err := revocations.Owing(ctx, before); err != nil || owed {
+		t.Errorf("the revocation settled before the backup's hour is owed %t (%v) after the block, want it settled still", owed, err)
 	}
 }

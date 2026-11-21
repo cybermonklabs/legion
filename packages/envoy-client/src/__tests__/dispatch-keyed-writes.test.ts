@@ -1731,8 +1731,8 @@ describe("DispatchClient's writes", () => {
   });
 
   // F11 (the review of 99b1e438db): Dispatch mounts `/healthz` outside its API chain
-  // (`dispatchHandler`, cmd/dispatch/main.go), so the probe presents no credential: a fail-fast
-  // credential failing at that moment cannot end the write at the probe.
+  // (`routes.Process`, internal/dispatch/routes/process.go), so the probe presents no credential:
+  // a fail-fast credential failing at that moment cannot end the write at the probe.
   test("the /healthz probe presents no credential, so a credential failing then does not end the write", async () => {
     let presented = 0;
     const credential: RequestCredential = {

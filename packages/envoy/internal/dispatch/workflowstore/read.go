@@ -17,19 +17,22 @@ import (
 // the runs happened: by generation, then by start, a run whose start never arrived first, then by
 // id. The attempt is the place of a run among the issue's runs of the same task, step and kind in
 // that order, from 1, so the retro and the merge, both at step 0, each count from 1. An issue
-// Legion never ran answers none.
+// Legion never ran answers none, and so does an issue of a project who does not see: the
+// statement holds the issue to who itself (access.IssueProjectClause), whatever the caller read
+// of the issue before.
 //
 // It reads the `part_of` tuples into the issue through workflow_tuples_inbound, whose predicate
 // the literal to_kind implies, and joins each to its node row, so it costs the issue's own runs
 // and nothing else.
-func IssueSteps(ctx context.Context, q Queryer, issue string) ([]StepRead, error) {
+func IssueSteps(ctx context.Context, q Queryer, who model.Actor, issue string) ([]StepRead, error) {
 	rows, err := q.Query(ctx, `
 		select n.id, n.attributes
 		from workflow_tuples t
 		join workflow_nodes n on n.kind = t.from_kind and n.id = t.from_id
 		where t.to_kind = '`+KindIssue+`' and t.to_id = $1 and t.kind = '`+RelationPartOf+`'
 			and t.from_kind = '`+KindStep+`' and t.asserted
-	`, issue)
+			and `+access.IssueProjectClause("$1", "$2")+`
+	`, issue, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the steps of %s: %w", issue, err)
 	}

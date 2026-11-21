@@ -264,7 +264,7 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	thread[0].AnchorPosition, err = s.anchorBlock(r.Context(), thread[0].Anchor)
+	thread[0].AnchorPosition, err = s.anchorBlock(r.Context(), who, thread[0].Anchor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -467,7 +467,9 @@ func scanComment(row pgx.Row, extra ...any) (model.Comment, error) {
 
 // hydrateCommentSideTables loads mentions, delivery attempts and the block each reply answers once
 // per comment page, avoiding a per-comment query while keeping all reads of a Comment's visible
-// delivery state consistent. A mention or a delivery names a session, which is left out where who
+// delivery state consistent. Each read holds the comment it hydrates to who in the statement
+// itself (access.ItemOwnerClause), so a comment made hidden after the read of it answers no
+// mention and no delivery. A mention or a delivery names a session, which is left out where who
 // does not see it (leaveOutHiddenCommentSessions).
 func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, who model.Actor, comments []model.Comment) ([]model.Comment, error) {
 	ids := make([]string, len(comments))
@@ -476,11 +478,11 @@ func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, who mo
 		ids[index] = comments[index].ID
 		replies[index] = &comments[index]
 	}
-	mentions, err := s.loadCommentMentions(ctx, q, ids)
+	mentions, err := s.loadCommentMentions(ctx, q, who, ids)
 	if err != nil {
 		return nil, err
 	}
-	deliveries, err := s.loadCommentDeliveries(ctx, q, ids)
+	deliveries, err := s.loadCommentDeliveries(ctx, q, who, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -537,7 +539,9 @@ func leaveOutHiddenCommentSessions(ctx context.Context, q queryer, who model.Act
 	return nil
 }
 
-func (s *server) loadCommentMentions(ctx context.Context, q queryer, commentIDs []string) (map[string][]model.Mention, error) {
+// loadCommentMentions reads the mentions of each of commentIDs, of the comments who may read
+// (access.ItemOwnerClause over each mention's own comment).
+func (s *server) loadCommentMentions(ctx context.Context, q queryer, who model.Actor, commentIDs []string) (map[string][]model.Mention, error) {
 	mentions := make(map[string][]model.Mention, len(commentIDs))
 	for _, id := range commentIDs {
 		mentions[id] = []model.Mention{}
@@ -546,11 +550,12 @@ func (s *server) loadCommentMentions(ctx context.Context, q queryer, commentIDs 
 		return mentions, nil
 	}
 	rows, err := q.Query(ctx, `
-		select comment_id::text, target, delivery, resolved_session_id
-		from comment_mentions
-		where comment_id = any($1::uuid[])
-		order by comment_id, target
-	`, commentIDs)
+		select m.comment_id::text, m.target, m.delivery, m.resolved_session_id
+		from comment_mentions m
+		join comments c on c.id = m.comment_id
+		where m.comment_id = any($1::uuid[]) and `+access.ItemOwnerClause("c.issue_key", "c.artifact_id", "$2")+`
+		order by m.comment_id, m.target
+	`, commentIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -566,7 +571,9 @@ func (s *server) loadCommentMentions(ctx context.Context, q queryer, commentIDs 
 	return mentions, rows.Err()
 }
 
-func (s *server) loadCommentDeliveries(ctx context.Context, q queryer, commentIDs []string) (map[string][]model.CommentDelivery, error) {
+// loadCommentDeliveries reads the delivery attempts of each of commentIDs, of the comments who may
+// read (access.ItemOwnerClause over each attempt's own comment).
+func (s *server) loadCommentDeliveries(ctx context.Context, q queryer, who model.Actor, commentIDs []string) (map[string][]model.CommentDelivery, error) {
 	deliveries := make(map[string][]model.CommentDelivery, len(commentIDs))
 	for _, id := range commentIDs {
 		deliveries[id] = []model.CommentDelivery{}
@@ -577,9 +584,11 @@ func (s *server) loadCommentDeliveries(ctx context.Context, q queryer, commentID
 	rows, err := q.Query(ctx, `
 		select `+commentDeliveryColumns+`
 		from comment_deliveries
-		where comment_id = any($1::uuid[])
+		where comment_id = any($1::uuid[]) and exists (
+			select 1 from comments c
+			where c.id = comment_deliveries.comment_id and `+access.ItemOwnerClause("c.issue_key", "c.artifact_id", "$2")+`)
 		order by comment_id, target, attempt
-	`, commentIDs)
+	`, commentIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}

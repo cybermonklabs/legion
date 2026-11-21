@@ -90,6 +90,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A restricted member names no issue's repository (refuseRepoOfRestrictedMember): refused
+	// here, before the body's project, parent or external ref is read and before anything, the
+	// related-item record of an issue already imported included, is written.
+	if refuseRepoOfRestrictedMember(w, who, input.Repo) {
+		return
+	}
 	blockers, err := normalizeIssueBlockers(input.BlockedBy)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -372,6 +378,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// read before the locks did not find takes no lock; one it found is read again under the lock.
 	if !visible {
 		s.writeHandlerError(w, pgx.ErrNoRows)
+		return
+	}
+	// A repository the GitHub proxy hides from the creator is not theirs to name
+	// (refuseRepoHidden): read once the project and the parent are read as the creator reads them,
+	// before the project's owner lock and before anything is written.
+	if err := refuseRepoHidden(r.Context(), tx, who, repo); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	var number int

@@ -240,7 +240,7 @@ func (s *server) readDecisions(
 	ctx context.Context, who model.Actor, document model.Artifact, reference, specID string, reader *displayTreeReader,
 ) ([]model.Decision, error) {
 	viewer := refs.VisibilityArg(who)
-	markdown, sections, err := s.decisionSections(ctx, document.ID)
+	markdown, sections, err := s.decisionSections(ctx, who, document.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -621,8 +621,8 @@ func decisionTextSum(text string) string {
 // decisionSections cuts the decisions document into its sections: each `##` heading outside
 // `## Replaced`, and each `###` heading under it, with every block after the heading up to the
 // next heading of its level or higher.
-func (s *server) decisionSections(ctx context.Context, artifactID string) (string, []decisionSection, error) {
-	markdown, blocks, err := s.deps.Docs.TextWithBlocks(ctx, artifactID)
+func (s *server) decisionSections(ctx context.Context, who model.Actor, artifactID string) (string, []decisionSection, error) {
+	markdown, blocks, err := s.deps.Docs.TextWithBlocks(ctx, who, artifactID)
 	if err != nil {
 		return "", nil, err
 	}

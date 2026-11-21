@@ -741,8 +741,19 @@ func TestBroadcastWhoseBudgetEndsBeforeEverySessionIsReadWritesNothingAndLeavesI
 			"body": "Status?", "delivery": "steer", "session_ids": []string{"planner", "tester"},
 		}, "alice", "budget-ended-before-every-read")
 	}
+	// The send is made on the bare handler, so it carries the reader the route's project check
+	// puts in its context (withinProjectScope): a handler handed no reader reads every session
+	// as hidden (sessionsHiddenFromReader), and its send would be refused for that, never for its
+	// budget.
+	routed := func(w http.ResponseWriter, r *http.Request) {
+		reader, ok := expired.readerOf(w, r)
+		if !ok {
+			return
+		}
+		expired.createBroadcast(w, r.WithContext(withReader(r.Context(), reader)))
+	}
 
-	refused := send(http.HandlerFunc(expired.createBroadcast))
+	refused := send(http.HandlerFunc(routed))
 	if refused.Code != http.StatusServiceUnavailable ||
 		!strings.Contains(refused.Body.String(), `"code":"ENVOY_UNAVAILABLE"`) {
 		t.Fatalf("a send whose budget ended before every session was read: status=%d body=%s, want 503 ENVOY_UNAVAILABLE",

@@ -133,7 +133,7 @@ func (rig goingRoutesRig) awaitTerminal(t *testing.T, id string) []string {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		stored, _, err := rig.server.readGoingStream(context.Background(), id, 0)
+		stored, _, err := rig.server.readGoingStream(context.Background(), everyReader, id, 0)
 		if err != nil {
 			t.Fatalf("read the run's frames: %v", err)
 		}

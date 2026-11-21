@@ -617,7 +617,7 @@ func writeIssueAskStates(t *testing.T, service *Service, asks []model.Ask, actor
 
 func documentText(t *testing.T, service *Service, artifactID string) string {
 	t.Helper()
-	text, err := service.Text(context.Background(), artifactID)
+	text, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the document: %v", err)
 	}

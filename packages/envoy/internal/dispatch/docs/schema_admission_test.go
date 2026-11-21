@@ -722,7 +722,7 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	t.Logf("the server had the document on the wire %v after the dial; the revoked page's socket ends %s, after a document message of %d bytes in a send buffer of %d",
 		onTheWire, read.end, read.biggestMessage, grant)
 
-	want, err := service.Text(context.Background(), artifactID)
+	want, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the server's document: %v", err)
 	}

@@ -111,7 +111,7 @@ func TestSeedTextStoresTreeAndReturnsCanonicalMarkdown(t *testing.T) {
 	if canonical != "## Database\n\nUse SQLite\n" {
 		t.Fatalf("canonical = %q", canonical)
 	}
-	if got, err := service.Text(context.Background(), artifactID); err != nil || got != canonical {
+	if got, err := service.Text(context.Background(), serverReader, artifactID); err != nil || got != canonical {
 		t.Fatalf("Text = %q (%v)", got, err)
 	}
 	loaded, err := service.persistence.Load(context.Background(), artifactID)
@@ -208,7 +208,7 @@ func TestReplaceTextWithTransactionRollsBackUpdate(t *testing.T) {
 		waitForNoLiveDocument(t, service, artifactID)
 	}
 
-	got, err := service.Text(ctx, artifactID)
+	got, err := service.Text(ctx, serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read durable text: %v", err)
 	}

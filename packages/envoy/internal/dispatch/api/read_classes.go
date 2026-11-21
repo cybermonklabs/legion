@@ -88,7 +88,11 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/going/capability":         reads("whether the deployment configured a text model, which names no row", nil, readclass.None),
 	"GET /api/v1/dashboard/builds":         reads("the dashboard builds the server processes serve, which name no row of a project", nil, readclass.None),
 	"GET /api/v1/credentials/capabilities": reads("the secrets broker's own metadata, relayed whole", nil, readclass.None),
-	"GET /api/v1/github/app-installation/{owner}/{repo}": reads("whether the GitHub App is installed on a repository the caller may see; a repository a private project hidden from the caller owns answers as not installed",
+
+	// Whether Dispatch's App is installed on a repository, which the Legion daemon asks for every
+	// repository it serves: held to the GitHub proxy's rule (refs.RepositoryClause), so a repository
+	// the caller may not see answers as one the App is not installed on.
+	"GET /api/v1/github/app-installation/{owner}/{repo}": reads("whether the GitHub App is installed on a repository the caller may see by the GitHub proxy's rule; any other repository answers as not installed",
 		readProbe{"owner": probeRepositoryOwner, "repo": probeRepositoryName}, readclass.Project),
 
 	// The caller's own rows, keyed on its credential or its person.
@@ -249,8 +253,10 @@ var readClasses = map[string]readEntry{
 //     viewer could be held to, so a viewer that is not open - a restricted member, or a credential
 //     that lists projects - is 403 DEPLOYMENT_READ_REFUSED, naming the row. The one exception is
 //     a row of restrictedOwnLoginRoutes (the list of a member's machine logins), which a restricted
-//     member reads at their browser, its handler holding them to their own logins, and is refused
-//     through any token 403 RESTRICTED_MEMBER.
+//     member reads at their browser, its handler holding them to their own logins; through their
+//     personal token or a person-scope broker token it is 403 RESTRICTED_MEMBER
+//     (restrictedOwnLoginRefusal), and their agent's named token, which holds no scope, is refused
+//     403 OAUTH_SCOPE_REQUIRED by gateRouteScopes before this check runs.
 //   - none, caller and testHook need neither, and the handler runs as it is.
 //
 // A server with no database, a test's, reads every caller as the closed viewer, which sees no
@@ -274,16 +280,14 @@ func (s *server) withinReadScope(route apiRoute, handler http.HandlerFunc) http.
 		if !ok {
 			return
 		}
-		switch {
-		case ownLogin && reader.Viewer != nil && reader.Viewer.Restricted && !atBrowser(r):
-			restrictedOwnLoginRefusal(w, route.Method, route.Pattern)
-			return
-		case ownLogin && reader.Viewer != nil && reader.Viewer.Restricted:
-		default:
-			if refused := deploymentReadRefusal(route.Method, route.Pattern, route.Reads, reader.Viewer); refused != nil {
-				writeError(w, refused.code, http.StatusForbidden, refused.message)
+		if ownLogin && reader.Viewer != nil && reader.Viewer.Restricted {
+			if !atBrowser(r) {
+				restrictedOwnLoginRefusal(w, route.Method, route.Pattern)
 				return
 			}
+		} else if refused := deploymentReadRefusal(route.Method, route.Pattern, route.Reads, reader.Viewer); refused != nil {
+			writeError(w, refused.code, http.StatusForbidden, refused.message)
+			return
 		}
 		handler(w, r.WithContext(withReader(r.Context(), reader)))
 	}

@@ -5,12 +5,12 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { settle } from "../../__tests__/fake-clock";
-import { runFocusFixup } from "../../__tests__/focus-fixup";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { pagedGroups } from "../../__tests__/paged-groups";
 import { ApiError, api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { AccessGroup, ProjectAccess } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { ProjectAccessPanel } from "./ProjectAccessPanel";
 
 /** CORE's access as the server answers it: owned by alice, naming carol and the group crew. */
@@ -733,7 +733,7 @@ test("a keyboard press of the switch keeps the focus through its write and refus
   const patch = spyOn(api, "patchProjectAccess")
     .mockReturnValueOnce(refused.promise)
     .mockImplementationOnce(panel.lands(access({ visibility: "private" })));
-  const stopFocusFixup = runFocusFixup();
+  const stopFocusFixup = emulateChromiumFocusFixup();
   try {
     const toggle = await screen.findByRole("switch", { name: "Private" });
     act(() => toggle.focus());
