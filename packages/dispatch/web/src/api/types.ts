@@ -241,6 +241,7 @@ export type {
   Project,
   ProjectDefaultAssignee,
   RecordResponse,
+  ReferenceLink,
   ReferenceQuestion,
   ReferenceQuestions,
   ReferenceTarget,

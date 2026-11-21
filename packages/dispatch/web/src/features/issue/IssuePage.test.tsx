@@ -263,7 +263,12 @@ function answerIssuePageReads(): void {
     ),
     http.get("/api/v1/issues/:key/artifacts", () => Response.json([])),
     http.get("/api/v1/issues/:key/references", () =>
-      Response.json({ members: [], truncated: false } satisfies IssueReferences)
+      Response.json({
+        linked_from: [],
+        links: [],
+        members: [],
+        truncated: false,
+      } satisfies IssueReferences)
     ),
     http.get("/api/v1/references", ({ request }) =>
       Response.json({

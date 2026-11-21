@@ -3,7 +3,7 @@ import { type ReactNode, useId, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
-import type { Artifact, IssueReferences } from "../../api/types";
+import type { Artifact, IssueReferences, ReferenceLink } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -28,6 +28,7 @@ import {
   documentRoute,
   isAgentArtifact,
   parseIssuePath,
+  parseNodeReference,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { artifactVersionUrl, formatArtifactBytes, versionsNewestFirst } from "./ArtifactHeader";
@@ -100,7 +101,11 @@ function artifactPath(artifact: Artifact): string {
 
 /** Who owns an artifact, as a References row names it: its issue, its project, or the agent
  *  whose conversation holds it. */
-function ArtifactOwner({ artifact }: { artifact: Artifact }): ReactNode {
+function ArtifactOwner({
+  artifact,
+}: {
+  artifact: Pick<Artifact, "issue_key" | "project" | "session_id">;
+}): ReactNode {
   if (artifact.issue_key !== null) return artifact.issue_key;
   if (!isAgentArtifact(artifact)) return artifact.project;
   return (
@@ -110,43 +115,174 @@ function ArtifactOwner({ artifact }: { artifact: Artifact }): ReactNode {
   );
 }
 
-// The issue's reference closure (every artifact reachable by following references, up to 8
-// hops) — a different thing from a single artifact's own "Referenced by" list above. Collapsed
-// by default: it is background context for the issue, not something worth scrolling past on
-// every visit to the tab.
-function References({ references }: { references: IssueReferences }): ReactNode {
-  if ((references.members ?? []).length === 0) {
-    return null;
-  }
+/** `GET /api/v1/issues/{key}/references` as either build of Dispatch answers it ("Two builds at
+ *  once", `packages/envoy/cmd/dispatch/README.md`). A build from before the one-hop read answers
+ *  `members` and `truncated` alone, so a missing `links` is that build's answer; a `null` list,
+ *  which no build writes, holds no row. */
+type ReferencesAnswer = Omit<IssueReferences, "links" | "linked_from"> &
+  Partial<Pick<IssueReferences, "links" | "linked_from">>;
 
+/** The key that matches a node of `links` with a node of `linked_from`: its ref, or its kind and
+ *  id where it has no ref. */
+function nodeKey(node: ReferenceLink["node"]): string {
+  return node.ref ?? `${node.kind} ${node.id}`;
+}
+
+/** The section's disclosure, collapsed by default: the issue's references are background context
+ *  for it, not something worth scrolling past on every visit to the tab. */
+function ReferencesDisclosure({
+  children,
+  count,
+}: {
+  children: ReactNode;
+  count: number;
+}): ReactNode {
   return (
     <details className={`rounded-lg border p-3 ${borderDefault}`}>
       <summary
         className={`min-h-11 cursor-pointer text-sm font-semibold ${textSecondaryOnSurface}`}
       >
-        References ({(references.members ?? []).length})
+        References ({count})
       </summary>
-      <section aria-label="References" className="mt-3 space-y-2">
-        <ul className="space-y-2">
-          {(references.members ?? []).map(({ artifact, depth, via }) => (
-            <li className={`rounded-lg border p-3 text-sm ${borderDefault}`} key={artifact.id}>
-              <Link
-                className={`font-medium underline ${linkText} ${linkHoverText}`}
-                to={artifactPath(artifact)}
-              >
-                {artifact.name}
-              </Link>
-              <p className={textMutedOnSurface}>
-                <ArtifactOwner artifact={artifact} /> · via {via.kind} · depth {depth}
-              </p>
-            </li>
-          ))}
-        </ul>
-        {references.truncated ? (
-          <p className={`text-sm ${textMutedOnSurface}`}>more references beyond 8 hops</p>
-        ) : null}
-      </section>
+      {children}
     </details>
+  );
+}
+
+/** One row of the references read: a link to the node at the far end through its own reference,
+ *  named by the words the read gives for it, then the node's kind and the kind of the issue's node
+ *  at the near end, which a row of `links` links from (`via`) and a row of `linked_from` links to
+ *  (`to`). A document's row names its owner first, as a member's row does. A node with no
+ *  reference (a session) has no page to open, so its row names it without a link. */
+function ReferenceLinkRow({
+  alsoReferences,
+  near,
+  row,
+}: {
+  alsoReferences: boolean;
+  near: "via" | "to";
+  row: ReferenceLink;
+}): ReactNode {
+  const { node } = row;
+  const route = node.ref === undefined ? undefined : parseNodeReference(node.ref);
+  return (
+    <li className={`rounded-lg border p-3 text-sm ${borderDefault}`}>
+      {route === undefined ? (
+        <span className="font-medium">{row.name}</span>
+      ) : (
+        <Link
+          className={`font-medium underline ${linkText} ${linkHoverText}`}
+          to={buildReferencePath(route)}
+        >
+          {row.name}
+        </Link>
+      )}
+      <p className={textMutedOnSurface}>
+        {node.kind === "artifact" ? (
+          <>
+            {/* A node names its issue or its project; an agent's artifact has neither and
+                belongs to the session whose conversation holds it. */}
+            <ArtifactOwner
+              artifact={{
+                issue_key: node.issue_key ?? null,
+                project: node.project ?? "",
+                session_id: node.parent?.kind === "session" ? node.parent.id : null,
+              }}
+            />{" "}
+            ·{" "}
+          </>
+        ) : null}
+        {node.kind} · {near} {row.via.kind}
+        {alsoReferences ? " · also references this issue" : null}
+      </p>
+    </li>
+  );
+}
+
+// The issue's references read, one hop in each direction: under References, each node the
+// issue's own content links to, and under Referenced by, each node that links to the issue or to
+// its own content. A node of both is drawn once, under References, marked as one that also
+// references the issue. Each row's node and name come in the answer, so the section reads nothing
+// to draw them, and a one-hop read cuts no walk, so no row has a depth. This is not the issue
+// header's "Referenced by" toggle, which reads the edges into the issue's own node alone. An
+// answer without `links`, from a build before the one-hop read, is drawn as that build's walk
+// always was: the documents of its `members`, each with its depth, and a line when the walk was
+// cut at 8 hops.
+function References({ references }: { references: ReferencesAnswer }): ReactNode {
+  if (references.links === undefined) {
+    const members = references.members ?? [];
+    if (members.length === 0) {
+      return null;
+    }
+    return (
+      <ReferencesDisclosure count={members.length}>
+        <section aria-label="References" className="mt-3 space-y-2">
+          <ul className="space-y-2">
+            {members.map(({ artifact, depth, via }) => (
+              <li className={`rounded-lg border p-3 text-sm ${borderDefault}`} key={artifact.id}>
+                <Link
+                  className={`font-medium underline ${linkText} ${linkHoverText}`}
+                  to={artifactPath(artifact)}
+                >
+                  {artifact.name}
+                </Link>
+                <p className={textMutedOnSurface}>
+                  <ArtifactOwner artifact={artifact} /> · via {via.kind} · depth {depth}
+                </p>
+              </li>
+            ))}
+          </ul>
+          {references.truncated ? (
+            <p className={`text-sm ${textMutedOnSurface}`}>more references beyond 8 hops</p>
+          ) : null}
+        </section>
+      </ReferencesDisclosure>
+    );
+  }
+
+  const links = references.links ?? [];
+  const linkedFrom = references.linked_from ?? [];
+  const linked = new Set(links.map(({ node }) => nodeKey(node)));
+  const linking = new Set(linkedFrom.map(({ node }) => nodeKey(node)));
+  const referencedBy = linkedFrom.filter(({ node }) => !linked.has(nodeKey(node)));
+  if (links.length === 0 && referencedBy.length === 0) {
+    return null;
+  }
+
+  return (
+    <ReferencesDisclosure count={links.length}>
+      {links.length === 0 ? null : (
+        <section aria-label="References" className="mt-3">
+          <ul className="space-y-2">
+            {links.map((row) => (
+              <ReferenceLinkRow
+                alsoReferences={linking.has(nodeKey(row.node))}
+                key={nodeKey(row.node)}
+                near="via"
+                row={row}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
+      {referencedBy.length === 0 ? null : (
+        <section aria-label="Referenced by" className="mt-3 space-y-2">
+          <p className={`text-sm font-semibold ${textSecondaryOnSurface}`}>
+            Referenced by ({referencedBy.length})
+          </p>
+          <ul className="space-y-2">
+            {referencedBy.map((row) => (
+              <ReferenceLinkRow
+                alsoReferences={false}
+                key={nodeKey(row.node)}
+                near="to"
+                row={row}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
+    </ReferencesDisclosure>
   );
 }
 
@@ -329,7 +465,7 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
           </span>
         )}
       </div>
-      {/* A references read that fails - a walk cut at the server's bound among them, which the
+      {/* A references read that fails - a read cut at the server's bound among them, which the
           shared retry policy leaves to this Retry - says so rather than hiding the section. */}
       {references.isError ? (
         <QueryError

@@ -49,27 +49,20 @@ const artifact = {
   // table's `Version[] | null` would not let them.
 } satisfies Artifact;
 
-const noReferences: IssueReferences = { members: [], truncated: false };
-
-/**
- * One row of `links` or `linked_from` in an issue's references answer (dispatch://INFRA-4704): the
- * node at the other end of a link as the graph read gives it, the words the graph read shows for
- * it, the kinds of its links and its via, the issue's node at the near end. The route's types gain
- * the two fields when its contract is generated again, so until then the cases write them with
- * these types.
- */
-interface ReferenceLinkRow {
-  readonly node: GraphEdge["node"];
-  readonly name: string;
-  readonly kinds: string[];
-  readonly via: NonNullable<IssueReferences["members"]>[number]["via"];
-}
-
-/** The references answer with its two lists: a Dispatch from before INFRA-4704 sends neither. */
-type ReferencesAnswer = IssueReferences & {
-  readonly links?: ReferenceLinkRow[] | null;
-  readonly linked_from?: ReferenceLinkRow[] | null;
+const noReferences: IssueReferences = {
+  linked_from: [],
+  links: [],
+  members: [],
+  truncated: false,
 };
+
+/** The references answer of a Dispatch from before INFRA-4704: `members` and `truncated`, with
+ *  neither `links` nor `linked_from`. The route's type holds both, and a page of this build reads
+ *  such an answer while a release rolls out ("Two builds at once",
+ *  `packages/envoy/cmd/dispatch/README.md`), so the answer reaches the page as the route's. */
+function olderAnswer(answer: Omit<IssueReferences, "links" | "linked_from">): IssueReferences {
+  return answer as IssueReferences;
+}
 
 /** A node as the graph read gives it, with no maker, change or parent recorded. */
 function graphNode(
@@ -437,16 +430,19 @@ test("From an answer without links, References lists closure members with chip, 
     primary: false,
     slug: "design-notes",
   };
-  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], {
-    members: [
-      {
-        artifact: referencedDocument,
-        depth: 1,
-        via: { id: "comment-1", kind: "comment" },
-      },
-    ],
-    truncated: true,
-  });
+  const { getIssueReferences, listArtifacts, view } = renderTab(
+    [artifact],
+    olderAnswer({
+      members: [
+        {
+          artifact: referencedDocument,
+          depth: 1,
+          via: { id: "comment-1", kind: "comment" },
+        },
+      ],
+      truncated: true,
+    })
+  );
 
   try {
     const summary = await screen.findByText("References (1)");
@@ -488,7 +484,7 @@ test("References lists the issue's links and Referenced by the nodes that link t
     issue_key: "CORE-7",
     project: "CORE",
   });
-  const answer: ReferencesAnswer = {
+  const answer: IssueReferences = {
     members: [
       {
         artifact: {
@@ -690,10 +686,13 @@ test("From an answer without links, References names the agent that owns a conve
     session_id: "planner-session",
     slug: "shot-png",
   };
-  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], {
-    members: [{ artifact: picture, depth: 1, via: { id: "comment-1", kind: "comment" } }],
-    truncated: false,
-  });
+  const { getIssueReferences, listArtifacts, view } = renderTab(
+    [artifact],
+    olderAnswer({
+      members: [{ artifact: picture, depth: 1, via: { id: "comment-1", kind: "comment" } }],
+      truncated: false,
+    })
+  );
 
   try {
     const references = await screen.findByRole("region", { name: "References", hidden: true });
