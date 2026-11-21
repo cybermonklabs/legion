@@ -2,8 +2,11 @@ package testnats
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"testing"
+
+	natsserver "github.com/nats-io/nats-server/v2/server"
 
 	"github.com/sjawhar/envoy/internal/testport"
 )
@@ -83,4 +86,33 @@ func TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart(t *testing.T
 		t.Fatalf("the shared server was started %d times, want 2: the planted failure, then the next asker's start", starts)
 	}
 	Connect(t, url).Close()
+}
+
+// A server that logged a fatal error fails its start even once its client listener is up: nats-server
+// v2.15.1 logs a profiler port it cannot bind as fatal and goes on starting (StartProfiler), and
+// ReadyForConnections does not look at the profiler. The row holds the profiler's port on every
+// address, waits until the server both logged the fatal error and accepts connections, and only then
+// asks awaitReady, so a wait that read the flag only while the server was not ready would pass it.
+func TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady(t *testing.T) {
+	held, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("hold a port for the server's profiler: %v", err)
+	}
+	defer held.Close()
+	srv, err := natsserver.NewServer(&natsserver.Options{Host: testport.LoopbackIP().String(), Port: -1, ProfPort: held.Addr().(*net.TCPAddr).Port, NoSigs: true})
+	if err != nil {
+		t.Fatalf("create the NATS server: %v", err)
+	}
+	log := &logCapture{}
+	srv.SetLoggerV2(log, false, false, false)
+	go srv.Start()
+	t.Cleanup(func() { srv.Shutdown(); srv.WaitForShutdown() })
+	for !srv.ReadyForConnections(retryInterval) {
+	}
+	if !log.fatalLogged() {
+		t.Fatalf("the server accepts connections with no fatal error logged, so its profiler took the held port %s: %s", held.Addr(), log)
+	}
+	if err := awaitReady(t, srv, log); err == nil || !strings.Contains(err.Error(), "fatal error") {
+		t.Fatalf("awaitReady of a server that accepts connections after logging a fatal error answered %v, want the fatal error: %s", err, log)
+	}
 }
