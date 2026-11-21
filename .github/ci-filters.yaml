@@ -273,6 +273,7 @@ legion_command: &legion_command
   - 'packages/envoy/internal/dispatch/text/*'
   - 'packages/envoy/internal/fold/*'
   - 'packages/envoy/internal/googleidentity/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
   - 'packages/envoy/internal/redirects/*'
