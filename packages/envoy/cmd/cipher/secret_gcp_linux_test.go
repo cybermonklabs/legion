@@ -297,12 +297,16 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 // TestGcloudSignInEndedByASignalKillsGcloudsChild: a sign-in whose gcloud never answers, ended by
 // an interrupt sent to agent-secrets alone (gcloud, in a group of its own, gets no signal sent to
 // agent-secrets' group, a terminal's Ctrl-C included), ends as the interrupt ends it - by SIGINT,
-// a shell's status 130 - and the child that held gcloud's output is gone with it.
+// a shell's status 130 - and the child that held gcloud's output is gone with it. The interrupt
+// comes as soon as the child is seen running, so it lands as close to gcloud's start as this test
+// can put it. agent-secrets is started by `env --default-signal`, so it does not inherit a SIGINT
+// this test process ignores (as a job run in the background of a script does), at which it
+// rightly goes on running.
 func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 	dir := t.TempDir()
 	child := gcloudChild{pidFile: filepath.Join(dir, "child.pid")}
 	t.Cleanup(func() { child.cleanUp(t) })
-	helper := exec.Command(os.Args[0], "-test.run=^TestGcloudSignInSignalHelper$", "-test.count=1")
+	helper := exec.Command("env", "--default-signal=INT", os.Args[0], "-test.run=^TestGcloudSignInSignalHelper$", "-test.count=1")
 	helper.Env = append(os.Environ(), "AGENT_SECRETS_GCLOUD_SIGNAL_HELPER="+child.pidFile)
 	var out bytes.Buffer
 	helper.Stdout, helper.Stderr = &out, &out
