@@ -695,6 +695,8 @@ const stubProjects = [
 ] satisfies Project[];
 
 export default defineConfig({
+  // INFRA-983 k8 proof (scratch): every row twice.
+  repeatEach: 2,
   testDir: ".",
   testMatch: /.*\.e2e\.ts/,
   // The projects below that name no `testIgnore` of their own inherit this one. `stubSpecs` is
