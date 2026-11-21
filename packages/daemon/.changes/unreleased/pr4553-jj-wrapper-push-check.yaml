@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+    The worker image's jj wrapper also checks a `jj gerrit upload`, which pushes through the same
+    git as a `jj git push`. It reads a `-R` written after the subcommand, so a push to another
+    repository is checked against that repository's `git.executable-path`. A configuration read
+    that fails is refused, since it names no git, and the error jj gave for that read follows the
+    refusal on standard error. The push itself runs with the caller's `--config` and
+    `--config-file` arguments after its other arguments, in the order written, then
+    `--config-file /dev/null`, then `--config git.executable-path="/opt/legion/bin/git"`, all
+    before any `--`. So a `[[--scope]]` that names the push alone cannot send it to another git,
+    and a caller's `--config` written before the subcommand still reaches the push.
+time: 2026-11-20T10:48:15Z
+custom:
+    Issue: pr4553

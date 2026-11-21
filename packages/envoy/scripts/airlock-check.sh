@@ -1455,7 +1455,7 @@ check_k6() {
 # environment is the first stack broker's own, read out of /proc/<pid>/environ, so nothing of the
 # stack's settings is left out.
 #
-# The pod sets NO_PROXY=* and GIT_CONFIG_COUNT=5 with a GitHub credential helper. NO_PROXY=* is
+# The pod sets NO_PROXY=* and GIT_CONFIG_COUNT=9 with a GitHub credential helper. NO_PROXY=* is
 # left exactly as it is: the CLI must drop it, and that it does is part of what this check
 # proves. The git credential settings are cleared for the git step alone, which brings its own
 # helper - the one that answers the placeholder - and the proxy in git's own configuration.

@@ -280,7 +280,7 @@ func serveVolumeTrim(ctx context.Context, m *manager, guard *pidGuard) <-chan st
 }
 
 // podTrimmer is the trimmer's own loop, a package variable for the reason readVolumeUsage is one
-// (volumeusage_linux.go): a test drives the trimmer the launcher built — its tree, its /proc,
+// (volumeusage.go): a test drives the trimmer the launcher built — its tree, its /proc,
 // its clock and its ticker — and watches the very loop Run waits on return.
 var podTrimmer = func(ctx context.Context, trim *trimmer) { trim.run(ctx) }
 

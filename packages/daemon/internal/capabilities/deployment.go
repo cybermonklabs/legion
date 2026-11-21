@@ -12,9 +12,10 @@ import (
 
 // Deployment is what the daemon knows of its deployment's capabilities: what its configuration
 // decides and sets, what boot learned of the image, the broker, the pod's Oh My Pi and the pool's
-// room for the probe, and what its live sessions reported of the live rows. Report renders every
-// row of Table from it. A gap is reported, never refused (LEGION-578, "The check"): a daemon that
-// will not run its pods would itself keep workers from working.
+// room for the probe, what its live sessions reported of the live rows, and what its repository
+// caches last said of their room. Report renders every row of Table from it. A gap is reported,
+// never refused (LEGION-578, "The check"): a daemon that will not run its pods would itself keep
+// workers from working.
 type Deployment struct {
 	// Decided is legion.yaml's capabilities.decided: the deployment rows the operator has decided,
 	// each with the reason, which the report shows in the gap's place.
@@ -54,6 +55,41 @@ type Deployment struct {
 	// report's incarnation its claim's current Locator's — each with its report of the live rows
 	// (LEGION-663). The daemon filters; Report renders a live row from them.
 	Sessions []Session
+	// Caches is every repository cache the runtime keeps, in its order (by repository), each as the
+	// daemon's last health read of it found it, which the repository-cache-room row reads; none
+	// under tmux, which runs no cache, and none in what the configuration alone states
+	// (daemon.Deployment). The daemon fills it from memory alone (supervision.caches).
+	Caches []Cache
+}
+
+// Cache is one repository cache as the daemon's last health read of it found it: the runtime's
+// sandbox.CacheStatus and the repocache.Health it carries, which the daemon maps here in one place
+// (supervision.caches), since this package imports neither — the cache's package imports config,
+// which imports this one.
+type Cache struct {
+	// Repo is the repository the cache serves, as its annotation names it.
+	Repo string
+	// Claim is the name of the cache's volume claim: the one an operator grows in place.
+	Claim string
+	// Read is whether the daemon's last health read of the cache answered. A cache that is not
+	// Ready is not read, and one whose /healthz could not be read keeps why (HealthError): either
+	// is unread and counts for nothing, and the present detail counts it.
+	Read bool
+	// Reported is whether that answer carried the room fields a cache of this release sends: a
+	// volume figure or the error of the statfs that read it, or a failure time. A cache of an
+	// earlier release sends none, so it counts for nothing, and the present detail counts it.
+	Reported bool
+	// VolumeBytes is the volume's size and AvailableBytes the bytes available to the cache, both
+	// zero where the cache's statfs failed, whose error VolumeError is.
+	VolumeBytes    uint64
+	AvailableBytes uint64
+	VolumeError    string
+	// Bytes is the clone's, as the cache's /tar streams it.
+	Bytes int64
+	// FetchOutOfSpaceAt and RepackOutOfSpaceAt are the time of that step's last failure for lack of
+	// space since its last success, zero while there is none.
+	FetchOutOfSpaceAt  time.Time
+	RepackOutOfSpaceAt time.Time
 }
 
 // The statuses a State carries: an image row is present or missing, a live or a deployment row
@@ -86,6 +122,10 @@ const (
 	// SourceBoot is what boot measured: the probe's OK line, the plugin gate's read under tmux,
 	// the broker login, and the pool's room for the probe at boot.
 	SourceBoot Source = "boot"
+	// SourceCaches is what the repository caches' last health reads said of their room: each
+	// volume's size and available bytes, and each step's last failure for lack of space
+	// (Deployment.Caches).
+	SourceCaches Source = "caches"
 )
 
 // State is one row of the deployment's report, as `legion state` carries it (api.CapabilityState),
@@ -145,7 +185,8 @@ func (d Deployment) Open() []Name {
 // OpenFromConfiguration is the open rows whose Source is SourceConfiguration, in Table order: the
 // configuration's own gaps, whatever row they fall on, which `legion config check` prints.
 // Boot's measurements are not its to say — a configured broker's login, model fallback, which the
-// probe or the plugin gate reads, and pool capacity, which the probe's run measures.
+// probe or the plugin gate reads, and pool capacity, which the probe's run measures — nor are the
+// repository caches', which their health reads measure.
 func (d Deployment) OpenFromConfiguration() []State {
 	var open []State
 	for _, state := range d.openStates() {
@@ -332,9 +373,89 @@ func (d Deployment) measure(name Name) (bool, Source, string) {
 			return false, SourceBoot, fmt.Sprintf("the image probe pod was Unschedulable %d time(s) at boot before it scheduled: %s; the pool had no room for its 500m / 1Gi reservation",
 				d.ProbeCapacityWaits, d.ProbeCapacityReason)
 		}
+	case RepositoryCacheRoom:
+		satisfied, detail := d.cacheRoom()
+		return satisfied, SourceCaches, detail
 	}
 	// Table names no other deployment row; TestEveryDeploymentRowIsMeasured holds it to this switch.
 	return false, "", "no measurement"
+}
+
+// cacheRoom is the repository-cache-room row's measurement, from each cache's last health read.
+// It is satisfied while no cache that reports its room carries a failure for lack of space, and
+// its detail then counts the caches read, those among them of an earlier release, which send no
+// room figures, and those unread, neither of which opens it. A cache of a repository the cache
+// set no longer names counts like any other while it stays. Otherwise its detail names each failing
+// cache (outOfRoom), then where room comes from: growing the claim in place gives that cache room
+// now, and runtime.kubernetes.repository_cache.volume sizes the caches the daemon makes later. The
+// tmux runtime runs no cache, and a Kubernetes deployment with none has nothing to report.
+func (d Deployment) cacheRoom() (bool, string) {
+	if d.Runtime == "tmux" {
+		return true, "the tmux runtime runs no repository cache"
+	}
+	if len(d.Caches) == 0 {
+		return true, "no repository cache is running"
+	}
+	var failing []string
+	read, silent, unread := 0, 0, 0
+	for _, cache := range d.Caches {
+		switch {
+		case !cache.Read:
+			unread++
+			continue
+		case !cache.Reported:
+			silent++
+		}
+		read++
+		if !cache.FetchOutOfSpaceAt.IsZero() || !cache.RepackOutOfSpaceAt.IsZero() {
+			failing = append(failing, cache.outOfRoom())
+		}
+	}
+	if len(failing) > 0 {
+		return false, fmt.Sprintf("%d of %d repository caches ran out of room: %s. Room comes from growing the cache's claim in place and raising runtime.kubernetes.repository_cache.volume",
+			len(failing), len(d.Caches), strings.Join(failing, ". "))
+	}
+	counts := []string{counted(read, "cache read", "caches read")}
+	if silent > 0 {
+		counts = append(counts, counted(silent, "sends no room figures", "send no room figures"))
+	}
+	if unread > 0 {
+		counts = append(counts, fmt.Sprintf("%d unread", unread))
+	}
+	return true, "no repository cache reports a failure for lack of space (" + strings.Join(counts, ", ") + ")"
+}
+
+// outOfRoom is how the open repository-cache-room row names c: its repository, its volume's size
+// with its claim and the bytes available, or why the cache could not read them, its clone's bytes,
+// and each step that failed for lack of space with that failure's time. Sizes are in GiB with one
+// decimal and times in RFC 3339 UTC. The statfs error is the cache's own text, so it is cleaned as
+// a session's detail is (cleanDetail): one line, no credential.
+func (c Cache) outOfRoom() string {
+	volume := fmt.Sprintf("on a %s volume (claim %s) with %s available", gib(float64(c.VolumeBytes)), c.Claim, gib(float64(c.AvailableBytes)))
+	if c.VolumeError != "" {
+		volume = fmt.Sprintf("on a volume (claim %s) whose room it could not read (%s)", c.Claim, cleanDetail(c.VolumeError))
+	}
+	var steps []string
+	for _, step := range []struct {
+		name string
+		at   time.Time
+	}{{"fetch", c.FetchOutOfSpaceAt}, {"repack", c.RepackOutOfSpaceAt}} {
+		if !step.at.IsZero() {
+			steps = append(steps, "its "+step.name+" failed for lack of space at "+step.at.UTC().Format(time.RFC3339))
+		}
+	}
+	return fmt.Sprintf("%s %s, its clone %s; %s", c.Repo, volume, gib(float64(c.Bytes)), strings.Join(steps, " and "))
+}
+
+// gib is bytes in GiB with one decimal, as the repository-cache-room row prints a size.
+func gib(bytes float64) string { return fmt.Sprintf("%.1f GiB", bytes/(1<<30)) }
+
+// counted is n and the words that follow it: one when n is 1, many otherwise.
+func counted(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // Pod is one of the pods the daemon builds as the resource-limits row names it.

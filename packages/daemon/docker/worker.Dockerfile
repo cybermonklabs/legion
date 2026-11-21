@@ -98,8 +98,12 @@ ARG MISE_VERSION=v2026.8.12
 # command reports a good signature from release key 24853EC9F655CE80B48E6C3A8B81C9D17413A06D
 # (published at https://mise.jdx.dev/gpg-key.pub, and at keys.openpgp.org by the same fingerprint).
 ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
-# Sami's jj fork: what the dogfood daemon runs on the devbox; same 0.45 line as the jj-lib inside OMP.
-ARG JJ_TOOL=github:sjawhar/jj@0.45.1-sami.20260910-043938
+# Sami's jj fork, at the release of sjawhar/jj#3 (INFRA-4036): jj 0.46 with a gix-pack that maps
+# each pack, index and multi-pack-index in 8 MiB chunks and keeps the chunks reads mark within
+# 512 MiB (JJ_PACK_MAPPED_LIMIT sets another budget). Under gVisor a whole mapping counts as the
+# pod's memory once one page of it is read, so a later pin must carry that patch, or one jj command
+# on a large pack fills an issue pod again.
+ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261120-120102
 ARG GH_TOOL=gh@2.98.0
 # The pin of the shared public leak check: the tag of the repository a deployment names in its
 # leak check setting (legion.yaml's leak_check, or LEGION_LEAK_CHECK_REPOSITORY), whose leak-check
@@ -688,7 +692,7 @@ RUN --mount=type=bind,source=packages/daemon/docker/azure-cli/requirements.txt,t
 COPY --chmod=0755 packages/daemon/docker/azure-cli/az /opt/azure-cli/bin/az
 
 # ------------------------------------------------------------------------------------------------
-# runtime-base: debian:trixie-slim for its git (2.47; jj 0.45's git backend needs >= 2.42 — bookworm
+# runtime-base: debian:trixie-slim for its git (2.47; jj 0.46's git backend needs >= 2.42 — bookworm
 # and bookworm-backports stop at 2.39.5). The dynamically linked binaries copied in below were built
 # or fetched on bookworm; trixie's newer glibc runs them, and the probe RUN below proves it.
 # No later layer may install a package: the image's Debian packages are the base's own and those this
@@ -1266,6 +1270,19 @@ COPY --chmod=555 packages/daemon/docker/legion-testpg /usr/local/bin/legion-test
 # test database reads an empty file there. The final step refuses an image where it is anything
 # else.
 RUN install -m 0444 -o root -g root /dev/null /var/run/legion/testpg.log
+# /etc/gitconfig holds the four pack settings of every git in an issue pod or a repository cache
+# (packWindowConfig, packages/daemon/internal/workspace/config.go): pack data mapped 32 MiB at a
+# time up to 256 MiB, and 64 MiB each of pack-objects' window memory and of cached delta bases.
+# git's defaults map 1 GiB windows, and gVisor counts every window a process touched whole as the
+# pod's memory. This file is for provisioning's git in the init container: its runner removes the
+# role environment's GIT_CONFIG pairs, which carry the same four to every role's git, and the
+# shared clone's own configuration, which provisioning writes them into, does not hold them yet
+# when that git first clones it. A Dockerfile cannot read the Go list, so the values are written
+# out here, and the final step fails the build when the file holds any others.
+RUN /usr/bin/git config --system core.packedGitWindowSize 32m \
+    && /usr/bin/git config --system core.packedGitLimit 256m \
+    && /usr/bin/git config --system pack.windowMemory 64m \
+    && /usr/bin/git config --system core.deltaBaseCacheLimit 64m
 # Keep Debian's chromium package for its shared-library dependency closure, but make its vulnerable
 # executable unreachable and expose the pinned Chrome for Testing binary under the usual name.
 RUN rm -f /opt/codegraph/node /usr/bin/chromium /usr/lib/chromium/chromium \
@@ -1434,10 +1451,10 @@ COPY --chmod=0755 packages/daemon/docker/gh /opt/legion/bin/gh
 # packages/daemon/internal/runtime/sandbox/manifest.go): packages/daemon/docker/git.
 COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
 # jj in a pod is Legion's wrapper too, which runs the real jj at /usr/local/bin/jj with the
-# arguments it was given and checks one thing before a `jj git push`: that the git jj will shell
-# out to is the wrapper above, on PATH and in jj's own git.executable-path. jj's push is a
-# `git … push --porcelain --no-verify`, so that wrapper is what puts the leak guard in front of
-# it, and a jj that would run another git is refused rather than pushing unchecked:
+# arguments it was given and checks one thing before a `jj git push` or a `jj gerrit upload`: that
+# the git jj will shell out to is the wrapper above, on PATH and in jj's own git.executable-path.
+# jj's push is a `git … push --porcelain --no-verify`, so that wrapper is what puts the leak guard
+# in front of it, and a jj that would run another git is refused rather than pushing unchecked:
 # packages/daemon/docker/jj.
 COPY --chmod=0755 packages/daemon/docker/jj /opt/legion/bin/jj
 # The pre-push hook the git wrapper points git at, in a root-owned directory no role can write:
@@ -1468,6 +1485,9 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # and no file under /usr/lib/openssh or /usr/bin/ssh-agent
 # carries a setuid or setgid bit (the apt RUN drops the two openssh-client installs, ssh-keysign's and
 # ssh-agent's), so a rebuild of that layer that brings one back fails here.
+# /etc/gitconfig holds the four pack settings the runtime stage wrote, at their values: the step
+# prints `gitconfig: <key>=<value>` for each, as `git config --system --get` reads it, and fails on
+# any other value, a missing key included.
 # Then the `legion` on the image PATH is this one, it runs on this base, and it names the
 # commit the workflow built. git, jj and gh each resolve to Legion's own wrapper in
 # /opt/legion/bin and the step refuses any other path, and behind each one the real binary runs
@@ -1578,6 +1598,10 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     stat -c '%a %n' /usr/lib/openssh/ssh-keysign /usr/bin/ssh-agent; \
     setid="$(find /usr/lib/openssh /usr/bin/ssh-agent -perm /6000)"; echo "set-id bits: ${setid:-none}"; test -z "$setid"; \
     git="$(command -v git)"; echo "git: $git"; test "$git" = /opt/legion/bin/git; /usr/bin/git --version; \
+    for setting in core.packedGitWindowSize=32m core.packedGitLimit=256m pack.windowMemory=64m core.deltaBaseCacheLimit=64m; do \
+      key="${setting%%=*}"; value="$(/usr/bin/git config --system --get "$key" || true)"; \
+      echo "gitconfig: $key=$value"; test "$key=$value" = "$setting"; \
+    done; \
     jj="$(command -v jj)"; echo "jj: $jj"; test "$jj" = /opt/legion/bin/jj; /usr/local/bin/jj --version; \
     hook="$(stat -c '%u:%g %a' /opt/legion/githooks/pre-push)"; echo "pre-push hook: $hook"; \
     test "$hook" = "0:0 755"; test -x /opt/legion/githooks/pre-push; \

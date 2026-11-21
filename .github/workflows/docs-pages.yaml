@@ -125,6 +125,7 @@ on:
       - 'packages/daemon/internal/supervise/*'
       - 'packages/daemon/internal/tlsalert/*'
       - 'packages/daemon/internal/treelifecycle/*'
+      - 'packages/daemon/internal/volumestat/*'
       - 'packages/daemon/internal/wait/*'
       - 'packages/daemon/internal/wakepace/*'
       - 'packages/daemon/internal/workflow/*'

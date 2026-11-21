@@ -7,7 +7,7 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 202,
+    "daemon": 213,
     "caller": 199
   },
   "admission": {
@@ -821,6 +821,12 @@
       "status": "present",
       "detail": "the image probe pod scheduled at its first attempt",
       "source": "boot"
+    },
+    {
+      "name": "repository-cache-room",
+      "status": "open",
+      "detail": "1 of 1 repository caches ran out of room: acme/widgets on a 20.0 GiB volume (claim cache-legion-legion-cache-acme-widgets-d782c874) with 0.1 GiB available, its clone 6.2 GiB; its repack failed for lack of space at 2026-10-16T02:15:33Z. Room comes from growing the cache's claim in place and raising runtime.kubernetes.repository_cache.volume",
+      "configLine": "capabilities.decided.repository-cache-room: \"\u003creason\u003e\""
     },
     {
       "name": "network",
