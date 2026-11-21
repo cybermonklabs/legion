@@ -88,24 +88,33 @@ case_read() {
 # names after a family and a colon, and the number of FAIL lines one_failure_result asks
 # for.
 #
-# case_result <name> <family the gate should name> <run>; a planted fault, which passes
-# when the run's record names that family among the assertions that failed (RUN_FAILED).
-# <family> is an extended regular expression over the names, as 'replay-command|
-# predicate-form'; a case that also asks what the FAIL said writes that after the name and
-# a colon, as "replay-command: f-behaviour-1 ran ...", and that detail is read from the
-# run's text alone, as a FAIL line of the family that matches it.
+# case_result <name> <family the gate should name> <run> [<family> <run>]...; a planted
+# fault, which passes when the run's record names that family among the assertions that
+# failed (RUN_FAILED); a fault two modes each refuse gives each run after the family its
+# record must name, and the runs are read in their order, the first that does not name its
+# family deciding the case. <family> is an extended regular expression over the names, as
+# 'replay-command|predicate-form'; a case that also asks what the FAIL said writes that
+# after the name and a colon, as "replay-command: f-behaviour-1 ran ...", and that detail
+# is read from the run's text alone, as a FAIL line of the family that matches it.
 case_result() {
-    local name="$1" family="${2%%:*}" detail="$2" run="$3"
-    case_read "$name" "$run" || return 0
-    if [ "$RUN_ENDING" = passed ]; then
-        case_failed "$name" "the gate passed it: $RUN_LINE"
-    elif ! printf '%s' "$RUN_FAILED" | grep -qxE -- "$family"; then
-        case_failed "$name" "the gate failed but named no $family, only $(printf '%s' "$RUN_FAILED" | tr '\n' ' ')$(grep '^FAIL' "$run/text" | head -2 | tr '\n' ' ')$RUN_LINE"
-    elif [ "$detail" != "$family" ] && ! grep -qE -- "^FAIL ($detail)" "$run/text"; then
-        case_failed "$name" "the gate failed $family, and no FAIL line of it reads $detail: $(grep -E "^FAIL ($family)" "$run/text" | head -2 | tr '\n' ' ')$RUN_LINE"
-    else
-        case_passed "$name"
-    fi
+    local name="$1" family detail run
+    shift
+    while [ "$#" -ge 2 ]; do
+        family="${1%%:*}" detail="$1" run="$2"
+        shift 2
+        case_read "$name" "$run" || return 0
+        if [ "$RUN_ENDING" = passed ]; then
+            case_failed "$name" "the gate passed it: $RUN_LINE"
+            return 0
+        elif ! printf '%s' "$RUN_FAILED" | grep -qxE -- "$family"; then
+            case_failed "$name" "the gate failed but named no $family, only $(printf '%s' "$RUN_FAILED" | tr '\n' ' ')$(grep '^FAIL' "$run/text" | head -2 | tr '\n' ' ')$RUN_LINE"
+            return 0
+        elif [ "$detail" != "$family" ] && ! grep -qE -- "^FAIL ($detail)" "$run/text"; then
+            case_failed "$name" "the gate failed $family, and no FAIL line of it reads $detail: $(grep -E "^FAIL ($family)" "$run/text" | head -2 | tr '\n' ' ')$RUN_LINE"
+            return 0
+        fi
+    done
+    case_passed "$name"
 }
 
 # honest_result <name> <family> <run>; the honest form beside a planted fault, which passes
@@ -4578,6 +4587,45 @@ cat "$PIPE_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jso
 ending_result "a row whose curl of the Dispatch API, answered 502, feeds a python3 that failed first is read by the curl: it cannot run, exit 2, naming the row, Dispatch and the 502 as a server error, and fails no assertion" 2 \
     "^check\\.sh cannot run --replay now: Dispatch gave no answer that judges f-dispatch-pipe-read's read of its API, .*exited 22, since Dispatch answered 502, a server error\$" \
     "$(DISPATCH_URL="$PIPE_URL" PATH="$PIPE_CASE/bin:$PATH" fixture_run "$dir" --replay)"
+
+# 152. The figure of a Cost is the whole word before engineer-day, and a word the reader
+# cannot read fails (review 6003758567, its third item, and the architect's change of round
+# 45). At a6c85d0a cost_read turned the text before the unit into words of letters, digits
+# and points, so "1/2 engineer-day" read as the words 1 and 2, and the last of them, 2, put
+# the page above one engineer-day: a copy of judgement v25 whose Envoy page's Cost read
+# 'about 1/2 engineer-day, by our estimate' passed all 7 of --landed, with that page held to
+# no state, and all 9 of --shape. The case writes the fixture's Envoy page's Cost so, leaves
+# the page with no state line, and runs --shape, which must fail page-parts, and --landed,
+# which must fail landed-proof, each naming the page and its Cost line as a figure the gate
+# cannot read and saying that a figure in digits is a whole number or one with a decimal
+# point.
+dir="$(fresh cost-slash-half)"
+sed -i '0,/^- \*\*Cost:\*\* 2 engineer-days$/s//- **Cost:** about 1\/2 engineer-day, by our estimate/' "$dir/judgement.md"
+awk '/^### Structured metadata on an Envoy message/{f=1; next} /^### /{f=0} f && /\*\*(Landed|Not landed|Refuted by|Proven by):\*\*/{n++} f && /^- \*\*Cost:\*\* about 1\/2 engineer-day, by our estimate$/{c++} END{exit !(c == 1 && n == 0)}' "$dir/judgement.md" || {
+    printf 'FAIL the fixture Envoy page could not be given a cost of 1/2 engineer-day with no state line\n'
+    exit 1
+}
+case_result "a page whose Cost is about 1/2 engineer-day fails --shape and --landed, each naming the page and its Cost line as a figure the gate cannot read" \
+    "page-parts: the page .Structured metadata on an Envoy message. gives its first step a cost whose figure this gate cannot read, .about 1/2 engineer-day, by our estimate. on its Cost line: .*in digits, a whole number or one with a decimal point" "$(fixture_run "$dir" --shape)" \
+    "landed-proof: the page .Structured metadata on an Envoy message. gives its first step a cost whose figure this gate cannot read, .about 1/2 engineer-day, by our estimate. on its Cost line: .*in digits, a whole number or one with a decimal point" "$(fixture_run "$dir" --landed)"
+
+# 153. A figure written with a decimal comma is no figure the reader reads (the item and the
+# change of case 152). At a6c85d0a "0,5 engineer-days" read as the words 0 and 5, and the
+# last of them, 5, put the page above one engineer-day, so a page whose first step takes
+# half a day, written with a decimal comma, passed --landed with no state, and --shape. The
+# case writes the fixture's Envoy page's Cost as "0,5 engineer-days", leaves the page with
+# no state line, and runs --shape, which must fail page-parts, and --landed, which must fail
+# landed-proof, each naming the page and its Cost line as a figure the gate cannot read and
+# saying that a figure in digits is a whole number or one with a decimal point.
+dir="$(fresh cost-decimal-comma)"
+sed -i '0,/^- \*\*Cost:\*\* 2 engineer-days$/s//- **Cost:** 0,5 engineer-days/' "$dir/judgement.md"
+awk '/^### Structured metadata on an Envoy message/{f=1; next} /^### /{f=0} f && /\*\*(Landed|Not landed|Refuted by|Proven by):\*\*/{n++} f && /^- \*\*Cost:\*\* 0,5 engineer-days$/{c++} END{exit !(c == 1 && n == 0)}' "$dir/judgement.md" || {
+    printf 'FAIL the fixture Envoy page could not be given a cost of 0,5 engineer-days with no state line\n'
+    exit 1
+}
+case_result "a page whose Cost is 0,5 engineer-days fails --shape and --landed, each naming the page and its Cost line as a figure the gate cannot read" \
+    "page-parts: the page .Structured metadata on an Envoy message. gives its first step a cost whose figure this gate cannot read, .0,5 engineer-days. on its Cost line: .*in digits, a whole number or one with a decimal point" "$(fixture_run "$dir" --shape)" \
+    "landed-proof: the page .Structured metadata on an Envoy message. gives its first step a cost whose figure this gate cannot read, .0,5 engineer-days. on its Cost line: .*in digits, a whole number or one with a decimal point" "$(fixture_run "$dir" --landed)"
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending

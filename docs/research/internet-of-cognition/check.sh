@@ -333,13 +333,14 @@
 # whose title the list does not name fails too, so the list stays the committed set of the
 # pages that carry one; the list names each step once, and a title it names twice fails.
 # Every page gives its first step one cost in engineer-days, on one Cost line, as R9 does:
-# --shape's page-parts fails a Cost line that names no engineer-days, and --landed reads
-# the cost by cost_read, the figure before the first "engineer-day" on the line, its two
-# words joined by a hyphen, an en dash, an em dash or spaces, in digits or in words (one,
-# a, an, half a, half an, two to ten). Every page at one engineer-day or less carries one
-# of the three states, as R12 asks; a Cost line with a figure the gate cannot read, or in
-# no engineer-days, fails, and so does a page carrying its Cost on more than one line or
-# none; the line that passes counts the pages at one engineer-day or less and those above.
+# --shape's page-parts and --landed both read it by cost_read, the whole word before the
+# first "engineer-day" on the line, its two words joined by a hyphen, an en dash, an em
+# dash or spaces, in digits, a whole number or one with a decimal point, or in words (one,
+# a, an, half a, half an, two to ten), and both fail a Cost line in no engineer-days or
+# with a figure the gate cannot read, as "1/2 engineer-day" or "0,5 engineer-days", naming
+# the page and the line. Every page at one engineer-day or less carries one of the three
+# states, as R12 asks, and a page carrying its Cost on more than one line or none fails;
+# the line that passes counts the pages at one engineer-day or less and those above.
 # The order of the two steps is judged only when every step of the list is landed, on the
 # one commit of this pull request that carries each step's subject, and two commits of one
 # subject fail, naming them; steps merged in another pull request are judged by their
@@ -670,7 +671,7 @@ count-class|replay|the count classes are the three the specification names, in c
 count-denominator|replay|every class of the count carries its denominator, and the count coordination/count.py prints again reads a whole number of records above zero|a class with no denominator
 count-zero-premise|replay|a class of zero over a denominator above zero is stated on the front page as a premise that failed|a class of zero with no failed premise
 page-count|shape|the judgement carries at least three and at most seven candidate pages|an eighth candidate page
-page-parts|shape|every candidate page carries each of its eleven parts on exactly one line, its Cost names engineer-days, and its landing component is Legion, Envoy or Dispatch|a page short of its reversal cost
+page-parts|shape|every candidate page carries each of its eleven parts on exactly one line, its Cost names engineer-days with a figure the gate reads, and its landing component is Legion, Envoy or Dispatch|a page short of its reversal cost
 page-verdict|shape|every candidate page carries exactly one verdict word of vendor, depend, port and reject|a page with two verdict words
 verdict-commitment|shape|a depend names its upstream owner, a port names the change in our code, a reject names its reason|a reject with no reason
 fixed-page|shape|the three pages the specification fixes exist and each answers by name the design already written for it|a fixed page that answers no named design
@@ -4886,8 +4887,10 @@ page_blocks() {
 # and this reads the first. R9 gives a page "the cost in engineer-days", so the unit is
 # "engineer-day" or "engineer-days", its two words joined by a hyphen, an en dash, an em
 # dash or spaces, in any case, and the cost is the figure before its first occurrence on
-# the line, the word that stands just before it: in digits, as "1 engineer-day", "about 1
-# engineer-day, by our estimate" or "about 2 engineer-days", or in words, one engineer-day
+# the line, the whole word that stands just before it, a word being what spaces and tabs
+# bound, read after the line's en and em dashes are read as hyphens: in digits, a whole
+# number or one with a decimal point, as "1 engineer-day", "about 1 engineer-day, by our
+# estimate", "0.5 engineer-days" or "about 2 engineer-days", or in words, one engineer-day
 # or less as "one", "a" or "an", or "half a" and "half an", and above one as "two" to
 # "ten". Unlike citation-figures, which reads no number word because a row prints digits
 # and a word names no spelling to look for in its output, this reader reads them: the Cost
@@ -4895,7 +4898,10 @@ page_blocks() {
 # reads it, so a figure written in words is the same cost and a reader of digits alone
 # would pass "about one engineer-day" as no cost. Any other word before the unit, as in "a
 # few engineer-days", "eleven engineer-days" or "the engineer-days a converter took", is a
-# figure this reader cannot read, and the caller fails it rather than count it as no cost.
+# figure this reader cannot read, and so is a word of digits with anything else in it: "1/2
+# engineer-day" is not read as its last digits, 2, nor "0,5 engineer-days" as 5. --shape
+# and --landed fail such a figure, naming the page and the line and the forms COST_FIGURES
+# says, rather than count it as no cost or as the digits it holds.
 cost_read() {
     awk '
         /\*\*Cost:\*\*/ {
@@ -4907,10 +4913,7 @@ cost_read() {
             if (!match(line, /engineer(-|[ \t]+)days?/)) { print "none\t" substr(said, 1, 240); exit }
             unit = substr(line, RSTART, RLENGTH)
             figure = substr(line, 1, RSTART - 1)
-            gsub(/[^a-z0-9.]+/, " ", figure)
-            sub(/^ +/, "", figure)
-            sub(/[ .]+$/, "", figure)
-            n = split(figure, word, / +/)
+            n = split(figure, word, " ")
             last = (n > 0) ? word[n] : ""
             before = (n > 1) ? word[n - 1] : ""
             if (last ~ /^[0-9]+(\.[0-9]+)?$/) value = last + 0
@@ -4922,6 +4925,10 @@ cost_read() {
             exit
         }'
 }
+
+# The forms of a figure cost_read reads, which --shape and --landed name when they fail one
+# it cannot read.
+COST_FIGURES="a cost is the one word just before engineer-day, written in digits, a whole number or one with a decimal point, as 2 or 0.5, or as one, a, an, half a, half an, or two to ten"
 
 mode_shape() {
     local text
@@ -4966,16 +4973,24 @@ mode_shape() {
             fi
         done
         # R9 gives a page "the cost in engineer-days", so a page's one Cost line names
-        # engineer-days, as cost_read reads the unit; a Cost line that names none, as "about
+        # engineer-days with a figure cost_read reads; a Cost line that names none, as "about
         # half a day" or "about 4 hours", fails, naming the page and the line, since its cost
-        # is no cost R12's test of one engineer-day can read. A page with no Cost line, or two,
-        # fails above.
+        # is no cost R12's test of one engineer-day can read, and so does one whose figure
+        # cost_read cannot read, as "1/2 engineer-day" or "0,5 engineer-days", rather than
+        # pass to --landed as no cost or as the digits it holds. A page with no Cost line, or
+        # two, fails above.
         if [ "$(printf '%s\n' "$page" | grep -cF -- '**Cost:**')" -eq 1 ]; then
             cost="$(printf '%s\n' "$page" | cost_read)"
-            if [ "${cost%%$'\t'*}" = none ]; then
+            case "${cost%%$'\t'*}" in
+            none)
                 bad_parts=$((bad_parts + 1))
                 fail page-parts "the page '$title' gives its cost in no engineer-days, '${cost#*$'\t'}' on its Cost line, and R9 gives a page its cost in engineer-days"
-            fi
+                ;;
+            unread)
+                bad_parts=$((bad_parts + 1))
+                fail page-parts "the page '$title' gives its first step a cost whose figure this gate cannot read, '${cost#*$'\t'}' on its Cost line: $COST_FIGURES"
+                ;;
+            esac
         fi
         # R9 names the landing component as Legion, Envoy or Dispatch, so the value of every
         # line that carries the field, after its label and with the whitespace around it and
@@ -5043,7 +5058,7 @@ mode_shape() {
         fail page-verdict "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so its verdicts are not judged"
         fail verdict-commitment "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so what its verdicts commit us to is not judged"
     fi
-    [ "$bad_parts" -eq 0 ] && pass page-parts "each of the $read_pages candidate pages carries each of its eleven parts on exactly one line, its cost in engineer-days, and its landing component is Legion, Envoy or Dispatch"
+    [ "$bad_parts" -eq 0 ] && pass page-parts "each of the $read_pages candidate pages carries each of its eleven parts on exactly one line, its cost in engineer-days with a figure the gate reads, and its landing component is Legion, Envoy or Dispatch"
     [ "$bad_verdict" -eq 0 ] && pass page-verdict "each of the $read_pages candidate pages carries exactly one verdict word"
     [ "$bad_commitment" -eq 0 ] && pass verdict-commitment "the verdict of each of the $read_pages candidate pages names what it commits us to"
 
@@ -6000,7 +6015,7 @@ mode_landed() {
         high) cost_high=$((cost_high + 1)) ;;
         unread)
             bad_proof=$((bad_proof + 1))
-            fail landed-proof "the page '$title' gives its first step a cost whose figure this gate cannot read, '${cost#*$'\t'}' on its Cost line: a cost is written in digits, or as one, a, an, half a, half an, or two to ten, before engineer-day"
+            fail landed-proof "the page '$title' gives its first step a cost whose figure this gate cannot read, '${cost#*$'\t'}' on its Cost line: $COST_FIGURES"
             ;;
         none)
             bad_proof=$((bad_proof + 1))
