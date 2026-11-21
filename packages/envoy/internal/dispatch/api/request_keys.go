@@ -75,7 +75,12 @@ import (
 //     delivery sweep resumes it (resumeOwedDeliveries), and a repeat only sooner.
 //   - Every answer to a keyed request the layer judged carries the key back in the Idempotency-Key
 //     response header, a 5xx included: an earlier Dispatch ignores the header and answers without
-//     it, so a client retries a 5xx under its key only where the echo says the key was judged.
+//     it, so a check can tell a Dispatch that judges the key from one that does not. The agents'
+//     client reads no /healthz, and every Dispatch that carries b1c42d1d7d runs this layer, so it
+//     sends a failed write again under its key whatever the echo says. It reads the echo only to
+//     settle a refusal: a fresh 4xx, or a 422 KEY_REUSED, that echoes exactly its key is final
+//     (answerEvent, packages/envoy-client), so a change that drops or moves the echo turns such
+//     a refusal back into an unsettled write.
 //
 // A write without the header runs as it always did, unkeyed, and is logged at DEBUG: a script, a
 // test and the Legion daemon's outbox send writes that name no intent, and are expected to. A write
@@ -312,9 +317,8 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		r.Body = io.NopCloser(replayable)
 
 		// Every answer from here on - run, replayed or refused, stored or not, a 5xx included - names
-		// the key back, so a client can tell a Dispatch that judged its key from one that ignored the
-		// header, and retries a 5xx under the key only against the first: an earlier Dispatch would
-		// run the write again.
+		// the key back, so a check can tell a Dispatch that judged its key from one that ignored the
+		// header.
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
 		claim, answered := s.claimRequestKey(w, r, login, key, hex.EncodeToString(digest.Sum(nil)), replay)
 		if answered {

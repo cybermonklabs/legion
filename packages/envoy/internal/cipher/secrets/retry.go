@@ -177,9 +177,11 @@ func (r *Retry) start(secretType string) *mintRetry {
 	return &mintRetry{retry: r, secretType: secretType, waitLeft: mintWaitBudget}
 }
 
-// startOnce is the share of calls nobody waits on, a give-back's revokes (GitHubApp.GiveBack): one
-// attempt of each call, counted under type as every other, and no retry, so it draws nothing from
-// the process-wide budget the mints a caller waits on retry from.
+// startOnce is the share of a call made once, counted under type as every other and never retried,
+// so it draws nothing from the process-wide budget the retried mints share. It has two callers: a
+// give-back's revokes (GitHubApp.GiveBack), which nobody waits on; and an Anthropic federation
+// exchange (AnthropicFederation.Mint), which a release waits on, and which is not sent again
+// because the identity token it presents may be good for one use only.
 func (r *Retry) startOnce(secretType string) *mintRetry {
 	return &mintRetry{retry: r, secretType: secretType, once: true}
 }
