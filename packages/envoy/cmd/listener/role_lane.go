@@ -45,7 +45,7 @@ type roleForwarder struct {
 	cfg   listenerDeliveryHandlerConfig
 	slots chan struct{}
 	// pending counts the forwards handed over and not yet reported, for wait.
-	pending sync.WaitGroup
+	pending inflight
 
 	mu sync.Mutex
 	// queues holds each holder's forwards not yet published, in arrival order. A holder has a key
@@ -100,7 +100,7 @@ func (f roleForward) msgID(subject string) string {
 // has none, once a slot is free.
 func (f *roleForwarder) enqueue(forward roleForward) {
 	f.slots <- struct{}{}
-	f.pending.Add(1)
+	f.pending.Add()
 	f.mu.Lock()
 	queue, running := f.queues[forward.sessionID]
 	f.queues[forward.sessionID] = append(queue, forward)
@@ -191,7 +191,7 @@ func (f *roleForwarder) outstanding() int {
 // drains, since the forwards and their exceptions are published through it. It reports whether all
 // were.
 func (f *roleForwarder) wait(ctx context.Context) bool {
-	return waitWithin(ctx, &f.pending)
+	return f.pending.wait(ctx)
 }
 
 // startRoleForward is forwardRole over client: every forward is stored-only

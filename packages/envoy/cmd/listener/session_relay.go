@@ -211,7 +211,7 @@ type sessionRelays struct {
 	// stopChange unregisters the session cache's change callback.
 	stopChange func()
 	// runs counts the relay goroutines; loopDone is closed once the loop has returned.
-	runs     sync.WaitGroup
+	runs     inflight
 	loopDone chan struct{}
 
 	// eventsMu guards events and ownershipChanged, which the loop takes each time wake fires.
@@ -579,13 +579,11 @@ func (m *sessionRelays) stop(ctx context.Context) {
 	m.events = nil
 	m.eventsMu.Unlock()
 	m.cancel(relayCancelListenerStopping)
-	select {
-	case <-m.loopDone:
-	case <-ctx.Done():
+	if !closedWithin(ctx, m.loopDone) {
 		m.logger.Warn("session relay loop still running at shutdown")
 		return
 	}
-	if !waitWithin(ctx, &m.runs) {
+	if !m.runs.wait(ctx) {
 		m.logger.Warn("session relays still running at shutdown")
 	}
 }

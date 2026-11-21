@@ -1981,17 +1981,11 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// in-flight deliveries without reconnecting, end the retired watchers and delete their
 	// consumers (endListenerKVWatchers, the drain hook main adds), and drain the connection, but
 	// never let a blocked NATS request pin the process after its HTTP listener is gone.
-	if loops.monitorDone != nil {
-		select {
-		case <-loops.monitorDone:
-		case <-shutdownCtx.Done():
-			logger.Warn("self-health monitor still running at shutdown")
-		}
+	if loops.monitorDone != nil && !closedWithin(shutdownCtx, loops.monitorDone) {
+		logger.Warn("self-health monitor still running at shutdown")
 	}
 	for _, done := range loops.kvLoopsDone {
-		select {
-		case <-done:
-		case <-shutdownCtx.Done():
+		if !closedWithin(shutdownCtx, done) {
 			logger.Warn("a KV bucket pass still running at shutdown")
 		}
 	}

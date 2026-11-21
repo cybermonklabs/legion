@@ -240,7 +240,7 @@ type sessionDelivery struct {
 	// read and written in session_consumer_delete.go alone, where the delete lifecycle is; a
 	// field of this type is declared with the type.
 	deleteMu   sync.Mutex
-	deletes    sync.WaitGroup
+	deletes    inflight
 	deletesOff bool
 	// grantMu guards the refusal episode below.
 	grantMu sync.Mutex
@@ -544,7 +544,9 @@ func (m *sessionDelivery) mark() uint64 { return m.marks.Add(1) }
 
 // drain drains the session-consumer connection, so the acks the relays sent reach the server,
 // within sessionConsumerDrain or what is left of ctx if that is less; with nothing left of ctx it
-// closes the connection. The relays are stopped first (sessionRelays.stop).
+// closes the connection and says so at WARN, since an ack the connection had not yet sent is then
+// lost and the server delivers its message again. The relays are stopped first
+// (sessionRelays.stop).
 func (m *sessionDelivery) drain(ctx context.Context) {
 	if m == nil || m.consumers == nil {
 		return
@@ -555,6 +557,7 @@ func (m *sessionDelivery) drain(ctx context.Context) {
 	}
 	if timeout <= 0 {
 		m.consumers.Close()
+		m.logger.Warn("session consumer connection closed without a drain: the shutdown's HTTP window was spent")
 		return
 	}
 	if err := m.consumers.Drain(timeout); err != nil {
