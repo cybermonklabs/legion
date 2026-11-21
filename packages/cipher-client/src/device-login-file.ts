@@ -261,7 +261,7 @@ async function walkTheWay(path: string, what: string, meet?: OnTheWay): Promise<
 /** The home directory, `HOME`, by the path a walk reaches it by ({@link walkTheWay}), or null
  *  where `HOME` names no absolute path, or none that a walk reaches. */
 async function homeReached(): Promise<string | null> {
-  const home = process.env.HOME ?? "";
+  const home = process.env["HOME"] ?? "";
   if (!isAbsolute(home)) return null;
   return await walkTheWay(home, "the home directory").catch(() => null);
 }
