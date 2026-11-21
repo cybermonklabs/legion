@@ -28,6 +28,27 @@ watch="$script_dir/disk_watch.py"
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# Every process this script starts runs in a PID namespace whose first process is this script, so
+# no sampler that `start` detaches can outlive it: when the first process of a PID namespace exits,
+# by any path and a SIGKILL included, the kernel kills every other process in it. unshare's
+# --kill-child sends that first process a SIGKILL when unshare itself dies, so a SIGKILL of the
+# process the caller started ends them too; the trap below runs on neither. --mount-proc gives the
+# namespace its own /proc, so the pids `start` writes, the ones `report` signals and the ones this
+# script reads in /proc are one numbering. Where the kernel refuses an unprivileged namespace, a
+# run by hand goes on without one and says so, and CI, whose job allows them first
+# (ci-job-test.yaml), fails instead.
+if [ -z "${DISK_WATCH_TEST_NAMESPACE:-}" ]; then
+  if namespace_out=$(unshare --user --map-root-user --mount --pid --fork --mount-proc true 2>&1); then
+    DISK_WATCH_TEST_NAMESPACE=1 exec unshare --user --map-root-user --mount --pid --fork --kill-child \
+      --mount-proc "$BASH" "${BASH_SOURCE[0]}" "$@"
+  elif [ "${GITHUB_ACTIONS:-}" = true ]; then
+    check "the kernel granted this script a PID namespace, which the job's step before this one allows: ${namespace_out%%$'\n'*}" false
+    summary "disk_watch.py"
+  else
+    echo "  NOTE: no PID namespace for this script (${namespace_out%%$'\n'*}), so a sampler it starts can outlive a SIGKILL of it"
+  fi
+fi
+
 work=$(mktemp -d)
 pid=""
 cleanup() {
