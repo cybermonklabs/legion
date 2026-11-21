@@ -96,6 +96,10 @@ func issueReferencesQueryRequest(t *testing.T, handler http.Handler, issueKey, q
 	return response
 }
 
+// An issue's references read answers in members each document the issue's own content links to,
+// at depth 1 and with the node it links from as its via, under an ETag that a conditional read
+// matches and a new version of the member changes. Diagram PNG, which only that member links to,
+// is two hops from the issue and no member, since the read reads one hop.
 func TestIssueReferencesClosureDepthViaAndETag(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -121,15 +125,12 @@ func TestIssueReferencesClosureDepthViaAndETag(t *testing.T) {
 		t.Fatalf("get issue references: status=%d body=%s", first.Code, first.Body.String())
 	}
 	firstValue := decodeBody[model.IssueReferences](t, first)
-	if firstValue.Truncated || len(firstValue.Members) != 2 {
-		t.Fatalf("issue references = %#v; want two untruncated members", firstValue)
+	if firstValue.Truncated || len(firstValue.Members) != 1 {
+		t.Fatalf("issue references = %#v; want one untruncated member, Design notes, and not Diagram PNG two hops away", firstValue)
 	}
-	firstMember, secondMember := firstValue.Members[0], firstValue.Members[1]
+	firstMember := firstValue.Members[0]
 	if firstMember.Artifact.ID != design.ID || firstMember.Depth != 1 || firstMember.Via != (model.ReferenceVia{Kind: "comment", ID: comment.ID}) {
-		t.Fatalf("first reference member = %#v; want Design notes through comment %q", firstMember, comment.ID)
-	}
-	if secondMember.Artifact.ID != diagram.ID || secondMember.Artifact.Project != "OPS" || secondMember.Depth != 2 || secondMember.Via != (model.ReferenceVia{Kind: "artifact", ID: design.ID}) {
-		t.Fatalf("second reference member = %#v; want cross-project Diagram PNG through Design notes", secondMember)
+		t.Fatalf("reference member = %#v; want Design notes at depth 1 through comment %q", firstMember, comment.ID)
 	}
 	firstETag := first.Header().Get("ETag")
 	if firstETag == "" {
@@ -153,8 +154,8 @@ func TestIssueReferencesClosureDepthViaAndETag(t *testing.T) {
 		t.Fatalf("read changed issue references: status=%d body=%s", second.Code, second.Body.String())
 	}
 	secondValue := decodeBody[model.IssueReferences](t, second)
-	if secondValue.Truncated || len(secondValue.Members) != 1 || secondValue.Members[0].Artifact.ID != design.ID {
-		t.Fatalf("references after removing link = %#v; want only Design notes", secondValue)
+	if secondValue.Truncated || len(secondValue.Members) != 1 || secondValue.Members[0].Artifact.ID != design.ID || secondValue.Members[0].Depth != 1 {
+		t.Fatalf("references after a new version of Design notes = %#v; want only Design notes, at depth 1", secondValue)
 	}
 	if second.Header().Get("ETag") == firstETag {
 		t.Fatal("reference ETag did not change after linked document version changed")
@@ -177,32 +178,42 @@ func TestIssueReferencesExcludeOwnArtifactsAndDanglingTargets(t *testing.T) {
 	}
 }
 
+// A chain of ten documents, each linking to the next, that the issue's comment enters at its first
+// answers that first document alone, at depth 1, and truncated false: the read reads one hop, so it
+// is never cut. The test keeps the name it had when the read walked eight hops and marked a ninth
+// truncated, the name plan.md's and verification.md's lists of checks give it.
 func TestIssueReferencesTruncateBeyondDepthEight(t *testing.T) {
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
+	labels := map[string]string{}
+	var first model.Artifact
 	for index := 1; index <= 10; index++ {
 		name := "Document " + strconv.Itoa(index)
 		content := "# " + name + "\n"
 		if index < 10 {
 			content += "dispatch://CORE/artifact/document-" + strconv.Itoa(index+1) + "\n"
 		}
-		createProjectDocument(t, handler, "CORE", name, content)
+		document := createProjectDocument(t, handler, "CORE", name, content)
+		labels[document.ID] = "the chain's document " + strconv.Itoa(index)
+		if index == 1 {
+			first = document
+		}
 	}
-	createReferenceAPIComment(t, handler, issue.Key, "dispatch://CORE/artifact/document-1")
+	comment := createReferenceAPIComment(t, handler, issue.Key, "dispatch://CORE/artifact/document-1")
+	labels[comment.ID] = "the issue's comment"
 
 	response := issueReferencesRequest(t, handler, issue.Key, "")
 	if response.Code != http.StatusOK {
-		t.Fatalf("get truncated issue references: status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("get issue references: status=%d body=%s", response.Code, response.Body.String())
 	}
 	value := decodeBody[model.IssueReferences](t, response)
-	if !value.Truncated || len(value.Members) != 8 {
-		t.Fatalf("truncated issue references = %#v; want eight members with truncation", value)
+	if value.Truncated {
+		t.Error("the answer is truncated; a read of one hop is never cut")
 	}
-	for index, member := range value.Members {
-		if member.Depth != index+1 {
-			t.Fatalf("member %d depth = %d; want %d", index, member.Depth, index+1)
-		}
+	want := []model.ReferenceMember{{Artifact: model.Artifact{ID: first.ID}, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment.ID}}}
+	if got, want := referenceMemberLines(value.Members, labels), referenceMemberLines(want, labels); !slices.Equal(got, want) {
+		t.Errorf("members hold\n\t%s\nwant the chain's first document alone, at depth 1\n\t%s", shownLines(got), shownLines(want))
 	}
 }
 

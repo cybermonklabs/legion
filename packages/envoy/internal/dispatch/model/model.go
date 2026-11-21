@@ -3477,14 +3477,17 @@ type ReferenceVia struct {
 	ID   string `json:"id"`
 }
 
-// ReferenceMember is one artifact in an issue's reference closure.
+// ReferenceMember is one document of an issue's references read: a document its own content
+// links to, always at depth 1. It stays for the clients that read members, beside Links.
 type ReferenceMember struct {
 	Artifact Artifact     `json:"artifact"`
 	Depth    int          `json:"depth"`
 	Via      ReferenceVia `json:"via"`
 }
 
-// IssueReferences is an issue's artifact reference closure.
+// IssueReferences is an issue's references read, one hop in each direction: Links and LinkedFrom,
+// with Members, the documents of Links, and Truncated, always false, kept for the clients that
+// read them.
 type IssueReferences struct {
 	Members   []ReferenceMember `json:"members"`
 	Truncated bool              `json:"truncated"`

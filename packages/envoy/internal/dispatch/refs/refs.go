@@ -3,7 +3,8 @@
 // graph_edges view unions both into one typed edge relation. Artifact targets use ref_key
 // (`<issue-or-project>/<slug>`, or `agent/<session id>/<slug>` for an agent's conversation) so
 // every owner's documents and files share one address; artifact sources are the artifact uuid.
-// Closure returns at most eight hops and marks the result truncated when it finds a ninth.
+// Closure reads an issue's references one hop in each direction: every node the issue's own
+// content links to, and every node that links to the issue or to its own content.
 // References whose target is absent stay stored but are absent from closures and referenced-by
 // results.
 package refs

@@ -252,8 +252,9 @@ func (s recordedStatement) head() string {
 	return ""
 }
 
-// oneHopBound is the statement_timeout the references route reads an issue's references under
-// (api.referencesClosureBound, cybermonklabs/legion#4554), as `set local` takes it.
+// oneHopBound is the bound the references route reads an issue's references under
+// (api.referencesClosureBound, cybermonklabs/legion#4554), written as `set local statement_timeout`
+// takes it.
 const oneHopBound = "2s"
 
 // linkTables is every table a link is read from: a mention of a document, an ask, a comment or a
