@@ -83,7 +83,6 @@ func TestAHeldCandidateStopsTheLineForAChildOfAnotherTree(t *testing.T) {
 			name: "the Dispatch consumer's hold",
 			hold: func(_ *testing.T, admission *Admission) {
 				admission.pending = map[string]intake.DispatchIssue{"LEGION-9": heldSummary()}
-				admission.target = 100
 			},
 			release: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 				reachConsumer(t, pool, admission, "position-1")
@@ -103,7 +102,6 @@ func TestAHeldCandidateStopsTheLineForAChildOfAnotherTree(t *testing.T) {
 			name: "both holds",
 			hold: func(_ *testing.T, admission *Admission) {
 				admission.pending = map[string]intake.DispatchIssue{"LEGION-9": heldSummary()}
-				admission.target = 100
 				admission.HoldForCatchUp("LEGION-9")
 			},
 			release: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
