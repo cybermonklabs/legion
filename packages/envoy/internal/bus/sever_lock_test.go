@@ -21,9 +21,11 @@ import (
 // reads running (its drain wait and mayHandBack) once a write holds nats.go's lock. A Sever that took
 // the client's lock to find the connection waited behind that read for as long as the write held,
 // and once the link moved, the publish that waited behind the write went out before the sever.
-// Two subtests: with no such read (the control), and with one left waiting for nats.go's lock.
-// Each requires that Sever returns while the write still holds the lock, and that the publish that
-// waited behind the write never reaches the server.
+// Two subtests: with no such read (the control), and with one left waiting for nats.go's lock, which
+// the row waits for until the client's lock stays taken. Each requires that Sever returns while the
+// write still holds the lock, and that the publish that waited behind the write never reaches the
+// server: once the client has a connection of its own again, a second marker published and flushed
+// on it is the first the subscriber receives.
 func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 	const subject = "testbus.sever.locked-marker"
 	for _, withRead := range []bool{false, true} {
@@ -51,11 +53,24 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 					client.Connected()
 					close(read)
 				}()
-				select {
-				case <-read:
-					t.Fatal("control: Connected answered while a write held nats.go's lock")
-				case <-time.After(500 * time.Millisecond):
-				}
+				// The read holds the client's lock while it waits for nats.go's. The row polls until
+				// the lock stays taken across three polls, which no caller that holds it only briefly
+				// does, so Sever runs once the read holds it.
+				taken := 0
+				testwait.WithinPolling(t, 10*time.Second, 5*time.Millisecond, "the Connected read holding the client's lock", func() bool {
+					select {
+					case <-read:
+						t.Fatal("control: Connected answered while a write held nats.go's lock")
+					default:
+					}
+					if client.mu.TryLock() {
+						client.mu.Unlock()
+						taken = 0
+						return false
+					}
+					taken++
+					return taken >= 3
+				})
 			}
 			severed := make(chan struct{})
 			go func() {
@@ -69,12 +84,23 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 				t.Fatal("Sever did not return within 10 s while the write held nats.go's lock: it waited for the client's lock")
 			}
 			thaw()
-			// Once the link moves, a marker the severed connection still held would reach the
-			// subscriber within a round trip; 3 s is the guard.
+			testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "the client's connection of its own after the sever", func() bool {
+				return client.Connected() && client.Connection() != conn
+			})
+			replacement := client.Connection()
+			if err := replacement.Publish(subject, []byte("after")); err != nil {
+				t.Fatalf("publish the second marker on the replacement connection: %v", err)
+			}
+			if err := replacement.Flush(); err != nil {
+				t.Fatalf("flush the replacement connection: %v", err)
+			}
 			select {
 			case msg := <-received:
-				t.Fatalf("the severed connection sent %q", msg.Data)
-			case <-time.After(3 * time.Second):
+				if string(msg.Data) != "after" {
+					t.Fatalf("the subscriber received %q before the second marker: the severed connection sent the publish that waited behind the held write", msg.Data)
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatal("control: the second marker did not reach the subscriber within 30 s")
 			}
 		})
 	}
