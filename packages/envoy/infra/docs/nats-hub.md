@@ -1367,7 +1367,7 @@ and `remote_id` catches it only while it holds a route under an id other than it
 server's, which it can send as its own. Nor does the credential fence it: the chart runs each pod
 with `shareProcessNamespace: true`, so a process of the pod that runs as the nats container's user,
 or with the capability to trace it, can read the password from that container's environment in
-`/proc`, as it can read its traffic. The credential fences a process that can only connect to 6222.
+`/proc`, and, with the capability to capture packets, its traffic. The credential fences a process that can only connect to 6222.
 A change of the password goes back to
 `env`, which drops `authorization` from `nats.conf`, so the routes are open again during its `env`
 and `routes` applies, and its rollout runs `routes record` and `routes check` again. The component

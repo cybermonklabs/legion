@@ -1,7 +1,8 @@
 package routes_test
 
-// Red tests from the independent test of the route check at 7c7131eece. Each fails at that head
-// and names the behaviour the change must have; none of them is the implementer's to weaken.
+// Red tests from the independent test of the route check at 7c7131eece. Each failed at that head
+// and names the behaviour the change must have. TestTakeRefusesOnceAuthorizationHasLoaded is kept
+// skipped, by the change owner's decision, as the documented limit its reason names.
 
 import (
 	"context"
