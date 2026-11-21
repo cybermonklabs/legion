@@ -718,12 +718,14 @@ func TestACallThatLosesItsConnectionIsRetriedOnce(t *testing.T) {
 // on a cross-domain redirect before a transport runs, so following one would hand the token to
 // whatever server the Location names. The client's redirect check fails the call instead, with
 // a detail naming the host the redirect points at, and the server the redirect points at hears
-// nothing at all. That holds for the transport's one retry too: a call that loses its connection
-// before the redirect answers is asked again a second later, meets the redirect, and follows it
-// no further. The redirecting endpoint redirects every request it gets, as a real one does: a
-// stand-in that answered once would answer the run's call after a request from a client that is
-// not the run's with "the stand-in has no more replies", and the detail would name no redirect at
-// all.
+// nothing at all. A redirect is not retried: the endpoint answers the run's one model call once.
+// That holds for the transport's one retry too: a call that loses its connection before the
+// redirect answers is asked again a second later, meets the redirect, and follows it no further,
+// so the endpoint gets the call and its retry and answers once. The redirecting endpoint redirects
+// every request it gets, as a real one does: a stand-in that answered once would answer the run's
+// call after a request from a client that is not the run's with "the stand-in has no more
+// replies", and the detail would name no redirect at all. Such a request carries none of the
+// run's credential, so the counts below leave it out.
 func TestARedirectIsNotFollowedAndItsTargetIsNeverCalled(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -765,8 +767,16 @@ func TestARedirectIsNotFollowedAndItsTargetIsNeverCalled(t *testing.T) {
 				if result.Text != "" {
 					t.Errorf("the run answered %q, want no answer from the redirect's target", result.Text)
 				}
-				if n := len(s.attempts()); n < 2 {
-					t.Errorf("the redirecting endpoint got %d requests, want the call and its retry", n)
+				// The drop falls on the endpoint's first request. Where that is the run's
+				// call, the endpoint gets the call and its one retry; where a request from
+				// another client came first and took the drop, the run's call is not dropped.
+				got := s.attempts()
+				want := 2
+				if len(got) > 0 && credentialed(got[:1]) == 0 {
+					want = 1
+				}
+				if n := credentialed(got); n != want {
+					t.Errorf("the redirecting endpoint got %d requests carrying the run's credential, want %d: the call, and its one retry where the drop fell on it", n, want)
 				}
 				return result.Fault, result.Detail
 			},
@@ -794,6 +804,11 @@ func TestARedirectIsNotFollowedAndItsTargetIsNeverCalled(t *testing.T) {
 				headers: map[string]string{"Location": target.server.URL + "/elsewhere"},
 			}).dropping(c.drops)
 			fault, detail := c.call(t, redirecting)
+			// One model call answered with the redirect: a retry of the redirect would be a
+			// second, while a dropped call and its retry are one (standIn.requests).
+			if n := credentialed(redirecting.requests()); n != 1 {
+				t.Errorf("the redirecting endpoint answered %d model calls carrying the run's credential, want 1: a redirect is not retried", n)
+			}
 			if fault != FaultProviderError {
 				t.Errorf("fault %q, want %q: a redirect is the provider failing the call: %s", fault, FaultProviderError, detail)
 			}
@@ -815,6 +830,18 @@ func TestARedirectIsNotFollowedAndItsTargetIsNeverCalled(t *testing.T) {
 			}
 		})
 	}
+}
+
+// credentialed is how many of rs carry an endpoint credential, as every request a run or a
+// decision makes does: a request from a client that is not the run's carries none.
+func credentialed(rs []recorded) int {
+	n := 0
+	for _, r := range rs {
+		if r.header.Get("X-Api-Key") != "" || r.header.Get("Authorization") != "" {
+			n++
+		}
+	}
+	return n
 }
 
 // A request the loop cannot run at all is an error rather than a fault: nothing comes back in the

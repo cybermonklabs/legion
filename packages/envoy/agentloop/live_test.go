@@ -38,7 +38,22 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+// liveTimeCap is a live request's time bound where the test binary has no deadline (-timeout 0):
+// the two minutes the live proof gave a real model call before runnerTime, never runnerTime's day.
+const liveTimeCap = 2 * time.Minute
+
+// liveTime is a live request's time bound: runnerTime where the test binary has a deadline, and
+// liveTimeCap where it has none, so a real call is never left a day.
+func liveTime(t *testing.T) time.Duration {
+	t.Helper()
+	if _, bounded := t.Deadline(); !bounded {
+		return liveTimeCap
+	}
+	return runnerTime(t)
+}
 
 // The environment the operator names the gateway and the System One API in.
 const (
@@ -100,7 +115,7 @@ func liveProof(t *testing.T, kind Kind) {
 		System: "You answer questions about what a warehouse holds. Call the inventory tool for the item the question names, and then answer with the object you are asked for, carrying the count and the aisle the tool gave you. Never guess either.",
 		Input:  []Message{{Role: User, Blocks: []Block{{Kind: TextBlock, Text: "How many " + liveItem + "s are in stock, and in which aisle are they?"}}}},
 		Tools:  []Tool{tool.register()},
-		Bounds: Bounds{Time: runnerTime(t), Calls: 3, OutputTokens: 2000},
+		Bounds: Bounds{Time: liveTime(t), Calls: 3, OutputTokens: 2000},
 		Final:  json.RawMessage(liveFinal),
 	}
 
@@ -163,7 +178,7 @@ func TestLiveDecide(t *testing.T) {
 					`{"true":"the label gives a count above zero","false":"the label gives no count, or a count of zero"}`),
 			},
 		},
-		Bounds: Bounds{Time: runnerTime(t)},
+		Bounds: Bounds{Time: liveTime(t)},
 	}
 
 	result, err := Decide(context.Background(), req)
