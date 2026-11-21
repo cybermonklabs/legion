@@ -39,11 +39,7 @@
       "!packages/contracts/fixtures/capability-redaction-plugin-report.json",
       "!packages/daemon/internal/capabilities/testdata/web-search-open-planner.json",
       "!packages/daemon/internal/runtime/tmux/testdata/golden/**",
-      "!packages/envoy/going/testdata/filtered-answers.json",
-      "!packages/envoy/internal/dispatch/pmdoc/schema/editor-node-names.json",
-      "!docs/site/media/broker/walkthrough/raw/sections.json",
-      "!scripts/search-measure/cases.json",
-      "!packages/contracts/src/export-surface.main.json"
+      "!packages/envoy/going/testdata/filtered-answers.json"
     ]
   },
   "linter": {
