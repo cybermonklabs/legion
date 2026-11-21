@@ -453,10 +453,10 @@ test.skipIf(skip)(
     let until = 0;
     const pane = await fallbackPane({
       chains: TWO_STEPS,
-      // One assignment. Its first turn starts a background job that ends by itself three seconds
-      // later, so the turn the second refusal ends waits on the job's result, and that result,
-      // not a step of the case, starts the run that reads where the session stood: no step of
-      // the case falls inside the wait.
+      // One assignment. Its first turn starts a background job, so the turn the second refusal
+      // ends waits on the job's result. The case reads the walks and the return from the
+      // transcript, on omp's own clock, so neither the job's length nor a step of the case decides
+      // it: the job's result starts a run whenever it comes, before the return or after it.
       prompt: ["Start FALL-1."],
       answer: (model, nth) => {
         if (nth === 1) {
@@ -483,12 +483,8 @@ test.skipIf(skip)(
       },
     });
 
-    expect(pane.models().slice(0, 4)).toEqual([
-      "strong-model",
-      "strong-model",
-      "middle-model",
-      "weak-model",
-    ]);
+    // The job's start, the refused turn, and the host's replay of it on the middle model.
+    expect(pane.models().slice(0, 3)).toEqual(["strong-model", "strong-model", "middle-model"]);
     const states = await pane.cooldowns();
     const armed = states.findLast((state) => state.arming !== undefined)?.arming;
     // The defect this case is the proof of: the plugin's own walk armed the return on the model
