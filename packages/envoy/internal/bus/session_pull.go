@@ -164,6 +164,14 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 // answer on a reply naming another consumer would answer that consumer's message. nats-server
 // refuses a client's publish whose reply begins $JS.ACK., so such a message reaches the inbox
 // today with some other reply; the check does not rely on that.
+//
+// A status is not checked: a message with no reply is the server's status as far as receive can
+// tell, since a forged one carries the same subject and no reply. So a message another connection
+// publishes into the inbox with no reply and a Status header of 409 or 503 is still queued, and
+// Next ends the pull on it (the relay then restarts at the ack floor; nothing is acknowledged).
+// The grant that closes it is natsgrant.Session publishing bus.SessionReplies
+// (_INBOX.*.<session id>.>) in place of every _INBOX. subject: a session may then publish to no
+// pull's inbox, _INBOX.<id>.
 func (p *SessionPull) receive(msg *nats.Msg) {
 	status, _ := pullStatus(msg)
 	if status == "" && !strings.HasPrefix(msg.Reply, p.ack) {

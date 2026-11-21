@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -61,7 +62,7 @@ func (f *forger) publish(t *testing.T, inbox, reply, data string) {
 func (f *forger) refusals() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]string(nil), f.refused...)
+	return slices.Clone(f.refused)
 }
 
 // A message another client publishes into a pull's inbox is not one its consumer delivered: its
