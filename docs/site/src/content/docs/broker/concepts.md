@@ -368,18 +368,28 @@ machine's login can still be ended there, while a service's login is out of reac
 Dispatch answers and what remains is cluster access (delete the service's pods, or remove its
 account from `BROKER_SERVICE_LOGINS` and redeploy the broker), such a dismissal or deny is refused
 `503 MEMBER_KIND_UNCHECKABLE`, and the approval page shows no request (`503`). While Dispatch does
-not answer at all (a timeout, a failed connection,
-a gateway's `502`, `503` or `504`, or Dispatch's own `DATABASE_UNAVAILABLE` or
-`OIDC_ISSUER_UNAVAILABLE`), a grant's revoke goes ahead where nobody else could end it, since a
-revoke only takes access away: by the person the grant names as its approver, and by any of its
-approvers, a member of its group or anyone, when its session acts for no person, as a service's
-pod does. A grant on a person's session has that person to end it, so every other revoke as an
-approver then is refused `503 MEMBER_KIND_UNCHECKABLE`, and so is every revoke while Dispatch
-answers anything else the broker cannot read: a refusal of the broker's own account, a kind this
-broker does not know, another code of Dispatch's, a certificate that does not verify or a name
-that does not resolve. A revoke of a grant of one's own session asks nothing. Each member-kind read
-a route Dispatch relays makes ends within 2 seconds, inside the 5 that Dispatch waits for the
-broker, and so does the approval page's; a revoke's read of a grant's project is not bounded so.
+not answer at all (a timeout, a failed connection, a gateway's `502`, `503` or `504`, Dispatch's
+own `DATABASE_UNAVAILABLE` or `OIDC_ISSUER_UNAVAILABLE`, or a `500` that names no code or names
+`INTERNAL`, which is how Dispatch answers a read its database failed), only the person a grant
+names as its approver ends it through the broker as an approver, since a revoke only takes access
+away. Every revoke through a group or as anyone is then refused `503 MEMBER_KIND_UNCHECKABLE`,
+whatever session holds the grant. A grant on a person's session can still be ended by that person,
+its operator, asking Dispatch nothing; a grant on a session that acts for no person (a service's
+pod, a person's pod `BROKER_POD_OPERATORS` no longer maps, or a machine's own session) nobody but
+its named approver ends through the broker until Dispatch answers. What remains for a pod's grant
+meanwhile is cluster access: delete the pod. Its grants then end when its lease lapses unrenewed
+(`BROKER_LEASE_SECONDS`), except that a session that names a session id leaves them dormant, used
+by nothing, for its next enrollment until `BROKER_SESSION_CARRY_SECONDS` passes, and a Legion
+claim's pod hands them to the claim's next live pod at once; so where something starts that
+session again (a Legion claim), stop that too. A grant also ends at its own expiry. Every revoke
+while Dispatch answers anything else the broker
+cannot read is refused `503 MEMBER_KIND_UNCHECKABLE` too: a refusal of the broker's own account, a
+kind this broker does not know, a `500` naming another code, another code of Dispatch's, a
+certificate that does not verify or a name that does not resolve. A revoke of a grant of one's own
+session asks nothing. The member-kind read of each route Dispatch relays ends within 2 seconds,
+inside the 5 that Dispatch waits for the broker, and so does the approval page's; a revoke's read
+of a grant's project is not bounded so, and while all of Dispatch is down it refuses the revoke of
+a grant whose project, or whose reason's issue key, it cannot ask about.
 The broker's rate
 limiter caps how often anyone can start a machine login, per source address and per named person,
 and how often anyone can try a token login: per source address before the token is verified, and

@@ -25,20 +25,31 @@ body: |-
   lost machine's login while a service's login waits for Dispatch or for cluster access, their
   dismissal or deny is refused `503 MEMBER_KIND_UNCHECKABLE`, with nothing written, and the
   approval page shows them no request (`503`). While Dispatch does not answer at all (a timeout, a
-  failed connection, a gateway's `502`, `503` or `504`, or Dispatch's own `DATABASE_UNAVAILABLE`
-  or `OIDC_ISSUER_UNAVAILABLE`), a grant's revoke goes ahead where nobody else could end it, logged
-  at WARN (`a revoke as the grant's approver goes ahead though Dispatch could not say whether the
-  person is a restricted member`): by the person the grant names as its approver, and through its
-  group or as anyone when the grant's session acts for no person, such as a service's pod, since a
-  revoke only takes access away and one refused through an outage would delay ending a grant that
-  leaks. A grant on a person's session has that person to end it, so a revoke of it through its
-  group or as anyone is then refused `503 MEMBER_KIND_UNCHECKABLE`, and so is every revoke while
-  Dispatch answers what the broker cannot read (a refused account, a kind this broker does not
-  know, another status or code, a body that does not decode, a certificate that does not verify, a
-  name that does not resolve) and every revoke whose caller hung up. Every member-kind read a
-  route Dispatch relays makes, and the approval page's, ends within 2 seconds, so a Dispatch that
-  does not answer leaves the route its answer rather than holding it past the 5 seconds Dispatch
-  waits. With `BROKER_PROJECT_ACCESS_URL` unset the broker asks nothing and behaves as before.
+  failed connection, a gateway's `502`, `503` or `504`, Dispatch's own `DATABASE_UNAVAILABLE` or
+  `OIDC_ISSUER_UNAVAILABLE`, or a `500` that names no code or names `INTERNAL`, which is how
+  Dispatch answers while its database fails), only the person a grant names as its approver ends
+  it through the broker as an approver, logged at WARN (`a revoke as the grant's approver goes
+  ahead though Dispatch could not say whether the person is a restricted member`), since a revoke
+  only takes access away and one refused through an outage would delay ending a grant that leaks.
+  Every revoke through a group or as anyone is then refused `503 MEMBER_KIND_UNCHECKABLE`,
+  whatever session holds the grant: a grant on a person's session is still ended by that person as
+  its operator, asking nothing, while a grant on a session that acts for no person (a service's
+  pod, a person's pod `BROKER_POD_OPERATORS` no longer maps, or a machine's own session) is ended
+  through the broker by nobody but its named approver until Dispatch answers, and what remains
+  meanwhile is cluster access (delete the pod). So is every revoke refused while Dispatch answers
+  what the broker cannot read (a refused account, a kind this broker does not know, a `500` naming
+  another code, another status or code, a body that does not decode, a certificate that does not
+  verify, a name that does not resolve). Every `503 MEMBER_KIND_UNCHECKABLE`, an enrollment's, a
+  request's and a release's included, ends by saying why: `Dispatch refused the broker's own
+  account`, `Dispatch answered a member kind this broker does not know`, `the broker could not ask
+  Dispatch` while Dispatch does not answer or the caller went away, and `Dispatch answered what the
+  broker cannot read` for any other answer, which lasts until somebody fixes it. A revoke whose
+  caller hung up is refused with no ERROR line: `503 MEMBER_KIND_UNCHECKABLE` during the
+  member-kind read, `503 REQUEST_ENDED` after it. The member-kind read of each route Dispatch
+  relays, and the approval page's, ends within 2 seconds, so a Dispatch that does not answer that
+  read leaves the route its answer rather than holding it past the 5 seconds Dispatch waits; a
+  revoke's read of a grant's project is not bounded so. With `BROKER_PROJECT_ACCESS_URL` unset the
+  broker asks nothing and behaves as before.
 time: 2026-11-21T14:07:07Z
 custom:
     Issue: restricted-member-approver

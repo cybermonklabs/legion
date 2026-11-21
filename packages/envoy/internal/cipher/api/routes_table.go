@@ -469,14 +469,19 @@ func routes() []apiRoute {
 		// its enrollment acts for, and one the grant admits only as an approver is 403
 		// NOT_APPROVER, saying why. Each of these revokes nothing. While Dispatch does not answer
 		// what kind of member the person is (a timeout, a failed connection, a gateway's 502, 503
-		// or 504, or Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE), a revoke goes
-		// ahead where nobody else could end the grant: the person the grant names as its approver,
-		// and anyone a grant whose session acts for no person (a service's pod) admits as an
-		// approver. Every other revoke as an approver then, and every revoke while Dispatch answers
+		// or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming
+		// no code or INTERNAL, which Dispatch answers while its database fails), only the person
+		// the grant names as its approver ends it as an approver. Every revoke through a group or
+		// as anyone then, whatever session holds the grant, and every revoke while Dispatch answers
 		// anything else the broker cannot read (a refused account, a kind this broker does not
 		// know, another code, a certificate or a name that does not resolve), is 503
-		// MEMBER_KIND_UNCHECKABLE, revoking nothing. The revoking person is the login the request
-		// names, which the broker still takes on the caller's word: a revoke only takes power away.
+		// MEMBER_KIND_UNCHECKABLE, revoking nothing. A grant on a person's session can still be
+		// ended then by that person, its operator, who asks Dispatch nothing; a grant on a session
+		// that acts for no person (a service's pod, a person's pod the broker no longer maps, or a
+		// machine's own session) is ended through the broker by nobody but its named approver
+		// until Dispatch answers. A revoke whose caller hung up after the member-kind read is 503
+		// REQUEST_ENDED. The revoking person is the login the request names, which the broker
+		// still takes on the caller's word: a revoke only takes power away.
 		{http.MethodPost, "/v1/grants/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeByApprover)},
 		// List the sign-ins the named person made on their machines with `agent-secrets login`,
 		// by machine: one row per box key they signed in with and have not revoked, each naming
