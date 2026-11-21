@@ -22,13 +22,19 @@ import (
 // in the order the server's messages arrive, so the record orders an answer against a creation.
 // That order cannot show a hand-back that made the recreated consumer deliver a message again: the
 // server sends a creation's advisory after the new consumer already takes answers, so the rows also
-// read that consumer itself (requireDeliveredOnceAfterTakeOver).
+// read that consumer itself (requireDeliveredOnceAfterTakeOver). A third subscription takes the
+// watch's own barrier messages (barrier), which say that every earlier event has been recorded.
 type durableEvents struct {
-	mu     sync.Mutex
-	events []string
+	conn     *natsgo.Conn
+	mu       sync.Mutex
+	events   []string
+	barriers map[string]bool
 }
 
 const durableCreated = "created"
+
+// durableEventsBarrier is the subject of the watch's own barrier messages (durableEvents.barrier).
+const durableEventsBarrier = "testdelivery.durable-events.barrier"
 
 func watchDurableEvents(t *testing.T, uri string) *durableEvents {
 	t.Helper()
@@ -37,6 +43,7 @@ func watchDurableEvents(t *testing.T, uri string) *durableEvents {
 	for _, subject := range []string{
 		"$JS.ACK." + bus.Stream + "." + bus.DispatchDeliveryDurable + ".>",
 		"$JS.EVENT.ADVISORY.CONSUMER.CREATED." + bus.Stream + "." + bus.DispatchDeliveryDurable,
+		durableEventsBarrier,
 	} {
 		if _, err := conn.ChanSubscribe(subject, arrived); err != nil {
 			t.Fatalf("subscribe to %s: %v", subject, err)
@@ -45,15 +52,18 @@ func watchDurableEvents(t *testing.T, uri string) *durableEvents {
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush the durable's watch: %v", err)
 	}
-	recorded := &durableEvents{}
+	recorded := &durableEvents{conn: conn, barriers: map[string]bool{}}
 	go func() {
 		for msg := range arrived {
-			event := string(msg.Data)
-			if strings.HasPrefix(msg.Subject, "$JS.EVENT.") {
-				event = durableCreated
-			}
 			recorded.mu.Lock()
-			recorded.events = append(recorded.events, event)
+			switch {
+			case msg.Subject == durableEventsBarrier:
+				recorded.barriers[string(msg.Data)] = true
+			case strings.HasPrefix(msg.Subject, "$JS.EVENT."):
+				recorded.events = append(recorded.events, durableCreated)
+			default:
+				recorded.events = append(recorded.events, string(msg.Data))
+			}
 			recorded.mu.Unlock()
 		}
 	}()
@@ -71,6 +81,23 @@ func (r *durableEvents) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.events)
+}
+
+// barrier waits until the watch has recorded every event the server had handled when barrier
+// began: it publishes a message of its own on the watch's connection and waits until the watch
+// records it. The server sends the watch each event as it handles the publish that makes it, and
+// handles this one later, so the watch receives it after them, in order on its one channel.
+func (r *durableEvents) barrier(t *testing.T) {
+	t.Helper()
+	id := natsgo.NewInbox()
+	if err := r.conn.Publish(durableEventsBarrier, []byte(id)); err != nil {
+		t.Fatalf("publish the durable watch's barrier: %v", err)
+	}
+	waitFor(t, 30*time.Second, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.barriers[id]
+	}, func() string { return "the durable's watch did not record its barrier within 30 s" })
 }
 
 // stopWithAHeldHandBack starts a holder and a standby, has the holder's handler hold one pull
