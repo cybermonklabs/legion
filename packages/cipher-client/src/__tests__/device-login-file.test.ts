@@ -220,6 +220,48 @@ test("a login in a directory others may write is refused before its file is open
   expect(opened).not.toContain(path);
 });
 
+/** Records the path of each `open`, and of each `stat` and `lstat`, until `restore`: what a read
+ *  opened, and what it looked at by its path. */
+function watchOpensAndLooks() {
+  const opened: string[] = [];
+  const looked: string[] = [];
+  const realOpen = fs.open;
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    opened.push(String(args[0]));
+    return await realOpen(...args);
+  }) as typeof fs.open);
+  const realStat = fs.stat;
+  const stats = spyOn(fs, "stat").mockImplementation((async (
+    ...args: Parameters<typeof fs.stat>
+  ) => {
+    looked.push(String(args[0]));
+    return await realStat(...args);
+  }) as typeof fs.stat);
+  const realLstat = fs.lstat;
+  const lstats = spyOn(fs, "lstat").mockImplementation((async (
+    ...args: Parameters<typeof fs.lstat>
+  ) => {
+    looked.push(String(args[0]));
+    return await realLstat(...args);
+  }) as typeof fs.lstat);
+  return {
+    opened,
+    looked,
+    /** Empties both records. */
+    clear: () => {
+      opened.length = 0;
+      looked.length = 0;
+    },
+    restore: () => {
+      opens.mockRestore();
+      stats.mockRestore();
+      lstats.mockRestore();
+    },
+  };
+}
+
 test("a login reached through a link into a directory others may write is refused before it is opened", async () => {
   // The setting may name a link. The file is then in the directory the link leads into, where
   // another user who can write picks what the open opens, as in the login's own directory.
@@ -229,16 +271,11 @@ test("a login reached through a link into a directory others may write is refuse
   const target = join(makeDirectory(), "shared", "device-login.json");
   await writeDeviceLoginFile(target, stub.url);
   await fs.symlink(target, path);
-  const opened: string[] = [];
-  const realOpen = fs.open;
-  const opens = spyOn(fs, "open").mockImplementation((async (
-    ...args: Parameters<typeof fs.open>
-  ) => {
-    opened.push(String(args[0]));
-    return await realOpen(...args);
-  }) as typeof fs.open);
+  const watch = watchOpensAndLooks();
+  const { opened, looked } = watch;
   try {
-    // Writable by anyone, and by its group.
+    // Writable by anyone, and by its group. The file the link names is neither opened nor looked
+    // at before its directory is refused.
     for (const mode of [0o777, 0o770]) {
       await chmod(dirname(target), mode);
       const refused = await readDeviceLogin(path).then(
@@ -249,6 +286,8 @@ test("a login reached through a link into a directory others may write is refuse
       expect(refused?.message).toContain("links to");
       expect(refused?.message).toContain("chmod 700");
       expect(refused?.message).not.toContain(dirname(target));
+      expect(opened).not.toContain(target);
+      expect(looked).not.toContain(target);
     }
     expect(opened).not.toContain(path);
     // Control: the same link into a directory others may only read and enter is read, and its
@@ -257,23 +296,28 @@ test("a login reached through a link into a directory others may write is refuse
     expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
     expect(opened).toContain(path);
     // Through a chain of links, the first one relative to its own directory, the directory of the
-    // file the last one names is the one checked.
+    // file the last one names is the one checked, and that file is neither opened nor looked at.
     const hop = join(dirname(dirname(path)), "hop");
     await mkdir(hop, { mode: 0o700 });
     await fs.symlink(target, join(hop, "next.json"));
     await fs.rm(path);
     await fs.symlink(join("..", "hop", "next.json"), path);
     await chmod(dirname(target), 0o777);
+    watch.clear();
     const chained = await readDeviceLogin(path).then(
       () => null,
       (error: unknown) => error as Error
     );
     expect(chained?.message).toContain("mode 0777");
     expect(chained?.message).toContain("links to");
+    expect(opened).not.toContain(target);
+    expect(looked).not.toContain(target);
+    // Control: the spies see the walk's look at the middle link.
+    expect(looked.some((at) => at.endsWith(join("hop", "next.json")))).toBe(true);
     await chmod(dirname(target), 0o755);
     expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
   } finally {
-    opens.mockRestore();
+    watch.restore();
   }
 });
 
@@ -289,14 +333,8 @@ test("a login reached through a link in a directory others may write is refused 
   await writeDeviceLoginFile(target, stub.url);
   await fs.symlink(target, middle);
   await fs.symlink(middle, path);
-  const opened: string[] = [];
-  const realOpen = fs.open;
-  const opens = spyOn(fs, "open").mockImplementation((async (
-    ...args: Parameters<typeof fs.open>
-  ) => {
-    opened.push(String(args[0]));
-    return await realOpen(...args);
-  }) as typeof fs.open);
+  const watch = watchOpensAndLooks();
+  const { opened, looked } = watch;
   try {
     await chmod(dirname(middle), 0o777);
     const refused = await readDeviceLogin(path).then(
@@ -307,13 +345,17 @@ test("a login reached through a link in a directory others may write is refused 
     expect(refused?.message).toContain("links to");
     expect(refused?.message).toContain("chmod 700");
     expect(refused?.message).not.toContain(dirname(middle));
-    expect(opened).not.toContain(path);
-    // Control: the same chain with every directory others may at most read and enter is read.
+    // Neither the middle link nor the file at the end is opened or looked at.
+    for (const at of [path, middle, target]) expect(opened).not.toContain(at);
+    for (const at of [middle, target]) expect(looked).not.toContain(at);
+    // Control: the same chain with every directory others may at most read and enter is read,
+    // and the spies see its open and the walk's look at the middle link.
     await chmod(dirname(middle), 0o755);
     expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
     expect(opened).toContain(path);
+    expect(looked).toContain(middle);
   } finally {
-    opens.mockRestore();
+    watch.restore();
   }
 });
 
