@@ -454,19 +454,85 @@ stop_tree() {
 # proc_walk_complaint ERRFILE PROC prints the first line of a walk of PROC's stderr that is neither an
 # entry this user may not read, another user's process's, nor one whose process ended during the
 # walk, and fails when every line is one of those two: what a walk of every process meets on a
-# busy machine and no error of its own. A walk that could not start (E2BIG, a find that is not
-# there, or one too old to read -files0-from) leaves a line of its own or the shell's, which is a
-# complaint. listening_holders (lib/rig.sh) and refuse_leftovers (lib/leftovers.sh) read their
-# find's stderr with it.
+# busy machine and no error of its own. It reads a find's lines (`find: 'PROC/<pid>…': …`) and a
+# grep's of an environment (`grep: PROC/<pid>/environ: …`), for which a process that ended between
+# the path's lookup and the open reads as ESRCH (`No such process`), the kernel's answer for an
+# environ whose task has gone. A walk that could not start (E2BIG, a find that is not there, or
+# one too old to read -files0-from) leaves a line of its own or the shell's, which is a complaint.
+# listening_holders (lib/rig.sh) and refuse_leftovers (lib/leftovers.sh) read their find's stderr
+# with it, and procs_naming its grep's.
 proc_walk_complaint() {
   local line rest
   while IFS= read -r line; do
     rest=${line#*find: \'"$2"/}
     [ "$rest" = "$line" ] || [[ ! $rest =~ ^[0-9]+(/[^\']*)?\':\ (Permission\ denied|No\ such\ file\ or\ directory)$ ]] || continue
+    rest=${line#*grep: "$2"/}
+    [ "$rest" = "$line" ] || [[ ! $rest =~ ^[0-9]+/environ:\ (Permission\ denied|No\ such\ file\ or\ directory|No\ such\ process)$ ]] || continue
     printf '%s\n' "$line"
     return 0
   done <"$1"
   return 1
+}
+
+# unread_may_carry PID SHELL_START ANCESTOR… succeeds when PID, a process of this user whose
+# environment this user cannot read, may carry the mark of the run this shell runs, and fails when
+# it cannot. The kernel gives a process's environ to root while the process is not dumpable: one
+# that set PR_SET_DUMPABLE to 0 (ssh-agent and gpg-agent do at their start), one whose credentials
+# changed (a login session's process that tailscaled or sshd started as root), and one with no
+# memory left (a zombie); its /proc/PID directory, its stat and its status stay its own user's.
+# SHELL_START is the start (proc_start) of this shell, $$, the run's own, and each ANCESTOR is one
+# of this shell's whole line of parents up to its top, as PID:START (proc_parent and proc_start;
+# procs_naming refuses a line it could not read to the top), so a pid another process has taken
+# since matches none. A process that started in the same clock tick as this shell is taken for one
+# that started after it, and a parent of the same tick for a younger one: the refusal is the side a
+# tie falls on. A process of the run is one this shell started, or one started for it, so it
+# started after this shell. Its parent is the process that started it, or, once that one ended,
+# the nearest subreaper above it, or pid 1, which adopted it: each parent read up from it is one of
+# its ancestors, and for a process of the run every one below this shell, or below the ANCESTOR
+# that adopted it, started after this shell, so the first one older than this shell is an
+# ANCESTOR, or the init of this shell's pid namespace: a shell that entered a namespace from outside
+# (`docker exec`, `kubectl exec`, a step of a GitHub Actions `container:` job) has no parent there
+# (its parent reads 0), and the run's orphans go to the namespace's init. A subreaper that is none
+# of the ANCESTORs adopts none of the run's processes, since the kernel gives an orphan only to a
+# subreaper above its own dead parent. So PID cannot carry the mark when it runs nothing (it has
+# ended or is a zombie), when it started before this shell (a devbox's own ssh-agent, gpg-agent or
+# forward), and when the first of its parents older than this shell is none of the ANCESTORs and
+# no init of a pid namespace (pid 1 here, or the last pid of its NSpid 1): a process that ran
+# outside the run before it, below which nothing inherited the run's environment (another session's
+# tool, a login session's process). Any other may: a child of the run, one double-forked away from
+# it to a reaper, as an ssh-agent the run started is, and one whose line of parents could not be
+# read to its end (a parent that ended during the read), unless it has ended since. A process of
+# another session that double-forked away during the run (a gpg-agent started for a new homedir),
+# or that a container's init adopted, reads as one of the run's: its parent is then a reaper too,
+# and nothing readable tells the two apart. Each process on the way is read once, its parent and
+# its start from one read of its stat (as proc_start reads it), in this shell: a devbox holds dozens
+# of this user's zombies and not-dumpable processes, and a subshell for each read doubled the time
+# of a walk of its /proc.
+unread_may_carry() {
+  local pid=$1 shell=$2 at parent=$1 start='' stat ancestor i
+  local -a fields ns
+  shift 2
+  for ((i = 0; i < 4096; i++)); do
+    stat=
+    { IFS= read -r -d '' stat <"/proc/$parent/stat"; } 2>/dev/null || :
+    [ -n "$stat" ] || break
+    read -r -a fields <<<"${stat##*) }"
+    [ "${fields[0]}" != Z ] || break
+    at=${fields[19]}
+    if [ -z "$start" ]; then
+      start=$at
+      [ "$start" -ge "$shell" ] || return 1
+    elif [ "$at" -lt "$shell" ]; then
+      for ancestor; do [ "$ancestor" != "$parent:$at" ] || return 0; done
+      [ "$parent" != 1 ] || return 0
+      ns=()
+      { while read -r -a ns; do [ "${ns[0]-}" != NSpid: ] || break; ns=(); done <"/proc/$parent/status"; } 2>/dev/null || :
+      [ "${#ns[@]}" -lt 2 ] || [ "${ns[${#ns[@]} - 1]}" != 1 ] || return 0
+      return 1
+    fi
+    parent=${fields[1]}
+  done
+  [ -n "$start" ] && [ "$(proc_start "$pid")" = "$start" ]
 }
 
 # procs_naming DIR NAME… prints `PID START` (proc_start) for each process whose environment gives
@@ -477,40 +543,132 @@ proc_walk_complaint() {
 # host's process count. Every process is read since a process that left every tree the run
 # recorded, a double-forked daemon the kernel gave to pid 1, is one of them: one grep narrows the
 # environments to those holding a NAME=DIR anywhere, and each is then read whole, variable by
-# variable. The shell's glob hands the entries to grep through xargs, which splits them into calls
-# that fit ARG_MAX: as grep's own arguments, past about 80,000 processes, grep could not start. The
-# start is read before and after the environment, and a process that ended or whose start moved
-# between is left out. xargs exits 123 when a batch's grep exits 1 or 2 (no match in it, or an
-# environment this user may not read, another user's, or whose process ended during the walk),
-# which is no error here. Any other status is xargs's own, a batch it could not start or a grep a
-# signal ended (125), and like a proc root that lists no process at all (an empty tmpfs where /proc
-# should be, or one whose pid entries this user cannot see), it makes procs_naming print why and
-# fail with 2, so no caller reads an unread machine as one with nothing left.
+# variable. The shell's glob lists the entries, the shell's own test keeps those this user may read,
+# and xargs hands them to grep in calls that fit ARG_MAX: as grep's own arguments, past about
+# 80,000 processes, grep could not start. Another user's environment, which a walk of a shared
+# machine meets by the thousand, is no process of a run, and each would add a complaint below. One
+# of this user's that the kernel keeps from this user (/proc/<pid> is this user's and its environ
+# root's), or that grep could not read once the test had passed it (a process that made itself not
+# dumpable between), is judged once grep is done (unread_may_carry): one that may carry the run's
+# mark makes procs_naming name it and fail with 2, since whether it carries the mark was not
+# checked, and one that cannot is passed, a zombie or a devbox's ssh-agent from before this shell
+# among them. The start is read before and after the environment, and a process that ended or whose
+# start moved between is left out. xargs exits 123 both for a batch whose command exits 1 and for
+# one whose command exits 2, and grep exits 1 for no match in its batch, as most batches of a busy
+# machine have, and 2 for an error. So each batch runs grep under a sh of its own (batch below),
+# which turns grep's no match into 0, passes grep's complaints on, and, for a grep that failed and
+# said nothing, says so itself: every failed batch leaves a line of its own, whatever another batch
+# printed, and a 123 is always a grep's error. A grep a signal ended ends its sh with that signal,
+# which xargs reads as 125. A grep's complaint about an environment this user may not read or
+# whose process ended during the walk is no error (proc_walk_complaint), this user's judged as
+# above. Any other complaint, and any other status, xargs's own (a batch it could not start, a grep
+# a signal ended, 125), like a proc root that lists no process at all (an empty tmpfs where /proc
+# should be, or one whose pid entries this user cannot see), make procs_naming print why and fail
+# with 2, so no caller reads an unread machine as one with nothing left.
 procs_naming() {
-  local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name
-  local -a names=("${@:2}") naming_patterns=() naming_files=() entries=()
+  local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name err complaint line rest shell comm unread=
+  local child child_start at lost
+  # $0 is the batch's name and "$@" the patterns and the batch's entries; grep's matches go out on
+  # fd 3, the walk's own output, and its complaints on stderr.
+  local batch='said=$(grep -lzF "$@" 2>&1 >&3 3>&-)
+status=$?
+[ -z "$said" ] || printf "%s\n" "$said" >&2
+case $status in
+  0 | 1) exit 0 ;;
+  2) [ -n "$said" ] || echo "grep exited 2 and printed nothing" >&2 ;;
+  *)
+    [ "$status" -le 128 ] || kill "-$((status - 128))" "$$"
+    echo "grep exited $status" >&2
+    ;;
+esac
+exit 2'
+  local -a names=("${@:2}") naming_patterns=() naming_files=() listed=() entries=() unread_pids=() ancestors=()
   # An empty DIR would match `NAME=` followed by any absolute path (names_dir).
   [ -n "$dir" ] || {
     echo "procs_naming: no run directory given, so no process was named" >&2
     return 2
   }
-  entries=("$proc"/[0-9]*/environ)
-  [ -e "${entries[0]}" ] || {
+  listed=("$proc"/[0-9]*/environ)
+  [ -e "${listed[0]}" ] || {
     echo "procs_naming: $proc lists no process's environ, so the processes naming $dir were not read" >&2
     return 2
   }
+  for p in "${listed[@]}"; do
+    if [ -r "$p" ]; then
+      entries+=("$p")
+    elif [ -O "${p%/environ}" ]; then
+      pid=${p%/environ}
+      unread_pids+=("${pid##*/}")
+    fi
+  done
+  # This shell's own environment is always one of them on a /proc: none read is no answer.
+  [ "${#entries[@]}" -gt 0 ] || {
+    echo "procs_naming: $proc lists no environ this user may read, so the processes naming $dir were not read" >&2
+    return 2
+  }
   for name in "${names[@]}"; do naming_patterns+=(-e "$name=$dir"); done
+  err=$(mktemp "${TMPDIR:-/tmp}/procs-naming.XXXXXX") || {
+    echo "procs_naming: no file to keep grep's complaints in, so the processes naming $dir were not read" >&2
+    return 2
+  }
   # `|| exit` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`) from
-  # firing inside the substitution for the batches every walk has with no match.
-  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | xargs -0 grep -lzsF "${naming_patterns[@]}" || exit)
+  # firing inside the substitution for an entry whose process ended during the walk.
+  # The C locale keeps grep's complaints in the words proc_walk_complaint reads.
+  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" |
+    LC_ALL=C xargs -0 sh -c "$batch" procs_naming "${naming_patterns[@]}" 3>&1 2>"$err" || exit)
   wait "$!" || status=$?
-  case $status in
-    0 | 123) ;;
-    *)
-      echo "procs_naming: xargs exited $status reading $proc/<pid>/environ, so the processes naming $dir were not read" >&2
+  complaint=
+  if [ "$status" != 0 ]; then
+    complaint=$(proc_walk_complaint "$err" "$proc") || complaint=
+    # A 123 whose every line is an entry each walk of a busy machine meets is an answer. Each failed
+    # batch printed a line, so a 123 with none lost its complaints, and any other status is none.
+    [ -n "$complaint" ] || [ "$status" != 123 ] || [ -s "$err" ] || complaint="its complaints were lost"
+    [ -n "$complaint" ] || [ "$status" = 123 ] || complaint="xargs printed nothing"
+    # An environment of this user's that the test passed and grep could not read is judged below.
+    while IFS= read -r line; do
+      rest=${line#*grep: "$proc"/}
+      [[ $rest =~ ^([0-9]+)/environ:\ Permission\ denied$ ]] || continue
+      [ ! -O "$proc/${BASH_REMATCH[1]}" ] || unread_pids+=("${BASH_REMATCH[1]}")
+    done <"$err"
+  fi
+  rm -f -- "$err"
+  if [ -n "$complaint" ]; then
+    echo "procs_naming: xargs exited $status reading $proc/<pid>/environ: $complaint, so the processes naming $dir were not read" >&2
+    return 2
+  fi
+  if [ "${#unread_pids[@]}" -gt 0 ]; then
+    # This shell's line of parents, read to its top (a parent of 0), each parent held to a start no
+    # later than its child's. A line cut short, by a parent that ended and was reaped during the
+    # read or whose pid another process took, would take a reaper above the cut for a stranger and
+    # pass a process of the run (unread_may_carry), so the walk is then no answer.
+    shell=$(proc_start "$$")
+    child=$$ child_start=$shell lost=
+    [ -n "$shell" ] || lost="this shell $$"
+    while [ -z "$lost" ]; do
+      p=$(proc_parent "$child")
+      [ "$p" != 0 ] || break
+      at=
+      [ -z "$p" ] || at=$(proc_start "$p")
+      if [ -z "$at" ] || [ "$at" -gt "$child_start" ] || [ "${#ancestors[@]}" -ge 4096 ]; then
+        lost="the parent ${p:-(none)} of $child"
+        break
+      fi
+      ancestors+=("$p:$at")
+      child=$p child_start=$at
+    done
+    [ -z "$lost" ] || {
+      echo "procs_naming: this shell's line of parents could not be read to its end, at $lost, which ended or whose pid another process took, so this user's processes whose environment cannot be read were not checked and the processes naming $dir were not read" >&2
       return 2
-      ;;
-  esac
+    }
+    for pid in "${unread_pids[@]}"; do
+      unread_may_carry "$pid" "${shell:-0}" ${ancestors[@]+"${ancestors[@]}"} || continue
+      comm=
+      { read -r comm <"/proc/$pid/comm"; } 2>/dev/null || :
+      echo "procs_naming: process $pid (${comm//[[:cntrl:]]/ }) is this user's, started after this shell, and its environment cannot be read, so it may carry the run's mark and the processes naming $dir were not checked" >&2
+      unread=1
+    done
+    [ -z "$unread" ] || return 2
+  fi
   for p in ${naming_files[@]+"${naming_files[@]}"}; do
     pid=${p%/environ}
     pid=${pid##*/}
