@@ -580,17 +580,24 @@ func TestTheOutsideOriginServesNoGoogleSignIn(t *testing.T) {
 // TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff (R5): with DISPATCH_SIGNIN_PASSKEY unset
 // and DISPATCH_OUTSIDE_ORIGIN still set on the same database (a rollback, or an outside origin
 // kept for agents), GET /auth/start and GET /auth/callback still answer 404 at the outside origin:
-// only DISPATCH_SIGNIN_OUTSIDE=1 signs anyone in with Google there. The canonical origin still
-// sends the browser to Google.
+// only DISPATCH_SIGNIN_OUTSIDE=1 signs anyone in with Google there. Its GET /auth/whoami's 401
+// still names the passkey sign-in, so its page offers no Google link that answers that 404. The
+// canonical origin still sends the browser to Google, and its 401 names no sign-in.
 //
 // Control: refuse Google at the outside origin only while passkey sign-in is on (googleSignInHere
-// reading Passkeys), and the outside origin's /auth/start answers 302 and the row fails.
+// reading Passkeys), and the outside origin's /auth/start answers 302 and the row fails; name the
+// passkey sign-in only while it is on (whoamiSignIn reading Passkeys), and the outside origin's 401
+// names none and the row fails.
 func TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff(t *testing.T) {
 	r := newPasskeyRig(t, nil)
 	off, _ := r.serverWith(t, map[string]string{"DISPATCH_SIGNIN_PASSKEY": ""})
 	for _, path := range []string{"/auth/start", "/auth/callback?code=c&state=s"} {
 		wantCode(t, "GET "+path+" at the outside origin with passkeys off", call(off, passkeyOrigin, http.MethodGet, path, nil), http.StatusNotFound, "NOT_FOUND")
 	}
+	if outside := whoamiOutside(off, nil); outside.Code != http.StatusUnauthorized || !strings.Contains(outside.Body.String(), `"sign_in":"passkey"`) {
+		t.Fatalf("whoami at the outside origin with passkeys off and no cookie: %d %s, want 401 naming the passkey sign-in", outside.Code, outside.Body.String())
+	}
+	requirePlainNoIdentity(t, "whoami at the canonical origin with passkeys off and no cookie", call(off, canonicalOrigin, http.MethodGet, "/auth/whoami", nil))
 	if started := call(off, canonicalOrigin, http.MethodGet, "/auth/start", nil); started.Code != http.StatusFound {
 		t.Fatalf("GET /auth/start at the canonical origin with passkeys off answered %d %s, want 302 to Google", started.Code, started.Body.String())
 	}

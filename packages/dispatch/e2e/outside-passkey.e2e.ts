@@ -270,6 +270,9 @@ test.describe("outside passkey sign-in", () => {
         await expect(
           alert.page().getByRole("button", { name: "Sign in with a passkey" })
         ).toBeVisible();
+        await expect(alert.page().getByRole("link", { name: "Sign in with Google" })).toHaveCount(
+          0
+        );
       });
 
       await test.step("alice's Access tab shows when the outsider's passkey was enrolled", async () => {

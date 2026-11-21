@@ -102,11 +102,14 @@ export function ceremonyRefusal(error: unknown, ceremony: Ceremony): CeremonyRef
       code === undefined ? undefined : (refusals[ceremony][code] ?? eitherCeremony[code]);
     if (known !== undefined) return known;
     // A deployment with passkey sign-in off answers these routes 404, as the company's own
-    // address does.
+    // address does. Its outside origin offers the passkey alone with the setting off too (whoami's
+    // `sign_in`), so a sign-in there meets this as well.
     if (error.status === 404) {
       return {
         message:
-          "This address does not sign anyone in with a passkey. Open the link exactly as the project's owner sent it.",
+          ceremony === "create"
+            ? "This address does not sign anyone in with a passkey. Open the link exactly as the project's owner sent it."
+            : "Dispatch signs nobody in with a passkey at this address now. Ask a project's owner.",
         retry: false,
       };
     }

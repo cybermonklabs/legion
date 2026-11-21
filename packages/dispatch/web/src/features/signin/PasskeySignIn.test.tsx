@@ -166,7 +166,34 @@ test("a browser that cannot use a passkey is told so on the sign-in page", async
     expect(
       screen.queryByRole("button", { name: "Sign in with a passkey" })
     ).not.toBeInTheDocument();
+    // The outside origin offers no Google sign-in, so no Google link stands in for the passkey.
+    expect(screen.queryByRole("link", { name: "Sign in with Google" })).not.toBeInTheDocument();
   } finally {
     teardown();
+  }
+});
+
+// The outside origin names the passkey sign-in in every 401, with passkey sign-in off too: its
+// page never offers the Google link, which answers 404 there. With passkey sign-in off the
+// ceremony answers 404 as well, and the press says so.
+test("at an outside origin with passkey sign-in off, the page offers no Google link and the press says passkeys sign nobody in", async () => {
+  const user = userEvent.setup();
+  const browser = installFakePasskeys();
+  const begin = spyOn(api, "passkeySignInOptions").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no route for POST /auth/passkey/login/begin" })
+  );
+  const teardown = renderGate(async () => {
+    throw signedOutHere;
+  });
+  try {
+    await user.click(await screen.findByRole("button", { name: "Sign in with a passkey" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Dispatch signs nobody in with a passkey at this address now. Ask a project's owner."
+    );
+    expect(screen.queryByRole("link", { name: "Sign in with Google" })).not.toBeInTheDocument();
+  } finally {
+    teardown();
+    begin.mockRestore();
+    browser.restore();
   }
 });
