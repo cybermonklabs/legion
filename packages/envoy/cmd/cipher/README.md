@@ -114,6 +114,12 @@ writer are spent alike. Where the rule changes nothing, the client still removes
 final line feed, which it has always done, so `echo` and a file that ends in a newline store the
 value without one.
 
+`--type` names what the broker mints a release from rather than releasing the stored value as it
+is: `github-app`, `google-login`, `azure-login`, `google-service-account` or
+`anthropic-federation`, or `none` for a stored secret. The docs site's
+[Concepts](https://cybermonklabs.github.io/legion/broker/concepts/#requests-and-grants) page says
+what each type's value holds and what its release returns.
+
 A type secret's value is checked before it is written, by the decoder the broker's minter for that
 type reads it with: `secret create --type` checks the value it stores, `secret set` checks it under
 the type tag the secret holds, and `secret retag` checks the value the secret holds when it
@@ -351,7 +357,10 @@ guide covers each step in full.
 Each grant is for one session, and lasts until that session ends or for `--ttl`. What happens to a
 request depends on the secret's `owner` and `tier` tags. Your own `tier=agent` secret is granted at
 once to a session on a machine you logged in, and goes to you for approval from any other session.
-Your own `tier=human` secret always goes to you for approval. A `shared` agent-tier secret is
+Your own `tier=human` secret always goes to you for approval. A secret a Google group owns
+(`owner=group:<address>`) is each member's as if it were their own: its `tier=agent` secret is
+granted at once to a member's own session, and every other request for it waits for any member's
+approval. A `shared` agent-tier secret is
 granted at once; a `shared` human-tier one waits for anyone who signs in to the broker. A
 service's secret goes only to that service's pods and VMs. Approvals happen on the broker's
 approval page, which the approver's Dispatch Inbox links to. The docs site's
@@ -408,12 +417,14 @@ source it used (`using …`) before its first store call, and a store refusal na
 choose another from that source. The store's IAM decides what each may do. `--owner me` is the
 email of the person that credential names, and is refused where it names none (a machine's role,
 a service account, a token without an email scope); `--owner <email>` names the owning person
-outright:
+outright, and `--owner group:<email>` a Google group by its lowercase email, each member of which
+decides the secret's requests as the one owner would:
 
 ```sh
 agent-secrets secret list
 agent-secrets secret show NAME
 agent-secrets secret create NAME --owner me --tier agent
+agent-secrets secret create NAME --owner group:approvers@example.com --tier human
 agent-secrets secret set NAME
 agent-secrets secret retag NAME --tier human
 agent-secrets secret delete NAME
@@ -421,9 +432,13 @@ agent-secrets secret restore NAME
 ```
 
 `--requesters` lists who may ask for a secret at all — people by their lowercase sign-in email,
-services by their registered name, separated by spaces — and a secret carrying such a list bounds
-its grants to an hour, so give it `--max-grant 1h` or less; `--requesters none` removes the list
-on retag. `secret create` and `secret retag` check those rules before they write, but neither can
+Google groups as `group:` and the group's lowercase email, which admits each member's sessions,
+and services by their registered name, separated by spaces; `--requesters none` removes the list
+on retag. The list bounds no grant by itself. A `google-service-account` or
+`anthropic-federation` secret names its owner in the list exactly once, beside the registered
+services a human-tier one may list: `--owner <email> --requesters <email>` for a person, and
+`--owner group:<email> --requesters group:<email>`, with no person, for a group. `secret create`
+and `secret retag` check those rules before they write, but neither can
 check whether an entry naming a service is one your deployment registers: this CLI holds no list
 of registered services, so only the broker knows. The reread that follows the write is what
 catches an unregistered name — the broker's refusal prints with its reason and the command exits

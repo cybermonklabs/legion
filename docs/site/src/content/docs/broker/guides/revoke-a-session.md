@@ -28,7 +28,9 @@ and stop it starting more, [revoke its machine login](#end-a-machines-login).
 Dispatch's **Settings** page lists your **Live grants**: every live grant of a session you operate,
 whether it was granted automatically or approved by someone, and every grant whose approver is
 you, on anyone's session — the ones you approved, and the ones the model judge approved in your
-stead. It lists to everyone, in the same way, every live grant the judge approved in anyone's
+stead — or a Google group the broker's last read lists you in, whichever member approved it
+([A group's secret](/legion/broker/concepts/#a-groups-secret)). It lists to everyone, in the same
+way, every live grant the judge approved in anyone's
 stead: a shared secret's, whose approver is the sentinel `anyone`, so it names no person who
 could end it. It also lists, to everyone, every live grant that belongs to no person: one a
 pod or a VM got without asking, under a machine login that is a service's rather than a person's.
@@ -40,7 +42,8 @@ how it was **Granted** (**Automatically**, or **Approved by** whoever decided it
 `judge:<model id>` where the model judge decided it in an approver's stead), and when it was
 created and expires. Click
 **Revoke** to end one at once; the session's next read of it is refused `GRANT_NOT_LIVE`. The
-broker allows it when you are the grant's approver or its session's operator, and it allows
+broker allows it when you are the grant's approver, a member of the group that is its approver,
+or its session's operator, and it allows
 anyone signed in to end a grant whose approver is `anyone`. It refuses everyone else
 `NOT_APPROVER` — so a grant with no approver and no operator has no **Revoke** button at all. Its
 row reads **Ends with its machine login** instead:
@@ -91,8 +94,10 @@ revoked f26b6b78-2819-4b1d-abbd-d6990ca1a776 at the broker AGENT_SECRETS_URL nam
 The line after the table goes to standard error, naming the broker and kind of store every row is from, so
 the table stays one row per grant for a script.
 
-`GRANTED` is `automatic` or `approval`. `APPROVER` is who may end the grant. `DECIDED_BY` is who
-decided the request it rests on: that same person for a person's own approval, and
+`GRANTED` is `automatic` or `approval`. `APPROVER` is who may end the grant: a person, or a group
+as `group:<address>`, any member of which may end it. `DECIDED_BY` is who
+decided the request it rests on: that same person for a person's own approval, the member who
+approved it for a group's, and
 `judge:<model id>` where [the model judge](/legion/broker/concepts/#the-model-judge) approved it
 in that person's stead. Both are `-` for an automatic grant, which nobody decided. `EXPIRES` is
 `session-end` for a grant that lasts until its session ends, and a time for one its request gave a
