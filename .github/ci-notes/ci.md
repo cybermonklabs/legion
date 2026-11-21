@@ -2075,9 +2075,9 @@ scope, where a POST needs `checks: write`, which a fork's run's read-only GITHUB
 not carry. A dispatched run carries
 neither a pull request nor a group and has no text to check, which is why the `if:` names the
 two events this job runs on rather than excluding the draft alone. Skipped there, the job still
-posts a check run, and a skipped one is a pass, so its `name:` is not `pr-title` on a dispatch of
-a branch. GitHub does not evaluate the name of a job it skips, so that check run carries the
-expression's own text
+posts a check run, and a skipped one is a pass. GitHub does not evaluate the name of a job it
+skips, so on every run that skips this one, a dispatch of any branch and a draft's run, the
+check run carries its `name:` expression's own text and not `pr-title`
 (.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own).
 
 ## What the pr-title job's scopes are for
@@ -2286,8 +2286,9 @@ dispatch-ui and docs / build, and its ci-ok check run 136722779787 concluded fai
 03:58:53Z; workflow_dispatch run 44860519340 of the branch passed, and its ci-ok check run
 136723497213 concluded success at 04:02:35Z; the same run posted pr-title check run
 136712596880, skipped. GitHub's own reading of the pull request did not take the dispatched
-run's: the commit's statusCheckRollup held the pull_request run's check runs alone, ci-ok
-failure among them, which is GitHub's documented rule (docs.github.com, "Troubleshooting
+run's: the commit's statusCheckRollup held 74 contexts, 73 check runs of pull_request runs and
+one of CodeQL, and no check run of the dispatched run, ci-ok failure among them. That is
+GitHub's documented rule (docs.github.com, "Troubleshooting
 required status checks", "Checks from some workflow jobs are not evaluated": the checks of a
 workflow_dispatch run's jobs do not appear in a pull request's checks and satisfy no required
 check). A reader that takes the commit's check runs by name did:
@@ -2298,25 +2299,30 @@ dispatched run's success as the head's ci-ok, and its skipped pr-title as the he
 
 So on such a run the `ci-ok` job is named `ci-ok (dispatch)`, and the reconcile step, "Set every
 other ci-ok on this head to this job's conclusion", is skipped, since every ci-ok that step could
-set is the pull request's or the queue's. The `pr-title` job carries the same kind of name, but
-such a run skips it, and GitHub does not evaluate the name of a job it skips: the check run
-carries the text of the expression, `github.event_name == 'workflow_dispatch' && … ||
-'pr-title'`, with the conclusion skipped (scratch run 44871030917, check run 136745386648, read
-2026-11-21). Either way it is not named pr-title. A run that skips pr-title because the pull
-request is a draft posts the same text: draft scratch run 44874260916 posted check run
-136755360755, skipped and not required, and its rollup reported no pr-title (read 2026-11-21).
-So a draft's head carries no pr-title pass, and marking the pull request ready starts the run
-that checks it. The
-ci-ok job runs on every event, and GitHub evaluates its name when the job is queued, after its
-needs: on scratch run 44872165102 the queued check run 136750697832 was already named ci-ok.
-The dispatched run still reaches its verdict and shows it on the head under its own
-name, so a reader by name finds one ci-ok and one pr-title on a pull request's head, and they
-are the pull request's own. Only a pull_request run, a merge-group run and the bypass check's
-dispatch on main report ci-ok and pr-title: the first two are the runs the ruleset and the
-queue read, and the third posts its verdict on main's tip, which is no pull request's head and
-where a person reading that commit looks for it. The name is chosen by the event and the ref of
-the run alone, so no run has to read whether another run exists, and nothing races.
-check-ci-filters.sh holds both jobs to that one `name:` (ci_filter_coverage.py's
-dispatch_name). The term reads `github.ref_name`, because the rule in ci_workflow_rules.py that
-refuses a comparison of `github.ref` with a branch ref holds such a comparison to be dead in
-this file.
+set is the pull request's or the queue's. GitHub evaluates a job's name only when the job runs.
+ci-ok runs on every event, so it is `ci-ok` on a pull request, a merge group and the bypass
+check's dispatch on main, and GitHub evaluates its name when the job is queued, after its needs:
+on scratch run 44872165102 the queued check run 136750697832 was already named ci-ok. pr-title
+runs only on a pull request that is not a draft and on a merge group, and is named pr-title
+there. Every run that skips it, a dispatch of any branch, main's included, and a draft's run,
+leaves its name unevaluated, and its check run carries the text of the expression,
+`github.event_name == 'workflow_dispatch' && … || 'pr-title'`, with the conclusion skipped:
+check run 136745386648 of scratch dispatch run 44871030917, and check run 136755360755 of draft
+scratch run 44874260916, whose own ci-ok, 136755360774, concluded failure (read 2026-11-21).
+Either way it is not named pr-title, so a draft's head carries no pr-title from this file, and
+marking the pull request ready starts the run that checks it. (pr-title.yaml, which runs on an
+edit of a pull request, draft or not, still posts its own.)
+
+The dispatched run still reaches its verdict and shows it on the head under its own name, so a
+reader by name finds one ci-ok and one pr-title on a pull request's head, and they are the pull
+request's own. Only a pull_request run, a merge-group run and the bypass check's dispatch on
+main report ci-ok, and only the first two report pr-title: they are the runs the ruleset and the
+queue read, and the bypass check's run posts its verdict on main's tip, which is no pull
+request's head and where a person reading that commit looks for it. The name is chosen by the
+event and the ref of the run alone, so no run has to read whether another run exists, and
+nothing races. check-ci-filters.sh holds both jobs to that one `name:` (ci_filter_coverage.py's
+dispatch_name), the reconcile step to the one `if:` (RECONCILE_IF), and every other job to a
+name that can evaluate to neither check. The term compares `github.ref` with
+`'refs/heads/main'` rather than `github.ref_name` with `'main'`, which a tag named main matches
+too; ci_workflow_rules.py's push-condition rule, which reads a comparison of `github.ref` with a
+branch ref as dead in this file, admits this one, joined to the workflow_dispatch event, as live.

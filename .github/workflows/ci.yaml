@@ -840,7 +840,7 @@ jobs:
   # why: .github/ci-notes/ci.md#the-pr-title-job-what-it-checks-and-why-it-posts-nothing
   pr-title:
     # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
-    name: ${{ github.event_name == 'workflow_dispatch' && github.ref_name != 'main' && 'pr-title (dispatch)' || 'pr-title' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && 'pr-title (dispatch)' || 'pr-title' }}
     if: ${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
@@ -900,7 +900,7 @@ jobs:
   # why: .github/ci-notes/ci.md#the-verdict-and-one-of-the-two-checks-mains-ruleset-requires-of
   ci-ok:
     # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
-    name: ${{ github.event_name == 'workflow_dispatch' && github.ref_name != 'main' && 'ci-ok (dispatch)' || 'ci-ok' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && 'ci-ok (dispatch)' || 'ci-ok' }}
     needs:
       - changes
       - lint
@@ -990,7 +990,7 @@ jobs:
 
       # why: .github/ci-notes/ci.md#why-every-other-ci-ok-on-this-head-is-set-to-this-jobs-conclusion
       - name: Set every other ci-ok on this head to this job's conclusion
-        if: ${{ always() && (github.event_name != 'workflow_dispatch' || github.ref_name == 'main') }}
+        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

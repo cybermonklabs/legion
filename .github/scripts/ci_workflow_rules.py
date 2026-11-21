@@ -35,6 +35,7 @@ from functools import cache
 
 from ci_filter_coverage import (
     CACHE_WORKFLOW,
+    DISPATCH_TERM,
     REPO,
     REQUIRED_CHECKS,
     WORKFLOW,
@@ -57,7 +58,11 @@ from workflow_paths import events
 # on every run there is. Either way round, as a GitHub expression may be written; its strings are
 # single-quoted, a double-quoted one being no expression at all. github.ref_name, and github.ref
 # in anything but such a comparison - startsWith against refs/heads/gh-readonly-queue/, the branch
-# a merge_group run does carry, among them - are left alone.
+# a merge_group run does carry, among them - are left alone. So is the one comparison that is
+# live: DISPATCH_TERM, which joins github.ref != 'refs/heads/main' to the workflow_dispatch event,
+# since the bypass check (.github/workflows/main-bypass-check.yaml) dispatches ci.yaml on main and
+# a person may dispatch it on another branch. The rule reads the condition with that exact text
+# taken out, so the same comparison written any other way is still refused.
 def comparison(left: str, right: str) -> str:
     """The regex of a GitHub expression comparing `left` with `right`, either operand first."""
     return rf"{left}\s*[=!]=\s*{right}|{right}\s*[=!]=\s*{left}"
@@ -118,12 +123,15 @@ def ci_only_documents(documents: dict) -> dict:
 def check_push_conditions(documents: dict, problems: list) -> None:
     """A job or a step of ci.yaml, or of a workflow only ci.yaml calls, gated on a push event,
     or on github.ref being a branch ref, is
-    dead: the workflow has no push trigger, and on its three events github.ref is a pull request's
-    merge ref or the merge queue's own branch, never the ref such a condition names. Dead code
+    dead: the workflow has no push trigger, and on a pull request and a merge group github.ref is
+    the pull request's merge ref or the merge queue's own branch, never the ref such a condition
+    names. Dead code
     that reads as live is worse than none - a step held back by `if: github.event_name ==
     'push'`, or a job by `if: github.ref == 'refs/heads/main'`, runs in no run of this workflow
-    while its text says it runs on main - so a later pull
-    request may not bring one back. Read off the if: text, one comparison at a time: a committer
+    but a dispatch while its text says it runs on main - so a later pull
+    request may not bring one back. A workflow_dispatch run does carry a branch ref, and the one
+    comparison joined to that event, DISPATCH_TERM, is read as live and taken out of the text
+    before it is read. Read off the if: text, one comparison at a time: a committer
     who writes the same test as a function call is the review's to catch. Which files it reads,
     and why it is not every file ci.yaml calls, is ci_only_documents above; each refusal names
     the file the condition is in."""
@@ -132,7 +140,7 @@ def check_push_conditions(documents: dict, problems: list) -> None:
             job = job or {}
             refs = conditions(job)
             for step, condition in refs:
-                for found in dict.fromkeys(m.group(0) for m in PUSH_CONDITION.finditer(condition)):
+                for found in dict.fromkeys(m.group(0) for m in PUSH_CONDITION.finditer(condition.replace(DISPATCH_TERM, ""))):
                     where = where_if(job_id, step)
                     runs = (f"{WORKFLOW} runs" if path == WORKFLOW
                             else f"{path} runs only as part of {WORKFLOW}, which runs")

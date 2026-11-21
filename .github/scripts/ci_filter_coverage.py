@@ -1717,26 +1717,45 @@ REPORT_STATUS = "${{ job.status }}"
 # carry one of these names, since a job posts the check its display name gives and a skipped job
 # posts a passing one.
 #
-# Each of the two carries the one `name:` dispatch_name gives it, and no other: its own name on
-# a pull request, a merge group and a dispatch on main, and `<name> (dispatch)` on a dispatch of
-# any other branch. pr-title is skipped on such a run, and GitHub does not evaluate a skipped
-# job's name, so its check run carries the expression's text, which is no pr-title either. Such
-# a run tests the branch's own tree, not its merge with the base, and its
-# check runs land on the branch's head, which is a pull request's head: under the plain name
-# that commit carried a second ci-ok with another tree's verdict, and a skipped pr-title. Pull
-# request #3513 at a368687e carried both on 2026-11-21 from workflow_dispatch run 44860519340,
-# a ci-ok success beside its pull_request run's failure. GitHub's rollup of the pull request
-# read the pull_request run's alone, but a reader by name (the commit's check-runs list, or a
-# record keeping the higher check run id per name) takes the dispatched run's.
+# Each of the two carries the one `name:` dispatch_name gives it, and no other. GitHub evaluates
+# a job's name only when the job runs. ci-ok runs on every event: it is `ci-ok` on a pull
+# request, a merge group and a dispatch on main, and `ci-ok (dispatch)` on a dispatch of any
+# other branch. pr-title runs only on a pull request that is not a draft and on a merge group,
+# and is named pr-title there; every run that skips it, a dispatch of any branch and a draft's
+# run among them, leaves the name unevaluated, and the check run carries the expression's text,
+# which is no pr-title either. A dispatch of a branch tests the branch's own tree, not its merge
+# with the base, and its check runs land on the branch's head, which is a pull request's head:
+# under the plain name that commit carried a second ci-ok with another tree's verdict, and a
+# skipped pr-title. Pull request #3513 at a368687e carried both on 2026-11-21 from
+# workflow_dispatch run 44860519340, a ci-ok success beside its pull_request run's failure.
+# GitHub's rollup of the pull request read no check run of the dispatched run, but a reader by
+# name (the commit's check-runs list, or a record keeping the higher check run id per name)
+# takes the dispatched run's.
+#
+# DISPATCH_TERM compares github.ref, which names a branch as refs/heads/<name>, rather than
+# github.ref_name, which a tag named main matches too. ci_workflow_rules.py's push-condition rule
+# admits this one comparison of github.ref with a branch ref, joined to the dispatch event.
 REQUIRED_CHECKS = ("ci-ok", "pr-title")
 VERDICT_JOB = "ci-ok"
-DISPATCH_TERM = "github.event_name == 'workflow_dispatch' && github.ref_name != 'main'"
+DISPATCH_TERM = "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'"
+# The verdict job's step that sets every other ci-ok on the head to its conclusion, and the one
+# `if:` it carries: it runs after a failed verdict (always()) and never on a dispatch of a branch,
+# since every other ci-ok on such a head is a pull request's or the queue's.
+RECONCILE_STEP = "Set every other ci-ok on this head to this job's conclusion"
+RECONCILE_IF = f"${{{{ always() && !({DISPATCH_TERM}) }}}}"
 
 
 def dispatch_name(job_id: str) -> str:
-    """The one `name:` a REQUIRED_CHECKS job carries: `<job id> (dispatch)` on a dispatch off
-    main, and the job id on every other run."""
+    """The one `name:` a REQUIRED_CHECKS job carries: `<job id> (dispatch)` on a dispatch of a
+    branch other than main, and the job id on every other run that evaluates it. A run that skips
+    the job evaluates no name, and its check run carries this expression's text."""
     return f"${{{{ {DISPATCH_TERM} && '{job_id} (dispatch)' || '{job_id}' }}}}"
+
+
+def quoted_names(named: str) -> set:
+    """The single-quoted strings of a `name:` that is an expression, which are the names it can
+    evaluate to, and nothing for a plain name."""
+    return set(re.findall(r"'([^']*)'", named)) if "${{" in named else set()
 
 
 # ci.yaml's env entry naming the jobs outside ci-ok's accounting: the job that exists to stop a
@@ -1759,7 +1778,9 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
     the verdict job has waited for every other job, and a job that calls
     a workflow must hand that workflow `ci-ok-changes` for its job's report step. Each
     REQUIRED_CHECKS name is a job of this file that carries the name dispatch_name gives it, no
-    other job carries it, and VERDICT_JOB must need every job of the file but itself and
+    other job carries it or a name expression that can evaluate to it, VERDICT_JOB's reconcile
+    step (RECONCILE_STEP) carries RECONCILE_IF, and VERDICT_JOB must need every job of the file
+    but itself and
     the exempt ones: a job outside its needs: ends after the verdict that says nothing about it.
     A job EXEMPT_LIST names is outside all of that: it is no job of
     CI_OK_SELECTED_BY, it needs no report step, and it must carry none, since ci-ok.sh fails a
@@ -1841,12 +1862,27 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
                                                 f"workflow_dispatch run of a branch, which tests the branch's tree "
                                                 f"rather than its merge with the base, reports under a name of its "
                                                 f"own and never sits beside the pull request's {job_id} on the "
-                                                f"branch's head, while every other run reports {job_id}"))
+                                                f"branch's head, while every other run that runs the job reports "
+                                                f"{job_id}"))
             continue
         if named in REQUIRED_CHECKS:
             problems.append(error(WORKFLOW, f"job {job_id} is named {named}, a check main's ruleset "
                                             f"requires, and is not the {named} job: a job posts its own check, and a skipped one "
                                             f"posts a pass, so the job of that name is the only one that may carry it"))
+            continue
+        for check in sorted(quoted_names(named) & set(REQUIRED_CHECKS)):
+            problems.append(error(WORKFLOW, f"job {job_id} carries `name: {named}`, which evaluates to {check} on "
+                                            f"some run, a check main's ruleset requires, and is not the {check} job: a "
+                                            f"job posts its own check, and a skipped one posts a pass, so the job of "
+                                            f"that name is the only one that may carry it"))
+    verdict_steps = (jobs.get(VERDICT_JOB) or {}).get("steps") or []
+    for step in verdict_steps:
+        if isinstance(step, dict) and step.get("name") == RECONCILE_STEP and str(step.get("if", "")) != RECONCILE_IF:
+            problems.append(error(WORKFLOW, f"job {VERDICT_JOB}'s step \"{RECONCILE_STEP}\" carries `if: "
+                                            f"{squash(str(step.get('if', '')))}`: give it `if: {RECONCILE_IF}`, so that "
+                                            f"it runs after a failed verdict and never on a workflow_dispatch run of a "
+                                            f"branch, whose verdict is no pull request's and must set none of a pull "
+                                            f"request's ci-ok check runs"))
     for check in REQUIRED_CHECKS:
         if check != VERDICT_JOB and check not in jobs:
             problems.append(error(WORKFLOW, f"this file has no {check} job, a check main's ruleset "
