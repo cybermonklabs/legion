@@ -655,6 +655,55 @@ test("the login and its lock are opened to be read as no terminal, and the lock 
   for (const open of ofLock) expect(open.flags & lockFlags).toBe(lockFlags);
 });
 
+test("a look at the lock takes its status from its one open of it, not from its path again", async () => {
+  // A second lookup of the path can find another file than the one the open read, so the status
+  // and the holder value of one look would be of two files.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  let looking = false;
+  const opened: string[] = [];
+  const lookups: string[] = [];
+  const realOpen = fs.open;
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    if (looking && String(args[0]) === lock) opened.push(String(args[0]));
+    return await realOpen(...args);
+  }) as typeof fs.open);
+  const realStat = fs.stat;
+  const stats = spyOn(fs, "stat").mockImplementation((async (
+    ...args: Parameters<typeof fs.stat>
+  ) => {
+    if (looking && String(args[0]) === lock) lookups.push(`stat ${String(args[0])}`);
+    return await realStat(...args);
+  }) as typeof fs.stat);
+  const realLstat = fs.lstat;
+  const lstats = spyOn(fs, "lstat").mockImplementation((async (
+    ...args: Parameters<typeof fs.lstat>
+  ) => {
+    if (looking && String(args[0]) === lock) lookups.push(`lstat ${String(args[0])}`);
+    return await realLstat(...args);
+  }) as typeof fs.lstat);
+  let stillHeld: boolean | undefined;
+  try {
+    await withDeviceLoginLock(path, async (held) => {
+      looking = true;
+      stillHeld = await held();
+      looking = false;
+    });
+  } finally {
+    opens.mockRestore();
+    stats.mockRestore();
+    lstats.mockRestore();
+  }
+  // The look read the holder's value through one open of the lock's path, which these spies see,
+  // and took no status of that path by name.
+  expect(stillHeld).toBe(true);
+  expect(opened).toEqual([lock]);
+  expect(lookups).toEqual([]);
+});
+
 test("a link to nothing at the lock's path is waited for while fresh, and taken over once stale", async () => {
   // The lock cannot be made beside such a link, and a look that follows it finds nothing there. A
   // caller that tries 50 times to make the lock without one wait is stopped by its signal, so a
