@@ -1328,10 +1328,13 @@ describe("a ! command in envoy.json", () => {
       ["2147483647", 2_147_483_647],
       // Bun 1.4.4's spawnSync wraps a timeout of 2^31 ms or more.
       ["2147483648", 10_000],
+      ["4294967296", 10_000],
+      ["4294967297", 10_000],
       ["99999999999999999999", 10_000],
       // In Bun, `timeout: 0` is no limit at all.
       ["0", 10_000],
       ["", 10_000],
+      [" ", 10_000],
       ["-1", 10_000],
       ["1.5", 10_000],
       ["0300", 10_000],
@@ -1363,14 +1366,28 @@ describe("a ! command in envoy.json", () => {
       notice: null,
       error: `${short.file}: dispatch.token's command did not finish within 0.3 s, and does not run again in this process`,
     });
-    // The longest bound Bun keeps, and the first it would wrap, both let a 0.5 s command finish.
-    for (const bound of ["2147483647", "2147483648"]) {
+    // A value refused keeps the 10 s itself, not merely no other bound: a 30 s command ends at
+    // 10 s, named so.
+    for (const bound of ["0", ""]) {
+      const started = Date.now();
+      const refused = read(bound, `sleep 30 # ${bound === "" ? "empty" : bound} ${home}`);
+      const elapsed = Date.now() - started;
+      expect(refused.settings).toEqual({
+        enabled: false,
+        notice: null,
+        error: `${refused.file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
+      });
+      expect(elapsed).toBeGreaterThanOrEqual(10_000);
+      expect(elapsed).toBeLessThan(15_000);
+    }
+    // The longest bound Bun keeps, and the values it would wrap, all let a 0.5 s command finish.
+    for (const bound of ["2147483647", "2147483648", "4294967296", "4294967297"]) {
       expect(read(bound, `sleep 0.5; printf ${USER_TOKEN}`).settings).toMatchObject({
         enabled: true,
         token: USER_TOKEN,
       });
     }
-  }, 20_000);
+  }, 45_000);
 
   test("whose field a variable overrides, or whose section is off, is not run", () => {
     const home = tempDir();
