@@ -6,10 +6,11 @@ import type {
   GraphNode,
   GraphReferences,
   IssueCoverage,
+  IssueReferencesAnswer,
 } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { textHead } from "../ask-answer";
-import type { DispatchClient, GraphReferencesQuery, IssueReferencesAnswer } from "../dispatch-http";
+import type { DispatchClient, GraphReferencesQuery } from "../dispatch-http";
 import { ITEM_KINDS, type ItemKind, type ParsedDispatchRef } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { dispatchAnswered } from "./failures";

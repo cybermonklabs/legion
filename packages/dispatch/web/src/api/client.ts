@@ -44,6 +44,7 @@ import type {
   DuplicateCandidate,
   IDCandidate,
   IssueAskThreadRow,
+  IssueReferencesAnswer,
   NewIssueSettings,
   TargetCandidate,
   UserIssueState,
@@ -976,9 +977,9 @@ export class DispatchApiClient {
    *  `200` body for that route, the display trees Dispatch adds to every stored text it answers
    *  this client with (`Dispatch-Trees`, in `answered`) included: the route table names each
    *  shaped read, so the trees are part of the body the document holds. A read states a response
-   *  shape of its own only where the document cannot hold it - `getIssueEvents` and
-   *  `listIssueAskThreads`, each saying beside it what that is - and those two go through `json`
-   *  with `routeUrl`. */
+   *  shape of its own only where the document cannot hold it, each saying beside it what that
+   *  is: `getIssueEvents` and `listIssueAskThreads`, which go through `json` with `routeUrl`, and
+   *  `getIssueReferences`, which a build older than the document answers with less. */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
@@ -1711,8 +1712,11 @@ export class DispatchApiClient {
   }
 
   /** The issue's references read, each member carrying its latest version alone
-   *  (`versions=latest`): the Artifacts tab, its one reader, draws no member's older versions. */
-  getIssueReferences(key: string) {
+   *  (`versions=latest`): the Artifacts tab, its one reader, draws no member's older versions.
+   *  The document's body holds `links` and `linked_from`, which a Dispatch from before the
+   *  one-hop read does not send, so this read answers `IssueReferencesAnswer`, where both may be
+   *  absent. */
+  getIssueReferences(key: string): Promise<IssueReferencesAnswer> {
     return this.read("/api/v1/issues/{key}/references", { key }, { versions: "latest" });
   }
 

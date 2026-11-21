@@ -1,9 +1,10 @@
+import { graphNodeKey, issueReferenceSections } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { memo, type ReactNode, useId, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
-import type { Artifact, IssueReferences, ReferenceLink } from "../../api/types";
+import type { Artifact, IssueReferencesAnswer, ReferenceLink } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -115,19 +116,6 @@ function ArtifactOwner({
   );
 }
 
-/** `GET /api/v1/issues/{key}/references` as either build of Dispatch answers it ("Two builds at
- *  once", `packages/envoy/cmd/dispatch/README.md`). A build from before the one-hop read answers
- *  `members` and `truncated` alone, so a missing `links` is that build's answer; a `null` list,
- *  which no build writes, holds no row. */
-type ReferencesAnswer = Omit<IssueReferences, "links" | "linked_from"> &
-  Partial<Pick<IssueReferences, "links" | "linked_from">>;
-
-/** The key that matches a node of `links` with a node of `linked_from`: its ref, or its kind and
- *  id where it has no ref. */
-function nodeKey(node: ReferenceLink["node"]): string {
-  return node.ref ?? `${node.kind} ${node.id}`;
-}
-
 /** One of the section's disclosures, collapsed by default: the issue's references are background
  *  context for it, not something worth scrolling past on every visit to the tab. Its summary names
  *  its list and counts the list's rows, so the count shows while it is closed. */
@@ -202,73 +190,79 @@ function ReferenceLinkRow({
   );
 }
 
+/** The References disclosure of an answer from a build before the one-hop read, drawn as that
+ *  build's walk always was: the documents of its `members`, each with its depth, and a line when
+ *  the walk was cut at 8 hops; nothing when it has no member. This path lasts only while such a
+ *  build is deployed. */
+function MemberReferences({
+  references,
+}: {
+  references: Pick<IssueReferencesAnswer, "members" | "truncated">;
+}): ReactNode {
+  const members = references.members ?? [];
+  if (members.length === 0) {
+    return null;
+  }
+  return (
+    <ReferencesDisclosure count={members.length} label="References">
+      <section aria-label="References" className="mt-3 space-y-2">
+        <ul className="space-y-2">
+          {members.map(({ artifact, depth, via }) => (
+            <li className={`rounded-lg border p-3 text-sm ${borderDefault}`} key={artifact.id}>
+              <Link
+                className={`font-medium underline ${linkText} ${linkHoverText}`}
+                to={artifactPath(artifact)}
+              >
+                {artifact.name}
+              </Link>
+              <p className={textMutedOnSurface}>
+                <ArtifactOwner artifact={artifact} /> · via {via.kind} · depth {depth}
+              </p>
+            </li>
+          ))}
+        </ul>
+        {references.truncated ? (
+          <p className={`text-sm ${textMutedOnSurface}`}>more references beyond 8 hops</p>
+        ) : null}
+      </section>
+    </ReferencesDisclosure>
+  );
+}
+
 // The issue's references read, one hop in each direction, drawn as two disclosures, each collapsed
 // by default and each counting its rows in its summary, so each count shows while it is closed:
 // References, each node the issue's own content links to, and under it Referenced by, each node
 // that links to the issue or to its own content. A disclosure with no row is not drawn. A node of
-// both is drawn once, under References, marked as one that also references the issue. Each row's
-// node and name come in the answer, so the section reads nothing to draw them, and a one-hop read
-// cuts no walk, so no row has a depth. This is not the issue header's "Referenced by" toggle,
-// which reads the edges into the issue's own node alone. An answer without `links`, from a build
-// before the one-hop read, is drawn as that build's walk always was: one References disclosure
-// over the documents of its `members`, each with its depth, and a line when the walk was cut at 8
-// hops. It is memoized: a keystroke in the tab's filter renders the tab again, and the answer, the
-// one prop, is the same object until the read answers anew.
+// both is drawn once, under References, marked as one that also references the issue
+// (`issueReferenceSections`). Each row's node and name come in the answer, so the section reads
+// nothing to draw them, and a one-hop read cuts no walk, so no row has a depth. This is not the
+// issue header's "Referenced by" toggle, which reads the edges into the issue's own node alone. An
+// answer without `links` is drawn by `MemberReferences`. It is memoized: a keystroke in the tab's
+// filter renders the tab again, and the answer, the one prop, is the same object until the read
+// answers anew.
 const References = memo(function References({
   references,
 }: {
-  references: ReferencesAnswer;
+  references: IssueReferencesAnswer;
 }): ReactNode {
   if (references.links === undefined) {
-    const members = references.members ?? [];
-    if (members.length === 0) {
-      return null;
-    }
-    return (
-      <ReferencesDisclosure count={members.length} label="References">
-        <section aria-label="References" className="mt-3 space-y-2">
-          <ul className="space-y-2">
-            {members.map(({ artifact, depth, via }) => (
-              <li className={`rounded-lg border p-3 text-sm ${borderDefault}`} key={artifact.id}>
-                <Link
-                  className={`font-medium underline ${linkText} ${linkHoverText}`}
-                  to={artifactPath(artifact)}
-                >
-                  {artifact.name}
-                </Link>
-                <p className={textMutedOnSurface}>
-                  <ArtifactOwner artifact={artifact} /> · via {via.kind} · depth {depth}
-                </p>
-              </li>
-            ))}
-          </ul>
-          {references.truncated ? (
-            <p className={`text-sm ${textMutedOnSurface}`}>more references beyond 8 hops</p>
-          ) : null}
-        </section>
-      </ReferencesDisclosure>
-    );
+    return <MemberReferences references={references} />;
   }
-
-  const links = references.links ?? [];
-  const linkedFrom = references.linked_from ?? [];
-  const linked = new Set(links.map(({ node }) => nodeKey(node)));
-  const linking = new Set(linkedFrom.map(({ node }) => nodeKey(node)));
-  const referencedBy = linkedFrom.filter(({ node }) => !linked.has(nodeKey(node)));
-  if (links.length === 0 && referencedBy.length === 0) {
+  const sections = issueReferenceSections(references);
+  if (sections.references.length === 0 && sections.referencedBy.length === 0) {
     return null;
   }
 
   return (
     <div className="space-y-3">
-      {links.length === 0 ? null : (
-        <ReferencesDisclosure count={links.length} label="References">
+      {sections.references.length === 0 ? null : (
+        <ReferencesDisclosure count={sections.references.length} label="References">
           <section aria-label="References" className="mt-3">
             <ul className="space-y-2">
-              {links.map((row) => (
+              {sections.references.map(({ alsoReferences, row }) => (
                 <ReferenceLinkRow
-                  alsoReferences={linking.has(nodeKey(row.node))}
-                  key={nodeKey(row.node)}
+                  alsoReferences={alsoReferences}
+                  key={graphNodeKey(row.node)}
                   near="via"
                   row={row}
                 />
@@ -277,14 +271,14 @@ const References = memo(function References({
           </section>
         </ReferencesDisclosure>
       )}
-      {referencedBy.length === 0 ? null : (
-        <ReferencesDisclosure count={referencedBy.length} label="Referenced by">
+      {sections.referencedBy.length === 0 ? null : (
+        <ReferencesDisclosure count={sections.referencedBy.length} label="Referenced by">
           <section aria-label="Referenced by" className="mt-3">
             <ul className="space-y-2">
-              {referencedBy.map((row) => (
+              {sections.referencedBy.map((row) => (
                 <ReferenceLinkRow
                   alsoReferences={false}
-                  key={nodeKey(row.node)}
+                  key={graphNodeKey(row.node)}
                   near="to"
                   row={row}
                 />

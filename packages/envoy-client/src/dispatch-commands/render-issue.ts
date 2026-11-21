@@ -3,7 +3,6 @@ import type {
   ClaimHolderLiveness,
   DispatchEvent,
   GraphEdgeKind,
-  GraphNode,
   GraphReferences,
   Issue,
   IssueAdvance,
@@ -12,13 +11,21 @@ import type {
   IssueCoverage,
   IssueDetails,
   IssueProgress,
+  IssueReferencesAnswer,
   IssueRouteStatus,
   ReferenceLink,
 } from "@legion/contracts";
-import { actorLabel, claimHolds, claimTakeableAt, ISSUE_ROUTE_STATUSES } from "@legion/contracts";
+import {
+  actorLabel,
+  claimHolds,
+  claimTakeableAt,
+  graphNodeKey,
+  ISSUE_ROUTE_STATUSES,
+  issueReferenceSections,
+} from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { askAnswerText, textHead } from "../ask-answer";
-import type { DispatchClient, IssueReferencesAnswer } from "../dispatch-http";
+import type { DispatchClient } from "../dispatch-http";
 import { humanEditHead } from "../human-edit";
 import { approvalLine, documentListLines } from "./document-targets";
 import { linkFor } from "./links";
@@ -294,12 +301,6 @@ export function olderServerWarnings(issue: {
   return warnings.length === 0 ? {} : { warnings };
 }
 
-/** The key that matches a node of the references read with a node of the graph read: its ref, or
- *  its kind and id where it has no ref. */
-function nodeKey(node: Pick<GraphNode, "kind" | "id" | "ref">): string {
-  return node.ref ?? `${node.kind} ${node.id}`;
-}
-
 /** The edges into an issue node that `Referenced by:` prints from the graph read beside the rows
  *  of `linked_from`: a child's `child_of` and the `blocked_by` of an issue that waits on it. The
  *  graph read's other edges into the issue node are mentions, each of which `linked_from` holds
@@ -314,6 +315,23 @@ function referenceLinkLine({ kinds, node, via }: ReferenceLink, near: "via" | "t
   return `- ${(kinds ?? []).join(",")} ${node.kind} ${node.ref ?? node.id} · ${near} ${via.kind} ${via.id}`;
 }
 
+/** The `References:` lines of an answer from a build before the one-hop read, which answers its
+ *  walk's documents alone: each with its depth, then the line that says the walk was cut. Such an
+ *  answer gives `Referenced by:` nothing, so that section prints every edge of the graph read into
+ *  the issue node, as it always did. This path lasts only while such a build is deployed. */
+function memberLines(references: Pick<IssueReferencesAnswer, "members" | "truncated">): string[] {
+  const members = references.members ?? [];
+  return [
+    ...(members.length === 0
+      ? ["- none"]
+      : members.map(
+          ({ artifact, depth, via }) =>
+            `- ${artifact.project}/${artifact.slug} · depth ${depth} via ${via.kind} ${via.id}`
+        )),
+    ...(references.truncated ? ["- more references beyond 8 hops"] : []),
+  ];
+}
+
 /**
  * An issue read's `References:` lines, and its `Referenced by:` lines where the references read
  * gives that section more than the graph read's edges into the issue node.
@@ -321,10 +339,11 @@ function referenceLinkLine({ kinds, node, via }: ReferenceLink, near: "via" | "t
  * An answer with `links` lists one hop in each direction. `References:` lists each node the
  * issue's own content links to, and `Referenced by:` each node that links to the issue or to its
  * own content, then the issue node's structural edges in from the graph read. Each related node
- * prints once: a node under `Links:` or at the source of a structural edge in prints there and
- * not under `References:`, and a node of both lists prints under `References:`, marked as one
- * that also references the issue, and not under `Referenced by:`. A one-hop read cuts no walk, so
- * no line says one was cut.
+ * prints once: a node of both lists prints under `References:`, marked as one that also
+ * references the issue, and not under `Referenced by:` (`issueReferenceSections`), and a node
+ * under `Links:` or at the source of a structural edge in prints there and not under
+ * `References:`. A one-hop read cuts no walk, so no line says one was cut. An answer without
+ * `links` prints as `memberLines` says.
  */
 function referenceSections(
   references: IssueReferencesAnswer | string,
@@ -335,25 +354,8 @@ function referenceSections(
   // `Referenced by:` prints every edge of the graph read into the issue node, as it does for an
   // answer without `links`.
   if (typeof references === "string") return { references: [`- ${references}`] };
-  // A build from before the one-hop read answers its walk's documents alone: the read prints each
-  // with its depth, the line that says the walk was cut, and every edge of the graph read into the
-  // issue node under `Referenced by:`, as it always did.
-  if (references.links === undefined) {
-    const members = references.members ?? [];
-    return {
-      references: [
-        ...(members.length === 0
-          ? ["- none"]
-          : members.map(
-              ({ artifact, depth, via }) =>
-                `- ${artifact.project}/${artifact.slug} · depth ${depth} via ${via.kind} ${via.id}`
-            )),
-        ...(references.truncated ? ["- more references beyond 8 hops"] : []),
-      ],
-    };
-  }
-  const links = references.links ?? [];
-  const linkedFrom = references.linked_from ?? [];
+  if (references.links === undefined) return { references: memberLines(references) };
+  const sections = issueReferenceSections(references);
   const structural =
     typeof incoming === "string"
       ? []
@@ -361,21 +363,19 @@ function referenceSections(
   // The nodes another section prints: each under `Links:` and each source of a structural edge
   // in, which `Referenced by:` prints as that edge.
   const outgoingEdges = typeof outgoing === "string" ? [] : (outgoing.edges ?? []);
-  const elsewhere = new Set([...outgoingEdges, ...structural].map((edge) => nodeKey(edge.node)));
-  const linked = new Set(links.map((row) => nodeKey(row.node)));
-  const linking = new Set(linkedFrom.map((row) => nodeKey(row.node)));
-  const referencesLines = links
-    .filter((row) => !elsewhere.has(nodeKey(row.node)))
-    .map((row) => {
-      const also = linking.has(nodeKey(row.node)) ? " · also references this issue" : "";
+  const elsewhere = new Set(
+    [...outgoingEdges, ...structural].map((edge) => graphNodeKey(edge.node))
+  );
+  const referencesLines = sections.references
+    .filter(({ row }) => !elsewhere.has(graphNodeKey(row.node)))
+    .map(({ alsoReferences, row }) => {
+      const also = alsoReferences ? " · also references this issue" : "";
       return `${referenceLinkLine(row, "via")}${also}`;
     });
   // A graph read the server could not serve names why after the rows of `linked_from`, since the
   // structural edges in are its own.
   const referencedBy = [
-    ...linkedFrom
-      .filter((row) => !linked.has(nodeKey(row.node)))
-      .map((row) => referenceLinkLine(row, "to")),
+    ...sections.referencedBy.map((row) => referenceLinkLine(row, "to")),
     ...(typeof incoming === "string" ? [`- ${incoming}`] : structural.map(edgeLine)),
   ];
   return {

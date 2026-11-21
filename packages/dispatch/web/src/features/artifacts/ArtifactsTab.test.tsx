@@ -8,7 +8,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
-import type { Artifact, IssueReferences } from "../../api/types";
+import type { Artifact, IssueReferences, IssueReferencesAnswer } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
 import { ArtifactsTab } from "./ArtifactsTab";
 
@@ -57,21 +57,13 @@ const noReferences: IssueReferences = {
   truncated: false,
 };
 
-/** The references answer of a Dispatch from before INFRA-4704: `members` and `truncated`, with
- *  neither `links` nor `linked_from`. The route's type holds both, and a page of this build reads
- *  such an answer while a release rolls out ("Two builds at once",
- *  `packages/envoy/cmd/dispatch/README.md`), so the answer reaches the page as the route's. */
-function olderAnswer(answer: Omit<IssueReferences, "links" | "linked_from">): IssueReferences {
-  return answer as IssueReferences;
-}
-
 function Location() {
   return <output data-testid="location">{useLocation().pathname}</output>;
 }
 
 function renderTab(
   artifacts: Artifact[],
-  references: IssueReferences | Error = noReferences,
+  references: IssueReferencesAnswer | Error = noReferences,
   isClosed = false
 ) {
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue(artifacts);
@@ -410,19 +402,16 @@ test("From an answer without links, References lists closure members with chip, 
     primary: false,
     slug: "design-notes",
   };
-  const { getIssueReferences, listArtifacts, view } = renderTab(
-    [artifact],
-    olderAnswer({
-      members: [
-        {
-          artifact: referencedDocument,
-          depth: 1,
-          via: { id: "comment-1", kind: "comment" },
-        },
-      ],
-      truncated: true,
-    })
-  );
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], {
+    members: [
+      {
+        artifact: referencedDocument,
+        depth: 1,
+        via: { id: "comment-1", kind: "comment" },
+      },
+    ],
+    truncated: true,
+  });
 
   try {
     const summary = await screen.findByText("References (1)");
@@ -726,13 +715,10 @@ test("From an answer without links, References names the agent that owns a conve
     session_id: "planner-session",
     slug: "shot-png",
   };
-  const { getIssueReferences, listArtifacts, view } = renderTab(
-    [artifact],
-    olderAnswer({
-      members: [{ artifact: picture, depth: 1, via: { id: "comment-1", kind: "comment" } }],
-      truncated: false,
-    })
-  );
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], {
+    members: [{ artifact: picture, depth: 1, via: { id: "comment-1", kind: "comment" } }],
+    truncated: false,
+  });
 
   try {
     const references = await screen.findByRole("region", { name: "References", hidden: true });

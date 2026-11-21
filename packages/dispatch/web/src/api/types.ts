@@ -193,6 +193,7 @@ export type {
   IssueReferenceSummary,
   IssueReferenceSummaryDocument,
   IssueReferences,
+  IssueReferencesAnswer,
   IssueSteps,
   IssueSummary,
   ItemBlock,

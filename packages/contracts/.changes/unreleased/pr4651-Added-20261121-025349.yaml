@@ -1,5 +1,5 @@
 kind: Added
-body: IssueReferences gains links and linked_from
+body: IssueReferences gains links and linked_from; IssueReferencesAnswer types either build's answer, issueReferenceSections splits one with links into References and Referenced by, and graphNodeKey matches a node across reads
 time: 2026-11-21T02:53:49.448828771Z
 custom:
     Issue: pr4651

@@ -51,7 +51,7 @@ import type {
   IssueDetails,
   IssuePriority,
   IssueRead,
-  IssueReferences,
+  IssueReferencesAnswer,
   IssueRouteStatus,
   IssueSteps,
   IssueSummary,
@@ -417,12 +417,6 @@ export type GraphReferencesQuery = ({ readonly to: string } | { readonly from: s
   /** events.id; keeps mentions introduced after it and excludes structural edges. */
   readonly since?: number;
 };
-
-/** `GET /api/v1/issues/{key}/references` as either build of Dispatch answers it. A build from
- *  before the one-hop read answers `members` and `truncated` alone, so a missing `links` is that
- *  build's answer; a `null` list, which no build writes, holds no row. */
-export type IssueReferencesAnswer = Omit<IssueReferences, "links" | "linked_from"> &
-  Partial<Pick<IssueReferences, "links" | "linked_from">>;
 
 /** Which of an issue's events `read` returns, oldest first: the newest `events`, or every one. */
 export interface IssueReadOptions {
