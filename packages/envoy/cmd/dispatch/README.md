@@ -4372,7 +4372,8 @@ Every server process publishes its dashboard build's assets into the database at
 it never reads `index.html` or a non-asset path from there.
 A path no build published remains `404 {"error":"not found"}` and any other read failure is a 502 with no cache header.
 The dashboard's pages (`index.html` and the shell served for a browser route) carry `Cache-Control: no-cache` and an `ETag` of their bytes, no `Last-Modified`, and its hashed `/assets` files `public, max-age=31536000, immutable`, so a browser keeps no page from another build.
-At `DISPATCH_OUTSIDE_ORIGIN` every dashboard answer also carries `Content-Security-Policy: frame-ancestors 'none'; object-src 'none'; base-uri 'none'` and `X-Frame-Options: DENY`, so no page of another site frames the enrollment page an owner's link opens or the passkey sign-in, and the pages load no plugin object and take no `<base>`; the policy names no script source, so the page's inline script runs. The canonical origin's answers carry neither header.
+At `DISPATCH_OUTSIDE_ORIGIN` every dashboard answer also carries `Content-Security-Policy: frame-ancestors 'none'; object-src 'none'; base-uri 'none'` and `X-Frame-Options: DENY`, so no page of another site frames the enrollment page an owner's link opens or the passkey sign-in, and the pages load no plugin object and take no `<base>`; the policy names no script source, so the page's inline script runs.
+The canonical origin's answers carry neither header.
 
 
 In this list, header identity means only the test/local harness mode described above.
