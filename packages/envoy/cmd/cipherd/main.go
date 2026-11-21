@@ -6,8 +6,9 @@
 // and issues nothing in Dispatch: Dispatch's server lists pending requests and links each to the
 // broker's page, and relays a machine login's decision with its typed code. The broker reads
 // Dispatch in two places, each with its own projected ServiceAccount token: its model judge,
-// whether an issue is open (BROKER_JUDGE_DISPATCH_URL), and its token exchange, whether a
-// person may see the projects a token names (BROKER_PROJECT_ACCESS_URL).
+// whether an issue is open (BROKER_JUDGE_DISPATCH_URL), and its project reads, whether a person
+// may see the projects a token names and which repositories a project's issues resolve to, which
+// it relays to an edge listener (BROKER_PROJECT_ACCESS_URL).
 package main
 
 import (
@@ -54,6 +55,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/projectrepos"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/proxy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -341,16 +343,22 @@ func main() {
 	// reads are counted with every read after them; broker_unservable_secrets, which reads the
 	// live policy, is registered on it once that first load has answered (LoadPolicy).
 	registry := metrics.New()
-	// The broker's one client of Dispatch's project access (BROKER_PROJECT_ACCESS_URL), read by
-	// the token exchange, an enrollment naming projects, and every request, release and airlock
-	// connection holding a project-tagged secret; nil when unset. It presents the broker's own
-	// projected ServiceAccount token for Dispatch's audience, read at call time through the reader
-	// every projected token here goes through, so a rotation needs no restart. config.Load holds
-	// the two settings to both or neither. Built before the loader, which serves a tagged secret
-	// only when this broker can ask whether its project is private (policy.Loader.ProjectChecks).
+	// The broker's two clients of the Dispatch at BROKER_PROJECT_ACCESS_URL, both nil when it is
+	// unset. Project access is read by the token exchange, an enrollment naming projects, and every
+	// request, release and airlock connection holding a project-tagged secret; the repository
+	// answer is what GET /v1/project-repositories relays to an edge listener, and a broker that
+	// reads none answers every edge listener 503 REPOSITORIES_UNKNOWN. Both present the broker's
+	// own projected ServiceAccount token for Dispatch's audience through one reader, read at call
+	// time, so a rotation needs no restart and the broker has one Dispatch address and one account
+	// there. config.Load holds the two settings to both or neither. Built before the loader, which
+	// serves a tagged secret only when this broker can ask whether its project is private
+	// (policy.Loader.ProjectChecks).
 	var projectAccess projectaccess.Access
+	var projectRepositories api.ProjectRepositoriesReader
 	if cfg.ProjectAccessURL != "" {
-		projectAccess = projectaccess.New(cfg.ProjectAccessURL, ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+		account := ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile)
+		projectAccess = projectaccess.New(cfg.ProjectAccessURL, account, nil)
+		projectRepositories = projectrepos.New(cfg.ProjectAccessURL, account, nil)
 	}
 	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
 	// policy version is the one it has today.
@@ -367,10 +375,13 @@ func main() {
 	discovered, err := discoverVerifiers(ctx, cfg, issuerKeys)
 	fatal(err)
 	pod := discovered.Pod
-	// The NATS auth service's list of services and the verifiers of their platform tokens, read
-	// at boot so an entry it could never admit refuses the start rather than every connection.
-	natsServices, natsTokens, err := natsCalloutBoot(ctx, cfg, discovered, issuerKeys)
+	// The verifiers of the NATS auth service's services' platform tokens, read at boot so an entry
+	// it could never admit refuses the start rather than every connection. config.Load parsed the
+	// list (cfg.NATS.Services); a broker that runs no auth service still answers its edge
+	// listeners' entries at GET /v1/project-repositories.
+	natsTokens, err := natsCalloutBoot(ctx, cfg, discovered, issuerKeys)
 	fatal(err)
+	edgeListeners := cfg.NATS.EdgeListeners()
 
 	// This process's own sender id, minted once at boot. Postgres delivers a notification to every
 	// session listening on the channel, this pod's own included, so without an id stamped on what
@@ -678,6 +689,7 @@ func main() {
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
 		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
+		EdgeListeners: edgeListeners, ProjectRepositories: projectRepositories,
 		Enroll: enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
@@ -791,11 +803,13 @@ func main() {
 	}()
 	// The NATS auth service starts once the broker serves, so a connection it admits can trade
 	// and introspect against a broker that answers; it answers in the replicas' queue group until
-	// the drain begins.
+	// the drain begins. BROKER_NATS_SERVICES alone starts none (config.Load), and the record says
+	// which, with the edge listeners GET /v1/project-repositories answers either way.
 	if cfg.NATS.Enabled() {
+		slog.Info("NATS auth service", "state", "on", "services", len(cfg.NATS.Services), "edge_listeners", len(edgeListeners))
 		service, err := natscallout.Start(ctx, natscallout.Settings{
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
-			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: natsServices,
+			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: cfg.NATS.Services,
 		}, natscallout.Deps{
 			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
 			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
@@ -804,9 +818,12 @@ func main() {
 		callout.Store(service)
 		go func() {
 			if err := service.Ready(ctx); err == nil {
-				slog.Info("broker: the NATS auth service is answering", "servers", strings.Join(cfg.NATS.URLs, ","), "services", len(natsServices))
+				slog.Info("broker: the NATS auth service is answering", "servers", strings.Join(cfg.NATS.URLs, ","), "services", len(cfg.NATS.Services))
 			}
 		}()
+	} else {
+		slog.Info("NATS auth service", "state", "off", "edge_listeners", len(edgeListeners),
+			"detail", "BROKER_NATS_URLS is unset, so the broker answers no hub; GET /v1/project-repositories reads the edge-listener entries of BROKER_NATS_SERVICES")
 	}
 
 	<-ctx.Done()
