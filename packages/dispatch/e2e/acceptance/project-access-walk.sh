@@ -214,7 +214,7 @@ seed_scenario() {
   give_repository main PRIV-1 acme/priv-repo
   send main carol PUT /api/v1/projects/PRIV/access/groups/priv-group
   expect_status 200 "main: carol names the group priv-group on PRIV's list"
-  # ses-priv-worker's history in PRIV, which shows it to bob and carol's PRIV token (confined). Only
+  # ses-priv-worker's history in PRIV, which shows it to bob and bob's PRIV token (confined). Only
   # a session its own credential proves records history (events.queueSessionProjects: a
   # broker-issued token's session; the shared token only names one), and this stack has no broker.
   # So the row is a stand-in for a broker-proven session's write, as --private-by-sql's store write
@@ -306,9 +306,11 @@ seed_scenario() {
   done
   mint_token main carol carol-priv-token '["PRIV"]'
   mint_token main alice alice-priv-token '["PRIV"]'
+  mint_token main bob bob-priv-token '["PRIV"]'
   # The twin's alice holds a token whose list names PRIV, which the twin never wrote: no route mints
   # a list naming a project nobody sees, so the list is written beside the mint, on the token the
-  # mint made. It sees what alice's PRIV token sees once PRIV is private: nothing.
+  # mint made. It sees what alice's PRIV token sees once PRIV is private: PUB alone, since a full
+  # member's list decides only which private projects it sees.
   mint_token twin alice alice-priv-token
   psql "$twin_database_url" -X -q -v ON_ERROR_STOP=1 \
     -c "update agent_tokens set projects = '{PRIV}' where id = '$(recalled twin "alice-priv-token id")'" >/dev/null ||
@@ -324,7 +326,7 @@ seed_scenario() {
 # The callers PRIV's list lets in, which project-access.sh's listed section reads as, and those it
 # does not, whom the walk reads as.
 # shellcheck disable=SC2034 # read by project-access.sh's listed section
-readonly listed_callers=(bob carol carol-priv-token)
+readonly listed_callers=(bob bob-priv-token carol carol-priv-token)
 readonly unseeing_callers=(alice alice-priv-token carol-token shared)
 # The object routes the listed callers read, each naming one object of {P}'s seed.
 # shellcheck disable=SC2034 # read by project-access.sh's listed and confined sections
@@ -480,14 +482,15 @@ walk_rows() {
     fi
     if [ -n "$no_project" ]; then
       # The object belongs to no project, so there is no object of PRIV to hide: the row is held
-      # to its class's refusal (scopeDeployment) of every caller that is not open.
+      # to its class's refusal (scopeDeployment) of every caller that is not open and of every
+      # credential whose writes a list holds, a full member's token that lists PRIV included.
       target=$(sed -E 's/\{[^}]+\}/project-access-walk/g' <<<"$pattern")
-      for caller in bob alice-priv-token carol-priv-token; do
+      for caller in bob bob-priv-token alice-priv-token carol-priv-token; do
         send main "$caller" "$method" "$target" "$body"
         refused=$((refused + 1))
         problem=''
         [ "$status" = 403 ] ||
-          problem="$caller $method $pattern ($no_project): HTTP $status, want 403 for a caller that is not open: $(head -c 300 "$work/body")"
+          problem="$caller $method $pattern ($no_project): HTTP $status, want 403 for a caller that is not open or whose writes a list holds: $(head -c 300 "$work/body")"
         judge "$status" "$problem"
       done
       continue
@@ -659,9 +662,9 @@ query_fill() {
 }
 
 # walk_queries walks every query parameter of every GET row of the route index (query_kind). Of a
-# row whose path names an object, the path is filled with PUB's, which every unseeing caller but
-# alice's PRIV token sees; that token sees no project, so it is answered alike for the two fills
-# whatever the parameter names. carol, who sees PRIV, must be answered 2xx for PRIV's fill and
+# row whose path names an object, the path is filled with PUB's, which every unseeing caller sees,
+# alice's PRIV token included, since a full member's list decides only which private projects it
+# sees. carol, who sees PRIV, must be answered 2xx for PRIV's fill and
 # otherwise than for the missing one, each masked with its own fill: a refusal says the fill is no
 # value the parameter takes, and an answer alike says the fill selects nothing of PRIV, and either
 # way a hidden and a missing answer would be alike whatever the server hides, so the parameter did

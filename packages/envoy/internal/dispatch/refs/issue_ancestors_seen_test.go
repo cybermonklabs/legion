@@ -44,7 +44,7 @@ func TestAnAncestorWalkAsSeenCostsAHiddenParentWhatAMissingOneCosts(t *testing.T
 	if err != nil || !slices.Equal(whole, []string{"PRIV-2", "PRIV-1"}) {
 		t.Fatalf("IssueAncestors(PRIV-3) = %v, %v; want [PRIV-2 PRIV-1]", whole, err)
 	}
-	sees := map[string]bool{"bob": true, "carol": true, "carol's token that lists PRIV": true, "the server": true}
+	sees := map[string]bool{"bob": true, "carol": true, "carol's token that lists PRIV": true, "bob's token that lists PRIV": true, "the server": true}
 	for _, caller := range seededCallers() {
 		reader := caller.reader(t, tx)
 		missing, err := IssueAncestorsAsSeen(ctx, tx, reader, "PRIV-9")

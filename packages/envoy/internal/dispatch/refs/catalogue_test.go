@@ -131,7 +131,7 @@ func TestAProjectConstraintOfAHiddenProjectStaysHidden(t *testing.T) {
 	carol := seededCarol
 	callers := append(seededCallers(), seededCaller{name: "carol's token that lists PUB", actor: model.Actor{Kind: "session", Owner: &carol,
 		Credential: &model.Credential{TokenID: "carol-pub", Projects: []string{seededPublic}}}})
-	seesPrivate := map[string]bool{"bob": true, "carol": true, "carol's token that lists PRIV": true, "the server": true}
+	seesPrivate := map[string]bool{"bob": true, "carol": true, "carol's token that lists PRIV": true, "bob's token that lists PRIV": true, "the server": true}
 	for _, caller := range callers {
 		reader := caller.reader(t, tx)
 		missing := readCatalogueNode(t, tx, reader, "constraint", uuid.NewString())

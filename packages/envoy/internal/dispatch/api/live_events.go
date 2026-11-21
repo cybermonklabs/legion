@@ -733,35 +733,23 @@ func eventSubscriptionCheck(ctx context.Context, q queryer, reader model.Actor, 
 
 // eventGapSQL passes the events row eventAlias names when it belongs to the gap of a resume read
 // for the viewer bound at viewerParam: an event that viewer may read (eventReadableSQL), which a
-// complete replay sends; a change of a project's access that took the project from the viewer
-// (lostSightSQL), which the viewer no longer reads once it is made; and a write of a group the
-// viewer may not read that can have moved what it sees (unreadGroupWriteSQL). Every other event is
-// one the page never held and would not be sent, so it is no gap: a resume across a project the
-// caller never saw is complete.
+// complete replay sends, and a change of a project's access that took the project from the viewer
+// (lostSightSQL), which the viewer no longer reads once it is made. Every other event is one the
+// page never held and would not be sent, so it is no gap: a resume across a project the caller
+// never saw is complete. A write of a group is read by every open viewer, a full member's
+// credential whatever it lists, and by no restricted member, whom no group admits to a project
+// (access.PersonSeesProjectSQL), so a group write a viewer may not read moves nothing it sees.
 func eventGapSQL(eventAlias, viewerParam string) string {
-	return `(` + eventReadableSQL(eventAlias, viewerParam) + ` or ` + lostSightSQL(eventAlias, viewerParam) +
-		` or ` + unreadGroupWriteSQL(eventAlias, viewerParam) + `)`
-}
-
-// unreadGroupWriteSQL is whether the event eventAlias names is a write of a group that the viewer
-// bound at viewerParam may not read and that can have moved what it sees: the viewer is a credential
-// that lists projects (Viewer.Lists) for a person, whose place in a group can give it a project its
-// list names. A group's event names no member, and only an open viewer reads it (eventReadableSQL),
-// so nothing such a credential may read says whether the write moved what it sees, and its resume
-// across any one owes the refresh (sightMovedSQL).
-func unreadGroupWriteSQL(eventAlias, viewerParam string) string {
-	return `(` + eventAlias + `.type = '` + accessGroupChangedEvent + `' and (` + viewerParam + `::jsonb ? 'lists') and ` +
-		access.ViewerPerson(viewerParam) + ` is not null)`
+	return `(` + eventReadableSQL(eventAlias, viewerParam) + ` or ` + lostSightSQL(eventAlias, viewerParam) + `)`
 }
 
 // sightMovedSQL is whether the event eventAlias names, one of the gap's (eventGapSQL), moved what
 // the viewer bound at viewerParam sees, so the page owes the refresh replay_complete false asks for:
 // a change of a project's access that took the project from the viewer (lostSightSQL) or gave it
-// the project (gainedSightSQL), and a change of a group, whose payload names no member and so may
-// have moved anyone's: one the viewer may read, and one a credential that lists projects may not
-// (unreadGroupWriteSQL). Every other access change in the gap is one the viewer reads and that
-// moved nothing it sees: another person added to a list it is on, its project turned private while
-// it stays on the list, a project's Slack channels.
+// the project (gainedSightSQL), and a change of a group the viewer reads, whose payload names no
+// member and so may have moved anyone's. Every other access change in the gap is one the viewer
+// reads and that moved nothing it sees: another person added to a list it is on, its project turned
+// private while it stays on the list, a project's Slack channels.
 func sightMovedSQL(eventAlias, viewerParam string) string {
 	e := eventAlias
 	return `(` + e + `.type = '` + accessGroupChangedEvent + `' or ` + lostSightSQL(e, viewerParam) + ` or ` + gainedSightSQL(e, viewerParam) + `)`

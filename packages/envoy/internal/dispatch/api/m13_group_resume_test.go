@@ -52,13 +52,16 @@ func TestAResumeAcrossAGroupTakenOffAListOwesARefreshToItsMembers(t *testing.T) 
 // TestAResumeAcrossItsPersonLeavingAGroupOwesARefreshToAListingToken: dave sees PRIV only through
 // group team, which PRIV's list names, and his token lists PRIV. carol takes dave out of team. The
 // token reads PRIV no more, so its resume across the change is not complete. The group's event
-// names no member, and a credential that lists projects may not read it (eventReadableSQL), so
-// nothing that credential may read says whether a group write moved what it sees: its resume
-// across any group write owes the refresh. dave at a browser reads the event and his resume is not
-// complete either; bob, a restricted member, whom no group admits, resumes complete.
+// names no member, and an open viewer reads it (eventReadableSQL), dave's token among them, since a
+// full member's credential is open whatever it lists: its resume across a group write owes the
+// refresh (sightMovedSQL). dave at a browser reads the event and his resume is not complete either.
+// bob, a restricted member, whom no group admits, resumes complete, and so does his token that lists
+// PRIV: no group write moves what a restricted member's credential sees, and it reads none.
 //
-// Control: the resume check asks nothing of a group write a listing credential may not read; the
-// token's resume is complete, and the test fails.
+// Controls: sightMovedSQL leaving out a group write, under which the token's resume is complete;
+// and the resume's gap holding every group write for a credential that lists projects (the rule
+// before, unreadGroupWriteSQL), under which bob's token's resume is not complete. Each fails the
+// test naming that caller.
 func TestAResumeAcrossItsPersonLeavingAGroupOwesARefreshToAListingToken(t *testing.T) {
 	const dave = "dave@example.com"
 	seed := seedPrivateProject(t)
@@ -73,4 +76,5 @@ func TestAResumeAcrossItsPersonLeavingAGroupOwesARefreshToAListingToken(t *testi
 		t.Errorf("dave's resume from %d across his leaving team says its replay is complete, so his page keeps PRIV: %+v", since, got)
 	}
 	requireResumeComplete(t, seed, url, callerBob, since, true, "no group admits a restricted member, so no group write moves what he sees")
+	requireResumeComplete(t, seed, url, callerBobPrivToken, since, true, "no group admits a restricted member, so no group write moves what his token sees")
 }

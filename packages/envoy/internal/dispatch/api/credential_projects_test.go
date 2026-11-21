@@ -160,10 +160,13 @@ func tokenListIn(t *testing.T, call string, answer *httptest.ResponseRecorder, i
 	return nil, false
 }
 
-// TestAPersonalTokenUsesOnlyItsProjects: a token minted with a list carries it on every request,
-// so it sees its list within what its person sees, and it gives another token, by a mint or an
-// edit, only a part of that list. A token minted with none answers as every token did before
-// lists, with no projects field, and sees the public projects its person sees.
+// TestAPersonalTokenUsesOnlyItsProjects: a token minted with a list carries it on every request.
+// carol's token that lists PRIV, a full member's, sees what its list covers within what carol sees
+// (access.CredentialCovers): PRIV, which it lists, and PUB, which is public, as an open viewer. It
+// gives another token, by a mint or an edit, only what it reaches itself: a project it sees, PUB
+// among them, and never an empty list, which would reach the rows of the whole deployment its own
+// list holds it from. A token minted with none answers as every token did before lists, with no
+// projects field, and sees the public projects its person sees.
 func TestAPersonalTokenUsesOnlyItsProjects(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
@@ -179,8 +182,9 @@ func TestAPersonalTokenUsesOnlyItsProjects(t *testing.T) {
 	}
 	unlisted := decodeBody[listedToken](t, open)
 
-	if got := viewerOf(t, deps, bearerOf(listed.Token)); len(got.Lists) == 0 || got.Open || !slices.Equal(got.Sees, []string{privateProject}) {
-		t.Fatalf("carol's token listing PRIV sees %+v, want PRIV alone, as a viewer holding a list", got)
+	both := []string{privateProject, publicProject}
+	if got := viewerOf(t, deps, bearerOf(listed.Token)); !slices.Equal(got.Lists, []string{privateProject}) || !got.Open || !slices.Equal(got.Sees, both) {
+		t.Fatalf("carol's token listing PRIV sees %+v, want PRIV and PUB, as an open viewer whose list is PRIV", got)
 	}
 	if got := viewerOf(t, deps, bearerOf(unlisted.Token)); len(got.Lists) > 0 || !got.Open || !slices.Equal(got.Sees, []string{publicProject}) {
 		t.Fatalf("carol's token listing nothing sees %+v, want the public projects carol sees, as an open viewer", got)
@@ -192,9 +196,9 @@ func TestAPersonalTokenUsesOnlyItsProjects(t *testing.T) {
 		t.Fatalf("carol's token list shows projects %v for the token listing nothing, want no field", projects)
 	}
 
-	// A credential that lists projects gives a token only a part of its own list: no project
-	// outside it, and not an empty list, which would see every public project.
-	for name, projects := range map[string][]string{"a project outside its list": {publicProject}, "no project at all": {}} {
+	// A credential that lists projects gives a token only what it reaches: no project it does not
+	// see, and not an empty list, which would reach the rows of the whole deployment.
+	for name, projects := range map[string][]string{"a project it does not see": {"NOPE"}, "no project at all": {}} {
 		before := countRows(t, database, `select count(*) from agent_tokens`)
 		wantRefusal(t, agentRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens", mintBody("child", projects), listed.Token),
 			http.StatusBadRequest, "TOKEN_PROJECTS_INPUT", "carol's token listing PRIV", "a mint naming "+name)
@@ -207,18 +211,23 @@ func TestAPersonalTokenUsesOnlyItsProjects(t *testing.T) {
 		t.Fatalf("a mint naming no projects under the PRIV token: status=%d body=%s, want 201 listing PRIV, the minter's own list",
 			inherited.Code, inherited.Body.String())
 	}
+	public := agentRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens", mintBody("public-child", []string{publicProject}), listed.Token)
+	if public.Code != http.StatusCreated || !slices.Equal(decodeBody[listedToken](t, public).Projects, []string{publicProject}) {
+		t.Fatalf("a mint naming PUB under the PRIV token: status=%d body=%s, want 201 listing PUB, which the minter sees",
+			public.Code, public.Body.String())
+	}
 
 	edit := func(token string, body map[string]any) *httptest.ResponseRecorder {
 		return agentRequest(t, handler, http.MethodPatch, "/api/v1/me/agent-tokens/"+unlisted.ID, body, token)
 	}
-	wantRefusal(t, edit(listed.Token, map[string]any{"scopes": model.Scopes, "projects": []string{publicProject}}),
-		http.StatusBadRequest, "TOKEN_PROJECTS_INPUT", "carol's token listing PRIV", "an edit naming PUB")
+	wantRefusal(t, edit(listed.Token, map[string]any{"scopes": model.Scopes, "projects": []string{"NOPE"}}),
+		http.StatusBadRequest, "TOKEN_PROJECTS_INPUT", "carol's token listing PRIV", "an edit naming NOPE")
 	edited := edit(listed.Token, map[string]any{"scopes": model.Scopes, "projects": []string{privateProject}})
 	if edited.Code != http.StatusOK || !slices.Equal(decodeBody[listedToken](t, edited).Projects, []string{privateProject}) {
 		t.Fatalf("an edit naming PRIV under the PRIV token: status=%d body=%s, want 200 listing PRIV", edited.Code, edited.Body.String())
 	}
-	if got := viewerOf(t, deps, bearerOf(unlisted.Token)); len(got.Lists) == 0 || !slices.Equal(got.Sees, []string{privateProject}) {
-		t.Fatalf("the edited token sees %+v, want PRIV alone", got)
+	if got := viewerOf(t, deps, bearerOf(unlisted.Token)); !slices.Equal(got.Lists, []string{privateProject}) || !slices.Equal(got.Sees, both) {
+		t.Fatalf("the edited token sees %+v, want PRIV and PUB, its list PRIV", got)
 	}
 	// An edit that names no projects leaves the token's list as it stands.
 	kept := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/me/agent-tokens/"+unlisted.ID,
@@ -277,20 +286,22 @@ func TestATokenCannotListAProjectItsPersonCannotSee(t *testing.T) {
 }
 
 // TestATokenListedBeforeItsPersonLostTheProjectSeesNothingOfIt: alice's token listing PRIV, minted
-// while PRIV was public, keeps its list when PRIV becomes private, and from then on sees nothing:
-// the rule reads its list against what alice sees on every request. It passes nothing of PRIV on,
-// and alice's own token list no longer names PRIV to her, a key she no longer sees.
+// while PRIV was public, keeps its list when PRIV becomes private, and from then on sees nothing of
+// PRIV: the rule reads its list against what alice sees on every request. While PRIV is public it
+// sees PRIV and PUB, as alice does, since a full member's list decides only private projects; once
+// PRIV is private it sees PUB alone, an open viewer whose list is PRIV. It passes nothing of PRIV
+// on, and alice's own token list no longer names PRIV to her, a key she no longer sees.
 func TestATokenListedBeforeItsPersonLostTheProjectSeesNothingOfIt(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
 	token := mintListed(t, handler, "alice", "priv", []string{privateProject})
-	if got := viewerOf(t, deps, bearerOf(token.Token)); !slices.Equal(got.Sees, []string{privateProject}) {
-		t.Fatalf("alice's PRIV token sees %+v while PRIV is public, want PRIV", got)
+	if got := viewerOf(t, deps, bearerOf(token.Token)); !slices.Equal(got.Sees, []string{privateProject, publicProject}) {
+		t.Fatalf("alice's PRIV token sees %+v while PRIV is public, want PRIV and PUB", got)
 	}
 
 	makePrivate(t, database, privateProject)
-	if got := viewerOf(t, deps, bearerOf(token.Token)); len(got.Lists) == 0 || got.Open || len(got.Sees) != 0 {
-		t.Fatalf("alice's PRIV token sees %+v once PRIV is private, want nothing, as a viewer holding a list", got)
+	if got := viewerOf(t, deps, bearerOf(token.Token)); !slices.Equal(got.Lists, []string{privateProject}) || !got.Open || !slices.Equal(got.Sees, []string{publicProject}) {
+		t.Fatalf("alice's PRIV token sees %+v once PRIV is private, want PUB alone, as an open viewer whose list is PRIV", got)
 	}
 	var stored []string
 	if err := database.Pool.QueryRow(context.Background(), `select projects from agent_tokens where id = $1`, token.ID).Scan(&stored); err != nil {
@@ -309,8 +320,9 @@ func TestATokenListedBeforeItsPersonLostTheProjectSeesNothingOfIt(t *testing.T) 
 }
 
 // TestANamedTokenUsesTheProjectItNames: a broker token an operator's entry named, whose person is
-// carol and whose project is PUB, reads PUB and not PRIV, writes a comment on a PUB issue, gets 404
-// on PRIV's issue for a read and a write, and is refused 403 OAUTH_SCOPE_REQUIRED on GET
+// carol and whose project is PUB, reads PUB and not PRIV, writes a comment on a PUB issue, answers
+// PRIV's issue as an issue nobody holds for a read and a write (its write is held to PUB, so both
+// are 403 PROJECT_SCOPE naming no project), and is refused 403 OAUTH_SCOPE_REQUIRED on GET
 // /api/v1/inbox: a named token holds no OAuth scope (namedTokenReads).
 func TestANamedTokenUsesTheProjectItNames(t *testing.T) {
 	namedTokenReads(t, []string{publicProject})
@@ -329,7 +341,8 @@ func TestANamedTokenNamingNoProjectReadsPublicProjectsOnly(t *testing.T) {
 }
 
 // namedTokenReads holds carol's named broker token, naming projects (one project, or none), to
-// what a named token reads and writes once PRIV is private.
+// what a named token reads and writes once PRIV is private. It is an open viewer either way: a full
+// member's list decides only which private projects it reads.
 func namedTokenReads(t *testing.T, projects []string) {
 	t.Helper()
 	listed := len(projects) > 0
@@ -357,8 +370,8 @@ func namedTokenReads(t *testing.T, projects []string) {
 	})
 	t.Run("sees the public projects only", func(t *testing.T) {
 		got := viewerOf(t, rig.deps, caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
-		if !slices.Equal(got.Sees, []string{publicProject}) || (len(got.Lists) > 0) != listed || got.Open == listed {
-			t.Fatalf("%s sees %+v, want PUB alone, listed %v", name, got, listed)
+		if !slices.Equal(got.Sees, []string{publicProject}) || (len(got.Lists) > 0) != listed || !got.Open {
+			t.Fatalf("%s sees %+v, want PUB alone as an open viewer, listed %v", name, got, listed)
 		}
 	})
 	t.Run("reads PUB's issue", func(t *testing.T) {
@@ -377,9 +390,10 @@ func namedTokenReads(t *testing.T, projects []string) {
 		}
 	})
 	t.Run("writes on PRIV's issue as missing", func(t *testing.T) {
-		if wrote := serve(http.MethodPost, "/api/v1/issues/"+priv+"/comments", map[string]any{"body": "Never lands."}); wrote.Code != http.StatusNotFound {
-			t.Fatalf("POST /api/v1/issues/%s/comments under %s = %d %s, want 404: %s is private", priv, name, wrote.Code, wrote.Body.String(), privateProject)
-		}
+		const nobody = "NOPE-404"
+		requireAnsweredAsMissing(t, "POST /api/v1/issues/"+priv+"/comments under "+name,
+			serve(http.MethodPost, "/api/v1/issues/"+priv+"/comments", map[string]any{"body": "Never lands."}),
+			serve(http.MethodPost, "/api/v1/issues/"+nobody+"/comments", map[string]any{"body": "Never lands."}), priv, nobody)
 	})
 }
 
@@ -387,8 +401,9 @@ func namedTokenReads(t *testing.T, projects []string) {
 // /api/v1/me/agent-tokens and in the PATCH answer, holds only the projects the reading credential
 // sees, so a credential that sees only public projects learns no private project's key from a
 // sibling token (R3). Carol's browser, whose person sees PRIV, still reads every list whole, and
-// what a token lists is unchanged by who reads it. With no private project, a token reads the list
-// byte for byte as the browser does (R9).
+// so does carol's token listing PRIV, which sees PRIV and PUB, the public project its list does not
+// name included; what a token lists is unchanged by who reads it. With no private project, a token
+// reads the list byte for byte as the browser does (R9).
 func TestATokenListShowsOnlyTheProjectsItsReaderSees(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
@@ -421,7 +436,7 @@ func TestATokenListShowsOnlyTheProjectsItsReaderSees(t *testing.T) {
 	}{
 		{"carol's browser", asCarol, []string{privateProject}, []string{privateProject, publicProject}},
 		{"carol's token listing nothing", func() *httptest.ResponseRecorder { return asToken(open.Token) }, nil, []string{publicProject}},
-		{"carol's token listing PRIV", func() *httptest.ResponseRecorder { return asToken(first.Token) }, []string{privateProject}, []string{privateProject}},
+		{"carol's token listing PRIV", func() *httptest.ResponseRecorder { return asToken(first.Token) }, []string{privateProject}, []string{privateProject, publicProject}},
 	} {
 		t.Run(read.name+" reads only the projects it sees", func(t *testing.T) {
 			answer := read.answer()

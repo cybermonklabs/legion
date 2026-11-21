@@ -496,14 +496,14 @@ func TestABroadcastLeavesOutASessionItsSenderMayNotSeeAsOneNobodyHolds(t *testin
 	send("s-nobody")
 }
 
-// A viewer that is not open - a restricted member, or a credential that lists projects - reads its
-// own direct messages alone (R4), so a broadcast is one to it only when its person sent it. bob, a
-// restricted member PRIV's list names, sees session-priv, which has acted in PRIV, and is no party
-// to carol's broadcast to it: the read GET /api/v1/broadcasts/{id} and a repeat of the send make
-// (readBroadcast) finds no broadcast for him, as for an id nobody holds. carol's token that lists
-// PRIV, not open either, reads it as its person's, and so does carol. Both GET routes refuse a
-// viewer that is not open before they read anything (deploymentReadRefusal), so the rule is read
-// here, beneath that gate.
+// A viewer that is not open - a restricted member, and his token - reads its own direct messages
+// alone (R4), so a broadcast is one to it only when its person sent it. bob, a restricted member
+// PRIV's list names, and bob's token that lists PRIV see session-priv, which has acted in PRIV, and
+// are no party to carol's broadcast to it: the read GET /api/v1/broadcasts/{id} and a repeat of the
+// send make (readBroadcast) finds no broadcast for either, as for an id nobody holds. carol reads
+// it, and so does carol's token that lists PRIV, a full member's credential and so open. Both GET
+// routes refuse a viewer that is not open before they read anything (deploymentReadRefusal), so the
+// rule is read here, beneath that gate.
 func TestABroadcastIsReadByAViewerThatIsNotOpenOnlyAsItsAuthors(t *testing.T) {
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
@@ -520,6 +520,7 @@ func TestABroadcastIsReadByAViewerThatIsNotOpenOnlyAsItsAuthors(t *testing.T) {
 		reads  bool
 	}{
 		{callerBob, false},
+		{callerBobPrivToken, false},
 		{callerCarol, true},
 		{callerCarolPrivToken, true},
 	} {
@@ -547,9 +548,8 @@ func TestABroadcastIsReadByAViewerThatIsNotOpenOnlyAsItsAuthors(t *testing.T) {
 // person's broadcast only where it may see every recipient. carol's token that lists no project sees
 // the public projects alone and not session-priv, which has acted in PRIV: GET /api/v1/broadcasts
 // leaves carol's broadcast to session-priv out, and GET /api/v1/broadcasts/{id} answers it in the
-// bytes an id nobody holds gets. carol, at her browser, sees PRIV and reads it on both routes. Her
-// token that lists PRIV is refused both routes whole (deploymentReadRefusal), and reads it beneath
-// that gate (readBroadcast), since it sees session-priv.
+// bytes an id nobody holds gets. carol, at her browser, sees PRIV and reads it on both routes, and
+// so does her token that lists PRIV, an open viewer that sees PRIV and session-priv with it.
 func TestACredentialReadsItsPersonsBroadcastOnlyWhereItSeesEveryRecipient(t *testing.T) {
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
@@ -592,6 +592,10 @@ func TestACredentialReadsItsPersonsBroadcastOnlyWhereItSeesEveryRecipient(t *tes
 		t.Errorf("carol: GET /api/v1/broadcasts leaves out her broadcast to %s", sessionOfPrivate)
 	}
 	seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/broadcasts/"+id, nil, http.StatusOK)
+	if !listed(callerCarolPrivToken) {
+		t.Errorf("%s: GET /api/v1/broadcasts leaves out carol's broadcast to %s, which it sees", callerCarolPrivToken, sessionOfPrivate)
+	}
+	seed.mustRequest(t, callerCarolPrivToken, http.MethodGet, "/api/v1/broadcasts/"+id, nil, http.StatusOK)
 	if read, err := seed.server.readBroadcast(t.Context(), reader(callerCarolPrivToken), id, false); err != nil || read.ID != id {
 		t.Errorf("%s reads carol's broadcast to %s as %+v, %v; want it", callerCarolPrivToken, sessionOfPrivate, read, err)
 	}

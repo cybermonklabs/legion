@@ -31,8 +31,9 @@ func TestReaderOfAnswersEachCallersViewer(t *testing.T) {
 		{callerAlice, model.Viewer{Person: seedAlice, Open: true, Sees: []string{seedPublic}, AnyPrivate: true}},
 		{callerBob, model.Viewer{Person: seedBob, Restricted: true, Sees: []string{seedPrivate}, AnyPrivate: true}},
 		{callerCarol, model.Viewer{Person: seedCarol, Open: true, Sees: []string{seedPrivate, seedPublic}, AnyPrivate: true}},
-		{callerCarolPrivToken, model.Viewer{Person: seedCarol, Lists: []string{seedPrivate}, Sees: []string{seedPrivate}, AnyPrivate: true}},
-		{callerAlicePrivToken, model.Viewer{Person: seedAlice, Lists: []string{seedPrivate}, Sees: []string{}, AnyPrivate: true}},
+		{callerCarolPrivToken, model.Viewer{Person: seedCarol, Open: true, Lists: []string{seedPrivate}, Sees: []string{seedPrivate, seedPublic}, AnyPrivate: true}},
+		{callerAlicePrivToken, model.Viewer{Person: seedAlice, Open: true, Lists: []string{seedPrivate}, Sees: []string{seedPublic}, AnyPrivate: true}},
+		{callerBobPrivToken, model.Viewer{Person: seedBob, Restricted: true, Lists: []string{seedPrivate}, Sees: []string{seedPrivate}, AnyPrivate: true}},
 		{callerCarolToken, model.Viewer{Person: seedCarol, Open: true, Sees: []string{seedPublic}, AnyPrivate: true}},
 		{callerSharedToken, model.Viewer{Open: true, Sees: []string{seedPublic}, AnyPrivate: true}},
 	} {

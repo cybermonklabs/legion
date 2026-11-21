@@ -589,12 +589,11 @@ func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
 }
 
 // A credential scoped to one project writes the records of that project's issues and no other's,
-// though it proves the session of that project's daemon. While no project is private a write to
-// another project's issue is refused 403 PROJECT_SCOPE naming both projects, as before projects
-// could be private (R9). Once a project is private, an issue of a project the credential does not
-// list is one it cannot see, so its write is answered as a write of a key no issue holds (404
-// ISSUE_NOT_FOUND), naming its own daemon's session or the other project's: the second is refused
-// for its body first (403 ACTOR_SESSION_MISMATCH), as it is for a key no issue holds.
+// though it proves the session of that project's daemon. A write to another project's issue it sees
+// is refused 403 PROJECT_SCOPE naming both projects, as before projects could be private (R9),
+// whatever the deployment holds: a full member's token scoped to one project keeps that write scope.
+// Once a project is private, an issue of a project its person does not see is refused exactly as a
+// key no issue holds: 403 PROJECT_SCOPE naming no project, whichever daemon's session the body names.
 func TestAProjectCredentialWritesOnlyItsProject(t *testing.T) {
 	for _, private := range []bool{false, true} {
 		t.Run(map[bool]string{false: "while no project is private", true: "once a project is private"}[private], func(t *testing.T) {
@@ -618,20 +617,18 @@ func TestAProjectCredentialWritesOnlyItsProject(t *testing.T) {
 			}
 			own, other := issueOf(brokerTestProject), issueOf("OTH")
 
-			if !private {
-				refused := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+other+"/steps/"+uuid.NewString(), token,
-					implementerStart(daemonSessionOf("OTH"))))
-				expectRefusal(t, "a write to "+other, refused, http.StatusForbidden, codeProjectScope, brokerTestProject, "OTH")
-			} else {
-				issueOf("HIDE")
-				makePrivate(t, rig.database, "HIDE")
-				for _, missing := range []string{other, "OTH-999"} {
-					refused := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+missing+"/steps/"+uuid.NewString(), token,
-						implementerStart(daemonSessionOf(brokerTestProject))))
-					expectRefusal(t, "a write to "+missing+" as its own daemon", refused, http.StatusNotFound, "ISSUE_NOT_FOUND", missing)
-					mismatched := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+missing+"/steps/"+uuid.NewString(), token,
-						implementerStart(daemonSessionOf("OTH"))))
-					expectRefusal(t, "a write to "+missing+" as OTH's daemon", mismatched, http.StatusForbidden, "ACTOR_SESSION_MISMATCH")
+			refused := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+other+"/steps/"+uuid.NewString(), token,
+				implementerStart(daemonSessionOf("OTH"))))
+			expectRefusal(t, "a write to "+other, refused, http.StatusForbidden, codeProjectScope, brokerTestProject, "OTH")
+			if private {
+				hidden := issueOf("HIDE")
+				hideFromBrokerPerson(t, rig, "HIDE")
+				for _, session := range []string{brokerTestProject, "HIDE"} {
+					written := func(key string) *httptest.ResponseRecorder {
+						return rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+key+"/steps/"+uuid.NewString(), token,
+							implementerStart(daemonSessionOf(session))))
+					}
+					requireAnsweredAsMissing(t, "a write to "+hidden+" as "+session+"'s daemon", written(hidden), written("HIDE-999"), hidden, "HIDE-999")
 				}
 			}
 			answered := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+own+"/steps/"+uuid.NewString(), token,

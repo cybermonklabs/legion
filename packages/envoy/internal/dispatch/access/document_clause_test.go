@@ -11,10 +11,12 @@ import (
 // document's own row, answers every seeded viewer exactly as ItemOwnerClause does over the same
 // document by its issue and its id - an issue's spec in PRIV, a document of PUB, and a file of an
 // agent's conversation whose session acted in PRIV - since a document's project_key is its issue's
-// project, written with the row and never changed after. And it answers the rule: bob and carol's
-// token read PRIV's spec, alice does not; alice reads PUB's document, bob does not; the
-// conversation's file is read by none of them, its session's own conversation, and by the server,
-// which reads every one.
+// project, written with the row and never changed after. And it answers the rule: bob, bob's
+// token and carol's token read PRIV's spec, alice does not; alice and carol's token, a full
+// member's, whose list decides only which private projects it reads, read PUB's document, bob and
+// his token do not; the conversation's file, whose session acted in PRIV, is read by carol's
+// token, an open viewer that sees PRIV, and by none of the others, its session's own conversation,
+// and by the server, which reads every one.
 func TestDocumentClauseAnswersAsItemOwnerClauseOverEveryDocument(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
@@ -34,6 +36,7 @@ func TestDocumentClauseAnswersAsItemOwnerClauseOverEveryDocument(t *testing.T) {
 	}
 	callers := map[string]model.Actor{
 		"alice": cookie(alice), "bob": cookie(bob), "carol's token naming PRIV": personalToken(carol, "PRIV"),
+		"bob's token naming PRIV": personalToken(bob, "PRIV"),
 	}
 	viewers := map[string]model.Viewer{"the server": *model.ServerViewer}
 	for name, actor := range callers {
@@ -44,9 +47,9 @@ func TestDocumentClauseAnswersAsItemOwnerClauseOverEveryDocument(t *testing.T) {
 		viewers[name] = viewer
 	}
 	want := map[string]map[string]bool{
-		"spec":  {"alice": false, "bob": true, "carol's token naming PRIV": true, "the server": true},
-		"notes": {"alice": true, "bob": false, "carol's token naming PRIV": false, "the server": true},
-		"plan":  {"alice": false, "bob": false, "carol's token naming PRIV": false, "the server": true},
+		"spec":  {"alice": false, "bob": true, "carol's token naming PRIV": true, "bob's token naming PRIV": true, "the server": true},
+		"notes": {"alice": true, "bob": false, "carol's token naming PRIV": true, "bob's token naming PRIV": false, "the server": true},
+		"plan":  {"alice": false, "bob": false, "carol's token naming PRIV": true, "bob's token naming PRIV": false, "the server": true},
 	}
 	compared := 0
 	for name, viewer := range viewers {

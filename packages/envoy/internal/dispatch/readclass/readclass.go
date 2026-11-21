@@ -37,8 +37,8 @@ const (
 	People Class = "people"
 	// Agents reads agent sessions, held to access.SessionClause.
 	Agents Class = "agents"
-	// Deployment reads rows of the whole deployment, which no restricted member and no
-	// credential that lists projects may read.
+	// Deployment reads rows of the whole deployment, which no restricted member, nor a credential
+	// acting for one, may read.
 	Deployment Class = "deployment"
 	// AccessAccount is the membership answer, read only by a service account
 	// DISPATCH_ACCESS_ACCOUNTS names.

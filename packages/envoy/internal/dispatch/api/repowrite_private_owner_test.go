@@ -203,36 +203,46 @@ func TestAnIssueWriteCannotTakeAHiddenPrivateRepository(t *testing.T) {
 	}
 }
 
-// TestAListingCredentialNamesOnlyARepositoryItReads: the gate is the proxy's, and the proxy shows
-// a viewer that is not open only a repository an issue of a project it sees resolves to. So while
-// PRIV is private, carol's token that lists PRIV names in PRIV a repository a PRIV issue resolves
-// to, acme/privdone and acme/both, and is refused 403 REPOSITORY_NOT_AVAILABLE for acme/fresh,
-// which no issue names, and for acme/pubonly, which only a PUB issue names; carol at her browser,
-// an open viewer, names acme/fresh in PRIV.
+// TestAListingCredentialNamesOnlyARepositoryItReads: the gate is the proxy's, and a full member's
+// token is an open viewer whatever it lists, since its list decides only which private projects it
+// reads (access.CredentialCovers). So while PRIV is private, carol's token that lists PRIV names in
+// PRIV every repository the proxy shows it: acme/privdone and acme/both, which PRIV issues resolve
+// to, acme/fresh, which no issue names, and acme/pubonly, which only a PUB issue names; and names
+// acme/pub in PUB, a public project its list does not name. alice's token that lists PRIV, which
+// alice does not see, reads PUB alone, and is refused 403 REPOSITORY_NOT_AVAILABLE in PUB for
+// acme/priv and acme/privdone, which only PRIV owns, with nothing written. bob's token that lists
+// PRIV, a restricted member's, names no issue's repository at all (403 RESTRICTED_MEMBER), as bob
+// does not.
 func TestAListingCredentialNamesOnlyARepositoryItReads(t *testing.T) {
 	seed := seedRepoWrite(t, testServerOptions{})
 	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": seedPublic, "title": "Works in a repository of PUB alone", "repo": "acme/pubonly", "force": true}, http.StatusCreated)
+	const restrictedRefusal = `{"code":"RESTRICTED_MEMBER","error":"a restricted member cannot set or clear an issue's repo; only a full member names an issue's own repository"}`
 	for _, write := range []struct {
-		caller     privateCaller
-		repository string
-		status     int
+		caller              privateCaller
+		project, repository string
+		status              int
+		refusal             string
 	}{
-		{callerCarolPrivToken, "acme/privdone", http.StatusCreated},
-		{callerCarolPrivToken, "acme/both", http.StatusCreated},
-		{callerCarolPrivToken, "acme/fresh", http.StatusForbidden},
-		{callerCarolPrivToken, "acme/pubonly", http.StatusForbidden},
-		{callerCarol, "acme/fresh", http.StatusCreated},
+		{callerCarolPrivToken, seedPrivate, "acme/privdone", http.StatusCreated, ""},
+		{callerCarolPrivToken, seedPrivate, "acme/both", http.StatusCreated, ""},
+		{callerCarolPrivToken, seedPrivate, "acme/fresh", http.StatusCreated, ""},
+		{callerCarolPrivToken, seedPrivate, "acme/pubonly", http.StatusCreated, ""},
+		{callerCarolPrivToken, seedPublic, "acme/pub", http.StatusCreated, ""},
+		{callerAlicePrivToken, seedPublic, "acme/priv", http.StatusForbidden, repositoryNotAvailableRefusal},
+		{callerAlicePrivToken, seedPublic, "acme/privdone", http.StatusForbidden, repositoryNotAvailableRefusal},
+		{callerBobPrivToken, seedPrivate, "acme/privdone", http.StatusForbidden, restrictedRefusal},
+		{callerCarol, seedPrivate, "acme/fresh", http.StatusCreated, ""},
 	} {
 		before := repoWriteSnapshot(t, seed.database)
 		response := seed.sendAs(t, write.caller, http.MethodPost, "/api/v1/issues",
-			map[string]any{"project": seedPrivate, "title": "Works in " + write.repository, "repo": write.repository, "force": true})
+			map[string]any{"project": write.project, "title": "Works in " + write.repository, "repo": write.repository, "force": true})
 		got := strings.TrimSpace(response.Body.String())
 		switch {
 		case response.Code != write.status:
-			t.Errorf("%s creates a PRIV issue naming %s = %d %s, want %d", write.caller, write.repository, response.Code, got, write.status)
-		case write.status == http.StatusForbidden && got != repositoryNotAvailableRefusal:
-			t.Errorf("%s creates a PRIV issue naming %s = %s, want %s", write.caller, write.repository, got, repositoryNotAvailableRefusal)
+			t.Errorf("%s creates a %s issue naming %s = %d %s, want %d", write.caller, write.project, write.repository, response.Code, got, write.status)
+		case write.status == http.StatusForbidden && got != write.refusal:
+			t.Errorf("%s creates a %s issue naming %s = %s, want %s", write.caller, write.project, write.repository, got, write.refusal)
 		case write.status == http.StatusForbidden && repoWriteSnapshot(t, seed.database) != before:
 			t.Errorf("%s's refused create naming %s wrote", write.caller, write.repository)
 		}
@@ -274,12 +284,11 @@ func TestARepositoryWriteAtAHiddenObjectAnswersAsAtAMissingOne(t *testing.T) {
 
 // TestRepositoryWritesAnswerAsBeforeWithNoPrivateProject (R9): once PRIV is public again, the
 // deployment holds no private project, and alice's create and patch naming acme/priv, her PUT that
-// maps it as PUB's default, and her token that lists PRIV, which is not open, creating and
-// patching PRIV's issues with a repository, acme/fresh among them, which no issue names, are each
-// taken and make no statement of the repository check (no statement names
-// access.HiddenPrivateProjectClause). The proxy's clause would hide acme/fresh from that token, so
-// the check reads nothing here rather than ask it. Each answer is logged masked (maskedAnswer), so
-// two builds' runs compare byte for byte.
+// maps it as PUB's default, and her token that lists PRIV creating and patching PRIV's issues with a
+// repository, acme/fresh among them, which no issue names, are each taken and make no statement of
+// the repository check (no statement names access.HiddenPrivateProjectClause): with no private
+// project the check reads nothing. Each answer is logged masked (maskedAnswer), so two builds' runs
+// compare byte for byte.
 func TestRepositoryWritesAnswerAsBeforeWithNoPrivateProject(t *testing.T) {
 	recorder := &statementRecorder{}
 	seed := seedRepoWrite(t, testServerOptions{tracer: recorder})

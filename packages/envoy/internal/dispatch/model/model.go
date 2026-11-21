@@ -75,9 +75,9 @@ type Credential struct {
 	// Projects are the projects the credential may use, sorted: a personal token's
 	// agent_tokens.projects (personalTokenActor), or a broker token's list (brokerTokenActor:
 	// the one project of a token an operator's entry mapped to it, or the list a token acting as
-	// its person traded for). Empty is a credential that names none, which sees only the public
-	// projects its person sees (internal/dispatch/access, the rule); what a list holds while no
-	// project is private is ListHoldsWhileNoPrivate's.
+	// its person traded for). Empty is a credential that names none. What a list decides is
+	// access.CredentialCovers': for a full member's credential, and one that names no person, only
+	// which private projects it reaches; for a restricted member's, every project it reaches.
 	Projects []string
 	// BrokerAdmittedSubject is, for such a token, the Google account (`sub`) the token's own
 	// credential records at the broker (the introspection's account_subject: the person token that
@@ -111,31 +111,13 @@ type Credential struct {
 	// requirement; it narrows what this credential may call rather than widening it. False for
 	// every other credential.
 	ReadOnly bool
-	// ListHoldsWhileNoPrivate is what Projects holds this credential to while the deployment
-	// holds no private project and its person is a full member (or it names none), which is what
-	// decides whether a list that existed before projects could be private changes what its
-	// credential reads (R9): once a project is private, and for a restricted member whatever the
-	// deployment holds, every list holds reads and writes alike (R3). Its zero value holds both,
-	// which is every credential that names no other. access.Resolve and api's writesHeldTo read it;
-	// brokerTokenActor sets it. A fact of the request, never written to a row or an answer.
-	ListHoldsWhileNoPrivate ListHold `json:"-"`
+	// NamedProject is the one project a broker token an operator's entry mapped to one project
+	// may write (brokertoken.ProjectScopeNamed), set by brokerTokenActor beside Projects, and
+	// empty for every other credential. It is the write scope such a token had before projects
+	// could be private, which holds whatever the deployment holds: api's namedProjectOf reads it.
+	// A fact of the request, never written to a row or an answer.
+	NamedProject string `json:"-"`
 }
-
-// ListHold is what a credential's list of projects (Credential.Projects) holds it to while the
-// deployment holds no private project and its person is not a restricted member.
-type ListHold uint8
-
-const (
-	// ListHoldsAll holds reads and writes to the list: a personal token's list, which is new with
-	// private projects.
-	ListHoldsAll ListHold = iota
-	// ListHoldsWrites holds writes to the list and no read: a broker token an operator's entry
-	// mapped to its one project, which before projects could be private limited its writes alone.
-	ListHoldsWrites
-	// ListHoldsNothing holds neither: a broker token acting as its person, whose trade's list
-	// limited nothing before projects could be private.
-	ListHoldsNothing
-)
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
 // caller that resolved to no credential at all is refused by the same test.
@@ -232,12 +214,16 @@ const (
 )
 
 // Viewer is what one caller may see, resolved once a request (access.Resolve). Sees is every
-// project it sees, sorted. Open is a viewer that is neither restricted nor holds a list of
-// projects: it reads every row that belongs to no project, as every caller did before projects
-// could be private. All is ServerViewer alone. AnyPrivate is whether the deployment holds a
-// private project at all. Lists is the credential's own list of projects (Credential.Projects),
-// nil when it lists none: which projects it would see were its person to see them, which tells a
-// read whether the credential read a project before a change took it away (api: eventGapSQL).
+// project it sees, sorted. Open is a viewer that is not a restricted member: it reads every row
+// that belongs to no project, as every caller did before projects could be private, whatever its
+// credential lists, since a list decides only which private projects a full member's credential
+// sees. All is ServerViewer alone. AnyPrivate is whether the deployment holds a private project at
+// all. Lists is the credential's own list of projects (Credential.Projects) as its caller is told
+// it - every credential's but a broker token's, whose list is answered only while some project is
+// private or its person is a restricted member, as before projects could be private - and nil
+// otherwise: which projects it would see were its person to see them, which tells a read whether
+// the credential read a project before a change took it away (api: eventGapSQL), and which whoami
+// answers as projects.
 type Viewer struct {
 	Person, Session string
 	Restricted      bool

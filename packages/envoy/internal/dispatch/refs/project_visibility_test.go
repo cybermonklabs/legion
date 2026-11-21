@@ -98,11 +98,14 @@ type seededCaller struct {
 	server bool
 }
 
-// seededCallers is every caller of verification v16, the closed viewer a read with no viewer
-// reads as, and the server's own viewer (model.ServerViewer). Each caller carries the credential
-// optionalActor resolves for it, a browser's included, since access.Resolve reads the credential.
+// seededCallers is every caller of verification v16, bob's token that lists PRIV, the closed
+// viewer a read with no viewer reads as, and the server's own viewer (model.ServerViewer). Each
+// caller carries the credential optionalActor resolves for it, a browser's included, since
+// access.Resolve reads the credential. A full member's token that lists PRIV sees every public
+// project its person sees and PRIV where its person sees PRIV (access.CredentialCovers); bob's,
+// a restricted member's, sees PRIV alone.
 func seededCallers() []seededCaller {
-	alice, carol := seededAlice, seededCarol
+	alice, bob, carol := seededAlice, seededBob, seededCarol
 	cookie := &model.Credential{Scopes: model.Scopes}
 	return []seededCaller{
 		{name: "alice", actor: model.Actor{Kind: "user", ID: seededAlice, Credential: cookie}},
@@ -112,6 +115,8 @@ func seededCallers() []seededCaller {
 			Credential: &model.Credential{TokenID: "carol-priv", Projects: []string{seededPrivate}}}},
 		{name: "alice's token that lists PRIV", actor: model.Actor{Kind: "session", Owner: &alice,
 			Credential: &model.Credential{TokenID: "alice-priv", Projects: []string{seededPrivate}}}},
+		{name: "bob's token that lists PRIV", actor: model.Actor{Kind: "session", Owner: &bob,
+			Credential: &model.Credential{TokenID: "bob-priv", Projects: []string{seededPrivate}}}},
 		{name: "carol's token that lists no project", actor: model.Actor{Kind: "session", Owner: &carol,
 			Credential: &model.Credential{TokenID: "carol-none"}}},
 		{name: "the shared token", actor: model.Actor{Credential: &model.Credential{}}},
@@ -240,11 +245,12 @@ func TestTheProjectClauseHidesAPrivateNode(t *testing.T) {
 
 	// Who sees what, by the caller names seededCallers gives. The server sees every node.
 	var (
-		seesPrivate = []string{"bob", "carol", "carol's token that lists PRIV"}
-		seesPublic  = []string{"alice", "carol", "carol's token that lists no project", "the shared token"}
-		open        = seesPublic
-		everyone    = []string{"alice", "bob", "carol", "carol's token that lists PRIV", "alice's token that lists PRIV",
-			"carol's token that lists no project", "the shared token", "the closed viewer"}
+		seesPrivate = []string{"bob", "carol", "carol's token that lists PRIV", "bob's token that lists PRIV"}
+		seesPublic  = []string{"alice", "carol", "carol's token that lists PRIV", "alice's token that lists PRIV",
+			"carol's token that lists no project", "the shared token"}
+		open     = seesPublic
+		everyone = []string{"alice", "bob", "carol", "carol's token that lists PRIV", "alice's token that lists PRIV",
+			"bob's token that lists PRIV", "carol's token that lists no project", "the shared token", "the closed viewer"}
 	)
 	scoped := []scopedNode{
 		{kind: "issue", id: "PRIV-1", held: true, sees: seesPrivate},
@@ -269,16 +275,16 @@ func TestTheProjectClauseHidesAPrivateNode(t *testing.T) {
 		{kind: "component", id: "PUB/storage", sees: seesPublic},
 		// A conversation of no project: an open viewer, which sees every session party, and a
 		// party or a credential of a person party only when it sees each session party too
-		// (access.PartyClause): carol's token that lists PRIV does not see ses_pub, of PUB.
+		// (access.PartyClause): bob's token that lists PRIV does not see ses_pub, of PUB.
 		{kind: "message", id: conversation, held: true, sees: open},
 		// Nothing wrote these: a node of a project kind the store holds no row of is visible
 		// only to an open viewer while no project is private.
 		{kind: "issue", id: "PRIV-404"},
 		{kind: "ask_block", id: "ask/" + uuid.NewString() + "#b1"},
-		// A person: an open viewer, the person themself, and a viewer that sees a project the
-		// person sees.
-		{kind: graphstore.KindPerson, id: seededBob, held: true, sees: append(slices.Clone(open), "bob", "carol's token that lists PRIV")},
-		{kind: graphstore.KindPerson, id: seededAlice, held: true, sees: append(slices.Clone(open), "alice's token that lists PRIV")},
+		// A person: an open viewer, the person themself and their own token, and a viewer that
+		// sees a project the person sees.
+		{kind: graphstore.KindPerson, id: seededBob, held: true, sees: append(slices.Clone(open), "bob", "bob's token that lists PRIV")},
+		{kind: graphstore.KindPerson, id: seededAlice, held: true, sees: open},
 		// A session and its page: a viewer that sees a project the session acted in, and an open
 		// viewer unless the session acted in a project it does not see (access.SessionClause), so
 		// a session of PRIV reaches only those that see PRIV. A role the session holds, and its

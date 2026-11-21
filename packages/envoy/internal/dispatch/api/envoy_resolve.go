@@ -140,8 +140,9 @@ func resolveThenLock[R, T any](
 //
 // A session the request's reader may not see (sessionHiddenFromReader) is "no live session <id>"
 // before the listener is asked, exactly as a session the listener holds no record of, so a
-// restricted member or a credential that lists projects reaches no session outside what it sees
-// and learns nothing of whether one is live. A role whose holder that reader may not see, or a role
+// restricted member or a credential acting for one reaches no session outside what it sees, and an
+// open viewer no session of a private project it does not see, and neither learns whether one is
+// live. A role whose holder that reader may not see, or a role
 // of a private project it does not see by the role's own name (legion-<project>-…,
 // contracts.RoleProject), whoever holds it, is answered as a role no session claims
 // (dispatchenvoy.NoRoleHolder), in the listener's words.

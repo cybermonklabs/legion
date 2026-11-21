@@ -481,14 +481,15 @@ func assertParentLeavesNoDependencyCycle(ctx context.Context, tx pgx.Tx, child, 
 // wait, and the walk below is what refuses a ring, between projects as inside one.
 //
 // Each target is read as who reads it (access.ProjectClause), under the locks: a target of a
-// project who does not see is refused exactly as a key no issue holds. A credential that lists
-// projects sees no project outside its list, so this is also what holds such a caller's targets
-// to its list.
+// project who does not see is refused exactly as a key no issue holds. A private project a
+// credential's list does not cover is one it does not see (access.CredentialCovers), so this is
+// also what holds such a caller's targets to what its list covers.
 //
-// A broker token scoped to one project, which reads open while no project is private, writes a
-// target only of that project then, as before projects could be private: a target of another is
-// refused 403 PROJECT_SCOPE in the words it was refused then (refuseBlockedByOutsideCallerProject).
-// Nothing is private then, so the refusal names no project its caller may not see.
+// A full member's broker token scoped to one project (namedProjectOf) writes a target only of
+// that project, whatever the deployment holds, as before projects could be private: a target of
+// another project it sees is refused 403 PROJECT_SCOPE in the words it was refused then
+// (refuseBlockedByOutsideCallerProject), and one it does not see is the key no issue holds above,
+// so the refusal names no project its caller may not see.
 //
 // The list who writes is the list who reads (the rule of references, references_seen.go): a link
 // to an issue who does not see is no part of it, so the write replaces the links who sees and keeps
@@ -498,7 +499,7 @@ func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue string, who model.Acto
 		return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "%s cannot be blocked by itself", issue)
 	}
 	viewer := refs.VisibilityArg(who)
-	covers, scoped := brokerProjectWhileNoPrivate(ctx, who.Viewer)
+	covers, scoped := namedProjectOf(who.Viewer, resolvedCredential(ctx))
 	for _, target := range targets {
 		var project string
 		err := tx.QueryRow(ctx, `select project_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
@@ -534,8 +535,8 @@ func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue string, who model.Acto
 	return err
 }
 
-// refuseBlockedByOutsideCallerProject is what a broker token scoped to project caller is answered,
-// while no project is private, for a blocked_by target of another project, in the words it was
+// refuseBlockedByOutsideCallerProject is what a full member's broker token scoped to project
+// caller is answered for a blocked_by target of another project it sees, in the words it was
 // answered before projects could be private.
 func refuseBlockedByOutsideCallerProject(caller, target, targetProject string) error {
 	return errorf(http.StatusForbidden, codeProjectScope,

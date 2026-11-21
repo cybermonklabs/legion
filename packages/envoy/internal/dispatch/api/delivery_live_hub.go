@@ -89,8 +89,8 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		reader = resolved
 	}
 	// The view keeps its GET row's rule (liveViewReads): a caller the row refuses, a restricted
-	// member or a credential that lists projects reading a row of the deployment, is refused here
-	// with the row's code, and holds no view.
+	// member or a credential acting for one reading a row of the deployment, is refused here with
+	// the row's code, and holds no view.
 	if refusal := liveReadRefusal(store.WithTransactionTracking(h.lifetime), frame.Sub, spec.kind, frame.Holds,
 		func(context.Context) (model.Actor, error) { return reader, nil }); refusal != nil {
 		conn.Send(*refusal)

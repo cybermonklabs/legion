@@ -122,8 +122,8 @@ var repositoryHiddenFromWriterQuery = `select ` + refs.RepositoryHidden("$1::tex
 // write's transaction, after the write has read its issue or its project as who reads them, so an
 // object who does not see still answers as one nobody holds, and before anything is written. The
 // server's own viewer and every viewer of a deployment with no private project read nothing for
-// it and are refused nothing, as before (R9): there the clause would hide from a credential that
-// lists projects a repository no issue of its projects resolves to yet, which it has always named.
+// it and are refused nothing, as before (R9): there the clause hides nothing from an open viewer,
+// and a restricted member's repo is refused before this (refuseRepoOfRestrictedMember).
 func refuseRepoHidden(ctx context.Context, q queryer, who model.Actor, repo *string) error {
 	if repo == nil || (who.Viewer != nil && (who.Viewer.All || !who.Viewer.AnyPrivate)) {
 		return nil

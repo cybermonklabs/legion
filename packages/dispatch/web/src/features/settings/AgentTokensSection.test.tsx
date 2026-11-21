@@ -217,8 +217,8 @@ function projectsPicker(subject: string): HTMLElement {
   return trigger;
 }
 
-// A token that names no project uses the public projects only, and one that names projects uses
-// those alone: the mint form names none until the reader picks some, sends the ones picked, and
+// A token that names no project uses the public projects only, and a private project needs a token
+// that names it: the mint form names none until the reader picks some, sends the ones picked, and
 // names none again for the next token.
 test("the mint form names no project until the reader picks some, and sends the ones picked", async () => {
   const user = userEvent.setup();
@@ -502,7 +502,7 @@ test("a token listing projects its reader cannot see can drop them in one confir
 
     await user.click(dropHidden("part"));
     expect(asked[2]).toBe(
-      "Drop the projects you cannot see from part? It then uses CORE alone, and a project you cannot see cannot be added back."
+      "Drop the projects you cannot see from part? It then names CORE alone, and a project you cannot see cannot be added back."
     );
     await waitFor(() =>
       expect(updateAgentToken).toHaveBeenLastCalledWith(

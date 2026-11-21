@@ -40,8 +40,8 @@ func (s *server) parseIssueAssignee(ctx context.Context, raw json.RawMessage) (a
 
 // allowedLogin canonicalises login and checks that it names a person who has signed in and whom the
 // request's reader may see (access.PersonClause, with the reader the request's check put in ctx):
-// a person a restricted member or a credential that lists projects may not see is refused exactly
-// as one who has not signed in. Without a reader in ctx - work the server does for itself - it
+// a person a restricted member or a credential acting for one may not see is refused exactly as
+// one who has not signed in. Without a reader in ctx - work the server does for itself - it
 // reads as everyReader, so every person who has signed in is one.
 func (s *server) allowedLogin(ctx context.Context, login string) (string, error) {
 	canonical := model.CanonicalLogin(login)
@@ -120,9 +120,9 @@ type listUsersResponse struct {
 }
 
 // listUsers returns the people who have signed in that the caller may see (access.PersonClause),
-// sorted by email: the assignee picker's options. An open viewer sees every one of them; a
-// restricted member, and a credential that lists projects, sees itself and the people of the
-// projects it sees.
+// sorted by email: the assignee picker's options. An open viewer, a full member's credential
+// whatever it lists among them, sees every one of them; a restricted member, and a credential
+// acting for one, sees itself and the people of the projects it sees.
 func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
@@ -174,17 +174,20 @@ type whoamiAgent struct {
 	// MemberKind is "restricted" when the person the credential acts for is a restricted member,
 	// and absent otherwise.
 	MemberKind string `json:"member_kind,omitempty" enum:"restricted"`
-	// Projects is the list of projects the credential's reads are held to, sorted, and absent when
-	// it lists none or its list holds no read (whoamiProjects), so a credential with no list, and a
-	// broker token while no project is private, answers what it always did.
+	// Projects is the credential's list as Resolve answers it (Viewer.Lists), sorted: a personal
+	// token's in every state, and a broker token's while some project is private or its person is a
+	// restricted member; absent when it lists none (whoamiProjects), so a credential with no list,
+	// and a broker token while no project is private, answers what it always did. A full member's
+	// list decides only which private projects it reads (access.CredentialCovers), and a restricted
+	// member's every project.
 	Projects []string `json:"projects,omitempty"`
 	// PrivateProjects lists, sorted, the keys of Projects the caller must treat as private: a
 	// private project's, one the credential no longer sees whatever its visibility, and one that
 	// names no project; absent when there is none (whoamiPrivateProjects, KF4). A key is public
 	// exactly when it is in Projects and not here.
 	PrivateProjects []string `json:"private_projects,omitempty"`
-	// Project is deprecated: the one key of a one-key list the credential's writes are held to,
-	// and null for any other list, none included.
+	// Project is deprecated: the one key of a one-key list the credential's writes are held to by
+	// name (writesHeldTo), and null for any other list, none included.
 	Project *string  `json:"project"`
 	Scopes  []string `json:"scopes"`
 	Service *string  `json:"service"`
@@ -197,12 +200,12 @@ type whoamiAgent struct {
 // names a service and no person) — the service it is, which is the verified Kubernetes subject
 // of its service-account token or the fleet a broker-issued token naming no person belongs to
 // (null for every other credential), the session its credential proved (null for a credential
-// that proves none, which every one but a broker-issued token is), the projects the credential's
-// reads are held to (absent where there are none) and, deprecated, the one project its writes are
-// held to (null otherwise, a person-scoped token included). A broker token's list holds what it
-// held before projects could be private while none is (model.ListHold): a token scoped to one
-// project answers that project and no projects, and a token acting as its person answers neither,
-// as each always did (R9).
+// that proves none, which every one but a broker-issued token is), the projects it lists (absent
+// where there are none) and, deprecated, the one project its writes are held to by name (null
+// otherwise, a person-scoped token included). A broker token's list is answered only while some
+// project is private or its person is a restricted member (access.Resolve), so while no project is
+// private a full member's broker token scoped to one project answers that project and no projects,
+// and a token acting as its person answers neither, as each always did (R9).
 //
 // Every caller is told the OAuth scopes its credential holds, which is what decides the routes it
 // may call (gateRouteScopes): both for a person at a browser, the set its own row names for a
@@ -232,8 +235,8 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, newWhoamiUser(actor, memberKind, scopes))
 		return
 	}
-	// A credential that lists projects is answered from what it may see now, which the list's
-	// projects and its hold decide; one that lists none resolves nothing, as it never did.
+	// A credential that lists projects is answered from what it may see now, which its list and its
+	// person decide; one that lists none resolves nothing, as it never did.
 	var viewer *model.Viewer
 	if actor.Credential != nil && len(actor.Credential.Projects) > 0 && s.deps.Store != nil && s.deps.Store.Pool != nil {
 		reader, err := s.readerFor(r.Context(), actor)
@@ -259,8 +262,9 @@ func newWhoamiUser(actor model.Actor, memberKind string, scopes []string) whoami
 // newWhoamiAgent is whoami's answer to a credential that is not a person's browser session, viewer
 // being what Resolve answered it may see now (nil where nothing was resolved: a credential that
 // lists none, or a server with no store, which answers the credential's list as it stands). Its
-// projects are those its reads are held to; its project, deprecated, is the one key of a one-key
-// list its writes are held to (writesHeldTo), and null for any other list, none included.
+// projects are its list where that list decides its reads (Viewer.Lists); its project, deprecated,
+// is the one key of a one-key list its writes are held to by name (writesHeldTo), and null for any
+// other list, none included.
 func newWhoamiAgent(actor model.Actor, memberKind string, scopes []string, viewer *model.Viewer) whoamiAgent {
 	var owner *string
 	if actor.Owner != nil {
@@ -272,8 +276,10 @@ func newWhoamiAgent(actor model.Actor, memberKind string, scopes []string, viewe
 	}
 	read, written := whoamiProjects(actor.Credential), whoamiProjects(actor.Credential)
 	if viewer != nil {
+		reader := actor
+		reader.Viewer = viewer
 		read = whoamiProjects(&model.Credential{Projects: viewer.Lists})
-		written = whoamiProjects(&model.Credential{Projects: writesHeldTo(viewer, actor.Credential)})
+		written = whoamiProjects(&model.Credential{Projects: writesHeldTo(reader, actor.Credential)})
 	}
 	var project *string
 	if len(written) == 1 {

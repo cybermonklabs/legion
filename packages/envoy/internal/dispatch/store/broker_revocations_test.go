@@ -542,8 +542,16 @@ func TestSignInSubjectRecordsTheRevocationAtItsCommit(t *testing.T) {
 	}
 }
 
-// The revocation commits with the sign-in that owes it: a sign-in whose own write fails after the
-// revocation was recorded rolls the revocation back with it, and the retry records it.
+// The revocation commits with the sign-in that owes it: a sign-in whose commit fails after the
+// revocation was recorded rolls the revocation back with it, and the retry records it. The failure
+// is a deferred trigger on the people row's new account, which fires as the sign-in commits, after
+// its last statement, the revocation's insert: it raises one message when the transaction holds
+// that revocation, and another when it holds none, so the test passes only over a revocation the
+// transaction recorded and its rollback removed.
+//
+// Control in people.go: the revocation recorded after the commit, on the pool (the trigger finds
+// none in the transaction, and the sign-in fails with the other message). The earlier form of this
+// test, whose trigger refused the people update before the revocation was written, passed under it.
 func TestSignInSubjectRecordsNoBrokerRevocationWhenItRollsBack(t *testing.T) {
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
@@ -551,18 +559,25 @@ func TestSignInSubjectRecordsNoBrokerRevocationWhenItRollsBack(t *testing.T) {
 	const email = "a.person@example.com"
 	signInAll(t, people, email, "subject-1")
 	if _, err := database.Pool.Exec(ctx, `
-		create function refuse_the_new_subject() returns trigger language plpgsql as $$ begin raise exception 'the test refuses the new subject'; end $$;
-		create trigger refuse_the_new_subject before update on people for each row when (new.sub = 'subject-2') execute function refuse_the_new_subject();
+		create function refuse_the_commit() returns trigger language plpgsql as $$
+		begin
+			if exists (select 1 from broker_revocations where email = new.email and subject = 'subject-1' and done_at is null) then
+				raise exception 'the test refuses the commit of a sign-in that recorded its revocation';
+			end if;
+			raise exception 'the test found no revocation recorded before the sign-in commits';
+		end $$;
+		create constraint trigger refuse_the_commit after update on people deferrable initially deferred
+			for each row when (new.sub = 'subject-2') execute function refuse_the_commit();
 	`); err != nil {
 		t.Fatal(err)
 	}
-	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-2", model.MemberFull); err == nil || !strings.Contains(err.Error(), "the test refuses the new subject") {
-		t.Fatalf("a sign-in whose own write fails: err = %v, want that write's error", err)
+	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-2", model.MemberFull); err == nil || !strings.Contains(err.Error(), "the test refuses the commit of a sign-in that recorded its revocation") {
+		t.Fatalf("a sign-in whose commit fails after it recorded its revocation: err = %v, want the commit's error naming the recorded revocation", err)
 	}
 	if got := brokerRevocationsOf(t, database, email); len(got) != 0 {
 		t.Fatalf("a sign-in that rolled back left a broker revocation of %s: %+v", email, got)
 	}
-	if _, err := database.Pool.Exec(ctx, `drop trigger refuse_the_new_subject on people`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `drop trigger refuse_the_commit on people`); err != nil {
 		t.Fatal(err)
 	}
 	signInAll(t, people, email, "subject-2")
