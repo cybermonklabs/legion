@@ -2491,14 +2491,12 @@ test("the titles' Retry whose blockers changed elsewhere and back while its read
 // The same, but drawing the other set reads its titles again, since a read that holds no answer
 // is always stale, and that read fails too before the session puts back the set the press was
 // for. The line stays throughout, with its Retry and the focus, and says each read's failure as
-// the row draws it: the other set's second, then the press's read's first. Neither failure is the
-// press's read failing, so once that read answers the line goes for the press's answer, and the
-// focus Retry held goes on to the row's control rather than to the page's body.
+// the row draws it: the other set's second, then the pressed set's first again, from its read
+// before the press. Neither is the press's read failing, so once that read answers the line goes
+// for the press's answer, and the focus Retry held goes on to the row's control rather than to
+// the page's body.
 test("the titles' Retry whose blockers changed elsewhere to a set whose read failed again, and back, while its read is out hands its focus to the row's control once that read answers", async () => {
   const details = titlesRetryDetails();
-  const otherSet = referenceTargetsQuery([
-    buildDispatchReference({ key: "CORE-4", kind: "issue" }),
-  ]).queryKey;
 
   try {
     const retry = await details.press();
@@ -2506,7 +2504,7 @@ test("the titles' Retry whose blockers changed elsewhere to a set whose read fai
     details.drawBlockers(["CORE-4"]);
     await waitFor(() =>
       expect(
-        details.queryClient.getQueryState(otherSet)?.errorUpdateCount,
+        details.queryClient.getQueryState(details.otherSet)?.errorUpdateCount,
         "the other set's titles were not read again with a failure"
       ).toBe(2)
     );
@@ -2545,7 +2543,6 @@ test("the titles' Retry whose blockers changed elsewhere to a set whose read fai
 // focus Retry held goes on to the row's control rather than to the page's body.
 test("the titles' Retry pressed again under another set hands its focus to the row's control once that press's read answers, though the first press's read failed meanwhile", async () => {
   const details = titlesRetryDetails();
-  const otherBlocker = buildDispatchReference({ key: "CORE-4", kind: "issue" });
   const otherRead = Promise.withResolvers<ReferenceTargets>();
 
   try {
@@ -2580,7 +2577,7 @@ test("the titles' Retry pressed again under another set hands its focus to the r
     ).toBe(retry);
 
     await act(async () =>
-      otherRead.resolve(issueNames([otherBlocker], { "CORE-4": "Ship the release" }))
+      otherRead.resolve(issueNames([details.otherBlocker], { "CORE-4": "Ship the release" }))
     );
     await waitFor(() =>
       expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Ship the release")
@@ -2984,9 +2981,9 @@ function referencedByDetails() {
  * read after those but the press's is out until the end: `press` waits for CORE-4's line, changes
  * the set to CORE-3, whose titles then fail too, and presses that line's Retry by keyboard, which
  * it returns once the read it sent is out. That read is out until `answerPress` answers it with
- * CORE-3's title or `failPress` fails it; `pressedFor` is its key, `titles` the spy of the titles'
- * reads, and `user` the reader who pressed. `restore` takes Details off the page and puts the
- * spies back.
+ * CORE-3's title or `failPress` fails it; `pressedFor` is its key. `otherBlocker` is CORE-4's
+ * reference and `otherSet` the key of its titles' read; `titles` is the spy of the titles' reads,
+ * and `user` the reader who pressed. `restore` takes Details off the page and puts the spies back.
  */
 function titlesRetryDetails() {
   const user = userEvent.setup();
@@ -3000,6 +2997,8 @@ function titlesRetryDetails() {
   const pressed = Promise.withResolvers<ReferenceTargets>();
   const blocker = buildDispatchReference({ key: "CORE-3", kind: "issue" });
   const pressedFor = referenceTargetsQuery([blocker]).queryKey;
+  const otherBlocker = buildDispatchReference({ key: "CORE-4", kind: "issue" });
+  const otherSet = referenceTargetsQuery([otherBlocker]).queryKey;
   const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
   const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
   const drawBlockers = (keys: string[]) =>
@@ -3009,6 +3008,8 @@ function titlesRetryDetails() {
     blockedBy,
     drawBlockers,
     failPress: () => pressed.reject(readFailure()),
+    otherBlocker,
+    otherSet,
     press: async () => {
       await waitFor(() =>
         expect(blockedBy().getByRole("alert")).toHaveTextContent(TITLES_READ_FAILED)

@@ -115,7 +115,8 @@ export interface RetryHandOff {
  *  by's list (`ReferencedBy`), which takes them as its own props: the press of Retry the line notes
  *  (`retried`), and the ref that takes Retry (`retryRef`), which, as Retry leaves the page with the
  *  focus after that press, hands the focus on to what `to` returns (`useFocusHandOff`, with the
- *  press as its `pressed`). */
+ *  press as its `pressed`). Its caller may keep the press itself, setting and forgetting it,
+ *  rather than hand it to the line (`useTitlesRetry`). */
 export function useRetryHandOff(to: Parameters<typeof useFocusHandOff>[0]): RetryHandOff {
   const retried = useRef(false);
   return { retried, retryRef: useFocusHandOff(to, retried) };
@@ -125,43 +126,42 @@ export function useRetryHandOff(to: Parameters<typeof useFocusHandOff>[0]): Retr
  *  of issues the row lists, spread on its line (`DetailsErrorLine`): it sends the read under
  *  `queryKey` again, joining one that is out (`retryRead`), and notes its press and that key as
  *  the read it was pressed for; as Retry leaves the page with the focus after that press
- *  (`useFocusHandOff`, with the press as its `pressed`), it hands the focus on to what `to`
- *  returns only where the read now drawn is under that key. A line that goes under another key
- *  went with the set of issues the row lists. The press is the hook's own, not the line's
- *  (`retried`): the row keeps one line across a change of the set, and that line says the
- *  failures of the read it draws now, so its failure changes as the set does, while the press's
- *  read is still out. The press is forgotten once the read it sent, or joined, fails, or ends
- *  while the row draws another key, even where the line stays over another set's read that
- *  stands failed too: a query leaves the cache once nothing has observed it, and no fetch of it
- *  is out, for its `gcTime`, so the row taken back to the key pressed for can draw a read built
- *  afresh, which has not failed, and its line goes with no answer to the press. The cache can
- *  drop that read only once its fetch has ended and the row draws another key: where it ended
- *  under another key the press is forgotten then; where it ended under the key pressed for, it
- *  failed, which forgot the press, or answered, and the line went with that answer, which ended
- *  the press there. A press whose read is still out as the row draws that key again is kept:
- *  drawing another key stops no read but its retries, or, offline, a read paused before it held
- *  anything, which TanStack cancels (a names read reads no abort signal), so the line stands
- *  until that read ends, and its going then is the press's answer. While the row draws that key,
- *  the key alone tells that the read answered the press: the line stands while the read stands
- *  failed (`standsFailed`), and a read that has failed stops standing failed only by holding its
- *  own answer - a names read draws no placeholder once it failed (`keptUntilFailed`) - or by
- *  being reset or taken out of the cache, which the app does to a read the row observes only as
- *  the reader signs out and the page goes. A refresh that fails over that answer before the page
- *  draws it draws no line, and the focus goes on all the same. */
+ *  (`useRetryHandOff`), it hands the focus on to what `to` returns only where the read now drawn
+ *  is under that key. A line that goes under another key went with the set of issues the row
+ *  lists. It keeps `useRetryHandOff`'s press itself and does not hand it to the line (`retried`):
+ *  the row keeps one line across a change of the set, and that line says the failures of the read
+ *  it draws now, so its failure changes as the set does, while the press's read is still out. A
+ *  later press under another key replaces the earlier one, whose read answering then hands nothing
+ *  on. The press is forgotten once the read it sent, or joined, fails, or ends while the row draws
+ *  another key, even where the line stays over another set's read that stands failed too: a query
+ *  leaves the cache once nothing has observed it, and no fetch of it is out, for its `gcTime`, so
+ *  the row taken back to the key pressed for can draw a read built afresh, which has not failed,
+ *  and its line goes with no answer to the press. The cache can drop that read only once its
+ *  fetch has ended and the row draws another key: where it ended under another key the press is
+ *  forgotten then; where it ended under the key pressed for, it failed, which forgot the press,
+ *  or answered, and the line went with that answer, which ended the press there. A press whose
+ *  read is still out as the row draws that key again is kept: drawing another key stops no read
+ *  but its retries, or, offline, a read paused before it held anything, which TanStack cancels (a
+ *  names read reads no abort signal), so the line stands until that read ends, and its going then
+ *  is the press's answer. While the row draws that key, the key alone tells that the read answered
+ *  the press: the line stands while the read stands failed (`standsFailed`), and a read that has
+ *  failed stops standing failed only by holding its own answer - a names read draws no placeholder
+ *  once it failed (`keptUntilFailed`) - or by being reset or taken out of the cache, which the app
+ *  does to a read the row observes only as the reader signs out and the page goes. A refresh that
+ *  fails over that answer before the page draws it draws no line, and the focus goes on all the
+ *  same. */
 export function useTitlesRetry(
   read: Parameters<typeof retryRead<{ readonly isError: boolean }>>[0],
   queryKey: QueryKey,
   to: Parameters<typeof useFocusHandOff>[0]
-): { readonly onRetry: () => void; readonly retryRef: RefCallback<HTMLElement> } {
+): Pick<RetryHandOff, "retryRef"> & { readonly onRetry: () => void } {
   const key = hashKey(queryKey);
   // The key the row draws now, for a press's read that ends renders after the press.
   const drawn = useRef(key);
   drawn.current = key;
-  const pressed = useRef(false);
   const pressedFor = useRef<string | null>(null);
-  const retryRef = useFocusHandOff(
-    (left) => (pressedFor.current === key ? to(left) : null),
-    pressed
+  const { retried: pressed, retryRef } = useRetryHandOff((left) =>
+    pressedFor.current === key ? to(left) : null
   );
   const onRetry = () => {
     const pressedKey = key;
@@ -191,8 +191,9 @@ export function useTitlesRetry(
  *  query's `isFetching`) but stays enabled, because Chromium moves the focus of a control that
  *  turns disabled to the page's body, which would lose a reader who pressed Retry by keyboard. A
  *  read that fails again is drawn afresh (`errorUpdateCount`), so a screen reader says it again
- *  even in the same words. It returns the read's promise, which holds the read's state once that
- *  read ends, for a caller that reads how it ended. */
+ *  even in the same words. It returns the read's promise, which, once that read ends, holds the
+ *  state of the read the caller draws then: another key's, where the caller's key changed
+ *  meanwhile. */
 export function retryRead<Answer>(read: {
   readonly refetch: (options: { cancelRefetch: boolean }) => Promise<Answer>;
 }): () => Promise<Answer> {
